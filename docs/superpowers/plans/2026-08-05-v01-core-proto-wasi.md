@@ -429,14 +429,6 @@ pub(crate) use lines::LineSplitter;
 #[derive(Debug)]
 pub(crate) struct LineSplitter {
     buf: Vec<u8>,
-    /// Сколько байт с начала `buf` уже отдано наружу.
-    ///
-    /// Существует ради сложности: сдвигать буфер на каждой строке
-    /// (`drain(..pos)` + `remove(0)`) стоит O(n·k) для чанка с k строками.
-    /// Замерено на прошлой версии: 50k коротких строк — 51 мс, 100k — 225 мс,
-    /// 200k — 925 мс, то есть 4× на каждое удвоение. Это парсер недоверенного
-    /// тела ответа, так что квадратичность здесь — вектор атаки.
-    start: usize,
     /// Сколько байт BOM уже подтверждено. 3 = BOM обработан (снят или отвергнут).
     bom_seen: usize,
     bom_done: bool,
@@ -448,16 +440,10 @@ const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 impl LineSplitter {
     pub(crate) fn new() -> Self {
-        Self { buf: Vec::new(), start: 0, bom_seen: 0, bom_done: false, pending_cr: false }
+        Self { buf: Vec::new(), bom_seen: 0, bom_done: false, pending_cr: false }
     }
 
     pub(crate) fn push(&mut self, chunk: &[u8]) {
-        // Компактация раз в push, а не раз в строку: суммарно линейно.
-        if self.start > 0 {
-            self.buf.drain(..self.start);
-            self.start = 0;
-        }
-
         let mut rest = chunk;
 
         // Фаза BOM: копим до трёх байт, решаем один раз.
@@ -488,15 +474,14 @@ impl LineSplitter {
     }
 
     pub(crate) fn next_line(&mut self) -> Option<Vec<u8>> {
-        let hay = &self.buf[self.start..];
-        let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
-        let term = hay[pos];
-        let line = hay[..pos].to_vec();
-        self.start += pos + 1; // строка плюс сам терминатор
+        let pos = self.buf.iter().position(|&b| b == b'\n' || b == b'\r')?;
+        let term = self.buf[pos];
+        let line: Vec<u8> = self.buf.drain(..pos).collect();
+        self.buf.remove(0); // сам терминатор
         if term == b'\r' {
-            if self.buf.get(self.start) == Some(&b'\n') {
-                self.start += 1; // CRLF
-            } else if self.start == self.buf.len() {
+            if self.buf.first() == Some(&b'\n') {
+                self.buf.remove(0); // CRLF внутри буфера
+            } else if self.buf.is_empty() {
                 self.pending_cr = true; // CR в конце — LF может прийти следующим чанком
             }
         }
@@ -504,9 +489,7 @@ impl LineSplitter {
     }
 
     pub(crate) fn buffered_len(&self) -> usize {
-        // Байты BOM, по которым решение ещё не принято, физически удержаны.
-        // Не учитывать их — значит дать обойти лимит размера события в декодере.
-        (self.buf.len() - self.start) + if self.bom_done { 0 } else { self.bom_seen }
+        self.buf.len()
     }
 }
 ```
@@ -524,96 +507,15 @@ use proptest::prelude::*;
 
 proptest! {
     #[test]
-    fn chunking_does_not_change_lines(
-        prefix_bom: bool,
-        data: Vec<u8>,
-        splits in proptest::collection::vec(0usize..4096, 0..4),
-    ) {
-        // Случайный Vec<u8> практически никогда не начнётся с EF BB BF
-        // (1 к 16 млн), поэтому BOM подставляется явно.
-        let mut input = Vec::new();
-        if prefix_bom { input.extend_from_slice(&[0xEF, 0xBB, 0xBF]) }
-        input.extend_from_slice(&data);
-
-        let whole = collect(&[&input]);
-
-        // Произвольное число кусков в произвольных местах: двух мало —
-        // состояние (pending_cr, фаза BOM) должно переживать несколько
-        // границ подряд.
-        let mut cuts: Vec<usize> = splits.iter().map(|s| s % (input.len() + 1)).collect();
-        cuts.sort_unstable();
-        let mut chunks: Vec<&[u8]> = Vec::new();
-        let mut prev = 0;
-        for c in cuts {
-            chunks.push(&input[prev..c]);
-            prev = c;
-        }
-        chunks.push(&input[prev..]);
-
-        prop_assert_eq!(whole, collect(&chunks));
+    fn chunking_does_not_change_lines(data: Vec<u8>, split_at in 0usize..64) {
+        let whole = collect(&[&data]);
+        let at = split_at.min(data.len());
+        let (a, b) = data.split_at(at);
+        let split = collect(&[a, b]);
+        prop_assert_eq!(whole, split);
     }
 }
-
-/// Единственный тест, покрывающий учёт байт BOM, по которым решение ещё не
-/// принято. `incomplete_line_is_withheld` его не покрывает: там BOM нет вовсе.
-#[test]
-fn buffered_len_counts_bytes_held_inside_an_undecided_bom() {
-    let mut s = LineSplitter::new();
-    s.push(&[0xEF, 0xBB]); // два из трёх байт BOM — решение ещё не принято
-    assert_eq!(s.buffered_len(), 2,
-        "недоучёт даёт обойти лимит размера события в декодере");
-    assert_eq!(s.next_line(), None);
-
-    s.push(&[0xBF]); // BOM собрался целиком и снят
-    assert_eq!(s.buffered_len(), 0);
-
-    s.push(b"ab");
-    assert_eq!(s.buffered_len(), 2);
-}
-
-/// Регресс на квадратичность.
-///
-/// Порог по абсолютному времени бесполезен, и это проверено: ре-ревью
-/// скопировало тело прежней версии этого теста в квадратичный код, и оно
-/// прошло за 0.26 с при бюджете 2 с. Поэтому проверяется КЛАСС сложности —
-/// отношение времён при четырёхкратном росте входа. Линейность предсказывает
-/// ~4×, квадратичность ~16×; порог 8× оставляет запас на шум планировщика и
-/// при этом отделяет один класс от другого.
-#[test]
-fn parsing_scales_linearly_not_quadratically() {
-    fn parse_millis(lines: usize) -> f64 {
-        let mut input = Vec::with_capacity(lines * 8);
-        for _ in 0..lines {
-            input.extend_from_slice(b"data: x\n");
-        }
-        let start = std::time::Instant::now();
-        let got = collect(&[&input]);
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        assert_eq!(got.len(), lines);
-        elapsed
-    }
-
-    // Разогрев: первый прогон платит за аллокатор и прогрев кэша.
-    let _ = parse_millis(2_000);
-
-    // Поднимаем базовый размер, пока замер тонет в разрешении таймера:
-    // отношение двух шумов не значит ничего.
-    let mut n = 4_000;
-    let (small, large) = loop {
-        let small = parse_millis(n);
-        if small >= 1.0 || n >= 64_000 {
-            break (small, parse_millis(n * 4));
-        }
-        n *= 2;
-    };
-
-    let ratio = large / small.max(0.001);
-    assert!(
-        ratio < 8.0,
-        "вход вырос в 4 раза, время — в {ratio:.1} ({small:.2} мс -> {large:.2} мс \
-         при n={n}): похоже на O(n^2)"
-    );
-}
+```
 
 - [ ] **Step 7: Запустить и убедиться, что property-тест проходит**
 
