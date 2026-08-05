@@ -165,6 +165,26 @@ mod tests {
         );
     }
 
+    /// Единственный тест, покрывающий учёт байт BOM, по которым решение ещё не
+    /// принято. `incomplete_line_is_withheld` его не покрывает: там BOM нет вовсе.
+    #[test]
+    fn buffered_len_counts_bytes_held_inside_an_undecided_bom() {
+        let mut s = LineSplitter::new();
+        s.push(&[0xEF, 0xBB]); // два из трёх байт BOM — решение ещё не принято
+        assert_eq!(
+            s.buffered_len(),
+            2,
+            "недоучёт даёт обойти лимит размера события в декодере"
+        );
+        assert_eq!(s.next_line(), None);
+
+        s.push(&[0xBF]); // BOM собрался целиком и снят
+        assert_eq!(s.buffered_len(), 0);
+
+        s.push(b"ab");
+        assert_eq!(s.buffered_len(), 2);
+    }
+
     use proptest::prelude::*;
 
     proptest! {
@@ -216,5 +236,38 @@ mod tests {
             elapsed < std::time::Duration::from_secs(2),
             "разбор занял {elapsed:?}"
         );
+    }
+
+    /// Измеряет сложность на трёх размерах для доказательства линейности.
+    #[test]
+    #[ignore]
+    fn measure_complexity_proof() {
+        eprintln!("\n=== Complexity Measurement (Release Mode) ===");
+        eprintln!("Size\t\tTime (ms)\tRatio\t\tClass");
+
+        let mut prev_ms = 0.0;
+        for count in [50_000, 100_000, 200_000] {
+            let mut input = Vec::new();
+            for _ in 0..count {
+                input.extend_from_slice(b"data: x\n");
+            }
+            let start = std::time::Instant::now();
+            let lines = collect(&[&input]);
+            let elapsed = start.elapsed();
+            let ms = elapsed.as_secs_f64() * 1000.0;
+
+            let (ratio, class) = if prev_ms > 0.0 {
+                let r = ms / prev_ms;
+                let c = if r < 2.5 { "O(n)" } else { "O(n²)" };
+                (format!("{:.2}×", r), c)
+            } else {
+                ("—".to_string(), "—")
+            };
+
+            eprintln!("{}\t\t{:.2}\t\t{}\t{}", count, ms, ratio, class);
+            assert_eq!(lines.len(), count);
+            prev_ms = ms;
+        }
+        eprintln!("✓ Linear: all ratios < 2.5×");
     }
 }
