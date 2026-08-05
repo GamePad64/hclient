@@ -554,6 +554,23 @@ proptest! {
     }
 }
 
+/// Единственный тест, покрывающий учёт байт BOM, по которым решение ещё не
+/// принято. `incomplete_line_is_withheld` его не покрывает: там BOM нет вовсе.
+#[test]
+fn buffered_len_counts_bytes_held_inside_an_undecided_bom() {
+    let mut s = LineSplitter::new();
+    s.push(&[0xEF, 0xBB]); // два из трёх байт BOM — решение ещё не принято
+    assert_eq!(s.buffered_len(), 2,
+        "недоучёт даёт обойти лимит размера события в декодере");
+    assert_eq!(s.next_line(), None);
+
+    s.push(&[0xBF]); // BOM собрался целиком и снят
+    assert_eq!(s.buffered_len(), 0);
+
+    s.push(b"ab");
+    assert_eq!(s.buffered_len(), 2);
+}
+
 /// Регресс на измеренную квадратичность: много коротких строк в одном чанке.
 #[test]
 fn many_lines_in_one_chunk_is_linear() {
