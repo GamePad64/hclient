@@ -17,6 +17,10 @@ pub(crate) struct LineSplitter {
     bom_done: bool,
     /// Предыдущий байт был CR — следующий LF надо проглотить.
     pending_cr: bool,
+    /// Байт терминатора, проглоченный на границе чанка (LF, догнавший CR из
+    /// предыдущего `push`). Начисляется следующей возвращённой строке: иначе
+    /// лимит размера события недоучитывает до ~1.5× при побайтовой доставке.
+    carried_terminator: usize,
 }
 
 const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -29,6 +33,7 @@ impl LineSplitter {
             bom_seen: 0,
             bom_done: false,
             pending_cr: false,
+            carried_terminator: 0,
         }
     }
 
@@ -61,7 +66,8 @@ impl LineSplitter {
             if self.pending_cr {
                 self.pending_cr = false;
                 if b == b'\n' {
-                    continue; // LF после CR уже учтён терминатором
+                    self.carried_terminator += 1;
+                    continue;
                 }
             }
             self.buf.push(b);
@@ -73,16 +79,15 @@ impl LineSplitter {
     /// `line.len() + 1`: CRLF занимает два байта, и предположение об
     /// однобайтовом терминаторе даёт недоучёт, растущий с числом строк.
     ///
-    /// Остаточная неточность: если CRLF разорван границей чанка, LF
-    /// проглатывается в `push` и здесь не начисляется — до одного байта на
-    /// такую границу. Это ограничено числом чанков, а не повторами внутри
-    /// чанка, поэтому не масштабируется атакующим.
+    /// Точен и при разрыве CRLF границей чанка: проглоченный в `push` LF
+    /// накапливается в `carried_terminator` и начисляется здесь той строке,
+    /// что вернётся первой после его прихода.
     pub(crate) fn next_line(&mut self) -> Option<(Vec<u8>, usize)> {
         let hay = &self.buf[self.start..];
         let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
         let term = hay[pos];
         let line = hay[..pos].to_vec();
-        let mut consumed = pos + 1;
+        let mut consumed = pos + 1 + core::mem::take(&mut self.carried_terminator);
         self.start += pos + 1; // строка плюс сам терминатор
         if term == b'\r' {
             if self.buf.get(self.start) == Some(&b'\n') {
@@ -149,6 +154,30 @@ mod tests {
         assert_eq!(
             collect(&[b"a\r", b"\nb\n"]),
             vec![b"a".to_vec(), b"b".to_vec()]
+        );
+    }
+
+    /// Регресс на недоучёт LF, проглоченного на границе чанка. До фикса
+    /// `carried_terminator` этот байт нигде не начислялся: сумма `consumed`
+    /// по обеим строкам получалась 6 вместо 7 реально потреблённых байт.
+    #[test]
+    fn carries_swallowed_lf_across_push_to_next_line_accounting() {
+        let mut s = LineSplitter::new();
+        s.push(b"ab\r");
+        let (line1, consumed1) = s.next_line().expect("CR terminates the first line");
+        assert_eq!(line1, b"ab");
+        assert_eq!(s.next_line(), None, "буфер пуст, CR ждёт возможный LF");
+
+        s.push(b"\ncd\n");
+        let (line2, consumed2) = s.next_line().expect("LF terminates the second line");
+        assert_eq!(line2, b"cd");
+
+        assert_eq!(
+            consumed1 + consumed2,
+            7,
+            "суммарно потреблено должно совпадать с суммой длин чанков \
+             (\"ab\\r\" = 3 + \"\\ncd\\n\" = 4 = 7), иначе LF, проглоченный на \
+             границе чанка, потерян и лимит размера события недоучитывает"
         );
     }
 

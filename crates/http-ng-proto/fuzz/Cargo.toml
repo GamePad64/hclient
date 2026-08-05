@@ -1,0 +1,21 @@
+[package]
+name = "http-ng-proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+http-ng-proto = { path = ".." }
+
+[[bin]]
+name = "sse"
+path = "fuzz_targets/sse.rs"
+test = false
+doc  = false
+bench = false
+
+[workspace]

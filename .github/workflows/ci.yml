@@ -57,6 +57,15 @@ jobs:
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
 
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run sse -- -max_total_time=60
+        working-directory: crates/http-ng-proto/fuzz
+
   # ── инварианты из спеки ───────────────────────────────────────────────
   proto-is-sans-io:
     runs-on: ubuntu-latest
