@@ -4,6 +4,14 @@
 #[derive(Debug)]
 pub(crate) struct LineSplitter {
     buf: Vec<u8>,
+    /// Сколько байт с начала `buf` уже отдано наружу.
+    ///
+    /// Существует ради сложности: сдвигать буфер на каждой строке
+    /// (`drain(..pos)` + `remove(0)`) стоит O(n·k) для чанка с k строками.
+    /// Замерено на прошлой версии: 50k коротких строк — 51 мс, 100k — 225 мс,
+    /// 200k — 925 мс, то есть 4× на каждое удвоение. Это парсер недоверенного
+    /// тела ответа, так что квадратичность здесь — вектор атаки.
+    start: usize,
     /// Сколько байт BOM уже подтверждено. 3 = BOM обработан (снят или отвергнут).
     bom_seen: usize,
     bom_done: bool,
@@ -17,6 +25,7 @@ impl LineSplitter {
     pub(crate) fn new() -> Self {
         Self {
             buf: Vec::new(),
+            start: 0,
             bom_seen: 0,
             bom_done: false,
             pending_cr: false,
@@ -24,6 +33,12 @@ impl LineSplitter {
     }
 
     pub(crate) fn push(&mut self, chunk: &[u8]) {
+        // Компактация раз в push, а не раз в строку: суммарно линейно.
+        if self.start > 0 {
+            self.buf.drain(..self.start);
+            self.start = 0;
+        }
+
         let mut rest = chunk;
 
         // Фаза BOM: копим до трёх байт, решаем один раз.
@@ -54,14 +69,15 @@ impl LineSplitter {
     }
 
     pub(crate) fn next_line(&mut self) -> Option<Vec<u8>> {
-        let pos = self.buf.iter().position(|&b| b == b'\n' || b == b'\r')?;
-        let term = self.buf[pos];
-        let line: Vec<u8> = self.buf.drain(..pos).collect();
-        self.buf.remove(0); // сам терминатор
+        let hay = &self.buf[self.start..];
+        let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
+        let term = hay[pos];
+        let line = hay[..pos].to_vec();
+        self.start += pos + 1; // строка плюс сам терминатор
         if term == b'\r' {
-            if self.buf.first() == Some(&b'\n') {
-                self.buf.remove(0); // CRLF внутри буфера
-            } else if self.buf.is_empty() {
+            if self.buf.get(self.start) == Some(&b'\n') {
+                self.start += 1; // CRLF
+            } else if self.start == self.buf.len() {
                 self.pending_cr = true; // CR в конце — LF может прийти следующим чанком
             }
         }
@@ -69,7 +85,9 @@ impl LineSplitter {
     }
 
     pub(crate) fn buffered_len(&self) -> usize {
-        self.buf.len()
+        // Байты BOM, по которым решение ещё не принято, физически удержаны.
+        // Не учитывать их — значит дать обойти лимит размера события в декодере.
+        (self.buf.len() - self.start) + if self.bom_done { 0 } else { self.bom_seen }
     }
 }
 
@@ -151,12 +169,52 @@ mod tests {
 
     proptest! {
         #[test]
-        fn chunking_does_not_change_lines(data: Vec<u8>, split_at in 0usize..64) {
-            let whole = collect(&[&data]);
-            let at = split_at.min(data.len());
-            let (a, b) = data.split_at(at);
-            let split = collect(&[a, b]);
-            prop_assert_eq!(whole, split);
+        fn chunking_does_not_change_lines(
+            prefix_bom: bool,
+            data: Vec<u8>,
+            splits in proptest::collection::vec(0usize..4096, 0..4),
+        ) {
+            // Случайный Vec<u8> практически никогда не начнётся с EF BB BF
+            // (1 к 16 млн), поэтому BOM подставляется явно.
+            let mut input = Vec::new();
+            if prefix_bom { input.extend_from_slice(&[0xEF, 0xBB, 0xBF]) }
+            input.extend_from_slice(&data);
+
+            let whole = collect(&[&input]);
+
+            // Произвольное число кусков в произвольных местах: двух мало —
+            // состояние (pending_cr, фаза BOM) должно переживать несколько
+            // границ подряд.
+            let mut cuts: Vec<usize> = splits.iter().map(|s| s % (input.len() + 1)).collect();
+            cuts.sort_unstable();
+            let mut chunks: Vec<&[u8]> = Vec::new();
+            let mut prev = 0;
+            for c in cuts {
+                chunks.push(&input[prev..c]);
+                prev = c;
+            }
+            chunks.push(&input[prev..]);
+
+            prop_assert_eq!(whole, collect(&chunks));
         }
+    }
+
+    /// Регресс на измеренную квадратичность: много коротких строк в одном чанке.
+    #[test]
+    fn many_lines_in_one_chunk_is_linear() {
+        let mut input = Vec::new();
+        for _ in 0..50_000 {
+            input.extend_from_slice(b"data: x\n");
+        }
+        let start = std::time::Instant::now();
+        let lines = collect(&[&input]);
+        let elapsed = start.elapsed();
+        assert_eq!(lines.len(), 50_000);
+        // Прежняя версия давала ~51 мс в release и кратно больше в debug.
+        // Порог намеренно щедрый: ловим класс O(n^2), а не микросекунды.
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "разбор занял {elapsed:?}"
+        );
     }
 }
