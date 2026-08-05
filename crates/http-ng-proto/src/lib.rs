@@ -4,4 +4,5 @@
 //! Всё, что зависит от времени, принимает `now` параметром. Проверяется в CI.
 #![deny(unsafe_code)]
 
+pub mod redirect;
 pub mod sse;
