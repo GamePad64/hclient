@@ -117,6 +117,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-body"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
+dependencies = [
+ "bytes",
+ "http",
+]
+
+[[package]]
+name = "http-ng-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body",
+]
+
+[[package]]
 name = "http-ng-proto"
 version = "0.1.0"
 dependencies = [

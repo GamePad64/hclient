@@ -1,0 +1,16 @@
+[package]
+name = "http-ng-core"
+version = "0.1.0"
+description = "Контракт плагина http-ng: Transport, Capabilities, RequestBody, Error, Timer"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes     = { workspace = true }
+http      = { workspace = true }
+http-body = { workspace = true }
+
+[lints]
+workspace = true
