@@ -18,4 +18,11 @@ test = false
 doc  = false
 bench = false
 
+[[bin]]
+name = "sse_accounting"
+path = "fuzz_targets/sse_accounting.rs"
+test = false
+doc  = false
+bench = false
+
 [workspace]

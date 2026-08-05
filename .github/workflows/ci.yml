@@ -65,6 +65,8 @@ jobs:
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz run sse -- -max_total_time=60
         working-directory: crates/http-ng-proto/fuzz
+      - run: cargo fuzz run sse_accounting -- -max_total_time=30 -max_len=256
+        working-directory: crates/http-ng-proto/fuzz
 
   # ── инварианты из спеки ───────────────────────────────────────────────
   proto-is-sans-io:

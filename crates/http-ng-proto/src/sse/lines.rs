@@ -103,7 +103,12 @@ impl LineSplitter {
     pub(crate) fn buffered_len(&self) -> usize {
         // Байты BOM, по которым решение ещё не принято, физически удержаны.
         // Не учитывать их — значит дать обойти лимит размера события в декодере.
-        (self.buf.len() - self.start) + if self.bom_done { 0 } else { self.bom_seen }
+        // carried_terminator — тот же случай: LF, проглоченный на границе чанка,
+        // ещё не отдан ни одной строке (следующей строки пока просто нет), но
+        // он уже реально потреблён с провода.
+        (self.buf.len() - self.start)
+            + if self.bom_done { 0 } else { self.bom_seen }
+            + self.carried_terminator
     }
 }
 
@@ -178,6 +183,45 @@ mod tests {
             "суммарно потреблено должно совпадать с суммой длин чанков \
              (\"ab\\r\" = 3 + \"\\ncd\\n\" = 4 = 7), иначе LF, проглоченный на \
              границе чанка, потерян и лимит размера события недоучитывает"
+        );
+    }
+
+    /// Регресс на недоучёт в `buffered_len()`: между двумя разрывами CRLF
+    /// подряд `carried_terminator` может держать 1 байт, который ещё не
+    /// отдан ни одной строке (следующей строки в буфере пока нет вовсе), но
+    /// уже реально потреблён с провода. `"x\r"` → строка "x" (CR в конце,
+    /// LF неизвестен); `"\ny\r"` → LF из предыдущего чанка проглочен и
+    /// начислен строке "y", новый CR снова повисает; `"\nz"` → LF из
+    /// предыдущего чанка проглочен, строки нет (в "z" нет терминатора), и
+    /// этот байт обязан быть виден в `buffered_len()`, иначе сумма
+    /// потреблённого меньше суммы поданного.
+    #[test]
+    fn buffered_len_counts_a_pending_carried_terminator() {
+        let mut s = LineSplitter::new();
+
+        s.push(b"x\r");
+        let (line1, consumed1) = s.next_line().expect("CR terminates the first line");
+        assert_eq!(line1, b"x");
+        assert_eq!(s.next_line(), None);
+
+        s.push(b"\ny\r");
+        let (line2, consumed2) = s.next_line().expect("LF terminates the second line");
+        assert_eq!(line2, b"y");
+        assert_eq!(s.next_line(), None);
+
+        s.push(b"\nz");
+        assert_eq!(
+            s.next_line(),
+            None,
+            "\"z\" не терминирована, строки ещё нет"
+        );
+
+        assert_eq!(
+            consumed1 + consumed2 + s.buffered_len(),
+            7,
+            "суммарно учтено (consumed обеих строк + buffered_len) должно \
+             совпадать с суммой длин чанков (\"x\\r\" = 2 + \"\\ny\\r\" = 3 + \
+             \"\\nz\" = 2 = 7); иначе непринятый carried_terminator потерян"
         );
     }
 
