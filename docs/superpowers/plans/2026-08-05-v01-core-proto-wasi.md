@@ -682,8 +682,12 @@ impl SseDecoder {
 
     fn handle_line(&mut self, line: &[u8]) {
         if line[0] == b':' {
-            let body = String::from_utf8_lossy(&line[1..]).trim_start_matches(' ').to_string();
-            self.ready.push_back(SseEvent::Comment(body));
+            // Снимается РОВНО один ведущий пробел, как и у полей.
+            // `trim_start_matches(' ')` снял бы все и потерял бы значащие.
+            let raw = &line[1..];
+            let raw = if raw.first() == Some(&b' ') { &raw[1..] } else { raw };
+            self.ready.push_back(SseEvent::Comment(
+                String::from_utf8_lossy(raw).into_owned()));
             return;
         }
         let (name, value) = match line.iter().position(|&b| b == b':') {
@@ -696,8 +700,12 @@ impl SseDecoder {
         };
         match name {
             b"data" => {
-                if !self.data.is_empty() { self.data.push('\n') }
+                // WHATWG: к буферу дописывается значение И перевод строки.
+                // Один хвостовой перевод снимается при диспатче. Схема
+                // «разделитель только между непустыми» даёт другой результат
+                // для пустого первого поля.
                 self.data.push_str(&String::from_utf8_lossy(value));
+                self.data.push('\n');
             }
             b"event" => {
                 // Повтор поля — последнее побеждает, а НЕ ошибка.
@@ -1281,9 +1289,12 @@ impl std::error::Error for Error {
 - [ ] **Step 4: Запустить тесты**
 
 Run: `cargo test -p http-ng-core error`
-Expected: PASS, четыре теста. (`unversioned`, `body`, `caps` ещё не написаны —
-временно закомментировать соответствующие строки в `lib.rs`, они появятся в
-Task 7–9.)
+Expected: PASS, четыре теста.
+
+**Модули объявлять по мере появления, а не комментировать.** В этой задаче
+`lib.rs` содержит только `mod error;` и `pub use error::…`; `body`, `caps` и
+`unversioned` добавляются в Task 7, 8 и 9 соответственно. Закомментированный
+код в коммите — дефект.
 
 - [ ] **Step 5: Commit**
 
@@ -2001,8 +2012,9 @@ pub fn check_supported(
 }
 ```
 
-Для компиляции `lib.rs` временно закомментировать `mod client/request/response/sse/stages;`
-и соответствующие `pub use` — они появятся в Task 11–14.
+**Модули объявлять по мере появления.** В этой задаче `lib.rs` содержит только
+`mod config;` и его реэкспорты; `mock`, `client`, `request`, `response`, `sse`
+и `stages` добавляются в Task 11–14. Закомментированный код в коммите — дефект.
 
 - [ ] **Step 4: Запустить тесты**
 
