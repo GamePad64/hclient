@@ -238,15 +238,15 @@ mod tests {
         );
     }
 
-    /// Измеряет сложность на трёх размерах для доказательства линейности.
+    /// Измеряет сложность на трёх размерах для доказательства линейности (10× scale).
     #[test]
     #[ignore]
     fn measure_complexity_proof() {
-        eprintln!("\n=== Complexity Measurement (Release Mode) ===");
+        eprintln!("\n=== Complexity Measurement (Release Mode, 10× Scale) ===");
         eprintln!("Size\t\tTime (ms)\tRatio\t\tClass");
 
         let mut prev_ms = 0.0;
-        for count in [50_000, 100_000, 200_000] {
+        for count in [500_000, 1_000_000, 2_000_000] {
             let mut input = Vec::new();
             for _ in 0..count {
                 input.extend_from_slice(b"data: x\n");
