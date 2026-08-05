@@ -1,0 +1,19 @@
+[package]
+name = "http-ng-proto"
+version = "0.1.0"
+description = "Чистые автоматы протокольных слоёв http-ng: без I/O, без async, без рантайма"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+http  = { workspace = true }
+url   = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

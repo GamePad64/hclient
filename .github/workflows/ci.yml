@@ -71,8 +71,8 @@ jobs:
             echo "::notice::http-ng-proto ещё нет — проверка пропущена"
             exit 0
           fi
-          if cargo tree -p http-ng-proto -e normal --prefix none \
-               | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
+          tree="$(cargo tree -p http-ng-proto -e normal --prefix none)"
+          if printf '%s\n' "$tree" | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
             echo "::error::http-ng-proto подцепил async-зависимость"
             exit 1
           fi
@@ -84,7 +84,8 @@ jobs:
             echo "::notice::http-ng-proto ещё нет — проверка пропущена"
             exit 0
           fi
-          if grep -rn "async fn" crates/http-ng-proto/src; then
+          if grep -rn "async fn" crates/http-ng-proto/src \
+               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
             echo "::error::sans-io крейт содержит async fn"
             exit 1
           fi
