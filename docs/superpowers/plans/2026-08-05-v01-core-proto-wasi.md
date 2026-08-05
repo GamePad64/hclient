@@ -2571,7 +2571,9 @@ git commit -m "feat(http-ng): Client with redirect stage and capability check at
   - `pub struct Collected { .. }`; `Collected::bytes()`, `Collected::text()`,
     `Collected::json<T>()`, и **сохраняет** `status()`, `headers()`, `url()`
   - `Client::get/post/put/delete/patch/head/request -> RequestBuilder<'_, T>`
-  - `RequestBuilder::{header, headers, body, send}`
+  - `RequestBuilder::{header, headers, body, timeouts, send}` — `timeouts`
+    кладёт `http_ng_core::Timeouts` в `Extensions` запроса, откуда их читает
+    транспорт (lookup «request-first, client-fallback», §4.5 спеки)
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -2733,12 +2735,13 @@ pub struct RequestBuilder<'a, T> {
     uri: Result<http::Uri, http::uri::InvalidUri>,
     headers: http::HeaderMap,
     body: RequestBody,
+    extensions: http::Extensions,
 }
 
 impl<'a, T: Transport> RequestBuilder<'a, T> {
     pub(crate) fn new(client: &'a Client<T>, method: http::Method, url: &str) -> Self {
         Self { client, method, uri: url.parse(), headers: http::HeaderMap::new(),
-               body: RequestBody::Empty }
+               body: RequestBody::Empty, extensions: http::Extensions::new() }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -2759,12 +2762,25 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         self
     }
 
+    /// Таймауты только для этого запроса. Кладутся в `Extensions`, откуда их
+    /// читает транспорт; незаданные поля падают обратно на конфигурацию
+    /// клиента.
+    ///
+    /// reqwest этого не умеет вовсе (issue #2641), из-за чего `act-cli`
+    /// вынужден строить отдельный `reqwest::Client` на каждый вызов
+    /// компонента — со своим пулом соединений.
+    pub fn timeouts(mut self, t: http_ng_core::Timeouts) -> Self {
+        self.extensions.insert(t);
+        self
+    }
+
     pub async fn send(self) -> Result<Response<T::Body>, Error> {
         let uri = self.uri.map_err(|e| Error::new(ErrorKind::Other, e))?;
         let mut req = http::Request::new(self.body);
         *req.method_mut() = self.method;
         *req.uri_mut() = uri.clone();
         *req.headers_mut() = self.headers;
+        *req.extensions_mut() = self.extensions;
         let resp = self.client.execute(req).await?;
         Ok(Response::new(resp, uri))
     }
