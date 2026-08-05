@@ -163,6 +163,11 @@ Expected: `OK` (членов пока нет — это нормально, `mem
 name: ci
 on: [push, pull_request]
 
+# Крейты появляются по ходу вертикали. Каждая проверка активируется, как только
+# её крейт существует, и до тех пор ЯВНО печатает, что пропущена. Молчаливый
+# зелёный чек опаснее красного: после опечатки в имени крейта он остаётся
+# зелёным навсегда.
+
 jobs:
   test:
     strategy:
@@ -172,14 +177,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --all-features
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
+            echo "::notice::в workspace ещё нет крейтов — тесты пропущены"
+            exit 0
+          fi
+          cargo test --workspace --all-features
 
   msrv:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
-      - run: cargo check -p http-ng-proto -p http-ng-core -p http-ng --all-features
+      - shell: bash
+        run: |
+          set -euo pipefail
+          pkgs=""
+          for p in http-ng-proto http-ng-core http-ng; do
+            if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
+          done
+          if [ -z "$pkgs" ]; then
+            echo "::notice::крейтов ядра ещё нет — MSRV не проверяется"
+            exit 0
+          fi
+          cargo check $pkgs --all-features
 
   wasip2:
     runs-on: ubuntu-latest
@@ -187,7 +210,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-wasip2 }
-      - run: cargo check -p http-ng-wasi --target wasm32-wasip2
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-wasi ]; then
+            echo "::notice::http-ng-wasi ещё нет — сборка под wasip2 пропущена"
+            exit 0
+          fi
+          cargo check -p http-ng-wasi --target wasm32-wasip2
 
   # ── инварианты из спеки ───────────────────────────────────────────────
   proto-is-sans-io:
@@ -196,13 +226,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: no async deps in http-ng-proto
+        shell: bash
         run: |
-          cargo tree -p http-ng-proto -e normal --prefix none \
-            | grep -Ei '^(tokio|futures-|async-|smol|compio)' && {
-              echo "http-ng-proto подцепил async-зависимость"; exit 1; } || true
+          set -euo pipefail
+          if [ ! -d crates/http-ng-proto ]; then
+            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            exit 0
+          fi
+          if cargo tree -p http-ng-proto -e normal --prefix none \
+               | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
+            echo "::error::http-ng-proto подцепил async-зависимость"
+            exit 1
+          fi
       - name: no async fn in http-ng-proto
+        shell: bash
         run: |
-          ! grep -rn "async fn" crates/http-ng-proto/src
+          set -euo pipefail
+          if [ ! -d crates/http-ng-proto/src ]; then
+            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            exit 0
+          fi
+          if grep -rn "async fn" crates/http-ng-proto/src; then
+            echo "::error::sans-io крейт содержит async fn"
+            exit 1
+          fi
 
   no-declared-send:
     runs-on: ubuntu-latest
@@ -210,9 +257,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: no Send/Sync bounds declared in core surface
+        shell: bash
         run: |
-          ! grep -rnE ':\s*Send\b|\+\s*Send\b|MaybeSend' \
-              crates/http-ng-core/src crates/http-ng/src
+          set -euo pipefail
+          dirs=""
+          for d in crates/http-ng-core/src crates/http-ng/src; do
+            if [ -d "$d" ]; then dirs="$dirs $d"; fi
+          done
+          if [ -z "$dirs" ]; then
+            echo "::notice::крейтов ядра ещё нет — проверка пропущена"
+            exit 0
+          fi
+          # Ищем ОБЪЯВЛЕННЫЕ бонды, а не упоминания в доках: строки, у которых
+          # содержимое начинается с комментария, отбрасываются вторым grep.
+          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
+               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
+            echo "::error::в ядре объявлен бонд Send или Sync"
+            exit 1
+          fi
 ```
 
 - [ ] **Step 5: Commit**
