@@ -22,6 +22,10 @@ impl Default for RedirectPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Follow {
+    /// Куда переходить. Может нести userinfo, присланный сервером
+    /// (`https://user:pass@host/`) — он не входит в origin по RFC 6454 и
+    /// поэтому не участвует в `strip_sensitive`, но это чужой ввод: не
+    /// продвигать его молча в доверенные credentials ниже по стеку.
     pub uri: Uri,
     pub method: Method,
     /// Снять `SENSITIVE_HEADERS`: сменился host или scheme.
@@ -37,6 +41,20 @@ pub enum RedirectAction {
     Follow(Follow),
     TooManyRedirects,
     InvalidLocation,
+}
+
+/// Порт с подстановкой умолчания по схеме.
+///
+/// `http::Uri` сохраняет явный `:443`, а цель редиректа проходит через
+/// `url::Url`, который его срезает. Без нормализации `https://a:443/` →
+/// `https://a/` читался бы как смена origin и снимал бы Authorization
+/// на каждом хопе.
+fn port_of(uri: &Uri) -> Option<u16> {
+    uri.port_u16().or_else(|| match uri.scheme_str() {
+        Some("https") => Some(443),
+        Some("http") => Some(80),
+        _ => None,
+    })
 }
 
 pub fn decide(
@@ -60,14 +78,16 @@ pub fn decide(
         return RedirectAction::TooManyRedirects;
     }
 
-    // `Location` пришёл из сети как сырые байты. Сначала проверяем их как
-    // валидное значение HTTP-заголовка (это отсекает управляющие символы
-    // вроде NUL, которые являются легальным UTF-8, но не легальны в
-    // field-value), и только потом — как UTF-8 строку.
-    let Ok(location) = HeaderValue::from_bytes(location) else {
+    // Валидируем как значение заголовка: отвергает C0-управляющие и DEL,
+    // то есть закрывает CR/LF-инъекцию через Location. Но НЕ через `to_str()`
+    // — тот отвергает и любой байт >= 0x80, а сырой не-ASCII (не
+    // percent-encoded путь, IDN-хост) формально невалиден и при этом
+    // встречается на практике; reqwest через tower_http его следует
+    // (`str::from_utf8` на сырых байтах, без ограничения по ASCII).
+    let Ok(header) = HeaderValue::from_bytes(location) else {
         return RedirectAction::InvalidLocation;
     };
-    let Ok(location) = location.to_str() else {
+    let Ok(location) = core::str::from_utf8(header.as_bytes()) else {
         return RedirectAction::InvalidLocation;
     };
     let Ok(base) = url::Url::parse(&current.to_string()) else {
@@ -82,7 +102,7 @@ pub fn decide(
 
     let cross_origin = uri.host() != current.host()
         || uri.scheme_str() != current.scheme_str()
-        || uri.port_u16() != current.port_u16();
+        || port_of(&uri) != port_of(current);
 
     // 303 — всегда GET (кроме HEAD). 301/302 с POST браузеры и reqwest
     // понижают до GET; расхождение с 303 было бы непоследовательным.
@@ -253,6 +273,176 @@ mod tests {
             &Method::GET,
             StatusCode::FOUND,
             Some(b"ht!tp://\x00"),
+        );
+        assert!(matches!(r, RedirectAction::InvalidLocation));
+    }
+
+    // ── ревью: находка 1 — асимметрия портов по умолчанию ──────────────
+    //
+    // `current` приходит как есть от вызывающего (может нести явный `:443`),
+    // а цель редиректа всегда проходит через `url::Url`, который срезает
+    // порт по умолчанию при сериализации. Без нормализации это читалось бы
+    // как смена origin и снимало бы Authorization на каждом хопе.
+
+    #[test]
+    fn keeps_sensitive_when_current_has_explicit_default_port() {
+        let RedirectAction::Follow(f) = go(302, "https://a:443/", "https://a/", Method::GET) else {
+            panic!()
+        };
+        assert!(
+            !f.strip_sensitive,
+            "explicit :443 on current must not read as cross-origin"
+        );
+    }
+
+    #[test]
+    fn keeps_sensitive_when_location_has_explicit_default_port() {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "https://a:443/", Method::GET) else {
+            panic!()
+        };
+        assert!(
+            !f.strip_sensitive,
+            "explicit :443 on the target must not read as cross-origin"
+        );
+    }
+
+    #[test]
+    fn keeps_sensitive_when_current_has_explicit_default_port_http() {
+        let RedirectAction::Follow(f) = go(302, "http://a:80/", "http://a/", Method::GET) else {
+            panic!()
+        };
+        assert!(
+            !f.strip_sensitive,
+            "explicit :80 on current must not read as cross-origin"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_different_port_is_still_cross_origin() {
+        let RedirectAction::Follow(f) = go(302, "https://a:8443/", "https://a/", Method::GET)
+        else {
+            panic!()
+        };
+        assert!(
+            f.strip_sensitive,
+            "8443 vs default 443 is a real origin change"
+        );
+    }
+
+    // ── ревью: находка 2 — содержимое SENSITIVE_HEADERS не было проверено ──
+    //
+    // Мутационный тест ревью: подмена константы на три копии content-type
+    // оставляла все двенадцать тестов зелёными, потому что ничто не читало
+    // саму константу.
+
+    #[test]
+    fn sensitive_headers_are_exactly_the_three_credential_carriers() {
+        assert_eq!(
+            SENSITIVE_HEADERS,
+            [
+                http::header::AUTHORIZATION,
+                http::header::COOKIE,
+                http::header::PROXY_AUTHORIZATION,
+            ]
+        );
+    }
+
+    #[test]
+    fn strip_sensitive_removes_only_the_credential_headers() {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "https://b/", Method::GET) else {
+            panic!()
+        };
+        assert!(f.strip_sensitive);
+
+        // Симулируем то, что должен делать вызывающий код: снять только
+        // SENSITIVE_HEADERS, остальные заголовки оставить как есть.
+        let mut headers = http::HeaderMap::new();
+        headers.insert(http::header::AUTHORIZATION, "secret".parse().unwrap());
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        if f.strip_sensitive {
+            for name in &SENSITIVE_HEADERS {
+                headers.remove(name);
+            }
+        }
+        assert!(
+            !headers.contains_key(http::header::AUTHORIZATION),
+            "Authorization must be stripped"
+        );
+        assert!(
+            headers.contains_key(http::header::CONTENT_TYPE),
+            "unrelated headers must survive"
+        );
+    }
+
+    // ── ревью: находка 3 — валидация Location была строже экосистемы ──────
+    //
+    // `HeaderValue::from_bytes` закрывает CR/LF-инъекцию (C0-управляющие и
+    // DEL). Но `to_str()` дополнительно отвергает любой байт >= 0x80, а
+    // сырой не-ASCII в Location — не percent-encoded путь, «сырой» IDN-хост
+    // — встречается на практике; reqwest (через tower_http) такой Location
+    // следует. Проверяем обе стороны: не-ASCII проходит, управляющие байты —
+    // нет.
+
+    #[test]
+    fn raw_utf8_path_is_followed() {
+        let RedirectAction::Follow(f) = go(302, "https://a/", "/caf\u{e9}", Method::GET) else {
+            panic!("raw UTF-8 path must not be rejected as InvalidLocation")
+        };
+        assert_eq!(f.uri, u("https://a/caf%C3%A9"));
+    }
+
+    #[test]
+    fn raw_utf8_idn_host_is_followed() {
+        let RedirectAction::Follow(f) = go(
+            302,
+            "https://a/",
+            "https://m\u{fc}nchen.example/",
+            Method::GET,
+        ) else {
+            panic!("raw UTF-8 IDN host must not be rejected as InvalidLocation")
+        };
+        assert_eq!(f.uri, u("https://xn--mnchen-3ya.example/"));
+        assert!(f.strip_sensitive, "host actually changed");
+    }
+
+    #[test]
+    fn bare_cr_in_location_is_rejected() {
+        let r = decide(
+            &p(),
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://b/\r"),
+        );
+        assert!(matches!(r, RedirectAction::InvalidLocation));
+    }
+
+    #[test]
+    fn bare_lf_in_location_is_rejected() {
+        let r = decide(
+            &p(),
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://b/\n"),
+        );
+        assert!(matches!(r, RedirectAction::InvalidLocation));
+    }
+
+    #[test]
+    fn crlf_header_injection_is_rejected() {
+        let r = decide(
+            &p(),
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://b/\r\nX-Injected: 1"),
         );
         assert!(matches!(r, RedirectAction::InvalidLocation));
     }
