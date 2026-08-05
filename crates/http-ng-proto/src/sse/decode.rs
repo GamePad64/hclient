@@ -63,13 +63,13 @@ impl SseDecoder {
 
     pub fn push(&mut self, chunk: &[u8]) -> Result<(), SseError> {
         self.lines.push(chunk);
-        while let Some(line) = self.lines.next_line() {
+        while let Some((line, consumed)) = self.lines.next_line() {
             if line.is_empty() {
                 self.dispatch();
                 self.event_bytes = 0;
                 continue;
             }
-            self.event_bytes = self.event_bytes.saturating_add(line.len() + 1);
+            self.event_bytes = self.event_bytes.saturating_add(consumed);
             if self.event_bytes > self.max_event_size {
                 return Err(SseError::EventTooLarge {
                     limit: self.max_event_size,
@@ -319,5 +319,30 @@ mod tests {
         let mut d = SseDecoder::new(16);
         let err = d.push(b"data: 0123456789abcdefghij\n\n").unwrap_err();
         assert_eq!(err, SseError::EventTooLarge { limit: 16 });
+    }
+
+    /// Регресс на недоучёт CRLF: старая версия заряжала `line.len() + 1`,
+    /// то есть предполагала однобайтовый терминатор. `"x:0\r\n"` — 5 байт
+    /// провода, из них 3 — сама строка. При лимите 16 старый код заряжал
+    /// 4 байта на строку (3 + 1) и пропускал 4 такие строки — 16 ≤ 16 — хотя
+    /// реальный объём провода уже 20 байт, на четверть больше лимита.
+    #[test]
+    fn crlf_terminators_are_charged_at_their_real_width() {
+        // 4 строки × 5 байт = 20 байт провода — обязаны быть отвергнуты.
+        let mut d = SseDecoder::new(16);
+        let err = d.push(b"x:0\r\nx:0\r\nx:0\r\nx:0\r\n").unwrap_err();
+        assert_eq!(err, SseError::EventTooLarge { limit: 16 });
+
+        // Граница не смещена в другую сторону: 3 строки × 5 байт = 15 байт
+        // провода — ровно под лимитом — обязаны пройти.
+        let mut d = SseDecoder::new(16);
+        d.push(b"x:0\r\nx:0\r\nx:0\r\n")
+            .expect("15 байт CRLF-строк умещается в лимит 16");
+
+        // LF (однобайтовый терминатор, поведение не менялось): 12 байт под
+        // лимитом 16 обязаны пройти.
+        let mut d = SseDecoder::new(16);
+        d.push(b"data: abcde\n")
+            .expect("12 байт LF-строки умещается в лимит 16");
     }
 }

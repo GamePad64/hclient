@@ -68,20 +68,31 @@ impl LineSplitter {
         }
     }
 
-    pub(crate) fn next_line(&mut self) -> Option<Vec<u8>> {
+    /// Возвращает строку и число реально потреблённых байт **включая
+    /// терминатор**. Потребитель обязан считать лимит по этому числу, а не по
+    /// `line.len() + 1`: CRLF занимает два байта, и предположение об
+    /// однобайтовом терминаторе даёт недоучёт, растущий с числом строк.
+    ///
+    /// Остаточная неточность: если CRLF разорван границей чанка, LF
+    /// проглатывается в `push` и здесь не начисляется — до одного байта на
+    /// такую границу. Это ограничено числом чанков, а не повторами внутри
+    /// чанка, поэтому не масштабируется атакующим.
+    pub(crate) fn next_line(&mut self) -> Option<(Vec<u8>, usize)> {
         let hay = &self.buf[self.start..];
         let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
         let term = hay[pos];
         let line = hay[..pos].to_vec();
+        let mut consumed = pos + 1;
         self.start += pos + 1; // строка плюс сам терминатор
         if term == b'\r' {
             if self.buf.get(self.start) == Some(&b'\n') {
                 self.start += 1; // CRLF
+                consumed += 1;
             } else if self.start == self.buf.len() {
                 self.pending_cr = true; // CR в конце — LF может прийти следующим чанком
             }
         }
-        Some(line)
+        Some((line, consumed))
     }
 
     pub(crate) fn buffered_len(&self) -> usize {
@@ -100,7 +111,7 @@ mod tests {
         let mut out = Vec::new();
         for c in chunks {
             s.push(c);
-            while let Some(l) = s.next_line() {
+            while let Some((l, _)) = s.next_line() {
                 out.push(l)
             }
         }
