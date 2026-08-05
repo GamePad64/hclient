@@ -1,0 +1,53 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --all-features
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo check -p http-ng-proto -p http-ng-core -p http-ng --all-features
+
+  wasip2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-wasip2 }
+      - run: cargo check -p http-ng-wasi --target wasm32-wasip2
+
+  # ── инварианты из спеки ───────────────────────────────────────────────
+  proto-is-sans-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: no async deps in http-ng-proto
+        run: |
+          cargo tree -p http-ng-proto -e normal --prefix none \
+            | grep -Ei '^(tokio|futures-|async-|smol|compio)' && {
+              echo "http-ng-proto подцепил async-зависимость"; exit 1; } || true
+      - name: no async fn in http-ng-proto
+        run: |
+          ! grep -rn "async fn" crates/http-ng-proto/src
+
+  no-declared-send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: no Send/Sync bounds declared in core surface
+        run: |
+          ! grep -rnE ':\s*Send\b|\+\s*Send\b|MaybeSend' \
+              crates/http-ng-core/src crates/http-ng/src

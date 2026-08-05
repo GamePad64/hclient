@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition      = "2024"
+rust-version = "1.85"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/actcore/http-ng"
+
+[workspace.dependencies]
+http           = "1.5"
+http-body      = "1.1"
+http-body-util = "0.1"
+bytes          = "1.12"
+futures-core   = { version = "0.3", default-features = false }
+url            = "2.5"
+proptest       = "1"
+
+http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0" }
+http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
+http-ng       = { path = "crates/http-ng",       version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code       = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs   = { level = "warn", check-cfg = [] }
