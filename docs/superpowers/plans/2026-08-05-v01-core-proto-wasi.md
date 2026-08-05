@@ -571,18 +571,48 @@ fn buffered_len_counts_bytes_held_inside_an_undecided_bom() {
     assert_eq!(s.buffered_len(), 2);
 }
 
-/// Регресс на измеренную квадратичность: много коротких строк в одном чанке.
+/// Регресс на квадратичность.
+///
+/// Порог по абсолютному времени бесполезен, и это проверено: ре-ревью
+/// скопировало тело прежней версии этого теста в квадратичный код, и оно
+/// прошло за 0.26 с при бюджете 2 с. Поэтому проверяется КЛАСС сложности —
+/// отношение времён при четырёхкратном росте входа. Линейность предсказывает
+/// ~4×, квадратичность ~16×; порог 8× оставляет запас на шум планировщика и
+/// при этом отделяет один класс от другого.
 #[test]
-fn many_lines_in_one_chunk_is_linear() {
-    let mut input = Vec::new();
-    for _ in 0..50_000 { input.extend_from_slice(b"data: x\n") }
-    let start = std::time::Instant::now();
-    let lines = collect(&[&input]);
-    let elapsed = start.elapsed();
-    assert_eq!(lines.len(), 50_000);
-    // Прежняя версия давала ~51 мс в release и кратно больше в debug.
-    // Порог намеренно щедрый: ловим класс O(n^2), а не микросекунды.
-    assert!(elapsed < std::time::Duration::from_secs(2), "разбор занял {elapsed:?}");
+fn parsing_scales_linearly_not_quadratically() {
+    fn parse_millis(lines: usize) -> f64 {
+        let mut input = Vec::with_capacity(lines * 8);
+        for _ in 0..lines {
+            input.extend_from_slice(b"data: x\n");
+        }
+        let start = std::time::Instant::now();
+        let got = collect(&[&input]);
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(got.len(), lines);
+        elapsed
+    }
+
+    // Разогрев: первый прогон платит за аллокатор и прогрев кэша.
+    let _ = parse_millis(2_000);
+
+    // Поднимаем базовый размер, пока замер тонет в разрешении таймера:
+    // отношение двух шумов не значит ничего.
+    let mut n = 4_000;
+    let (small, large) = loop {
+        let small = parse_millis(n);
+        if small >= 1.0 || n >= 64_000 {
+            break (small, parse_millis(n * 4));
+        }
+        n *= 2;
+    };
+
+    let ratio = large / small.max(0.001);
+    assert!(
+        ratio < 8.0,
+        "вход вырос в 4 раза, время — в {ratio:.1} ({small:.2} мс -> {large:.2} мс \
+         при n={n}): похоже на O(n^2)"
+    );
 }
 
 - [ ] **Step 7: Запустить и убедиться, что property-тест проходит**
