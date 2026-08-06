@@ -267,8 +267,11 @@ name = "http-ng-wasi"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures",
+ "http",
  "http-body",
  "http-ng-core",
+ "serde_json",
  "wasip3",
 ]
 

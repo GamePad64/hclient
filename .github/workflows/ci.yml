@@ -132,6 +132,38 @@ parsing_scales_linearly_not_quadratically переименован или пер
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
 
+  # Task 16: `wasi:http` 0.3 возвращает `result<_, ...>` из сеттеров опций
+  # запроса (`set_connect_timeout`, `set_method`, `set_scheme`, ...) именно
+  # для того, чтобы хост мог отказать — предшественник этого крейта,
+  # `wasi-fetch`, отбрасывал семь таких `Result` через `let _ =`. Черновик
+  # задачи проверял это один раз, вручную, на этапе реализации — единственный
+  # прогон не защищает ничего, что напишут позже. Тот же guard-паттерн, что у
+  # остальных job'ов: `::notice::` и выход нулём, пока крейта нет.
+  no-discarded-wasi-setters:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-wasi/src ]; then
+            echo "::notice::http-ng-wasi ещё нет — проверка отброшенных сеттеров пропущена"
+            exit 0
+          fi
+          # Ловит не только `let _ = ...set_xxx(...)`, но и `.ok()` /
+          # `.unwrap_or_default()` на том же вызове — оба точно так же
+          # выбрасывают `Result`, не читая содержимое, и оба не дают
+          # компилятору повода предупредить (в отличие от голого
+          # `foo.set_x(y);`, который сам по себе не компилируется под
+          # `-D warnings` из-за `#[must_use]` на `Result` — так что этот
+          # случай защищён уже обычной сборкой, а вот `let _ =`/`.ok()`/
+          # `.unwrap_or_default()` — нет, они молча гасят предупреждение).
+          if grep -rnE 'let[[:space:]]+_[[:space:]]*=.*\.set_[a-z_]+\(|\.set_[a-z_]+\([^;]*\)\.(ok\(\)|unwrap_or_default\(\))' crates/http-ng-wasi/src \
+               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
+            echo "::error::найден отброшенный Result у сеттера wasi:http (let _ = / .ok() / .unwrap_or_default()) — каждый отказ хоста обязан стать типизированной Error, см. crates/http-ng-wasi/src/convert.rs"
+            exit 1
+          fi
+
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
