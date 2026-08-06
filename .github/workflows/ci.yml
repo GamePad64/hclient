@@ -192,6 +192,12 @@ jobs:
             exit 0
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
+          # Task 17: сквозной пример `examples/fetch.rs` — единственный код в
+          # репозитории, который реально проходит через пользовательский
+          # `http_ng::Client`, а не напрямую через `Transport::execute`.
+          # `cargo check` его не видит (он не lib/bin-таргет по умолчанию для
+          # `check` без `--examples`), так что нужен отдельный `cargo build`.
+          cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
       # Резолюция review (Task 16, находка B-7): `tests/live_roundtrip.rs` —
       # единственная автоматическая защита свойства, ради которого
       # существует вся эта вертикаль (`Body::is_end_stream()` против

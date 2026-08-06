@@ -270,6 +270,7 @@ dependencies = [
  "futures",
  "http",
  "http-body",
+ "http-ng",
  "http-ng-core",
  "serde_json",
  "wasip3",

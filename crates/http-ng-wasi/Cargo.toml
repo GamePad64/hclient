@@ -35,6 +35,14 @@ name = "live_roundtrip_guest"
 path = "examples/live_roundtrip_guest.rs"
 crate-type = ["cdylib"]
 
+# Сквозной пример (Task 17): та же форма `wasip3::cli::command::export!`, что
+# у `live_roundtrip_guest` выше и по той же причине — см. doc-комментарий
+# `examples/fetch.rs` про то, почему не `fn main()`.
+[[example]]
+name = "fetch"
+path = "examples/fetch.rs"
+crate-type = ["cdylib"]
+
 [dev-dependencies]
 # Только для `tests/live_roundtrip.rs`: разобрать
 # `cargo build --message-format=json`, чтобы взять настоящий путь
@@ -42,6 +50,13 @@ crate-type = ["cdylib"]
 # гадает неверно при нестандартном `CARGO_TARGET_DIR`). Дев-зависимость не
 # входит в граф зависимостей публикуемого крейта.
 serde_json = "1"
+# Только для `examples/fetch.rs`: сквозной пример собирает прикладной код
+# через пользовательский `http_ng::Client`, а не напрямую через
+# `Transport::execute` (как `live_roundtrip_guest`) — именно это и есть код,
+# который вертикали 2 и 3 переиспользуют без изменений. Нет обратного цикла:
+# `http-ng` не зависит от `http-ng-wasi`, а dev-dependency в цикл графа сборки
+# библиотеки не входит в любом случае.
+http-ng = { workspace = true }
 
 [lints]
 workspace = true

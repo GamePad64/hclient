@@ -1,0 +1,73 @@
+# http-ng
+
+Кроссплатформенный асинхронный HTTP-клиент. Один и тот же прикладной код
+собирается под native, браузер и WASI — транспорт подменяется, а не
+обкладывается `#[cfg]`.
+
+```rust
+let client = http_ng::Client::builder(transport).build()?;
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
+Рабочий сквозной пример, который реально собирается и исполняется под
+`wasmtime` (не только компилируется) —
+[`crates/http-ng-wasi/examples/fetch.rs`](crates/http-ng-wasi/examples/fetch.rs):
+
+```
+cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
+wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm
+```
+
+## Что в графе зависимостей
+
+| сборка | tokio |
+|---|---|
+| ambient (`http-ng` + `-wasi` / `-fetch`) | **нет вообще** |
+| native, только HTTP/1 | есть, но с фичами `sync` + `default`; весь его dep-tree — `pin-project-lite` |
+| native + HTTP/2 | настоящий: `h2` тянет `tokio` с `io-util` и `tokio-util` с `codec`, а через него `libc` |
+
+Средняя строка не случайна: в исходниках hyper на HTTP/1-пути `tokio`
+используется ровно в одном месте — `tokio::sync::oneshot::Receiver` в
+`src/upgrade.rs`. Убери эту одну зависимость — и весь dep-tree схлопывается
+до `pin-project-lite`; это именно то, что HTTP/2-путь ниже тянет заново через
+`h2`.
+
+Убрать tokio из hyper-сборок нельзя: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
+(ровно эта замена на `futures-channel`, спрятанная за feature-флагом) отклонена
+мейнтейнером не по техническим причинам, а из-за необратимости решения:
+*«As of 1.0, we are going to be very careful about adding new dependencies to
+the public API… it "exposes" a crate feature that we could never remove»*.
+[hyper#3767](https://github.com/hyperium/hyper/issues/3767) — отдельный тикет
+с тем же выводом про единственное место использования — закрыт как *not
+planned*.
+
+## Статус
+
+v0.1: ядро (`http-ng-core`, `http-ng-proto`, `http-ng`) и один бэкенд,
+`http-ng-wasi` поверх `wasi:http` 0.3. Native (hyper-транспорт) и браузер
+(`fetch`) — вертикали 2 и 3, ещё не начаты.
+
+**Доказано.** Форма `Transport` реально работает против ambient-бэкенда без
+собственного сокета гостя — не в теории, а под настоящим хостом `wasmtime`
+(`crates/http-ng-wasi/tests/live_roundtrip.rs`). Настройка, которую транспорт
+не поддерживает, становится типизированной ошибкой `UnsupportedCapability` уже
+на `ClientBuilder::build()`, а не тихо игнорируется; то же самое на уровень
+ниже — хост `wasi:http` отвергает значение опции запроса (таймаут, метод,
+scheme) — тоже становится ошибкой, а не отбрасывается, и это не только
+проверено вручную при реализации, а держится статическим анализом в CI
+(`no-discarded-wasi-setters`) на каждый пуш.
+
+**Главная архитектурная находка этой вертикали: `full_duplex` объявлен
+`false`.** Сам протокол `wasi:http` 0.3 поддерживает дуплекс тела запроса —
+данные тела могут идти, пока хост ещё не вернул ответ. Но *эта* форма
+`Transport::execute` выразить это не может: она возвращается только тогда,
+когда одновременно завершились и отправка, и запись тела запроса целиком.
+Измерено на живом хосте: ответ существовал на стороне сервера уже к t≈0.10s,
+но вызывающая сторона видела его только к t≈2.00s — когда дописалось тело; для
+тела без конца вызывающая сторона не увидела бы ответ вообще никогда. Это
+ограничение конкретно этой формы `execute`, а не хоста `wasi:http` —
+снять его значит изменить сигнатуру seam так, чтобы поток кадров ответа
+возвращался отдельно от завершения записи тела. Это работа вертикали 2, где
+native-транспорт проектируется уже с оглядкой на эту находку.
+
+Дизайн: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
