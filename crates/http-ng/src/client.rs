@@ -1,4 +1,6 @@
-use crate::config::{Config, check_supported, check_timeouts_supported, effective_timeouts};
+use crate::config::{
+    Config, check_supported, check_timeouts_supported, effective_timeouts, effective_uri,
+};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use http_ng_core::Timeouts;
@@ -34,6 +36,42 @@ impl<T: Transport> ClientBuilder<T> {
         self.config.timeouts = t;
         self
     }
+    /// База, относительно которой разрешается URI каждого запроса.
+    ///
+    /// Ответ этой библиотеки на reqwest #988 и #213 (открыты с 2017 и 2020,
+    /// 104 голоса). До фикс-раунда 3 значение здесь сохранялось и не
+    /// читалось ниоткуда — то есть сеттер был тихим no-op.
+    ///
+    /// **Правило — RFC 3986 §5**, то же самое, каким разрешается `Location:`
+    /// из ответа: один клиент не должен понимать `/x` двумя способами в
+    /// зависимости от того, прислал его сервер или вызывающая сторона.
+    /// Отсюда два следствия, которые стоит прочитать до того, как они
+    /// удивят:
+    ///
+    /// ```text
+    /// base "https://api.test/v1/"   + "things"    -> https://api.test/v1/things
+    /// base "https://api.test/v1/"   + "/things"   -> https://api.test/things      // ведущий / ЗАМЕНЯЕТ путь базы
+    /// base "https://api.test/v1"    + "things"    -> https://api.test/things      // база без / — не каталог
+    /// base "https://api.test/v1/"   + "https://other.test/x" -> https://other.test/x
+    /// ```
+    ///
+    /// То есть база с путём почти всегда должна заканчиваться слэшем, а
+    /// ссылка — НЕ начинаться с него. Обе строки выше — не наша
+    /// самодеятельность, а merge и §5.2.2 RFC; они же работают в `url::Url::
+    /// join`, в браузерном `new URL(ref, base)` и в `urllib.parse.urljoin`.
+    ///
+    /// Сама база обязана быть абсолютной. Относительная (`/api/`) —
+    /// типизированная ошибка `InvalidBaseUrl` из `send()`/`execute()`, а не
+    /// тихо проигнорированная настройка. Проверки на `build()` нет
+    /// сознательно: она потребовала бы сменить тип ошибки `build()`, что
+    /// шире этого раунда — записано в отчёте.
+    ///
+    /// Ограничение, о котором стоит знать: `Client::execute`, принимающий
+    /// готовый `http::Request`, видит уже разобранный `http::Uri`, а тот
+    /// path-relative ссылку не представляет вовсе (`"things"` —
+    /// `InvalidUri`). Через этот вход база может дать запросу схему и
+    /// authority, но не путь. `RequestBuilder` (`client.get("things")`)
+    /// разрешает исходную строку до разбора и такого ограничения не имеет.
     pub fn base_url(mut self, uri: http::Uri) -> Self {
         self.config.base_url = Some(uri);
         self
@@ -134,9 +172,19 @@ impl<T: Transport> Client<T> {
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
         let (parts, mut body) = req.into_parts();
+
+        // Базовый URL применяется здесь, а не только в `RequestBuilder`:
+        // `execute` — публичный вход, принимающий готовый `http::Request`, и
+        // настройка, работающая лишь на одном из двух путей, была бы
+        // починена наполовину. Идемпотентно — `RequestBuilder::send`
+        // разрешает тот же URI заранее (ему результат нужен для
+        // `Response::url()`), а разрешение уже абсолютного URI возвращает
+        // его самого (RFC 3986 §5.2.2).
+        let uri = effective_uri(self.config.base_url.as_ref(), &parts.uri.to_string())?;
+
         let mut hp = HopParts {
             method: parts.method,
-            uri: parts.uri,
+            uri,
             headers: parts.headers,
             version: parts.version,
             extensions: parts.extensions,

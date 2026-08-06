@@ -7,7 +7,12 @@ use http_ng_core::{Error, ErrorKind, RequestBody};
 pub struct RequestBuilder<'a, T> {
     client: &'a Client<T>,
     method: http::Method,
-    uri: Result<http::Uri, http::uri::InvalidUri>,
+    /// Уже разрешённый относительно `base_url` клиента (или просто
+    /// разобранный, если базы нет). Разрешение живёт в `new`, а не в `send`,
+    /// потому что делать его нужно на исходной СТРОКЕ: `http::Uri` не умеет
+    /// представлять path-relative ссылку, а это ровно та форма, ради которой
+    /// база существует (см. `config::effective_uri`).
+    uri: Result<http::Uri, Error>,
     headers: http::HeaderMap,
     body: RequestBody,
     extensions: http::Extensions,
@@ -25,7 +30,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         Self {
             client,
             method,
-            uri: url.parse(),
+            uri: crate::config::effective_uri(client.config().base_url.as_ref(), url),
             headers: http::HeaderMap::new(),
             body: RequestBody::Empty,
             extensions: http::Extensions::new(),
@@ -108,7 +113,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         if let Some(e) = self.error {
             return Err(e);
         }
-        let uri = self.uri.map_err(|e| Error::new(ErrorKind::Other, e))?;
+        let uri = self.uri?;
         let mut req = http::Request::new(self.body);
         *req.method_mut() = self.method;
         *req.uri_mut() = uri.clone();

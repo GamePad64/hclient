@@ -14,7 +14,7 @@ mod sse;
 mod stages;
 
 pub use client::{Client, ClientBuilder};
-pub use config::{Config, Timeouts, check_supported, effective_timeouts};
+pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
 // Task 17 fix round 1: этот список обязан покрывать не только `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, но и КАЖДЫЙ тип `http-ng-core`,
 // достижимый из сигнатуры, поля или варианта чего-то уже реэкспортированного

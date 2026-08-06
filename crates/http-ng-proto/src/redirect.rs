@@ -90,13 +90,11 @@ pub fn decide(
     let Ok(location) = core::str::from_utf8(header.as_bytes()) else {
         return RedirectAction::InvalidLocation;
     };
-    let Ok(base) = url::Url::parse(&current.to_string()) else {
-        return RedirectAction::InvalidLocation;
-    };
-    let Ok(joined) = base.join(location) else {
-        return RedirectAction::InvalidLocation;
-    };
-    let Ok(uri) = joined.as_str().parse::<Uri>() else {
+    // Общая с `ClientBuilder::base_url` реализация RFC 3986 §5 — см.
+    // doc-комментарий `crate::uri`: правило разрешения относительной ссылки
+    // в этом клиенте ровно одно, независимо от того, прислал её сервер в
+    // `Location:` или вызывающая сторона в `client.get(..)`.
+    let Some(uri) = crate::uri::resolve_reference(current, location) else {
         return RedirectAction::InvalidLocation;
     };
 

@@ -6,3 +6,4 @@
 
 pub mod redirect;
 pub mod sse;
+pub mod uri;
