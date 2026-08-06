@@ -10,7 +10,7 @@ repository.workspace = true
 [features]
 default = []
 # Мок-транспорт для тестов потребителей.
-test-util = ["dep:http-body-util"]
+test-util = []
 
 [dependencies]
 bytes         = { workspace = true }
@@ -19,12 +19,6 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
 http-ng-proto = { workspace = true }
-# `pub mod mock` не под `cfg(test)`, а под фичей `test-util` — он часть
-# обычной (не dev) сборки крейта, когда фича включена, и линкуется во
-# внешние интеграционные тесты (`tests/shape.rs`). Поэтому исполнитель мока
-# — обычная опциональная зависимость, а не dev-dependency: dev-зависимости
-# не видны при сборке крейта как зависимости другого таргета.
-http-body-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }

@@ -183,7 +183,6 @@ dependencies = [
  "futures-executor",
  "http",
  "http-body",
- "http-body-util",
  "http-ng-core",
  "http-ng-proto",
 ]
