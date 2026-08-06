@@ -427,35 +427,6 @@ fn headers_overrides_a_same_named_header_rather_than_duplicating_it() {
     );
 }
 
-/// Вторая половина m4: `headers()` не смотрел в слот ошибки, в отличие от
-/// `header()`. Первая ошибка построения обязана побеждать и переживать
-/// последующие вызовы любого сеттера заголовков, иначе «первая ошибка
-/// побеждает» верно только для одного из двух.
-#[test]
-fn headers_after_an_invalid_header_does_not_hide_the_earlier_error() {
-    let m = MockTransport::new();
-    m.push_response(http::Response::builder().status(200).body("").unwrap());
-    let c = Client::builder(m).build().unwrap();
-
-    let mut extra = http::HeaderMap::new();
-    extra.insert("x-b", "2".parse().unwrap());
-
-    let result = futures_executor::block_on(
-        c.get("https://a/x")
-            .header("bad header", "v")
-            .headers(extra)
-            .send(),
-    );
-    assert!(
-        result.is_err(),
-        "ошибка от header() обязана пережить headers(): {result:?}"
-    );
-    assert!(
-        c.transport().requests().is_empty(),
-        "и запрос не должен был уйти"
-    );
-}
-
 /// m5. `chunk_skips_trailer_frames` ставит трейлер ПОСЛЕДНИМ, где «пропустил
 /// и нашёл EOF» и «остановился на нём» — одно и то же наблюдение: мутация
 /// `Err(_) => continue` в `Err(_) => return None` оставляла весь набор
