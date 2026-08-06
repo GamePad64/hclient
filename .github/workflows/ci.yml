@@ -41,6 +41,28 @@ jobs:
           # разом, так что дублировать проверку здесь избыточно.
           cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
 
+  # До этого джоба clippy нигде в CI не гонялся: каждая задача вертикали
+  # запускала `cargo clippy --workspace --all-targets --all-features -- -D
+  # warnings` вручную и рапортовала "чисто", но ничего не проверяло, что это
+  # действительно происходит на каждый пуш — дисциплина держалась только на
+  # соглашении (Task 15, review round 1, Finding 3). Тот же guard-паттерн,
+  # что у `test`: печатает `::notice::` и выходит нулём, пока в workspace
+  # нет ни одного крейта, вместо того чтобы быть тихо-зелёным по умолчанию.
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
+            echo "::notice::в workspace ещё нет крейтов — clippy пропущен"
+            exit 0
+          fi
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+
   # Изолированный запуск теста-регресса на квадратичность (`sse/lines.rs`).
   # Не часть `test` выше — см. комментарий у `--skip` там. `best-of-3`
   # внутри самого теста — вторичная защита от разового шума; первичная
@@ -163,8 +185,16 @@ parsing_scales_linearly_not_quadratically переименован или пер
         shell: bash
         run: |
           set -euo pipefail
+          # `http-ng-wasi/src` в списке с Task 15 (review round 1, Finding 4):
+          # инвариант защищает потребителей от бондов Send/Sync, которые их
+          # ограничивают, а транспорт способен утечь такой же бонд в своём
+          # публичном API не хуже ядра — было выбором никого не сканировать
+          # его, а не осознанным решением, что он не в области действия.
+          # Маркер `send-bound-exception` по-прежнему разрешает обоснованные
+          # исключения, так что расширение охвата ничего не стоит там, где
+          # бонд оправдан.
           dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src; do
+          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then

@@ -62,14 +62,20 @@ impl HttpBody for Body {
             Inner::Incoming(i) => match Pin::new(i).poll_frame(cx) {
                 Poll::Ready(Some(Ok(f))) => Poll::Ready(Some(Ok(f))),
                 Poll::Ready(Some(Err(e))) => {
-                    // `ErrorCode` идёт в `Error::new` как есть, без обёртки:
-                    // у него уже есть написанные вручную `Debug`/`Display`/
-                    // `core::error::Error` (wasip3 `service.rs`), а
-                    // `Error::new` всё равно стирает источник в
-                    // `Arc<dyn Error + Send + Sync>` — обёртка не убрала бы
-                    // тип из публичного API (он и так туда не попадает), а
-                    // только заменила бы честный `Display` на `{:?}` и
-                    // закрыла бы даункаст к настоящему типу.
+                    // `ErrorCode` идёт в `Error::new` как есть, без обёртки.
+                    // Обёртка была бы лишней машинерией без выигрыша:
+                    // `ErrorCode` уже реализует `Debug`/`Display`/
+                    // `core::error::Error` вручную (wasip3 `service.rs`) —
+                    // причём его собственный `Display` тоже устроен как
+                    // `write!(f, "{:?}", self)`, так что обёртка не сделала
+                    // бы вывод содержательнее. А поскольку `Error::new`
+                    // стирает источник в `Arc<dyn Error + Send + Sync>`,
+                    // конкретный тип `ErrorCode` и так не появляется в
+                    // публичном API этого крейта что через обёртку, что без
+                    // неё; разница только в том, что без обёртки вызывающая
+                    // сторона может честно даункаститься до настоящего типа
+                    // через `Error::source()`, а обёртка эту возможность
+                    // закрывала бы.
                     self.inner = Inner::Done;
                     Poll::Ready(Some(Err(Error::new(ErrorKind::Body, e))))
                 }
@@ -92,6 +98,18 @@ impl HttpBody for Body {
     /// `false`), из-за которого гости трапались посреди чтения
     /// HTTP/2-ответов; воспроизводить его здесь было бы бессмысленно —
     /// это и есть весь мотив задачи.
+    ///
+    /// **Непроверенная ветка.** `Inner::Incoming(i) => i.is_end_stream()` —
+    /// центральная строка всей задачи — не покрыта юнит-тестом: у
+    /// `IncomingResponseBody` нет конструктора без настоящего хоста
+    /// `wasi:http` (`wasip3::http::types::Response` — непрозрачный
+    /// WIT-ресурс). Мутационный прогон ревью подтвердил дыру: замена этой
+    /// ветки на жёсткий `false` (тот самый баг `act`) не роняет ни один
+    /// тест из `#[cfg(test)] mod tests` ниже. Покрытие появится только в
+    /// Task 16, который поднимает `.cargo/config.toml` с
+    /// `runner = "wasmtime run -S http --"` и гоняет
+    /// `cargo test -p http-ng-wasi --target wasm32-wasip2` под настоящим
+    /// хостом — до этого момента риск регрессии здесь ничем не защищён.
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Inner::Done => true,
@@ -101,12 +119,37 @@ impl HttpBody for Body {
 
     /// Форвардит хостовую оценку (`content-length`), а не отбрасывает её:
     /// `IncomingResponseBody` уже вычислила `size_hint()` из заголовков
-    /// ответа, пересчитывать нечего.
+    /// ответа, пересчитывать нечего — кроме одного случая: `i.size_hint()`
+    /// сама никогда не уменьшается (она разово посчитана из
+    /// `content-length` и с тех пор не меняется), а `poll_frame` держит
+    /// `self.inner` в `Incoming` ещё один вызов ПОСЛЕ того, как
+    /// `i.is_end_stream()` уже стало истинным — кадр трейлеров (или
+    /// последний `Ready(None)`) увиден внутренним телом, но переход в
+    /// `Inner::Done` у нас происходит только на следующем `poll_frame`.
+    /// В этом окне некорректированная `i.size_hint()` обещала бы верхнюю
+    /// границу байтов, которых больше не будет — переоценка, а не
+    /// недооценка, и именно переоценка вредна вызывающей стороне (аллокация
+    /// под обещанный остаток, ожидание байтов, которые не придут). См.
+    /// `size_hint_honoring_end` — логика вынесена в чистую функцию, чтобы
+    /// её можно было проверить без живого `IncomingResponseBody`.
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             Inner::Done => SizeHint::with_exact(0),
-            Inner::Incoming(i) => i.size_hint(),
+            Inner::Incoming(i) => size_hint_honoring_end(i.is_end_stream(), i.size_hint()),
         }
+    }
+}
+
+/// Не даёт устаревшей оценке хоста пережить собственный конец потока — см.
+/// комментарий у `Body::size_hint`. Чистая функция специально: сам сценарий
+/// (`Inner::Incoming` с `is_end_stream() == true`) недостижим без живого
+/// `IncomingResponseBody`, а эта логика — достижима и обязана быть
+/// проверена саму по себе.
+fn size_hint_honoring_end(is_end_stream: bool, upstream: SizeHint) -> SizeHint {
+    if is_end_stream {
+        SizeHint::with_exact(0)
+    } else {
+        upstream
     }
 }
 
@@ -121,7 +164,11 @@ mod tests {
     // `wasip3::http::types::Response` — непрозрачного WIT-ресурса, которому
     // неоткуда взяться без настоящего хоста `wasi:http`. Эти пути остаются
     // непроверенными до Task 16 (или интеграционного теста поверх реального
-    // хоста).
+    // хоста); `is_end_stream`, где это особенно чувствительно, отмечено
+    // отдельным doc-комментарием на самом методе. Исключение —
+    // `size_hint_honoring_end`: её решение, устаревшую оценку или нет
+    // возвращать, вынесено в чистую функцию именно затем, чтобы не делить
+    // её судьбу с остальными `Inner::Incoming`-ветками — она проверена ниже.
 
     #[test]
     fn empty_body_yields_no_frames() {
@@ -147,5 +194,37 @@ mod tests {
         let hint = Body::empty().size_hint();
         assert_eq!(hint.lower(), 0);
         assert_eq!(hint.upper(), Some(0));
+    }
+
+    /// Ревью round 1, Finding 1: `IncomingBody::size_hint()` считается один
+    /// раз из `content-length` и сама никогда не уменьшается, а
+    /// `Body::poll_frame` держит `self.inner` в `Incoming` ещё один вызов
+    /// после того, как внутреннее тело уже сообщило `is_end_stream() ==
+    /// true`. Без коррекции в этом окне наружу ушла бы устаревшая верхняя
+    /// граница — обещание байтов, которых больше не будет. Ставим заведомо
+    /// "богатую" оценку (`4096`), чтобы тест не мог случайно совпасть с
+    /// правильным ответом (`0`) при сломанной логике.
+    #[test]
+    fn size_hint_does_not_over_promise_once_the_stream_has_ended() {
+        let mut stale = SizeHint::new();
+        stale.set_upper(4096);
+
+        let hint = size_hint_honoring_end(true, stale);
+
+        assert_eq!(hint.lower(), 0);
+        assert_eq!(hint.upper(), Some(0));
+    }
+
+    /// Симметрия к тесту выше: пока поток не закончился, оценку хоста
+    /// нужно передать как есть, а не тоже занулить.
+    #[test]
+    fn size_hint_passes_through_the_upstream_estimate_mid_stream() {
+        let mut mid = SizeHint::new();
+        mid.set_upper(4096);
+
+        let hint = size_hint_honoring_end(false, mid);
+
+        assert_eq!(hint.lower(), mid.lower());
+        assert_eq!(hint.upper(), mid.upper());
     }
 }
