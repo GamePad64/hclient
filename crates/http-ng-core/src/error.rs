@@ -26,16 +26,26 @@ pub enum ErrorKind {
 }
 
 /// `Clone` намеренно: непрозрачная и неклонируемая ошибка reqwest — источник
-/// постоянных жалоб (reqwest#1053). `Arc<dyn Error>` не требует `Send`,
-/// поэтому auto-trait прозрачность доходит и до ошибок.
+/// постоянных жалоб (reqwest#1053).
+///
+/// `source` обязан быть `Send + Sync` — это единственное документированное
+/// исключение из инварианта крейта "ни одного объявленного бонда
+/// `Send`/`Sync`". Без этого бонда `Arc<dyn Error>` стирает auto-traits
+/// источника, и `Error` (а вместе с ней future, который возвращает
+/// `Client::execute`) была бы `!Send` для любого транспорта —
+/// `tokio::spawn(client.get(u).send())` не компилировался бы никогда. Все
+/// три бэкенда v0.1 (hyper, wasi:http, browser fetch без
+/// `target_feature = "atomics"`) уже производят `Send + Sync`-ошибки, так
+/// что это фиксация факта, а не новое ограничение; транспорт с
+/// принципиально `!Send`-ошибкой не сможет использовать эту обёртку.
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    source: Arc<dyn std::error::Error + 'static>,
+    source: Arc<dyn std::error::Error + Send + Sync + 'static>,
 }
 
 impl Error {
-    pub fn new<E: std::error::Error + 'static>(kind: ErrorKind, source: E) -> Self {
+    pub fn new<E: std::error::Error + Send + Sync + 'static>(kind: ErrorKind, source: E) -> Self {
         Self {
             kind,
             source: Arc::new(source),
@@ -97,33 +107,35 @@ mod tests {
         let e = Error::new(ErrorKind::Connect, Src);
         let c = e.clone();
         assert_eq!(c.kind(), &ErrorKind::Connect);
+        // Клон должен шарить один и тот же source, а не копировать и не
+        // терять его: указатели на источник у оригинала и клона совпадают.
+        let a = std::error::Error::source(&e).unwrap() as *const dyn std::error::Error;
+        let b = std::error::Error::source(&c).unwrap() as *const dyn std::error::Error;
+        assert!(std::ptr::eq(a, b));
     }
 
     #[test]
     fn predicates_agree_with_kind() {
         assert!(Error::new(ErrorKind::Timeout(Phase::Connect), Src).is_timeout());
         assert!(Error::new(ErrorKind::Redirect, Src).is_redirect());
+        assert!(Error::new(ErrorKind::Connect, Src).is_connect());
         assert!(!Error::new(ErrorKind::Body, Src).is_connect());
+        assert!(Error::new(ErrorKind::Unsupported, Src).is_unsupported());
+        assert!(!Error::new(ErrorKind::Body, Src).is_unsupported());
     }
 
     #[test]
-    fn error_is_not_forced_send() {
-        // Ядро не объявляет Send: ошибка от !Send-источника всё равно строится.
-        // Поле не читается — оно нужно только своим типом, чтобы сделать
-        // структуру !Send; отсюда allow(dead_code).
-        #[allow(dead_code)]
-        struct NotSend(std::rc::Rc<()>);
-        impl std::fmt::Debug for NotSend {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "ns")
-            }
-        }
-        impl std::fmt::Display for NotSend {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "ns")
-            }
-        }
-        impl std::error::Error for NotSend {}
-        let _ = Error::new(ErrorKind::Other, NotSend(std::rc::Rc::new(())));
+    fn error_is_send_so_client_futures_can_be_spawned() {
+        // Единственное документированное исключение из "ядро не объявляет
+        // Send/Sync": Error::source обязан быть Send + Sync, иначе future,
+        // который возвращает Client::execute, не мог бы попасть в
+        // tokio::spawn ни для одного бэкенда. Компиляция этой функции —
+        // сам тест; вызов ниже нужен, чтобы её не выкинуло как мёртвый код.
+        fn _assert<T: Send + Sync>() {}
+        _assert::<Error>();
+
+        // Плюс рантайм-конструирование, чтобы тест не был пустым no-op.
+        let e = Error::new(ErrorKind::Other, Src);
+        assert_eq!(e.kind(), &ErrorKind::Other);
     }
 }

@@ -1,7 +1,12 @@
 //! Контракт плагина http-ng.
 //!
-//! Инвариант крейта: ни одного объявленного бонда `Send`/`Sync`. Send-ность
-//! выводится auto-traits через `impl Future`.
+//! Инвариант крейта: seam-трейты (`Transport`, `Timer`, middleware) не
+//! объявляют бонды `Send`/`Sync` — Send-ность выводится auto-traits через
+//! `impl Future`. Единственное документированное исключение — [`Error`]: её
+//! `source` обязан быть `Send + Sync`, иначе `Client::execute` не мог бы
+//! вернуть Send-совместимый future ни для одного бэкенда. Бонд
+//! `T::Error: Send + Sync + 'static` живёт в собственном where-клаузе
+//! `Client::execute`, а не в самом трейте `Transport`.
 #![deny(unsafe_code)]
 
 mod error;
