@@ -117,12 +117,15 @@ impl<T: Transport> Client<T> {
     /// `where T::Error: Send + Sync + 'static` — второе документированное
     /// исключение из инварианта «ядро не объявляет Send/Sync» (spec
     /// amendment C1, сестра исключения у `Error::source`). Без него
-    /// `Error::new(ErrorKind::Other, e)` ниже не собрался бы для абстрактного
-    /// `T`: `Error` хранит источник как `Arc<dyn Error + Send + Sync>`, и
-    /// стирание типа не пропускает auto-traits неограниченного объекта-трейта
-    /// (проверено компиляцией — без этой границы E0277 на обоих бондах).
-    /// Бонд живёт здесь, а не в самом трейте `Transport`, как и
-    /// задокументировано в `http-ng-core`'s lib.rs.
+    /// `Transport::into_error` ниже не вызвался бы для абстрактного `T`: его
+    /// собственная where-клауза требует того же бонда, потому что его
+    /// дефолтное тело зовёт `Error::new`, а `Error` хранит источник как
+    /// `Arc<dyn Error + Send + Sync>`, и стирание типа не пропускает
+    /// auto-traits неограниченного объекта-трейта (проверено компиляцией —
+    /// без этой границы E0277). Бонд живёт здесь и на самом методе, а не на
+    /// трейте `Transport` целиком, как и задокументировано в
+    /// `http-ng-core`'s lib.rs: транспорт с честно `!Send` ошибкой остаётся
+    /// представимым, он просто не может пользоваться `Client`.
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -175,7 +178,13 @@ impl<T: Transport> Client<T> {
                 .transport
                 .execute(hp.to_request(sending))
                 .await
-                .map_err(|e| Error::new(ErrorKind::Other, e))?;
+                // Не `Error::new(ErrorKind::Other, e)`: B2 финального ревью
+                // ветки — безусловное обёртывание расплющивало категорию
+                // ЛЮБОЙ ошибки транспорта в `Other`, обесценивая всю
+                // таксономию `ErrorKind`. Решает бэкенд, а не эта строка:
+                // дефолт `Transport::into_error` обёртывает ровно так же,
+                // а бэкенд, чья ошибка уже `Error`, отдаёт её как есть.
+                .map_err(|e| self.transport.into_error(e))?;
 
             let location = resp
                 .headers()

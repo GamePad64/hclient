@@ -69,9 +69,82 @@ impl Transport for Echo {
             Bytes::from_static(b"ok"),
         )))
     }
+    fn into_error(&self, e: Self::Error) -> Error {
+        e
+    }
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
+}
+
+/// Бэкенд со своим типом ошибки, который `into_error` не переопределяет —
+/// то, ради чего у хука вообще есть дефолт (B2 финального ревью ветки).
+struct Bare {
+    caps: Capabilities,
+}
+
+#[derive(Debug, PartialEq)]
+struct Custom;
+impl std::fmt::Display for Custom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "backend said no")
+    }
+}
+impl std::error::Error for Custom {}
+
+impl Transport for Bare {
+    type Body = http_body_util::Full<Bytes>;
+    type Error = Custom;
+    async fn execute(
+        &self,
+        _req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Self::Body>, Self::Error> {
+        Err(Custom)
+    }
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+}
+
+/// Дефолт `Transport::into_error` обёртывает с `ErrorKind::Other`,
+/// **сохраняя источник целиком**: бэкенду, которому нечего сказать о
+/// категории, не нужно ничего писать, а вызывающая сторона всё равно
+/// получает типизированный источник, а не строку.
+#[test]
+fn into_error_defaults_to_other_and_keeps_the_source_intact() {
+    let t = Bare {
+        caps: Capabilities::none(),
+    };
+    let e = t.into_error(Custom);
+    assert_eq!(e.kind(), &ErrorKind::Other);
+    let src = std::error::Error::source(&e).expect("Error::new всегда кладёт source");
+    assert_eq!(
+        src.downcast_ref::<Custom>(),
+        Some(&Custom),
+        "источник обязан остаться собой, а не стать строкой"
+    );
+}
+
+/// А бэкенд, чья ошибка уже `Error`, переопределяет хук тождеством — иначе
+/// его категория теряется, а `Display` печатает источник дважды. `Echo`
+/// здесь стоит за `http-ng-wasi`, чей `type Error = http_ng_core::Error` и
+/// который делает ровно это.
+#[test]
+fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
+    let t = Echo {
+        caps: Capabilities::none(),
+    };
+    let e = t.into_error(Error::new(ErrorKind::Tls, Never));
+    assert_eq!(
+        e.kind(),
+        &ErrorKind::Tls,
+        "тождество обязано сохранять категорию, а не пересобирать ошибку"
+    );
+    assert_eq!(
+        e.to_string(),
+        "Tls: never",
+        "и не вкладывать вторую категорию перед настоящей"
+    );
 }
 
 /// Утверждает главное архитектурное свойство ядра: `Send` нигде не
@@ -109,6 +182,51 @@ fn non_send_transport_still_satisfies_the_trait() {
         caps: Capabilities::none(),
         _rc: std::rc::Rc::new(()),
     };
+}
+
+/// Тот же инвариант, но по оси, которую `into_error` могла бы сломать
+/// (B2 финального ревью ветки): транспорт, чья ОШИБКА честно `!Send`.
+///
+/// Это единственная причина, по которой `into_error` — дефолтный метод с
+/// where-клаузой, а не `Transport::Error: Into<Error>` на трейте и не
+/// `Error` в качестве типа ошибки шва: любая из тех двух форм потребовала
+/// бы `Send + Sync` от ошибки каждого бэкенда и выбросила бы этот тип из
+/// `Transport` вовсе. Поправка C1 сохраняет его представимым — он не может
+/// пользоваться `Client` (и не может вызвать `into_error`), но `Transport`
+/// реализует. Тест ничего не «проверяет» в рантайме; он не компилируется,
+/// если инвариант нарушен, и `Rc` внутри ошибки — не украшение, а то, что
+/// делает её `!Send` по-настоящему.
+#[test]
+fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
+    #[derive(Debug)]
+    struct NotSend(#[allow(dead_code)] std::rc::Rc<()>);
+    impl std::fmt::Display for NotSend {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "not send")
+        }
+    }
+    impl std::error::Error for NotSend {}
+
+    struct LocalErr {
+        caps: Capabilities,
+    }
+    impl Transport for LocalErr {
+        type Body = http_body_util::Full<Bytes>;
+        type Error = NotSend;
+        async fn execute(
+            &self,
+            _req: http::Request<RequestBody>,
+        ) -> Result<http::Response<Self::Body>, Self::Error> {
+            Err(NotSend(std::rc::Rc::new(())))
+        }
+        fn capabilities(&self) -> &Capabilities {
+            &self.caps
+        }
+    }
+    let t = LocalErr {
+        caps: Capabilities::none(),
+    };
+    assert!(!t.capabilities().streaming_request_body);
 }
 
 /// Тривиальный `Timer`, чей `Instant` — просто счётчик. Достаточно, чтобы

@@ -280,6 +280,21 @@ impl Transport for WasiHttp {
         ))
     }
 
+    /// Тождество, а не дефолтное обёртывание: `Self::Error` — уже
+    /// `http_ng_core::Error`, и `convert::wasi_err` только что разложила по
+    /// ней 39 вариантов `ErrorCode`.
+    ///
+    /// Без переопределения `Client::execute` завернул бы её ещё раз, с
+    /// `ErrorKind::Other`, и вся эта классификация пропадала бы у
+    /// вызывающей стороны: `is_timeout()`/`is_connect()`/`is_unsupported()`
+    /// возвращали бы `false` для DNS-сбоя, TLS-сбоя, connect-таймаута и
+    /// отказа хоста одинаково, а `Display` печатал бы категорию дважды —
+    /// `Other: Unsupported: wasi:http host rejected setting 'scheme'`. Это
+    /// и была находка B2 финального ревью ветки, ровно здесь и лечится.
+    fn into_error(&self, e: Self::Error) -> Error {
+        e
+    }
+
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }

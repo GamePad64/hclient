@@ -60,9 +60,20 @@ enum MockFrame {
     Error(Error),
 }
 
+/// Один элемент очереди мока: ответ или отказ самого транспорта.
+///
+/// `Err` — не то же самое, что `MockFrame::Error`: тот обрывает уже
+/// начавшееся тело, а этот проваливает `Transport::execute` целиком, до
+/// всякого ответа. Без него мок не мог произвести НИ ОДНОЙ ошибки
+/// транспорта, кроме `QueueEmpty` с фиксированным `ErrorKind::Other` — и
+/// именно поэтому 165 тестов ветки не замечали, что `Client::execute`
+/// расплющивал категорию любой ошибки транспорта в `Other` (B2 финального
+/// ревью).
+type Queued = Result<http::Response<VecDeque<MockFrame>>, Error>;
+
 #[derive(Debug)]
 pub struct MockTransport {
-    queue: Mutex<VecDeque<http::Response<VecDeque<MockFrame>>>>,
+    queue: Mutex<VecDeque<Queued>>,
     seen: Mutex<Vec<RecordedRequest>>,
     caps: Capabilities,
 }
@@ -105,7 +116,7 @@ impl MockTransport {
         self.queue
             .lock()
             .expect("mock lock poisoned")
-            .push_back(http::Response::from_parts(parts, frames));
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
     /// Ставит в очередь ответ из нескольких кадров — например, чтобы
@@ -120,7 +131,7 @@ impl MockTransport {
         self.queue
             .lock()
             .expect("mock lock poisoned")
-            .push_back(http::Response::from_parts(parts, frames));
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
     /// Как `push_response_frames`, но добавляет кадр трейлеров последним —
@@ -140,7 +151,7 @@ impl MockTransport {
         self.queue
             .lock()
             .expect("mock lock poisoned")
-            .push_back(http::Response::from_parts(parts, frames));
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
     /// Как `push_response_frames`, но обрывает тело ошибкой после `frames`,
@@ -165,7 +176,23 @@ impl MockTransport {
         self.queue
             .lock()
             .expect("mock lock poisoned")
-            .push_back(http::Response::from_parts(parts, frames));
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
+    }
+
+    /// Ставит в очередь отказ САМОГО транспорта — `Transport::execute`
+    /// вернёт `Err(err)`, ответа не будет вовсе.
+    ///
+    /// Существует ради B2 финального ревью ветки: `Client::execute`
+    /// расплющивал категорию любой ошибки транспорта в `ErrorKind::Other`,
+    /// и ни один тест этого не видел, потому что мок умел провалить
+    /// `execute` только исчерпанием очереди — а у той категория `Other` и
+    /// так правильная. Здесь категорию задаёт вызывающая сторона, так что
+    /// «дошла ли она до потребителя» становится наблюдаемым свойством.
+    pub fn push_transport_error(&self, err: Error) {
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(Err(err));
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
@@ -204,12 +231,24 @@ impl Transport for MockTransport {
                 body_size_hint,
             });
         match self.queue.lock().expect("mock lock poisoned").pop_front() {
-            Some(r) => {
+            Some(Ok(r)) => {
                 let (p, frames) = r.into_parts();
                 Ok(http::Response::from_parts(p, MockBody { frames }))
             }
+            Some(Err(e)) => Err(e),
             None => Err(Error::new(ErrorKind::Other, QueueEmpty)),
         }
+    }
+
+    /// Тождество, а не обёртывание — `Self::Error` уже `http_ng_core::Error`.
+    ///
+    /// Та же причина, по которой его переопределяет `http-ng-wasi`: без
+    /// переопределения `Client::execute` завернул бы уже-классифицированную
+    /// ошибку в ещё одну с `ErrorKind::Other`, и `push_transport_error`
+    /// перестал бы что-либо доказывать — мок обязан быть верной моделью
+    /// бэкенда, а не тем, что маскирует проверяемый дефект.
+    fn into_error(&self, e: Self::Error) -> Error {
+        e
     }
 
     fn capabilities(&self) -> &Capabilities {
