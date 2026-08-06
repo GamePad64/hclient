@@ -9,7 +9,7 @@ use std::future::Future;
 /// типизирован на `std::time::Instant`, который паникует на
 /// `wasm32-unknown-unknown`.
 pub trait Timer {
-    type Instant: Copy;
+    type Instant: Copy + PartialOrd;
 
     fn sleep(&self, d: Duration) -> impl Future<Output = ()>;
     fn now(&self) -> Self::Instant;

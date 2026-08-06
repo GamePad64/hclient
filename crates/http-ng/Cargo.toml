@@ -1,0 +1,27 @@
+[package]
+name = "http-ng"
+version = "0.1.0"
+description = "Кроссплатформенный асинхронный HTTP-клиент: один код под native, browser и WASI"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Мок-транспорт для тестов потребителей.
+test-util = []
+
+[dependencies]
+bytes         = { workspace = true }
+futures-core  = { workspace = true }
+http          = { workspace = true }
+http-body     = { workspace = true }
+http-ng-core  = { workspace = true }
+http-ng-proto = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+
+[lints]
+workspace = true

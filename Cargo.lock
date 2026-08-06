@@ -146,6 +146,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-ng-core",
+ "http-ng-proto",
+]
+
+[[package]]
 name = "http-ng-core"
 version = "0.1.0"
 dependencies = [
