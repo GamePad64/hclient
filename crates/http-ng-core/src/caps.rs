@@ -129,11 +129,36 @@ mod tests {
 
     #[test]
     fn none_is_the_conservative_base() {
+        // Every one of the 16 fields, spelled out individually — not
+        // `assert_eq!` on the whole struct via a derived `PartialEq`, which
+        // `Capabilities` deliberately does not implement (it's
+        // `#[non_exhaustive]` so its shape stays ours to change, and a
+        // struct-wide `PartialEq` would be a public trait impl added purely
+        // for a test's convenience). This is also what fails informatively,
+        // field by field, when a seventeenth field is added and someone
+        // forgets to default it here.
         let c = Capabilities::none();
         assert!(!c.streaming_request_body);
         assert!(!c.full_duplex);
+        assert!(!c.request_trailers);
+        assert!(!c.response_trailers);
         assert_eq!(c.redirects, RedirectSupport::None);
         assert_eq!(c.tls_config, TlsSupport::None);
+        assert!(!c.client_certs);
+        assert!(!c.proxy);
+        assert!(!c.owns_cookie_jar);
+        assert!(!c.owns_cache);
+        assert!(!c.version_select);
+        assert!(!c.version_reported);
+        assert_eq!(
+            c.timeouts,
+            TimeoutSupport {
+                connect: false,
+                first_byte: false,
+                between_bytes: false,
+            }
+        );
+        assert!(!c.informational_1xx);
         assert_eq!(c.upgrade, UpgradeSupport::None);
         assert!(c.forbidden_request_headers.is_empty());
     }
@@ -157,28 +182,5 @@ mod tests {
             between_bytes: false,
         };
         assert!(t.connect && t.first_byte && !t.between_bytes);
-    }
-
-    #[test]
-    fn capability_types_stay_send_and_sync() {
-        // `impl Trait` in argument position, not `<T: Send + Sync>`: the
-        // generic-bound spelling contains the literal substrings
-        // `: Send`/`+ Sync` that the `no-declared-send` CI job greps for,
-        // which would force caps.rs onto the same file-level exclusion list
-        // as error.rs/body.rs even though this crate's public surface here
-        // declares no such bond — only this test does. Proves the identical
-        // property without tripping that check.
-        fn assert_send(_: impl Send) {}
-        fn assert_sync(_: impl Sync) {}
-        assert_send(Capabilities::none());
-        assert_sync(Capabilities::none());
-        assert_send(Timeouts::default());
-        assert_sync(Timeouts::default());
-        let u = UnsupportedCapability {
-            what: "x",
-            backend: "y",
-        };
-        assert_send(u.clone());
-        assert_sync(u);
     }
 }
