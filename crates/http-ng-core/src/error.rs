@@ -41,13 +41,13 @@ pub enum ErrorKind {
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    source: Arc<dyn std::error::Error + Send + Sync + 'static>, // send-bound-exception: поправка С1
+    source: Arc<dyn std::error::Error + Send + Sync + 'static>, // send-bound-exception: amendment-C1
 }
 
 impl Error {
     pub fn new<E>(kind: ErrorKind, source: E) -> Self
     where
-        E: std::error::Error + Send + Sync + 'static, // send-bound-exception: поправка С1
+        E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
         Self {
             kind,

@@ -42,9 +42,21 @@ pub struct RecordedRequest {
     pub body_size_hint: Option<u64>,
 }
 
+/// Кадр тела мока: данные или трейлеры. Существует, чтобы
+/// `push_response_with_trailers` могла поставить в очередь трейлер-кадр.
+/// Без него была бы задокументирована, но ничем не проверена асимметрия
+/// `Response::chunk()` (пропускает трейлеры) против `into_parts()` с прямым
+/// опросом (отдаёт их) — `push_response` и `push_response_frames` производят
+/// только данные.
+#[derive(Debug, Clone)]
+enum MockFrame {
+    Data(Bytes),
+    Trailers(http::HeaderMap),
+}
+
 #[derive(Debug)]
 pub struct MockTransport {
-    queue: Mutex<VecDeque<http::Response<VecDeque<Bytes>>>>,
+    queue: Mutex<VecDeque<http::Response<VecDeque<MockFrame>>>>,
     seen: Mutex<Vec<RecordedRequest>>,
     caps: Capabilities,
 }
@@ -83,7 +95,7 @@ impl MockTransport {
     pub fn push_response(&self, resp: http::Response<&'static str>) {
         let (parts, body) = resp.into_parts();
         let mut frames = VecDeque::new();
-        frames.push_back(Bytes::from_static(body.as_bytes()));
+        frames.push_back(MockFrame::Data(Bytes::from_static(body.as_bytes())));
         self.queue
             .lock()
             .expect("mock lock poisoned")
@@ -95,10 +107,30 @@ impl MockTransport {
     /// отдаются `poll_frame`'ом по одному, в переданном порядке.
     pub fn push_response_frames(&self, resp: http::Response<Vec<&'static str>>) {
         let (parts, body) = resp.into_parts();
-        let frames: VecDeque<Bytes> = body
+        let frames: VecDeque<MockFrame> = body
             .into_iter()
-            .map(|s| Bytes::from_static(s.as_bytes()))
+            .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(http::Response::from_parts(parts, frames));
+    }
+
+    /// Как `push_response_frames`, но добавляет кадр трейлеров последним —
+    /// доказывает асимметрию `Response::chunk()` (пропускает трейлеры) против
+    /// `into_parts()` + прямого опроса тела (отдаёт их), см. `response.rs`.
+    pub fn push_response_with_trailers(
+        &self,
+        resp: http::Response<Vec<&'static str>>,
+        trailers: http::HeaderMap,
+    ) {
+        let (parts, body) = resp.into_parts();
+        let mut frames: VecDeque<MockFrame> = body
+            .into_iter()
+            .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
+            .collect();
+        frames.push_back(MockFrame::Trailers(trailers));
         self.queue
             .lock()
             .expect("mock lock poisoned")
@@ -160,7 +192,7 @@ impl Transport for MockTransport {
 /// стрима остался бы непроверенным.
 #[derive(Debug)]
 pub struct MockBody {
-    frames: VecDeque<Bytes>,
+    frames: VecDeque<MockFrame>,
 }
 
 impl http_body::Body for MockBody {
@@ -171,11 +203,12 @@ impl http_body::Body for MockBody {
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
-        Poll::Ready(
-            self.frames
-                .pop_front()
-                .map(|b| Ok(http_body::Frame::data(b))),
-        )
+        Poll::Ready(self.frames.pop_front().map(|f| {
+            Ok(match f {
+                MockFrame::Data(b) => http_body::Frame::data(b),
+                MockFrame::Trailers(h) => http_body::Frame::trailers(h),
+            })
+        }))
     }
 
     fn is_end_stream(&self) -> bool {

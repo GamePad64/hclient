@@ -107,7 +107,7 @@ impl<T: Transport> Client<T> {
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<T::Body>, Error>
     where
-        T::Error: Send + Sync + 'static, // send-bound-exception: поправка С1
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
         let (parts, mut body) = req.into_parts();
         let mut hp = HopParts {

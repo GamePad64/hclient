@@ -45,7 +45,7 @@ where
     // объекта-трейта. Тот же бонд, что и `Client::execute`, только на этот раз
     // требуется у `T::Body::Error`, а не `T::Error` — тело читается уже после
     // того, как транспорт его вернул.
-    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: поправка С1
+    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     /// Следующий чанк данных. Трейлер-фреймы пропускаются — за ними идти в
     /// `into_parts` и поллить тело напрямую.
@@ -106,6 +106,11 @@ impl Collected {
     /// Десериализует тело как JSON. Часть интерфейса, объявленного для этой
     /// задачи (`Collected::json<T>()`), но отсутствовавшая в шаге 3 брифа —
     /// см. отчёт о задаче.
+    ///
+    /// За фичей `json`, выключенной по умолчанию: `serde`/`serde_json` не
+    /// нужны потребителю, который тело только стримит или читает как байты —
+    /// см. комментарий у фичи в Cargo.toml про цену на wasm.
+    #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
         serde_json::from_slice(&self.body).map_err(|e| Error::new(ErrorKind::Decode, e))
     }

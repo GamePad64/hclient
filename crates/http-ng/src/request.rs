@@ -11,6 +11,13 @@ pub struct RequestBuilder<'a, T> {
     headers: http::HeaderMap,
     body: RequestBody,
     extensions: http::Extensions,
+    /// Первая ошибка построения. Всплывает в `send()`: молча проглоченный
+    /// невалидный заголовок — это ровно тот тихий no-op, против которого
+    /// построен `ClientBuilder::build` (см. `check_supported` в config.rs).
+    /// Брифовый код `header()` отбрасывал невалидную пару молча (`if let
+    /// (Ok(n), Ok(v)) = .. { .. }`, без `else`) — дефект самого брифа, а не
+    /// намеренное поведение: см. отчёт о задаче, Task 13 fix round 1.
+    error: Option<Error>,
 }
 
 impl<'a, T: Transport> RequestBuilder<'a, T> {
@@ -22,15 +29,26 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
             headers: http::HeaderMap::new(),
             body: RequestBody::Empty,
             extensions: http::Extensions::new(),
+            error: None,
         }
     }
 
+    /// Первая ошибка построения побеждает и переживает дальнейшие вызовы —
+    /// не перезаписывается второй невалидной парой и не теряется, если после
+    /// неё вызвали ещё валидный `header()`.
     pub fn header(mut self, name: &str, value: &str) -> Self {
-        if let (Ok(n), Ok(v)) = (
+        if self.error.is_some() {
+            return self;
+        }
+        match (
             name.parse::<http::HeaderName>(),
             value.parse::<http::HeaderValue>(),
         ) {
-            self.headers.insert(n, v);
+            (Ok(n), Ok(v)) => {
+                self.headers.insert(n, v);
+            }
+            (Err(e), _) => self.error = Some(Error::new(ErrorKind::Other, e)),
+            (_, Err(e)) => self.error = Some(Error::new(ErrorKind::Other, e)),
         }
         self
     }
@@ -63,8 +81,11 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         // `send` зовёт `Client::execute`, которое требует `T::Error: Send +
         // Sync + 'static` — обобщённая функция обязана повторить бонд своего
         // callee, трейт сам его не несёт.
-        T::Error: Send + Sync + 'static, // send-bound-exception: поправка С1
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
+        if let Some(e) = self.error {
+            return Err(e);
+        }
         let uri = self.uri.map_err(|e| Error::new(ErrorKind::Other, e))?;
         let mut req = http::Request::new(self.body);
         *req.method_mut() = self.method;

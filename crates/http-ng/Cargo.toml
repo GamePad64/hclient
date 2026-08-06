@@ -11,6 +11,16 @@ repository.workspace = true
 default = []
 # Мок-транспорт для тестов потребителей.
 test-util = []
+# `Collected::json`. Выключено по умолчанию: измерено на реальной сборке
+# wasm32-unknown-unknown (opt-level=z, lto=true, strip=true) — 74 байта, когда
+# `.json()` ни разу не вызван (LTO вычищает метод целиком), 46 877 байт и
+# +5 крейтов в графе (41 → 46), как только он вызван хоть раз. Для крейта,
+# чьи целевые платформы включают браузер и чьи собственные примеры — SSE и
+# байтовые сценарии — этим методом не пользуются, это реальная цена, которую
+# не должен платить каждый потребитель по умолчанию. `test` job в CI уже
+# гоняет `--all-features`, так что путь остаётся под тестами, просто не в
+# дефолтной сборке. Тот же приём, что у reqwest, и по той же причине.
+json = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 bytes         = { workspace = true }
@@ -19,16 +29,18 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
 http-ng-proto = { workspace = true }
-# Только для `Collected::json` — единственное место в крейте, которому нужна
-# сериализация. Не в `[workspace.dependencies]`: больше нигде в вертикали не
-# требуется (как и `futures-executor` ниже, локальная зависимость одного крейта).
-serde         = { version = "1", default-features = false, features = ["std"] }
-serde_json    = { version = "1", default-features = false, features = ["std"] }
+# Только для `Collected::json`, за фичей `json` (см. `[features]` выше). Не в
+# `[workspace.dependencies]`: больше нигде в вертикали не требуется (как и
+# `futures-executor` ниже, локальная зависимость одного крейта).
+serde         = { version = "1", default-features = false, features = ["std"], optional = true }
+serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-# derive живёт только здесь: тестам нужно `#[derive(Deserialize)]`, самому
-# крейту — нет (`Collected::json` принимает уже сериализуемый T снаружи).
+# derive живёт только здесь: тесту за фичей `json` нужен
+# `#[derive(Deserialize)]`, самому крейту — нет (`Collected::json` принимает
+# уже сериализуемый T снаружи). dev-dependencies не входят в `-e normal`, так
+# что это не считается в графе потребителя даже когда доступно тестам.
 serde             = { version = "1", features = ["derive"] }
 
 [lints]

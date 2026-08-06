@@ -3831,7 +3831,7 @@ https, 80 для http, иначе `port_u16()`. Плюс тесты на обе 
 
 ### П8. `Error` требует `Send + Sync` от источника
 
-См. поправку С1 в спеке. Кратко: `Arc<dyn Error + 'static>` не пропускает
+См. поправку C1 в спеке. Кратко: `Arc<dyn Error + 'static>` не пропускает
 auto-traits, поэтому `Error` был `!Send` всегда, и `tokio::spawn` не собрался бы
 ни при каком транспорте. Источник ограничивается `Send + Sync`.
 
@@ -3841,6 +3841,6 @@ auto-traits, поэтому `Error` был `!Send` всегда, и `tokio::spaw
 
 ### П9. `RequestBody`: границы `Send` на объектах-трейтах
 
-См. поправку С2. `Arc<dyn Fn() -> RequestBody + Send + Sync>` и
+См. поправку C2. `Arc<dyn Fn() -> RequestBody + Send + Sync>` и
 `Box<dyn Body<..> + Unpin + Send>`. Найдено компиляционной проверкой до
 реализации Task 7.

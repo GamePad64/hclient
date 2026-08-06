@@ -19,3 +19,19 @@ fn public_api_types_are_reachable_from_the_facade() {
     let _: Result<(), http_ng::UnsupportedCapability> =
         http_ng::check_supported(&cfg, &caps, "probe");
 }
+
+/// `Response`, `Collected` и `RequestBuilder` (Task 13) не имели проверки
+/// достижимости из фасада (Task 13 fix round 1, Finding 6). В отличие от
+/// типов выше, у них нет публичного конструктора без транспорта — значение
+/// сконструировать здесь нечем, поэтому достижимость и форма (арность
+/// дженериков) проверяются компиляцией никогда не вызываемой функции: если
+/// `Response`/`Collected`/`RequestBuilder` перестанут реэкспортироваться из
+/// `http_ng::` или сменят число параметров, этот файл — как внешний
+/// потребитель — перестанет собираться.
+#[allow(dead_code)]
+fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
+    _r: http_ng::Response<B>,
+    _c: http_ng::Collected,
+    _b: http_ng::RequestBuilder<'_, T>,
+) {
+}
