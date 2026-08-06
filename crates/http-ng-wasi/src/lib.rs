@@ -104,9 +104,19 @@ impl WasiHttp {
             first_byte: true,
             between_bytes: true,
         };
-        // И беднее по всему остальному: в спеке нет ни редиректов, ни TLS,
-        // ни прокси, ни выбора версии, ни upgrade.
-        caps.redirects = RedirectSupport::None;
+        // И беднее по всему остальному: в спеке нет ни TLS, ни прокси, ни
+        // выбора версии, ни upgrade.
+        //
+        // Редиректы — `Transparent`, а не `None` (M2 финального ревью
+        // ветки). Измерено на живом хосте (резолюция review Task 16,
+        // находка B-9): 3xx доходит до гостя как обычный ответ, вести
+        // цепочку обязан он сам — то есть стадия редиректа `Client`'а здесь
+        // работает полностью. `None` этого сказать не мог: то же значение
+        // отдаёт `Capabilities::none()`, так что вызывающая сторона не
+        // отличала «бэкенд прозрачен» от «поле не заполняли» и, решив по
+        // `redirects == None`, что редиректы тут невозможны, была бы
+        // неправа насчёт единственного существующего бэкенда.
+        caps.redirects = RedirectSupport::Transparent;
         caps.tls_config = TlsSupport::None;
         caps.upgrade = UpgradeSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();

@@ -606,7 +606,16 @@ mod tests {
         // `wasi:http` дуплекс поддерживает.
         assert!(!caps.full_duplex);
         // И беднее по всему остальному.
-        assert_eq!(caps.redirects, http_ng_core::RedirectSupport::None);
+        // `Transparent`, а не `None` (M2 финального ревью ветки): 3xx
+        // доходит до гостя как обычный ответ и стадия редиректа `Client`'а
+        // отрабатывает его полностью. `None` — то же, что отдаёт
+        // `Capabilities::none()`, и означало бы «редиректов тут нет».
+        assert_eq!(caps.redirects, http_ng_core::RedirectSupport::Transparent);
+        assert_ne!(
+            caps.redirects,
+            http_ng_core::Capabilities::none().redirects,
+            "заявленная способность обязана отличаться от «поле не заполняли»"
+        );
         assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
         assert_eq!(caps.tls_config, http_ng_core::TlsSupport::None);
         assert!(!caps.proxy);
