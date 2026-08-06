@@ -12,5 +12,5 @@
 mod body;
 mod error;
 
-pub use body::{RequestBody, RetryKind};
+pub use body::{RequestBody, RetryKind, RewindFactory};
 pub use error::{Error, ErrorKind, Phase};

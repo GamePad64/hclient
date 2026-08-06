@@ -33,6 +33,23 @@ pub enum RequestBody {
     #[default]
     Empty,
     Full(Bytes),
+    /// Переигрывается вызовом фабрики.
+    ///
+    /// **Контракт фабрики.** Она обязана быть чистой: каждый вызов должен
+    /// производить тело, эквивалентное предыдущему (то же содержимое, тот же
+    /// размер). Фабрика со скрытым состоянием, отдающая на каждый вызов
+    /// разное тело — это лежащий на поверхности, но недокументированный
+    /// источник багов, поэтому `size_hint()` для этого варианта намеренно
+    /// возвращает `None`: гадать по первому вызову опасно, если контракт
+    /// нарушен.
+    ///
+    /// Фабрика вправе легально вернуть `RequestBody::Streaming` — это не
+    /// живая ложь, потому что `retry_kind()` и `rewind()` всегда
+    /// вычисляются заново по тому объекту, который сейчас лежит внутри
+    /// `RequestBody`, а не кэшируются на момент создания `Rewindable`.
+    /// **Инвариант, важный для retry-слоя (Task 8): всегда переспрашивай
+    /// `retry_kind()` у того тела, которое сейчас на руках, и никогда не
+    /// кэшируй его через `rewind()`.**
     Rewindable(RewindFactory),
     /// Однопроходное тело. Конкретный поток задаёт транспорт; в v0.1 ядру
     /// достаточно знать, что переиграть его нельзя.
@@ -110,18 +127,71 @@ mod tests {
     }
 
     #[test]
-    fn full_rewinds_by_cloning_bytes() {
+    fn full_rewind_preserves_the_payload() {
         let b = RequestBody::Full(Bytes::from_static(b"abc"));
-        assert!(b.rewind().is_some());
+        match b.rewind().expect("Full реиграется") {
+            RequestBody::Full(x) => assert_eq!(&x[..], b"abc"),
+            other => panic!("ожидался Full, получен {other:?}"),
+        }
     }
 
     #[test]
-    fn size_hint_known_for_buffered_unknown_for_streaming() {
+    fn a_factory_survives_repeated_replays() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let b = RequestBody::rewindable(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            RequestBody::Full(Bytes::from_static(b"same"))
+        });
+        for _ in 0..3 {
+            let again = b.rewind().expect("rewindable реиграется");
+            assert!(matches!(again, RequestBody::Full(ref x) if &x[..] == b"same"));
+            assert_eq!(
+                b.retry_kind(),
+                RetryKind::ViaFactory,
+                "вид не меняется от повторов"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// Пара `Empty`/`Full` — единственные варианты, для которых размер
+    /// известен заранее. `Rewindable` и `Streaming` покрыты отдельно
+    /// (`rewindable_replays_through_factory`,
+    /// `streaming_is_honest_about_being_unreplayable`) и туда не входят —
+    /// имя теста не должно обещать охват, которого здесь нет.
+    #[test]
+    fn size_hint_is_known_for_empty_and_full_bodies() {
         assert_eq!(RequestBody::Empty.size_hint(), Some(0));
         assert_eq!(
             RequestBody::Full(Bytes::from_static(b"abcd")).size_hint(),
             Some(4)
         );
+    }
+
+    /// Тело без единого байта в буфере: `poll_frame` сразу возвращает
+    /// `Ready(None)`. Нужно только для того, чтобы сконструировать
+    /// `RequestBody::Streaming` в тестах — конкретный транспорт задаёт
+    /// свою реализацию.
+    struct EmptyStream;
+    impl http_body::Body for EmptyStream {
+        type Data = Bytes;
+        type Error = crate::Error;
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+            std::task::Poll::Ready(None)
+        }
+    }
+
+    #[test]
+    fn streaming_is_honest_about_being_unreplayable() {
+        let b = RequestBody::Streaming(Box::new(EmptyStream));
+        assert_eq!(b.retry_kind(), RetryKind::Impossible);
+        assert!(b.rewind().is_none(), "должен вернуть None, а не паниковать");
+        assert_eq!(b.size_hint(), None);
     }
 
     /// Свойство, ради которого существует поправка C2: без `+ Send + Sync`
