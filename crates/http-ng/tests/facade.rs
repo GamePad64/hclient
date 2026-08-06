@@ -196,3 +196,28 @@ fn mock_transport_round_trip_uses_only_facade_types() {
         other => panic!("expected a terminal error frame, got {other:?}"),
     }
 }
+
+// ── Task 17 fix round 2 ─────────────────────────────────────────────────
+
+/// `Client::capabilities()` — the forwarder that answers "what can this
+/// client do" without the caller ever writing `use
+/// http_ng_core::unversioned::Transport`. Before this round, the only path
+/// to a `&Capabilities` from a `Client<T>` was `client.transport().capabilities()`,
+/// and `capabilities()` there is a *trait* method — calling it through the
+/// bare `&T` that `.transport()` returns needs `Transport` in scope, which
+/// defeats the point of a facade that only names types reachable from
+/// `http_ng::`. `MockTransport::with_capabilities` sets `streaming_request_body`
+/// deliberately (the default from `MockTransport::new()` is `Capabilities::none()`,
+/// all `false`) so the assertion below is checking a value that was actually
+/// threaded through, not one that happened to already be true.
+#[cfg(feature = "test-util")]
+#[test]
+fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
+    let mut caps = http_ng::Capabilities::none();
+    caps.streaming_request_body = true;
+    let m = http_ng::mock::MockTransport::new().with_capabilities(caps);
+    let client = http_ng::Client::builder(m)
+        .build()
+        .expect("mock supports the default config");
+    assert!(client.capabilities().streaming_request_body);
+}

@@ -3,7 +3,7 @@ use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use http_ng_core::Timeouts;
 use http_ng_core::unversioned::Transport;
-use http_ng_core::{Error, ErrorKind, RequestBody, UnsupportedCapability};
+use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
 use http_ng_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 
 #[derive(Debug)]
@@ -66,6 +66,20 @@ impl<T: Transport> Client<T> {
     }
     pub fn config(&self) -> &Config {
         &self.config
+    }
+    /// Что умеет транспорт этого клиента.
+    ///
+    /// Форвардер существует, чтобы ответ на самый естественный вопрос к
+    /// `Capabilities` не требовал тащить в область видимости
+    /// `unversioned::Transport` (Task 17 fix round 2) — трейт намеренно в
+    /// semver-карантине (см. doc-комментарий
+    /// `http-ng-core/src/unversioned/mod.rs`) и в фасад `http-ng` не входит.
+    /// Без этого форвардера `client.transport().capabilities()` — трейтовый
+    /// метод — был единственным путём, а `client.transport()` возвращает
+    /// `&T`, так что вызов `.capabilities()` на нём требовал бы `Transport`
+    /// в `use`.
+    pub fn capabilities(&self) -> &Capabilities {
+        self.transport.capabilities()
     }
 
     pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T> {

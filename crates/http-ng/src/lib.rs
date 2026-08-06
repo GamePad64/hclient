@@ -39,10 +39,12 @@ pub use config::{Config, Timeouts, check_supported, effective_timeouts};
 // Намеренно НЕ реэкспортированы `unversioned::{Transport, Timer}`: это
 // карантинный контракт для авторов бэкендов/рантаймов (см. doc-комментарий
 // `http-ng-core/src/unversioned/mod.rs`), не часть фасада для потребителя,
-// который просто собирает запросы и читает ответы. У этого решения есть
-// цена — `client.transport().capabilities()` требует `Transport` в зоне
-// видимости, и `Client` сегодня не даёт этого в обход трейта — см. отчёт
-// задачи 17, раздел про фикс-раунд 1, "Concerns".
+// который просто собирает запросы и читает ответы. У этого решения была
+// цена — `client.transport().capabilities()` требовал бы `Transport` в зоне
+// видимости, поскольку `capabilities()` там трейтовый метод, а `.transport()`
+// отдаёт голый `&T` — фикс-раунд 2 снял её форвардером `Client::capabilities()`
+// (`client.rs`), а не реэкспортом трейта: самый частый вопрос к `Capabilities`
+// закрыт, карантин остаётся карантином.
 pub use http_ng_core::{
     Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, RetryKind, RewindFactory,
     TimeoutSupport, TlsSupport, UnsupportedCapability, UpgradeSupport,
