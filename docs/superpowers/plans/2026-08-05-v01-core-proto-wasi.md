@@ -3838,3 +3838,9 @@ auto-traits, поэтому `Error` был `!Send` всегда, и `tokio::spaw
 Следствие для CI: `no-declared-send` теперь обязан исключать
 `crates/http-ng-core/src/error.rs` — с комментарием, что это единственное
 задокументированное исключение, а не послабление проверки.
+
+### П9. `RequestBody`: границы `Send` на объектах-трейтах
+
+См. поправку С2. `Arc<dyn Fn() -> RequestBody + Send + Sync>` и
+`Box<dyn Body<..> + Unpin + Send>`. Найдено компиляционной проверкой до
+реализации Task 7.

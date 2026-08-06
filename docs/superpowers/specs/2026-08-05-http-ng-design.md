@@ -1179,3 +1179,36 @@ v0.1 ошибки `Send`. `JsValue` и типы `web_sys` — `Send` без
 **Цена, названная вслух.** Сборка wasm с `+atomics` (wasm-потоки), где `JsValue`
 честно `!Send`, теряет путь через `Client`. Это та же конфигурация, для которой
 §4.2 уже предписывает `.boxed_local()`, и она остаётся вне v0.1.
+
+### С2. `RequestBody` тоже обязан ограничить свои объекты-трейты
+
+Тот же класс, что С1, и найден до реализации — проверкой компиляции, а не
+ревью. §4.4 задавал:
+
+```rust
+Rewindable(Arc<dyn Fn() -> BodyStream>),
+Streaming(BodyStream),                    // Box<dyn Body + Unpin>
+```
+
+Оба объекта-трейта без `Send`, значит `RequestBody` — `!Send`, значит
+`http::Request<RequestBody>` — `!Send`, значит футура `Transport::execute`
+— `!Send`. Исправление С1 в одиночку не спасало бы: спавн всё равно
+невозможен, просто по другой причине.
+
+**Решение.**
+
+```rust
+Rewindable(Arc<dyn Fn() -> RequestBody + Send + Sync>),
+Streaming(Box<dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send>),
+```
+
+`Sync` нужен только у `Arc`: `Arc<T>: Send` требует `T: Send + Sync`, потому что
+`Arc` разделяем; `Box<T>: Send` требует лишь `T: Send`. Проверено компиляцией:
+с этими границами `RequestBody: Send` и `http::Request<RequestBody>: Send`,
+а `Sync` у `RequestBody` не достигается и не нужен — заявка уходит в `execute`
+по значению.
+
+**Общий вывод, который стоит держать в голове до конца v0.1.** Всякий раз,
+когда в тип на пути `Client -> Transport` попадает объект-трейт, auto-traits на
+нём обрываются. Перед добавлением любого `dyn` в этот путь — компиляционная
+проверка `assert_send`, а не рассуждение.
