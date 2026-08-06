@@ -19,9 +19,17 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
 http-ng-proto = { workspace = true }
+# Только для `Collected::json` — единственное место в крейте, которому нужна
+# сериализация. Не в `[workspace.dependencies]`: больше нигде в вертикали не
+# требуется (как и `futures-executor` ниже, локальная зависимость одного крейта).
+serde         = { version = "1", default-features = false, features = ["std"] }
+serde_json    = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# derive живёт только здесь: тестам нужно `#[derive(Deserialize)]`, самому
+# крейту — нет (`Collected::json` принимает уже сериализуемый T снаружи).
+serde             = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

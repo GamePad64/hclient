@@ -1,4 +1,5 @@
 use crate::config::{Config, check_supported};
+use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use http_ng_core::Timeouts;
 use http_ng_core::unversioned::Transport;
@@ -65,6 +66,28 @@ impl<T: Transport> Client<T> {
     }
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T> {
+        RequestBuilder::new(self, method, url)
+    }
+    pub fn get(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::GET, url)
+    }
+    pub fn post(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::POST, url)
+    }
+    pub fn put(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::PUT, url)
+    }
+    pub fn delete(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::DELETE, url)
+    }
+    pub fn patch(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::PATCH, url)
+    }
+    pub fn head(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::HEAD, url)
     }
 
     /// Порядок стадий фиксирован и корректен по построению.

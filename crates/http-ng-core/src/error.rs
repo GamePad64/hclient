@@ -45,7 +45,6 @@ pub struct Error {
 }
 
 impl Error {
-    // send-bound-exception: поправка С1
     pub fn new<E>(kind: ErrorKind, source: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static, // send-bound-exception: поправка С1

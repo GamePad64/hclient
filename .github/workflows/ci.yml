@@ -135,17 +135,29 @@ jobs:
           # Маркер — это ЗАЯВКА, а не способ заглушить проверку: каждая
           # маркированная строка обязана называть поправку (С1 или С2) из
           # `docs/superpowers/specs/2026-08-05-http-ng-design.md`, которая её
-          # оправдывает. Сейчас размечены пять мест — три оригинальных
+          # оправдывает. Сейчас размечены восемь мест — пять оригинальных
           # (`http-ng-core/src/error.rs`: поле `source` и бонд `Error::new`;
           # `http-ng-core/src/body.rs`: `RewindFactory`, `Streaming`-вариант и
-          # бонд `rewindable`) плюс `http-ng/src/client.rs`: where-клауза
-          # `Client::execute` (поправка С1, «уточнённая формулировка
-          # инварианта» — Task 12 fix round 1). Новый маркер без
-          # соответствующей поправки в спеке — повод для ревью, а не для
-          # зелёного CI.
+          # бонд `rewindable`) плюс три из Task 12/13: `http-ng/src/client.rs`
+          # (where-клауза `Client::execute`), `http-ng/src/response.rs`
+          # (where-клауза `Response::chunk`/`collect` — тот же `Error::new`
+          # требует `Send + Sync` от `B::Error`) и `http-ng/src/request.rs`
+          # (where-клауза `RequestBuilder::send`, которая зовёт
+          # `Client::execute` и обязана повторить её бонд). Все восемь —
+          # поправка С1 или С2. Новый маркер без соответствующей поправки в
+          # спеке — повод для ревью, а не для зелёного CI.
+          #
+          # Сам фильтр маркера тоже сузили (Task 13 fix round 1): раньше
+          # `grep -v 'send-bound-exception'` пропускал ЛЮБУЮ строку,
+          # содержащую эту подстроку — включая маркер с выдуманным
+          # обоснованием. Теперь строка обязана содержать `send-bound-
+          # exception:` и реальную ссылку на поправку С1 или С2; это не
+          # закрывает дыру полностью (выдумать можно и «поправка С1»), но
+          # поднимает планку выше «любая строка» и оставляет каждую заявку
+          # проверяемой по двум существующим сегодня поправкам.
           if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
-               | grep -v 'send-bound-exception'; then
+               | grep -vE 'send-bound-exception:[[:space:]]*поправка[[:space:]]+С[12]\b'; then
             echo "::error::в ядре объявлен бонд Send или Sync без маркера send-bound-exception"
             exit 1
           fi
