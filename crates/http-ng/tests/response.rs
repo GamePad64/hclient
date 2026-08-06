@@ -1,5 +1,11 @@
 //! Тесты `Response`/`Collected`/`RequestBuilder` на уровне `Client`.
 
+// `http_ng::mock` живёт за фичей `test-util` (см. `mock.rs`); без этой строки
+// `cargo test -p http-ng` без флагов падал с E0432 вместо того, чтобы
+// собраться в пустоту — как уже было сделано для `shape.rs` в Task 12. Task
+// 13 fix round 2, Residual 3.
+#![cfg(feature = "test-util")]
+
 use http_ng::mock::MockTransport;
 use http_ng::{Client, RequestBody};
 
