@@ -7,3 +7,5 @@
 mod config;
 
 pub use config::{Config, Timeouts, check_supported, effective_timeouts};
+pub use http_ng_core::{Capabilities, UnsupportedCapability};
+pub use http_ng_proto::redirect::RedirectPolicy;

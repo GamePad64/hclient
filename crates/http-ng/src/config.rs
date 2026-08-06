@@ -27,24 +27,37 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
 }
 
 /// Вызывается из `ClientBuilder::build()`. Ни одного тихого no-op.
+///
+/// Деструктурирует `cfg` без `..`-остатка — по тому же рецепту, что
+/// `Capabilities::none_is_the_conservative_base` в `http-ng-core`: новое
+/// поле в `Config` или `Timeouts` становится ошибкой компиляции, называющей
+/// его, а не тихо пропускается массивом `checks`. `redirect` и `base_url`
+/// сегодня намеренно не проверяются на поддержку — `_` явно фиксирует это
+/// решение, а не забывает про поле.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {
+    let Config {
+        timeouts:
+            Timeouts {
+                connect,
+                first_byte,
+                between_bytes,
+            },
+        redirect: _,
+        base_url: _,
+    } = cfg;
     let checks = [
+        (connect.is_some(), caps.timeouts.connect, "connect_timeout"),
         (
-            cfg.timeouts.connect.is_some(),
-            caps.timeouts.connect,
-            "connect_timeout",
-        ),
-        (
-            cfg.timeouts.first_byte.is_some(),
+            first_byte.is_some(),
             caps.timeouts.first_byte,
             "first_byte_timeout",
         ),
         (
-            cfg.timeouts.between_bytes.is_some(),
+            between_bytes.is_some(),
             caps.timeouts.between_bytes,
             "between_bytes_timeout",
         ),
