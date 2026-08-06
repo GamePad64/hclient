@@ -15,8 +15,7 @@ use http_body::{Body as HttpBody, Frame};
 use http_ng_core::{Error, ErrorKind, RequestBody};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use wasip3::http::types::{
     ErrorCode, HeaderError, Method as WM, RequestOptions, RequestOptionsError, Scheme,
@@ -248,7 +247,9 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 /// предлагал `let (resp, _written) = join!(..)`.
 ///
 /// **Про третий отброшенный `Result` — резолюция review, находка B-3,
-/// пересмотрена с доказательством.** Второй возврат `Request::new` —
+/// пересмотрена с доказательством, формулировка уточнена в fix round 2
+/// (находка 5: предыдущая версия этого комментария переоценивала то, что
+/// было измерено — см. ниже).** Второй возврат `Request::new` —
 /// `FutureReader<Result<(), ErrorCode>>`, задокументированный upstream как
 /// "resolves to result of transmission of this request" — тоже
 /// отбрасывается (`Transport::execute` дропает его явно, с комментарием на
@@ -256,19 +257,31 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 /// реализован и **откачен**: измерено на живом хосте (wasmtime 47,
 /// `wasip3` 0.7.0, дважды — один раз через полный путь этого крейта, один
 /// раз через голые вызовы `wasip3` в обход `http-ng-wasi` целиком, чтобы
-/// исключить баг в собственной логике гонки), что эта футура не резолвится
-/// для ответа с телом, ПОКА тело ответа не будет вычитано целиком —
-/// `send()` вернул `Ok` немедленно, футура передачи оставалась `Pending`,
-/// пока весь `Body` из ответа не был вычитан вручную, и резолвилась только
-/// тогда. `execute()` возвращает `Body` вызывающей стороне ДО того, как та
-/// решит его читать — штатно позже, частично, или никогда. Дождаться этой
-/// футуры здесь означало бы одно из двух: либо `execute()` не возвращается
-/// ни для одного ответа с непустым телом, пока сама не вычитает его целиком
-/// за вызывающую сторону (разрушая стриминг, ради которого существует
-/// `Body`), либо виснет навсегда, если вызывающая сторона (как и
-/// большинство кода) читает тело уже ПОСЛЕ получения `Response` — то есть
-/// после того, как `execute()` уже обязана была вернуться. Ни один вариант
-/// не совместим с сигнатурой seam. Подробности и точка дропа —
+/// исключить баг в собственной логике гонки), что эта футура **не
+/// гарантированно** резолвится до того, как тело ответа вычитано целиком —
+/// НЕ "никогда не резолвится раньше": заново проверено отдельно (12-байтный
+/// `Content-Length`-ответ, `resp` дропнут немедленно, тело не тронуто ни
+/// разу) — `transmitted` резолвится в `Ok(())` без единого вызова
+/// `poll_frame`. Но для `chunked`, ответов с трейлерами и вообще
+/// сколько-нибудь заметных тел измеримо не резолвится, пока `Body` не
+/// вычитан вручную — `send()` возвращал `Ok` немедленно, футура передачи
+/// оставалась `Pending`, пока весь `Body` не был вычитан, и резолвилась
+/// только тогда. `execute()` возвращает `Body` вызывающей стороне ДО того,
+/// как та решит его читать — штатно позже, частично, или никогда. Ждать
+/// эту футуру здесь БЕЗУСЛОВНО означало бы: либо `execute()` не
+/// возвращается для типичного ответа с телом, пока сама не вычитает его
+/// целиком за вызывающую сторону (разрушая стриминг, ради которого
+/// существует `Body`), либо виснет для штатного сценария "тело читают
+/// после получения `Response`" — то есть после того, как `execute()` уже
+/// обязана была вернуться.
+///
+/// Ни один вариант не совместим с ЭТОЙ формой seam — но третий вариант
+/// совместим и вне объёма этого фикс-раунда: пронести эту футуру в
+/// возвращаемый `Body` и дождаться её на конце потока, выдав отказ
+/// передачи как терминальную ошибку тела вместо чистого `None`. Ровно
+/// измеренное здесь его и оправдывает — футура резолвится в момент, когда
+/// тело закончило вычитываться, а это именно та точка, где живёт `Body`.
+/// Кандидат на v0.2, а не отвергнутый тупик. Подробности и точка дропа —
 /// `Transport::execute` в `lib.rs`.
 ///
 /// **Политика при расхождении исходов.**
@@ -327,52 +340,95 @@ pub(crate) async fn race_send_with_body<T>(
     }
 }
 
-/// Трейлеры испущены телом запроса, но заголовок `Trailer:` их не назвал.
+/// Разбирает заголовок(и) `Trailer:` запроса в множество объявленных имён
+/// трейлер-полей. `Trailer:` — список через запятую (RFC 9110 §6.5.1),
+/// возможно повторённый несколькими заголовками; оба варианта складываются
+/// в одно множество. `HeaderName` уже сравнивается регистронезависимо
+/// (`http` хранит имя в канонической форме), так что `X-Checksum` и
+/// `x-checksum` — одно и то же имя.
+pub(crate) fn declared_trailer_names(
+    headers: &http::HeaderMap,
+) -> std::collections::HashSet<http::HeaderName> {
+    headers
+        .get_all(http::header::TRAILER)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| http::HeaderName::from_bytes(s.trim().as_bytes()).ok())
+        .collect()
+}
+
+/// Тело запроса эмитировало трейлер-поле(я), которые `Trailer:` не назвал.
 ///
 /// `wasi:http` честно принимает трейлеры от `BodyWriter` (они уходят в
 /// `result_writer` независимо от заголовков — см.
 /// `wasip3::http_compat::body_writer::send_http_body`), но измерено на
 /// живом хосте (резолюция review, находка B-1), что HTTP/1.1-кодировщик
-/// хоста молча роняет их на проводе, если запрос не объявил имена заранее
-/// через `Trailer:` (RFC 9110 §6.5.1: получатель, решивший не буферизовать
-/// тело, обязан игнорировать необъявленные трейлеры). `execute` при этом
-/// раньше молча возвращал `Ok` — данные, которые вызывающая сторона
-/// приложила к телу, никогда не покидали процесс, и ничто об этом не
-/// сообщало.
+/// хоста молча роняет их на проводе, если конкретное имя поля не было
+/// заранее объявлено через `Trailer:` (RFC 9110 §6.5.1: получатель,
+/// решивший не буферизовать тело, обязан игнорировать необъявленные
+/// трейлеры) — резолюция review, находка 2 фикс-раунда 2: сверять надо
+/// именно ИМЕНА полей, а не сам факт присутствия заголовка `Trailer:`.
+/// Заголовок `Trailer: X-Other`, объявляющий не то поле, что реально
+/// эмитировано (`x-checksum`), теряет данные точно так же, как полное
+/// отсутствие заголовка — измерено: `execute` возвращал `Ok(200)`, а
+/// провод показывал `0\r\n\r\n` без трейлера.
+///
+/// **Ошибка приходит постфактум** (резолюция review, находка 4 фикс-раунда
+/// 2): к моменту, когда вызывающая сторона видит эту ошибку, запрос уже
+/// дошёл до сервера и получил ответ — гвард срабатывает уже ПОСЛЕ успешного
+/// `race_send_with_body`, потому что имена трейлер-полей, вообще говоря,
+/// известны только когда тело закончилось, а раньше заголовков это не
+/// предсказать. Не считать это признаком, что запрос можно бездумно
+/// повторить: для неидемпотентного запроса это двойная отправка.
 #[derive(Debug)]
-pub(crate) struct UndeclaredTrailers;
+pub(crate) struct UndeclaredTrailers(Vec<http::HeaderName>);
 impl std::fmt::Display for UndeclaredTrailers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = self
+            .0
+            .iter()
+            .map(http::HeaderName::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
         write!(
             f,
-            "streaming request body emitted trailers, but the request has no `Trailer:` \
-             header naming them — wasi:http's HTTP/1.1 encoder drops undeclared trailers \
-             silently; declare their names via a `Trailer:` header before streaming them"
+            "streaming request body emitted trailer field(s) [{names}] that the request's \
+             `Trailer:` header did not declare — wasi:http's HTTP/1.1 encoder drops undeclared \
+             trailer fields silently. This error arrives after the request already reached the \
+             server and was answered (race_send_with_body already succeeded) — do not retry \
+             blindly, a non-idempotent request may already have taken effect."
         )
     }
 }
 impl std::error::Error for UndeclaredTrailers {}
-pub(crate) fn undeclared_trailers() -> Error {
-    Error::new(ErrorKind::Body, UndeclaredTrailers)
+pub(crate) fn undeclared_trailers(names: Vec<http::HeaderName>) -> Error {
+    Error::new(ErrorKind::Body, UndeclaredTrailers(names))
 }
 
 /// Обёртка `http_body::Body`, которая ничего не меняет в передаваемых
-/// кадрах, а только замечает, испустило ли обёрнутое тело кадр трейлеров —
-/// нужна `Transport::execute`, чтобы поймать `UndeclaredTrailers` (находка
-/// B-1) в точке, где кадр реально пришёл, не предсказывая это заранее по
-/// заголовкам.
+/// кадрах, а только собирает имена полей из кадров трейлеров, которые
+/// реально прошли через обёрнутое тело — нужна `Transport::execute`, чтобы
+/// после успешной отправки сверить их с тем, что объявил `Trailer:`
+/// (находка B-1, уточнена находкой 2 фикс-раунда 2 — именами, не только
+/// фактом присутствия заголовка), в точке, где кадр реально пришёл, не
+/// предсказывая это заранее.
 pub(crate) struct TrailerWatch<B> {
     inner: B,
-    seen: Arc<AtomicBool>,
+    seen: Arc<Mutex<Vec<http::HeaderName>>>,
 }
 
 impl<B> TrailerWatch<B> {
-    /// Оборачивает `inner` и возвращает флаг, который станет `true` после
-    /// первого кадра трейлеров. `Arc<AtomicBool>`, а не `Rc<Cell<bool>>`:
-    /// `Payload::Streaming` уже несёт `+ Send` (amendment C2), и обёртка не
-    /// должна сузить этот бонд для будущего `Transport::execute`.
-    pub(crate) fn new(inner: B) -> (Self, Arc<AtomicBool>) {
-        let seen = Arc::new(AtomicBool::new(false));
+    /// Оборачивает `inner` и возвращает список имён полей, увиденных в
+    /// кадрах трейлеров, — растёт по мере опроса. `Arc<Mutex<_>>`, а не
+    /// `Rc<RefCell<_>>`: `Payload::Streaming` уже несёт `+ Send` (amendment
+    /// C2), и обёртка не должна сузить этот бонд для будущего
+    /// `Transport::execute` (`tests/shape.rs` проверяет это свойство
+    /// снаружи крейта). `Mutex`, а не что-то более экзотичное — гость
+    /// однопоточный, конкуренции за блокировку никогда не бывает, `Mutex`
+    /// здесь ровно формальность ради `Sync`.
+    pub(crate) fn new(inner: B) -> (Self, Arc<Mutex<Vec<http::HeaderName>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
                 inner,
@@ -395,10 +451,21 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         let poll = Pin::new(&mut self.inner).poll_frame(cx);
-        if let Poll::Ready(Some(Ok(f))) = &poll
-            && f.is_trailers()
-        {
-            self.seen.store(true, Ordering::Relaxed);
+        if let Poll::Ready(Some(Ok(f))) = &poll {
+            // Резолюция review, находка 3 фикс-раунда 2: `trailers_ref`
+            // возвращает `Some(&HeaderMap)` и для ПУСТОГО кадра трейлеров
+            // (`Frame::trailers(HeaderMap::new())`) — такой кадр ничего не
+            // теряет на проводе (нечему теряться), так что регистрируем
+            // только непустые карты, а не сам факт "это кадр трейлеров".
+            if let Some(map) = f.trailers_ref()
+                && !map.is_empty()
+            {
+                let mut seen = self
+                    .seen
+                    .lock()
+                    .expect("single-threaded guest, never poisoned");
+                seen.extend(map.keys().cloned());
+            }
         }
         poll
     }
@@ -833,31 +900,40 @@ mod tests {
         assert_eq!(err.kind(), &ErrorKind::Other);
     }
 
+    struct DataThenTrailers {
+        data: Option<Bytes>,
+        trailers: Option<http::HeaderMap>,
+    }
+    impl HttpBody for DataThenTrailers {
+        type Data = Bytes;
+        type Error = Error;
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+            if let Some(d) = self.data.take() {
+                return Poll::Ready(Some(Ok(Frame::data(d))));
+            }
+            if let Some(t) = self.trailers.take() {
+                return Poll::Ready(Some(Ok(Frame::trailers(t))));
+            }
+            Poll::Ready(None)
+        }
+    }
+
+    fn poll_once<B: HttpBody<Data = Bytes, Error = Error> + Unpin>(
+        b: &mut B,
+    ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        Pin::new(b).poll_frame(&mut cx)
+    }
+
     /// Резолюция review, находка B-1: тело эмитит кадр трейлеров —
-    /// `TrailerWatch` обязана это заметить через флаг, не трогая сами
+    /// `TrailerWatch` обязана это заметить (по имени поля), не трогая сами
     /// кадры.
     #[test]
-    fn trailer_watch_flags_a_trailers_frame_without_altering_it() {
-        struct DataThenTrailers {
-            data: Option<Bytes>,
-            trailers: Option<http::HeaderMap>,
-        }
-        impl HttpBody for DataThenTrailers {
-            type Data = Bytes;
-            type Error = Error;
-            fn poll_frame(
-                mut self: Pin<&mut Self>,
-                _: &mut Context<'_>,
-            ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
-                if let Some(d) = self.data.take() {
-                    return Poll::Ready(Some(Ok(Frame::data(d))));
-                }
-                if let Some(t) = self.trailers.take() {
-                    return Poll::Ready(Some(Ok(Frame::trailers(t))));
-                }
-                Poll::Ready(None)
-            }
-        }
+    fn trailer_watch_records_the_field_name_without_altering_the_frame() {
         let mut trailers = http::HeaderMap::new();
         trailers.insert("x-checksum", "deadbeef".parse().unwrap());
         let body = DataThenTrailers {
@@ -865,34 +941,100 @@ mod tests {
             trailers: Some(trailers),
         };
         let (mut watched, seen) = TrailerWatch::new(body);
-        assert!(!seen.load(Ordering::Relaxed));
+        assert!(seen.lock().unwrap().is_empty());
 
-        let waker = std::task::Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        // Кадр данных: флаг ещё не должен подняться.
-        match Pin::new(&mut watched).poll_frame(&mut cx) {
+        // Кадр данных: список ещё должен быть пуст.
+        match poll_once(&mut watched) {
             Poll::Ready(Some(Ok(f))) => assert!(f.is_data()),
             other => panic!("expected a data frame, got {other:?}"),
         }
-        assert!(!seen.load(Ordering::Relaxed), "data frame is not trailers");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "data frame is not trailers"
+        );
 
-        // Кадр трейлеров: теперь должен.
-        match Pin::new(&mut watched).poll_frame(&mut cx) {
-            Poll::Ready(Some(Ok(f))) => assert!(f.is_trailers()),
+        // Кадр трейлеров: имя поля должно появиться, сам кадр — дойти до
+        // вызывающей стороны нетронутым.
+        match poll_once(&mut watched) {
+            Poll::Ready(Some(Ok(f))) => {
+                assert!(f.is_trailers());
+                assert_eq!(
+                    f.trailers_ref().unwrap().get("x-checksum").unwrap(),
+                    "deadbeef"
+                );
+            }
             other => panic!("expected a trailers frame, got {other:?}"),
         }
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[http::header::HeaderName::from_static("x-checksum")]
+        );
+    }
+
+    /// Резолюция review, находка 3 фикс-раунда 2: пустой кадр трейлеров
+    /// (`Frame::trailers(HeaderMap::new())`) ничего не теряет на проводе —
+    /// `TrailerWatch` не должна регистрировать его как "трейлеры были".
+    /// До фикса именно это ловило запрос, который на деле ничего не терял:
+    /// регресс, который этот тест и предотвращает.
+    #[test]
+    fn trailer_watch_ignores_an_empty_trailers_frame() {
+        let body = DataThenTrailers {
+            data: Some(Bytes::from_static(b"x")),
+            trailers: Some(http::HeaderMap::new()),
+        };
+        let (mut watched, seen) = TrailerWatch::new(body);
+        let _ = poll_once(&mut watched); // data frame
+        match poll_once(&mut watched) {
+            Poll::Ready(Some(Ok(f))) => assert!(f.is_trailers()),
+            other => panic!("expected a (empty) trailers frame, got {other:?}"),
+        }
         assert!(
-            seen.load(Ordering::Relaxed),
-            "trailers frame must set the flag"
+            seen.lock().unwrap().is_empty(),
+            "an empty trailers frame loses nothing on the wire and must not be flagged"
         );
     }
 
     #[test]
-    fn undeclared_trailers_error_names_the_problem_and_the_fix() {
-        let e = undeclared_trailers();
+    fn declared_trailer_names_parses_a_comma_separated_list() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::TRAILER,
+            "X-Checksum, X-Other".parse().unwrap(),
+        );
+        let declared = declared_trailer_names(&headers);
+        assert!(declared.contains(&http::HeaderName::from_static("x-checksum")));
+        assert!(declared.contains(&http::HeaderName::from_static("x-other")));
+        assert_eq!(declared.len(), 2);
+    }
+
+    #[test]
+    fn declared_trailer_names_merges_repeated_headers() {
+        let mut headers = http::HeaderMap::new();
+        headers.append(http::header::TRAILER, "X-Checksum".parse().unwrap());
+        headers.append(http::header::TRAILER, "X-Other".parse().unwrap());
+        let declared = declared_trailer_names(&headers);
+        assert_eq!(declared.len(), 2);
+    }
+
+    #[test]
+    fn declared_trailer_names_is_empty_without_a_trailer_header() {
+        let headers = http::HeaderMap::new();
+        assert!(declared_trailer_names(&headers).is_empty());
+    }
+
+    /// Резолюция review, находка 2 фикс-раунда 2: сообщение обязано назвать
+    /// конкретное поле — "generic refusal" недостаточно — и явно
+    /// предупредить о постфактум-природе ошибки (находка 4).
+    #[test]
+    fn undeclared_trailers_error_names_the_field_and_warns_about_retrying() {
+        let e = undeclared_trailers(vec![http::HeaderName::from_static("x-checksum")]);
         assert_eq!(e.kind(), &ErrorKind::Body);
         let msg = e.to_string();
+        assert!(msg.contains("x-checksum"), "{msg}");
         assert!(msg.contains("Trailer"), "{msg}");
+        assert!(
+            msg.to_lowercase().contains("retry"),
+            "must warn against blind retries: {msg}"
+        );
     }
 }

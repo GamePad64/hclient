@@ -7,6 +7,55 @@ on: [push, pull_request]
 # зелёным навсегда.
 
 jobs:
+  # Резолюция review (Task 16, fix round 2, находка 1): этот файл был
+  # невалидным YAML с `68d91f3` (многострочное `echo "::error::…"` в
+  # `sse-complexity-guard` переносилось на новую строку с нулевым отступом
+  # внутри `run: |` — YAML block scalar завершается первой строкой с
+  # отступом МЕНЬШЕ базового, так что парсер читал продолжение сообщения
+  # как начало нового документа и падал с `ScannerError`). Следствие: ни
+  # один job в этом файле не запускался вовсе — ни sans-io проверка, ни
+  # `no-declared-send`, ни clippy-гейт, ни сканер сеттеров, ни guard
+  # сложности, ни живой тест. Единственная проверка YAML была ручной, один
+  # раз, при создании файла (Task 1) — и ни разу больше, ровно тот класс
+  # дефекта "прогон один раз не защищает ничего, что напишут позже",
+  # против которого вся эта вертикаль. Job внутри файла не может спасти
+  # уже сломанный файл — но предотвращает СЛЕДУЮЩУЮ поломку, что и есть
+  # реалистичный риск здесь. Локально: `python3 -c "import yaml;
+  # yaml.safe_load(open('.github/workflows/ci.yml'))"` (тот же вызов, что
+  # ниже) — стоит прогонять перед каждым коммитом, трогающим этот файл.
+  workflow-yaml-is-valid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: bash
+        run: |
+          set -euo pipefail
+          # `actions/runner-images`' ubuntu-latest обычно уже несёт PyYAML, но
+          # не гарантированно — проверяем импортом и ставим только при
+          # необходимости. `--break-system-packages`: PEP 668
+          # ("externally-managed-environment") на некоторых образах
+          # запрещает голый `pip install` в системный Python; для
+          # одноразового CI-раннера это ровно тот случай, для которого флаг
+          # существует.
+          python3 -c "import yaml" 2>/dev/null || \
+            python3 -m pip install --quiet --break-system-packages pyyaml || \
+            python3 -m pip install --quiet pyyaml
+          python3 - <<'PYEOF'
+          import sys
+          import yaml
+          from pathlib import Path
+
+          ok = True
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              try:
+                  yaml.safe_load(path.read_text(encoding="utf-8"))
+                  print(f"{path}: valid YAML")
+              except yaml.YAMLError as e:
+                  print(f"::error file={path}::{path} is not valid YAML: {e}")
+                  ok = False
+          sys.exit(0 if ok else 1)
+          PYEOF
+
   test:
     strategy:
       matrix:
@@ -93,9 +142,7 @@ jobs:
             sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact)"
           printf '%s\n' "$out"
           if ! printf '%s\n' "$out" | grep -qE '^test result: ok\. 1 passed;'; then
-            echo "::error::sse-complexity-guard не запустил ровно один тест — похоже, \
-parsing_scales_linearly_not_quadratically переименован или перемещён. Поправьте путь \
-здесь И значение --skip в job'е test."
+            echo "::error::sse-complexity-guard не запустил ровно один тест — похоже, parsing_scales_linearly_not_quadratically переименован или перемещён. Поправьте путь здесь И значение --skip в job'е test."
             exit 1
           fi
 
@@ -204,19 +251,44 @@ parsing_scales_linearly_not_quadratically переименован или пер
           #    (не только буквально `let _ =`) и `drop(..)` — тоже.
           #
           # Оба исправлены переходом на Python: вместо построчного `grep`
-          # склеиваем содержимое каждого файла (без построчных `//`-
-          # комментариев) в один нормализованный по пробелам поток,
-          # сохраняя для каждого символа исходный номер строки — перенос
-          # rustfmt'а перестаёт быть невидимым, а диагностика всё равно
-          # называет строку, где вызов начался. Вызовы `.set_xxx(...)`
-          # находятся вручную подсчитанным балансом скобок (обычный regex не
-          # умеет вложенные `Some(ns)` внутри `set_connect_timeout(Some(ns))`),
-          # а следом за закрывающей скобкой проверяется расширенный список
-          # форм отброса — на нормализованном потоке, а не на исходных строках.
+          # склеиваем содержимое каждого файла (без комментариев — см. ниже)
+          # в один нормализованный по пробелам поток, сохраняя для каждого
+          # символа исходный номер строки — перенос rustfmt'а перестаёт быть
+          # невидимым, а диагностика всё равно называет строку, где вызов
+          # начался. Вызовы `.set_xxx(...)` находятся вручную подсчитанным
+          # балансом скобок (обычный regex не умеет вложенные `Some(ns)`
+          # внутри `set_connect_timeout(Some(ns))`), а следом за закрывающей
+          # скобкой проверяется расширенный список форм отброса — на
+          # нормализованном потоке, а не на исходных строках.
           #
-          # Проверено на девяти засеянных нарушениях (все формы выше плюс
-          # перенос rustfmt) и на существующем дереве (`OK`, без ложных
-          # срабатываний на `.map_err(..)?` — легитимном пути honoring'а).
+          # Проверено на девяти засеянных нарушениях round 1 (три исходных
+          # плюс перенос rustfmt для каждой) и на существующем дереве (`OK`,
+          # без ложных срабатываний на `.map_err(..)?` — легитимном пути
+          # honoring'а). Fix round 2 (находка 6) добавил ТРИ ещё незакрытые
+          # формы, найденные повторным ревью, — предыдущая формулировка
+          # "проверено на всех девяти" была неточной: сами девять форм round
+          # 1 не покрывали всё пространство способов отбросить `Result`.
+          # Закрыты: `if let Err(_e) = ..set_x(..) { }` (пустой блок под
+          # if-let-цепочкой), голое `_ = ..set_x(..);` (destructuring
+          # assignment без `let`), и `let _: Тип = ..set_x(..);` (аннотация
+          # типа ломала регэксп `let _\w*\s*=`, ожидавший `=` сразу после
+          # идентификатора). Ревью также отметило два НЕ прогнанных до
+          # компилируемой формы: `/* .. */`-комментарий между вызовом и
+          # `.ok()`, и `//` внутри строкового литера (`set_path_with_query`/
+          # `set_authority` реально принимают строки — `"//foo"`,
+          # `"http://x"` — вполне вероятны в реальном коде, так что это не
+          # только гипотетический риск). Собственное тестирование фикстурой
+          # для этого раунда подтвердило оба и заодно нашло третий дефект,
+          # привнесённый уже ЭТИМ раундом: `?` после вызова (типичный
+          # `let _x = opts.set_x(y).map_err(..)?;`) ложно ловился как
+          # `let _ident = ..` — присваивается-то уже `()`, не `Result`,
+          # ошибка честно пропагирована. Все пять (три из первого списка
+          # плюс два из повторного) закрыты и заново проверены на
+          # шестнадцати формах (двенадцать нарушений плюс четыре легитимных
+          # — `?`-пропагация, `match` с реальной обработкой, переменная
+          # `foo_`, строка с `//`, за которой идёт `?`, а не discard) в
+          # изолированной фикстуре перед применением здесь — zero ложных
+          # срабатываний ни в одну сторону.
           python3 - <<'PYEOF'
           import re, sys, pathlib
 
@@ -224,16 +296,68 @@ parsing_scales_linearly_not_quadratically переименован или пер
 
           DISCARD_TAIL = re.compile(r'^\s*\.(ok|unwrap_or_default|is_ok|is_err)\s*\(\s*\)')
           DISCARD_TAIL_ARG = re.compile(r'^\s*\.unwrap_or\s*\(')
+          # `(:[^=;{}]*)?` — необязательная аннотация типа между `_<ident>`
+          # и `=` (`let _: Result<(), E> = ..`), иначе не матчилась.
+          LET_UNDERSCORE = re.compile(r'\blet\s+_\w*\s*(:[^=;{}]*)?=\s*[^;{}]*$')
+          DROP_CALL = re.compile(r'\bdrop\s*\([^;{}]*$')
+          # Голое `_ = expr;` (destructuring assignment, не `let`). `\b`
+          # перед `_` не даёт словить конец обычного идентификатора вроде
+          # `foo_ = ..` (там между `o` и `_` нет границы слова — оба словные
+          # символы); `(?!>)` не даёт словить `_ => ..` (match-рукав).
+          BARE_UNDERSCORE_ASSIGN = re.compile(r'\b_\s*=(?!>)\s*[^;{}]*$')
+          # `if let Err(_e) = ..` — в т.ч. внутри let-цепочки (`if let Some(x)
+          # = y && let Err(_e) = ..`), где `if` не стоит вплотную перед `let
+          # Err` — поэтому без `\bif\s+` в начале, ищем сам `let Err(_ident)
+          # =` где угодно в préfix'е.
+          IF_LET_ERR_UNDERSCORE = re.compile(r'\blet\s+Err\s*\(\s*_\w*\s*\)\s*=\s*[^;{}]*$')
+          BLOCK_COMMENT = re.compile(r'/\*.*?\*/', re.DOTALL)
+
+          def strip_block_comments(text):
+              # Заменяет содержимое `/* .. */` пробелами, СОХРАНЯЯ переносы
+              # строк внутри — номера строк для всего, что после, не
+              # съезжают. Не умеет вложенные `/* /* */ */` (Rust это
+              # разрешает) — соответствующая находка ревью осталась
+              # незакрытой сознательно, редкий случай для этого файла.
+              def repl(m):
+                  return ''.join(c if c == '\n' else ' ' for c in m.group(0))
+              return BLOCK_COMMENT.sub(repl, text)
+
+          def strip_line_comment(line):
+              # Наивный `line.split("//", 1)[0]` резал строку и по `//`
+              # ВНУТРИ строкового литерала (`"http://x"`), пряча всё, что
+              # шло дальше на той же строке, включая настоящий discard.
+              # `set_path_with_query`/`set_authority` в этом крейте реально
+              # принимают строки такого вида — не гипотетический риск.
+              in_string = False
+              i, n = 0, len(line)
+              while i < n:
+                  c = line[i]
+                  if in_string:
+                      if c == '\\' and i + 1 < n:
+                          i += 2
+                          continue
+                      if c == '"':
+                          in_string = False
+                      i += 1
+                      continue
+                  if c == '"':
+                      in_string = True
+                      i += 1
+                      continue
+                  if c == '/' and i + 1 < n and line[i + 1] == '/':
+                      return line[:i]
+                  i += 1
+              return line
 
           violations = []
 
           for path in sorted(ROOT.rglob("*.rs")):
-              text = path.read_text()
+              text = strip_block_comments(path.read_text())
               lines = text.splitlines()
               stream_chars = []
               char_line = []
               for lineno, line in enumerate(lines, start=1):
-                  code = line.split("//", 1)[0]
+                  code = strip_line_comment(line)
                   for ch in code:
                       stream_chars.append(ch)
                       char_line.append(lineno)
@@ -272,14 +396,32 @@ parsing_scales_linearly_not_quadratically переименован или пер
                       stream.rfind('}', 0, start),
                   ) + 1
                   prefix = stream[stmt_start:start]
-                  if re.search(r'\blet\s+_\w*\s*=\s*[^;{}]*$', prefix):
-                      p = re.sub(r'\s+', ' ', prefix).strip()
-                      violations.append((path, line_no, f"{p[-40:]} {snippet}"))
-                      continue
-                  if re.search(r'\bdrop\s*\([^;{}]*$', prefix):
-                      p = re.sub(r'\s+', ' ', prefix).strip()
-                      violations.append((path, line_no, f"{p[-40:]} {snippet}"))
-                      continue
+
+                  # `?` между вызовом и концом инструкции означает, что
+                  # `Result` пропагируется наружу (возможно, после
+                  # `.map_err(..)`), а не отбрасывается — `let _x =
+                  # opts.set_authority(..).map_err(..)?;` присваивает `_x`
+                  # уже значение `()`, а не `Result`. Без этой проверки
+                  # каждый такой (легитимный, обычный в этом крейте) вызов
+                  # ловился бы проверками ниже как ложный "нарушитель" —
+                  # найдено и закрыто при собственном тестировании фикстурой
+                  # для fix round 2, не входило в находки ревью.
+                  stmt_end = stream.find(';', end)
+                  if stmt_end == -1:
+                      stmt_end = len(stream)
+                  propagated = '?' in stream[end + 1:stmt_end]
+
+                  if not propagated:
+                      for pattern in (
+                          LET_UNDERSCORE,
+                          DROP_CALL,
+                          BARE_UNDERSCORE_ASSIGN,
+                          IF_LET_ERR_UNDERSCORE,
+                      ):
+                          if pattern.search(prefix):
+                              p = re.sub(r'\s+', ' ', prefix).strip()
+                              violations.append((path, line_no, f"{p[-40:]} {snippet}"))
+                              break
 
           for path, line_no, snippet in violations:
               print(f"{path}:{line_no}: {snippet}")
@@ -287,9 +429,10 @@ parsing_scales_linearly_not_quadratically переименован или пер
           if violations:
               print(
                   "::error::найден отброшенный Result у сеттера wasi:http "
-                  "(let _ / let _ident / .ok() / .unwrap_or_default() / .unwrap_or(..) / "
-                  ".is_ok() / .is_err() / drop(..) — в одну строку или через перенос rustfmt) "
-                  "— каждый отказ хоста обязан стать типизированной Error, "
+                  "(let _ / let _ident / let _: Тип / .ok() / .unwrap_or_default() / "
+                  ".unwrap_or(..) / .is_ok() / .is_err() / drop(..) / голое `_ = ..` / "
+                  "`if let Err(_e) = ..` с пустым блоком — в одну строку или через перенос "
+                  "rustfmt) — каждый отказ хоста обязан стать типизированной Error, "
                   "см. crates/http-ng-wasi/src/convert.rs"
               )
               sys.exit(1)

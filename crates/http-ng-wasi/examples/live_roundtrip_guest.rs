@@ -83,8 +83,10 @@ impl wasip3::exports::cli::run::Guest for Guest {
 
         match mode {
             "response-roundtrip" => response_roundtrip(port).await,
-            "request-trailers-undeclared" => request_trailers(port, false).await,
-            "request-trailers-declared" => request_trailers(port, true).await,
+            "request-trailers-undeclared" => request_trailers(port, TrailerCase::Undeclared).await,
+            "request-trailers-declared" => request_trailers(port, TrailerCase::Declared).await,
+            "request-trailers-wrong-name" => request_trailers(port, TrailerCase::WrongName).await,
+            "request-trailers-empty-frame" => request_trailers(port, TrailerCase::EmptyFrame).await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
@@ -168,19 +170,29 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
 }
 
 /// Тело запроса, которое эмитит один кадр данных, затем один кадр
-/// трейлеров — нужно `request_trailers` ниже, чтобы реально пройти через
+/// трейлеров (пустой или с полем `x-checksum`, по выбору) — нужно
+/// `request_trailers` ниже, чтобы реально пройти через
 /// `convert::TrailerWatch` в `WasiHttp::execute`.
 struct DataThenTrailers {
     data: Option<bytes::Bytes>,
     trailers: Option<http::HeaderMap>,
 }
 impl DataThenTrailers {
-    fn new() -> Self {
+    fn with_checksum_trailer() -> Self {
         let mut trailers = http::HeaderMap::new();
         trailers.insert("x-checksum", "deadbeef".parse().unwrap());
         Self {
             data: Some(bytes::Bytes::from_static(b"payload")),
             trailers: Some(trailers),
+        }
+    }
+    /// Резолюция review, находка 3 фикс-раунда 2: пустой кадр трейлеров
+    /// ничего не теряет на проводе (нечему теряться) — гвард не должен его
+    /// отвергать, даже без `Trailer:`.
+    fn with_empty_trailer_frame() -> Self {
+        Self {
+            data: Some(bytes::Bytes::from_static(b"payload")),
+            trailers: Some(http::HeaderMap::new()),
         }
     }
 }
@@ -201,57 +213,84 @@ impl HttpBody for DataThenTrailers {
     }
 }
 
-/// Резолюция review, находка B-1, живой прогон: `Streaming`-тело запроса
-/// реально эмитит трейлеры (`DataThenTrailers`). С `declare_header == false`
-/// запрос не называет их в `Trailer:` — `WasiHttp::execute` обязана вернуть
-/// типизированную ошибку (`convert::undeclared_trailers`), а не тихо
-/// потерять данные, которые `wasi:http`'s HTTP/1.1-кодировщик роняет на
-/// проводе без объявления. С `declare_header == true` — тот же поток,
-/// корректно объявленный, обязан пройти успешно: гвард не должен ложно
-/// срабатывать на легитимное использование трейлеров.
-async fn request_trailers(port: u16, declare_header: bool) -> Result<(), ()> {
+enum TrailerCase {
+    /// Нет `Trailer:`, тело эмитит `x-checksum` — обязана быть ошибка.
+    Undeclared,
+    /// `Trailer: X-Checksum`, тело эмитит `x-checksum` — обязан быть успех.
+    Declared,
+    /// Резолюция review, находка 2 фикс-раунда 2: `Trailer: X-Other`, тело
+    /// эмитит `x-checksum` — заголовок присутствует, но называет НЕ ТО
+    /// поле. Обязана быть та же ошибка, что и при полном отсутствии
+    /// заголовка: измерено на живом хосте, что провод теряет `x-checksum`
+    /// точно так же в обоих случаях.
+    WrongName,
+    /// Резолюция review, находка 3 фикс-раунда 2: нет `Trailer:`, тело
+    /// эмитит ПУСТОЙ кадр трейлеров — терять нечего, обязан быть успех.
+    EmptyFrame,
+}
+
+/// Резолюция review, находка B-1, живой прогон (уточнена находками 2 и 3
+/// фикс-раунда 2): `Streaming`-тело запроса реально эмитит трейлеры
+/// (`DataThenTrailers`) в одной из четырёх конфигураций. `Undeclared` и
+/// `WrongName` обязаны провалиться типизированной ошибкой
+/// (`convert::undeclared_trailers`) — оба теряют `x-checksum` на проводе
+/// одинаково. `Declared` и `EmptyFrame` обязаны пройти успешно: гвард не
+/// должен ложно срабатывать ни на корректно объявленное имя, ни на кадр,
+/// которому нечего терять.
+async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
     let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
         .parse()
         .expect("uri");
     let mut builder = http::Request::builder().method(http::Method::POST).uri(uri);
-    if declare_header {
-        builder = builder.header(http::header::TRAILER, "X-Checksum");
-    }
-    let req = builder
-        .body(RequestBody::Streaming(Box::new(DataThenTrailers::new())))
-        .expect("request");
+    let body: Box<dyn HttpBody<Data = bytes::Bytes, Error = http_ng_core::Error> + Unpin + Send> =
+        match case {
+            TrailerCase::Undeclared => Box::new(DataThenTrailers::with_checksum_trailer()),
+            TrailerCase::Declared => {
+                builder = builder.header(http::header::TRAILER, "X-Checksum");
+                Box::new(DataThenTrailers::with_checksum_trailer())
+            }
+            TrailerCase::WrongName => {
+                builder = builder.header(http::header::TRAILER, "X-Other");
+                Box::new(DataThenTrailers::with_checksum_trailer())
+            }
+            TrailerCase::EmptyFrame => Box::new(DataThenTrailers::with_empty_trailer_frame()),
+        };
+    let req = builder.body(RequestBody::Streaming(body)).expect("request");
 
     let transport = http_ng_wasi::WasiHttp::new();
     let result = transport.execute(req).await;
 
-    if declare_header {
-        match result {
-            Ok(_) => {
-                println!("TRAILERS_ACCEPTED_OK");
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("expected success with a declared `Trailer:` header, got error: {e}");
-                Err(())
-            }
+    let expect_ok = matches!(case, TrailerCase::Declared | TrailerCase::EmptyFrame);
+    match (expect_ok, result) {
+        (true, Ok(_)) => {
+            println!("TRAILERS_ACCEPTED_OK");
+            Ok(())
         }
-    } else {
-        match result {
-            Err(e) if e.kind() == &http_ng_core::ErrorKind::Body => {
-                println!("TRAILERS_REJECTED_OK");
-                Ok(())
+        (true, Err(e)) => {
+            eprintln!("expected success, got error: {e}");
+            Err(())
+        }
+        (false, Err(e)) if e.kind() == &http_ng_core::ErrorKind::Body => {
+            let msg = e.to_string();
+            // Находка 2: сообщение обязано назвать конкретное поле, не
+            // просто "отказано".
+            if !msg.contains("x-checksum") {
+                eprintln!("error must name the specific field `x-checksum`: {msg}");
+                return Err(());
             }
-            Err(e) => {
-                eprintln!("expected ErrorKind::Body for undeclared trailers, got: {e:?}");
-                Err(())
-            }
-            Ok(_) => {
-                eprintln!(
-                    "expected an error for undeclared trailers, got success — this is \
-                     exactly the silent data loss Task 16's B-1 exists to catch"
-                );
-                Err(())
-            }
+            println!("TRAILERS_REJECTED_OK");
+            Ok(())
+        }
+        (false, Err(e)) => {
+            eprintln!("expected ErrorKind::Body naming x-checksum, got: {e:?}");
+            Err(())
+        }
+        (false, Ok(_)) => {
+            eprintln!(
+                "expected an error for undeclared/mismatched trailers, got success — this is \
+                 exactly the silent data loss Task 16's B-1 exists to catch"
+            );
+            Err(())
         }
     }
 }

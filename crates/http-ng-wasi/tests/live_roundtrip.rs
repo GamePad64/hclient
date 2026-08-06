@@ -131,6 +131,58 @@ fn wasi_transport_accepts_streaming_request_trailers_when_declared() {
     }
 }
 
+/// Резолюция review, находка 2 фикс-раунда 2, живой прогон: `Trailer:`
+/// присутствует, но называет ДРУГОЕ поле (`X-Other`), чем реально эмитирует
+/// тело (`x-checksum`) — измерено, что провод теряет `x-checksum` точно так
+/// же, как при полном отсутствии заголовка. Гвард обязан сравнивать ИМЕНА,
+/// а не факт присутствия заголовка.
+#[test]
+fn wasi_transport_rejects_streaming_request_trailers_with_the_wrong_declared_name() {
+    let Some(wasmtime) = require_wasmtime(
+        "wasi_transport_rejects_streaming_request_trailers_with_the_wrong_declared_name",
+    ) else {
+        return;
+    };
+
+    let (stdout, stderr, status) = run_guest_against_mock_server(
+        &wasmtime,
+        Some("request-trailers-wrong-name"),
+        drain_request_fully,
+    );
+    if !status.success() || !stdout.contains("TRAILERS_REJECTED_OK") {
+        panic!(
+            "expected WasiHttp::execute to reject a Trailer: header naming the wrong field \
+             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+            status.code(),
+        );
+    }
+}
+
+/// Резолюция review, находка 3 фикс-раунда 2, живой прогон: тело эмитит
+/// пустой кадр трейлеров (`Frame::trailers(HeaderMap::new())`) без
+/// `Trailer:` — нечему теряться на проводе, гвард не должен отказывать.
+#[test]
+fn wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header() {
+    let Some(wasmtime) =
+        require_wasmtime("wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header")
+    else {
+        return;
+    };
+
+    let (stdout, stderr, status) = run_guest_against_mock_server(
+        &wasmtime,
+        Some("request-trailers-empty-frame"),
+        drain_request_fully,
+    );
+    if !status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK") {
+        panic!(
+            "expected WasiHttp::execute to accept an empty trailers frame \
+             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+            status.code(),
+        );
+    }
+}
+
 /// Читает только до конца заголовков запроса — используется сценарием
 /// `response-roundtrip`, где у запроса нет тела вовсе (`RequestBody::Empty`),
 /// так что дальше и не придёт ничего.

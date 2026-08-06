@@ -16,7 +16,6 @@ use http_ng_core::{
     Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, Timeouts, TlsSupport,
     UpgradeSupport,
 };
-use std::sync::atomic::Ordering;
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 
@@ -80,18 +79,24 @@ impl WasiHttp {
         // каждый бэкенд и принадлежит вертикали 2, не фикс-раунду здесь.
         caps.full_duplex = false;
         // `request_trailers`/`response_trailers`: трейлеры РАБОТАЮТ на
-        // `wasi:http`, но только если запрос заранее объявил их имена
-        // через заголовок `Trailer:` — измерено (резолюция review, находка
-        // B-1), что HTTP/1.1-кодировщик хоста молча роняет необъявленные
-        // трейлеры на проводе (RFC 9110 §6.5.1). Имена трейлеров известны
+        // `wasi:http`, но только для полей, чьи ИМЕНА запрос заранее
+        // объявил через заголовок `Trailer:` — измерено (резолюция review,
+        // находка B-1, уточнена находкой 2 фикс-раунда 2), что
+        // HTTP/1.1-кодировщик хоста молча роняет на проводе любое
+        // трейлер-поле, чьё имя не было объявлено, даже если `Trailer:`
+        // присутствует, но называет ДРУГОЕ поле. Имена трейлеров известны
         // только после того, как тело закончилось — раньше заголовков их
         // предсказать нельзя, инъецировать `Trailer:` за вызывающую сторону
         // здесь некому. Вызывающая сторона обязана сама выставить
-        // `Trailer:` с именами полей, которые её `RequestBody::Streaming`
-        // будет эмитить как трейлеры; `Transport::execute` ловит нарушение
-        // этого контракта типизированной ошибкой в момент, когда кадр
-        // трейлеров реально пришёл (см. `convert::TrailerWatch`,
-        // `convert::undeclared_trailers`), а не тихо теряет данные.
+        // `Trailer:` с именами ВСЕХ полей, которые её `RequestBody::Streaming`
+        // будет эмитить как трейлеры; `Transport::execute` сверяет реально
+        // пришедшие имена с объявленными (см. `convert::TrailerWatch`,
+        // `convert::declared_trailer_names`, `convert::undeclared_trailers`)
+        // и ловит нарушение типизированной ошибкой, а не тихо теряет
+        // данные. **Эта ошибка приходит постфактум**: к моменту, когда она
+        // видна вызывающей стороне, запрос уже дошёл до сервера и получил
+        // ответ (гвард срабатывает уже после успешного `race_send_with_body`)
+        // — не повод бездумно повторять неидемпотентный запрос.
         caps.request_trailers = true;
         caps.response_trailers = true;
         caps.timeouts = TimeoutSupport {
@@ -126,10 +131,12 @@ impl Transport for WasiHttp {
         let (parts, body) = req.into_parts();
         let scheme = convert::scheme_of(&parts.uri)?;
 
-        // Резолюция review, находка B-1: захватываем ДО того, как заголовки
-        // уйдут в `Fields` — нужно и после, чтобы решить, доверять ли
-        // трейлерам, которые может испустить `RequestBody::Streaming`.
-        let declares_trailer_names = parts.headers.contains_key(http::header::TRAILER);
+        // Резолюция review, находка B-1 (уточнена находкой 2 фикс-раунда
+        // 2): захватываем ДО того, как заголовки уйдут в `Fields` — нужно и
+        // после, чтобы сверить с именами полей, которые реально испустит
+        // `RequestBody::Streaming`, а не просто с фактом присутствия
+        // заголовка.
+        let declared_trailer_names = convert::declared_trailer_names(&parts.headers);
 
         let header_list: Vec<(String, Vec<u8>)> = parts
             .headers
@@ -177,28 +184,31 @@ impl Transport for WasiHttp {
             }
         };
 
-        // Резолюция review, находка B-3, ПЕРЕСМОТРЕНО экспериментально при
-        // подготовке этого фикс-раунда. Второй возврат `Request::new` —
+        // Резолюция review, находка B-3, пересмотрена экспериментально при
+        // подготовке фикс-раунда 1, формулировка уточнена в фикс-раунде 2
+        // (находка 5). Второй возврат `Request::new` —
         // `FutureReader<Result<(), ErrorCode>>`, задокументированный
         // upstream как "resolves to result of transmission of this
         // request". План ревью — включить его третьим плечом в
         // `race_send_with_body` — был реализован и ОТКАЧЕН: измерено на
-        // живом хосте дважды (полным путём этого крейта и голыми вызовами
-        // `wasip3` в обход крейта целиком, чтобы исключить баг в
-        // собственной логике гонки), что эта футура не резолвится для
-        // ответа с телом, пока тело ответа не будет вычитано ЦЕЛИКОМ —
-        // `send()` возвращал `Ok` немедленно, а `transmitted` оставался
-        // `Pending`, пока весь `Body` из ответа не был вычитан вручную.
-        // `execute()` возвращает `Body` вызывающей стороне ДО того, как та
-        // решит его читать — штатно позже, частично, или никогда. Ждать
-        // здесь означало бы: либо `execute()` не возвращается ни для
-        // одного ответа с непустым телом, пока сама не вычитает его целиком
-        // (разрушая стриминг, ради которого существует `Body`), либо виснет
-        // навсегда для штатного сценария "тело читают после получения
-        // `Response`". Ни один вариант не совместим с формой seam —
-        // подробности и доказательство см. doc-комментарий
-        // `convert::resolve_send`. Отбрасывается здесь явно, с этим
-        // комментарием, а не через `let (.., _) = ..`.
+        // живом хосте, что эта футура НЕ ГАРАНТИРОВАННО резолвится до того,
+        // как тело ответа вычитано целиком (маленький `Content-Length`-ответ
+        // резолвит её без единого вызова `poll_frame` — отдельно
+        // перепроверено), но для `chunked`, ответов с трейлерами и вообще
+        // сколько-нибудь заметных тел измеримо не резолвится, пока `Body` не
+        // вычитан вручную. `execute()` возвращает `Body` вызывающей стороне
+        // ДО того, как та решит его читать — штатно позже, частично, или
+        // никогда. Ждать эту футуру здесь безусловно означало бы: либо
+        // `execute()` не возвращается для типичного ответа с телом, пока
+        // сама не вычитает его целиком (разрушая стриминг, ради которого
+        // существует `Body`), либо виснет для штатного сценария "тело
+        // читают после получения `Response`". Ни один вариант не совместим
+        // с ЭТОЙ формой seam — но пронести футуру в `Body` и дождаться её
+        // на конце потока, выдав отказ передачи терминальной ошибкой тела,
+        // совместим и остаётся кандидатом на v0.2 (подробности и полное
+        // доказательство — doc-комментарий `convert::resolve_send`).
+        // Отбрасывается здесь явно, с этим комментарием, а не через
+        // `let (.., _) = ..`.
         let (wasi_request, transmitted) = Request::new(fields, contents, trailers, Some(opts));
         drop(transmitted);
         wasi_request
@@ -234,19 +244,28 @@ impl Transport for WasiHttp {
                 .await?
             }
             Some((w, Payload::Streaming(s))) => {
-                let (mut watched, trailer_seen) = TrailerWatch::new(s);
+                let (mut watched, trailer_names_seen) = TrailerWatch::new(s);
                 let resp = convert::race_send_with_body(
                     wasip3::http::client::send(wasi_request),
                     w.send_http_body(&mut watched),
                 )
                 .await?;
-                // Резолюция review, находка B-1: тело реально испустило
-                // трейлеры, но запрос не объявил их именами через
-                // `Trailer:` — на проводе они уже потеряны (см.
-                // `convert::undeclared_trailers`), не выдаём успех, который
-                // это скрыл бы.
-                if trailer_seen.load(Ordering::Relaxed) && !declares_trailer_names {
-                    return Err(convert::undeclared_trailers());
+                // Резолюция review, находка B-1 (уточнена находкой 2
+                // фикс-раунда 2): сравниваем ИМЕНА реально пришедших
+                // трейлер-полей с объявленными, а не факт присутствия
+                // `Trailer:` — заголовок, называющий не то поле, теряет
+                // данные точно так же, как его отсутствие (измерено). Не
+                // выдаём успех, который это скрыл бы (см.
+                // `convert::undeclared_trailers`).
+                let undeclared: Vec<http::HeaderName> = trailer_names_seen
+                    .lock()
+                    .expect("single-threaded guest, never poisoned")
+                    .iter()
+                    .filter(|name| !declared_trailer_names.contains(*name))
+                    .cloned()
+                    .collect();
+                if !undeclared.is_empty() {
+                    return Err(convert::undeclared_trailers(undeclared));
                 }
                 resp
             }
