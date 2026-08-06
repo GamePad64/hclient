@@ -1,0 +1,23 @@
+[package]
+name = "http-ng-wasi"
+version = "0.1.0"
+description = "Транспорт http-ng поверх wasi:http 0.3"
+edition.workspace = true
+# Выше workspace-минимума (1.85): требование `wasip3` — 1.87. MSRV job в CI
+# проверяет только три ядровых крейта, так что расхождение намеренное.
+rust-version = "1.90"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes        = { workspace = true }
+http-body    = { workspace = true }
+http-ng-core = { workspace = true }
+# `http-compat`: даёт `IncomingBody`/`IncomingResponseBody` и типы
+# `wasi:http` (`ErrorCode` и т.д.) вместо голых WIT-байндингов. Фичи по
+# умолчанию (`std`, `bitflags`) не отключаем: этот крейт нужен только на
+# `wasm32-wasip2`, `no_std`-сборка тут не сценарий.
+wasip3       = { version = "0.7.0", features = ["http-compat"] }
+
+[lints]
+workspace = true
