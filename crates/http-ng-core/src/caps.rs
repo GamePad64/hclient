@@ -134,33 +134,60 @@ mod tests {
         // `Capabilities` deliberately does not implement (it's
         // `#[non_exhaustive]` so its shape stays ours to change, and a
         // struct-wide `PartialEq` would be a public trait impl added purely
-        // for a test's convenience). This is also what fails informatively,
-        // field by field, when a seventeenth field is added and someone
-        // forgets to default it here.
-        let c = Capabilities::none();
-        assert!(!c.streaming_request_body);
-        assert!(!c.full_duplex);
-        assert!(!c.request_trailers);
-        assert!(!c.response_trailers);
-        assert_eq!(c.redirects, RedirectSupport::None);
-        assert_eq!(c.tls_config, TlsSupport::None);
-        assert!(!c.client_certs);
-        assert!(!c.proxy);
-        assert!(!c.owns_cookie_jar);
-        assert!(!c.owns_cache);
-        assert!(!c.version_select);
-        assert!(!c.version_reported);
+        // for a test's convenience).
+        //
+        // Destructured with no `..` rest pattern — `#[non_exhaustive]` only
+        // blocks that from outside the crate, and this test lives inside it.
+        // A prior version of this comment claimed the individual assertions
+        // below "fail informatively when a seventeenth field is added and
+        // someone forgets to default it". That was false: a reviewer added a
+        // seventeenth field, set it to `true` in `none()`, and the old
+        // `let c = Capabilities::none(); assert!(!c.streaming_request_body);
+        // ...` form compiled and passed without any indication the new field
+        // existed. Only the exhaustive destructure below actually catches
+        // that: omitting a field from the pattern is a compile error naming
+        // it, because `..` is not present to absorb it silently.
+        let Capabilities {
+            streaming_request_body,
+            full_duplex,
+            request_trailers,
+            response_trailers,
+            redirects,
+            tls_config,
+            client_certs,
+            proxy,
+            owns_cookie_jar,
+            owns_cache,
+            version_select,
+            version_reported,
+            timeouts,
+            informational_1xx,
+            upgrade,
+            forbidden_request_headers,
+        } = Capabilities::none();
+        assert!(!streaming_request_body);
+        assert!(!full_duplex);
+        assert!(!request_trailers);
+        assert!(!response_trailers);
+        assert_eq!(redirects, RedirectSupport::None);
+        assert_eq!(tls_config, TlsSupport::None);
+        assert!(!client_certs);
+        assert!(!proxy);
+        assert!(!owns_cookie_jar);
+        assert!(!owns_cache);
+        assert!(!version_select);
+        assert!(!version_reported);
         assert_eq!(
-            c.timeouts,
+            timeouts,
             TimeoutSupport {
                 connect: false,
                 first_byte: false,
                 between_bytes: false,
             }
         );
-        assert!(!c.informational_1xx);
-        assert_eq!(c.upgrade, UpgradeSupport::None);
-        assert!(c.forbidden_request_headers.is_empty());
+        assert!(!informational_1xx);
+        assert_eq!(upgrade, UpgradeSupport::None);
+        assert!(forbidden_request_headers.is_empty());
     }
 
     #[test]

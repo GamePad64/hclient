@@ -12,6 +12,7 @@
 mod body;
 mod caps;
 mod error;
+pub mod unversioned;
 
 pub use body::{RequestBody, RetryKind, RewindFactory};
 pub use caps::{
