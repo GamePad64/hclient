@@ -41,11 +41,15 @@ pub enum ErrorKind {
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    source: Arc<dyn std::error::Error + Send + Sync + 'static>,
+    source: Arc<dyn std::error::Error + Send + Sync + 'static>, // send-bound-exception: поправка С1
 }
 
 impl Error {
-    pub fn new<E: std::error::Error + Send + Sync + 'static>(kind: ErrorKind, source: E) -> Self {
+    // send-bound-exception: поправка С1
+    pub fn new<E>(kind: ErrorKind, source: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static, // send-bound-exception: поправка С1
+    {
         Self {
             kind,
             source: Arc::new(source),
@@ -124,18 +128,15 @@ mod tests {
         assert!(!Error::new(ErrorKind::Body, Src).is_unsupported());
     }
 
-    #[test]
-    fn error_is_send_so_client_futures_can_be_spawned() {
-        // Единственное документированное исключение из "ядро не объявляет
-        // Send/Sync": Error::source обязан быть Send + Sync, иначе future,
-        // который возвращает Client::execute, не мог бы попасть в
-        // tokio::spawn ни для одного бэкенда. Компиляция этой функции —
-        // сам тест; вызов ниже нужен, чтобы её не выкинуло как мёртвый код.
-        fn _assert<T: Send + Sync>() {}
-        _assert::<Error>();
-
-        // Плюс рантайм-конструирование, чтобы тест не был пустым no-op.
-        let e = Error::new(ErrorKind::Other, Src);
-        assert_eq!(e.kind(), &ErrorKind::Other);
-    }
+    // `Error: Send + Sync` (spec amendment C1) — moved to
+    // `crates/http-ng-core/tests/shape.rs` per amendment C3: a bare
+    // `fn _assert<T: Send + Sync>() {}` inside `src` matches the
+    // `no-declared-send` guard's own pattern. Fix round 1 for Task 12
+    // dropped this file's blanket exclusion from that guard in favour of
+    // per-line `send-bound-exception` markers, which turned this
+    // previously-shielded compile-time assertion into a false positive.
+    // Relocating it (rather than marking it) shrinks the guard's blind
+    // spot instead of growing it — the assertion needs zero exception
+    // once it's not sharing a file with the two lines that actually are
+    // the exception.
 }

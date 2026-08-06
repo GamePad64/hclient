@@ -9,12 +9,40 @@ use http_ng_core::unversioned::{Timer, Transport};
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, Timeouts, UnsupportedCapability};
 
 fn assert_send_sync<T: Send + Sync>() {}
+fn assert_send<T: Send>() {}
 
 #[test]
 fn capability_types_are_send_and_sync() {
     assert_send_sync::<Capabilities>();
     assert_send_sync::<Timeouts>();
     assert_send_sync::<UnsupportedCapability>();
+}
+
+/// `Error: Send + Sync` — spec amendment C1, the single documented exception
+/// from "ядро не объявляет Send/Sync": `Error::source` обязан быть
+/// `Send + Sync`, иначе future, который возвращает `Client::execute`, не мог
+/// бы попасть в `tokio::spawn` ни для одного бэкенда. Was a compile-time-only
+/// assertion inside `error.rs`'s own `#[cfg(test)] mod tests` until Task 12's
+/// fix round 1 moved it here (amendment C3: such assertions belong in
+/// `tests/`, not `src`) — the runtime construction below keeps it from being
+/// a vacuous no-op, same as the original.
+#[test]
+fn error_is_send_sync_and_constructs_a_real_error_not_just_compiles() {
+    assert_send_sync::<Error>();
+    let e = Error::new(ErrorKind::Other, Never);
+    assert_eq!(e.kind(), &ErrorKind::Other);
+}
+
+/// `RequestBody: Send` and `http::Request<RequestBody>: Send` — spec
+/// amendment C2: without `+ Send` on both of `RequestBody`'s trait objects,
+/// `RequestBody` and therefore `http::Request<RequestBody>` would be
+/// `!Send`, and `Transport::execute`'s future with it. Relocated from
+/// `body.rs`'s own test module for the same C3 reason as the `Error` test
+/// above.
+#[test]
+fn request_body_and_its_request_are_send() {
+    assert_send::<RequestBody>();
+    assert_send::<http::Request<RequestBody>>();
 }
 
 struct Echo {

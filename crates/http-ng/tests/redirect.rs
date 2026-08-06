@@ -113,6 +113,32 @@ fn enforces_the_hop_limit() {
     );
 }
 
+/// `hops >= policy.limit` — off-by-one bait: `limit: 0` must reject the very
+/// first redirect without ever incrementing `hops`, sending only the
+/// original request.
+#[test]
+fn redirect_limit_of_zero_sends_only_the_original_request() {
+    let m = MockTransport::new();
+    m.push_response(redirect_to("https://a/loop"));
+
+    let c = Client::builder(m)
+        .redirect(RedirectPolicy { limit: 0 })
+        .build()
+        .unwrap();
+    let req = http::Request::builder()
+        .uri("https://a/x")
+        .body(RequestBody::Empty)
+        .unwrap();
+    let err = futures_executor::block_on(c.execute(req)).unwrap_err();
+
+    assert!(err.is_redirect(), "{err}");
+    assert_eq!(
+        c.transport().requests().len(),
+        1,
+        "только исходный запрос, ни одного хопа"
+    );
+}
+
 #[test]
 fn post_becomes_get_and_drops_body_on_302() {
     let m = MockTransport::new();
@@ -153,6 +179,84 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
         .build()
         .unwrap_err();
     assert_eq!(err.what, "connect_timeout");
+}
+
+/// Только `Location` читается из ответа при построении следующего хопа.
+/// Ничто в `next_hop`/`decide()` сегодня не трогает остальные заголовки
+/// ответа, но до fix round 1 ни один тест не проверял это поведенчески —
+/// мутация, сливающая `resp.headers()` в заголовки следующего запроса
+/// (`Set-Cookie` от сервера или что угодно ещё утёкшее в цепочку), проходила
+/// бы все шесть тестов из брифа незамеченной.
+#[test]
+fn response_headers_do_not_leak_into_the_next_hop() {
+    let m = MockTransport::new();
+    m.push_response(
+        http::Response::builder()
+            .status(302)
+            .header("location", "https://a/second")
+            .header("set-cookie", "sid=abc123")
+            .header("x-injected", "should-not-cross")
+            .body("")
+            .unwrap(),
+    );
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    let req = http::Request::builder()
+        .uri("https://a/first")
+        .body(RequestBody::Empty)
+        .unwrap();
+    let _ = futures_executor::block_on(c.execute(req)).unwrap();
+
+    let seen = c.transport().requests();
+    assert!(
+        !seen[1].headers.contains_key("set-cookie"),
+        "response header set-cookie must not leak into the next request"
+    );
+    assert!(
+        !seen[1].headers.contains_key("x-injected"),
+        "response header x-injected must not leak into the next request"
+    );
+}
+
+/// `Timeouts` (Task 10) едет к транспорту через `http::Extensions` запроса —
+/// весь механизм, ради которого оно там лежит, полагается на то, что
+/// `extensions` доживают до каждого хопа, а не только до первого.
+#[test]
+fn per_request_extensions_survive_a_hop_unchanged() {
+    use http_ng_core::Timeouts;
+    use std::time::Duration;
+
+    let m = MockTransport::new();
+    m.push_response(redirect_to("https://a/second"));
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    let mut req = http::Request::builder()
+        .uri("https://a/first")
+        .body(RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut().insert(Timeouts {
+        connect: Some(Duration::from_secs(3)),
+        ..Default::default()
+    });
+    let _ = futures_executor::block_on(c.execute(req)).unwrap();
+
+    let seen = c.transport().requests();
+    let t0 = seen[0]
+        .extensions
+        .get::<Timeouts>()
+        .expect("hop 0 carries the Timeouts inserted on the original request");
+    let t1 = seen[1]
+        .extensions
+        .get::<Timeouts>()
+        .expect("hop 1 must carry the same Timeouts, not drop it");
+    assert_eq!(t0.connect, Some(Duration::from_secs(3)));
+    assert_eq!(
+        t1.connect,
+        Some(Duration::from_secs(3)),
+        "unchanged across the hop"
+    );
 }
 
 /// Тело `Streaming` невоспроизводимо: `RequestBody::rewind()` вернёт `None`.

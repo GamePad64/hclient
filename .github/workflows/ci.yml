@@ -118,38 +118,34 @@ jobs:
             echo "::notice::крейтов ядра ещё нет — проверка пропущена"
             exit 0
           fi
-          # error.rs, body.rs и client.rs — единственные документированные
-          # исключения. error.rs (spec amendment C1): Error::source обязан
-          # быть Send + Sync, иначе future, который возвращает
-          # Client::execute, не мог бы быть Send ни для одного бэкенда.
-          # body.rs (spec amendment C2): оба объекта-трейта на пути
-          # Client -> Transport (RequestBody::Rewindable,
-          # RequestBody::Streaming) обязаны нести свои собственные Send/Sync
-          # бонды, иначе стирание в dyn Trait сбрасывает auto-traits и
-          # RequestBody, а вместе с ней http::Request<RequestBody> и футура
-          # Transport::execute, оказываются !Send для любого бэкенда.
-          # client.rs (та же C1, «уточнённая формулировка инварианта»):
-          # Client::execute несёт `where T::Error: Send + Sync + 'static` —
-          # не в трейте Transport, а именно здесь, потому что Error::new
-          # требует эту границу от источника и не собирается для абстрактного
-          # T без неё (проверено компиляцией на Task 12: без where-клаузы —
-          # E0277 на обоих бондах). Все три исключения — только для этих
-          # файлов, а не ослабление инварианта в целом — все остальные файлы
-          # обоих крейтов по-прежнему сканируются.
-          files="$(find $dirs -type f -name '*.rs' \
-               ! -path '*/http-ng-core/src/error.rs' \
-               ! -path '*/http-ng-core/src/body.rs' \
-               ! -path '*/http-ng/src/client.rs')"
-          if [ -z "$files" ]; then
-            exit 0
-          fi
           # Ищем ОБЪЯВЛЕННЫЕ бонды, а не упоминания в доках: строки, у которых
           # содержимое начинается с комментария, отбрасываются вторым grep.
-          # -H обязателен: без него grep опускает имя файла, если после
-          # исключений остаётся ровно один файл, и фильтр по
-          # "file:line:content" перестаёт совпадать.
-          if grep -nHE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $files \
-               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
-            echo "::error::в ядре объявлен бонд Send или Sync"
+          #
+          # Третий grep вычитает строки с маркером `send-bound-exception` —
+          # ПОСТРОЧНОЕ, а не файловое исключение. До Task 12 fix round 1 этот
+          # список был файловым (`! -path .../error.rs` и `.../body.rs`):
+          # ревью нашло, что это слепая зона на весь файл — например,
+          # `trait FakeSeamTrait: Send + Sync {}`, вставленный куда угодно в
+          # такой файл, проходил бы CI незамеченным, и `client.rs` был
+          # третьим таким файлом ещё до того, как Task 13 начал его менять
+          # дальше. Маркер сужает исключение до конкретной строки: только она
+          # пропускается, весь остальной текст файла (включая новый код,
+          # который допишут поздние задачи) по-прежнему сканируется.
+          #
+          # Маркер — это ЗАЯВКА, а не способ заглушить проверку: каждая
+          # маркированная строка обязана называть поправку (С1 или С2) из
+          # `docs/superpowers/specs/2026-08-05-http-ng-design.md`, которая её
+          # оправдывает. Сейчас размечены пять мест — три оригинальных
+          # (`http-ng-core/src/error.rs`: поле `source` и бонд `Error::new`;
+          # `http-ng-core/src/body.rs`: `RewindFactory`, `Streaming`-вариант и
+          # бонд `rewindable`) плюс `http-ng/src/client.rs`: where-клауза
+          # `Client::execute` (поправка С1, «уточнённая формулировка
+          # инварианта» — Task 12 fix round 1). Новый маркер без
+          # соответствующей поправки в спеке — повод для ревью, а не для
+          # зелёного CI.
+          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
+               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
+               | grep -v 'send-bound-exception'; then
+            echo "::error::в ядре объявлен бонд Send или Sync без маркера send-bound-exception"
             exit 1
           fi

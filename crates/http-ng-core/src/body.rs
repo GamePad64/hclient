@@ -25,7 +25,7 @@ pub enum RetryKind {
 /// нужен только здесь, у `Arc`: `Arc<T>: Send` требует `T: Send + Sync`,
 /// тогда как `Box<T>: Send` (см. [`RequestBody::Streaming`]) требует лишь
 /// `T: Send`.
-pub type RewindFactory = Arc<dyn Fn() -> RequestBody + Send + Sync>;
+pub type RewindFactory = Arc<dyn Fn() -> RequestBody + Send + Sync>; // send-bound-exception: поправка С2
 
 /// Тело запроса с явным контрактом переигрывания.
 #[derive(Default)]
@@ -56,7 +56,7 @@ pub enum RequestBody {
     ///
     /// `+ Send` — то же исключение C2, что у [`RewindFactory`]: `Box<T>: Send`
     /// требует только `T: Send`, `Sync` здесь не нужен.
-    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>),
+    Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: поправка С2
 }
 
 impl std::fmt::Debug for RequestBody {
@@ -73,7 +73,7 @@ impl std::fmt::Debug for RequestBody {
 impl RequestBody {
     pub fn rewindable<F>(f: F) -> Self
     where
-        F: Fn() -> RequestBody + Send + Sync + 'static,
+        F: Fn() -> RequestBody + Send + Sync + 'static, // send-bound-exception: поправка С2
     {
         RequestBody::Rewindable(Arc::new(f))
     }
@@ -194,15 +194,12 @@ mod tests {
         assert_eq!(b.size_hint(), None);
     }
 
-    /// Свойство, ради которого существует поправка C2: без `+ Send + Sync`
-    /// на обоих объектах-трейтах `RequestBody` был бы `!Send`, и вместе с
-    /// ней `http::Request<RequestBody>` — а значит футура, которую вернёт
-    /// `Transport::execute`, не смогла бы попасть в `tokio::spawn` ни для
-    /// одного бэкенда.
-    #[test]
-    fn request_body_is_send_so_transport_futures_can_be_spawned() {
-        fn assert_send<T: Send>() {}
-        assert_send::<RequestBody>();
-        assert_send::<http::Request<RequestBody>>();
-    }
+    // `RequestBody: Send` and `http::Request<RequestBody>: Send` (spec
+    // amendment C2) — moved to `crates/http-ng-core/tests/shape.rs` per
+    // amendment C3, for the same reason as the sibling removal in
+    // `error.rs`: a bare `fn assert_send<T: Send>() {}` inside `src` is
+    // exactly what the `no-declared-send` guard's regex matches, and Task
+    // 12's fix round 1 replaced this file's blanket exclusion with
+    // per-line `send-bound-exception` markers. Relocating (not marking)
+    // shrinks the guard's blind spot instead of growing it.
 }
