@@ -13,6 +13,19 @@ pub trait Transport {
     type Body: http_body::Body<Data = Bytes>;
     type Error: std::error::Error + 'static;
 
+    /// Отправить запрос.
+    ///
+    /// **Про `Timeouts` в `req.extensions()`: наличие — не намерение.**
+    /// `http_ng::Client::execute` кладёт туда результат слияния своей
+    /// конфигурации с запросом (`effective_timeouts`, находка B1
+    /// финального ревью ветки) БЕЗУСЛОВНО — в том числе когда не задано ни
+    /// одного таймаута, и тогда там лежит `Timeouts` со всеми полями
+    /// `None`. Правильное чтение — `.get::<Timeouts>().copied().
+    /// unwrap_or_default()` и затем поле за полем: «нет расширения» и «есть
+    /// расширение, все поля `None`» обязаны быть для бэкенда одним и тем же
+    /// наблюдением. Ветвиться на `extensions.get::<Timeouts>().is_some()`
+    /// как на «вызывающая сторона просила таймауты» нельзя — это будет
+    /// правдой всегда, для каждого запроса, пришедшего через `Client`.
     fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -117,13 +130,16 @@ pub trait Transport {
     where
         Self::Error: Send + Sync, // send-bound-exception: amendment-C1
     {
-        // `Self::Error: 'static` — из трейта, `Send + Sync` — из
-        // where-клаузы выше, вместе это ровно бонды `Box<dyn Any + Send +
-        // Sync>`. Бокс нужен потому, что `Any` умеет ОТДАТЬ значение только
-        // из `Box`: `downcast_ref`/`downcast_mut` дали бы ссылку, а нам
-        // нужно владение — без него пришлось бы требовать `Clone` от чужой
-        // ошибки.
-        let boxed: Box<dyn core::any::Any + Send + Sync> = Box::new(e);
+        // Бокс нужен потому, что `Any` умеет ОТДАТЬ значение только из
+        // `Box`: `downcast_ref`/`downcast_mut` дали бы ссылку, а нам нужно
+        // владение — иначе пришлось бы требовать `Clone` от чужой ошибки.
+        // `dyn Any` без `+ Send + Sync`: auto-traits стёртому объекту здесь
+        // не нужны вовсе (`downcast` есть и у голого `Box<dyn Any>`), а
+        // `Error::new` ниже берёт их у where-клаузы метода. Написать их тут
+        // означало бы объявить бонд, который ничего не даёт, и потратить на
+        // него маркер `send-bound-exception` — CI `no-declared-send` ловит
+        // такую строку, и правильно.
+        let boxed: Box<dyn core::any::Any> = Box::new(e);
         match boxed.downcast::<Error>() {
             // `Self::Error` — это и есть наша `Error`: категория уже
             // проставлена бэкендом, заворачивать нечего.

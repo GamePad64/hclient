@@ -136,3 +136,36 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
         "запрос с неподдерживаемой настройкой не должен доходить до транспорта"
     );
 }
+
+/// Обратная сторона безусловной вставки: `Client::execute` кладёт слитый
+/// `Timeouts` в `extensions` ВСЕГДА, в том числе когда не задано ни одного
+/// таймаута. Два следствия, и оба обязаны быть правдой, иначе безусловная
+/// вставка была бы регрессией:
+///
+/// 1. Транспорт с `Capabilities::none()` (все три фазы не поддержаны) от
+///    этого не отказывает — гейт смотрит на значения, а не на присутствие.
+/// 2. Расширение при этом всё-таки лежит, и все его поля `None`.
+///
+/// Второе — то, из-за чего doc-комментарий `Transport::execute` предупреждает
+/// бэкенды не читать присутствие как намерение: `extensions.get::<Timeouts>()
+/// .is_some()` истинно для КАЖДОГО запроса, пришедшего через `Client`.
+#[test]
+fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    futures_executor::block_on(c.get("https://a/x").send())
+        .expect("ни одного таймаута не задано — отказывать не за что");
+
+    let seen = c.transport().requests();
+    let t = seen[0]
+        .extensions
+        .get::<Timeouts>()
+        .expect("слитый Timeouts кладётся безусловно");
+    assert_eq!(
+        *t,
+        Timeouts::default(),
+        "и он пуст: присутствие расширения не значит, что таймауты просили"
+    );
+}
