@@ -47,11 +47,12 @@
 //! to an empty, harmless native `cdylib` there instead.
 #![cfg(target_arch = "wasm32")]
 
-use http_body::Body as _;
+use http_body::{Body as HttpBody, Frame};
 use http_ng_core::RequestBody;
 use http_ng_core::unversioned::Transport;
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 wasip3::cli::command::export!(Guest);
 
@@ -67,7 +68,7 @@ impl wasip3::exports::cli::run::Guest for Guest {
         let port: u16 = args
             .get(1)
             .unwrap_or_else(|| {
-                eprintln!("usage: live_roundtrip_guest <port>");
+                eprintln!("usage: live_roundtrip_guest <port> [mode]");
                 std::process::abort()
             })
             .parse()
@@ -75,75 +76,182 @@ impl wasip3::exports::cli::run::Guest for Guest {
                 eprintln!("port must be numeric: {e}");
                 std::process::abort()
             });
+        let mode = args
+            .get(2)
+            .map(String::as_str)
+            .unwrap_or("response-roundtrip");
 
-        let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
-            .parse()
-            .expect("uri");
-        let req = http::Request::builder()
-            .method(http::Method::GET)
-            .uri(uri)
-            .body(RequestBody::Empty)
-            .expect("request");
-
-        let transport = http_ng_wasi::WasiHttp::new();
-        let resp = transport.execute(req).await.map_err(|e| {
-            eprintln!("execute failed: {e}");
-        })?;
-        if resp.status() != http::StatusCode::OK {
-            eprintln!("unexpected status: {}", resp.status());
-            return Err(());
-        }
-
-        let mut body = resp.into_body();
-        let mut collected = Vec::new();
-        let mut end_flagged_at_trailers = false;
-        let mut saw_trailers = false;
-        loop {
-            match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-                Some(Ok(f)) => {
-                    if f.is_trailers() {
-                        // Ключевая проверка задачи, и ключевая по срокам:
-                        // опрашиваем `is_end_stream()` СРАЗУ после кадра
-                        // трейлеров, ДО следующего `poll_frame` — то есть
-                        // пока `Body::inner` ещё `Inner::Incoming`, а не
-                        // `Inner::Done` (тот наступит только на следующем
-                        // `Ready(None)`). Именно в этом окне честная ветка
-                        // `Inner::Incoming(i) => i.is_end_stream()` реально
-                        // отличима от хардкод-`false` мутации — см.
-                        // doc-комментарий модуля про то, почему без
-                        // трейлеров такого окна нет вовсе.
-                        saw_trailers = true;
-                        end_flagged_at_trailers = body.is_end_stream();
-                    } else if let Ok(data) = f.into_data() {
-                        collected.extend_from_slice(&data);
-                    }
-                }
-                Some(Err(e)) => {
-                    eprintln!("body error: {e}");
-                    return Err(());
-                }
-                None => break,
+        match mode {
+            "response-roundtrip" => response_roundtrip(port).await,
+            "request-trailers-undeclared" => request_trailers(port, false).await,
+            "request-trailers-declared" => request_trailers(port, true).await,
+            other => {
+                eprintln!("unknown mode: {other}");
+                Err(())
             }
         }
+    }
+}
 
-        if collected != EXPECTED_BODY {
-            eprintln!("body mismatch: {:?}", String::from_utf8_lossy(&collected));
-            return Err(());
-        }
-        if !saw_trailers {
-            eprintln!("expected a trailers frame from the mock server, got none");
-            return Err(());
-        }
-        if !end_flagged_at_trailers {
-            eprintln!(
-                "is_end_stream() must already report true right after the trailers frame \
-                 arrives, while Body::inner is still Inner::Incoming — this is the exact gap \
-                 Task 16 exists to close, see the doc-comment on Body::is_end_stream"
-            );
-            return Err(());
-        }
+/// Оригинальный сценарий этого гостя: реальный ответ через `WasiHttp::execute`,
+/// закрывающий дыру `Body::is_end_stream()` (см. doc-комментарий модуля).
+async fn response_roundtrip(port: u16) -> Result<(), ()> {
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
+        .parse()
+        .expect("uri");
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(uri)
+        .body(RequestBody::Empty)
+        .expect("request");
 
-        println!("ROUNDTRIP_OK");
-        Ok(())
+    let transport = http_ng_wasi::WasiHttp::new();
+    let resp = transport.execute(req).await.map_err(|e| {
+        eprintln!("execute failed: {e}");
+    })?;
+    if resp.status() != http::StatusCode::OK {
+        eprintln!("unexpected status: {}", resp.status());
+        return Err(());
+    }
+
+    let mut body = resp.into_body();
+    let mut collected = Vec::new();
+    let mut end_flagged_at_trailers = false;
+    let mut saw_trailers = false;
+    loop {
+        match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+            Some(Ok(f)) => {
+                if f.is_trailers() {
+                    // Ключевая проверка задачи, и ключевая по срокам:
+                    // опрашиваем `is_end_stream()` СРАЗУ после кадра
+                    // трейлеров, ДО следующего `poll_frame` — то есть пока
+                    // `Body::inner` ещё `Inner::Incoming`, а не
+                    // `Inner::Done` (тот наступит только на следующем
+                    // `Ready(None)`). Именно в этом окне честная ветка
+                    // `Inner::Incoming(i) => i.is_end_stream()` реально
+                    // отличима от хардкод-`false` мутации — см.
+                    // doc-комментарий модуля про то, почему без трейлеров
+                    // такого окна нет вовсе.
+                    saw_trailers = true;
+                    end_flagged_at_trailers = body.is_end_stream();
+                } else if let Ok(data) = f.into_data() {
+                    collected.extend_from_slice(&data);
+                }
+            }
+            Some(Err(e)) => {
+                eprintln!("body error: {e}");
+                return Err(());
+            }
+            None => break,
+        }
+    }
+
+    if collected != EXPECTED_BODY {
+        eprintln!("body mismatch: {:?}", String::from_utf8_lossy(&collected));
+        return Err(());
+    }
+    if !saw_trailers {
+        eprintln!("expected a trailers frame from the mock server, got none");
+        return Err(());
+    }
+    if !end_flagged_at_trailers {
+        eprintln!(
+            "is_end_stream() must already report true right after the trailers frame \
+             arrives, while Body::inner is still Inner::Incoming — this is the exact gap \
+             Task 16 exists to close, see the doc-comment on Body::is_end_stream"
+        );
+        return Err(());
+    }
+
+    println!("ROUNDTRIP_OK");
+    Ok(())
+}
+
+/// Тело запроса, которое эмитит один кадр данных, затем один кадр
+/// трейлеров — нужно `request_trailers` ниже, чтобы реально пройти через
+/// `convert::TrailerWatch` в `WasiHttp::execute`.
+struct DataThenTrailers {
+    data: Option<bytes::Bytes>,
+    trailers: Option<http::HeaderMap>,
+}
+impl DataThenTrailers {
+    fn new() -> Self {
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert("x-checksum", "deadbeef".parse().unwrap());
+        Self {
+            data: Some(bytes::Bytes::from_static(b"payload")),
+            trailers: Some(trailers),
+        }
+    }
+}
+impl HttpBody for DataThenTrailers {
+    type Data = bytes::Bytes;
+    type Error = http_ng_core::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<bytes::Bytes>, http_ng_core::Error>>> {
+        if let Some(d) = self.data.take() {
+            return Poll::Ready(Some(Ok(Frame::data(d))));
+        }
+        if let Some(t) = self.trailers.take() {
+            return Poll::Ready(Some(Ok(Frame::trailers(t))));
+        }
+        Poll::Ready(None)
+    }
+}
+
+/// Резолюция review, находка B-1, живой прогон: `Streaming`-тело запроса
+/// реально эмитит трейлеры (`DataThenTrailers`). С `declare_header == false`
+/// запрос не называет их в `Trailer:` — `WasiHttp::execute` обязана вернуть
+/// типизированную ошибку (`convert::undeclared_trailers`), а не тихо
+/// потерять данные, которые `wasi:http`'s HTTP/1.1-кодировщик роняет на
+/// проводе без объявления. С `declare_header == true` — тот же поток,
+/// корректно объявленный, обязан пройти успешно: гвард не должен ложно
+/// срабатывать на легитимное использование трейлеров.
+async fn request_trailers(port: u16, declare_header: bool) -> Result<(), ()> {
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
+        .parse()
+        .expect("uri");
+    let mut builder = http::Request::builder().method(http::Method::POST).uri(uri);
+    if declare_header {
+        builder = builder.header(http::header::TRAILER, "X-Checksum");
+    }
+    let req = builder
+        .body(RequestBody::Streaming(Box::new(DataThenTrailers::new())))
+        .expect("request");
+
+    let transport = http_ng_wasi::WasiHttp::new();
+    let result = transport.execute(req).await;
+
+    if declare_header {
+        match result {
+            Ok(_) => {
+                println!("TRAILERS_ACCEPTED_OK");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("expected success with a declared `Trailer:` header, got error: {e}");
+                Err(())
+            }
+        }
+    } else {
+        match result {
+            Err(e) if e.kind() == &http_ng_core::ErrorKind::Body => {
+                println!("TRAILERS_REJECTED_OK");
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("expected ErrorKind::Body for undeclared trailers, got: {e:?}");
+                Err(())
+            }
+            Ok(_) => {
+                eprintln!(
+                    "expected an error for undeclared trailers, got success — this is \
+                     exactly the silent data loss Task 16's B-1 exists to catch"
+                );
+                Err(())
+            }
+        }
     }
 }

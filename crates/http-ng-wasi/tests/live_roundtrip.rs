@@ -61,37 +61,141 @@ const RESPONSE_BODY: &[u8] = b"hello from a real wasi:http host";
 
 #[test]
 fn wasi_transport_round_trips_a_real_response_through_wasmtime() {
-    let Some(wasmtime) = find_wasmtime() else {
-        // Громко, а не молча — тот же принцип, что у `::notice::`-пропусков
-        // в `.github/workflows/ci.yml`: немой зелёный тест опаснее красного.
-        eprintln!(
-            "NOTICE: `wasmtime` не найден — живой прогон wasi:http пропущен. \
-             Эта среда не может подтвердить Body::is_end_stream() против \
-             настоящего хоста (crates/http-ng-wasi/src/body.rs)."
-        );
+    let Some(wasmtime) =
+        require_wasmtime("wasi_transport_round_trips_a_real_response_through_wasmtime")
+    else {
         return;
     };
 
-    // 1. Нативный мок-сервер: голый HTTP/1.1 от руки, в отдельном ОС-потоке.
+    let (stdout, stderr, status) = run_guest_against_mock_server(&wasmtime, None, drain_headers);
+    if !status.success() || !stdout.contains("ROUNDTRIP_OK") {
+        panic!(
+            "live wasi:http round-trip failed (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+            status.code(),
+        );
+    }
+}
+
+/// Резолюция review, находка B-1, живой прогон: `Streaming`-тело запроса
+/// реально эмитит трейлеры без `Trailer:` в заголовках — `WasiHttp::execute`
+/// обязана вернуть ошибку, а не тихо потерять их (измерено: `wasi:http`'s
+/// HTTP/1.1-кодировщик роняет необъявленные трейлеры на проводе). Мок-сервер
+/// не проверяет сами байты трейлеров на проводе — это уже измерено при
+/// подготовке фикс-раунда; тест проверяет, что наш гвард
+/// (`convert::TrailerWatch` и `convert::undeclared_trailers`) реально
+/// доходит до вызывающей стороны как типизированная ошибка.
+#[test]
+fn wasi_transport_rejects_streaming_request_trailers_without_a_trailer_header() {
+    let Some(wasmtime) = require_wasmtime(
+        "wasi_transport_rejects_streaming_request_trailers_without_a_trailer_header",
+    ) else {
+        return;
+    };
+
+    let (stdout, stderr, status) = run_guest_against_mock_server(
+        &wasmtime,
+        Some("request-trailers-undeclared"),
+        drain_request_fully,
+    );
+    if !status.success() || !stdout.contains("TRAILERS_REJECTED_OK") {
+        panic!(
+            "expected WasiHttp::execute to reject undeclared streaming request trailers \
+             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+            status.code(),
+        );
+    }
+}
+
+/// Симметрия к тесту выше: тот же `Streaming`-поток с трейлерами, но
+/// заголовок `Trailer:` объявлен корректно — гвард не должен ложно
+/// срабатывать на легитимное использование трейлеров.
+#[test]
+fn wasi_transport_accepts_streaming_request_trailers_when_declared() {
+    let Some(wasmtime) =
+        require_wasmtime("wasi_transport_accepts_streaming_request_trailers_when_declared")
+    else {
+        return;
+    };
+
+    let (stdout, stderr, status) = run_guest_against_mock_server(
+        &wasmtime,
+        Some("request-trailers-declared"),
+        drain_request_fully,
+    );
+    if !status.success() || !stdout.contains("TRAILERS_ACCEPTED_OK") {
+        panic!(
+            "expected WasiHttp::execute to accept declared streaming request trailers \
+             (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
+            status.code(),
+        );
+    }
+}
+
+/// Читает только до конца заголовков запроса — используется сценарием
+/// `response-roundtrip`, где у запроса нет тела вовсе (`RequestBody::Empty`),
+/// так что дальше и не придёт ничего.
+fn drain_headers(stream: &mut std::net::TcpStream) {
+    let mut buf = [0u8; 1024];
+    let mut seen = Vec::new();
+    loop {
+        let n = stream.read(&mut buf).expect("read");
+        if n == 0 {
+            break;
+        }
+        seen.extend_from_slice(&buf[..n]);
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+}
+
+/// Читает, пока не наступит пауза без новых байт — используется сценариями
+/// с телом запроса (`request-trailers-*`), где после заголовков ещё придут
+/// chunked-кадры данных (и, может быть, трейлеров). Не читает "до EOF":
+/// `wasi:http` не обязан закрывать TCP-соединение после тела запроса. Тела
+/// в этих тестах — единицы байт, так что даже сильно урезанное окно тишины
+/// комфортно перекрывает время, нужное гостю на запись.
+fn drain_request_fully(stream: &mut std::net::TcpStream) {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(1500)))
+        .expect("set_read_timeout");
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => continue,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(e) => panic!("unexpected read error while draining request: {e}"),
+        }
+    }
+}
+
+/// Общая обвязка: поднять мок-сервер (принять одно соединение, слить запрос
+/// через `drain`, ответить заранее известным `chunked`+`Trailer:` ответом),
+/// собрать гостя и прогнать его под `wasmtime` в заданном режиме, направив
+/// на мок-сервер через argv. Возвращает `(stdout, stderr, ExitStatus)`
+/// гостя — вызывающий тест сам решает, что считать успехом для своего
+/// режима.
+fn run_guest_against_mock_server(
+    wasmtime: &Path,
+    mode: Option<&str>,
+    drain: fn(&mut std::net::TcpStream),
+) -> (String, String, std::process::ExitStatus) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("local_addr").port();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
-        let mut buf = [0u8; 1024];
-        let mut seen = Vec::new();
-        loop {
-            let n = stream.read(&mut buf).expect("read");
-            if n == 0 {
-                break;
-            }
-            seen.extend_from_slice(&buf[..n]);
-            if seen.windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
-            }
-        }
+        drain(&mut stream);
         // `chunked` + `Trailer:` — не `Content-Length`: см. doc-комментарий
         // модуля про то, почему только с трейлером у теста вообще есть шанс
-        // поймать хардкод-`false` мутацию `is_end_stream()`.
+        // поймать хардкод-`false` мутацию `is_end_stream()`. Общий ответ для
+        // всех режимов — режимы `request-trailers-*` проверяют поведение на
+        // СТОРОНЕ ЗАПРОСА и не читают этот ответ содержательно.
         let mut out =
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Checksum\r\n\r\n"
                 .to_vec();
@@ -102,36 +206,61 @@ fn wasi_transport_round_trips_a_real_response_through_wasmtime() {
         let _ = stream.flush();
     });
 
-    // 2. Собрать гостя. `--message-format=json` — чтобы взять реальный путь
-    //    артефакта у cargo, а не гадать его по относительному пути (тот
-    //    гадает неверно при нестандартном `CARGO_TARGET_DIR`).
     let artifact = build_guest();
 
-    // 3. Прогнать под тем же раннером, что настроен в `.cargo/config.toml`
-    //    (`-S http`), направив гостя на мок-сервер через argv.
-    let output = Command::new(&wasmtime)
-        .args([
-            "run",
-            "-S",
-            "http",
-            "--",
-            artifact.to_str().expect("utf8 path"),
-            &port.to_string(),
-        ])
+    let mut args = vec![
+        "run".to_string(),
+        "-S".to_string(),
+        "http".to_string(),
+        "--".to_string(),
+        artifact.to_str().expect("utf8 path").to_string(),
+        port.to_string(),
+    ];
+    if let Some(mode) = mode {
+        args.push(mode.to_string());
+    }
+    let output = Command::new(wasmtime)
+        .args(&args)
         .stdin(Stdio::null())
         .output()
         .expect("failed to spawn wasmtime");
 
     server.join().expect("mock server thread panicked");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() || !stdout.contains("ROUNDTRIP_OK") {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+    )
+}
+
+/// Резолюция review (Task 16, находка B-7): раньше отсутствие `wasmtime`
+/// везде вело к одному и тому же — `NOTICE` в stderr и `return` из теста,
+/// который сам же выглядит как `ok`. На ноутбуке без `wasmtime` это
+/// разумный компромисс, но в CI — ровно тот класс дефекта, что правился во
+/// всех остальных job'ах вертикали: зелёный `cargo test` перестаёт
+/// означать, что что-то реально проверено. `CI` — переменная, которую
+/// GitHub Actions выставляет сама для каждого job'а (и большинство других
+/// CI-систем тоже) — здесь превращает "нет `wasmtime`" из тихого пропуска
+/// в падение теста: раз мы в CI, `wasmtime` обязан быть установлен
+/// (см. job `wasip2` в `.github/workflows/ci.yml`), и его отсутствие —
+/// поломка окружения, а не повод молчать.
+fn require_wasmtime(test_name: &str) -> Option<PathBuf> {
+    if let Some(p) = find_wasmtime() {
+        return Some(p);
+    }
+    if std::env::var_os("CI").is_some() {
         panic!(
-            "live wasi:http round-trip failed (exit {:?})\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}",
-            output.status.code(),
+            "`wasmtime` не найден в CI (`{test_name}`) — job `wasip2` обязан был установить \
+             его перед этим тестом; окружение сломано, а не намеренно ограничено, как на \
+             ноутбуке без wasmtime."
         );
     }
+    eprintln!(
+        "NOTICE: `wasmtime` не найден — живой прогон `{test_name}` пропущен. Эта среда не \
+         может подтвердить его против настоящего хоста."
+    );
+    None
 }
 
 fn find_wasmtime() -> Option<PathBuf> {

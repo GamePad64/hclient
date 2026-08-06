@@ -131,6 +131,39 @@ parsing_scales_linearly_not_quadratically переименован или пер
             exit 0
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
+      # Резолюция review (Task 16, находка B-7): `tests/live_roundtrip.rs` —
+      # единственная автоматическая защита свойства, ради которого
+      # существует вся эта вертикаль (`Body::is_end_stream()` против
+      # настоящего хоста), и раньше не гонялся ни в одном CI job'е вовсе.
+      # При отсутствии `wasmtime` он печатал `::notice::` и молча возвращал
+      # `ok` — зелёный `cargo test` в этом случае ничего не говорит о том,
+      # была ли эта ветка вообще проверена; тот же класс вакуумной проверки,
+      # что правился во всех остальных job'ах вертикали. `cargo install`, а
+      # не готовый бинарь — тот же паттерн, что у `cargo-fuzz` в
+      # `fuzz-smoke` ниже.
+      - run: cargo install wasmtime-cli --locked
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-wasi ]; then
+            echo "::notice::http-ng-wasi ещё нет — живой прогон wasip2 пропущен"
+            exit 0
+          fi
+          # Чистые юнит-тесты — реально исполняются под настоящим
+          # `wasmtime` через раннер из `.cargo/config.toml`, не только
+          # компилируются.
+          cargo test -p http-ng-wasi --target wasm32-wasip2
+          # `live_roundtrip`/`shape` — нативные (см. doc-комментарий
+          # `tests/live_roundtrip.rs` про то, почему им нельзя быть
+          # `wasm32-wasip2`-таргетом): сами поднимают мок-сервер и
+          # запускают `wasmtime` подпроцессом. `CI` (GitHub Actions
+          # выставляет её для каждого job'а сама) заставляет
+          # `find_wasmtime()` внутри `live_roundtrip.rs` паниковать, если
+          # `wasmtime` всё-таки не нашёлся, вместо того чтобы тихо
+          # пропустить проверку — здесь он обязан найтись, раз только что
+          # установлен шагом выше.
+          cargo test -p http-ng-wasi --test live_roundtrip -- --test-threads=1
+          cargo test -p http-ng-wasi --test shape
 
   # Task 16: `wasi:http` 0.3 возвращает `result<_, ...>` из сеттеров опций
   # запроса (`set_connect_timeout`, `set_method`, `set_scheme`, ...) именно
@@ -150,19 +183,117 @@ parsing_scales_linearly_not_quadratically переименован или пер
             echo "::notice::http-ng-wasi ещё нет — проверка отброшенных сеттеров пропущена"
             exit 0
           fi
-          # Ловит не только `let _ = ...set_xxx(...)`, но и `.ok()` /
-          # `.unwrap_or_default()` на том же вызове — оба точно так же
-          # выбрасывают `Result`, не читая содержимое, и оба не дают
-          # компилятору повода предупредить (в отличие от голого
-          # `foo.set_x(y);`, который сам по себе не компилируется под
-          # `-D warnings` из-за `#[must_use]` на `Result` — так что этот
-          # случай защищён уже обычной сборкой, а вот `let _ =`/`.ok()`/
-          # `.unwrap_or_default()` — нет, они молча гасят предупреждение).
-          if grep -rnE 'let[[:space:]]+_[[:space:]]*=.*\.set_[a-z_]+\(|\.set_[a-z_]+\([^;]*\)\.(ok\(\)|unwrap_or_default\(\))' crates/http-ng-wasi/src \
-               | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
-            echo "::error::найден отброшенный Result у сеттера wasi:http (let _ = / .ok() / .unwrap_or_default()) — каждый отказ хоста обязан стать типизированной Error, см. crates/http-ng-wasi/src/convert.rs"
-            exit 1
-          fi
+          # Ревью (Task 16, находка B-4) нашло исходную grep-версию этой
+          # проверки дефектной по двум независимым осям:
+          #
+          # 1. Построчный `grep` матчит `.set_x(...)` и способ отбросить его
+          #    `Result` только если оба на ОДНОЙ строке. `cargo fmt` в этом
+          #    workspace переносит длинный вызов сеттера на новую строку
+          #    (`max_width = 100`) — `opts\n    .set_between_bytes_timeout(..)\n    .unwrap_or_default();`
+          #    после форматирования сам форматтер, которым эта же CI и гейтит
+          #    (`fmt`-джоб), делает нарушение невидимым для построчного
+          #    поиска. Девять форм, засеянных ревью, доказали это на живом
+          #    прогоне: три исходных ловились, шесть — нет, и первый же
+          #    промах был не гипотетическим, а именно этим переносом.
+          # 2. Список форм отброса был неполон: `.ok()`/`.unwrap_or_default()`
+          #    — не единственные способы молча выбросить `Result`, не давая
+          #    компилятору повода предупредить о `#[must_use]` (голый
+          #    `foo.set_x(y);` без обёртки САМ не собрался бы под `-D
+          #    warnings` — этот случай уже защищён обычной сборкой).
+          #    `.unwrap_or(..)`, `.is_ok()`, `.is_err()`, `let _ident = ..`
+          #    (не только буквально `let _ =`) и `drop(..)` — тоже.
+          #
+          # Оба исправлены переходом на Python: вместо построчного `grep`
+          # склеиваем содержимое каждого файла (без построчных `//`-
+          # комментариев) в один нормализованный по пробелам поток,
+          # сохраняя для каждого символа исходный номер строки — перенос
+          # rustfmt'а перестаёт быть невидимым, а диагностика всё равно
+          # называет строку, где вызов начался. Вызовы `.set_xxx(...)`
+          # находятся вручную подсчитанным балансом скобок (обычный regex не
+          # умеет вложенные `Some(ns)` внутри `set_connect_timeout(Some(ns))`),
+          # а следом за закрывающей скобкой проверяется расширенный список
+          # форм отброса — на нормализованном потоке, а не на исходных строках.
+          #
+          # Проверено на девяти засеянных нарушениях (все формы выше плюс
+          # перенос rustfmt) и на существующем дереве (`OK`, без ложных
+          # срабатываний на `.map_err(..)?` — легитимном пути honoring'а).
+          python3 - <<'PYEOF'
+          import re, sys, pathlib
+
+          ROOT = pathlib.Path("crates/http-ng-wasi/src")
+
+          DISCARD_TAIL = re.compile(r'^\s*\.(ok|unwrap_or_default|is_ok|is_err)\s*\(\s*\)')
+          DISCARD_TAIL_ARG = re.compile(r'^\s*\.unwrap_or\s*\(')
+
+          violations = []
+
+          for path in sorted(ROOT.rglob("*.rs")):
+              text = path.read_text()
+              lines = text.splitlines()
+              stream_chars = []
+              char_line = []
+              for lineno, line in enumerate(lines, start=1):
+                  code = line.split("//", 1)[0]
+                  for ch in code:
+                      stream_chars.append(ch)
+                      char_line.append(lineno)
+                  stream_chars.append(' ')
+                  char_line.append(lineno)
+              stream = ''.join(stream_chars)
+
+              for m in re.finditer(r'\.set_[a-z_]+\(', stream):
+                  start = m.start()
+                  depth = 0
+                  i = m.end() - 1
+                  end = None
+                  while i < len(stream):
+                      if stream[i] == '(':
+                          depth += 1
+                      elif stream[i] == ')':
+                          depth -= 1
+                          if depth == 0:
+                              end = i
+                              break
+                      i += 1
+                  if end is None:
+                      continue
+                  after = stream[end + 1:end + 60]
+                  line_no = char_line[start]
+                  snippet = re.sub(r'\s+', ' ', stream[start:end + 1]).strip()
+
+                  if DISCARD_TAIL.match(after) or DISCARD_TAIL_ARG.match(after):
+                      tail = re.sub(r'\s+', ' ', after[:30]).strip()
+                      violations.append((path, line_no, f"{snippet}{tail}"))
+                      continue
+
+                  stmt_start = max(
+                      stream.rfind(';', 0, start),
+                      stream.rfind('{', 0, start),
+                      stream.rfind('}', 0, start),
+                  ) + 1
+                  prefix = stream[stmt_start:start]
+                  if re.search(r'\blet\s+_\w*\s*=\s*[^;{}]*$', prefix):
+                      p = re.sub(r'\s+', ' ', prefix).strip()
+                      violations.append((path, line_no, f"{p[-40:]} {snippet}"))
+                      continue
+                  if re.search(r'\bdrop\s*\([^;{}]*$', prefix):
+                      p = re.sub(r'\s+', ' ', prefix).strip()
+                      violations.append((path, line_no, f"{p[-40:]} {snippet}"))
+                      continue
+
+          for path, line_no, snippet in violations:
+              print(f"{path}:{line_no}: {snippet}")
+
+          if violations:
+              print(
+                  "::error::найден отброшенный Result у сеттера wasi:http "
+                  "(let _ / let _ident / .ok() / .unwrap_or_default() / .unwrap_or(..) / "
+                  ".is_ok() / .is_err() / drop(..) — в одну строку или через перенос rustfmt) "
+                  "— каждый отказ хоста обязан стать типизированной Error, "
+                  "см. crates/http-ng-wasi/src/convert.rs"
+              )
+              sys.exit(1)
+          PYEOF
 
   fuzz-smoke:
     runs-on: ubuntu-latest
