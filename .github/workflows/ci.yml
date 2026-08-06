@@ -22,7 +22,36 @@ jobs:
             echo "::notice::в workspace ещё нет крейтов — тесты пропущены"
             exit 0
           fi
-          cargo test --workspace --all-features
+          # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) исключён
+          # отсюда намеренно (Task 14, review round 1, Finding 4): этот job
+          # гоняет `cargo test --workspace --all-features` целиком, и именно
+          # это соседство — несколько тяжёлых тестовых процессов на одном
+          # раннере одновременно — было измеренным источником флейка теста
+          # сложности. У него свой job, `sse-complexity-guard` ниже, где он
+          # не делит раннер ни с чем.
+          cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
+
+  # Изолированный запуск теста-регресса на квадратичность (`sse/lines.rs`).
+  # Не часть `test` выше — см. комментарий у `--skip` там. `best-of-3`
+  # внутри самого теста — вторичная защита от разового шума; первичная
+  # защита — вот эта изоляция: собственный job, ничего больше не гоняется
+  # параллельно на этом раннере. Подробное обоснование, включая измеренные
+  # цифры (best-of-5 флеканул 25 раз из 25 под устойчивым overcommit,
+  # single-sample — 9 из 25) — в doc-комментарии самого теста.
+  sse-complexity-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-proto ]; then
+            echo "::notice::http-ng-proto ещё нет — проверка сложности пропущена"
+            exit 0
+          fi
+          cargo test -p http-ng-proto --all-features \
+            sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact
 
   msrv:
     runs-on: ubuntu-latest
