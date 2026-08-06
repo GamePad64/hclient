@@ -106,6 +106,55 @@ impl Transport for Bare {
     }
 }
 
+/// Бэкенд, чья ошибка — уже наша `Error`, и который `to_error` НЕ
+/// переопределяет. Существует только ради теста ниже: оба настоящих бэкенда
+/// переопределяют хук явно, так что без этого двойника гарантию дефолта
+/// нечем было бы наблюдать.
+struct Forgetful {
+    caps: Capabilities,
+}
+
+impl Transport for Forgetful {
+    type Body = http_body_util::Full<Bytes>;
+    type Error = Error;
+    async fn execute(
+        &self,
+        _req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Self::Body>, Self::Error> {
+        Err(Error::new(ErrorKind::Resolve, Never))
+    }
+    // `to_error` намеренно НЕ переопределён.
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+}
+
+/// Главная гарантия дефолта: категорию нельзя потерять, забыв
+/// переопределить хук.
+///
+/// До этого раунда забывчивый бэкенд получал `ErrorKind::Other` и
+/// `Display` вида `Other: Resolve: …`, компилятор был доволен, его
+/// собственные тесты классификации зелены — неверно было только у
+/// потребителя. Защитой служила проза в трёх местах; теперь её держит
+/// структура, и этот тест — то, что не даёт структуре тихо испариться.
+#[test]
+fn the_default_passes_our_own_error_through_even_when_a_backend_forgets_to_override() {
+    let t = Forgetful {
+        caps: Capabilities::none(),
+    };
+    let e = t.to_error(Error::new(ErrorKind::Tls, Never));
+    assert_eq!(
+        e.kind(),
+        &ErrorKind::Tls,
+        "дефолт обязан узнать собственную `Error` и пропустить её насквозь"
+    );
+    assert_eq!(
+        e.to_string(),
+        "Tls: never",
+        "и не вкладывать вторую категорию перед настоящей"
+    );
+}
+
 /// Дефолт `Transport::to_error` обёртывает с `ErrorKind::Other`,
 /// **сохраняя источник целиком**: бэкенду, которому нечего сказать о
 /// категории, не нужно ничего писать, а вызывающая сторона всё равно
