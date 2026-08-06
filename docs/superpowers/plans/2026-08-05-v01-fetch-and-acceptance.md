@@ -360,6 +360,11 @@ use http_ng_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport,
 /// WHATWG Fetch (forbidden request-headers). Мы их **объявляем**, а не молча
 /// выбрасываем: молчаливое выбрасывание `Proxy-*` или `Cookie` — источник
 /// ошибок безопасности.
+// ВНИМАНИЕ (поправка С4): `static FORBIDDEN: &[HeaderName] = &[..]` НЕ
+// компилируется на stable — E0492 для любого заголовка, потому что тип
+// HeaderName содержит вариант Custom поверх Bytes с AtomicPtr. Работает
+// const-массив (как здесь) либо Box::leak/OnceLock для среза. Проверить
+// форму компиляцией до написания всего списка.
 pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
     http::header::HOST,
     http::header::CONNECTION,
