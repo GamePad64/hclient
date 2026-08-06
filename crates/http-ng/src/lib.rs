@@ -5,6 +5,8 @@
 #![deny(unsafe_code)]
 
 mod config;
+#[cfg(feature = "test-util")]
+pub mod mock;
 
 pub use config::{Config, Timeouts, check_supported, effective_timeouts};
 pub use http_ng_core::{Capabilities, UnsupportedCapability};
