@@ -10,7 +10,12 @@
 #![deny(unsafe_code)]
 
 mod body;
+mod caps;
 mod error;
 
 pub use body::{RequestBody, RetryKind, RewindFactory};
+pub use caps::{
+    Capabilities, RedirectSupport, TimeoutSupport, Timeouts, TlsSupport, UnsupportedCapability,
+    UpgradeSupport,
+};
 pub use error::{Error, ErrorKind, Phase};
