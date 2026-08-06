@@ -9,6 +9,8 @@
 //! `Client::execute`, а не в самом трейте `Transport`.
 #![deny(unsafe_code)]
 
+mod body;
 mod error;
 
+pub use body::{RequestBody, RetryKind};
 pub use error::{Error, ErrorKind, Phase};

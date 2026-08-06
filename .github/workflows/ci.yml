@@ -118,21 +118,29 @@ jobs:
             echo "::notice::крейтов ядра ещё нет — проверка пропущена"
             exit 0
           fi
-          # error.rs — единственное документированное исключение (spec
-          # amendment C1): Error::source обязан быть Send + Sync, иначе
-          # future, который возвращает Client::execute, не мог бы быть Send
-          # ни для одного бэкенда. Это исключение только для одного файла,
-          # а не ослабление инварианта в целом — все остальные файлы обоих
-          # крейтов по-прежнему сканируются.
-          files="$(find $dirs -type f -name '*.rs' ! -path '*/http-ng-core/src/error.rs')"
+          # error.rs и body.rs — единственные документированные исключения.
+          # error.rs (spec amendment C1): Error::source обязан быть
+          # Send + Sync, иначе future, который возвращает Client::execute, не
+          # мог бы быть Send ни для одного бэкенда. body.rs (spec amendment
+          # C2): оба объекта-трейта на пути Client -> Transport
+          # (RequestBody::Rewindable, RequestBody::Streaming) обязаны нести
+          # свои собственные Send/Sync бонды, иначе стирание в dyn Trait
+          # сбрасывает auto-traits и RequestBody, а вместе с ней
+          # http::Request<RequestBody> и футура Transport::execute,
+          # оказываются !Send для любого бэкенда. Оба исключения — только
+          # для этих двух файлов, а не ослабление инварианта в целом — все
+          # остальные файлы обоих крейтов по-прежнему сканируются.
+          files="$(find $dirs -type f -name '*.rs' \
+               ! -path '*/http-ng-core/src/error.rs' \
+               ! -path '*/http-ng-core/src/body.rs')"
           if [ -z "$files" ]; then
             exit 0
           fi
           # Ищем ОБЪЯВЛЕННЫЕ бонды, а не упоминания в доках: строки, у которых
           # содержимое начинается с комментария, отбрасываются вторым grep.
           # -H обязателен: без него grep опускает имя файла, если файл
-          # ровно один (как сейчас, после исключения error.rs), и фильтр
-          # по "file:line:content" перестаёт совпадать.
+          # ровно один (как сейчас, после исключения error.rs и body.rs), и
+          # фильтр по "file:line:content" перестаёт совпадать.
           if grep -nHE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $files \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
             echo "::error::в ядре объявлен бонд Send или Sync"
