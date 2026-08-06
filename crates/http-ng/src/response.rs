@@ -10,12 +10,28 @@ pub struct Response<B> {
     parts: http::response::Parts,
     body: B,
     url: http::Uri,
+    /// Взводится, когда `chunk()` отдал `Some(Err(_))`, и после этого
+    /// `chunk()` возвращает `None`, не трогая `body` вовсе.
+    ///
+    /// m6 финального ревью ветки: без него `chunk()` после ошибки заново
+    /// опрашивал нижележащее тело, и вызывающая сторона, работающая с
+    /// `Response::chunk` напрямую, могла крутиться в цикле по телу,
+    /// отдающему ошибку на каждый опрос. `SseStream` компенсировал это
+    /// своим флагом `done` и тестировал его подробно — но только для себя.
+    /// Терминальность здесь ровно та же: ошибка отдаётся один раз, дальше
+    /// конец потока.
+    sealed: bool,
 }
 
 impl<B> Response<B> {
     pub(crate) fn new(resp: http::Response<B>, url: http::Uri) -> Self {
         let (parts, body) = resp.into_parts();
-        Self { parts, body, url }
+        Self {
+            parts,
+            body,
+            url,
+            sealed: false,
+        }
     }
     pub fn status(&self) -> http::StatusCode {
         self.parts.status
@@ -49,7 +65,14 @@ where
 {
     /// Следующий чанк данных. Трейлер-фреймы пропускаются — за ними идти в
     /// `into_parts` и поллить тело напрямую.
+    ///
+    /// Ошибка терминальна: после `Some(Err(_))` тело запечатано и все
+    /// последующие вызовы отдают `None`, не опрашивая его заново (m6
+    /// финального ревью ветки — см. поле `sealed`).
     pub async fn chunk(&mut self) -> Option<Result<Bytes, Error>> {
+        if self.sealed {
+            return None;
+        }
         loop {
             let frame = std::future::poll_fn(|cx| Pin::new(&mut self.body).poll_frame(cx)).await;
             match frame {
@@ -57,8 +80,14 @@ where
                     Ok(d) => return Some(Ok(d)),
                     Err(_) => continue, // трейлеры
                 },
-                Some(Err(e)) => return Some(Err(Error::new(ErrorKind::Body, e))),
-                None => return None,
+                Some(Err(e)) => {
+                    self.sealed = true;
+                    return Some(Err(Error::new(ErrorKind::Body, e)));
+                }
+                None => {
+                    self.sealed = true;
+                    return None;
+                }
             }
         }
     }

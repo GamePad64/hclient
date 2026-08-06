@@ -361,3 +361,167 @@ fn version_and_into_parts_expose_the_full_response_head() {
         other => panic!("expected the data frame via the raw body, got {other:?}"),
     }
 }
+
+// ── резолюция финального ревью ветки: миноры m4/m5/m6 ────────────────────
+
+/// m4. `RequestBuilder::headers()` ПРИСВАИВАЛ (`self.headers = headers`),
+/// а не дополнял, — так что `.header("x-a","1").headers(map)` терял `x-a`
+/// без всякой диагностики. Тот же класс дефекта, что брифовый `header()`,
+/// который Task 13 чинил и обкладывал тестом: значение, переданное
+/// вызывающей стороной, исчезает молча.
+#[test]
+fn headers_extends_what_header_already_set_instead_of_discarding_it() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let c = Client::builder(m).build().unwrap();
+
+    let mut extra = http::HeaderMap::new();
+    extra.insert("x-b", "2".parse().unwrap());
+
+    futures_executor::block_on(
+        c.get("https://a/x")
+            .header("x-a", "1")
+            .headers(extra)
+            .send(),
+    )
+    .unwrap();
+
+    let seen = c.transport().requests();
+    assert_eq!(
+        seen[0].headers.get("x-a").map(|v| v.to_str().unwrap()),
+        Some("1"),
+        "headers() не должен выбрасывать то, что выставил header()"
+    );
+    assert_eq!(
+        seen[0].headers.get("x-b").map(|v| v.to_str().unwrap()),
+        Some("2"),
+    );
+}
+
+/// Обратная сторона m4: «дополнять» не значит «накапливать дубликаты».
+/// Одноимённый заголовок из `headers()` ПЕРЕКРЫВАЕТ выставленный раньше —
+/// иначе `.header("accept","a").headers({accept:b})` уехал бы на провод
+/// двумя `accept`, что для большинства заголовков означает другой запрос.
+#[test]
+fn headers_overrides_a_same_named_header_rather_than_duplicating_it() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let c = Client::builder(m).build().unwrap();
+
+    let mut extra = http::HeaderMap::new();
+    extra.insert("x-a", "second".parse().unwrap());
+
+    futures_executor::block_on(
+        c.get("https://a/x")
+            .header("x-a", "first")
+            .headers(extra)
+            .send(),
+    )
+    .unwrap();
+
+    let seen = c.transport().requests();
+    assert_eq!(seen[0].headers.get_all("x-a").iter().count(), 1);
+    assert_eq!(
+        seen[0].headers.get("x-a").map(|v| v.to_str().unwrap()),
+        Some("second"),
+    );
+}
+
+/// Вторая половина m4: `headers()` не смотрел в слот ошибки, в отличие от
+/// `header()`. Первая ошибка построения обязана побеждать и переживать
+/// последующие вызовы любого сеттера заголовков, иначе «первая ошибка
+/// побеждает» верно только для одного из двух.
+#[test]
+fn headers_after_an_invalid_header_does_not_hide_the_earlier_error() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let c = Client::builder(m).build().unwrap();
+
+    let mut extra = http::HeaderMap::new();
+    extra.insert("x-b", "2".parse().unwrap());
+
+    let result = futures_executor::block_on(
+        c.get("https://a/x")
+            .header("bad header", "v")
+            .headers(extra)
+            .send(),
+    );
+    assert!(
+        result.is_err(),
+        "ошибка от header() обязана пережить headers(): {result:?}"
+    );
+    assert!(
+        c.transport().requests().is_empty(),
+        "и запрос не должен был уйти"
+    );
+}
+
+/// m5. `chunk_skips_trailer_frames` ставит трейлер ПОСЛЕДНИМ, где «пропустил
+/// и нашёл EOF» и «остановился на нём» — одно и то же наблюдение: мутация
+/// `Err(_) => continue` в `Err(_) => return None` оставляла весь набор
+/// `http-ng` зелёным. Здесь трейлер стоит МЕЖДУ данными, и две гипотезы
+/// расходятся.
+#[test]
+fn chunk_continues_reading_data_that_follows_a_trailer_frame() {
+    let mut trailers = http::HeaderMap::new();
+    trailers.insert("x-trailer", "v".parse().unwrap());
+
+    let m = MockTransport::new();
+    m.push_response_with_trailers_between_data(
+        http::Response::builder()
+            .status(200)
+            .body(vec!["before"])
+            .unwrap(),
+        trailers,
+        vec!["after"],
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let mut resp = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
+
+    let first = futures_executor::block_on(resp.chunk()).unwrap().unwrap();
+    assert_eq!(&first[..], b"before");
+    let second = futures_executor::block_on(resp.chunk())
+        .expect("данные после трейлер-кадра не должны проглатываться")
+        .unwrap();
+    assert_eq!(&second[..], b"after");
+    assert!(futures_executor::block_on(resp.chunk()).is_none());
+}
+
+/// m6. После `Some(Err(_))` тело не запечатывалось: следующий `chunk()`
+/// заново опрашивал нижележащий `Body`. Вызывающая сторона, использующая
+/// `Response::chunk` напрямую (без `SseStream`, у которого свой флаг
+/// `done`), могла крутиться в цикле по телу, отдающему ошибку на каждый
+/// опрос. Ошибка терминальна: отдаётся ровно один раз, дальше — конец
+/// потока.
+#[test]
+fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
+    let m = MockTransport::new();
+    // Ошибка ПОВТОРЯЮЩАЯСЯ: с одноразовой тест был бы вакуумным — кадры
+    // после неё кончаются, и второй `chunk()` вернул бы `None` по
+    // совпадению, а не потому, что тело запечатано (проверено: с
+    // `push_response_frames_then_error` тест зелёный и без фикса).
+    m.push_response_frames_then_repeating_error(
+        http::Response::builder()
+            .status(200)
+            .body(vec!["data"])
+            .unwrap(),
+        http_ng::Error::new(http_ng::ErrorKind::Other, std::io::Error::other("boom")),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let mut resp = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
+
+    assert_eq!(
+        &futures_executor::block_on(resp.chunk()).unwrap().unwrap()[..],
+        b"data"
+    );
+    let err = futures_executor::block_on(resp.chunk())
+        .expect("кадр ошибки")
+        .unwrap_err();
+    assert_eq!(*err.kind(), http_ng::ErrorKind::Body);
+    assert!(
+        futures_executor::block_on(resp.chunk()).is_none(),
+        "после ошибки тело запечатано — второй раз её не отдаём и заново тело не опрашиваем"
+    );
+}

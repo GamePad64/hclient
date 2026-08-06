@@ -58,6 +58,14 @@ enum MockFrame {
     Data(Bytes),
     Trailers(http::HeaderMap),
     Error(Error),
+    /// Ошибка, которую тело отдаёт на КАЖДЫЙ опрос, а не один раз.
+    ///
+    /// Существует ради m6 финального ревью ветки: `Response::chunk` не
+    /// запечатывался после `Some(Err(_))` и заново опрашивал нижележащее
+    /// тело. Одноразовый `Error` этого не показывает — после него кадры
+    /// кончаются, и повторный `chunk()` отдаёт `None` по случайному
+    /// совпадению, а не потому, что тело запечатано.
+    RepeatingError(Error),
 }
 
 /// Один элемент очереди мока: ответ или отказ самого транспорта.
@@ -148,6 +156,58 @@ impl MockTransport {
             .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
             .collect();
         frames.push_back(MockFrame::Trailers(trailers));
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
+    }
+
+    /// Как `push_response_with_trailers`, но трейлер-кадр стоит МЕЖДУ двумя
+    /// группами данных, а не последним.
+    ///
+    /// Существует ради m5 финального ревью ветки. `Response::chunk`
+    /// документирует, что трейлер-кадры ПРОПУСКАЮТСЯ и чтение продолжается,
+    /// но с трейлером в конце «пропустил и нашёл EOF» и «остановился на нём»
+    /// — одно и то же наблюдение, и мутация `Err(_) => continue` в
+    /// `Err(_) => return None` оставляла весь набор зелёным. Кадр посередине
+    /// эти две гипотезы разводит.
+    pub fn push_response_with_trailers_between_data(
+        &self,
+        resp: http::Response<Vec<&'static str>>,
+        trailers: http::HeaderMap,
+        after: Vec<&'static str>,
+    ) {
+        let (parts, body) = resp.into_parts();
+        let mut frames: VecDeque<MockFrame> = body
+            .into_iter()
+            .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
+            .collect();
+        frames.push_back(MockFrame::Trailers(trailers));
+        frames.extend(
+            after
+                .into_iter()
+                .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes()))),
+        );
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
+    }
+
+    /// Как `push_response_frames_then_error`, но ошибка не одноразовая:
+    /// тело отдаёт её на каждый последующий опрос, как сделало бы
+    /// по-настоящему сломанное соединение. См. `MockFrame::RepeatingError`.
+    pub fn push_response_frames_then_repeating_error(
+        &self,
+        resp: http::Response<Vec<&'static str>>,
+        err: Error,
+    ) {
+        let (parts, body) = resp.into_parts();
+        let mut frames: VecDeque<MockFrame> = body
+            .into_iter()
+            .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
+            .collect();
+        frames.push_back(MockFrame::RepeatingError(err));
         self.queue
             .lock()
             .expect("mock lock poisoned")
@@ -273,10 +333,18 @@ impl http_body::Body for MockBody {
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
-        Poll::Ready(self.frames.pop_front().map(|f| match f {
+        let Some(f) = self.frames.pop_front() else {
+            return Poll::Ready(None);
+        };
+        Poll::Ready(Some(match f {
             MockFrame::Data(b) => Ok(http_body::Frame::data(b)),
             MockFrame::Trailers(h) => Ok(http_body::Frame::trailers(h)),
             MockFrame::Error(e) => Err(e),
+            MockFrame::RepeatingError(e) => {
+                let out = e.clone();
+                self.frames.push_front(MockFrame::RepeatingError(e));
+                Err(out)
+            }
         }))
     }
 

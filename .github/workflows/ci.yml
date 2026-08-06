@@ -104,6 +104,32 @@ jobs:
           # разом, так что дублировать проверку здесь избыточно.
           cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
 
+  # m2 финального ревью ветки. `no-discarded-wasi-setters` ниже обосновывает
+  # свой переход с построчного grep на Python тем, что перенос строки делает
+  # «сам форматтер, которым эта же CI и гейтит (`fmt`-джоб)» — а `fmt`-джоба
+  # в файле не было, и форматирование не проверялось нигде. Обоснование
+  # сканера верно и без этого (rustfmt переносит строку независимо от того,
+  # гейтит ли его CI), но ссылаться на несуществующий job оно не должно.
+  # Дешевле и полезнее добавить job, чем вычеркнуть фразу: `rustfmt.toml` в
+  # workspace есть, а каждая задача вертикали и так гоняла `cargo fmt`
+  # вручную и рапортовала «чисто» — то есть дисциплина держалась ровно на
+  # том же соглашении, которое для clippy сочли недостаточным (Task 15,
+  # review round 1, Finding 3).
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt }
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
+            echo "::notice::в workspace ещё нет крейтов — fmt пропущен"
+            exit 0
+          fi
+          cargo fmt --all --check
+
   # До этого джоба clippy нигде в CI не гонялся: каждая задача вертикали
   # запускала `cargo clippy --workspace --all-targets --all-features -- -D
   # warnings` вручную и рапортовала "чисто", но ничего не проверяло, что это
@@ -700,8 +726,18 @@ jobs:
           # Маркер `send-bound-exception` по-прежнему разрешает обоснованные
           # исключения, так что расширение охвата ничего не стоит там, где
           # бонд оправдан.
+          #
+          # `http-ng-proto/src` — m3 финального ревью ветки. Ревью засеяло
+          # `pub trait Probe: Send + Sync {}` в `http-ng-proto/src/redirect.rs`
+          # и проверка осталась зелёной, тогда как та же строка в
+          # `http-ng/src/client.rs` ловилась. Сегодня безвредно — proto
+          # никаких таких бондов не объявляет и его типы до шва не доходят;
+          # перестанет быть безвредным, когда там появятся кэш Alt-Svc и
+          # планировщик Happy Eyeballs (spec §5.4, §5.6) и их типы пойдут
+          # через `Client`. Одно слово в списке, добавленное до того, а не
+          # после.
           dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src; do
+          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src crates/http-ng-proto/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
