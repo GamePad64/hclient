@@ -30,25 +30,53 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
 ///
 /// Деструктурирует `cfg` без `..`-остатка — по тому же рецепту, что
 /// `Capabilities::none_is_the_conservative_base` в `http-ng-core`: новое
-/// поле в `Config` или `Timeouts` становится ошибкой компиляции, называющей
-/// его, а не тихо пропускается массивом `checks`. `redirect` и `base_url`
-/// сегодня намеренно не проверяются на поддержку — `_` явно фиксирует это
-/// решение, а не забывает про поле.
+/// поле в `Config` становится ошибкой компиляции, называющей его, а не тихо
+/// пропускается (то же для полей `Timeouts` — в
+/// `check_timeouts_supported`). `redirect` и `base_url` сегодня намеренно не
+/// проверяются на поддержку — `_` явно фиксирует это решение, а не забывает
+/// про поле.
+///
+/// `redirect: _` перестанет быть безобидным, как только появится бэкенд с
+/// `RedirectSupport::Internal`: он следует редиректам сам, стадия
+/// `Client`'а не увидит ни одного 3xx, и заданный `RedirectPolicy` станет
+/// ровно тем тихим no-op, против которого построен весь этот модуль. Ни
+/// один существующий бэкенд не `Internal` (`WasiHttp` — `Transparent`, см.
+/// `RedirectSupport`), так что сегодня проверять нечего; триггер —
+/// браузерный `fetch` вертикали 3.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {
     let Config {
-        timeouts:
-            Timeouts {
-                connect,
-                first_byte,
-                between_bytes,
-            },
+        timeouts,
         redirect: _,
         base_url: _,
     } = cfg;
+    check_timeouts_supported(timeouts, caps, backend)
+}
+
+/// Та же проверка, но по одному `Timeouts`, а не по всему `Config` — потому
+/// что `Client::execute` проверяет **слитый** результат
+/// `effective_timeouts`, а не конфигурацию клиента (B1/M3 финального ревью
+/// ветки: до него per-request таймауты не проверялись вовсе, а клиентские
+/// проверялись здесь и не доезжали до транспорта). Общее тело, а не вторая
+/// копия массива `checks`: разойтись эти две проверки не должны, а два
+/// списка фаз разойдутся при первой же новой фазе.
+///
+/// `pub(crate)`, в отличие от `check_supported`: фасад `http-ng` и так
+/// экспортирует больше плюмбинга, чем стоило бы (находка §6.7 того же
+/// ревью), и увеличивать этот долг новым именем не за чем.
+pub(crate) fn check_timeouts_supported(
+    t: &Timeouts,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    let Timeouts {
+        connect,
+        first_byte,
+        between_bytes,
+    } = t;
     let checks = [
         (connect.is_some(), caps.timeouts.connect, "connect_timeout"),
         (

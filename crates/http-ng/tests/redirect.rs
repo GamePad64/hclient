@@ -233,7 +233,17 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     use http_ng_core::Timeouts;
     use std::time::Duration;
 
-    let m = MockTransport::new();
+    // Возможности не декоративны с тех пор, как `Client::execute` проверяет
+    // слитые таймауты (M3 финального ревью ветки): мок с
+    // `Capabilities::none()` теперь честно отвергает `connect`-таймаут, а
+    // этот тест про перенос `extensions` между хопами, не про гейт.
+    let mut caps = http_ng::Capabilities::none();
+    caps.timeouts = http_ng::TimeoutSupport {
+        connect: true,
+        first_byte: true,
+        between_bytes: true,
+    };
+    let m = MockTransport::new().with_capabilities(caps);
     m.push_response(redirect_to("https://a/second"));
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 

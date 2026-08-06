@@ -1,4 +1,4 @@
-use crate::config::{Config, check_supported};
+use crate::config::{Config, check_supported, check_timeouts_supported, effective_timeouts};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use http_ng_core::Timeouts;
@@ -23,6 +23,13 @@ impl<T: Transport> ClientBuilder<T> {
         self.config.redirect = policy;
         self
     }
+    /// Таймауты по умолчанию для каждого запроса этого клиента.
+    ///
+    /// Поле за полем перекрываются `RequestBuilder::timeouts`; слияние
+    /// делает `Client::execute` (`effective_timeouts`), и его результат —
+    /// то, что реально едет транспорту в `http::Extensions`. Неподдерживаемая
+    /// транспортом фаза — ошибка на `build()`, а с B1/M3 и на `execute()`
+    /// для того, что задал сам запрос.
     pub fn timeouts(mut self, t: Timeouts) -> Self {
         self.config.timeouts = t;
         self
@@ -131,6 +138,30 @@ impl<T: Transport> Client<T> {
             version: parts.version,
             extensions: parts.extensions,
         };
+
+        // B1/M3 финального ревью ветки, две половины одной дыры. До него
+        // `effective_timeouts` не вызывалась ниоткуда в продакшн-коде —
+        // `ClientBuilder::timeouts()` был тихим no-op, потому что
+        // единственный канал к транспорту это `http::Extensions`, а
+        // клиентская конфигурация в них не попадала; и симметрично
+        // `RequestBuilder::timeouts()` писал в `Extensions` вообще без
+        // проверки против `Capabilities`, тогда как та же настройка на
+        // уровне клиента давала `UnsupportedCapability` на `build()`.
+        //
+        // Слияние и проверка живут здесь, а не в `build()` и не в
+        // `RequestBuilder`, потому что только здесь известен ОБА слагаемых.
+        // Результат кладётся в `extensions` до цикла: следующие хопы
+        // клонируют их из предыдущего (`stages::redirect::next_hop`), так
+        // что слить достаточно один раз.
+        let effective = effective_timeouts(&hp.extensions, &self.config.timeouts);
+        check_timeouts_supported(
+            &effective,
+            self.transport.capabilities(),
+            backend_name::<T>(),
+        )
+        .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
+        hp.extensions.insert(effective);
+
         let mut hops: u8 = 0;
 
         loop {

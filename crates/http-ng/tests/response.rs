@@ -151,15 +151,31 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 }
 
 /// `RequestBuilder::timeouts` обязан класть `Timeouts` в `Extensions` запроса,
-/// откуда их читает транспорт (lookup «request-first, client-fallback»,
-/// §4.5 спеки, Task 10). Без записи в `extensions` этот сеттер был бы тихим
-/// no-op — ровно тот класс дефекта, которого дизайн крейта старается избежать.
+/// откуда их читает транспорт (Task 10). Без записи в `extensions` этот
+/// сеттер был бы тихим no-op — ровно тот класс дефекта, которого дизайн
+/// крейта старается избежать.
+///
+/// Сам lookup «request-first, client-fallback» (§4.5 спеки) этот тест НЕ
+/// проверяет — прежняя версия комментария это утверждала, а проверить не
+/// могла: клиент здесь не задаёт таймаутов вовсе, так что перекрывать
+/// нечего. Композиция клиента и запроса живёт в `tests/timeouts.rs` (B1
+/// финального ревью ветки — до него её не существовало и в коде).
+///
+/// `with_capabilities` — не украшение: с M3 `Client::execute` проверяет
+/// слитые таймауты против `Capabilities`, и мок с `Capabilities::none()`
+/// теперь честно отвергает этот запрос.
 #[test]
 fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     use http_ng_core::Timeouts;
     use std::time::Duration;
 
-    let m = MockTransport::new();
+    let mut caps = http_ng::Capabilities::none();
+    caps.timeouts = http_ng::TimeoutSupport {
+        connect: true,
+        first_byte: true,
+        between_bytes: true,
+    };
+    let m = MockTransport::new().with_capabilities(caps);
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
     let c = Client::builder(m).build().unwrap();
