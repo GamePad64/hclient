@@ -197,6 +197,63 @@ fn oversized_event_is_fatal_but_does_not_lose_events_decoded_before_it() {
     );
 }
 
+/// The other fatal path: a body-level error from `Response::chunk()` (e.g. a
+/// dropped connection mid-stream), not a decoder size-limit violation. Same
+/// ordering contract as the test above — "structurally identical" is not
+/// "actually exercised", so this is tested independently rather than assumed
+/// to hold by resemblance (review round 2, Finding 2).
+/// `MockTransport::push_response_frames_then_error` (`mock.rs`) makes
+/// `MockBody::poll_frame` return `Err` after its data frames, which
+/// `Response::chunk()` wraps as `Error::new(ErrorKind::Body, ..)`.
+#[test]
+fn body_error_is_fatal_but_does_not_lose_events_decoded_before_it() {
+    let m = MockTransport::new();
+    m.push_response_frames_then_error(
+        http::Response::builder()
+            .status(200)
+            .header("content-type", "text/event-stream")
+            .body(vec!["data: a\n\n"])
+            .unwrap(),
+        http_ng_core::Error::new(
+            http_ng_core::ErrorKind::Other,
+            std::io::Error::other("boom"),
+        ),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = futures_executor::block_on(c.get("https://a/s").send()).unwrap();
+    let mut s = SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).unwrap();
+
+    let first = futures_executor::block_on(s.next())
+        .expect("the event decoded before the body error must not be lost")
+        .expect("the first event is valid, not the error");
+    assert_eq!(
+        first,
+        SseEvent::Message {
+            event: None,
+            data: "a".into(),
+            id: None
+        },
+        "the valid event must survive, and survive intact"
+    );
+
+    let second = futures_executor::block_on(s.next())
+        .expect("the body error must surface as an item, not be swallowed");
+    assert!(
+        second.is_err(),
+        "the body error must be reported as an error, not accepted as a valid end of stream"
+    );
+
+    assert!(
+        futures_executor::block_on(s.next()).is_none(),
+        "the stream must be over immediately after the fatal error"
+    );
+    assert!(
+        futures_executor::block_on(s.next()).is_none(),
+        "\"fatal\" must mean forever, not a one-shot glitch the stream recovers from"
+    );
+}
+
 #[test]
 fn tracks_last_event_id_for_future_reconnects() {
     let m = MockTransport::new();

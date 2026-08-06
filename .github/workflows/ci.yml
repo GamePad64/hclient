@@ -29,6 +29,16 @@ jobs:
           # раннере одновременно — было измеренным источником флейка теста
           # сложности. У него свой job, `sse-complexity-guard` ниже, где он
           # не делит раннер ни с чем.
+          #
+          # У `--skip` здесь НЕТ отдельной проверки "нашёл ли он что пропустить":
+          # непереименованный на этой стороне тест просто вернётся в общий прогон
+          # и рискует флейком под нагрузкой (деградация, не слепая зона — тест
+          # всё равно выполняется и рано или поздно поймает настоящую регрессию).
+          # Симметричный дефект — на стороне `sse-complexity-guard`, где
+          # несовпадение имени даёт ПОЛНОСТЬЮ немой зелёный джоб без единого
+          # прогона теста — и именно там стоит проверка (Finding 1, review round
+          # 2). Она красная останавливает мердж и вынуждает поправить оба места
+          # разом, так что дублировать проверку здесь избыточно.
           cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
 
   # Изолированный запуск теста-регресса на квадратичность (`sse/lines.rs`).
@@ -50,8 +60,22 @@ jobs:
             echo "::notice::http-ng-proto ещё нет — проверка сложности пропущена"
             exit 0
           fi
-          cargo test -p http-ng-proto --all-features \
-            sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact
+          # `cargo test ... -- --exact NAME`, если NAME ни с чем не совпал,
+          # выходит с кодом 0 и печатает "0 passed" — тот же класс дефекта,
+          # что уже правился в Task 1 (`cargo tree | grep` и `grep -rn`,
+          # молча зелёные при отсутствующем крейте). Переименование или
+          # перенос теста дало бы здесь ПОЛНОСТЬЮ немой зелёный джоб — ноль
+          # прогонов, ничего не проверено — если не проверить явно, что тест
+          # реально нашёлся и выполнился (review round 2, Finding 1).
+          out="$(cargo test -p http-ng-proto --all-features \
+            sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact)"
+          printf '%s\n' "$out"
+          if ! printf '%s\n' "$out" | grep -qE '^test result: ok\. 1 passed;'; then
+            echo "::error::sse-complexity-guard не запустил ровно один тест — похоже, \
+parsing_scales_linearly_not_quadratically переименован или перемещён. Поправьте путь \
+здесь И значение --skip в job'е test."
+            exit 1
+          fi
 
   msrv:
     runs-on: ubuntu-latest

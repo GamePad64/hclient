@@ -42,16 +42,22 @@ pub struct RecordedRequest {
     pub body_size_hint: Option<u64>,
 }
 
-/// Кадр тела мока: данные или трейлеры. Существует, чтобы
-/// `push_response_with_trailers` могла поставить в очередь трейлер-кадр.
-/// Без него была бы задокументирована, но ничем не проверена асимметрия
+/// Кадр тела мока: данные, трейлеры или обрыв ошибкой. Существует, чтобы
+/// `push_response_with_trailers` могла поставить в очередь трейлер-кадр, а
+/// `push_response_frames_then_error` — оборвать тело ошибкой посреди потока.
+/// Без первого была бы задокументирована, но ничем не проверена асимметрия
 /// `Response::chunk()` (пропускает трейлеры) против `into_parts()` с прямым
 /// опросом (отдаёт их) — `push_response` и `push_response_frames` производят
-/// только данные.
+/// только данные. Без второго путь `Some(Err(_))` у `Response::chunk()` в
+/// `SseStream::next` (Task 14, review round 2, Finding 2) оставался бы
+/// структурно похожим на протестированный путь превышения лимита, но не
+/// проверенным отдельно: `MockBody` до этого раунда умел отдавать только
+/// `Ok`-кадры, ни один вызов `poll_frame` не мог вернуть `Err`.
 #[derive(Debug, Clone)]
 enum MockFrame {
     Data(Bytes),
     Trailers(http::HeaderMap),
+    Error(Error),
 }
 
 #[derive(Debug)]
@@ -137,6 +143,31 @@ impl MockTransport {
             .push_back(http::Response::from_parts(parts, frames));
     }
 
+    /// Как `push_response_frames`, но обрывает тело ошибкой после `frames`,
+    /// вместо чистого EOF — воспроизводит обрыв соединения посреди потока
+    /// (например, для `SseStream::next`, у которого путь `Some(Err(_))` из
+    /// `Response::chunk()` иначе остался бы структурно похожим на
+    /// протестированный путь превышения лимита декодера, но не проверенным
+    /// отдельно; Task 14, review round 2, Finding 2). `err` летит наружу как
+    /// есть — `Response::chunk()` оборачивает его в `Error::new(ErrorKind::Body,
+    /// ..)`, как и любую другую ошибку тела.
+    pub fn push_response_frames_then_error(
+        &self,
+        resp: http::Response<Vec<&'static str>>,
+        err: Error,
+    ) {
+        let (parts, body) = resp.into_parts();
+        let mut frames: VecDeque<MockFrame> = body
+            .into_iter()
+            .map(|s| MockFrame::Data(Bytes::from_static(s.as_bytes())))
+            .collect();
+        frames.push_back(MockFrame::Error(err));
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(http::Response::from_parts(parts, frames));
+    }
+
     pub fn requests(&self) -> Vec<RecordedRequest> {
         self.seen.lock().expect("mock lock poisoned").clone()
     }
@@ -203,11 +234,10 @@ impl http_body::Body for MockBody {
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
-        Poll::Ready(self.frames.pop_front().map(|f| {
-            Ok(match f {
-                MockFrame::Data(b) => http_body::Frame::data(b),
-                MockFrame::Trailers(h) => http_body::Frame::trailers(h),
-            })
+        Poll::Ready(self.frames.pop_front().map(|f| match f {
+            MockFrame::Data(b) => Ok(http_body::Frame::data(b)),
+            MockFrame::Trailers(h) => Ok(http_body::Frame::trailers(h)),
+            MockFrame::Error(e) => Err(e),
         }))
     }
 
