@@ -117,7 +117,7 @@ impl<T: Transport> Client<T> {
     /// `where T::Error: Send + Sync + 'static` — второе документированное
     /// исключение из инварианта «ядро не объявляет Send/Sync» (spec
     /// amendment C1, сестра исключения у `Error::source`). Без него
-    /// `Transport::into_error` ниже не вызвался бы для абстрактного `T`: его
+    /// `Transport::to_error` ниже не вызвался бы для абстрактного `T`: его
     /// собственная where-клауза требует того же бонда, потому что его
     /// дефолтное тело зовёт `Error::new`, а `Error` хранит источник как
     /// `Arc<dyn Error + Send + Sync>`, и стирание типа не пропускает
@@ -182,9 +182,9 @@ impl<T: Transport> Client<T> {
                 // ветки — безусловное обёртывание расплющивало категорию
                 // ЛЮБОЙ ошибки транспорта в `Other`, обесценивая всю
                 // таксономию `ErrorKind`. Решает бэкенд, а не эта строка:
-                // дефолт `Transport::into_error` обёртывает ровно так же,
+                // дефолт `Transport::to_error` обёртывает ровно так же,
                 // а бэкенд, чья ошибка уже `Error`, отдаёт её как есть.
-                .map_err(|e| self.transport.into_error(e))?;
+                .map_err(|e| self.transport.to_error(e))?;
 
             let location = resp
                 .headers()

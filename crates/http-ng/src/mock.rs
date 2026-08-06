@@ -307,7 +307,7 @@ impl Transport for MockTransport {
     /// ошибку в ещё одну с `ErrorKind::Other`, и `push_transport_error`
     /// перестал бы что-либо доказывать — мок обязан быть верной моделью
     /// бэкенда, а не тем, что маскирует проверяемый дефект.
-    fn into_error(&self, e: Self::Error) -> Error {
+    fn to_error(&self, e: Self::Error) -> Error {
         e
     }
 

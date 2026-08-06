@@ -69,7 +69,7 @@ impl Transport for Echo {
             Bytes::from_static(b"ok"),
         )))
     }
-    fn into_error(&self, e: Self::Error) -> Error {
+    fn to_error(&self, e: Self::Error) -> Error {
         e
     }
     fn capabilities(&self) -> &Capabilities {
@@ -77,7 +77,7 @@ impl Transport for Echo {
     }
 }
 
-/// Бэкенд со своим типом ошибки, который `into_error` не переопределяет —
+/// Бэкенд со своим типом ошибки, который `to_error` не переопределяет —
 /// то, ради чего у хука вообще есть дефолт (B2 финального ревью ветки).
 struct Bare {
     caps: Capabilities,
@@ -106,16 +106,16 @@ impl Transport for Bare {
     }
 }
 
-/// Дефолт `Transport::into_error` обёртывает с `ErrorKind::Other`,
+/// Дефолт `Transport::to_error` обёртывает с `ErrorKind::Other`,
 /// **сохраняя источник целиком**: бэкенду, которому нечего сказать о
 /// категории, не нужно ничего писать, а вызывающая сторона всё равно
 /// получает типизированный источник, а не строку.
 #[test]
-fn into_error_defaults_to_other_and_keeps_the_source_intact() {
+fn to_error_defaults_to_other_and_keeps_the_source_intact() {
     let t = Bare {
         caps: Capabilities::none(),
     };
-    let e = t.into_error(Custom);
+    let e = t.to_error(Custom);
     assert_eq!(e.kind(), &ErrorKind::Other);
     let src = std::error::Error::source(&e).expect("Error::new всегда кладёт source");
     assert_eq!(
@@ -134,7 +134,7 @@ fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
     let t = Echo {
         caps: Capabilities::none(),
     };
-    let e = t.into_error(Error::new(ErrorKind::Tls, Never));
+    let e = t.to_error(Error::new(ErrorKind::Tls, Never));
     assert_eq!(
         e.kind(),
         &ErrorKind::Tls,
@@ -184,22 +184,25 @@ fn non_send_transport_still_satisfies_the_trait() {
     };
 }
 
-/// Тот же инвариант, но по оси, которую `into_error` могла бы сломать
+/// Тот же инвариант, но по оси, которую `to_error` могла бы сломать
 /// (B2 финального ревью ветки): транспорт, чья ОШИБКА честно `!Send`.
 ///
-/// Это единственная причина, по которой `into_error` — дефолтный метод с
+/// Это единственная причина, по которой `to_error` — дефолтный метод с
 /// where-клаузой, а не `Transport::Error: Into<Error>` на трейте и не
 /// `Error` в качестве типа ошибки шва: любая из тех двух форм потребовала
 /// бы `Send + Sync` от ошибки каждого бэкенда и выбросила бы этот тип из
 /// `Transport` вовсе. Поправка C1 сохраняет его представимым — он не может
-/// пользоваться `Client` (и не может вызвать `into_error`), но `Transport`
+/// пользоваться `Client` (и не может вызвать `to_error`), но `Transport`
 /// реализует. Тест ничего не «проверяет» в рантайме; он не компилируется,
 /// если инвариант нарушен, и `Rc` внутри ошибки — не украшение, а то, что
 /// делает её `!Send` по-настоящему.
 #[test]
 fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
+    // `PhantomData<Rc<()>>`, а не `Rc<()>` полем: то же самое для auto-traits
+    // (тип честно `!Send`), но без непрочитанного поля — а значит и без
+    // `#[allow(dead_code)]`, которого этой ветке лучше нигде не иметь.
     #[derive(Debug)]
-    struct NotSend(#[allow(dead_code)] std::rc::Rc<()>);
+    struct NotSend(std::marker::PhantomData<std::rc::Rc<()>>);
     impl std::fmt::Display for NotSend {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "not send")
@@ -217,7 +220,7 @@ fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
             &self,
             _req: http::Request<RequestBody>,
         ) -> Result<http::Response<Self::Body>, Self::Error> {
-            Err(NotSend(std::rc::Rc::new(())))
+            Err(NotSend(std::marker::PhantomData))
         }
         fn capabilities(&self) -> &Capabilities {
             &self.caps

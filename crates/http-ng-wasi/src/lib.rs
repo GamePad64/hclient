@@ -331,7 +331,7 @@ impl Transport for WasiHttp {
     /// отказа хоста одинаково, а `Display` печатал бы категорию дважды —
     /// `Other: Unsupported: wasi:http host rejected setting 'scheme'`. Это
     /// и была находка B2 финального ревью ветки, ровно здесь и лечится.
-    fn into_error(&self, e: Self::Error) -> Error {
+    fn to_error(&self, e: Self::Error) -> Error {
         e
     }
 

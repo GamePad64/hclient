@@ -650,7 +650,7 @@ mod tests {
 
     /// B2 финального ревью ветки: вся классификация `wasi_err` (39
     /// вариантов `ErrorCode` на восемь `ErrorKind`) существует только
-    /// потому, что `Transport::into_error` этого бэкенда — тождество. С
+    /// потому, что `Transport::to_error` этого бэкенда — тождество. С
     /// дефолтной реализацией `Client::execute` завернул бы её ещё раз, в
     /// `ErrorKind::Other`, и всё, что проверяют тесты выше про
     /// `is_connect()`/`is_unsupported()`, было бы верно на уровне
@@ -660,12 +660,12 @@ mod tests {
     /// (тот при обёртывании печатал бы `Other: Tls: …` — отложенный минор
     /// Task 6 про удвоение).
     #[test]
-    fn into_error_is_the_identity_so_the_classification_survives_the_client() {
+    fn to_error_is_the_identity_so_the_classification_survives_the_client() {
         use http_ng_core::unversioned::Transport as _;
 
         let t = super::super::WasiHttp::new();
         let classified = wasi_err(ErrorCode::TlsProtocolError);
-        let seen = t.into_error(classified);
+        let seen = t.to_error(classified);
 
         assert_eq!(seen.kind(), &ErrorKind::Tls);
         assert!(

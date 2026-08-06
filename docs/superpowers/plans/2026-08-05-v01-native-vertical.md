@@ -33,8 +33,19 @@ per-runtime TLS-склейки не существует вообще. HTTP/1-с
 - **`unsafe` запрещён везде** (`#![deny(unsafe_code)]`). Шим futures-io →
   hyper::rt пишется через безопасный `ReadBufCursor::put_slice`, как советует
   документация самого hyper.
+- **Всякий бэкенд, чей `Transport::Error` уже несёт `ErrorKind`, ОБЯЗАН
+  переопределить `Transport::to_error`** (в этой вертикали — `Native`, Task 13)
+  и завести тест, который это фиксирует. Дефолт хука заворачивает ошибку с
+  `ErrorKind::Other`, молча расплющивая любую уже проставленную категорию;
+  компилятор этого не ловит и поймать не может. Подробности и причина, по
+  которой хук остался дефолтным, — в блоке над Step 1 задачи 13 и в
+  doc-комментарии самого метода в `http-ng-core`.
 - Пул соединений **не входит** в эту вертикаль: одно соединение на запрос.
-- MSRV: 1.85. `rust-version` у всех крейтов вертикали — `"1.85"`.
+- MSRV: 1.85. `rust-version` у всех крейтов вертикали — `"1.85"`. Job `msrv`
+  в CI гоняет `cargo check --all-features --all-targets` (с `--all-targets` —
+  с фикс-раунда финального ревью вертикали 1; до него тестовые таргеты не
+  проверялись при 1.85 ни разу), но его список пакетов — три ядровых крейта.
+  Крейты этой вертикали нужно в него добавить.
 
 ## Файловая структура
 
@@ -2696,10 +2707,38 @@ git commit -m "feat(native): HTTP/1 exchange driving the connection inline, no s
   - `pub struct Native<R, T, D> { rt: R, tls: T, dns: D, opts: TcpOpts }`
   - `Native::new(rt: R, tls: T, dns: D) -> Self`; `Native::tcp_opts(self, o: TcpOpts) -> Self`
   - `impl<R, T, D> Transport for Native<R, T, D>` с `type Body = NativeBody; type Error = Error;`
+  - **`Transport::to_error` ОБЯЗАН быть переопределён тождеством** — см. блок
+    ниже, это не необязательная деталь
   - `Capabilities`: `streaming_request_body: false` (v0.1), `redirects: Configurable`,
     `tls_config: Full`, `version_reported: true`, `timeouts.connect: true`,
     `timeouts.first_byte: false`, `timeouts.between_bytes: false`,
     `upgrade: UpgradeSupport::None` (h1-upgrade — v0.3)
+
+> **Обязательное переопределение `Transport::to_error`.** Вертикаль 1
+> (находка B2 её финального ревью) добавила в шов дефолтный хук
+> `fn to_error(&self, e: Self::Error) -> Error`, превращающий ошибку бэкенда
+> в ошибку библиотеки. Дефолт заворачивает её с `ErrorKind::Other` — это верно
+> ровно для бэкенда, которому нечего сказать о категории. `Native` — не он:
+> его `type Error = Error`, то есть категория УЖЕ проставлена
+> (`ErrorKind::Resolve` в `execute`, `Connect` в `race_connect`, `Tls` в
+> `TlsConnect`, `Body` в `h1`). Без переопределения `Client::execute` завернёт
+> её во вторую ошибку, и у потребителя `kind()` станет `Other`, а
+> `is_timeout()`/`is_connect()`/`is_unsupported()` — `false` для всего сразу;
+> `Display` вдобавок напечатает категорию дважды (`Other: Connect: …`).
+>
+> Именно так вертикаль 1 и отгрузилась бы: `http-ng-wasi` раскладывал 39
+> вариантов `ErrorCode` на восемь `ErrorKind` сорока строками, и всё это
+> выбрасывалось слоем выше. 165 тестов этого не видели, потому что ни один не
+> проверял, что категория транспорта доживает до вызывающей стороны.
+>
+> Компилятор эту обязанность не проверяет и не может: дефолт остаётся
+> дефолтом сознательно (альтернативы потребовали бы `Send + Sync` от ошибки
+> КАЖДОГО бэкенда на уровне трейта, а поправка C1 сохраняет представимость
+> транспорта с честно `!Send` ошибкой). Проверяет её только тест — он в Step 1
+> ниже, и он обязателен, а не «желателен». Образцы:
+> `to_error_is_the_identity_so_the_classification_survives_the_client`
+> (`crates/http-ng-wasi/src/convert.rs`) и
+> `crates/http-ng/tests/transport_error.rs`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -2746,6 +2785,32 @@ async fn capabilities_are_honest_about_v01_limits() {
     assert!(!caps.timeouts.first_byte, "нет пула и таймера ответа — заявлять нельзя");
     assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
+}
+
+/// Категория, которую проставил `Native`, обязана дожить до вызывающей
+/// стороны — то есть `Transport::to_error` обязан быть переопределён
+/// тождеством (см. блок над Step 1). С дефолтным хуком этот тест красный:
+/// `kind()` будет `Other`, а `Display` — `Other: Resolve: …`.
+///
+/// Хост выбран несуществующим намеренно: это единственный отказ, который
+/// `execute` производит без сети и без сервера, и `wasi`-аналог этого
+/// теста устроен так же — гоняет реальный классификатор бэкенда, а не
+/// сконструированную вручную `Error`.
+#[tokio::test]
+async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other() {
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let c = Client::builder(t).build().unwrap();
+    let err = c.get("http://nonexistent.invalid/").send().await.unwrap_err();
+
+    assert_eq!(
+        *err.kind(),
+        http_ng::ErrorKind::Resolve,
+        "категория обязана дожить до вызывающей стороны, а не расплющиться в Other: {err}"
+    );
+    assert!(
+        !err.to_string().starts_with("Other:"),
+        "категория печатается один раз, и это настоящая категория: {err}"
+    );
 }
 
 #[tokio::test]
@@ -2857,6 +2922,15 @@ where
             h1::exchange(tcp, req).await
         }
     }
+
+    /// Тождество, а не дефолтное обёртывание: `Self::Error` — уже
+    /// `http_ng_core::Error`, и категория в ней проставлена там, где отказ
+    /// произошёл (`Resolve` выше, `Connect` в `race_connect`, `Tls` в
+    /// `TlsConnect`, `Body` в `h1`). Дефолт завернул бы её второй раз, с
+    /// `ErrorKind::Other`, и вся эта классификация пропала бы у вызывающей
+    /// стороны. См. блок над Step 1 и тест
+    /// `transport_error_kind_survives_the_client_instead_of_flattening_to_other`.
+    fn to_error(&self, e: Self::Error) -> Error { e }
 
     fn capabilities(&self) -> &Capabilities { &self.caps }
 }
