@@ -11,12 +11,21 @@ repository.workspace = true
 
 [dependencies]
 bytes        = { workspace = true }
-# Нужен для `join!` в `Transport::execute` (Task 16): тело пишется в
-# `BodyWriter` параллельно с `client::send`, а не до или после него — это и
-# есть честный `full_duplex`. Только `async-await` (даёт `join!` через
-# `futures-util/async-await` + `async-await-macro`) — `default-features =
-# false` без `std`/`executor`: свой executor этому крейту не нужен, вызовы
-# `wasip3` уже управляются рантаймом хоста.
+# Нужен для `futures::future::select` в `convert::race_send_with_body`:
+# запись тела в `BodyWriter` гонится наперегонки с `client::send`, чтобы
+# ранний отказ хоста не ждал конца записи (находка B-5).
+#
+# Прежняя версия этого комментария говорила про `join!` и называла
+# происходящее «честным `full_duplex`» — неверно вдвойне (m1 финального
+# ревью ветки): `join!` заменён на `select` ещё в фикс-раунде Task 16 и
+# выжил только в прозе, а `WasiHttp::new()` тремя файлами дальше заявляет
+# `full_duplex = false` и подробно объясняет, почему. Параллельная запись —
+# не дуплекс: `execute` всё равно не возвращается, пока запись не
+# закончится.
+#
+# Только `async-await` — `default-features = false` без `std`/`executor`:
+# свой executor этому крейту не нужен, вызовы `wasip3` уже управляются
+# рантаймом хоста.
 futures      = { version = "0.3", default-features = false, features = ["async-await"] }
 http         = { workspace = true }
 http-body    = { workspace = true }
