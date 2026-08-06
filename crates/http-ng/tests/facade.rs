@@ -35,3 +35,16 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
     _b: http_ng::RequestBuilder<'_, T>,
 ) {
 }
+
+/// `SseStream`, `SseEvent` и `DEFAULT_MAX_EVENT_SIZE` (Task 14) на самом деле
+/// живут в `http-ng-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) и `http-ng`
+/// (`SseStream`), но обязаны быть именуемы из `http_ng::` без прямой
+/// зависимости от `http-ng-proto` — тот же контракт, что и выше. Тот же
+/// приём для `SseStream`, что и для `Response`/`Collected`/`RequestBuilder`:
+/// конструктора без транспорта нет, поэтому достижимость и форма (арность
+/// дженерика) проверяются компиляцией никогда не вызываемой функции.
+#[allow(dead_code)]
+fn sse_types_are_reachable_from_the_facade<B>(_s: http_ng::SseStream<B>) {
+    let _event: http_ng::SseEvent = http_ng::SseEvent::Comment(String::new());
+    let _limit: usize = http_ng::DEFAULT_MAX_EVENT_SIZE;
+}

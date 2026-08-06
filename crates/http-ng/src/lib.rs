@@ -10,11 +10,14 @@ mod config;
 pub mod mock;
 mod request;
 mod response;
+mod sse;
 mod stages;
 
 pub use client::{Client, ClientBuilder};
 pub use config::{Config, Timeouts, check_supported, effective_timeouts};
 pub use http_ng_core::{Capabilities, RequestBody, UnsupportedCapability};
 pub use http_ng_proto::redirect::RedirectPolicy;
+pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
+pub use sse::SseStream;

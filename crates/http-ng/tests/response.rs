@@ -203,6 +203,33 @@ fn invalid_header_name_fails_send_instead_of_silently_dropping_it() {
     );
 }
 
+/// Carried finding from Task 13's review (progress.md, "Task 13: minor
+/// (deferred)"): the "first error wins" contract of `header()` is guaranteed
+/// structurally (`header()` short-circuits before parsing once the error
+/// slot is filled), but had no test pinning it. Calls an invalid *name*
+/// first, then an invalid *value*: the error `send()` reports must be the
+/// name error, not the value error that came second.
+#[test]
+fn header_first_error_wins_name_over_later_value_error() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let c = Client::builder(m).build().unwrap();
+
+    let result = futures_executor::block_on(
+        c.get("https://a/x")
+            .header("bad header", "v") // invalid name — recorded first
+            .header("x-ok", "bad\nvalue") // invalid value — must not overwrite it
+            .send(),
+    );
+    let err = result.expect_err("both header() calls are invalid; send() must fail");
+    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    assert!(
+        src.downcast_ref::<http::header::InvalidHeaderName>()
+            .is_some(),
+        "the first error (invalid name) must win over the later invalid value: {err}"
+    );
+}
+
 /// `chunk()` skips trailer frames — documented in `response.rs` but, before
 /// this fix round, untested: `push_response`/`push_response_frames` only ever
 /// produce data frames. `push_response_with_trailers` closes that gap
