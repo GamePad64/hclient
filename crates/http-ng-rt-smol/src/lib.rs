@@ -101,12 +101,17 @@ impl TcpConnect for Smol {
         begin_connect(&sock, addr)?;
 
         let std_stream: std::net::TcpStream = sock.into();
-        // `async_io::Async::new` регистрирует дескриптор в реакторе smol.
-        // Сокет уже неблокирующий и уже начал коннект (см. `begin_connect`
-        // выше) — `Async::new`, а не `new_nonblocking`, потому что публичное
-        // API `async-io` не экспортирует последний; повторная установка
-        // неблокирующего режима внутри него безвредна (идемпотентна).
-        let async_stream = async_io::Async::new(std_stream)?;
+        // `async_io::Async::new_nonblocking` регистрирует дескриптор в
+        // реакторе smol БЕЗ повторной установки неблокирующего режима —
+        // `sock.set_nonblocking(true)` двумя строками выше уже сделал это
+        // один раз. `Async::new` (обычный, не `_nonblocking` вариант) сам
+        // устроен как `set_nonblocking(io) + Self::new_nonblocking(io)`
+        // (`async-io-2.6.0/src/lib.rs:658-663` и `:752-757`, для unix- и
+        // windows-`impl`-блока — прочитано, не предположено): вызвать его
+        // здесь значило бы платить второй, избыточный синскол на каждый
+        // `connect()`. `new_nonblocking` — обычная `pub fn` на обоих
+        // `impl`-блоках, экспортирована наравне с `new`.
+        let async_stream = async_io::Async::new_nonblocking(std_stream)?;
         // Сокет становится writable, когда неблокирующий `connect()`
         // завершается — успехом или ошибкой. Тот же приём, что и в
         // `async_io::Async::<TcpStream>::connect` (единственная причина,

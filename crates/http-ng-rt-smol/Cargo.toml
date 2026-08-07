@@ -28,6 +28,10 @@ libc = "0.2.172"
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# Только для `tests/adversarial_smol_io.rs`: `hyper` — нормальная (не dev)
+# зависимость `http-ng-rt`, а не этого крейта, поэтому интеграционному тесту
+# она не видна без собственного dev-dependency.
+hyper            = { version = "1.11", default-features = false }
 
 [lints]
 workspace = true

@@ -407,6 +407,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-rt-pair-check"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "http-ng-rt",
+ "http-ng-rt-smol",
+ "http-ng-rt-tokio",
+ "hyper",
+ "tokio",
+]
+
+[[package]]
 name = "http-ng-rt-smol"
 version = "0.1.0"
 dependencies = [
@@ -417,6 +429,7 @@ dependencies = [
  "futures-executor",
  "futures-lite",
  "http-ng-rt",
+ "hyper",
  "libc",
  "socket2",
 ]

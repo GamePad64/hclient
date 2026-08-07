@@ -1,0 +1,22 @@
+[package]
+name = "http-ng-rt-pair-check"
+version = "0.1.0"
+description = "Доказательство: один и тот же клиентский код гоняет способности рантайма на tokio и на smol без единого #[cfg]"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+http-ng-rt       = { path = "../http-ng-rt", version = "0.1.0" }
+http-ng-rt-tokio = { path = "../http-ng-rt-tokio", version = "0.1.0" }
+http-ng-rt-smol  = { path = "../http-ng-rt-smol", version = "0.1.0" }
+hyper            = { version = "1.11", default-features = false }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
