@@ -109,7 +109,32 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
     Pin::new(io).poll_flush(cx)
 }
 
-/// Вычитать из транспорта и скормить rustls. `Ok(false)` — EOF.
+/// Вычитать из транспорта и скормить rustls. `Ok(false)` — сырой транспорт
+/// дошёл до EOF на этом чтении (0 байт из `poll_read`); `Ok(true)` — что-то
+/// реально прочитано.
+///
+/// EOF отдаётся rustls'у ЯВНО, тем же вызовом `read_tls`, каким передаются
+/// обычные байты — не перехватывается заранее, до того как rustls его
+/// увидит. `read_tls` на 0-байтовом чтении выставляет внутренний
+/// `has_seen_eof` (`rustls-0.23.43 src/conn.rs:776`), и именно этот флаг
+/// отличает резкий обрыв TCP без `close_notify` от честного `close_notify`:
+/// `Reader::check_no_bytes_state` (`src/conn.rs:183`) на СЛЕДУЮЩЕМ вызове
+/// `conn.reader().read()` возвращает `Err(UnexpectedEof)` для первого
+/// случая и `Ok(0)` для второго — но только если `read_tls` вообще увидел
+/// этот 0-байтовый исход хотя бы раз. Раньше эта функция перехватывала
+/// `filled.is_empty()` СРАЗУ и возвращала `Ok(false)`, ни разу не передав
+/// пустое чтение rustls'у — truncation-attack дыра (fix round 2 review):
+/// голый TCP FIN без `close_notify` резолвился идентично честному
+/// `close_notify` на уровне `TlsStream::poll_read`, потому что встроенное
+/// различение rustls попросту никогда не запускалось. Решение — не здесь:
+/// эта функция обязана честно отдать rustls'у то, что он умеет различить, а
+/// не решать за него, что "нечего читать" и "поток оборван без
+/// предупреждения" — одно и то же. Терпимость к серверам, закрывающимся без
+/// `close_notify` (их немало на практике), если она вообще нужна, — решение
+/// HTTP-слоя поверх `hyper::rt::Read`, который знает про framing
+/// (`Content-Length`/chunked) и способен отличить "тело уже дочитано
+/// целиком, TLS оборвался ПОСЛЕ" от "тело оборвано на середине" — этот
+/// поток не может и не должен угадывать это сам.
 pub(crate) fn pump_incoming<S: Read + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
@@ -119,15 +144,19 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
     let mut rb = hyper::rt::ReadBuf::new(&mut scratch);
     ready!(Pin::new(io).poll_read(cx, rb.unfilled()))?;
     let filled = rb.filled();
-    if filled.is_empty() {
-        return Poll::Ready(Ok(false));
-    }
+    let had_bytes = !filled.is_empty();
     let mut cursor = std::io::Cursor::new(filled);
-    while (cursor.position() as usize) < filled.len() {
+    // do-while: даже пустой (EOF) срез обязан дойти до `read_tls` хотя бы
+    // раз — обычный `while (pos as usize) < filled.len()` пропустил бы тело
+    // цикла целиком при `filled.len() == 0`, вернувшись к старому багу.
+    loop {
         conn.read_tls(&mut cursor).map_err(tls_err)?;
         conn.process_new_packets().map_err(tls_err)?;
+        if (cursor.position() as usize) >= filled.len() {
+            break;
+        }
     }
-    Poll::Ready(Ok(true))
+    Poll::Ready(Ok(had_bytes))
 }
 
 impl<S: Read + Write + Unpin> Read for TlsStream<S> {
@@ -165,12 +194,14 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
             }
             // 2. Отдать всё исходящее (renegotiation, close_notify и т.п.).
             ready!(flush_outgoing(&mut this.io, &mut this.conn, cx))?;
-            // 3. Дочитать из транспорта.
-            let more = ready!(pump_incoming(&mut this.io, &mut this.conn, cx))?;
-            if !more {
-                return Poll::Ready(Ok(()));
-            } // EOF (закрытие сырого транспорта, не TLS-уровня — отдельный
-            // случай от close_notify выше)
+            // 3. Дочитать из транспорта. Не короткое замыкание на "сырой
+            // транспорт вернул 0 байт" — `pump_incoming` уже скормила этот
+            // исход rustls'у (см. её doc-комментарий), и следующая итерация
+            // цикла вернётся на шаг 1, где `conn.reader().read()` теперь
+            // честно различит `close_notify` (`Ok(0)`) и резкий обрыв без
+            // него (`Err(UnexpectedEof)`) — здесь эту разницу решать не
+            // нужно и нельзя.
+            ready!(pump_incoming(&mut this.io, &mut this.conn, cx))?;
         }
     }
 }

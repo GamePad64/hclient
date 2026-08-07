@@ -26,6 +26,14 @@ http-ng-rt       = { path = "../http-ng-rt" }
 http-ng-rt-smol  = { path = "../http-ng-rt-smol" }
 http-ng-rt-tokio = { path = "../http-ng-rt-tokio" }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# `client` + `http1`: только эта задача (fix round 2) реально говорит HTTP
+# поверх `TlsStream` — проверить утверждение "framing решает hyper, а не
+# этот поток" можно только настоящим hyper-клиентом, не самодельной
+# заменой. `[dependencies]` выше остаётся `default-features = false` без
+# этих фич — резолвер фич per-target (`resolver = "3"`, workspace root)
+# не даёт им просочиться в библиотечную сборку, проверено `cargo tree`.
+hyper            = { version = "1.11", default-features = false, features = ["client", "http1"] }
+http-body-util   = { workspace = true }
 rcgen            = "0.14"
 socket2          = { version = "0.6", features = ["all"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }

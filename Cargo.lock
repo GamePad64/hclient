@@ -625,6 +625,7 @@ name = "http-ng-tls-rustls"
 version = "0.1.0"
 dependencies = [
  "futures-executor",
+ "http-body-util",
  "http-ng-core",
  "http-ng-rt",
  "http-ng-rt-smol",
