@@ -468,6 +468,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-tls"
+version = "0.1.0"
+dependencies = [
+ "http-ng-core",
+ "hyper",
+]
+
+[[package]]
 name = "http-ng-wasi"
 version = "0.1.0"
 dependencies = [

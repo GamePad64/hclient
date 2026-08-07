@@ -1,0 +1,15 @@
+[package]
+name = "http-ng-tls"
+version = "0.1.0"
+description = "Трейт подключаемого TLS для http-ng"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+http-ng-core = { workspace = true }
+hyper        = { version = "1.11", default-features = false }
+
+[lints]
+workspace = true
