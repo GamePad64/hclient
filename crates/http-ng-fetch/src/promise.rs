@@ -85,6 +85,18 @@ unsafe impl<T> Send for SingleThreaded<T> {} // unsafe-code-exception: amendment
 
 type ClosurePair = (Closure<dyn FnMut(JsValue)>, Closure<dyn FnMut(JsValue)>);
 
+/// `pub(crate)`, not module-private: `SendJsFuture::downgrade_state`
+/// (below) returns `Weak<Mutex<State>>`, and that function is `pub(crate)`
+/// itself, called from `lib.rs`'s `testing` module — a sibling module
+/// needs `State` at least `pub(crate)` to be able to hold a value of that
+/// type at all. Diagnosed and applied by `v3-impl-task-3` mid fix-round-1,
+/// not by this file's own author: `downgrade_state` was added here while
+/// `State` was still module-private, which is `E0446` and broke every
+/// other crate in `http-ng-fetch` — including `caps.rs`/`convert.rs`,
+/// which have nothing to do with this file. Fixed with the minimal
+/// one-line widening, on the correct diagnosis, and folded into this
+/// file's own history rather than left as a silent fix in someone else's
+/// commit.
 #[derive(Default)]
 pub(crate) struct State {
     result: Option<Result<JsValue, JsValue>>,
