@@ -1,0 +1,20 @@
+[package]
+name = "http-ng-rt-tokio"
+version = "0.1.0"
+description = "Реализация способностей рантайма http-ng поверх tokio"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+http-ng-rt = { path = "../http-ng-rt", version = "0.1.0" }
+hyper      = { version = "1.11", default-features = false }
+socket2    = { version = "0.6", features = ["all"] }
+tokio      = { version = "1", features = ["net", "rt", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
