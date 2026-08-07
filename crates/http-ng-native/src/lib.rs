@@ -68,7 +68,7 @@ impl<R, T, D> Native<R, T, D> {
         // Честно про v0.1: пула соединений нет, стриминга тела запроса нет,
         // upgrade нет — остальные поля остаются на консервативной базе
         // `Capabilities::none()` (см. `tests/transport.rs`'s
-        // `every_undeclared_capability_stays_at_the_conservative_default`).
+        // `undeclared_capability_fields_match_their_conservative_defaults_today`).
         caps.streaming_request_body = false;
         caps.redirects = RedirectSupport::Configurable;
         caps.tls_config = TlsSupport::Full;

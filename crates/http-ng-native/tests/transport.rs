@@ -28,6 +28,8 @@
 //! `Client::execute` (у которого есть собственный шаг `.map_err(|e|
 //! self.transport.to_error(e))`), и до `kind()`, который видит вызывающая
 //! сторона.
+mod net_fixtures;
+
 use http_ng::Client;
 use http_ng_core::ErrorKind;
 use http_ng_core::unversioned::Transport;
@@ -144,15 +146,33 @@ async fn capabilities_are_honest_about_v01_limits() {
 /// `capabilities_are_honest_about_v01_limits` above only samples the fields
 /// the brief calls out. This one destructures the rest of the struct so a
 /// field nobody asked `Native` to turn on can't silently end up
-/// `true`/non-`None`. Unlike `Capabilities::none_is_the_conservative_base`
-/// in `http-ng-core` (which lives inside that crate and can omit `..`),
-/// this file is an external crate — `Capabilities` is `#[non_exhaustive]`,
-/// so `..` is mandatory here (E0638) and a brand-new field added later
-/// would silently fall through it rather than fail to compile. That's the
-/// documented cost of `#[non_exhaustive]` for outside consumers, not a gap
-/// specific to this test.
+/// `true`/non-`None`.
+///
+/// **What this test cannot do, despite what an earlier name implied.** Unlike
+/// `Capabilities::none_is_the_conservative_base` in `http-ng-core` (which
+/// lives inside that crate and can destructure with no `..` rest pattern, so
+/// a brand-new field is a compile error naming it), this file is an
+/// *external* crate — `Capabilities` is `#[non_exhaustive]`, so `..` is
+/// mandatory here (E0638), and that `..` silently absorbs any field added
+/// later. A reviewer built exactly this scenario (added a seventeenth field
+/// to `Capabilities`): `http-ng-core`'s own internal test failed to compile
+/// as designed, and this test compiled and passed without noticing.
+/// Renamed from `every_undeclared_capability_stays_at_the_conservative_default`
+/// to stop promising that it does — it checks that the fields enumerated
+/// below are at their conservative defaults *today*, nothing more. The
+/// exhaustiveness guarantee (a new field becomes a compile error, not a
+/// silent pass) exists exactly once, inside `http-ng-core`'s own
+/// `Capabilities::none_is_the_conservative_base` — `#[non_exhaustive]` makes
+/// that guarantee structurally unavailable to any test outside the crate
+/// that owns the type, this one included. Any future capabilities-
+/// completeness check belongs there, not in a transport crate like this one.
+/// (Note for whoever wires this to a spec citation later: this is *not* the
+/// same thing as design-doc amendment C3, which is specifically about where
+/// `Send`/`Sync` assertions live so `no-declared-send`'s `src`-only grep
+/// doesn't trip on its own test text — a different rule that happens to
+/// share the "belongs in `tests/`, not here" shape.)
 #[tokio::test]
-async fn every_undeclared_capability_stays_at_the_conservative_default() {
+async fn undeclared_capability_fields_match_their_conservative_defaults_today() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let http_ng_core::Capabilities {
         streaming_request_body: _,
@@ -314,4 +334,76 @@ async fn tls_handshake_failure_reports_tls_kind_through_the_client() {
     .expect("must not hang")
     .unwrap_err();
     assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
+}
+
+// --- The remaining two of the brief's five `ErrorKind` fidelity properties ---
+//
+// The tests above cover `Resolve`, `Cancelled` and `Tls` surviving
+// `Client::execute`. `Connect` and `Body` were the other two the brief
+// named, and fix round 1's review found neither had a test of its own at
+// this composed layer — both pass on unmodified code (no bug), but nothing
+// held that property in place: wrapping `h1::exchange`'s error in a fresh
+// `Error::new(ErrorKind::Connect, e)` in `src/lib.rs` turns the `Body` test
+// below red while every other test in this file stays green (verified
+// directly, see this task's report). The two tests below close that gap.
+
+/// `ErrorKind::Connect` (`connect::connect`'s own `AllAttemptsFailed`,
+/// `ErrorKind::Connect` — Task 11) surviving `Client::execute`, the same
+/// property `Resolve`/`Cancelled`/`Tls` already have tests for above.
+/// `net_fixtures::closed_port` (not a hand-rolled bind-then-drop) reuses the
+/// helper this crate already has for "a port that genuinely refuses" — see
+/// its doc comment for why a hand-rolled version is a trap worth avoiding a
+/// second time, and why a supposedly-unroutable *address* would not do here
+/// (this container's `tun0` makes those connect successfully; a closed
+/// *local* port still gets a real `ECONNREFUSED` from the kernel regardless).
+#[tokio::test]
+async fn connect_refused_kind_survives_the_client() {
+    let addr = net_fixtures::closed_port();
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let c = Client::builder(t).build().unwrap();
+    let err = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/")).send())
+        .await
+        .expect("must not hang")
+        .unwrap_err();
+    assert_eq!(*err.kind(), ErrorKind::Connect, "{err}");
+}
+
+/// A one-shot `RequestBody::Streaming` whose only frame is an error —
+/// exercises the same "outgoing body fails mid-stream" shape `h1.rs`'s own
+/// unit test already proves one layer down
+/// (`exchange_recovers_error_kind_through_hyper_error_not_flattening_it`,
+/// which calls `h1::exchange` directly), but through the full
+/// `Native::execute` + `Client::execute` composition instead.
+struct OneShotErrBody(Option<http_ng_core::Error>);
+impl http_body::Body for OneShotErrBody {
+    type Data = bytes::Bytes;
+    type Error = http_ng_core::Error;
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, http_ng_core::Error>>> {
+        std::task::Poll::Ready(self.0.take().map(Err))
+    }
+    fn is_end_stream(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+/// `ErrorKind::Body` (the outgoing request body itself failing, not the
+/// response) surviving `Client::execute` — see the module-level comment
+/// above for the mutation that proves this test is load-bearing, not
+/// decorative.
+#[tokio::test]
+async fn streaming_request_body_error_kind_survives_the_client() {
+    let addr = spawn_h1_server();
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let c = Client::builder(t).build().unwrap();
+    let body = http_ng_core::RequestBody::Streaming(Box::new(OneShotErrBody(Some(
+        http_ng_core::Error::new(ErrorKind::Body, std::io::Error::other("stream broke")),
+    ))));
+    let err = tokio::time::timeout(BOUND, c.post(&format!("http://{addr}/")).body(body).send())
+        .await
+        .expect("must not hang")
+        .unwrap_err();
+    assert_eq!(*err.kind(), ErrorKind::Body, "{err}");
 }
