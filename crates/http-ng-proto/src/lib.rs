@@ -4,6 +4,7 @@
 //! Всё, что зависит от времени, принимает `now` параметром. Проверяется в CI.
 #![forbid(unsafe_code)]
 
+pub mod happy_eyeballs;
 pub mod redirect;
 pub mod sse;
 pub mod uri;

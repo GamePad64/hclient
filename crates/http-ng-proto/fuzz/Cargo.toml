@@ -25,4 +25,11 @@ test = false
 doc  = false
 bench = false
 
+[[bin]]
+name = "happy_eyeballs"
+path = "fuzz_targets/happy_eyeballs.rs"
+test = false
+doc  = false
+bench = false
+
 [workspace]
