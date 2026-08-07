@@ -164,13 +164,15 @@ async fn capabilities_are_honest_about_v01_limits() {
 /// silent pass) exists exactly once, inside `http-ng-core`'s own
 /// `Capabilities::none_is_the_conservative_base` — `#[non_exhaustive]` makes
 /// that guarantee structurally unavailable to any test outside the crate
-/// that owns the type, this one included. Any future capabilities-
-/// completeness check belongs there, not in a transport crate like this one.
-/// (Note for whoever wires this to a spec citation later: this is *not* the
-/// same thing as design-doc amendment C3, which is specifically about where
-/// `Send`/`Sync` assertions live so `no-declared-send`'s `src`-only grep
-/// doesn't trip on its own test text — a different rule that happens to
-/// share the "belongs in `tests/`, not here" shape.)
+/// that owns the type, this one included (design-doc **amendment C6** —
+/// `docs/superpowers/specs/2026-08-05-http-ng-design.md`, `## Поправки к
+/// дизайну`; recorded there with this exact evidence after this test found
+/// it). Any future capabilities-completeness check belongs in `http-ng-core`,
+/// not in a transport crate like this one. Not the same rule as amendment C3
+/// (which is about where `Send`/`Sync` assertions live, so
+/// `no-declared-send`'s `src`-only grep doesn't trip on its own test text) —
+/// the two share a "belongs elsewhere" shape but are different amendments,
+/// citing one for the other was a mistake caught and corrected once already.
 #[tokio::test]
 async fn undeclared_capability_fields_match_their_conservative_defaults_today() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
