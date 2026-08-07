@@ -263,6 +263,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-rt"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "futures-io",
+ "http-ng-core",
+ "hyper",
+]
+
+[[package]]
 name = "http-ng-wasi"
 version = "0.1.0"
 dependencies = [
@@ -274,6 +284,18 @@ dependencies = [
  "http-ng-core",
  "serde_json",
  "wasip3",
+]
+
+[[package]]
+name = "hyper"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body",
+ "tokio",
 ]
 
 [[package]]
@@ -712,6 +734,15 @@ checksum = "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tokio"
+version = "1.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+dependencies = [
+ "pin-project-lite",
 ]
 
 [[package]]

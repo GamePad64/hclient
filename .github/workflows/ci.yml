@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -212,8 +212,13 @@ jobs:
           #
           # `http-ng-wasi` в этот job не входит намеренно: у него собственный
           # `rust-version = "1.90"` (требование `wasip3`), расхождение
-          # задокументировано в его Cargo.toml. Список `$pkgs` — три ядровых
-          # крейта, и `--all-targets` его не расширяет.
+          # задокументировано в его Cargo.toml. `http-ng-rt` (Task 1
+          # вертикали 2) в список добавлен: workspace `rust-version = "1.85"`
+          # — общее обещание, и plan Global Constraints вертикали не
+          # закрепляет за `http-ng-rt` собственный, более высокий минимум
+          # (в отличие от `http-ng-wasi`), значит он проверяется здесь же, с
+          # остальными. Список `$pkgs` — четыре крейта, и `--all-targets`
+          # его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
   wasip2:
@@ -748,8 +753,17 @@ jobs:
           # планировщик Happy Eyeballs (spec §5.4, §5.6) и их типы пойдут
           # через `Client`. Одно слово в списке, добавленное до того, а не
           # после.
+          #
+          # `http-ng-rt/src` — Task 1 вертикали 2. Тот же класс промаха, что
+          # выше с `http-ng-proto/src`: крейт не существовал, когда список
+          # писался, значит его отсутствие здесь было бы фактом истории, а
+          # не решением, что бонды в нём вне области действия. `Blocking::run`
+          # в этом крейте объявляет `Send` в самом трейте способности (см.
+          # `amendment-C5` ниже по фильтру и в спеке) — ровно тот случай,
+          # который эта проверка обязана видеть и пропускать по маркеру, а
+          # не молчать по недосмотру.
           dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src crates/http-ng-proto/src; do
+          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src crates/http-ng-proto/src crates/http-ng-rt/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
@@ -771,8 +785,8 @@ jobs:
           # который допишут поздние задачи) по-прежнему сканируется.
           #
           # Маркер — это ЗАЯВКА, а не способ заглушить проверку: каждая
-          # маркированная строка обязана называть поправку (C1 или C2, Latin
-          # C) из `docs/superpowers/specs/2026-08-05-http-ng-design.md`,
+          # маркированная строка обязана называть поправку (C1, C2 или C5,
+          # Latin C) из `docs/superpowers/specs/2026-08-05-http-ng-design.md`,
           # которая её оправдывает.
           #
           # ПРАВИЛО, а не список конкретных строк (Task 13 fix round 2):
@@ -812,7 +826,8 @@ jobs:
           # (Task 13 fix round 1): раньше `grep -v 'send-bound-exception'`
           # пропускал ЛЮБУЮ строку, содержащую эту подстроку — включая маркер
           # с выдуманным обоснованием. Теперь строка обязана содержать
-          # `send-bound-exception:` и реальную ссылку на поправку C1 или C2.
+          # `send-bound-exception:` и реальную ссылку на поправку C1, C2 или
+          # C5.
           #
           # Round 2 латинизировал сам токен поправки (`C1`/`C2`, было
           # `С1`/`С2`): кириллическая `С` (U+0421) неотличима на глаз от
@@ -824,9 +839,20 @@ jobs:
           # «amendment-C1»), но поднимает планку выше «любая строка» и делает
           # каждую заявку находимой обычным ASCII-поиском по двум
           # существующим сегодня поправкам.
+          #
+          # Task 1 вертикали 2 расширил класс фильтра с `C[12]` до `C[125]`:
+          # `http-ng-rt::Blocking` — первое исключение, чей источник бонда не
+          # стирание auto-traits на пути `Client -> Transport` (C1/C2), а
+          # чужой API (`tokio::task::spawn_blocking`, `blocking::unblock`),
+          # который требует `Send + 'static` в своей сигнатуре — новый класс,
+          # значит новая поправка (C5 в спеке), не переиспользование C1/C2.
+          # `C3` и `C4` в фильтр не входят намеренно: они не про исключения из
+          # этого инварианта (C3 — соглашение о месте `assert_send`-тестов, C4
+          # — про `&'static [HeaderName]`) и ни разу не встречаются как
+          # `send-bound-exception`-маркер в коде.
           if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
-               | grep -vE 'send-bound-exception:[[:space:]]*amendment-C[12]\b'; then
+               | grep -vE 'send-bound-exception:[[:space:]]*amendment-C[125]\b'; then
             echo "::error::в ядре объявлен бонд Send или Sync без маркера send-bound-exception"
             exit 1
           fi
