@@ -96,6 +96,22 @@ impl<R, T, D> Native<R, T, D> {
             // Применяется по-настоящему — см. `execute`'s гонку `connect::
             // connect` против `rt.sleep(d)`, ниже, и `tests/transport.rs`'s
             // `declared_connect_timeout_is_actually_applied`.
+            //
+            // Scope, spelled out (final review round 3: the capability
+            // alone left this ambiguous — RFC 8305 staggers several TCP
+            // attempts, and "connect" could plausibly mean a budget per
+            // attempt or one budget for all of them, which are materially
+            // different promises to a caller). This is the LATTER: one
+            // deadline for `connect::connect` as a whole — DNS resolution,
+            // every Happy Eyeballs attempt across every address offered,
+            // and (for `https`) the TLS handshake — not a per-attempt
+            // budget. `with_connect_timeout` below wraps the entire
+            // `connect::connect(..)` future exactly once; there is no
+            // per-attempt timer anywhere in this file or in `connect.rs`.
+            // `tests/transport.rs`'s `connect_timeout_covers_the_whole_
+            // race_not_a_single_attempt` pins this by counting how many
+            // Happy Eyeballs attempts two different deadlines let through,
+            // not merely that a timeout fires.
             connect: true,
             // Ни пула, ни таймера ответа в v0.1 нет — заявлять эти фазы
             // значило бы способность, которая лжёт о своём состоянии.
@@ -220,6 +236,14 @@ impl std::error::Error for ConnectTimedOut {}
 /// брифовский `select_biased!` не подошёл): здесь всего два плеча и оба
 /// нужны ровно один раз, макрос не даёт этой паре ничего, чего не даёт
 /// прямой `poll`.
+///
+/// Scope (final review round 3): `fut` is expected to be the whole
+/// `connect::connect(..)` call, passed in as one opaque future — this
+/// function has no visibility into, and no way to time, any individual
+/// attempt inside it. That's what makes the deadline an overall one rather
+/// than a per-attempt one: there is exactly one `sleep(d)` racing exactly
+/// one `fut`, called exactly once per `execute()`, not once per address
+/// Happy Eyeballs tries.
 async fn with_connect_timeout<R, F, T>(rt: &R, d: Duration, fut: F) -> Result<T, Error>
 where
     R: Timer,

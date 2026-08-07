@@ -38,6 +38,7 @@ use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -429,6 +430,65 @@ async fn streaming_request_body_error_kind_survives_the_client() {
 
 // --- Final review, F1: does the declared connect timeout actually fire? ---
 
+/// Polls `fut` in a bare loop — no parking, no reactor, and (unlike the
+/// `std::thread::spawn` + `std::process::exit` watchdog this replaces)
+/// no second thread — until it resolves or `bound` elapses. Returns `None`
+/// on timeout, letting the caller fail through an ordinary `panic!`/
+/// `assert!` instead.
+///
+/// **Why this replaces a watchdog thread, final review round 3.** Measured
+/// directly (throwaway experiment, not assumed): a `std::process::exit`
+/// called from a spawned thread, even immediately after an `eprintln!`,
+/// prints nothing but `error: test failed` under a plain `cargo test` —
+/// libtest's output capture swallows the message and, because `exit`
+/// terminates the process before libtest's own harness can report a named
+/// failure, the test name is gone too. Only `--nocapture` reveals either.
+/// That is exactly the failure mode Task 3 and Task 9's bounded-wait work
+/// spent effort eliminating elsewhere in this vertical ("a stalled run
+/// gives no test name and no diagnosis") — reproduced here in a different
+/// shape, guarding the one capability whose silent no-op blocked this
+/// branch.
+///
+/// A watchdog **thread** is unnecessary here in particular: the future this
+/// helper drives (`Client::execute`'s `send()`, backed by `NeverConnects`'s
+/// `TcpConnect::connect`, which resolves via `std::future::pending()`) never
+/// blocks the calling thread — polling it is instant and returns `Pending`
+/// immediately, every time. What made the old thread-based watchdog seem
+/// necessary was routing through `futures_executor::block_on`, which PARKS
+/// the calling thread on a waker that a `pending()`-backed future will never
+/// invoke — an external thread was the only thing that could ever unpark
+/// it. Polling directly, without parking, sidesteps that: the same thread
+/// that's running the `#[test]` fn just asks again, on a short interval,
+/// until `bound` says to stop asking. Same trick `Native::testing::
+/// BlockingIo`'s doc comment already names ("busy-spin, not park, because
+/// nothing here can wake a parked thread") — applied to a future instead of
+/// raw socket I/O.
+///
+/// Scoped to this file rather than published from `Native::testing`: no
+/// other test in this crate currently needs a bounded driver for a plain,
+/// non-tokio `#[test]` (`connect.rs`/`h1.rs`/`dual_runtime.rs`'s own
+/// watchdog helpers guard different properties, reviewed and accepted in
+/// earlier rounds, and carry the same `process::exit` shape unconverted —
+/// noted as a followup, not fixed here, since converting them isn't what
+/// this review found; blocking-severity findings get fixed on sight,
+/// pre-existing lower-severity siblings don't get silently swept in). The
+/// pattern is what's meant to be reused, not this specific function.
+fn poll_bounded<F: Future>(fut: F, bound: Duration) -> Option<F::Output> {
+    let mut fut = std::pin::pin!(fut);
+    let start = std::time::Instant::now();
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    loop {
+        if let std::task::Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+            return Some(v);
+        }
+        if start.elapsed() >= bound {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// `TcpConnect` whose `connect` future never resolves — the timer is the
 /// only thing that can end this race.
 struct NeverConnects;
@@ -549,16 +609,12 @@ impl http_ng_tls::TlsConnect for NoOpTls {
 /// while nothing in `execute` ever read `Timeouts` — `check_timeouts_supported`
 /// let a connect timeout through `build()` because the capability said so,
 /// and then it did nothing, forever. This is the review's own probe (its
-/// `StuckRt`/`OneAddr`/`NeverStream` renamed to match this file's naming and
-/// its ad hoc watchdog rewritten as `std::process::exit(101)` to match the
-/// rest of the crate's convention for "must not hang, not merely `assert`
-/// eventually") — not a rewrite of what it tests, since the point is to
-/// verify the review's own finding, not a different one.
-///
-/// `futures_executor::block_on`, not `tokio::test`: `NeverConnects` supplies
-/// its own `Timer`/`TcpConnect`, and pulling in a full tokio runtime just to
-/// run one non-tokio future would be the same needless-dependency pattern
-/// `connect.rs`'s own `bounded_block_on`-based tests already avoid.
+/// `StuckRt`/`OneAddr`/`NeverStream` renamed to match this file's naming) —
+/// not a rewrite of what it tests, since the point is to verify the
+/// review's own finding, not a different one. Driven through `poll_bounded`
+/// rather than a watchdog thread — see that function's doc comment (final
+/// review round 3: the thread-based version's failure message and even its
+/// test name were invisible under a plain `cargo test`).
 #[test]
 fn declared_connect_timeout_is_actually_applied() {
     let t = Native::new(NeverConnects, NoOpTls, OneUnroutableAddr);
@@ -570,26 +626,171 @@ fn declared_connect_timeout_is_actually_applied() {
         .build()
         .expect("Native declares timeouts.connect = true, so build() must accept this");
 
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let done2 = done.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(5));
-        if !done2.load(std::sync::atomic::Ordering::SeqCst) {
-            eprintln!(
-                "declared_connect_timeout_is_actually_applied: a 50 ms connect timeout never \
-                 fired after 5 s — the declared capability is a silent no-op (final review, F1)"
-            );
-            std::process::exit(101);
-        }
-    });
-
-    let err = futures_executor::block_on(c.get("http://example.invalid/").send())
-        .expect_err("connect never completes, so this must be a timeout, not a success");
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = poll_bounded(
+        c.get("http://example.invalid/").send(),
+        Duration::from_secs(5),
+    );
+    let err = match result {
+        None => panic!(
+            "a 50 ms connect timeout never fired after 5 s — the declared capability is a \
+             silent no-op (final review, F1)"
+        ),
+        Some(Ok(_)) => panic!("connect never completes, so this must be a timeout, not a success"),
+        Some(Err(e)) => e,
+    };
     assert_eq!(
         *err.kind(),
         ErrorKind::Timeout(http_ng_core::Phase::Connect),
         "{err}"
+    );
+}
+
+// --- Final review round 3, item 2: what does the connect deadline cover,
+// and is its declared duration actually the one used? ---
+
+/// `TcpConnect` that never completes any attempt (same shape as
+/// `NeverConnects`), but records the wall-clock time each attempt started —
+/// the observable `connect_timeout_covers_the_whole_race_not_a_single_
+/// attempt` needs to tell "the deadline stopped the race early" apart from
+/// "Happy Eyeballs simply ran out of addresses on its own."
+#[derive(Clone, Default)]
+struct LoggingNeverConnects {
+    attempts: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+}
+impl http_ng_rt::TcpConnect for LoggingNeverConnects {
+    type Stream = NeverStream;
+    async fn connect(
+        &self,
+        _addr: std::net::SocketAddr,
+        _opts: &http_ng_rt::TcpOpts,
+    ) -> std::io::Result<NeverStream> {
+        self.attempts
+            .lock()
+            .unwrap()
+            .push(std::time::Instant::now());
+        std::future::pending().await
+    }
+}
+impl http_ng_rt::Timer for LoggingNeverConnects {
+    type Instant = std::time::Instant;
+    async fn sleep(&self, d: Duration) {
+        // Real sleep on a helper thread, same construction as
+        // `NeverConnects::sleep` above — this file has no reactor.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done2 = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(d);
+            done2.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        std::future::poll_fn(move |cx| {
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                std::task::Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await
+    }
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+    fn elapsed_since(&self, earlier: std::time::Instant) -> Duration {
+        earlier.elapsed()
+    }
+}
+
+/// Five addresses, all unroutable — enough that Happy Eyeballs alone
+/// (`HeConfig::default()`'s `attempt_delay`, 250 ms, staggering each new
+/// attempt) would still be launching attempts long after either deadline
+/// below has expired, if nothing cut it off first.
+struct FiveUnroutableAddrs;
+impl Resolve for FiveUnroutableAddrs {
+    fn lookup_ipv4(
+        &self,
+        _name: &str,
+    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, http_ng_core::Error>> {
+        futures_util::stream::iter((1..=5u8).map(|n| {
+            Ok(ResolvedAddr {
+                addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, n)),
+                ttl: None,
+            })
+        }))
+    }
+    fn lookup_ipv6(
+        &self,
+        _name: &str,
+    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, http_ng_core::Error>> {
+        futures_util::stream::empty()
+    }
+}
+
+/// Final review round 3, item 2: `declared_connect_timeout_is_actually_
+/// applied` above proves a deadline exists and fires; it does not prove
+/// WHAT it covers or that its DURATION is the one the caller asked for —
+/// with only one address and one deadline, a hardcoded duration or a
+/// deadline re-armed per attempt would both still produce a `Timeout`
+/// error, and that test would stay green either way.
+///
+/// This test tells those apart. `connect::connect` always builds
+/// `HeConfig::default()` internally (`Native` has no way to configure it),
+/// so its 250 ms `attempt_delay` is a fact about today's code, not a choice
+/// made here: with five never-connecting addresses, attempts start at
+/// roughly t=0, 250 ms, 500 ms, 750 ms, 1000 ms. Two different declared
+/// deadlines — 150 ms and 400 ms — each fall between two of those attempt
+/// times. If the deadline is a single budget for the whole race (see
+/// `Native::new`'s doc comment on `TimeoutSupport::connect`), each case
+/// must let through exactly the attempts that started before its own
+/// deadline and no more; a deadline applied per attempt, or one that
+/// ignored the requested duration in favor of a fixed value, would show a
+/// DIFFERENT attempt count than the one that duration predicts.
+#[test]
+fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
+    let run = |d: Duration| -> (ErrorKind, usize) {
+        let rt = LoggingNeverConnects::default();
+        let t = Native::new(rt.clone(), NoOpTls, FiveUnroutableAddrs);
+        let c = Client::builder(t)
+            .timeouts(http_ng::Timeouts {
+                connect: Some(d),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        let result = poll_bounded(
+            c.get("http://example.invalid/").send(),
+            Duration::from_secs(10),
+        );
+        let err = result
+            .expect("must not hang")
+            .expect_err("none of the five addresses ever connects");
+        (err.kind().clone(), rt.attempts.lock().unwrap().len())
+    };
+
+    // 150 ms: past the first attempt (t≈0), short of the second (t≈250 ms).
+    let (kind, attempts) = run(Duration::from_millis(150));
+    assert_eq!(
+        kind,
+        ErrorKind::Timeout(http_ng_core::Phase::Connect),
+        "{kind:?}"
+    );
+    assert_eq!(
+        attempts, 1,
+        "a 150 ms deadline must cut the race off after exactly one attempt"
+    );
+
+    // 400 ms: past the second attempt (t≈250 ms), short of the third (t≈500 ms).
+    let (kind, attempts) = run(Duration::from_millis(400));
+    assert_eq!(
+        kind,
+        ErrorKind::Timeout(http_ng_core::Phase::Connect),
+        "{kind:?}"
+    );
+    assert_eq!(
+        attempts, 2,
+        "a 400 ms deadline must let a second attempt start but cut off before a third — a \
+         count of 1 here would mean the deadline ignored the requested duration (it would \
+         match the 150 ms case exactly); a count of 5 would mean it isn't bounding the race \
+         at all, or is being applied per-attempt instead of to connect() as a whole"
     );
 }
 
@@ -661,4 +862,73 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
         "expected two separate chunk frames (proves streaming, not one \
          collect()-then-write), got:\n{text}"
     );
+}
+
+// --- Final review round 3, item 1: does h1.rs's own response-body ---
+// --- classification survive to the caller, not just Response::chunk()'s ---
+// --- passthrough? ---
+
+/// Final review round 2 found `Response::chunk()` relabeling an
+/// already-classified body error (fixed in round 2, F2). Round 3's re-review
+/// reproduced the review's ORIGINAL mutation (`h1.rs`'s two
+/// `from_hyper_error(e, ErrorKind::Body)` call sites in `NativeBody::
+/// poll_frame`, flipped to `ErrorKind::Other`) directly and found it still
+/// killed zero tests: round 2's fix made `chunk()` pass through whatever
+/// `h1.rs` decided, but nothing forced `h1.rs` itself to decide on a
+/// genuine, unclassified transport failure — every existing body-error test
+/// injects an already-classified `http_ng_core::Error` via
+/// `RequestBody::Streaming`, which `from_hyper_error` recovers from
+/// `hyper::Error::source()` without ever reaching its `fallback` argument.
+///
+/// This test reaches the fallback for real: a server that announces a
+/// `Content-Length` far larger than what it actually sends, then closes the
+/// connection outright. hyper's own h1 decoder — not anything this crate
+/// injects — detects the truncation and returns a `hyper::Error` whose
+/// `source()` is NOT an `http_ng_core::Error` (nothing in this call chain
+/// ever put one there), so `from_hyper_error`'s `None => Error::new(fallback,
+/// e)` branch is what classifies it. That's the exact branch the review's
+/// mutation targets.
+#[tokio::test]
+async fn truncated_response_body_reports_body_kind_from_the_h1_layer() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = l.accept() {
+            let mut b = [0u8; 2048];
+            let _ = s.read(&mut b);
+            // Promise 1000 bytes, send 5, then drop the socket — no clean
+            // shutdown, no `Content-Length` satisfied.
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nshort");
+        }
+        // `s` (and the listener, after this one connection) drops here,
+        // closing the socket without a TLS-style clean close or a
+        // `Connection: close`-negotiated shutdown.
+    });
+
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let c = Client::builder(t).build().unwrap();
+    let mut resp = tokio::time::timeout(BOUND, c.get(&format!("http://{addr}/")).send())
+        .await
+        .expect("must not hang")
+        .unwrap();
+
+    let mut err = None;
+    loop {
+        match tokio::time::timeout(BOUND, resp.chunk())
+            .await
+            .expect("must not hang")
+        {
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => {
+                err = Some(e);
+                break;
+            }
+            None => break,
+        }
+    }
+    let err = err.expect(
+        "a response body truncated far short of its declared Content-Length must surface as \
+         an error, not a clean end of stream",
+    );
+    assert_eq!(*err.kind(), ErrorKind::Body, "{err}");
 }
