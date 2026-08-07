@@ -309,28 +309,76 @@ impl Client<crate::DefaultTransport> {
     /// new(rt, tls, dns))` с рантаймом на выбор (см. `crates/http-ng/tests/
     /// two_runtimes.rs`, тот же конструктор для tokio и для smol).
     ///
-    /// `.expect("platform verifier")` на ошибке `Rustls::
-    /// with_platform_verifier()`, а не проброс через `Result` этой функции:
-    /// возвращаемая ошибка здесь — `UnsupportedCapability` (`what`,
+    /// # Паника
+    ///
+    /// Паникует ровно в одном случае: `Rustls::with_platform_verifier()`
+    /// не смогла прочитать системное хранилище доверия ОС (`rustls-
+    /// platform-verifier`, по её собственному наблюдению — это состояние
+    /// среды выполнения, не ошибка конфигурации клиента). Настройка
+    /// клиента, которую транспорт не поддерживает (`UnsupportedCapability`,
+    /// тип ошибки этой функции), паники не вызывает — возвращается как
+    /// обычный `Err`.
+    ///
+    /// Не паникующая альтернатива — [`Client::try_new`]: тот же
+    /// конструктор, но с обоими отказами (хранилище доверия И
+    /// неподдерживаемая настройка) как `Err`, для вызывающей стороны,
+    /// которая обязана обработать любой отказ, а не только второй.
+    /// `.expect(...)` здесь, а не проброс через `Result` этой функции — то
+    /// же решение, что и раньше: `UnsupportedCapability` (`what`,
     /// `backend`, оба `&'static str`) — типизированный ответ на «транспорт
     /// не поддерживает вот эту настройку клиента», а не на «системное
-    /// хранилище доверия не удалось прочитать». Смешать их значило бы
-    /// врать о причине отказа тем же способом, каким «нет молчаливых
-    /// no-op» запрещает вертикали лгать об успехе — здесь наоборот: не
-    /// лгать о категории отказа. Отказ `with_platform_verifier()` на
-    /// практике означает окружение без работающего системного хранилища
-    /// сертификатов — по наблюдению `rustls-platform-verifier`, состояние
-    /// среды, не конфигурация клиента, и `expect` делает это громким
-    /// падением с ясным сообщением вместо тихого молчания, а не подменяет
-    /// его.
+    /// хранилище доверия не удалось прочитать», и смешать их значило бы
+    /// врать о категории отказа. `try_new` ниже решает это не смешиванием,
+    /// а более широким типом ошибки — `http_ng_core::Error`, у которой
+    /// обе причины уже различимы через `ErrorKind` (`Tls` и `Unsupported`
+    /// соответственно), так что паника здесь остаётся выбором эргономики
+    /// «частого случая», а не единственным путём.
     pub fn new() -> Result<Self, http_ng_core::UnsupportedCapability> {
+        let transport = Self::default_native_transport().expect("platform verifier");
+        Self::builder(transport).build()
+    }
+
+    /// Не паникующая версия [`Client::new`] — то же самое построение
+    /// (`Native<Tokio, Rustls, SystemDns<Tokio>>` с системным хранилищем
+    /// доверия), но обе точки отказа становятся `Err`, а не одна из двух:
+    /// `Rustls::with_platform_verifier()` — `ErrorKind::Tls` (уже так
+    /// возвращает сама `with_platform_verifier`, `?` ниже просто не гасит
+    /// её паникой), несовместимая настройка на `build()` —
+    /// `ErrorKind::Unsupported`, тем же приёмом, что `Client::execute`
+    /// уже применяет к `UnsupportedCapability` из `check_timeouts_
+    /// supported` (`Error::new(ErrorKind::Unsupported, e)`, `config.rs`) —
+    /// не новый приём, изобретённый ради этой функции, а повторное
+    /// использование существующего.
+    ///
+    /// Для процесса, где паника — не приемлемый способ узнать об
+    /// окружении без рабочего системного хранилища сертификатов
+    /// (встроенные системы, долгоживущие процессы, где `catch_unwind`
+    /// вокруг конструктора клиента — не вариант) — этот путь, а не
+    /// [`Client::new`].
+    pub fn try_new() -> Result<Self, http_ng_core::Error> {
+        let transport = Self::default_native_transport()?;
+        Self::builder(transport)
+            .build()
+            .map_err(|e| http_ng_core::Error::new(http_ng_core::ErrorKind::Unsupported, e))
+    }
+
+    /// Общее построение транспорта по умолчанию для [`Client::new`] и
+    /// [`Client::try_new`] — единственная операция, которая у обоих может
+    /// реально отказать (`Rustls::with_platform_verifier()`), поэтому
+    /// вынесена один раз, а не продублирована. `Result<_, http_ng_core::
+    /// Error>`, а не `UnsupportedCapability`: `with_platform_verifier()`
+    /// уже возвращает `Error` (`ErrorKind::Tls`) сама, а `Native::new`/
+    /// `SystemDns::new` не могут отказать вовсе (обычные конструкторы,
+    /// без IO) — оборачивать их несуществующий отказ в `Result` было бы
+    /// нечем обосновать.
+    fn default_native_transport() -> Result<crate::DefaultTransport, http_ng_core::Error> {
         let rt = http_ng_rt_tokio::Tokio;
-        Self::builder(http_ng_native::Native::new(
+        let tls = http_ng_tls_rustls::Rustls::with_platform_verifier()?;
+        Ok(http_ng_native::Native::new(
             rt,
-            http_ng_tls_rustls::Rustls::with_platform_verifier().expect("platform verifier"),
+            tls,
             http_ng_dns_system::SystemDns::new(rt),
         ))
-        .build()
     }
 }
 

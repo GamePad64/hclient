@@ -250,3 +250,30 @@ fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
     // существует, а проверка самого дефолта.
     let _client_no_param: http_ng::Client = client;
 }
+
+// ── Fix round 1 ──────────────────────────────────────────────────────────
+
+/// `Client::try_new()` — не паникующая альтернатива `Client::new()`
+/// (fix round 1, находка 2: `new()` паникует на отказе `with_platform_
+/// verifier()`, а у крейта не было пути получить эту же ошибку как `Err`).
+/// Возвращаемый тип — `http_ng::Error` (уже реэкспортирован ради
+/// `Client::execute`), не `UnsupportedCapability`: в отличие от `new()`,
+/// эта функция обязана уметь назвать ОБЕ причины отказа (хранилище
+/// доверия — `ErrorKind::Tls`, неподдерживаемая настройка —
+/// `ErrorKind::Unsupported`) одним типом, а `UnsupportedCapability`
+/// вторую категорию назвать не может.
+///
+/// Тестирует только успешный путь — то же самое окружение с рабочим
+/// системным хранилищем доверия, что и у `default_transport_is_
+/// reachable_and_is_the_bare_clients_default_param` выше, так что путь
+/// отказа `with_platform_verifier()` здесь структурно (типами), а не
+/// поведением: нет переносимого способа заставить системное хранилище
+/// сертификатов отказать по требованию в тесте, который должен идти
+/// на linux/macos/windows одинаково.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+#[test]
+fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {
+    let client: http_ng::Client<http_ng::DefaultTransport> =
+        http_ng::Client::try_new().expect("default transport supports the default config");
+    let _client_no_param: http_ng::Client = client;
+}
