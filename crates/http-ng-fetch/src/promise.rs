@@ -34,7 +34,7 @@ pub(crate) struct SingleThreaded<T>(pub(crate) T);
 unsafe impl<T> Send for SingleThreaded<T> {} // unsafe-code-exception: amendment-C7
 
 #[derive(Default)]
-struct State {
+pub(crate) struct State {
     result: Option<Result<JsValue, JsValue>>,
     waker: Option<Waker>,
 }
@@ -104,6 +104,19 @@ impl SendJsFuture {
             state,
             _keepalive: SingleThreaded((on_ok, on_err)),
         }
+    }
+
+    /// A weak handle to the shared state, for `tests/promise.rs` to prove
+    /// that dropping `SendJsFuture` while its promise is still pending does
+    /// NOT drop the callbacks registered against it: if `Weak::upgrade`
+    /// still succeeds after the future itself is gone, only the callbacks'
+    /// own clones of the `Arc` can be keeping it alive.
+    ///
+    /// Not `#[cfg(test)]`: `tests/promise.rs` is an integration test, a
+    /// separate crate linking the ordinary build of this library, so
+    /// `cfg(test)` would remove it for exactly the caller that needs it.
+    pub(crate) fn downgrade_state(&self) -> std::sync::Weak<Mutex<State>> {
+        Arc::downgrade(&self.state)
     }
 }
 

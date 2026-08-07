@@ -10,22 +10,38 @@ repository.workspace = true
 # Task 1 added `js-sys` and `wasm-bindgen` for the `Send`-compatible promise
 # adapter (`src/promise.rs`). Task 2 (`src/caps.rs`, runtime capability
 # probing) adds `http` (for `HeaderName` in `FORBIDDEN_HEADERS`) and
-# `http-ng-core` (for `Capabilities` and its constituent enums). It does
-# NOT need `web-sys`: `supports_duplex()` only has to read
+# `http-ng-core` (for `Capabilities` and its constituent enums); it does
+# NOT need `web-sys`, since `supports_duplex()` only has to read
 # `Request.prototype.duplex`'s existence, which `js_sys::Reflect` alone can
-# do without a typed `web_sys::Request` binding. `bytes`, `futures-core`,
-# `http-body` and `wasm-streams` remain deferred to whichever later task
-# needs them (`body`, `convert`).
+# do without a typed `web_sys::Request` binding.
 #
-# Found while wiring the crate into the `msrv` CI job, not assumed:
-# `wasm-streams` 0.6.0 requires rustc 1.88 (`cargo +1.85.0 check --target
-# wasm32-unknown-unknown` on a Cargo.toml carrying it fails with "rustc
-# 1.85.0 is not supported by wasm-streams@0.6.0, requires 1.88" before a
-# single line of this crate's own code is even checked) — a real conflict
-# with the workspace's `rust-version = "1.85"` promise. Since this task's
-# code never uses it, the conflict doesn't block Task 1, but whichever
-# later task actually introduces `wasm-streams` (for `body`'s
-# `ReadableStream` bridge) must resolve it explicitly: pin an older,
+# Task 3 (`src/convert.rs`, request conversion) is the first one that
+# actually builds a `web_sys::Request`, so it adds `web-sys` — with only
+# the five features `convert.rs` names a type from (`Request`,
+# `RequestInit`, `Headers`, `AbortController`, `AbortSignal`; verified by
+# compiling with exactly this feature list, not copied from a bigger
+# preset). It deliberately still does NOT add `bytes` or `http-body`:
+# `RequestBody::Full`'s payload is turned into a `js_sys::Uint8Array`
+# immediately (via `&b[..]`, resolved through `Bytes`'s inherent `Deref`,
+# which needs no local naming of the `bytes` crate — an inherent method on
+# a type reachable through a direct dependency's public API doesn't
+# require that type's own defining crate to be a direct dependency too),
+# and `RequestBody::Streaming`'s payload is matched as `_` and never
+# touched, so nothing in this file ever names `bytes::Bytes` or
+# `http_body::Body`. It does NOT add `wasm-streams` either — Task 3 cannot
+# build a `ReadableStream` from a `RequestBody::Streaming`, and says so:
+# see `convert::resolve_body`'s doc comment for why that's a typed error
+# today, not silent truncation, and why the MSRV conflict below is
+# unaffected.
+#
+# Found while wiring the crate into the `msrv` CI job (Task 1), not
+# assumed: `wasm-streams` 0.6.0 requires rustc 1.88 (`cargo +1.85.0 check
+# --target wasm32-unknown-unknown` on a Cargo.toml carrying it fails with
+# "rustc 1.85.0 is not supported by wasm-streams@0.6.0, requires 1.88"
+# before a single line of this crate's own code is even checked) — a real
+# conflict with the workspace's `rust-version = "1.85"` promise. Whichever
+# later task actually introduces `wasm-streams` (for the `ReadableStream`
+# bridge `resolve_body` defers) must resolve it explicitly: pin an older,
 # 1.85-compatible `wasm-streams` release, or give this crate its own
 # higher `rust-version` the way `http-ng-wasi` already does for its
 # `wasip3` requirement (documented there, in its own `Cargo.toml`) — not
@@ -35,9 +51,25 @@ http          = { workspace = true }
 http-ng-core  = { workspace = true }
 js-sys        = "0.3"
 wasm-bindgen  = "0.2.126"
+web-sys       = { version = "0.3.103", features = [
+    "Request",
+    "RequestInit",
+    "Headers",
+    "AbortController",
+    "AbortSignal",
+] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# `tests/convert.rs` needs to construct a `RequestBody::Streaming` (to prove
+# it's rejected as a typed error, never silently emptied — see
+# `resolve_body`'s doc comment) and a `RequestBody::Full` (to check the
+# actual bytes survive the trip). That means naming `http_body::Body` and
+# `bytes::Bytes` from a test, unlike `src/convert.rs` itself (see the big
+# comment above `[dependencies]`) — a `dev-dependency` only affects test
+# targets, so this doesn't change what the shipped library depends on.
+bytes     = { workspace = true }
+http-body = { workspace = true }
 
 # NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =
 # "forbid"`, and `forbid` cannot be relaxed from inside a crate (`E0453`,
