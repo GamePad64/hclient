@@ -1,0 +1,33 @@
+[package]
+name = "http-ng-rt-smol"
+version = "0.1.0"
+description = "Реализация способностей рантайма http-ng поверх smol"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-net      = "2"
+async-io       = "2"
+async-executor = "1"
+blocking       = "1"
+futures-lite   = "2"
+http-ng-rt     = { path = "../http-ng-rt", version = "0.1.0" }
+socket2        = { version = "0.6", features = ["all"] }
+
+# `EINPROGRESS` не наблюдаем через `std::io::ErrorKind`: соответствующий
+# вариант (`ErrorKind::InProgress`) до сих пор `#[unstable(feature =
+# "io_error_inprogress")]` в стандартной библиотеке — недоступен на stable.
+# `socket2` сталкивается с той же проблемой в собственном
+# `Socket::connect_timeout` и решает её тем же способом: читает
+# `raw_os_error()` и сравнивает с `libc::EINPROGRESS` под `cfg(unix)`. Версия
+# — та же нижняя граница, что и у `socket2` для этой же зависимости.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.172"
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

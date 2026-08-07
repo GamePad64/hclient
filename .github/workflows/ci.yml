@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -219,8 +219,10 @@ jobs:
           # (в отличие от `http-ng-wasi`), значит он проверяется здесь же, с
           # остальными. `http-ng-rt-tokio` (Task 3) добавлен по той же
           # причине: собственного `rust-version` не объявляет, значит несёт
-          # workspace-минимум и обязан собираться при 1.85. Список `$pkgs` —
-          # пять крейтов, и `--all-targets` его не расширяет.
+          # workspace-минимум и обязан собираться при 1.85. `http-ng-rt-smol`
+          # (Task 4) — тот же случай в третий раз: своего `rust-version` тоже
+          # не объявляет. Список `$pkgs` — шесть крейтов, и `--all-targets`
+          # его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
   wasip2:
@@ -880,6 +882,14 @@ jobs:
           # именно это предвидение и должно было измениться первым, а не
           # только прозой в комментарии.
           #
+          # Task 4 добавил `http-ng-rt-smol`: моста `FuturesIo` не пишет
+          # заново (переиспользует тот, что уже есть в `http-ng-rt` — у
+          # smol'а IO и так `futures-io`), но собственный неблокирующий
+          # `connect()` (`begin_connect`/`build_socket`) — новый код, который
+          # мог бы захотеть `unsafe` не меньше моста; несёт тот же
+          # `#![forbid(unsafe_code)]` и ту же обязанность оставаться в этом
+          # списке.
+          #
           # ПЕРВАЯ и главная линия защиты — не этот job, а сам компилятор:
           # `lib.rs` несёт `#![forbid(unsafe_code)]` (fix round 1; было
           # `#![deny(...)]`), и он проверяется на каждой сборке матрицы
@@ -939,7 +949,7 @@ jobs:
           # ловит. Поэтому — постоянный job с явным `if`/`then`/`exit 1`, а
           # не однострочный grep-трюк.
           dirs=""
-          for d in crates/http-ng-rt/src crates/http-ng-rt-tokio/src; do
+          for d in crates/http-ng-rt/src crates/http-ng-rt-tokio/src crates/http-ng-rt-smol/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
