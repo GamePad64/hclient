@@ -7,7 +7,7 @@
 //! вернуть Send-совместимый future ни для одного бэкенда. Бонд
 //! `T::Error: Send + Sync + 'static` живёт в собственном where-клаузе
 //! `Client::execute`, а не в самом трейте `Transport`.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 mod body;
 mod caps;

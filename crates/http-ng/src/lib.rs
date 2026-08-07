@@ -2,7 +2,7 @@
 //!
 //! Инвариант крейта: ни одного объявленного бонда `Send`/`Sync`, ни одного
 //! `#[cfg]`-переключаемого трейт-алиаса. Send-ность выводится auto-traits.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 mod client;
 mod config;
