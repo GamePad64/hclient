@@ -7,12 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# This task (Task 1) implements only the `Send`-compatible promise adapter
-# (`src/promise.rs`), which uses `js-sys` and `wasm-bindgen` and nothing
-# else. `bytes`, `futures-core`, `http`, `http-body`, `http-ng-core`,
-# `web-sys` and `wasm-streams` belong to later tasks in this vertical
-# (`body`, `caps`, `convert` — see `src/lib.rs`) and are deliberately left
-# out here rather than added unused ahead of need.
+# Task 1 added `js-sys` and `wasm-bindgen` for the `Send`-compatible promise
+# adapter (`src/promise.rs`). Task 2 (`src/caps.rs`, runtime capability
+# probing) adds `http` (for `HeaderName` in `FORBIDDEN_HEADERS`) and
+# `http-ng-core` (for `Capabilities` and its constituent enums). It does
+# NOT need `web-sys`: `supports_duplex()` only has to read
+# `Request.prototype.duplex`'s existence, which `js_sys::Reflect` alone can
+# do without a typed `web_sys::Request` binding. `bytes`, `futures-core`,
+# `http-body` and `wasm-streams` remain deferred to whichever later task
+# needs them (`body`, `convert`).
 #
 # Found while wiring the crate into the `msrv` CI job, not assumed:
 # `wasm-streams` 0.6.0 requires rustc 1.88 (`cargo +1.85.0 check --target
@@ -28,8 +31,10 @@ repository.workspace = true
 # `wasip3` requirement (documented there, in its own `Cargo.toml`) — not
 # silently inherit a broken promise.
 [dependencies]
-js-sys       = "0.3"
-wasm-bindgen = "0.2.126"
+http          = { workspace = true }
+http-ng-core  = { workspace = true }
+js-sys        = "0.3"
+wasm-bindgen  = "0.2.126"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
