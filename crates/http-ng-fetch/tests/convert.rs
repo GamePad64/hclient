@@ -211,6 +211,58 @@ fn a_factory_that_never_bottoms_out_is_a_bounded_error_not_a_hang() {
     );
 }
 
+/// Builds a `RequestBody::Rewindable` chain exactly `depth` `Rewindable`
+/// layers deep, terminating in a `Full` carrying `payload`. `depth == 0`
+/// is `payload` itself, with no `Rewindable` wrapper at all.
+fn nested_rewindable(depth: u8, payload: &'static [u8]) -> RequestBody {
+    if depth == 0 {
+        RequestBody::Full(Bytes::from_static(payload))
+    } else {
+        RequestBody::rewindable(move || nested_rewindable(depth - 1, payload))
+    }
+}
+
+/// The exact boundary `MAX_REWIND_DEPTH`'s doc comment names: 15 levels of
+/// `Rewindable` nesting is the practical ceiling (one below the constant
+/// itself, since the constant counts loop iterations, not successfully
+/// unwrapped layers — see `MAX_REWIND_DEPTH`'s doc comment). Checks actual
+/// bytes, not `.is_ok()`, for the same reason `nested_rewindable_resolves_
+/// through_every_level` does: an empty body would also be a "successful"
+/// `POST`, so a weak assertion here wouldn't prove the 15th layer was
+/// actually reached rather than silently given up on.
+#[wasm_bindgen_test]
+async fn rewindable_nested_at_the_practical_ceiling_still_resolves() {
+    let f = http_ng_fetch::Fetch::new();
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("https://example.com/")
+        .body(nested_rewindable(15, b"fifteen-deep"))
+        .unwrap();
+    let (request, _controller) = http_ng_fetch::testing::to_web_request(&f, req).unwrap();
+    let text_promise = request.text().expect("text() must not throw");
+    let text = http_ng_fetch::testing::send_js_future(text_promise)
+        .await
+        .expect("reading the body back must not reject");
+    assert_eq!(text.as_string().as_deref(), Some("fifteen-deep"));
+}
+
+/// One layer past the ceiling above: `RewindTooDeep`, not a hang and not a
+/// silently emptied body.
+#[wasm_bindgen_test]
+fn rewindable_nested_one_past_the_ceiling_is_a_typed_error() {
+    let f = http_ng_fetch::Fetch::new();
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("https://example.com/")
+        .body(nested_rewindable(16, b"sixteen-deep"))
+        .unwrap();
+    let err = http_ng_fetch::testing::to_web_request(&f, req).unwrap_err();
+    assert!(
+        !matches!(err.kind(), http_ng_core::ErrorKind::Unsupported),
+        "{err}"
+    );
+}
+
 // ---------------------------------------------------------------------
 // GET/HEAD cannot carry a body — fetch throws a TypeError for this;
 // caught ahead of time as a typed error instead of an opaque one.
@@ -500,4 +552,39 @@ fn check_headers_rejects_exactly_what_capabilities_declares_forbidden() {
     let mut h = http::HeaderMap::new();
     h.insert("x-other", "fine".parse().unwrap());
     assert!(http_ng_fetch::testing::check_headers(&h, &caps).is_ok());
+}
+
+// ---------------------------------------------------------------------
+// `verify_headers_survived` checks NAME presence, not byte-exact value
+// fidelity — documented precisely, not left for the next reader to
+// discover. Confirmed directly (not assumed): `web_sys::Headers::append`
+// trims leading/trailing HTTP whitespace from a value before storing it
+// (RFC 7230 optional-whitespace normalization, applied by the Fetch
+// Standard's own "normalize a byte sequence" step — not a Chrome quirk).
+// A caller who sets `" padded "` gets back `"padded"`; that is a real,
+// observable difference `verify_headers_survived` does not catch, because
+// it never compares values, only checks that the name is still present.
+// This is deliberately not treated as a silent drop: the value SURVIVED,
+// merely normalized the same way any HTTP implementation is allowed to.
+// ---------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+async fn header_value_whitespace_is_trimmed_and_not_flagged_as_a_silent_drop() {
+    let f = http_ng_fetch::Fetch::new();
+    let req = http::Request::builder()
+        .uri("https://example.com/")
+        .header("x-padded", "  padded value  ")
+        .body(RequestBody::Empty)
+        .unwrap();
+    // Must succeed: `verify_headers_survived` only checks the name
+    // `x-padded` is present, which it is — the whitespace trim is not an
+    // error condition this check is meant to catch.
+    let (request, _controller) = http_ng_fetch::testing::to_web_request(&f, req).unwrap();
+    // And the trim genuinely happened — this isn't merely "didn't error",
+    // the value on the wire really is different from what was set.
+    assert_eq!(
+        request.headers().get("x-padded").unwrap().as_deref(),
+        Some("padded value"),
+        "the browser must have trimmed the surrounding whitespace"
+    );
 }

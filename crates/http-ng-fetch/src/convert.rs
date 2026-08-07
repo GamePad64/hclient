@@ -14,9 +14,12 @@
 //!    (see `FORBIDDEN_HEADERS`'s own doc comment) — so
 //!    [`verify_headers_survived`] closes the gap from the other side, after
 //!    construction: it reads back the built `Request`'s own `Headers` and
-//!    fails loudly if anything we tried to set didn't make it, rather than
-//!    letting a caller believe an unnamed forbidden header (`Sec-Foo`, say)
-//!    went out when the browser quietly dropped it.
+//!    fails loudly if the NAME of anything we tried to set isn't there,
+//!    rather than letting a caller believe an unnamed forbidden header
+//!    (`Sec-Foo`, say) went out when the browser quietly dropped it. It
+//!    checks presence, not byte-exact value fidelity — see
+//!    [`verify_headers_survived`]'s own doc comment for the one documented
+//!    gap that leaves open (harmless whitespace normalization, not a drop).
 //!
 //! 2. **No `RequestBody` variant silently becomes an empty body.**
 //!    [`resolve_body`] handles `Empty`, `Full`, `Rewindable`, and
@@ -129,8 +132,16 @@ impl std::error::Error for BodyNotAllowedForMethod {}
 /// factory calling through to a second, to a third, buys the caller
 /// nothing — so past this depth [`resolve_body`] stops with a typed error
 /// instead of silently giving up (an empty body) or recursing forever.
-/// Same constant, same bound, same reasoning as
-/// `http-ng-wasi/src/convert.rs`'s `MAX_REWIND_DEPTH`.
+///
+/// **The practical ceiling is `MAX_REWIND_DEPTH - 1` (15), not
+/// `MAX_REWIND_DEPTH` itself** — the constant names how many times
+/// `resolve_body`'s loop inspects a body, not how many `Rewindable` layers
+/// successfully unwrap; the last of those inspections is spent discovering
+/// the budget is exhausted rather than unwrapping another layer. Confirmed
+/// directly: a body nested 15 `Rewindable` layers deep resolves; nested 16
+/// or deeper, it hits [`RewindTooDeep`] instead. Same constant, same
+/// off-by-one, same reasoning as `http-ng-wasi/src/convert.rs`'s
+/// `MAX_REWIND_DEPTH` — not a new discrepancy introduced here.
 const MAX_REWIND_DEPTH: u8 = 16;
 
 #[derive(Debug)]
@@ -139,7 +150,7 @@ impl std::fmt::Display for RewindTooDeep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
+            "RequestBody::Rewindable factory nested {MAX_REWIND_DEPTH} levels deep or more \
              (each factory call returned another Rewindable instead of a terminal body)"
         )
     }
@@ -190,7 +201,7 @@ pub(crate) fn check_headers(h: &http::HeaderMap, caps: &Capabilities) -> Result<
 }
 
 /// After the `Request` exists, reads its own `Headers` back and confirms
-/// every header we tried to set is actually there. Closes the gap
+/// the NAME of every header we tried to set is still there. Closes the gap
 /// `FORBIDDEN_HEADERS` structurally can't: a `Sec-*`/`Proxy-*`-prefixed
 /// header, or one of the ten other forbidden names outside that fixed
 /// array, sails past `check_headers` untouched and is then silently
@@ -200,6 +211,18 @@ pub(crate) fn check_headers(h: &http::HeaderMap, caps: &Capabilities) -> Result<
 /// pre-filtered against `Capabilities::forbidden_request_headers` and
 /// still set, say, `Sec-Foo` would have it vanish with the transport
 /// reporting success — exactly the silent no-op this project forbids.
+///
+/// **What this does NOT check: value fidelity.** Only presence of the
+/// NAME is compared, never the value. Confirmed directly (not assumed):
+/// `web_sys::Headers::append` trims leading/trailing HTTP whitespace from
+/// a value before storing it (the Fetch Standard's own "normalize a byte
+/// sequence" step, RFC 7230 optional-whitespace stripping — not a Chrome
+/// quirk) — see `header_value_whitespace_is_trimmed_and_not_flagged_as_a_
+/// silent_drop` in `tests/convert.rs`. That is intentionally not treated
+/// as a drop: the header survived, merely normalized the way any HTTP
+/// implementation is allowed to. A caller relying on this function should
+/// read it as "the name made it through", not "the exact bytes made it
+/// through unchanged".
 fn verify_headers_survived(
     sent: &http::HeaderMap,
     request: &web_sys::Request,
@@ -251,8 +274,10 @@ enum ResolvedBody {
 /// `body.rs`; the mutation check in `tests/convert.rs` reverts to it and
 /// confirms it's caught.
 ///
-/// Iterative, not recursive, and bounded by [`MAX_REWIND_DEPTH`]: a factory
-/// that always returns another `Rewindable` would otherwise unwrap forever.
+/// Iterative, not recursive, and bounded by [`MAX_REWIND_DEPTH`] (see its
+/// own doc comment for the exact, off-by-one-from-the-constant ceiling): a
+/// factory that always returns another `Rewindable` would otherwise unwrap
+/// forever.
 fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
     let mut body = body;
     for _ in 0..MAX_REWIND_DEPTH {
