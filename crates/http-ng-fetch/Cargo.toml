@@ -39,13 +39,54 @@ repository.workspace = true
 # --target wasm32-unknown-unknown` on a Cargo.toml carrying it fails with
 # "rustc 1.85.0 is not supported by wasm-streams@0.6.0, requires 1.88"
 # before a single line of this crate's own code is even checked) — a real
-# conflict with the workspace's `rust-version = "1.85"` promise. Whichever
-# later task actually introduces `wasm-streams` (for the `ReadableStream`
-# bridge `resolve_body` defers) must resolve it explicitly: pin an older,
-# 1.85-compatible `wasm-streams` release, or give this crate its own
-# higher `rust-version` the way `http-ng-wasi` already does for its
-# `wasip3` requirement (documented there, in its own `Cargo.toml`) — not
-# silently inherit a broken promise.
+# conflict with the workspace's `rust-version = "1.85"` promise. Task 4
+# (`src/body.rs`, this file) is the one that actually needs a
+# `ReadableStream` bridge, and resolves the conflict rather than inheriting
+# it:
+#
+# **Considered, in the order the task's dispatch asked for.**
+# 1. An older, still-1.85-compatible `wasm-streams`. `cargo info
+#    wasm-streams@0.5.0` reports `rust-version: unknown` (no MSRV declared
+#    at all, unlike 0.6.0's explicit `1.88`) — not proof by itself, so it
+#    was verified directly rather than trusted: a scratch crate depending
+#    on exactly `wasm-streams = "=0.5.0"` (plus `wasm-bindgen`, `js-sys`,
+#    `futures-core`, matching this crate's own versions) compiles cleanly
+#    with `cargo +1.85.0 check --target wasm32-unknown-unknown` — full
+#    output kept in the task report. Its public shape is what
+#    `Body::from_response` below actually uses:
+#    `ReadableStream::from_raw(raw: web_sys::ReadableStream) -> Self` (its
+#    `sys::ReadableStream` is a plain `pub use web_sys::ReadableStream`, not
+#    a distinct extension type — no `unchecked_into` needed converting into
+#    it, unlike the brief's own reference code) and
+#    `into_stream(self) -> IntoStream<'static>`, a
+#    `Stream<Item = Result<JsValue, JsValue>>` — the exact shape 0.6.0
+#    also has. This is the option taken: `wasm-streams = "0.5"` below.
+#    Only one 0.5.x release exists today (0.5.0), so the range and the
+#    exact pin currently resolve identically; the range is kept (matching
+#    how `wasm-bindgen`/`web-sys` are floored elsewhere in this file, not
+#    upper-bounded) because the committed `Cargo.lock` — not the range —
+#    is what actually protects a given CI run, and the `msrv` job already
+#    re-checks this crate at 1.85.0 on every push regardless.
+# 2. Driving `ReadableStreamDefaultReader` directly through `web-sys`/
+#    `js-sys`, skipping `wasm-streams` altogether. Not obviously hard, as
+#    flagged — but not obviously free either: `wasm-streams`'s own
+#    `IntoStream` (read via its source while verifying option 1) is ~50
+#    lines handling exactly the bookkeeping a hand-rolled version would
+#    have to reproduce — one in-flight `read()` future at a time, dropping
+#    the reader (and catching, not propagating, its rejection) on both a
+#    natural end and an error, and releasing the lock on drop so a
+#    cancelled read doesn't wedge the stream. None of that is exotic, but
+#    reimplementing it inside `#![deny(unsafe_code)]` gains nothing over a
+#    dependency that already exists, is already 1.85-compatible (option 1),
+#    and is already the crate this vertical's own brief was written
+#    against — this option is strictly more code for the same behavior.
+# 3. Raising the workspace MSRV to 1.88. Rejected: it would break the
+#    promise every other crate in the workspace makes in its own
+#    `rust-version`, for a version bump whose only payoff is not having to
+#    write the three lines above — option 1 gets the same `wasm-streams`
+#    API (0.5.0 and 0.6.0 are the same shape; the only difference the
+#    upgrade would buy today is the MSRV number itself) at zero cost to the
+#    published promise.
 [dependencies]
 http          = { workspace = true }
 http-ng-core  = { workspace = true }
@@ -57,19 +98,56 @@ web-sys       = { version = "0.3.103", features = [
     "Headers",
     "AbortController",
     "AbortSignal",
+    "Window",
+    "Response",
+    "ReadableStream",
 ] }
+# Task 4 (`src/body.rs`) is the first file in this crate to actually
+# implement `http_body::Body`, so `bytes`/`http-body`/`futures-core` move
+# here from `[dev-dependencies]` (where Task 3 left `bytes`/`http-body` for
+# `tests/convert.rs` only — see that entry's own history below) into real
+# dependencies; a shipped public type's `type Data = Bytes` and
+# `impl http_body::Body` can't be satisfied from a dev-only crate.
+bytes        = { workspace = true }
+http-body    = { workspace = true }
+futures-core = { workspace = true }
+# `default-features = false, features = ["std"]` — the same exact form
+# already used by `http-ng-native`, `http-ng-dns`, and `http-ng-dns-system`
+# for the identical need (`StreamExt::map`), not a preset copied blind.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# See the MSRV comment above `[dependencies]`: pinned to the 0.5 line,
+# verified 1.85-compatible, not 0.6 (rustc 1.88).
+wasm-streams = "0.5"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-# `tests/convert.rs` needs to construct a `RequestBody::Streaming` (to prove
+# `tests/convert.rs` needed to construct a `RequestBody::Streaming` (to prove
 # it's rejected as a typed error, never silently emptied — see
 # `resolve_body`'s doc comment) and a `RequestBody::Full` (to check the
-# actual bytes survive the trip). That means naming `http_body::Body` and
-# `bytes::Bytes` from a test, unlike `src/convert.rs` itself (see the big
-# comment above `[dependencies]`) — a `dev-dependency` only affects test
-# targets, so this doesn't change what the shipped library depends on.
-bytes     = { workspace = true }
-http-body = { workspace = true }
+# actual bytes survive the trip) — that used to be the only reason `bytes`/
+# `http-body` appeared in this manifest at all, as a `dev-dependency` only
+# (Task 3). Task 4 (`src/body.rs`) made both real dependencies (see above),
+# so this entry is gone; `tests/convert.rs` keeps compiling unchanged, now
+# drawing `bytes`/`http-body` from `[dependencies]` like everything else in
+# `tests/`.
+#
+# `tests/body.rs` needs to build its own, fully Rust-controlled
+# `web_sys::ReadableStream` (a `pull`/`cancel` callback pair via
+# `js_sys::Object` + `js_sys::Reflect`) to exercise a mid-stream error, a
+# non-byte chunk, and cancel-on-drop deterministically — none of which a
+# real network `fetch()` can be made to do on demand. That needs
+# `ReadableStreamDefaultController` (to `enqueue`/`close`/`error` from the
+# `pull` callback) and `ResponseInit` (to build a synthetic
+# `web_sys::Response` around that stream, with caller-chosen headers, via
+# `Response::new_with_opt_readable_stream_and_init`) — neither named by
+# `src/`, so both are added here rather than to the real `[dependencies]`
+# `web-sys` entry above: a `[dev-dependencies]` feature list for the same
+# crate is unified with `[dependencies]`'s only when building test targets,
+# never for the plain library build the published crate ships.
+web-sys = { version = "0.3.103", features = [
+    "ReadableStreamDefaultController",
+    "ResponseInit",
+] }
 
 # NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =
 # "forbid"`, and `forbid` cannot be relaxed from inside a crate (`E0453`,
