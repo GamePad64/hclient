@@ -231,6 +231,30 @@ impl std::error::Error for ResolveErrors {
     }
 }
 
+impl ResolveErrors {
+    /// Первая записанная ошибка резолва (любого из двух семейств), чей
+    /// `kind()` — НЕ `ErrorKind::Resolve`. Review round 1, finding 1:
+    /// `drive` раньше заворачивала любую ошибку резолва (при
+    /// `launched == 0`) в свежий `Error::new(ErrorKind::Resolve, errs)`, а
+    /// при `launched > 0` не читала `errs` вообще — оба пути стирали
+    /// `ErrorKind::Cancelled` (Task 7: пул фоновых потоков ушёл раньше,
+    /// чем резолв успел отработать) неотличимо от «имя не резолвится».
+    /// Конкретный найденный случай — `Cancelled`, но правило общее: ЛЮБОЙ
+    /// `kind()`, отличный от того `Resolve`, который этот модуль сам
+    /// синтезирует, несёт информацию, которую коннектор не производил и
+    /// не вправе переименовывать. Вызывается ДО обеих веток отказа в
+    /// `drive`'s `HeAction::Exhausted`, так что ни `AllAttemptsFailed`,
+    /// ни синтетический `ErrorKind::Resolve` не достижимы, минуя эту
+    /// проверку — отбрасывание становится структурно невозможным, а не
+    /// просто обработанным по одному найденному случаю.
+    fn distinguishing_error(&self) -> Option<&Error> {
+        [&self.v6, &self.v4]
+            .into_iter()
+            .flatten()
+            .find(|e| e.kind() != &ErrorKind::Resolve)
+    }
+}
+
 /// `attempt_delay` запрошенного `HeConfig` вне рекомендованного RFC 8305
 /// диапазона. `Scheduler::new` (Task 5) молча зажимает такое значение,
 /// потому что его сигнатура зафиксирована интерфейсом задачи — `Self`, не
@@ -463,6 +487,20 @@ where
                     if let Ok(s) = res {
                         return Ok(s);
                     }
+                }
+                // Review round 1, finding 1: проверяется ДО обеих веток
+                // ниже, а не как частный случай внутри одной из них — так
+                // отбрасывание отличающегося kind() (в частности,
+                // ErrorKind::Cancelled) становится структурно
+                // недостижимым, а не просто обработанным для одного
+                // найденного случая. Возвращается КЛОН исходной ошибки
+                // резолвера как есть — без повторной обёртки в
+                // Error::new — потому что она уже несёт свой правильный
+                // kind() и свою цепочку source(); заворачивать её ещё раз
+                // значило бы повторить ровно ту же ошибку категоризации
+                // другим способом.
+                if let Some(distinguishing) = errs.distinguishing_error() {
+                    return Err(distinguishing.clone());
                 }
                 if launched == 0 {
                     // Ни одной TCP-попытки не было — значит нечего было
@@ -994,6 +1032,96 @@ mod tests {
         assert_eq!(err.kind(), &ErrorKind::Resolve);
     }
 
+    /// Как `ErrOnce` (см. выше), но с настраиваемым `ErrorKind` — нужен,
+    /// чтобы смоделировать `ErrorKind::Cancelled` (Task 7: пул фоновых
+    /// потоков ушёл раньше, чем `getaddrinfo` успел отработать), а не
+    /// только `ErrorKind::Resolve`.
+    struct ErrOnceWithKind(bool, ErrorKind);
+    impl futures_util::Stream for ErrOnceWithKind {
+        type Item = Result<ResolvedAddr, Error>;
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if this.0 {
+                this.0 = false;
+                Poll::Ready(Some(Err(Error::new(
+                    this.1.clone(),
+                    std::io::Error::other("boom"),
+                ))))
+            } else {
+                Poll::Ready(None)
+            }
+        }
+    }
+
+    /// Review round 1, finding 1, loss path A ("flattened to Resolve").
+    /// Раньше `drive` заворачивал ЛЮБУЮ ошибку резолва при `launched == 0`
+    /// в свежий `Error::new(ErrorKind::Resolve, errs)`, отбрасывая
+    /// исходный `kind()`. `ErrorKind::Cancelled` (Task 7) существует
+    /// ровно для того, чтобы вызывающая сторона отличила «рантайм
+    /// завершает работу» от «это имя не резолвится» без даункаста, просто
+    /// сравнив `kind()` — а флэттенинг в `Resolve` стирал это различие.
+    #[test]
+    fn a_cancelled_resolve_error_is_not_flattened_to_resolve_kind_when_nothing_launched() {
+        let rt = FakeRt::new([]);
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            ErrOnceWithKind(true, ErrorKind::Cancelled),
+            futures_util::stream::empty(),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("v6-резолвер отменён, v4 ничего не нашёл");
+        assert_eq!(
+            err.kind(),
+            &ErrorKind::Cancelled,
+            "вызывающая сторона обязана видеть 'рантайм завершает работу', а не 'это имя не \
+             резолвится' — иначе circuit breaker на ErrorKind::Resolve ошибочно занесёт живой \
+             хост в чёрный список во время обычного shutdown"
+        );
+        assert!(
+            rt.log.borrow().is_empty(),
+            "ни одной TCP-попытки не должно было быть"
+        );
+    }
+
+    /// Review round 1, finding 1, loss path B ("silently discarded") — тот
+    /// же принцип, но `launched > 0`: v6 отменён, v4 нашёл один мёртвый
+    /// адрес и реально его испробовал. Раньше `drive` возвращал
+    /// `AllAttemptsFailed`/`ErrorKind::Connect` в этой ветке, и `errs`
+    /// (держащий Cancelled-сигнал) вообще не читался — не в `.source()`,
+    /// нигде. Это худший из двух путей потери: ошибку, которой нет даже в
+    /// цепочке источников, не восстановит никакой даже самый
+    /// внимательный вызывающий код.
+    #[test]
+    fn a_cancelled_resolve_error_is_not_discarded_when_the_other_family_launched_and_failed() {
+        let rt = FakeRt::new([]); // единственный адрес v4 не в outcomes -> отказ
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            ErrOnceWithKind(true, ErrorKind::Cancelled),
+            futures_util::stream::iter([Ok(ResolvedAddr {
+                addr: v4(1),
+                ttl: None,
+            })]),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("единственный адрес v4 мёртв");
+        assert_eq!(
+            err.kind(),
+            &ErrorKind::Cancelled,
+            "отмена v6 обязана остаться видимой, даже когда v4 реально запустился и отказал"
+        );
+        assert_eq!(
+            rt.log.borrow().len(),
+            1,
+            "единственный (мёртвый) адрес v4 действительно был испробован"
+        );
+    }
+
     // --- Плюмбинг `connect`: URI → host/port/схема, TLS/plain ------------
 
     struct StaticResolve {
@@ -1055,6 +1183,50 @@ mod tests {
             let _ = l.accept();
         });
         addr
+    }
+
+    /// Review round 1, finding 3: every `connect()` test up to this point
+    /// used a single-address resolver, so success always returned via the
+    /// `Exhausted` branch's post-drain loop — a mutation that broke ONLY
+    /// the `Wait` branch's `Event::Attempt(Some(Ok(s))) => return Ok(s)`
+    /// (see `drive`) would be invisible through `connect()`, even though
+    /// `race_connect`'s own
+    /// `race_connect_never_requires_send_even_through_the_wait_path`
+    /// already catches that exact mutation. Same shape as that test: two
+    /// v6 addresses plus one live v4 address. RFC 8305 interleaving starts
+    /// v6(1) first, then v4 (second, not third) — so the second v6
+    /// address is STILL queued when the v4 attempt succeeds,
+    /// `Scheduler::poll`'s `Exhausted` condition
+    /// (`v6.is_empty() && v4.is_empty() && ..`) is therefore not met yet,
+    /// and the success can only be observed via `Wait`.
+    #[test]
+    fn connect_returns_success_via_the_wait_branch_not_only_via_exhausted() {
+        let live = live_listener_addr();
+        let dns = StaticResolve {
+            v6: vec![v6(1), v6(2)],
+            v4: vec![live.ip()],
+        };
+        let uri: Uri = format!("http://example.invalid:{}/", live.port())
+            .parse()
+            .unwrap();
+        let rt = FakeRt::new([(live.ip(), true)]);
+        let (conn, _info) = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+        ))
+        .expect("v4-адрес обязан выиграть гонку");
+        assert!(matches!(conn, Conn::Plain(_)));
+        // v6(2) так и не получил очереди — гонка остановилась, как только
+        // выиграл v4.
+        assert_eq!(
+            rt.log.borrow().len(),
+            2,
+            "v6(1) (мёртвый), затем живой v4 — v6(2) не запускался"
+        );
     }
 
     #[test]
