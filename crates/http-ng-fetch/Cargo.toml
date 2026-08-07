@@ -121,6 +121,22 @@ wasm-streams = "0.5"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Task 5 (`tests/transport.rs`): the brief's own tests go through
+# `http_ng::Client`, not `Fetch` directly — the same reason
+# `http-ng-native`/`http-ng-wasi` both carry `http-ng` as a DEV dependency
+# only (`http-ng`'s own `default-transport` doc comment records the
+# invariant: `http-ng` never depends on any backend crate, backend crates
+# may depend on `http-ng` for their own tests). No `default-features = false`
+# override (tried first; Cargo rejects overriding `default-features` on a
+# workspace-inherited dependency whose `[workspace.dependencies]` entry
+# doesn't itself set the field: "`default-features = false` cannot override
+# workspace's `default-features`", verified by attempting it): `http-ng`'s
+# own default is already `default = []` (see its `lib.rs`), so there is
+# nothing extra for a default feature set to pull in regardless — this
+# crate needs `Client`/`Timeouts`/`RequestBody` only, and gets exactly that
+# with a plain workspace inheritance, the same form `http-ng-native`'s
+# Cargo.toml already uses.
+http-ng = { workspace = true }
 # `tests/convert.rs` needed to construct a `RequestBody::Streaming` (to prove
 # it's rejected as a typed error, never silently emptied — see
 # `resolve_body`'s doc comment) and a `RequestBody::Full` (to check the
@@ -151,10 +167,19 @@ wasm-bindgen-test = "0.3"
 # via `DomException::new_with_message_and_name`, rather than a generic
 # `js_sys::Error` — proving the abort-specific shape, not just "some error",
 # takes the same code path in `Body::poll_frame`.
+#
+# `Location` — Task 5, `tests/transport.rs`'s `end_to_end_through_the_
+# client`: reads `window.location().href()` to get a real, currently-
+# loaded `http://` URL to fetch (the brief's own `data:` URL can never
+# reach `Fetch` at all through `http_ng::Client` — see that test's own
+# comment and the task report). Not needed by `src/`, so it goes here
+# rather than the real `[dependencies]` `web-sys` entry, same reasoning as
+# the three features above it.
 web-sys = { version = "0.3.103", features = [
     "ReadableStreamDefaultController",
     "ResponseInit",
     "DomException",
+    "Location",
 ] }
 
 # NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =

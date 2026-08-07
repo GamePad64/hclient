@@ -24,11 +24,48 @@ mod promise;
 // the crate, pinned to the 0.5 line for the MSRV reason recorded in
 // `Cargo.toml`. See
 // `.superpowers/sdd/2026-08-05-v01-fetch-and-acceptance/task-4-brief.md`.
+//
+// Task 5 (this file's `impl Transport for Fetch`, below) composes Tasks
+// 1-4 into the third backend in the project, after `wasi:http` and native:
+// `convert::to_web_request` (Task 3) turns the request into a
+// `web_sys::Request`, the browser's own `fetch` (found through `js_sys::
+// global()`, not `web_sys::window()`, so this also works from a Worker —
+// see `execute`'s own comment) sends it, `Body::from_response` (Task 4)
+// wraps the response, and `promise::SendJsFuture` (Task 1) is what makes
+// awaiting that whole exchange a `Send` future in the first place. See
+// `.superpowers/sdd/2026-08-05-v01-fetch-and-acceptance/task-5-brief.md`.
+//
+// **One deliberate deviation from the brief's own Step 3 reference code.**
+// That code destructures `to_web_request`'s result as
+// `let (request, _abort) = ..;` and never touches the `AbortController`
+// again — but `to_web_request`'s own doc comment (Task 3, `convert.rs`)
+// says explicitly that a later task, "the `Transport` impl, driving
+// deadlines and cancellation," needs to HOLD ONTO it after the function
+// returns. An immediately-discarded local binding doesn't hold onto
+// anything: if a caller races `execute`'s future against something else
+// (there's no `tokio::time::timeout` on wasm, but `futures::select!` or an
+// equivalent works the same way) and drops it while the fetch promise is
+// still pending, the brief's own code leaves the browser's `fetch()`
+// running to completion, unseen, for nothing — the in-flight-cancellation
+// capability `AbortController` exists to provide is built, handed over,
+// and then thrown away. [`AbortOnDrop`] below closes exactly that gap:
+// armed across the one `.await` in `execute` that can actually be
+// interrupted, `defuse`d the instant the promise settles (success or
+// failure) — never later, because aborting AFTER a successful fetch would
+// also abort the response body stream the caller hasn't started reading
+// yet (the Fetch Standard propagates a signal's abort to an already-
+// obtained `Response`'s body). See `tests/transport.rs`'s
+// `dropping_the_guard_before_defuse_aborts_the_signal`/
+// `defusing_the_guard_prevents_the_abort` for the deterministic, network-
+// free proof, and this task's report for why this isn't presented as a
+// silent fix.
 
 pub use body::Body;
 pub use caps::FORBIDDEN_HEADERS;
 
-use http_ng_core::Capabilities;
+use http_ng_core::unversioned::Transport;
+use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};
+use wasm_bindgen::JsCast;
 
 /// The browser `fetch` transport.
 ///
@@ -75,6 +112,114 @@ impl Fetch {
 impl Default for Fetch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Cancels the `AbortController`'s signal when dropped, unless [`defuse`]
+/// was called first — see the module doc comment's section on why the
+/// brief's own `_abort` discard doesn't honor what `convert::to_web_request`
+/// asked of a "later task."
+///
+/// [`defuse`]: AbortOnDrop::defuse
+struct AbortOnDrop(Option<web_sys::AbortController>);
+
+impl AbortOnDrop {
+    /// Consumes the guard without aborting. Called exactly once in
+    /// `execute`, immediately after the fetch promise settles (`Ok` or
+    /// `Err`): at that point there is nothing left to cancel, and calling
+    /// `abort()` anyway would, for a SUCCESSFUL fetch, also abort the
+    /// response body's `ReadableStream` before the caller has read a single
+    /// byte of it — the Fetch Standard propagates a signal's abort to an
+    /// already-obtained `Response`, not just to the initial request.
+    fn defuse(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(c) = self.0.take() {
+            c.abort();
+        }
+    }
+}
+
+impl Transport for Fetch {
+    type Body = Body;
+    type Error = Error;
+
+    async fn execute(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Body>, Error> {
+        let (request, abort) = convert::to_web_request(req, &self.caps)?;
+        let guard = AbortOnDrop(abort);
+
+        // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
+        // through `js_sys::global()`, not `web_sys::window()`, so this
+        // works in both contexts, not just a page's main thread.
+        let global = js_sys::global();
+        let fetch_fn = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
+            .map_err(convert::js_err)?
+            .dyn_into::<js_sys::Function>()
+            .map_err(convert::js_err)?;
+        let promise = fetch_fn
+            .call1(&global, &request)
+            .map_err(convert::js_err)?
+            .dyn_into::<js_sys::Promise>()
+            .map_err(convert::js_err)?;
+
+        let outcome = promise::SendJsFuture::new(promise).await;
+        // The promise has settled — see `AbortOnDrop::defuse`'s doc
+        // comment for why this must happen here, before anything else, on
+        // BOTH the success and the failure path.
+        guard.defuse();
+
+        let value = outcome.map_err(|e| {
+            // fetch distinguishes a network error only by `TypeError` —
+            // that's all the browser gives you, and it's recorded in
+            // `Capabilities` (no separate "resolve failed" concept exists
+            // for this backend, unlike native/wasi).
+            let base = convert::js_err(e);
+            Error::new(ErrorKind::Connect, base)
+        })?;
+        let resp: web_sys::Response = value.dyn_into().map_err(convert::js_err)?;
+
+        let mut builder = http::Response::builder().status(resp.status());
+        let headers = resp.headers();
+        let iter = js_sys::try_iter(&headers).map_err(convert::js_err)?;
+        if let Some(iter) = iter {
+            for entry in iter {
+                let entry = entry.map_err(convert::js_err)?;
+                let pair: js_sys::Array = entry.into();
+                let (Some(k), Some(v)) = (pair.get(0).as_string(), pair.get(1).as_string()) else {
+                    continue;
+                };
+                builder = builder.header(k, v);
+            }
+        }
+        let body = Body::from_response(&resp)?;
+        builder
+            .body(body)
+            .map_err(|e| Error::new(ErrorKind::Other, e))
+    }
+
+    /// Identity, not the default wrapping: `Self::Error` is already
+    /// `http_ng_core::Error`, and every fallible step in `execute`
+    /// (`convert::to_web_request`, the fetch call, response-building,
+    /// `Body::from_response`) has already set its own category. Without
+    /// this override `Client::execute` would still behave identically
+    /// (the default recognizes an already-`Error` and passes it through
+    /// unchanged) — the line is behaviorally redundant and semantically
+    /// needed anyway: it names the intent where it's read, and it survives
+    /// a future change to the default. Same reasoning, same wording, as
+    /// `http-ng-native`'s and `http-ng-wasi`'s identical overrides.
+    fn to_error(&self, e: Self::Error) -> Error {
+        e
+    }
+
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
     }
 }
 
@@ -198,5 +343,43 @@ pub mod testing {
             }
         }
         Ok(buf.freeze())
+    }
+
+    /// Exercises [`crate::AbortOnDrop`] directly and deterministically — no
+    /// network involved, `AbortController`/`AbortSignal` are plain,
+    /// synchronous browser objects, unlike a real `fetch()`'s timing (which
+    /// this test environment has no way to bound or control on demand; see
+    /// `tests/transport.rs`'s own comment on why this isn't tested by
+    /// racing a real request against a timer instead).
+    ///
+    /// `defuse: true` proves the happy path leaves the signal untouched
+    /// (`AbortOnDrop::defuse`'s doc comment: aborting after a successful
+    /// fetch would also abort the response body the caller hasn't read
+    /// yet). `defuse: false` proves the guard genuinely cancels when
+    /// dropped without ever being defused — the case that matters, an
+    /// `execute()` future abandoned mid-flight.
+    pub fn abort_guard_behavior(defuse: bool) -> bool {
+        let controller =
+            web_sys::AbortController::new().expect("AbortController::new in a real browser");
+        // Read the signal from the controller BEFORE moving the controller
+        // into the guard — `AbortSignal` is a distinct object from
+        // `AbortController`, `AbortController::signal` takes `&self`, and
+        // this is the only handle this function keeps to check the
+        // outcome against afterward.
+        let signal = controller.signal();
+        let guard = crate::AbortOnDrop(Some(controller));
+        if defuse {
+            guard.defuse();
+        } else {
+            // Explicit, not left to fall out of scope at the end of the
+            // function: a function's tail expression is evaluated BEFORE
+            // its still-live locals are dropped, so `signal.aborted()`
+            // below would observe the guard's PRE-drop state (always
+            // `false`) if `guard` were merely left to drop implicitly
+            // here. Caught by running this exact function without the
+            // `drop(guard)` call — see the task report.
+            drop(guard);
+        }
+        signal.aborted()
     }
 }

@@ -1021,9 +1021,25 @@ jobs:
           # class "declared Send on a data structure / a test" for which
           # the marker and the C3 relocation already exist as the standard
           # answer everywhere in this file.
+          #
+          # `http-ng-fetch/src` — Task 5 of vertical 3. The same argument a
+          # third time: before this task the crate exported `Fetch`
+          # (construction/probing only) plus a `#[doc(hidden)] pub mod
+          # testing` — no genuine public seam yet. Task 5 gives it one,
+          # `impl Transport for Fetch`, so it can leak a `Send`/`Sync`
+          # bound in its public API exactly as `Native`/`WasiHttp` could.
+          # Checked before adding, not after: `grep -rnE '(:|\+)[[:space:]]*
+          # (Send|Sync)\b|MaybeSend' crates/http-ng-fetch/src` (this job's
+          # own pattern, run locally) finds four lines, all four inside
+          # `///` doc comments in `promise.rs` quoting upstream
+          # `wasm-bindgen` source (`unsafe impl Send for JsValue {}` and
+          # neighbors) — the existing comment filter below drops every one
+          # of them, so adding this directory requires zero new markers,
+          # the same clean result Task 13 recorded for `Native`.
           dirs=""
           for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src \
-                   crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src; do
+                   crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src \
+                   crates/http-ng-fetch/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then

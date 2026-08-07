@@ -575,6 +575,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-ng",
  "http-ng-core",
  "js-sys",
  "wasm-bindgen",
