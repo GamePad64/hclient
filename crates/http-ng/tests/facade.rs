@@ -221,3 +221,32 @@ fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
         .expect("mock supports the default config");
     assert!(client.capabilities().streaming_request_body);
 }
+
+// ── Task 14 ──────────────────────────────────────────────────────────────
+
+/// `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — the
+/// facade rule applied to the default transport itself. Unlike
+/// `Response`/`Collected`/`Error` above, which are re-exports FROM another
+/// crate and needed a `pub use` to become nameable here, `DefaultTransport`
+/// is declared directly in `http_ng`'s own `lib.rs` — the one type a caller
+/// might still want to name (e.g. `fn make() -> http_ng::Client<http_ng::
+/// DefaultTransport>`) is already reachable by construction, with nothing
+/// to re-export and so nothing to forget re-exporting.
+///
+/// This checks construction and the default generic parameter, not a real
+/// network round trip — `two_runtimes.rs` owns that property (the same
+/// generic body over tokio and smol against a real TCP server); this file
+/// is about nameability, not behavior. `Client::new()` itself needs no
+/// ambient tokio runtime to construct (only `execute()` — the actual
+/// connect/spawn/sleep path — would), so a plain `#[test]` is enough here.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+#[test]
+fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
+    let client: http_ng::Client<http_ng::DefaultTransport> =
+        http_ng::Client::new().expect("default transport supports the default config");
+    // Присвоение в переменную с аннотацией ГОЛОГО `Client` (без `<...>`)
+    // компилируется, только если дефолт генерик-параметра действительно
+    // резолвится в `DefaultTransport` — не просто проверка, что `new()`
+    // существует, а проверка самого дефолта.
+    let _client_no_param: http_ng::Client = client;
+}

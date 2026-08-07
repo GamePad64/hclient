@@ -259,6 +259,68 @@ jobs:
           # `--all-targets` его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
+  # Task 14: сквозная приёмка вертикали — один и тот же обобщённый код
+  # (`fetch_once` в `two_runtimes.rs`) реально бегает по сети на tokio и на
+  # smol без единого `#[cfg]`. Матрица трёх ОС, потому что рантайм-шов —
+  # именно то место, где платформенная разница (epoll/kqueue/IOCP под
+  # `async-io`, планировщик tokio) могла бы незаметно просочиться наружу.
+  two-runtimes:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng ]; then
+            echo "::notice::http-ng ещё нет — сквозной прогон на двух рантаймах пропущен"
+            exit 0
+          fi
+          cargo test -p http-ng --test two_runtimes
+      # Черновик задачи (task-14-brief.md, Step 5) предлагал буквальный
+      # `grep -E '^(tokio|async-compat)'` по `cargo tree -p http-ng-rt-smol
+      # -e normal` и ожидал пустой результат — проверено на этом дереве и
+      # НЕ подтвердилось: `tokio` в нём есть. Причина — не регрессия
+      # смол-пути, а уже задокументированный (README, «Что в графе
+      # зависимостей») факт: `hyper` зависит от `tokio` БЕЗУСЛОВНО, не по
+      # фиче, и попадает в граф `http-ng-rt-smol` транзитивно через
+      # `http-ng-rt` (который зависит от `hyper` ради типажей моста
+      # `hyper::rt::{Read,Write}`, нужных всем рантайм-бэкендам одинаково —
+      # не только tokio). Буквальная проверка брифа обязана была бы падать
+      # на каждом пуше — не потому, что смол-путь что-то нарушил, а потому
+      # что она проверяла факт, который эта же вертикаль сама и
+      # опровергла заранее. Настоящее свойство, которое стоит держать
+      # зелёным: смол-путь не тянет РАНТАЙМ tokio (реактор, `tokio::spawn`,
+      # `tokio::net`) — только пассивный лист (`tokio::sync::oneshot`,
+      # который `hyper::upgrade` использует внутри, никогда не
+      # исполняется на этом пути) — и не тянет `async-compat` (шим для
+      # запуска tokio-специфичного кода на чужом executor'е, который был
+      # бы нужен, если бы граф ниже был устроен иначе).
+      - name: smol path pulls no tokio runtime and no async-compat
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-rt-smol ]; then
+            echo "::notice::http-ng-rt-smol ещё нет — проверка пропущена"
+            exit 0
+          fi
+          tree="$(cargo tree -p http-ng-rt-smol -e normal --prefix none)"
+          printf '%s\n' "$tree"
+          if printf '%s\n' "$tree" | grep -qE '^async-compat'; then
+            echo "::error::смол-путь подтащил async-compat — шим для чужого рантайма, которого здесь быть не должно"
+            exit 1
+          fi
+          feat_line="$(cargo tree -p http-ng-rt-smol -e normal -i tokio --prefix none -f '{p} [{f}]' | head -1)"
+          echo "tokio (если есть) в смол-пути: ${feat_line:-<отсутствует>}"
+          if [ -n "$feat_line" ] && printf '%s\n' "$feat_line" \
+               | grep -qE '\[[^]]*\b(rt|rt-multi-thread|net|time|io-util|process|signal|macros|fs)\b'; then
+            echo "::error::tokio в смол-пути несёт фичи рантайма/реактора (ожидались максимум default/sync) — смол-путь перестал быть независимым от tokio-рантайма"
+            exit 1
+          fi
+
   wasip2:
     runs-on: ubuntu-latest
     steps:

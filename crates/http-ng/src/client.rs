@@ -96,6 +96,26 @@ fn backend_name<T>() -> &'static str {
     std::any::type_name::<T>()
 }
 
+// Раздвоенное объявление, а не одно `pub struct Client<T = crate::
+// DefaultTransport>` под условным дефолтом: у Rust нет способа сделать
+// генерик-дефолт сам условным на фиче — `#[cfg]` на отдельном параметре
+// дефолта внутри одного объявления структуры не читается компилятором.
+// Без фичи `default-transport` `Client` обязан требовать `T` явно (обычная
+// ошибка компиляции «missing generics» на `Client` без параметра — та же
+// честная ошибка, что и у отсутствующего `DefaultTransport`, см. его
+// doc-комментарий в `lib.rs`), а не резолвиться в дефолт из ветки, которой
+// с выключенной фичей вообще не существует. Оба варианта ниже — тот же
+// набор полей, `impl<T: Transport> Client<T>` дальше применяется к обоим
+// одинаково: дефолт параметра генерика влияет только на места вызова, где
+// `Client` написан без явных `<...>` (например, возврат `Client::new()`
+// ниже), не на сигнатуры existing impl-блоков.
+#[cfg(feature = "default-transport")]
+#[derive(Debug)]
+pub struct Client<T = crate::DefaultTransport> {
+    transport: T,
+    config: Config,
+}
+#[cfg(not(feature = "default-transport"))]
 #[derive(Debug)]
 pub struct Client<T> {
     transport: T,
@@ -268,6 +288,49 @@ impl<T: Transport> Client<T> {
                 }
             }
         }
+    }
+}
+
+// `not(target_family = "wasm")`, а не только `feature = "default-transport"`
+// — тот же двойной гейт, что у `DefaultTransport` самого (`lib.rs`): на
+// wasm-таргетах, где ветка `DefaultTransport` не существует (см. её
+// doc-комментарий), этот `impl` для `Client<crate::DefaultTransport>`
+// ссылался бы на несуществующий тип. Раздельные гейты дали бы то же самое
+// поведение (`impl` для несуществующего типа тоже не компилируется), но
+// повторение условия делает причину видимой на месте, а не только в
+// `lib.rs`.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+impl Client<crate::DefaultTransport> {
+    /// Клиент с транспортом по умолчанию.
+    ///
+    /// На native требует окружающего tokio-рантайма: `tokio::spawn` и
+    /// `tokio::time::sleep` вне рантайма паникуют. Ровно так же ведёт себя
+    /// reqwest. Явный путь без этого требования — `Client::builder(Native::
+    /// new(rt, tls, dns))` с рантаймом на выбор (см. `crates/http-ng/tests/
+    /// two_runtimes.rs`, тот же конструктор для tokio и для smol).
+    ///
+    /// `.expect("platform verifier")` на ошибке `Rustls::
+    /// with_platform_verifier()`, а не проброс через `Result` этой функции:
+    /// возвращаемая ошибка здесь — `UnsupportedCapability` (`what`,
+    /// `backend`, оба `&'static str`) — типизированный ответ на «транспорт
+    /// не поддерживает вот эту настройку клиента», а не на «системное
+    /// хранилище доверия не удалось прочитать». Смешать их значило бы
+    /// врать о причине отказа тем же способом, каким «нет молчаливых
+    /// no-op» запрещает вертикали лгать об успехе — здесь наоборот: не
+    /// лгать о категории отказа. Отказ `with_platform_verifier()` на
+    /// практике означает окружение без работающего системного хранилища
+    /// сертификатов — по наблюдению `rustls-platform-verifier`, состояние
+    /// среды, не конфигурация клиента, и `expect` делает это громким
+    /// падением с ясным сообщением вместо тихого молчания, а не подменяет
+    /// его.
+    pub fn new() -> Result<Self, http_ng_core::UnsupportedCapability> {
+        let rt = http_ng_rt_tokio::Tokio;
+        Self::builder(http_ng_native::Native::new(
+            rt,
+            http_ng_tls_rustls::Rustls::with_platform_verifier().expect("platform verifier"),
+            http_ng_dns_system::SystemDns::new(rt),
+        ))
+        .build()
     }
 }
 

@@ -11,6 +11,17 @@ repository.workspace = true
 default = []
 # Мок-транспорт для тестов потребителей.
 test-util = []
+# `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — см.
+# doc-комментарий `DefaultTransport` в `src/lib.rs` за тем, что именно
+# резолвится по таргету и почему `dep:`-список ниже, а не сами имена
+# крейтов: скрывает неявные фичи, которые cargo иначе завёл бы под каждый
+# опциональный target-dependency, оставляя ровно одну фичу-переключатель.
+default-transport = [
+    "dep:http-ng-native",
+    "dep:http-ng-rt-tokio",
+    "dep:http-ng-tls-rustls",
+    "dep:http-ng-dns-system",
+]
 # `Collected::json`. Выключено по умолчанию: измерено на реальной сборке
 # wasm32-unknown-unknown (opt-level=z, lto=true, strip=true) — 74 байта, когда
 # `.json()` ни разу не вызван (LTO вычищает метод целиком), 46 877 байт и
@@ -35,6 +46,31 @@ http-ng-proto = { workspace = true }
 serde         = { version = "1", default-features = false, features = ["std"], optional = true }
 serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
 
+# Таргет-зависимые опциональные зависимости `DefaultTransport` (см.
+# `default-transport` в `[features]` выше и doc-комментарий
+# `DefaultTransport` в `src/lib.rs`). `not(target_family = "wasm")` — та же
+# граница, что и у самого type alias'а: native-ветка одна на все не-wasm
+# таргеты (linux/macos/windows), браузер (`wasm32-unknown-unknown`,
+# вертикаль 3) и WASI (`wasm32-wasip2`, уже собранная в `http-ng-wasi`
+# отдельно от этого механизма — см. doc-комментарий про то, почему) в этот
+# блок не попадают вовсе, так что при сборке под них `default-transport`
+# просто ничего не тянет — компиляция падает на отсутствующем
+# `DefaultTransport`, а не молча собирает пустой транспорт.
+#
+# `http-ng-tls-rustls` несёт фичу `platform-verifier` не опционально, а
+# принудительно: `Client::new()` (`src/client.rs`) вызывает
+# `Rustls::with_platform_verifier()`, которая сама `#[cfg(feature =
+# "platform-verifier")]` в `http-ng-tls-rustls` — без этой строки
+# `default-transport` собирался бы у транспорта (`Native`), но не у
+# `Client::new()`, который бы попросту не нашёл метод. Найдено проверкой
+# исходников `http-ng-tls-rustls`, не предположено: черновик этой задачи
+# не называл эту строку явно.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+http-ng-native     = { path = "../http-ng-native",     version = "0.1.0", optional = true }
+http-ng-rt-tokio   = { path = "../http-ng-rt-tokio",   version = "0.1.0", optional = true }
+http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", optional = true, features = ["platform-verifier"] }
+http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", optional = true }
+
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 # derive живёт только здесь: тесту за фичей `json` нужен
@@ -42,6 +78,20 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 # уже сериализуемый T снаружи). dev-dependencies не входят в `-e normal`, так
 # что это не считается в графе потребителя даже когда доступно тестам.
 serde             = { version = "1", features = ["derive"] }
+# `tests/two_runtimes.rs` — сквозной прогон одного обобщённого тела на
+# tokio и на smol без единого `#[cfg]` (Task 14). `webpki-roots`, не
+# `platform-verifier`: тест никогда не выполняет настоящий TLS-хендшейк
+# (сервер отвечает по чистому HTTP), но конструктору `Native::new` всё
+# равно нужен конкретный тип `T: TlsConnect` — `with_webpki_roots()` не
+# требует доступа к системному хранилищу сертификатов и не тянет
+# `rustls-platform-verifier`, которая в dev-контексте не нужна вовсе.
+http-ng-native     = { path = "../http-ng-native" }
+http-ng-rt         = { path = "../http-ng-rt" }
+http-ng-rt-tokio   = { path = "../http-ng-rt-tokio" }
+http-ng-rt-smol    = { path = "../http-ng-rt-smol" }
+http-ng-tls-rustls = { path = "../http-ng-tls-rustls", features = ["webpki-roots"] }
+http-ng-dns-system = { path = "../http-ng-dns-system" }
+tokio              = { version = "1", features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true

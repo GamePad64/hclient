@@ -498,9 +498,16 @@ dependencies = [
  "http",
  "http-body",
  "http-ng-core",
+ "http-ng-dns-system",
+ "http-ng-native",
  "http-ng-proto",
+ "http-ng-rt",
+ "http-ng-rt-smol",
+ "http-ng-rt-tokio",
+ "http-ng-tls-rustls",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
