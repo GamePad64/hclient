@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls http-ng-tls-rustls; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -240,8 +240,16 @@ jobs:
           # пятый раз — собственного `rust-version` тоже не объявляет
           # (`rust-version.workspace = true` в его Cargo.toml), несёт
           # workspace-минимум 1.85 и обязан собираться при нём наравне с
-          # остальными девятью. Список `$pkgs` — десять крейтов, и
-          # `--all-targets` его не расширяет.
+          # остальными девятью.
+          # `http-ng-tls-rustls` (Task 9 вертикали 2) — одиннадцатый: тот же
+          # случай в шестой раз — своего `rust-version` тоже не объявляет
+          # (`rust-version.workspace = true` в его Cargo.toml). Он тянет
+          # `rustls` (0.23, требует `std`+`ring`+`tls12`) и, под
+          # `--all-features` здесь, ещё `rustls-platform-verifier` и
+          # `webpki-roots` — ни одна из этих зависимостей своего `rust-version`
+          # выше workspace-минимума не объявляет, так что крейт обязан
+          # собираться при 1.85 наравне с остальными десятью. Список `$pkgs`
+          # — одиннадцать крейтов, и `--all-targets` его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
   wasip2:
