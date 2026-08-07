@@ -368,6 +368,54 @@ impl http_body::Body for MockBody {
     }
 }
 
+/// A controllable [`http_ng_core::unversioned::Timer`] for tests: `sleep`
+/// never actually waits — it records the requested `Duration` and resolves
+/// immediately — so a reconnect test (`ReconnectingSseStream`, `sse.rs`)
+/// stays on the bare `futures_executor` executor this crate's test suite
+/// uses everywhere, with no real sleeping and no real runtime, and can
+/// still assert exactly what the backoff computed rather than only how
+/// many times it eventually reconnected.
+///
+/// `Clone`, cheaply — `Arc` inside — so a test can hand one copy to
+/// `SseBuilder::with_timer` and keep another to call `sleeps()` on
+/// afterward.
+#[derive(Debug, Clone, Default)]
+pub struct TestTimer {
+    sleeps: std::sync::Arc<Mutex<Vec<std::time::Duration>>>,
+}
+
+impl TestTimer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Every `Duration` `sleep` was called with, in call order.
+    pub fn sleeps(&self) -> Vec<std::time::Duration> {
+        self.sleeps.lock().expect("TestTimer lock poisoned").clone()
+    }
+}
+
+impl http_ng_core::unversioned::Timer for TestTimer {
+    /// The sum of every recorded sleep so far — a simple virtual clock,
+    /// sufficient for the one thing `Timer::Instant` needs to support
+    /// (`Copy + PartialOrd`), without claiming any relationship to real
+    /// wall-clock time.
+    type Instant = std::time::Duration;
+
+    fn sleep(&self, d: std::time::Duration) -> impl std::future::Future<Output = ()> {
+        self.sleeps.lock().expect("TestTimer lock poisoned").push(d);
+        std::future::ready(())
+    }
+
+    fn now(&self) -> Self::Instant {
+        self.sleeps().into_iter().sum()
+    }
+
+    fn elapsed_since(&self, earlier: Self::Instant) -> std::time::Duration {
+        self.now().saturating_sub(earlier)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +631,74 @@ mod tests {
                     .unwrap();
             assert_eq!(resp.status().as_u16(), expected);
         }
+    }
+
+    // ── TestTimer ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_timer_sleep_resolves_immediately_without_real_waiting() {
+        use http_ng_core::unversioned::Timer;
+        use std::time::{Duration, Instant};
+
+        let t = TestTimer::new();
+        let start = Instant::now();
+        // A duration long enough that a real sleep would make this test
+        // itself violate "every wait bounded" if `sleep` genuinely waited.
+        futures_executor::block_on(t.sleep(Duration::from_secs(3600)));
+        assert!(
+            Instant::now().duration_since(start) < Duration::from_millis(100),
+            "TestTimer::sleep must resolve immediately, not actually wait"
+        );
+    }
+
+    #[test]
+    fn test_timer_records_every_sleep_call_in_order() {
+        use http_ng_core::unversioned::Timer;
+        use std::time::Duration;
+
+        let t = TestTimer::new();
+        futures_executor::block_on(t.sleep(Duration::from_millis(1)));
+        futures_executor::block_on(t.sleep(Duration::from_millis(2)));
+        futures_executor::block_on(t.sleep(Duration::from_millis(3)));
+        assert_eq!(
+            t.sleeps(),
+            vec![
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                Duration::from_millis(3)
+            ],
+            "recorded in call order, not e.g. reversed or deduplicated"
+        );
+    }
+
+    /// `Clone` shares the same recording — a test that hands one clone to
+    /// `SseBuilder::with_timer` and keeps another to inspect afterward must
+    /// see the SAME sleeps, not an independent, empty log.
+    #[test]
+    fn test_timer_clones_share_the_same_recording() {
+        use http_ng_core::unversioned::Timer;
+        use std::time::Duration;
+
+        let original = TestTimer::new();
+        let handed_to_caller = original.clone();
+        futures_executor::block_on(handed_to_caller.sleep(Duration::from_millis(42)));
+        assert_eq!(
+            original.sleeps(),
+            vec![Duration::from_millis(42)],
+            "a clone's sleep must be visible through the original handle too"
+        );
+    }
+
+    #[test]
+    fn test_timer_now_and_elapsed_since_track_the_virtual_clock() {
+        use http_ng_core::unversioned::Timer;
+        use std::time::Duration;
+
+        let t = TestTimer::new();
+        let t0 = t.now();
+        futures_executor::block_on(t.sleep(Duration::from_millis(10)));
+        let t1 = t.now();
+        assert_eq!(t.elapsed_since(t0), Duration::from_millis(10));
+        assert_eq!(t1, Duration::from_millis(10));
     }
 }

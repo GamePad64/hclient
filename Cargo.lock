@@ -531,12 +531,9 @@ dependencies = [
  "http-ng-rt-smol",
  "http-ng-rt-tokio",
  "http-ng-tls-rustls",
- "js-sys",
  "serde",
  "serde_json",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]

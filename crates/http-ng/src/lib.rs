@@ -5,7 +5,6 @@
 #![forbid(unsafe_code)]
 
 mod client;
-mod clock;
 mod config;
 #[cfg(feature = "test-util")]
 pub mod mock;
@@ -57,7 +56,7 @@ pub use http_ng_proto::redirect::RedirectPolicy;
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
-pub use sse::{ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
+pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 
 /// The default transport, chosen by **the target, not the user**.
 ///

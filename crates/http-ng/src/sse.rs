@@ -1,5 +1,4 @@
 use crate::client::Client;
-use crate::clock::AmbientClock;
 use crate::response::Response;
 use bytes::Bytes;
 use http_body::Body as HttpBody;
@@ -231,6 +230,15 @@ where
 /// `http-ng-proto`, and `HeConfig` before it): a small value struct meant to
 /// be built with a literal or `..Default::default()`, not something a
 /// caller constructs through a builder of its own.
+///
+/// No `reconnect: bool` field — an earlier version of this had one, and
+/// removing it was deliberate: whether reconnect is enabled at all is
+/// decided at the TYPE level now, by whether [`SseBuilder::with_timer`] was
+/// called (see its doc comment), not by a runtime flag that could disagree
+/// with the type. Keeping both would have meant two things claiming to
+/// control the same behavior with only one of them exercised by most
+/// tests — the same shape of redundancy this crate's own mutation testing
+/// on `ReconnectingSseStream` already caught once, elsewhere, this task.
 #[derive(Debug, Clone, Copy)]
 pub struct SseOptions {
     pub max_event_size: usize,
@@ -238,12 +246,6 @@ pub struct SseOptions {
     /// field. See [`ReconnectingSseStream`]'s doc comment on `next` for how
     /// the two interact once the server does send one.
     pub backoff: Backoff,
-    /// `false` makes [`ReconnectingSseStream`] behave exactly like the
-    /// plain, non-reconnecting `SseStream` it wraps: a clean end of stream
-    /// or a fatal error both just end the stream, no reopen is ever
-    /// attempted. The default is `true` — the entire reason to go through
-    /// `Client::sse` instead of `SseStream::new` directly.
-    pub reconnect: bool,
 }
 
 impl Default for SseOptions {
@@ -251,12 +253,12 @@ impl Default for SseOptions {
         Self {
             max_event_size: http_ng_proto::sse::DEFAULT_MAX_EVENT_SIZE,
             backoff: Backoff::default(),
-            reconnect: true,
         }
     }
 }
 
-/// Builds a [`ReconnectingSseStream`]. Returned by [`Client::sse`].
+/// Builds either a plain [`SseStream`] (`connect`) or a reconnecting one
+/// (`with_timer(..).connect()`). Returned by [`Client::sse`].
 #[derive(Debug)]
 pub struct SseBuilder<'a, T> {
     client: &'a Client<T>,
@@ -283,7 +285,8 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
         }
     }
 
-    /// A header sent with the initial connection AND with every reconnect.
+    /// A header sent with the initial connection AND — if this builder
+    /// goes on to [`with_timer`](Self::with_timer) — with every reconnect.
     /// The first invalid `(name, value)` pair wins and survives further
     /// calls — see `RequestBuilder::header`'s doc comment for the identical
     /// contract and the reasoning behind it.
@@ -309,6 +312,103 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
         self
     }
 
+    /// Supplies the clock reconnect needs to wait out a backoff delay
+    /// between attempts, and switches this builder from `SseStream`
+    /// (single attempt) to [`ReconnectingSseStream`] (reconnects
+    /// automatically). Returns [`ReconnectingSseBuilder`], which otherwise
+    /// offers the same `header`/`options` calls before its own `connect`.
+    ///
+    /// **Why an explicit input, not something `http-ng` supplies on its
+    /// own** — this crate tried the alternative first (an ambient,
+    /// per-target clock built into `http-ng` itself, so `connect()` alone
+    /// would reconnect with no timer argument anywhere) and it was
+    /// rejected on review, for two reasons that both hold independently of
+    /// each other:
+    ///
+    /// 1. **It puts per-target runtime code in the facade crate.** `http-ng`
+    ///    is supposed to be the SAME code on every target, with the
+    ///    *transport* swapped for the platform — that's the whole point of
+    ///    `crates/http-ng-rt-pair-check`, which exists to fail the day a
+    ///    `#[cfg]` shows up that only one target satisfies. A clock inside
+    ///    `http-ng` needs a native branch and a browser branch, which is
+    ///    exactly that `#[cfg]`. Checked directly: `http-ng-rt-pair-check`
+    ///    depends on the runtime crates, not on `http-ng`, so it would not
+    ///    even have caught this if it had landed.
+    /// 2. **A `std::thread`-backed sleep compiles on `wasm32-wasip2` while
+    ///    having no OS thread to actually hand out under stock `wasmtime`
+    ///    at runtime** — a capability that LOOKS supported and silently
+    ///    isn't, which is precisely the class of defect this project's
+    ///    reviews exist to catch (it produced vertical 1's headline finding
+    ///    and vertical 2's one blocking finding). An ambient clock in
+    ///    `http-ng` would carry that lie into every crate that depends on
+    ///    it, with no way for a caller to see it from the type signature.
+    ///
+    /// Requiring `Timer` here instead is not a quarantine violation: a
+    /// caller asking for reconnect WITH exponential backoff is asking for
+    /// timed behavior by definition, so the capability stating its own
+    /// dependency is the honest shape — `Native<R: TcpConnect + Timer, ..>`
+    /// already requires exactly this from `R`, and nobody has called that a
+    /// leak of the backend contract. In practice a caller on `http-ng-rt-
+    /// tokio` or `http-ng-rt-smol` already has a `Timer` in scope (`Tokio`/
+    /// `Smol` both implement it) for the SAME reason their transport needed
+    /// one — nothing new to plumb through. `http-ng`'s own `test-util`
+    /// feature carries [`crate::mock::TestTimer`] for exactly this call, so
+    /// reconnect stays testable on the bare `futures_executor` this crate's
+    /// test suite uses everywhere, without a real runtime and without
+    /// sleeping for real — `TestTimer::sleep` records the requested
+    /// `Duration` and resolves immediately, so a test can assert the
+    /// backoff actually computed the interval it should have, which a
+    /// thread-backed clock could only do by really waiting.
+    pub fn with_timer<Tm: Timer>(self, timer: Tm) -> ReconnectingSseBuilder<'a, T, Tm> {
+        ReconnectingSseBuilder {
+            builder: self,
+            timer,
+        }
+    }
+
+    /// A single connection attempt, exactly [`SseStream::new`]'s contract —
+    /// no reconnect, because there is no timer to wait out a backoff delay
+    /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
+    pub async fn connect(self) -> Result<SseStream<T::Body>, Error>
+    where
+        T::Body: HttpBody<Data = Bytes> + Unpin,
+        <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    {
+        if let Some(e) = self.error {
+            return Err(e);
+        }
+        open(
+            self.client,
+            &self.headers,
+            &self.url,
+            None,
+            self.options.max_event_size,
+        )
+        .await
+    }
+}
+
+/// Builds a [`ReconnectingSseStream`]. Returned by [`SseBuilder::with_timer`].
+#[derive(Debug)]
+pub struct ReconnectingSseBuilder<'a, T, Tm> {
+    builder: SseBuilder<'a, T>,
+    timer: Tm,
+}
+
+impl<'a, T: Transport, Tm: Timer> ReconnectingSseBuilder<'a, T, Tm> {
+    /// Forwards to [`SseBuilder::header`] — see its doc comment.
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.builder = self.builder.header(name, value);
+        self
+    }
+
+    /// Forwards to [`SseBuilder::options`] — see its doc comment.
+    pub fn options(mut self, o: SseOptions) -> Self {
+        self.builder = self.builder.options(o);
+        self
+    }
+
     /// Makes exactly one connection attempt — no retry, regardless of
     /// whether the failure would later be classified as retryable by the
     /// reconnect loop. Mirrors `SseStream::new`'s own contract (a failed
@@ -318,29 +418,30 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
     /// started yet. Reconnect (with backoff) only applies to a stream that
     /// was successfully opened at least once and later dropped — see
     /// `ReconnectingSseStream::next`.
-    pub async fn connect(self) -> Result<ReconnectingSseStream<'a, T>, Error>
+    pub async fn connect(self) -> Result<ReconnectingSseStream<'a, T, Tm>, Error>
     where
         T::Body: HttpBody<Data = Bytes> + Unpin,
         <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
-        if let Some(e) = self.error {
+        if let Some(e) = self.builder.error {
             return Err(e);
         }
         let inner = open(
-            self.client,
-            &self.headers,
-            &self.url,
+            self.builder.client,
+            &self.builder.headers,
+            &self.builder.url,
             None,
-            self.options.max_event_size,
+            self.builder.options.max_event_size,
         )
         .await?;
         let cached_last_event_id = inner.last_event_id().map(str::to_owned);
         Ok(ReconnectingSseStream {
-            client: self.client,
-            url: self.url,
-            headers: self.headers,
-            options: self.options,
+            client: self.builder.client,
+            url: self.builder.url,
+            headers: self.builder.headers,
+            options: self.builder.options,
+            timer: self.timer,
             cached_last_event_id,
             attempt: 0,
             server_retry: None,
@@ -438,8 +539,8 @@ where
 /// no matter what": `Backoff::max_attempts` (still `None`/unlimited only by
 /// the caller's own explicit choice, per Task 6) bounds it, and a caller
 /// that wants a NEW `ErrorKind` treated as terminal can already do so today
-/// by setting `SseOptions::reconnect = false` and handling the resulting
-/// `Err` itself.
+/// by using the plain `SseStream` (`SseBuilder::connect` with no
+/// `with_timer`) and handling every `Err` itself instead of reconnecting.
 fn is_retryable(kind: &ErrorKind) -> bool {
     !matches!(
         kind,
@@ -451,12 +552,39 @@ fn is_retryable(kind: &ErrorKind) -> bool {
     )
 }
 
+/// A fresh, uniform `[0.0, 1.0)` jitter draw for `Backoff::delay`.
+/// Randomness isn't a seam anyone has defined in this project (unlike
+/// `Timer`, which reconnect takes as an explicit input — see
+/// `SseBuilder::with_timer`'s doc comment for why the two are treated
+/// differently), so `http-ng` sources this itself rather than asking the
+/// reconnect caller for an RNG, the same way `http-ng-proto`'s
+/// `Backoff::delay` already expects SOME caller to supply `jitter`.
+///
+/// `getrandom` failing is a documented but exceedingly rare condition (the
+/// OS's entropy source is unavailable). Silently discarding the error
+/// (`.unwrap_or(())`) would leave the buffer at all-zeros with no record
+/// that anything went wrong — this project's "no silent no-ops" rule, so
+/// the fallback is written out instead: an all-zeros draw maps to
+/// `jitter = 0.0`, `Backoff`'s OWN documented resolution for an
+/// out-of-domain jitter (see `backoff.rs`'s
+/// `nan_jitter_does_not_panic_and_is_treated_as_no_reduction`) — no
+/// reduction, the conservative (slower, not faster) direction, so a
+/// starved entropy source degrades reconnect into un-jittered exponential
+/// backoff rather than into hammering the server.
+fn jitter() -> f64 {
+    let mut buf = [0u8; 8];
+    if getrandom::fill(&mut buf).is_err() {
+        return 0.0;
+    }
+    (u64::from_le_bytes(buf) as f64) / (u64::MAX as f64)
+}
+
 /// The delay before the next (re)connect attempt — pure, and taking
-/// `jitter` as an explicit parameter rather than reading `crate::clock::
-/// jitter()` itself, for exactly the reason `Backoff::delay` itself takes
-/// `jitter` as a parameter (`http-ng-proto/src/backoff.rs`'s own doc
-/// comment): a function that reads live entropy internally can only be
-/// tested probabilistically. Factored out of `next()`'s `Disconnected`
+/// `jitter` as an explicit parameter rather than reading `jitter()` (above)
+/// itself, for exactly the reason `Backoff::delay` itself takes `jitter` as
+/// a parameter (`http-ng-proto/src/backoff.rs`'s own doc comment): a
+/// function that reads live entropy internally can only be tested
+/// probabilistically. Factored out of `next()`'s `Disconnected`
 /// arm specifically so the "server's `retry:` REPLACES `options.backoff.
 /// base`" decision (see `ReconnectingSseStream::next`'s doc comment) can be
 /// pinned with `jitter = 0.0` in a deterministic unit test below, instead
@@ -513,25 +641,29 @@ enum ReconnectState<B> {
     /// size for every `ReconnectingSseStream`, live connection or not
     /// (`clippy::large_enum_variant`).
     Live(Box<SseStream<B>>),
-    /// The previous connection ended (cleanly or on a retryable error) and
-    /// reconnect is enabled: the next `next()` call will wait out a
-    /// backoff delay, then attempt to reopen.
+    /// The previous connection ended (cleanly or on a retryable error): the
+    /// next `next()` call will wait out a backoff delay, then attempt to
+    /// reopen. Reconnect is always enabled for this type — a
+    /// `ReconnectingSseStream` only exists because [`SseBuilder::with_timer`]
+    /// was called, which is the only place that decision is made now (no
+    /// runtime flag to disagree with it — see `SseOptions`'s doc comment).
     Disconnected,
-    /// Forever. Set on a terminal error, on `Backoff` exhaustion, or on a
-    /// clean end of stream with `reconnect: false`.
+    /// Forever. Set on a terminal error, or on `Backoff` exhaustion.
     Terminated,
 }
 
 /// A reconnecting SSE stream: on a clean end of stream or a retryable
 /// failure, resends the request (filling in `Last-Event-ID` when there's a
-/// non-empty one to send) after a jittered backoff delay. Built by
-/// [`SseBuilder::connect`], reachable from [`Client::sse`].
+/// non-empty one to send) after a jittered backoff delay, waited out on
+/// `Tm`. Built by [`ReconnectingSseBuilder::connect`], reachable from
+/// [`Client::sse`]`.with_timer(..)`.
 #[derive(Debug)]
-pub struct ReconnectingSseStream<'a, T: Transport> {
+pub struct ReconnectingSseStream<'a, T: Transport, Tm> {
     client: &'a Client<T>,
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
+    timer: Tm,
     /// The last event ID observed so far, kept OUTSIDE the live
     /// `SseStream`'s own decoder so it survives the decoder being replaced
     /// on every reconnect. Snapshotted from the live stream's
@@ -554,12 +686,13 @@ pub struct ReconnectingSseStream<'a, T: Transport> {
     state: ReconnectState<T::Body>,
 }
 
-impl<'a, T> ReconnectingSseStream<'a, T>
+impl<'a, T, Tm> ReconnectingSseStream<'a, T, Tm>
 where
     T: Transport,
     T::Body: HttpBody<Data = Bytes> + Unpin,
     <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
     T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    Tm: Timer,
 {
     /// The last event ID seen, across any number of reconnects — the value
     /// that would go out as `Last-Event-ID` on the NEXT reconnect (subject
@@ -587,15 +720,15 @@ where
     }
 
     /// The next event. On a clean end of stream or a retryable failure
-    /// (`is_retryable`), with `options.reconnect` on, this reconnects
-    /// internally — after a backoff delay — rather than ending the stream
-    /// or surfacing the failure: a caller iterating this for `SseEvent`s
-    /// should not see a spurious `Err` for a hiccup that was automatically
-    /// recovered from, matching real `EventSource`'s behavior of retrying
-    /// silently in the background. A TERMINAL failure surfaces as `Err`
-    /// exactly once, then the stream is over for good — the same
-    /// fatal-then-forever-`None` contract `SseStream` itself already
-    /// makes, extended across reconnects rather than broken by them.
+    /// (`is_retryable`), this reconnects internally — after a backoff delay
+    /// waited out on `Tm` — rather than ending the stream or surfacing the
+    /// failure: a caller iterating this for `SseEvent`s should not see a
+    /// spurious `Err` for a hiccup that was automatically recovered from,
+    /// matching real `EventSource`'s behavior of retrying silently in the
+    /// background. A TERMINAL failure surfaces as `Err` exactly once, then
+    /// the stream is over for good — the same fatal-then-forever-`None`
+    /// contract `SseStream` itself already makes, extended across
+    /// reconnects rather than broken by them.
     ///
     /// **The server's `retry:` field REPLACES `options.backoff.base` for
     /// every delay computed from the moment it's received onward** (until
@@ -625,7 +758,7 @@ where
                     }
                     Some(Err(err)) => {
                         self.cached_last_event_id = inner.last_event_id().map(str::to_owned);
-                        if !self.options.reconnect || !is_retryable(err.kind()) {
+                        if !is_retryable(err.kind()) {
                             self.state = ReconnectState::Terminated;
                             return Some(Err(err));
                         }
@@ -633,15 +766,11 @@ where
                     }
                     None => {
                         self.cached_last_event_id = inner.last_event_id().map(str::to_owned);
-                        if !self.options.reconnect {
-                            self.state = ReconnectState::Terminated;
-                            return None;
-                        }
                         self.state = ReconnectState::Disconnected;
                     }
                 },
                 ReconnectState::Disconnected => {
-                    let jitter = crate::clock::jitter();
+                    let jitter = jitter();
                     let Some(delay) = effective_delay(
                         &self.options.backoff,
                         self.server_retry,
@@ -656,7 +785,7 @@ where
                         )));
                     };
                     self.attempt = self.attempt.saturating_add(1);
-                    AmbientClock.sleep(delay).await;
+                    self.timer.sleep(delay).await;
 
                     match open(
                         self.client,
@@ -803,7 +932,7 @@ mod reconnect_tests {
     #[cfg(feature = "test-util")]
     fn attempt_resets_to_zero_after_a_successful_reopen_not_just_once() {
         use crate::client::Client;
-        use crate::mock::MockTransport;
+        use crate::mock::{MockTransport, TestTimer};
 
         let m = MockTransport::new();
         // Connection 1: one event, then a retryable body error.
@@ -837,8 +966,13 @@ mod reconnect_tests {
             },
             ..Default::default()
         };
-        let mut s =
-            futures_executor::block_on(c.sse("https://a/stream").options(opts).connect()).unwrap();
+        let mut s = futures_executor::block_on(
+            c.sse("https://a/stream")
+                .options(opts)
+                .with_timer(TestTimer::new())
+                .connect(),
+        )
+        .unwrap();
 
         // Call 1: connection 1's decoder already has "a" ready before its
         // error is even reached — this returns immediately, WITHOUT ever

@@ -1,22 +1,21 @@
 //! `Client::sse` — the reconnecting SSE stream.
 //!
 //! `#![cfg(feature = "test-util")]` — same reason as `tests/sse.rs`: this
-//! file pulls in `http_ng::mock::MockTransport`, which only exists behind
-//! `test-util`.
+//! file pulls in `http_ng::mock::{MockTransport, TestTimer}`, which only
+//! exist behind `test-util`.
 //!
-//! Every backoff here uses a millisecond-scale `Backoff` (`fast_backoff`
-//! below), not the library's 1s/30s production default: the ambient clock
-//! (`AmbientClock`, `src/clock.rs`) really sleeps a background thread, and a
-//! test suite that waited out real 1s-30s delays per reconnect would be the
-//! exact "unbounded wait" class of defect this vertical's own CI discipline
-//! polices (`http-ng-native/src/connect.rs`'s `FakeRt` sidesteps this with a
-//! virtual clock instead — not available here, since the ambient clock is
-//! deliberately NOT injectable from outside the crate, see the report for
-//! why). Every test below still finishes in well under a second of real
-//! wall-clock time.
+//! Every reconnecting test below supplies `TestTimer` to
+//! `SseBuilder::with_timer` — it records the `Duration`s `sleep` was called
+//! with and resolves immediately, so nothing here actually waits, no matter
+//! what `Backoff` is configured. This is the same "controllable clock
+//! instead of a real one" trick `http-ng-native/src/connect.rs`'s `FakeRt`
+//! already uses for connect-timeout tests; `TestTimer` is `http-ng`'s own
+//! instance of it, next to `MockTransport` in `mock.rs`, specifically
+//! because an earlier version of this file needed a real ambient clock and
+//! that design was reworked away (see the report).
 #![cfg(feature = "test-util")]
 
-use http_ng::mock::MockTransport;
+use http_ng::mock::{MockTransport, TestTimer};
 use http_ng::{Client, ErrorKind, SseEvent, SseOptions};
 use http_ng_proto::backoff::Backoff;
 use std::time::Duration;
@@ -29,10 +28,11 @@ fn sse(body: &'static str) -> http::Response<&'static str> {
         .unwrap()
 }
 
-/// A backoff that resolves in low single-digit milliseconds even at
-/// `max_attempts`, so the reconnect tests below stay fast without needing a
-/// fake/injectable clock.
-fn fast_backoff() -> Backoff {
+/// A small, easy-to-read `Backoff` for tests that need a bounded
+/// `max_attempts` — readability, not speed: `TestTimer` never actually
+/// waits, so the actual `Duration` values here don't affect how long any
+/// test takes to run.
+fn bounded_backoff() -> Backoff {
     Backoff {
         base: Duration::from_millis(1),
         max: Duration::from_millis(20),
@@ -40,9 +40,9 @@ fn fast_backoff() -> Backoff {
     }
 }
 
-fn fast_options() -> SseOptions {
+fn bounded_options() -> SseOptions {
     SseOptions {
-        backoff: fast_backoff(),
+        backoff: bounded_backoff(),
         ..Default::default()
     }
 }
@@ -54,9 +54,13 @@ fn reconnects_and_sends_last_event_id() {
     m.push_response(sse("data: second\n\n"));
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let mut got = Vec::new();
     for _ in 0..2 {
@@ -113,9 +117,13 @@ fn stops_forever_on_204() {
     );
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
     while futures_executor::block_on(s.next()).is_some() {}
 
     assert_eq!(
@@ -142,9 +150,13 @@ fn a_204_reconnect_surfaces_one_terminal_error_not_a_silent_stop() {
     );
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
@@ -174,12 +186,11 @@ fn a_204_reconnect_surfaces_one_terminal_error_not_a_silent_stop() {
 #[test]
 fn honours_server_sent_retry_over_the_policy() {
     // The server's `retry: 1` (1ms) replaces the configured `Backoff::base`
-    // (which here is deliberately set much larger — 10s — specifically so
-    // this test can tell "the server's value was used" apart from "the
-    // policy's base was used anyway": if the policy's 10s base leaked
-    // through, this test would time out / not finish, rather than silently
-    // pass. See the report for why "replaces the base" was chosen over
-    // "caps it" or "ignored".
+    // — checked two ways: the events still all arrive (behavioral), AND
+    // `TestTimer` recorded a delay no larger than the server's 1ms rather
+    // than the policy's 10s (exact — `Backoff::delay` only ever REDUCES via
+    // jitter, never grows past its base, so this bound holds regardless of
+    // the actual jitter draw).
     let m = MockTransport::new();
     m.push_response(sse("retry: 1\ndata: x\n\n"));
     m.push_response(sse("data: y\n\n"));
@@ -194,9 +205,11 @@ fn honours_server_sent_retry_over_the_policy() {
         },
         ..Default::default()
     };
+    let timer = TestTimer::new();
     let mut s = futures_executor::block_on(
         c.sse("https://a/stream")
             .options(slow_base_but_server_overrides)
+            .with_timer(timer.clone())
             .connect(),
     )
     .unwrap();
@@ -204,9 +217,8 @@ fn honours_server_sent_retry_over_the_policy() {
     // `next()` also yields the `Retry` directive itself as a real item
     // (first-class, per the design doc — same treatment as `Comment`), so
     // a plain "collect N items" loop would count it as one of the three
-    // and never actually reach `data: z` — passing for the wrong reason,
-    // without ever exercising the third reconnect. Filter to `Message`
-    // events specifically, and bound the iteration count generously (not
+    // and never actually reach `data: z`. Filter to `Message` events
+    // specifically, and bound the iteration count generously (not
     // unboundedly) so a real regression fails instead of hanging.
     let mut messages = Vec::new();
     for _ in 0..8 {
@@ -220,10 +232,29 @@ fn honours_server_sent_retry_over_the_policy() {
     assert_eq!(
         messages,
         vec!["x".to_string(), "y".to_string(), "z".to_string()],
-        "all three messages, across two reconnects, must arrive quickly — \
-         a 10s base leaking through would blow the test's real budget \
-         and this loop's 8-iteration bound"
+        "all three messages, across two reconnects, must arrive"
     );
+
+    let sleeps = timer.sleeps();
+    assert_eq!(sleeps.len(), 2, "exactly two reconnects happened");
+    for d in sleeps {
+        assert!(
+            d <= Duration::from_millis(1),
+            "recorded sleep {d:?} exceeds the server's 1ms retry — the \
+             configured 10s base leaked through instead of being replaced"
+        );
+        // Lower bound too, not just upper: jitter is drawn from [0.0, 1.0)
+        // (strictly less than 1), so `Backoff::delay` on a nonzero base
+        // always returns a STRICTLY positive `Duration` — never exactly
+        // zero. Catches a wiring bug that calls `sleep` with a hardcoded
+        // zero (which would trivially satisfy the upper-bound check above
+        // too) instead of the actually-computed delay.
+        assert!(
+            d > Duration::ZERO,
+            "recorded sleep was exactly zero — sleep() was likely called \
+             with a hardcoded value instead of the computed delay"
+        );
+    }
 }
 
 #[test]
@@ -238,8 +269,9 @@ fn oversized_event_is_fatal_and_not_retried() {
         c.sse("https://a/stream")
             .options(SseOptions {
                 max_event_size: 8,
-                ..fast_options()
+                ..bounded_options()
             })
+            .with_timer(TestTimer::new())
             .connect(),
     )
     .unwrap();
@@ -278,9 +310,13 @@ fn a_transient_body_error_is_retried_transparently_without_surfacing_as_an_event
     m.push_response(sse("data: b\n\n"));
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let mut got = Vec::new();
     for _ in 0..2 {
@@ -298,13 +334,16 @@ fn a_transient_body_error_is_retried_transparently_without_surfacing_as_an_event
 }
 
 #[test]
-fn connect_makes_exactly_one_attempt_regardless_of_error_kind() {
-    // The VERY FIRST connection is a decision the caller is actively
-    // waiting on, not a background retry loop that hasn't started yet —
-    // `SseBuilder::connect` mirrors `SseStream::new`'s own contract (a
-    // failed construction is `Err`, full stop). This holds independent of
-    // `is_retryable`'s classification: even a kind that would be silently
-    // retried mid-stream (`Body`, here) still fails `connect()` outright.
+fn connect_without_with_timer_makes_exactly_one_attempt_regardless_of_error_kind() {
+    // Without `with_timer`, `SseBuilder::connect` returns a plain
+    // `SseStream` (vertical 1's type, not a reconnecting wrapper at all) —
+    // this checks the WIRING through `Client::sse` -> `open` -> a single
+    // `Client::execute` call behaves like `SseStream::new`'s own contract
+    // (a failed construction is `Err`, full stop), independent of
+    // `is_retryable`'s classification: even a kind that WOULD be silently
+    // retried by the reconnecting variant (`Body`, here) still fails this
+    // plain `connect()` outright, because there is no timer to wait a
+    // backoff delay with and therefore no reconnect loop at all.
     let m = MockTransport::new();
     m.push_transport_error(http_ng::Error::new(
         ErrorKind::Body,
@@ -312,14 +351,13 @@ fn connect_makes_exactly_one_attempt_regardless_of_error_kind() {
     ));
 
     let c = Client::builder(m).build().unwrap();
-    let err =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .expect_err("connect() must fail outright on the very first attempt, no retry");
+    let err = futures_executor::block_on(c.sse("https://a/stream").connect())
+        .expect_err("connect() must fail outright on the very first attempt, no retry");
     assert_eq!(err.kind(), &ErrorKind::Body);
     assert_eq!(
         c.transport().requests().len(),
         1,
-        "no retry was attempted for the initial connection"
+        "no retry was attempted — there is no timer to retry with"
     );
 }
 
@@ -331,10 +369,11 @@ fn an_unsupported_capability_error_is_terminal_not_retried() {
     // (`a_transient_body_error_is_retried_transparently_...` above) is the
     // point: not every non-decode error is retryable, and not every error
     // is terminal — the classification is per-kind. Triggered MID-STREAM
-    // (after a successful connect), not at `connect()` itself: `connect()`
-    // fails outright on ANY kind regardless of classification (see
-    // `connect_makes_exactly_one_attempt_regardless_of_error_kind` above),
-    // so only a mid-stream failure actually exercises `is_retryable`.
+    // (after a successful connect through `with_timer`), not at the
+    // initial connection: the initial connection fails outright on ANY
+    // kind regardless of classification (see the plain-`connect()` test
+    // above), so only a mid-stream failure actually exercises
+    // `is_retryable`.
     let m = MockTransport::new();
     m.push_response_frames_then_error(
         http::Response::builder()
@@ -350,9 +389,13 @@ fn an_unsupported_capability_error_is_terminal_not_retried() {
     m.push_response(sse("data: never\n\n"));
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
@@ -388,10 +431,10 @@ fn gives_up_after_max_attempts_with_one_distinguishable_error_not_silence() {
             .unwrap(),
         http_ng::Error::new(ErrorKind::Body, std::io::Error::other("down")),
     );
-    // Only ONE more response queued after the first failure — every
-    // reconnect attempt after that hits `MockTransport`'s empty-queue
-    // error, `ErrorKind::Other`, which is retryable, so the backoff runs
-    // out of `max_attempts` rather than hitting a terminal kind.
+    // No further response queued: every reconnect attempt after the first
+    // failure hits `MockTransport`'s empty-queue error, `ErrorKind::Other`,
+    // which is retryable, so the backoff runs out of `max_attempts` rather
+    // than hitting a terminal kind.
 
     let c = Client::builder(m).build().unwrap();
     let opts = SseOptions {
@@ -402,8 +445,13 @@ fn gives_up_after_max_attempts_with_one_distinguishable_error_not_silence() {
         },
         ..Default::default()
     };
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(opts).connect()).unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(opts)
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
@@ -446,20 +494,19 @@ fn gives_up_after_max_attempts_with_one_distinguishable_error_not_silence() {
 }
 
 #[test]
-fn reconnect_false_behaves_like_the_plain_non_reconnecting_stream() {
+fn connect_without_with_timer_returns_a_plain_non_reconnecting_stream() {
+    // No runtime flag controls this anymore (an earlier version had
+    // `SseOptions::reconnect: bool`) — whether the stream reconnects is a
+    // type-level fact now, decided solely by whether `with_timer` was
+    // called. This test exercises the "not called" side: `Client::sse(url)
+    // .connect()` must behave exactly like `SseStream`'s own vertical-1
+    // contract (already covered in depth by `tests/sse.rs`) — a clean EOF
+    // just ends the stream, no error, no reconnect attempt.
     let m = MockTransport::new();
     m.push_response(sse("data: only\n\n"));
 
     let c = Client::builder(m).build().unwrap();
-    let mut s = futures_executor::block_on(
-        c.sse("https://a/stream")
-            .options(SseOptions {
-                reconnect: false,
-                ..fast_options()
-            })
-            .connect(),
-    )
-    .unwrap();
+    let mut s = futures_executor::block_on(c.sse("https://a/stream").connect()).unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
@@ -472,12 +519,12 @@ fn reconnect_false_behaves_like_the_plain_non_reconnecting_stream() {
     );
     assert!(
         futures_executor::block_on(s.next()).is_none(),
-        "a clean EOF with reconnect disabled just ends the stream, no error"
+        "a clean EOF with no timer supplied just ends the stream, no error"
     );
     assert_eq!(
         c.transport().requests().len(),
         1,
-        "reconnect: false must mean zero reconnect attempts"
+        "without with_timer there is no reconnect attempt at all"
     );
 }
 
@@ -491,7 +538,8 @@ fn header_carries_a_custom_header_across_every_reconnect() {
     let mut s = futures_executor::block_on(
         c.sse("https://a/stream")
             .header("x-api-key", "secret")
-            .options(fast_options())
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
             .connect(),
     )
     .unwrap();
@@ -544,9 +592,13 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
     m.push_response(sse("data: third\n\n"));
 
     let c = Client::builder(m).build().unwrap();
-    let mut s =
-        futures_executor::block_on(c.sse("https://a/stream").options(fast_options()).connect())
-            .unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
