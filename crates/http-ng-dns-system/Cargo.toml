@@ -1,0 +1,21 @@
+[package]
+name = "http-ng-dns-system"
+version = "0.1.0"
+description = "Системный резолвер (getaddrinfo) для http-ng через способность Blocking"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures-core = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+http-ng-core = { workspace = true }
+http-ng-dns  = { path = "../http-ng-dns", version = "0.1.0" }
+http-ng-rt   = { path = "../http-ng-rt",  version = "0.1.0" }
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

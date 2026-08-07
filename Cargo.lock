@@ -398,6 +398,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-dns-system"
+version = "0.1.0"
+dependencies = [
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "http-ng-core",
+ "http-ng-dns",
+ "http-ng-rt",
+]
+
+[[package]]
 name = "http-ng-proto"
 version = "0.1.0"
 dependencies = [

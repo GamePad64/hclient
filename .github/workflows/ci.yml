@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -229,7 +229,13 @@ jobs:
           # `http-ng-dns` (Task 6 вертикали 2) — восьмой: своего
           # `rust-version` тоже не объявляет (`rust-version.workspace = true`
           # в его Cargo.toml), значит несёт тот же workspace-минимум, что и
-          # остальные семь. Список `$pkgs` — восемь крейтов, и
+          # остальные семь.
+          # `http-ng-dns-system` (Task 7 вертикали 2) — девятый: тот же
+          # случай в четвёртый раз (после `http-ng-rt`, `http-ng-rt-tokio`,
+          # `http-ng-rt-smol`) — собственного `rust-version` не объявляет,
+          # `rust-version.workspace = true` в его Cargo.toml, значит несёт
+          # workspace-минимум 1.85 и обязан собираться при нём наравне с
+          # остальными восемью. Список `$pkgs` — девять крейтов, и
           # `--all-targets` его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
