@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -225,8 +225,12 @@ jobs:
           # четвёртый: `publish = false` (это доказательство свойства, а не
           # публикуемый крейт), но `rust-version.workspace = true` в его
           # Cargo.toml — то же самое обещание, которое уже проверяется у
-          # остальных пяти, и `publish = false` его не отменяет. Список
-          # `$pkgs` — семь крейтов, и `--all-targets` его не расширяет.
+          # остальных пяти, и `publish = false` его не отменяет.
+          # `http-ng-dns` (Task 6 вертикали 2) — восьмой: своего
+          # `rust-version` тоже не объявляет (`rust-version.workspace = true`
+          # в его Cargo.toml), значит несёт тот же workspace-минимум, что и
+          # остальные семь. Список `$pkgs` — восемь крейтов, и
+          # `--all-targets` его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
   wasip2:
@@ -952,8 +956,21 @@ jobs:
           # следующий коммит, добавляющий unsafe месяцем позже, никто не
           # ловит. Поэтому — постоянный job с явным `if`/`then`/`exit 1`, а
           # не однострочный grep-трюк.
+          #
+          # Task 6 добавил `http-ng-dns` в список каталогов — не
+          # native-runtime-крейт (никакого моста `futures-io`/`hyper::rt`,
+          # вообще без I/O: чистый трейт-контракт резолвера), так что
+          # заголовок шага выше («no unsafe code in native runtime crates»)
+          # для него не буквален. Добавлен по прямому пункту чек-листа
+          # вертикали 2 («Add it to no-unsafe-code's directory list too»),
+          # который не сужает область до крейтов с мостами — сама проверка
+          # ловит РЕГРЕСС `#![forbid(unsafe_code)]`, а это обещание крейт
+          # даёт независимо от того, есть ли у него мотив писать `unsafe`
+          # сегодня. `http-ng-dns` несёт `#![forbid(unsafe_code)]` в `lib.rs`
+          # ровно как остальные три — вторая линия защиты работает
+          # одинаково для всех, кто дал то же обещание.
           dirs=""
-          for d in crates/http-ng-rt/src crates/http-ng-rt-tokio/src crates/http-ng-rt-smol/src; do
+          for d in crates/http-ng-rt/src crates/http-ng-rt-tokio/src crates/http-ng-rt-smol/src crates/http-ng-dns/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then

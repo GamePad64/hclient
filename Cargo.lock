@@ -387,6 +387,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-dns"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "http-ng-core",
+]
+
+[[package]]
 name = "http-ng-proto"
 version = "0.1.0"
 dependencies = [
