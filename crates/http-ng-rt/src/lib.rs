@@ -8,7 +8,7 @@
 mod caps;
 mod futures_io;
 
-pub use caps::{Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts};
+pub use caps::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts};
 pub use futures_io::FuturesIo;
 
 /// `Timer` определён один раз, в `http-ng-core`: он нужен портативному ядру

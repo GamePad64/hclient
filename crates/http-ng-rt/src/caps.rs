@@ -55,12 +55,46 @@ pub trait TcpAdoptStd: TcpConnect {
 /// каждый нёс собственный маркер `send-bound-exception` на своей строке: CI
 /// `no-declared-send` матчит объявление бонда построчно, и один общий
 /// комментарий после списка дженериков его бы не покрыл.
+///
+/// Два разных отказа `f` не смешиваются в один канал:
+///
+/// - Паника `f` — баг вызывающего кода. Она обязана перевызываться как
+///   паника (`std::panic::resume_unwind`, с оригинальным payload), а не
+///   тихо превращаться в значение, которое можно `?`-пропустить — иначе
+///   реализация прячет дефект вызывающего кода за `Result`.
+/// - Уход пула фоновых потоков (например, рантайм завершает работу, пока
+///   задача ещё стоит в очереди и не начала выполняться) — это не баг
+///   вызывающего кода, а обычное событие жизненного цикла рантайма.
+///   Реализация обязана вернуть [`Cancelled`], а не паниковать: паника
+///   библиотечного кода на штатном (пусть и редком) сценарии остановки
+///   рантайма противоречила бы остальному проекту ("no silent no-ops...
+///   typed error, never a discarded value" — то же самое применено и
+///   здесь, только к отказу, а не к успеху).
 pub trait Blocking {
-    fn run<T, F>(&self, f: F) -> impl Future<Output = T>
+    fn run<T, F>(&self, f: F) -> impl Future<Output = Result<T, Cancelled>>
     where
         T: Send + 'static, // send-bound-exception: amendment-C5
         F: FnOnce() -> T + Send + 'static; // send-bound-exception: amendment-C5
 }
+
+/// Пул фоновых потоков, на котором должна была выполниться `Blocking::run`,
+/// исчез раньше, чем задача успела начать выполняться — например, рантайм
+/// завершает работу, пока задача ещё стоит в очереди. Без payload: это не
+/// ошибка `f` (`f` не запускалась вовсе), а сигнал среды выполнения, что
+/// результата не будет.
+///
+/// Паника `f`, для контраста, НЕ становится `Cancelled` — она перевызывается
+/// как паника у реализации `Blocking`, см. doc-комментарий трейта.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("blocking task pool went away before the work started")
+    }
+}
+
+impl std::error::Error for Cancelled {}
 
 #[cfg(test)]
 mod tests {
