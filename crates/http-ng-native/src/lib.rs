@@ -3,17 +3,201 @@
 //! Этот крейт собирает воедино рантайм ([`http_ng_rt`]), DNS ([`http_ng_dns`])
 //! и TLS ([`http_ng_tls`]) поверх `hyper`. Task 10 заложила адаптер тела
 //! запроса ([`body`], `pub(crate)`); Task 11 добавила коннектор
-//! ([`connect`], тоже `pub(crate)`); Task 12 добавляет HTTP/1-драйвер
-//! ([`h1`], `pub(crate)`) — первый настоящий потребитель обоих:
-//! `h1::exchange` доводит запрос до ответа, поллируя `hyper::client::conn::
-//! http1::Connection` вручную, рядом с чтением тела, без единого `spawn`
-//! (сам `Transport` появится в Task 13). Крейт по-прежнему не экспортирует
-//! ничего публично, кроме тестового хелпера [`testing`].
+//! ([`connect`], тоже `pub(crate)`); Task 12 добавила HTTP/1-драйвер
+//! ([`h1`], `pub(crate)`); Task 13 собирает всё это в [`Native`] —
+//! единственный публичный тип крейта, реализующий `http_ng_core::
+//! unversioned::Transport`.
+//!
+//! # `Native::execute` не резолвит DNS сам
+//!
+//! Черновик этой задачи (`task-13-brief.md`) резолвил адреса вручную —
+//! `.filter_map(|r| async { r.ok() })` над `Resolve::lookup_ipv4`/
+//! `lookup_ipv6`, отбрасывая ЛЮБУЮ ошибку резолвера (в том числе
+//! `ErrorKind::Cancelled` — обычное завершение фонового пула, Task 7) и
+//! синтезируя единый `ErrorKind::Resolve`, если оба стрима оказались пусты.
+//! Review Task 7 уже нашла ровно этот дефект на этом же месте: смешение
+//! «резолвер отказал» и «рантайм завершает работу» ломает circuit breaker,
+//! ключующийся на `Resolve` — он ошибочно занёс бы живой хост в чёрный
+//! список во время обычного shutdown.
+//!
+//! Task 11 решила это один раз и структурно в `connect::drive`/
+//! `ResolveErrors::distinguishing_error` (см. doc-комментарий `connect.rs`):
+//! отличающийся от синтетического `Resolve` `kind()` проверяется ДО обеих
+//! веток отказа, так что отбрасывание становится структурно недостижимым, а
+//! не просто обработанным для одного найденного случая. `execute` ниже
+//! поэтому не резолвит и не гоняет Happy Eyeballs сам — он вызывает
+//! `connect::connect`, ту же точку входа, что уже покрыта юнит-тестами
+//! `connect.rs`; `crates/http-ng-native/tests/transport.rs`'s
+//! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
+//! проверяет, что это свойство доживает до всего пути `Client::execute`, не
+//! только до `connect::drive` самого по себе.
 #![forbid(unsafe_code)]
 
 mod body;
 mod connect;
 mod h1;
+
+use http_ng_core::unversioned::Transport;
+use http_ng_core::{
+    Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, TlsSupport, UpgradeSupport,
+};
+use http_ng_dns::Resolve;
+use http_ng_rt::{TcpConnect, TcpOpts, Timer};
+use http_ng_tls::TlsConnect;
+
+/// Транспорт http-ng поверх реального TCP/TLS/HTTP1: подключает вместе
+/// рантайм `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
+/// ([`http_ng_tls::TlsConnect`]) и резолвер `D` ([`http_ng_dns::Resolve`]).
+///
+/// v0.1: одно соединение на запрос (пула нет), тело запроса буферизуется
+/// целиком (`streaming_request_body: false`), HTTP/1.1 only, без upgrade —
+/// см. [`Native::new`] и [`Capabilities`], которые эти ограничения
+/// объявляют честно, а не молчат о них.
+#[derive(Debug)]
+pub struct Native<R, T, D> {
+    rt: R,
+    tls: T,
+    dns: D,
+    opts: TcpOpts,
+    caps: Capabilities,
+}
+
+impl<R, T, D> Native<R, T, D> {
+    pub fn new(rt: R, tls: T, dns: D) -> Self {
+        let mut caps = Capabilities::none();
+        // Честно про v0.1: пула соединений нет, стриминга тела запроса нет,
+        // upgrade нет — остальные поля остаются на консервативной базе
+        // `Capabilities::none()` (см. `tests/transport.rs`'s
+        // `every_undeclared_capability_stays_at_the_conservative_default`).
+        caps.streaming_request_body = false;
+        caps.redirects = RedirectSupport::Configurable;
+        caps.tls_config = TlsSupport::Full;
+        caps.version_reported = true;
+        caps.timeouts = TimeoutSupport {
+            connect: true,
+            // Ни пула, ни таймера ответа в v0.1 нет — заявлять эти фазы
+            // значило бы способность, которая лжёт о своём состоянии.
+            first_byte: false,
+            between_bytes: false,
+        };
+        caps.upgrade = UpgradeSupport::None;
+        Self {
+            rt,
+            tls,
+            dns,
+            opts: TcpOpts::default(),
+            caps,
+        }
+    }
+
+    /// Параметры сокета для КАЖДОЙ TCP-попытки этого транспорта (см.
+    /// [`http_ng_rt::TcpOpts`]).
+    pub fn tcp_opts(mut self, opts: TcpOpts) -> Self {
+        self.opts = opts;
+        self
+    }
+}
+
+impl<R, T, D> Transport for Native<R, T, D>
+where
+    R: TcpConnect + Timer,
+    R::Stream: 'static,
+    T: TlsConnect,
+    T::Stream<R::Stream>: 'static,
+    D: Resolve,
+{
+    type Body = h1::NativeBody;
+    type Error = Error;
+
+    async fn execute(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Self::Body>, Error> {
+        let (parts, body) = req.into_parts();
+
+        // См. doc-комментарий модуля: `connect::connect` — не переиспользование
+        // ради экономии кода, а единственный путь, на котором отличающийся
+        // `ErrorKind` резолвера (в частности, `Cancelled`) структурно не может
+        // быть отброшен. Она же резолвит схему (`http`/`https`, любая другая —
+        // типизированный `ErrorKind::Unsupported`) и опционально проводит
+        // TLS-хендшейк с ALPN `http/1.1` — единственным протоколом, который
+        // умеет `h1::exchange`.
+        let (conn, _tls_info) = connect::connect(
+            &self.rt,
+            &self.dns,
+            &self.tls,
+            &parts.uri,
+            &self.opts,
+            &[b"http/1.1"],
+        )
+        .await?;
+
+        let outgoing = body::OutgoingBody::from_request_body(body);
+        let mut req = http::Request::from_parts(parts, outgoing);
+        // hyper h1 требует origin-form и заголовок `Host:` — `connect::connect`
+        // уже успел проверить и хост, и схему, так что здесь их не перепроверяем.
+        origin_form(&mut req);
+
+        h1::exchange(conn, req).await
+    }
+
+    /// Тождество: `Self::Error` — уже `http_ng_core::Error`, и категория в
+    /// ней проставлена там, где отказ произошёл (`Resolve`/`Connect`/
+    /// `Unsupported` в `connect::connect`, `Tls` в `TlsConnect::connect`,
+    /// `Body`/`Connect` в `h1::exchange`). Дефолт хука сделал бы ровно то же
+    /// самое (он узнаёт нашу `Error` и пропускает её насквозь) — строка
+    /// избыточна по поведению и нужна по смыслу: называет намерение там, где
+    /// его читают, и переживёт возможное изменение дефолта. См.
+    /// doc-комментарий `Transport::to_error` в `http-ng-core`.
+    fn to_error(&self, e: Self::Error) -> Error {
+        e
+    }
+
+    fn capabilities(&self) -> &Capabilities {
+        &self.caps
+    }
+}
+
+/// Переписывает URI запроса в origin-form (`hyper`'s h1-клиент требует
+/// именно её, не absolute-form) и проставляет `Host:`, если вызывающая
+/// сторона его не задала сама.
+///
+/// К моменту вызова `connect::connect` уже успешно отработал — а значит его
+/// собственные проверки (`host()`, `wants_tls()`) уже прошли, так что
+/// `req.uri()` гарантированно несёт хост и поддерживаемую (`http`/`https`)
+/// схему; эта функция их не перепроверяет.
+fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
+    let uri = req.uri().clone();
+    let https = uri.scheme_str() == Some("https");
+    let default_port = if https { 443 } else { 80 };
+    let port = uri.port_u16().unwrap_or(default_port);
+    let host = uri.host().unwrap_or_default();
+
+    if !req.headers().contains_key(http::header::HOST) {
+        let authority = if port == default_port {
+            host.to_owned()
+        } else {
+            format!("{host}:{port}")
+        };
+        // Хост, доживший до `connect::connect` (прошедший DNS-резолюцию, а
+        // для `https` — ещё и построение TLS SNI), на практике всегда
+        // валиден как значение заголовка. Если всё же нет — запрос уйдёт без
+        // `Host:`, и это не тихая потеря: ни один сервер, с которым говорит
+        // этот крейт, не примет HTTP/1.1-запрос без `Host:`, так что отказ
+        // будет немедленным и явным протокольным отказом, а не тихим no-op.
+        if let Ok(v) = http::HeaderValue::from_str(&authority) {
+            req.headers_mut().insert(http::header::HOST, v);
+        }
+    }
+    let pq = uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/")
+        .to_owned();
+    if let Ok(u) = pq.parse::<http::Uri>() {
+        *req.uri_mut() = u;
+    }
+}
 
 /// Только для интеграционных тестов этого крейта: `pub`, а не `pub(crate)`,
 /// потому что `tests/*.rs` компилируются как отдельный внешний крейт и не

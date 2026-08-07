@@ -85,27 +85,18 @@
 //! которого у него нет, а не притворяется, что запрашивал и не нашёл (то же
 //! разграничение, что `supports_svcb()` уже проводит на уровне `Resolve`).
 //!
-//! # `connect` (и всё, что использует только оно) вне тестов пока не вызывается
+//! # `connect` больше не мёртвый код вне тестов
 //!
-//! `race_connect` (и всё, что тянет за собой — `drive`, `AllAttemptsFailed`,
-//! `ResolveErrors`, `build_scheduler`) уже используется по-настоящему, через
-//! `crate::testing::connect_for_test`. Верхний, DNS-потребляющий `connect` —
-//! нет: его настоящий вызывающий (HTTP/1-драйвер и `Transport`) приезжает в
-//! Tasks 12–13, тем же порядком, что и `OutgoingBody`/`Inner` в `body.rs`
-//! (Task 10) ждали коннектор этой самой задачи. `cfg_attr(not(test), ...)`,
-//! а не голый `expect`, по той же причине, что там: в тестовой сборке
-//! `#[cfg(test)] mod tests` ниже использует `connect`, `Conn`, `host`,
-//! `port`, `wants_tls` по-настоящему, `dead_code` там не сработает, и
-//! непарный `expect` сам обернулся бы предупреждением
-//! (`unfulfilled_lint_expectations`).
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "connect/Conn/host/port/wants_tls используются HTTP/1-драйвером и Transport \
-                  в Task 12–13; до тех пор — только тестами этого файла"
-    )
-)]
+//! До Task 13 ничего в крейте не вызывало DNS-потребляющий `connect` вне
+//! `#[cfg(test)] mod tests` этого файла (только `race_connect`, через
+//! `crate::testing::connect_for_test`), так что здесь стоял
+//! `cfg_attr(not(test), expect(dead_code, ..))` — тот же приём, что и в
+//! `body.rs` до Task 12. С Task 13 `Native::execute` (`src/lib.rs`) зовёт
+//! `connect` по-настоящему, не только в тестах — атрибут снят, а не сужен:
+//! не осталось ни одного пути этого файла (`connect`, `Conn`, `host`,
+//! `port`, `wants_tls`), который был бы живым только в тестовой сборке
+//! (тот же вывод, что doc-комментарий `body.rs` сделал для `Inner`/
+//! `OutgoingBody` годом раньше в той же вертикали).
 #![allow(clippy::too_many_arguments)]
 
 use futures_util::Stream;

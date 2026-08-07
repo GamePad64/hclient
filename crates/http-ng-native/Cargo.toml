@@ -21,10 +21,13 @@ http-ng-tls    = { path = "../http-ng-tls",   version = "0.1.0" }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 
 [dev-dependencies]
-futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-http-ng-rt-tokio  = { path = "../http-ng-rt-tokio", version = "0.1.0" }
-http-ng-rt-smol   = { path = "../http-ng-rt-smol",  version = "0.1.0" }
-tokio             = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+futures-executor    = { version = "0.3", default-features = false, features = ["std"] }
+http-ng             = { workspace = true }
+http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
+http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
+http-ng-rt-smol     = { path = "../http-ng-rt-smol",     version = "0.1.0" }
+http-ng-tls-rustls  = { path = "../http-ng-tls-rustls",  version = "0.1.0", features = ["webpki-roots"] }
+tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 
 [lints]
 workspace = true

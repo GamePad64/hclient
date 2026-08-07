@@ -800,8 +800,46 @@ jobs:
           # `amendment-C5` ниже по фильтру и в спеке) — ровно тот случай,
           # который эта проверка обязана видеть и пропускать по маркеру, а
           # не молчать по недосмотру.
+          #
+          # `http-ng-native/src` — Task 13 вертикали 2. Список здесь
+          # ЧАСТИЧНЫЙ НАМЕРЕННО (в отличие от `no-unsafe-code`'s
+          # `crates/*/src`): рантайм- и бэкенд-крейты вроде `http-ng-rt`
+          # легитимно несут `Send` на СПОСОБНОСТЯХ (бонды в трейте, как
+          # `Blocking::run` выше) и на impl'ах конкретных типов под
+          # конкретный чужой API (например, `Spawn<F: Send + 'static> for
+          # Tokio` в `http-ng-rt-tokio` — не в этом списке, и не должен
+          # быть: сканировать бэкенды рантайма целиком означало бы требовать
+          # маркер на каждом таком impl'е, которых там много и которые не
+          # про инвариант «ядро не объявляет Send/Sync»). `http-ng-native`
+          # раньше не было смысла сканировать — до Task 13 крейт не
+          # экспортировал ничего публично, кроме `testing` (см.
+          # `#[doc(hidden)] pub mod testing` в `src/lib.rs`). С Task 13 у
+          # него появился настоящий публичный тип, `Native: Transport`, и он
+          # способен утечь тот же класс `Send`-бонда в свой публичный API,
+          # что и ядро — тот же аргумент, что уже привёл сюда
+          # `http-ng-wasi/src`. Проверено перед добавлением (не после):
+          # `Native`'s struct, `impl Transport for Native`, и его собственные
+          # публичные методы не объявляют ни `Send`, ни `Sync` нигде — все
+          # бонды в его where-клаузе (`R::Stream: 'static`, `T::Stream<R::
+          # Stream>: 'static` и т.п.) не про `Send`/`Sync` вовсе. Добавление
+          # этого каталога НЕ потребовало ни одного нового маркера на самом
+          # `Native` — ровно то, что Task 11 уже проверила для остального
+          # крейта. Единственное, что проверка нашла в `src/` этого крейта —
+          # `body.rs`'s `Inner::Streaming(Box<dyn Body<..> + Unpin + Send>)`,
+          # тот же C2-бонд, что уже промаркирован в
+          # `http-ng-core/src/body.rs:59`, и один C3-нарушающий тест
+          # (`B::Error: .. + Send + Sync` внутри `#[cfg(test)] mod tests`),
+          # перенесённый в `tests/shape.rs` тем же приёмом, что и
+          # аналогичные тесты в `http-ng-core`/`http-ng-wasi`. Ни то, ни
+          # другое не было «impl bound» — то самое условие, при котором бриф
+          # Task 13 просил переформулировать это правило вместо того, чтобы
+          # маркировать код, здесь не сработало: оба найденных случая —
+          # ровно тот класс «объявленный Send на структуре данных / тесте»,
+          # для которого маркер и C3-перенос уже существуют как стандартный
+          # ответ везде в этом файле.
           dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src crates/http-ng-proto/src crates/http-ng-rt/src; do
+          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src \
+                   crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then

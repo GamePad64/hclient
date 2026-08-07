@@ -102,7 +102,7 @@ enum Inner {
     /// (amendment-C2 там же), просто пронесённые через границу крейта:
     /// адаптер оборачивает чужой поток, а не производит собственный
     /// `!Unpin`/`!Send` тип, так что сохранение бондов ничего не стоит.
-    Streaming(Box<dyn Body<Data = Bytes, Error = Error> + Unpin + Send>),
+    Streaming(Box<dyn Body<Data = Bytes, Error = Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
 impl Inner {
@@ -199,16 +199,16 @@ mod tests {
     use http_body_util::BodyExt;
     use http_ng_core::{ErrorKind, RequestBody};
 
-    #[test]
-    fn error_type_satisfies_hypers_send_sync_bound() {
-        fn assert_bound<B: http_body::Body>()
-        where
-            B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-            B::Data: bytes::Buf + Send,
-        {
-        }
-        assert_bound::<OutgoingBody>();
-    }
+    // `error_type_satisfies_hypers_send_sync_bound` used to live here, but
+    // Task 13 (vertical 2) added `crates/http-ng-native/src` to the
+    // `no-declared-send` CI scan (it now has a public item, `Native`, worth
+    // protecting the same way `http-ng-core`/`http-ng` already are). Spec
+    // amendment C3 is explicit that a `B::Error: ... + Send + Sync` bound
+    // like that one belongs in `tests/`, not `src/`, precisely so the guard
+    // doesn't trip on its own assertion text. Relocated to
+    // `tests/shape.rs`'s `outgoing_bodys_error_satisfies_hypers_send_sync_bound`
+    // — same assertion, run against `crate::testing::OutgoingBody` from
+    // outside the crate.
 
     #[test]
     fn full_body_yields_its_bytes_once() {
