@@ -68,6 +68,12 @@ pub enum HeAction {
 /// вызовами; при уменьшении `poll` не паникует, но `Wait` перестаёт быть
 /// ограничен `max(attempt_delay, resolution_delay)` — это предпосылка
 /// интерфейса, а не проверяемый инвариант.
+///
+/// `Scheduler` не сортирует адреса внутри семейства и отдаёт их в том
+/// порядке, в котором они пришли в `offer_v6` / `offer_v4`. Сортировка по
+/// Destination Address Selection (RFC 8305 §4, RFC 6724 §6) — забота
+/// вызывающей стороны, до `offer_*`; здесь её нет намеренно, не по
+/// недосмотру.
 #[derive(Debug)]
 pub struct Scheduler {
     cfg: HeConfig,
@@ -393,6 +399,32 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_still_goes_first_when_first_family_count_is_zero() {
+        // `first_family_count` не зажат (RFC не даёт для него границы), так
+        // 0 — легальное, достижимое значение (и proptest ниже его
+        // генерирует). Для FAFC >= 1 условие `run_in_first_family <
+        // first_family_count` само по себе уже выбрало бы IPv6 первым (run
+        // стартует с 0), так что дизъюнкт `|| self.started == 0` в `poll`
+        // ничего не меняет на большинстве значений FAFC — кроме нуля, где
+        // он единственное, что не даёт обещанию "IPv6 первым" (RFC 8305 §2)
+        // тихо сломаться.
+        let cfg = HeConfig {
+            first_family_count: 0,
+            ..Default::default()
+        };
+        let mut s = Scheduler::new(cfg);
+        s.offer_v6(&[v6(1)]);
+        s.offer_v4(&[v4(1)]);
+        s.mark_v6_done();
+        s.mark_v4_done();
+        assert_eq!(
+            s.poll(ms(0)),
+            HeAction::Start(v6(1)),
+            "RFC 8305 §2: IPv6 is preferred first regardless of first_family_count"
+        );
+    }
+
+    #[test]
     fn attempt_delay_is_clamped_to_the_rfc_recommended_range() {
         // RFC 8305 §5/§8, "Minimum Connection Attempt Delay": "The
         // recommended minimum value is 100 milliseconds". НЕ 10 мс — тот
@@ -469,11 +501,60 @@ mod tests {
         panic!("планировщик не сошёлся к Exhausted за {MAX_STEPS} шагов");
     }
 
+    /// Независимый оракул для правила интерливинга RFC 8305 §4: раунд —
+    /// блок первого семейства (IPv6) размером `first_family_count` (но не
+    /// меньше 1 в самом первом раунде — RFC 8305 §2, IPv6 первым всегда),
+    /// затем один адрес второго; раунды повторяются, пока одно из семейств
+    /// не иссякнет, после чего остаток другого добирается подряд, без
+    /// дальнейшего чередования — реплицирует ветку `v4.is_empty() /
+    /// v6.is_empty()` в `poll`, не блочную арифметику.
+    ///
+    /// Реализован иначе, чем `Scheduler::poll`: явным циклом по индексам двух
+    /// срезов с размером блока, вычисляемым на раунд, а не накоплением
+    /// состояния через счётчик вроде `run_in_first_family` и флаг `started`.
+    /// Цель разницы в форме — чтобы баг именно в state-machine-версии внутри
+    /// `poll` (например, в сравнении `<` на границе блока или в сбросе
+    /// счётчика при переключении семейства) с меньшей вероятностью
+    /// воспроизвёлся тем же способом здесь и был пойман сравнением, а не
+    /// прошёл мимо теста, который на самом деле проверяет сам себя.
+    fn expected_interleave(v6: &[IpAddr], v4: &[IpAddr], first_family_count: usize) -> Vec<IpAddr> {
+        if v4.is_empty() {
+            return v6.to_vec();
+        }
+        if v6.is_empty() {
+            return v4.to_vec();
+        }
+        let mut out = Vec::new();
+        let (mut vi, mut fi) = (0usize, 0usize);
+        let mut round = 0usize;
+        while vi < v6.len() && fi < v4.len() {
+            let block = if round == 0 {
+                first_family_count.max(1)
+            } else {
+                first_family_count
+            };
+            let take = block.min(v6.len() - vi);
+            out.extend_from_slice(&v6[vi..vi + take]);
+            vi += take;
+            if vi >= v6.len() {
+                // IPv6 иссяк внутри раунда — оставшийся IPv4 добирается ниже
+                // без чередования, этот раунд IPv4 не получает.
+                break;
+            }
+            out.push(v4[fi]);
+            fi += 1;
+            round += 1;
+        }
+        out.extend_from_slice(&v6[vi..]);
+        out.extend_from_slice(&v4[fi..]);
+        out
+    }
+
     use proptest::prelude::*;
 
     proptest! {
         #[test]
-        fn every_offered_address_is_started_exactly_once_and_waits_are_bounded(
+        fn starts_match_the_rfc8305_interleave_order_and_waits_are_bounded(
             v6_n in 0usize..6,
             v4_n in 0usize..6,
             first_family_count in 0usize..4,
@@ -494,11 +575,13 @@ mod tests {
             s.mark_v6_done();
             s.mark_v4_done();
 
-            let mut starts = drain_to_exhausted(&mut s);
-            starts.sort_by_key(IpAddr::to_string);
-            let mut expected: Vec<IpAddr> = v6_addrs.into_iter().chain(v4_addrs).collect();
-            expected.sort_by_key(IpAddr::to_string);
+            let starts = drain_to_exhausted(&mut s);
+            let expected = expected_interleave(&v6_addrs, &v4_addrs, first_family_count);
 
+            // Совпадение полных последовательностей подразумевает и
+            // "каждый адрес ровно один раз" (перестановочное равенство —
+            // более слабое следствие покомпонентного), так что отдельная
+            // проверка мультимножества избыточна.
             prop_assert_eq!(starts, expected);
         }
     }
