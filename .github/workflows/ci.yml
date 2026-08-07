@@ -195,7 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls http-ng-tls-rustls; do
+          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls http-ng-tls-rustls http-ng-native; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -248,8 +248,15 @@ jobs:
           # `--all-features` здесь, ещё `rustls-platform-verifier` и
           # `webpki-roots` — ни одна из этих зависимостей своего `rust-version`
           # выше workspace-минимума не объявляет, так что крейт обязан
-          # собираться при 1.85 наравне с остальными десятью. Список `$pkgs`
-          # — одиннадцать крейтов, и `--all-targets` его не расширяет.
+          # собираться при 1.85 наравне с остальными десятью.
+          # `http-ng-native` (Task 10 вертикали 2) — двенадцатый: тот же
+          # случай в седьмой раз — своего `rust-version` тоже не объявляет
+          # (`rust-version.workspace = true` в его Cargo.toml). Тянет `hyper`
+          # (уже проверен через `http-ng-rt`/`http-ng-tls`) и сам ядерный
+          # `http-ng-core`/`http-ng-proto` — ни один не поднимает минимум
+          # выше 1.85, так что крейт обязан собираться при нём наравне с
+          # остальными одиннадцатью. Список `$pkgs` — двенадцать крейтов, и
+          # `--all-targets` его не расширяет.
           cargo check $pkgs --all-features --all-targets
 
   wasip2:
