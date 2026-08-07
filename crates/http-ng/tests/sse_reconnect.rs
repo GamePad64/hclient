@@ -185,14 +185,24 @@ fn a_204_reconnect_surfaces_one_terminal_error_not_a_silent_stop() {
 
 #[test]
 fn honours_server_sent_retry_over_the_policy() {
-    // The server's `retry: 1` (1ms) replaces the configured `Backoff::base`
-    // — checked two ways: the events still all arrive (behavioral), AND
-    // `TestTimer` recorded a delay no larger than the server's 1ms rather
-    // than the policy's 10s (exact — `Backoff::delay` only ever REDUCES via
-    // jitter, never grows past its base, so this bound holds regardless of
-    // the actual jitter draw).
+    // The server's `retry: 1000` (1s) replaces the configured
+    // `Backoff::base` (10s) — checked two ways: the events still all
+    // arrive (behavioral), AND `TestTimer` recorded a delay no larger than
+    // the server's 1s rather than the policy's 10s (exact — `Backoff::
+    // delay` only ever REDUCES via jitter, never grows past its base, so
+    // this bound holds regardless of the actual jitter draw).
+    //
+    // `1000`, not `1` (review round 1, Minor-2): with a 1ms server-supplied
+    // base the lower-bound check below could flake at roughly 1-in-10^6 —
+    // `Backoff`'s fixed-point jitter quantization floors a 1ms base to
+    // exactly `Duration::ZERO` for any jitter draw past ≈0.9999995
+    // (measured against this toolchain: `Backoff{base:1ms,..}.delay(0,
+    // 0.9999995) == Some(Duration::ZERO)`), which is common enough to hit
+    // in CI over time. A 1s base pushes that same floor-to-zero event down
+    // to roughly 1-in-10^9 — see the lower-bound assertion's own comment
+    // for the (now honestly stated, not claimed-impossible) residual.
     let m = MockTransport::new();
-    m.push_response(sse("retry: 1\ndata: x\n\n"));
+    m.push_response(sse("retry: 1000\ndata: x\n\n"));
     m.push_response(sse("data: y\n\n"));
     m.push_response(sse("data: z\n\n"));
 
@@ -239,16 +249,28 @@ fn honours_server_sent_retry_over_the_policy() {
     assert_eq!(sleeps.len(), 2, "exactly two reconnects happened");
     for d in sleeps {
         assert!(
-            d <= Duration::from_millis(1),
-            "recorded sleep {d:?} exceeds the server's 1ms retry — the \
+            d <= Duration::from_secs(1),
+            "recorded sleep {d:?} exceeds the server's 1000ms retry — the \
              configured 10s base leaked through instead of being replaced"
         );
-        // Lower bound too, not just upper: jitter is drawn from [0.0, 1.0)
-        // (strictly less than 1), so `Backoff::delay` on a nonzero base
-        // always returns a STRICTLY positive `Duration` — never exactly
-        // zero. Catches a wiring bug that calls `sleep` with a hardcoded
-        // zero (which would trivially satisfy the upper-bound check above
-        // too) instead of the actually-computed delay.
+        // Lower bound too, not just upper — catches a wiring bug that
+        // calls `sleep` with a hardcoded zero (which would trivially
+        // satisfy the upper-bound check above too) instead of the
+        // actually-computed delay.
+        //
+        // NOT actually impossible, and this comment used to claim
+        // otherwise (review round 1, Minor-2): `jitter()` is documented
+        // (see its doc comment in `sse.rs`) to be able to return exactly
+        // `1.0`, at which point `Backoff::delay` returns exactly
+        // `Duration::ZERO` regardless of `base` — and even short of that,
+        // `Backoff`'s fixed-point jitter quantization floors a small-
+        // enough scaled base to `Duration::ZERO` on its own for a jitter
+        // draw close enough to (but short of) `1.0`. Both are real,
+        // measured floors, not eliminated by this fix — only pushed far
+        // enough out (the 1s base here puts the combined probability
+        // around 1-in-10^9 per sleep) that a real CI run flaking on it is
+        // not a realistic outcome, unlike the 1ms base this test used to
+        // configure.
         assert!(
             d > Duration::ZERO,
             "recorded sleep was exactly zero — sleep() was likely called \
@@ -358,6 +380,45 @@ fn connect_without_with_timer_makes_exactly_one_attempt_regardless_of_error_kind
         c.transport().requests().len(),
         1,
         "no retry was attempted — there is no timer to retry with"
+    );
+}
+
+/// Review round 1, Important-1: `ReconnectingSseBuilder::connect`'s own doc
+/// comment states this exact contract ("makes exactly one connection
+/// attempt — no retry, regardless of whether the failure would later be
+/// classified as retryable"), but nothing exercised it — the test above
+/// drives the *plain* `SseBuilder::connect`, a different function on a
+/// different type, and the reviewer showed (mutation M19) that rewriting
+/// `ReconnectingSseBuilder::connect` to enter the reconnect loop on a
+/// retryable first-connect failure instead of returning `Err` left the
+/// entire workspace suite green. This test drives the type that doc
+/// comment is actually on: `.with_timer(..)` is supplied, and the initial
+/// failure (`Body`, retryable once a stream is already live — see
+/// `a_transient_body_error_is_retried_transparently_...` above) must STILL
+/// fail the very first connection outright, with no reconnect attempt,
+/// because `connect` is a single try before any `ReconnectingSseStream`
+/// — with its own `attempt`/backoff state — exists to retry with at all.
+#[test]
+fn with_timer_connect_also_makes_exactly_one_attempt_regardless_of_error_kind() {
+    let m = MockTransport::new();
+    m.push_transport_error(http_ng::Error::new(
+        ErrorKind::Body,
+        std::io::Error::other("down before the first byte"),
+    ));
+
+    let c = Client::builder(m).build().unwrap();
+    let err = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .expect_err("with_timer(..).connect() must also fail outright on the first attempt");
+    assert_eq!(err.kind(), &ErrorKind::Body);
+    assert_eq!(
+        c.transport().requests().len(),
+        1,
+        "no reconnect attempt for a failure on the INITIAL connection — \
+         the reconnect loop only exists once a stream has been live at least once"
     );
 }
 
@@ -559,6 +620,58 @@ fn header_carries_a_custom_header_across_every_reconnect() {
     }
 }
 
+/// Review round 1, Important-2: `SseBuilder::error` exists specifically so
+/// an invalid `(name, value)` pair passed to `.header(..)` becomes an `Err`
+/// from `connect()` rather than the brief's own reference code, which
+/// silently dropped it — the project's headline "no silent no-ops" rule,
+/// applied here. Nothing exercised it (mutation M20: reverting `header` to
+/// silently drop an invalid pair left the whole suite green). No response
+/// is queued on the mock transport for either half of this test — the
+/// error must short-circuit `connect()` before any request is even
+/// attempted, so `requests().len() == 0` is exactly as load-bearing as the
+/// `Err` itself: a version that queued the invalid header but still sent
+/// the request would fail differently (a real request going out with a
+/// dropped header) and this assertion is what would catch that.
+#[test]
+fn an_invalid_header_is_an_error_not_a_silently_dropped_pair() {
+    let m = MockTransport::new();
+    let c = Client::builder(m).build().unwrap();
+
+    let err =
+        futures_executor::block_on(c.sse("https://a/stream").header("bad name", "v").connect())
+            .expect_err("an invalid header name must fail connect(), not be silently dropped");
+    assert_eq!(err.kind(), &ErrorKind::Other);
+    assert_eq!(
+        c.transport().requests().len(),
+        0,
+        "the invalid header must short-circuit before any request is sent"
+    );
+}
+
+/// The same mechanism, through the reconnecting builder — `SseBuilder::
+/// error` is shared state consulted by BOTH `SseBuilder::connect` and
+/// `ReconnectingSseBuilder::connect` (the latter via `self.builder.error`),
+/// and only the first was ever tested.
+#[test]
+fn an_invalid_header_is_an_error_through_with_timer_too() {
+    let m = MockTransport::new();
+    let c = Client::builder(m).build().unwrap();
+
+    let err = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .header("bad name", "v")
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .expect_err("an invalid header name must fail with_timer(..).connect() too");
+    assert_eq!(err.kind(), &ErrorKind::Other);
+    assert_eq!(
+        c.transport().requests().len(),
+        0,
+        "the invalid header must short-circuit before any request is sent"
+    );
+}
+
 #[test]
 fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect() {
     // WHATWG: an `id:` field with an EMPTY value clears the last event ID
@@ -649,5 +762,135 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
         "the cleared (empty) id must not be sent as Last-Event-ID — an \
          empty header is exactly what WHATWG forbids, and what \
          reqwest-eventsource gets wrong"
+    );
+}
+
+/// Review round 1, Minor-4: WHATWG requires `EventSource` to send
+/// `Accept: text/event-stream` — a content-negotiating server without it
+/// could answer with something else entirely and there would be no way to
+/// tell the server "no, specifically this." Deleting the line that sets it
+/// (`open`, `sse.rs`) left the whole suite green (mutation M21); nothing
+/// looked at the header before this test.
+#[test]
+fn accept_header_is_sent_and_survives_a_reconnect() {
+    let m = MockTransport::new();
+    m.push_response(sse("data: first\n\n"));
+    m.push_response(sse("data: second\n\n"));
+
+    let c = Client::builder(m).build().unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
+
+    for _ in 0..2 {
+        futures_executor::block_on(s.next());
+    }
+
+    let seen = c.transport().requests();
+    assert_eq!(seen.len(), 2, "one reconnect happened");
+    for (i, r) in seen.iter().enumerate() {
+        assert_eq!(
+            r.headers.get("accept").map(|v| v.to_str().unwrap()),
+            Some("text/event-stream"),
+            "request {i} is missing Accept: text/event-stream"
+        );
+    }
+}
+
+/// Review round 1, Minor-5: nothing pinned that `Client::sse` actually
+/// resolves its URL against a configured `base_url` — `effective_uri`
+/// itself is well covered (`tests/base_url.rs`), but replacing `open`'s
+/// `effective_uri(client.config().base_url.as_ref(), url)` with
+/// `effective_uri(None, url)` left the whole suite green (mutation M22):
+/// nothing routes an SSE connection through the client's base at all in
+/// any existing test, since every other test in this file passes an
+/// already-absolute URL. A relative path against a configured base is
+/// exactly the case a caller who set `base_url` expects to work.
+#[test]
+fn client_sse_resolves_a_relative_url_against_the_configured_base() {
+    let m = MockTransport::new();
+    m.push_response(sse("data: hello\n\n"));
+
+    let c = Client::builder(m)
+        .base_url("https://api.example/v1/".parse().unwrap())
+        .build()
+        .unwrap();
+    let mut s = futures_executor::block_on(c.sse("events").connect()).unwrap();
+
+    let first = futures_executor::block_on(s.next()).unwrap().unwrap();
+    assert_eq!(
+        first,
+        SseEvent::Message {
+            event: None,
+            data: "hello".into(),
+            id: None
+        }
+    );
+
+    let seen = c.transport().requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].uri,
+        "https://api.example/v1/events"
+            .parse::<http::Uri>()
+            .unwrap(),
+        "a relative SSE URL must resolve against the client's base_url, \
+         the same RFC 3986 §5 rule every other Client::request path already follows"
+    );
+}
+
+/// Review round 1, Minor-6: every response queued anywhere else in this
+/// file carries a correct `Content-Type`, so only the `Status` branch of
+/// `validate_sse_response` was ever exercised THROUGH the reconnect path —
+/// a wrong `Content-Type` was only ever tested on the very first
+/// connection (`tests/sse.rs`'s vertical-1 coverage), never on a reconnect
+/// specifically. The classification (`Decode`, terminal) is shared code
+/// with the already-tested oversized-event case, so the risk was graded
+/// low — closing it anyway, since it is cheap and was a genuine, named gap.
+#[test]
+fn a_wrong_content_type_on_a_reconnect_is_terminal_not_retried() {
+    let m = MockTransport::new();
+    m.push_response(sse("data: first\n\n")); // clean EOF -> reconnect
+    m.push_response(
+        http::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body("{}")
+            .unwrap(),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let mut s = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .options(bounded_options())
+            .with_timer(TestTimer::new())
+            .connect(),
+    )
+    .unwrap();
+
+    let first = futures_executor::block_on(s.next()).unwrap().unwrap();
+    assert_eq!(
+        first,
+        SseEvent::Message {
+            event: None,
+            data: "first".into(),
+            id: None
+        }
+    );
+
+    let second = futures_executor::block_on(s.next())
+        .expect("a wrong Content-Type on the reconnect must surface as an item");
+    let err = second.expect_err("application/json is not an SSE stream");
+    assert_eq!(err.kind(), &ErrorKind::Decode);
+
+    assert!(futures_executor::block_on(s.next()).is_none());
+    assert_eq!(
+        c.transport().requests().len(),
+        2,
+        "no further reconnect attempt after the terminal content-type rejection"
     );
 }

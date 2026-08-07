@@ -245,6 +245,16 @@ pub struct SseOptions {
     /// The base retry policy, in the absence of a server-sent `retry:`
     /// field. See [`ReconnectingSseStream`]'s doc comment on `next` for how
     /// the two interact once the server does send one.
+    ///
+    /// **Inert without [`SseBuilder::with_timer`].** `SseOptions` is shared
+    /// by both branches (`SseBuilder::connect` and
+    /// `ReconnectingSseBuilder::connect`), and `max_event_size` applies to
+    /// both — but a plain, non-reconnecting `SseStream` never reconnects at
+    /// all, so it never reads `backoff`. Setting it and calling the plain
+    /// `.connect()` isn't rejected (there's nothing wrong with the value
+    /// itself, just no reconnect loop to apply it to), but it's silently
+    /// unused — the one piece of "one struct feeding two type branches"
+    /// residue the `reconnect: bool` removal didn't fully close.
     pub backoff: Backoff,
 }
 
@@ -552,7 +562,20 @@ fn is_retryable(kind: &ErrorKind) -> bool {
     )
 }
 
-/// A fresh, uniform `[0.0, 1.0)` jitter draw for `Backoff::delay`.
+/// A fresh, uniform jitter draw for `Backoff::delay`, over the CLOSED
+/// interval `[0.0, 1.0]` — not the half-open `[0.0, 1.0)` an earlier
+/// version of this comment claimed. Verified empirically, not assumed: an
+/// `f64`'s 53-bit mantissa can't represent `u64::MAX` (`2^64 - 1`)
+/// exactly, so `u64::MAX as f64` rounds UP to `2^64` — and so does any u64
+/// draw within about 2^12 of `u64::MAX` (the local rounding granularity
+/// near that magnitude), so numerator and denominator can come out equal
+/// and the ratio exactly `1.0`, at roughly 1-in-10^16 odds per draw. This
+/// is within `Backoff::delay`'s own documented domain (it treats
+/// `jitter >= 1.0`, not just `> 1.0`, as "clamp to full reduction" — see
+/// `backoff.rs`'s `jitter_at_or_above_one_clamps_to_full_reduction`), so
+/// it was never a correctness bug — but a caller reading this specific
+/// doc comment deserves the true range, not the tidier-looking wrong one.
+///
 /// Randomness isn't a seam anyone has defined in this project (unlike
 /// `Timer`, which reconnect takes as an explicit input — see
 /// `SseBuilder::with_timer`'s doc comment for why the two are treated
@@ -670,11 +693,15 @@ pub struct ReconnectingSseStream<'a, T: Transport, Tm> {
     /// `last_event_id()` every time the live connection is about to be
     /// torn down (on a retryable error, a clean EOF, or a terminal error —
     /// the snapshot is harmless even when about to terminate, and cheap).
-    /// A fresh reconnect never has to seed this into the new `SseDecoder`
-    /// (which starts, as always, with no id of its own) — `open`'s
-    /// `last_event_id` PARAMETER is what actually carries this value onto
-    /// the wire, this field's only other job is answering `last_event_id()`
-    /// while disconnected/terminated, when there is no live decoder to ask.
+    /// A fresh reconnect DOES seed this into the new `SseDecoder` — `open`
+    /// passes it to `SseDecoder::new_with_last_event_id`, so the decoder
+    /// never starts id-less on a reconnect the way a first connect does
+    /// (see `open`'s own doc comment, and `last_event_id()` below, which
+    /// depends on this seeding for its own correctness). This field's job
+    /// is twofold: it's the value `open` actually seeds the decoder AND
+    /// sends as `Last-Event-ID` with, and it's what answers
+    /// `last_event_id()` while disconnected/terminated, when there is no
+    /// live decoder to ask at all.
     cached_last_event_id: Option<String>,
     /// Zero-based, matches `Backoff::delay`'s own convention. Reset to `0`
     /// on every SUCCESSFUL (re)open — growth is a property of consecutive
@@ -839,6 +866,29 @@ mod reconnect_tests {
             max: Duration::from_secs(30),
             max_attempts: None,
         }
+    }
+
+    // Review round 1, Minor-3: `Decode`, `Status`, and `Unsupported` were
+    // each covered by an integration test that observes `is_retryable`'s
+    // effect end-to-end; `Cancelled` and `Redirect` were not — deleting
+    // both from the `matches!` at once (mutation M4) left the whole suite
+    // green. Direct unit tests on the function itself, mirroring how
+    // `effective_delay` below is tested, rather than another end-to-end
+    // detour through `MockTransport` for two one-line facts.
+    #[test]
+    fn is_retryable_treats_cancelled_as_terminal() {
+        assert!(
+            !is_retryable(&ErrorKind::Cancelled),
+            "a shutting-down runtime is not a reason to keep retrying"
+        );
+    }
+
+    #[test]
+    fn is_retryable_treats_redirect_as_terminal() {
+        assert!(
+            !is_retryable(&ErrorKind::Redirect),
+            "too many hops or a bad Location is a policy problem, not a network blip"
+        );
     }
 
     #[test]

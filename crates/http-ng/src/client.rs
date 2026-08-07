@@ -173,10 +173,14 @@ impl<T: Transport> Client<T> {
         self.request(http::Method::HEAD, url)
     }
 
-    /// Starts building a reconnecting SSE stream — see
-    /// [`crate::SseBuilder`]/[`crate::ReconnectingSseStream`]. For a single,
-    /// non-reconnecting stream over a response already in hand, use
-    /// [`crate::SseStream::new`] directly instead.
+    /// Starts an SSE request. **On its own, `.connect()` is one-shot** —
+    /// a single attempt, no reconnect, the same contract as
+    /// [`crate::SseStream::new`] (which is still the right call for a
+    /// response you already have in hand, with no `Client` involved at
+    /// all). Add [`crate::SseBuilder::with_timer`] before `.connect()` to
+    /// get a [`crate::ReconnectingSseStream`] instead — that call is the
+    /// actual gate between the two behaviors, not this method or any
+    /// option on it.
     pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T> {
         crate::sse::SseBuilder::new(self, url)
     }

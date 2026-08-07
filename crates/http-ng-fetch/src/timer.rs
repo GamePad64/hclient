@@ -68,12 +68,23 @@ impl Timer for BrowserClock {
     type Instant = f64;
 
     fn sleep(&self, d: Duration) -> impl std::future::Future<Output = ()> {
-        // Saturates to `f64::INFINITY` for a pathological `Duration` (e.g.
-        // `Duration::MAX`, reachable from an extreme `Backoff` config)
-        // rather than panicking; the browser's own `setTimeout` clamps an
-        // out-of-range delay to its spec-defined maximum (~24.8 days)
-        // instead of erroring, so an absurd input degrades to "wait a very
-        // long but bounded time", not a crash.
+        // The previous version of this comment claimed the multiply
+        // saturates to `f64::INFINITY` for a pathological `Duration` and
+        // that the browser then clamps to a ~24.8-day maximum — both
+        // false, caught in review round 1 (Minor-7). Measured directly:
+        // `Duration::MAX.as_secs_f64() * 1000.0 ≈ 1.8447e22`, an ordinary
+        // finite `f64`, nowhere near `f64::MAX` (≈1.7977e308) — no
+        // saturation happens at all, and `setTimeout`'s `timeout`
+        // parameter is a WebIDL `long` (32-bit signed), which coerces an
+        // out-of-range double via `ToInt32` (modulo `2^32`, reinterpreted
+        // signed) rather than clamping to any spec-defined maximum — the
+        // real outcome for a value this large is an effectively arbitrary
+        // short delay, most plausibly firing very soon, not a predictable
+        // "long but bounded" wait. This path stays unreachable in
+        // practice regardless: `Backoff::max` caps the delay before it
+        // ever reaches `sleep`, so no config gets `d` anywhere near
+        // `Duration::MAX` — but the comment shouldn't assert a precise
+        // behavior nobody verified.
         let ms = d.as_secs_f64() * 1000.0;
         async move {
             let promise = js_sys::Promise::new(&mut |resolve, _reject| {
