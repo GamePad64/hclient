@@ -810,6 +810,27 @@ fn accept_header_is_sent_and_survives_a_reconnect() {
 /// any existing test, since every other test in this file passes an
 /// already-absolute URL. A relative path against a configured base is
 /// exactly the case a caller who set `base_url` expects to work.
+///
+/// **Deliberately a MULTI-segment relative path (`"a/events"`), not a
+/// single bare segment (`"events"`).** The first version of this fix used
+/// `"events"` and did NOT catch the mutation it was written for, found by
+/// actually re-running M22, not by reasoning: `"events"` alone happens to
+/// parse as a valid (if unusual) bare `http::Uri` — a path-only URI with
+/// no scheme or authority — even with no base at all. So under the
+/// mutation, `open`'s own resolution silently "succeeds" (producing that
+/// bare-path URI), the request still goes out, and `Client::execute`'s
+/// OWN, entirely separate `effective_uri` call (`client.rs`, applied to
+/// every request as a second, redundant safety net) re-resolves it against
+/// the SAME base anyway — masking `open`'s mutated line completely. A
+/// multi-segment reference like `"a/events"` does NOT parse as a bare
+/// `http::Uri` at all (confirmed: `"a/events".parse::<http::Uri>()` is
+/// `Err`, the same as the crate's own documented `"v1/things"` example) —
+/// so under the mutation, `open`'s own now-baseless resolution fails
+/// immediately with `InvalidUri`, `connect()` returns `Err`, and this
+/// test's `.unwrap()` panics, which a passing run does not. This is what
+/// actually distinguishes "`open` applies the base" from "`Client::
+/// execute` quietly compensates regardless" — re-verified by re-running
+/// M22 against this version specifically.
 #[test]
 fn client_sse_resolves_a_relative_url_against_the_configured_base() {
     let m = MockTransport::new();
@@ -819,7 +840,7 @@ fn client_sse_resolves_a_relative_url_against_the_configured_base() {
         .base_url("https://api.example/v1/".parse().unwrap())
         .build()
         .unwrap();
-    let mut s = futures_executor::block_on(c.sse("events").connect()).unwrap();
+    let mut s = futures_executor::block_on(c.sse("a/events").connect()).unwrap();
 
     let first = futures_executor::block_on(s.next()).unwrap().unwrap();
     assert_eq!(
@@ -835,7 +856,7 @@ fn client_sse_resolves_a_relative_url_against_the_configured_base() {
     assert_eq!(seen.len(), 1);
     assert_eq!(
         seen[0].uri,
-        "https://api.example/v1/events"
+        "https://api.example/v1/a/events"
             .parse::<http::Uri>()
             .unwrap(),
         "a relative SSE URL must resolve against the client's base_url, \
