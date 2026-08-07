@@ -25,59 +25,62 @@ impl<T: Transport> ClientBuilder<T> {
         self.config.redirect = policy;
         self
     }
-    /// Таймауты по умолчанию для каждого запроса этого клиента.
+    /// Default timeouts for every request from this client.
     ///
-    /// Поле за полем перекрываются `RequestBuilder::timeouts`; слияние
-    /// делает `Client::execute` (`effective_timeouts`), и его результат —
-    /// то, что реально едет транспорту в `http::Extensions`. Неподдерживаемая
-    /// транспортом фаза — ошибка на `build()`, а с B1/M3 и на `execute()`
-    /// для того, что задал сам запрос.
+    /// Overridden field by field by `RequestBuilder::timeouts`; the merge
+    /// is done by `Client::execute` (`effective_timeouts`), and its result
+    /// is what actually goes to the transport in `http::Extensions`. A
+    /// phase the transport doesn't support is an error at `build()`, and
+    /// with B1/M3 also at `execute()` for whatever the request itself set.
     pub fn timeouts(mut self, t: Timeouts) -> Self {
         self.config.timeouts = t;
         self
     }
-    /// База, относительно которой разрешается URI каждого запроса.
+    /// The base against which each request's URI is resolved.
     ///
-    /// Ответ этой библиотеки на reqwest #988 и #213 (открыты с 2017 и 2020,
-    /// 104 голоса). До фикс-раунда 3 значение здесь сохранялось и не
-    /// читалось ниоткуда — то есть сеттер был тихим no-op.
+    /// This library's answer to reqwest #988 and #213 (open since 2017 and
+    /// 2020, 104 votes). Before fix round 3, the value stored here was
+    /// never read from anywhere — the setter was a silent no-op.
     ///
-    /// **Правило — RFC 3986 §5**, то же самое, каким разрешается `Location:`
-    /// из ответа: один клиент не должен понимать `/x` двумя способами в
-    /// зависимости от того, прислал его сервер или вызывающая сторона.
-    /// Отсюда два следствия, которые стоит прочитать до того, как они
-    /// удивят:
+    /// **The rule is RFC 3986 §5**, the exact same one that resolves a
+    /// response's `Location:`: one client shouldn't understand `/x` two
+    /// different ways depending on whether the server sent it or the
+    /// caller did. Two consequences follow, worth reading before they
+    /// surprise you:
     ///
     /// ```text
     /// base "https://api.test/v1/"   + "things"    -> https://api.test/v1/things
-    /// base "https://api.test/v1/"   + "/things"   -> https://api.test/things      // ведущий / ЗАМЕНЯЕТ путь базы
-    /// base "https://api.test/v1"    + "things"    -> https://api.test/things      // база без / — не каталог
+    /// base "https://api.test/v1/"   + "/things"   -> https://api.test/things      // a leading / REPLACES the base's path
+    /// base "https://api.test/v1"    + "things"    -> https://api.test/things      // a base without / is not a directory
     /// base "https://api.test/v1/"   + "https://other.test/x" -> https://other.test/x
     /// ```
     ///
-    /// То есть база с путём почти всегда должна заканчиваться слэшем, а
-    /// ссылка — НЕ начинаться с него. Обе строки выше — не наша
-    /// самодеятельность, а merge и §5.2.2 RFC; они же работают в `url::Url::
-    /// join`, в браузерном `new URL(ref, base)` и в `urllib.parse.urljoin`.
+    /// In other words, a base with a path should almost always end in a
+    /// slash, and a reference should NOT start with one. Neither of these
+    /// lines is our own invention — they're the merge algorithm and RFC
+    /// §5.2.2; the same rules drive `url::Url::join`, the browser's
+    /// `new URL(ref, base)`, and `urllib.parse.urljoin`.
     ///
-    /// Сама база обязана быть абсолютной. Относительная (`/api/`) —
-    /// типизированная ошибка `InvalidBaseUrl` из `send()`/`execute()`, а не
-    /// тихо проигнорированная настройка. Проверки на `build()` нет
-    /// сознательно: она потребовала бы сменить тип ошибки `build()`, что
-    /// шире этого раунда — записано в отчёте.
+    /// The base itself must be absolute. A relative one (`/api/`) is a
+    /// typed `InvalidBaseUrl` error from `send()`/`execute()`, not a
+    /// silently ignored setting. There's deliberately no check at
+    /// `build()`: that would require changing `build()`'s error type,
+    /// which is wider than this round — noted in the report.
     ///
-    /// Ограничение, о котором стоит знать: `Client::execute`, принимающий
-    /// готовый `http::Request`, видит уже разобранный `http::Uri`, а тот
-    /// path-relative ссылку не представляет вовсе (`"things"` —
-    /// `InvalidUri`). Через этот вход база может дать запросу схему и
-    /// authority, но не путь. `RequestBuilder` (`client.get("things")`)
-    /// разрешает исходную строку до разбора и такого ограничения не имеет.
+    /// A limitation worth knowing: `Client::execute`, which takes an
+    /// already-built `http::Request`, sees an already-parsed `http::Uri`,
+    /// and that type can't represent a path-relative reference at all
+    /// (`"things"` is `InvalidUri`). Through this entry point the base can
+    /// give the request a scheme and authority, but not a path.
+    /// `RequestBuilder` (`client.get("things")`) resolves the original
+    /// string before parsing and has no such limitation.
     pub fn base_url(mut self, uri: http::Uri) -> Self {
         self.config.base_url = Some(uri);
         self
     }
-    /// Проверяет конфигурацию против возможностей транспорта. Ни одного
-    /// тихого no-op: неподдерживаемая настройка — ошибка здесь и сейчас.
+    /// Checks the configuration against the transport's capabilities. Not
+    /// a single silent no-op: an unsupported setting is an error, here and
+    /// now.
     pub fn build(self) -> Result<Client<T>, UnsupportedCapability> {
         check_supported(
             &self.config,
@@ -92,23 +95,24 @@ impl<T: Transport> ClientBuilder<T> {
 }
 
 fn backend_name<T>() -> &'static str {
-    // Имя типа достаточно информативно для сообщения об ошибке и ничего не стоит.
+    // The type name is informative enough for an error message and costs nothing.
     std::any::type_name::<T>()
 }
 
-// Раздвоенное объявление, а не одно `pub struct Client<T = crate::
-// DefaultTransport>` под условным дефолтом: у Rust нет способа сделать
-// генерик-дефолт сам условным на фиче — `#[cfg]` на отдельном параметре
-// дефолта внутри одного объявления структуры не читается компилятором.
-// Без фичи `default-transport` `Client` обязан требовать `T` явно (обычная
-// ошибка компиляции «missing generics» на `Client` без параметра — та же
-// честная ошибка, что и у отсутствующего `DefaultTransport`, см. его
-// doc-комментарий в `lib.rs`), а не резолвиться в дефолт из ветки, которой
-// с выключенной фичей вообще не существует. Оба варианта ниже — тот же
-// набор полей, `impl<T: Transport> Client<T>` дальше применяется к обоим
-// одинаково: дефолт параметра генерика влияет только на места вызова, где
-// `Client` написан без явных `<...>` (например, возврат `Client::new()`
-// ниже), не на сигнатуры existing impl-блоков.
+// A forked declaration, rather than one `pub struct Client<T = crate::
+// DefaultTransport>` with a conditional default: Rust has no way to make a
+// generic default itself conditional on a feature — a `#[cfg]` on a lone
+// default parameter inside a single struct declaration isn't read by the
+// compiler. Without the `default-transport` feature, `Client` must require
+// `T` explicitly (an ordinary "missing generics" compile error on `Client`
+// with no parameter — the same honest error as the missing
+// `DefaultTransport`, see its doc comment in `lib.rs`), rather than
+// resolving to a default from a branch that doesn't exist at all with the
+// feature off. Both variants below carry the same set of fields;
+// `impl<T: Transport> Client<T>` further down applies to both identically:
+// the generic parameter's default only affects call sites where `Client`
+// is written with no explicit `<...>` (e.g. `Client::new()`'s return type
+// below), not the signatures of existing impl blocks.
 #[cfg(feature = "default-transport")]
 #[derive(Debug)]
 pub struct Client<T = crate::DefaultTransport> {
@@ -132,17 +136,17 @@ impl<T: Transport> Client<T> {
     pub fn config(&self) -> &Config {
         &self.config
     }
-    /// Что умеет транспорт этого клиента.
+    /// What this client's transport can do.
     ///
-    /// Форвардер существует, чтобы ответ на самый естественный вопрос к
-    /// `Capabilities` не требовал тащить в область видимости
-    /// `unversioned::Transport` (Task 17 fix round 2) — трейт намеренно в
-    /// semver-карантине (см. doc-комментарий
-    /// `http-ng-core/src/unversioned/mod.rs`) и в фасад `http-ng` не входит.
-    /// Без этого форвардера `client.transport().capabilities()` — трейтовый
-    /// метод — был единственным путём, а `client.transport()` возвращает
-    /// `&T`, так что вызов `.capabilities()` на нём требовал бы `Transport`
-    /// в `use`.
+    /// This forwarder exists so that answering the most natural question
+    /// about `Capabilities` doesn't require dragging `unversioned::
+    /// Transport` into scope (Task 17 fix round 2) — the trait is
+    /// deliberately in semver quarantine (see the doc comment on
+    /// `http-ng-core/src/unversioned/mod.rs`) and isn't part of the
+    /// `http-ng` facade. Without this forwarder, `client.transport().
+    /// capabilities()` — a trait method — was the only path, and
+    /// `client.transport()` returns `&T`, so calling `.capabilities()` on
+    /// it would require `Transport` in a `use`.
     pub fn capabilities(&self) -> &Capabilities {
         self.transport.capabilities()
     }
@@ -169,21 +173,22 @@ impl<T: Transport> Client<T> {
         self.request(http::Method::HEAD, url)
     }
 
-    /// Порядок стадий фиксирован и корректен по построению.
-    /// В v0.1 стадия одна — redirect.
+    /// The stage order is fixed and correct by construction.
+    /// In v0.1 there's one stage — redirect.
     ///
-    /// `where T::Error: Send + Sync + 'static` — второе документированное
-    /// исключение из инварианта «ядро не объявляет Send/Sync» (spec
-    /// amendment C1, сестра исключения у `Error::source`). Без него
-    /// `Transport::to_error` ниже не вызвался бы для абстрактного `T`: его
-    /// собственная where-клауза требует того же бонда, потому что его
-    /// дефолтное тело зовёт `Error::new`, а `Error` хранит источник как
-    /// `Arc<dyn Error + Send + Sync>`, и стирание типа не пропускает
-    /// auto-traits неограниченного объекта-трейта (проверено компиляцией —
-    /// без этой границы E0277). Бонд живёт здесь и на самом методе, а не на
-    /// трейте `Transport` целиком, как и задокументировано в
-    /// `http-ng-core`'s lib.rs: транспорт с честно `!Send` ошибкой остаётся
-    /// представимым, он просто не может пользоваться `Client`.
+    /// `where T::Error: Send + Sync + 'static` — the second documented
+    /// exception to the "core declares no Send/Sync" invariant (spec
+    /// amendment-C1, sibling of the exception on `Error::source`). Without
+    /// it, `Transport::to_error` below wouldn't be callable for an
+    /// abstract `T`: its own where-clause requires the same bound, because
+    /// its default body calls `Error::new`, and `Error` stores its source
+    /// as `Arc<dyn Error + Send + Sync>`, and type erasure doesn't let an
+    /// unbounded trait object's auto-traits through (verified by
+    /// compilation — E0277 without this bound). The bound lives here, on
+    /// the method itself, rather than on the `Transport` trait as a whole,
+    /// exactly as documented in `http-ng-core`'s lib.rs: a transport with
+    /// an honestly `!Send` error remains representable, it just can't be
+    /// used with `Client`.
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -193,13 +198,13 @@ impl<T: Transport> Client<T> {
     {
         let (parts, mut body) = req.into_parts();
 
-        // Базовый URL применяется здесь, а не только в `RequestBuilder`:
-        // `execute` — публичный вход, принимающий готовый `http::Request`, и
-        // настройка, работающая лишь на одном из двух путей, была бы
-        // починена наполовину. Идемпотентно — `RequestBuilder::send`
-        // разрешает тот же URI заранее (ему результат нужен для
-        // `Response::url()`), а разрешение уже абсолютного URI возвращает
-        // его самого (RFC 3986 §5.2.2).
+        // The base URL is applied here, not only in `RequestBuilder`:
+        // `execute` is a public entry point that takes an already-built
+        // `http::Request`, and a setting that only worked on one of the
+        // two paths would be half-fixed. Idempotent — `RequestBuilder::
+        // send` resolves the same URI ahead of time (it needs the result
+        // for `Response::url()`), and resolving an already-absolute URI
+        // returns it unchanged (RFC 3986 §5.2.2).
         let uri = effective_uri(self.config.base_url.as_ref(), &parts.uri.to_string())?;
 
         let mut hp = HopParts {
@@ -210,20 +215,21 @@ impl<T: Transport> Client<T> {
             extensions: parts.extensions,
         };
 
-        // B1/M3 финального ревью ветки, две половины одной дыры. До него
-        // `effective_timeouts` не вызывалась ниоткуда в продакшн-коде —
-        // `ClientBuilder::timeouts()` был тихим no-op, потому что
-        // единственный канал к транспорту это `http::Extensions`, а
-        // клиентская конфигурация в них не попадала; и симметрично
-        // `RequestBuilder::timeouts()` писал в `Extensions` вообще без
-        // проверки против `Capabilities`, тогда как та же настройка на
-        // уровне клиента давала `UnsupportedCapability` на `build()`.
+        // B1/M3 of the branch's final review, two halves of one hole.
+        // Before it, `effective_timeouts` was never called from anywhere
+        // in production code — `ClientBuilder::timeouts()` was a silent
+        // no-op, because the only channel to the transport is
+        // `http::Extensions`, and the client's configuration never made
+        // it in there; and symmetrically, `RequestBuilder::timeouts()`
+        // wrote to `Extensions` with no check against `Capabilities` at
+        // all, whereas the same setting at the client level produced an
+        // `UnsupportedCapability` at `build()`.
         //
-        // Слияние и проверка живут здесь, а не в `build()` и не в
-        // `RequestBuilder`, потому что только здесь известен ОБА слагаемых.
-        // Результат кладётся в `extensions` до цикла: следующие хопы
-        // клонируют их из предыдущего (`stages::redirect::next_hop`), так
-        // что слить достаточно один раз.
+        // The merge and the check live here, not in `build()` and not in
+        // `RequestBuilder`, because only here are BOTH operands known. The
+        // result is stored in `extensions` before the loop: subsequent
+        // hops clone them from the previous one
+        // (`stages::redirect::next_hop`), so merging once is enough.
         let effective = effective_timeouts(&hp.extensions, &self.config.timeouts);
         check_timeouts_supported(
             &effective,
@@ -236,9 +242,10 @@ impl<T: Transport> Client<T> {
         let mut hops: u8 = 0;
 
         loop {
-            // Снимок для переигрывания снимается ДО отправки: после неё тело
-            // уже потреблено. Для `Streaming` вернётся `None` — и это честно
-            // известно заранее, а не после провала ретрая.
+            // The replay snapshot is taken BEFORE sending: after that, the
+            // body is already consumed. For `Streaming` this returns
+            // `None` — and that's known honestly ahead of time, not after
+            // a failed retry.
             let replay = body.rewind();
             let sending = std::mem::replace(&mut body, RequestBody::Empty);
 
@@ -246,12 +253,13 @@ impl<T: Transport> Client<T> {
                 .transport
                 .execute(hp.to_request(sending))
                 .await
-                // Не `Error::new(ErrorKind::Other, e)`: B2 финального ревью
-                // ветки — безусловное обёртывание расплющивало категорию
-                // ЛЮБОЙ ошибки транспорта в `Other`, обесценивая всю
-                // таксономию `ErrorKind`. Решает бэкенд, а не эта строка:
-                // дефолт `Transport::to_error` обёртывает ровно так же,
-                // а бэкенд, чья ошибка уже `Error`, отдаёт её как есть.
+                // Not `Error::new(ErrorKind::Other, e)`: B2 of the
+                // branch's final review — unconditional wrapping flattened
+                // the category of ANY transport error into `Other`,
+                // devaluing the whole `ErrorKind` taxonomy. The backend
+                // decides, not this line: the default `Transport::to_error`
+                // wraps exactly the same way, and a backend whose error is
+                // already an `Error` hands it back as-is.
                 .map_err(|e| self.transport.to_error(e))?;
 
             let location = resp
@@ -291,69 +299,69 @@ impl<T: Transport> Client<T> {
     }
 }
 
-// `not(target_family = "wasm")`, а не только `feature = "default-transport"`
-// — тот же двойной гейт, что у `DefaultTransport` самого (`lib.rs`): на
-// wasm-таргетах, где ветка `DefaultTransport` не существует (см. её
-// doc-комментарий), этот `impl` для `Client<crate::DefaultTransport>`
-// ссылался бы на несуществующий тип. Раздельные гейты дали бы то же самое
-// поведение (`impl` для несуществующего типа тоже не компилируется), но
-// повторение условия делает причину видимой на месте, а не только в
-// `lib.rs`.
+// `not(target_family = "wasm")`, not just `feature = "default-transport"`
+// — the same double gate as `DefaultTransport` itself (`lib.rs`): on wasm
+// targets, where the `DefaultTransport` branch doesn't exist (see its doc
+// comment), this `impl` for `Client<crate::DefaultTransport>` would refer
+// to a nonexistent type. Separate gates would give the same behavior (an
+// `impl` for a nonexistent type also fails to compile), but repeating the
+// condition makes the reason visible on the spot, not only in `lib.rs`.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 impl Client<crate::DefaultTransport> {
-    /// Клиент с транспортом по умолчанию.
+    /// A client with the default transport.
     ///
-    /// На native требует окружающего tokio-рантайма: `tokio::spawn` и
-    /// `tokio::time::sleep` вне рантайма паникуют. Ровно так же ведёт себя
-    /// reqwest. Явный путь без этого требования — `Client::builder(Native::
-    /// new(rt, tls, dns))` с рантаймом на выбор (см. `crates/http-ng/tests/
-    /// two_runtimes.rs`, тот же конструктор для tokio и для smol).
+    /// On native this requires a surrounding tokio runtime: `tokio::spawn`
+    /// and `tokio::time::sleep` panic outside a runtime. reqwest behaves
+    /// exactly the same way. The explicit path without this requirement is
+    /// `Client::builder(Native::new(rt, tls, dns))` with a runtime of your
+    /// choice (see `crates/http-ng/tests/two_runtimes.rs`, the same
+    /// constructor for tokio and for smol).
     ///
-    /// # Паника
+    /// # Panics
     ///
-    /// Паникует ровно в одном случае: `Rustls::with_platform_verifier()`
-    /// не смогла прочитать системное хранилище доверия ОС (`rustls-
-    /// platform-verifier`, по её собственному наблюдению — это состояние
-    /// среды выполнения, не ошибка конфигурации клиента). Настройка
-    /// клиента, которую транспорт не поддерживает (`UnsupportedCapability`,
-    /// тип ошибки этой функции), паники не вызывает — возвращается как
-    /// обычный `Err`.
+    /// Panics in exactly one case: `Rustls::with_platform_verifier()`
+    /// couldn't read the OS's system trust store (`rustls-platform-
+    /// verifier`'s own view is that this is a runtime environment
+    /// condition, not a client configuration error). A client setting the
+    /// transport doesn't support (`UnsupportedCapability`, this function's
+    /// error type) doesn't cause a panic — it comes back as an ordinary
+    /// `Err`.
     ///
-    /// Не паникующая альтернатива — [`Client::try_new`]: тот же
-    /// конструктор, но с обоими отказами (хранилище доверия И
-    /// неподдерживаемая настройка) как `Err`, для вызывающей стороны,
-    /// которая обязана обработать любой отказ, а не только второй.
-    /// `.expect(...)` здесь, а не проброс через `Result` этой функции — то
-    /// же решение, что и раньше: `UnsupportedCapability` (`what`,
-    /// `backend`, оба `&'static str`) — типизированный ответ на «транспорт
-    /// не поддерживает вот эту настройку клиента», а не на «системное
-    /// хранилище доверия не удалось прочитать», и смешать их значило бы
-    /// врать о категории отказа. `try_new` ниже решает это не смешиванием,
-    /// а более широким типом ошибки — `http_ng_core::Error`, у которой
-    /// обе причины уже различимы через `ErrorKind` (`Tls` и `Unsupported`
-    /// соответственно), так что паника здесь остаётся выбором эргономики
-    /// «частого случая», а не единственным путём.
+    /// The non-panicking alternative is [`Client::try_new`]: the same
+    /// construction, but with both failure modes (trust store AND
+    /// unsupported setting) as `Err`, for a caller that must handle any
+    /// failure, not just the second one. `.expect(...)` here, rather than
+    /// propagating through this function's `Result`, is the same decision
+    /// as before: `UnsupportedCapability` (`what`, `backend`, both
+    /// `&'static str`) is a typed answer to "the transport doesn't support
+    /// this particular client setting", not to "the system trust store
+    /// couldn't be read", and conflating them would mean lying about the
+    /// category of failure. `try_new` below resolves this not by
+    /// conflating them but with a wider error type — `http_ng_core::Error`,
+    /// where both causes are already distinguishable via `ErrorKind`
+    /// (`Tls` and `Unsupported` respectively), so the panic here stays an
+    /// ergonomics choice for "the common case", not the only path.
     pub fn new() -> Result<Self, http_ng_core::UnsupportedCapability> {
         let transport = Self::default_native_transport().expect("platform verifier");
         Self::builder(transport).build()
     }
 
-    /// Не паникующая версия [`Client::new`] — то же самое построение
-    /// (`Native<Tokio, Rustls, SystemDns<Tokio>>` с системным хранилищем
-    /// доверия), но обе точки отказа становятся `Err`, а не одна из двух:
-    /// `Rustls::with_platform_verifier()` — `ErrorKind::Tls` (уже так
-    /// возвращает сама `with_platform_verifier`, `?` ниже просто не гасит
-    /// её паникой), несовместимая настройка на `build()` —
-    /// `ErrorKind::Unsupported`, тем же приёмом, что `Client::execute`
-    /// уже применяет к `UnsupportedCapability` из `check_timeouts_
-    /// supported` (`Error::new(ErrorKind::Unsupported, e)`, `config.rs`) —
-    /// не новый приём, изобретённый ради этой функции, а повторное
-    /// использование существующего.
+    /// The non-panicking version of [`Client::new`] — the exact same
+    /// construction (`Native<Tokio, Rustls, SystemDns<Tokio>>` with the
+    /// system trust store), but both failure points become `Err` instead
+    /// of just one of the two: `Rustls::with_platform_verifier()` gives
+    /// `ErrorKind::Tls` (`with_platform_verifier` itself already returns
+    /// that; the `?` below simply doesn't silence it into a panic), an
+    /// incompatible setting at `build()` gives `ErrorKind::Unsupported`,
+    /// the same trick `Client::execute` already applies to
+    /// `UnsupportedCapability` from `check_timeouts_supported`
+    /// (`Error::new(ErrorKind::Unsupported, e)`, `config.rs`) — not a new
+    /// trick invented for this function, but reuse of an existing one.
     ///
-    /// Для процесса, где паника — не приемлемый способ узнать об
-    /// окружении без рабочего системного хранилища сертификатов
-    /// (встроенные системы, долгоживущие процессы, где `catch_unwind`
-    /// вокруг конструктора клиента — не вариант) — этот путь, а не
+    /// For a process where a panic isn't an acceptable way to learn about
+    /// an environment without a working system certificate store
+    /// (embedded systems, long-lived processes where `catch_unwind` around
+    /// the client constructor isn't an option) — this path, not
     /// [`Client::new`].
     pub fn try_new() -> Result<Self, http_ng_core::Error> {
         let transport = Self::default_native_transport()?;
@@ -362,15 +370,15 @@ impl Client<crate::DefaultTransport> {
             .map_err(|e| http_ng_core::Error::new(http_ng_core::ErrorKind::Unsupported, e))
     }
 
-    /// Общее построение транспорта по умолчанию для [`Client::new`] и
-    /// [`Client::try_new`] — единственная операция, которая у обоих может
-    /// реально отказать (`Rustls::with_platform_verifier()`), поэтому
-    /// вынесена один раз, а не продублирована. `Result<_, http_ng_core::
-    /// Error>`, а не `UnsupportedCapability`: `with_platform_verifier()`
-    /// уже возвращает `Error` (`ErrorKind::Tls`) сама, а `Native::new`/
-    /// `SystemDns::new` не могут отказать вовсе (обычные конструкторы,
-    /// без IO) — оборачивать их несуществующий отказ в `Result` было бы
-    /// нечем обосновать.
+    /// The shared construction of the default transport for
+    /// [`Client::new`] and [`Client::try_new`] — the one operation that
+    /// can genuinely fail for both (`Rustls::with_platform_verifier()`),
+    /// so it's factored out once rather than duplicated. `Result<_,
+    /// http_ng_core::Error>`, not `UnsupportedCapability`:
+    /// `with_platform_verifier()` already returns an `Error`
+    /// (`ErrorKind::Tls`) itself, and `Native::new`/`SystemDns::new` can't
+    /// fail at all (ordinary constructors, no IO) — wrapping their
+    /// nonexistent failure in a `Result` would have nothing to justify it.
     fn default_native_transport() -> Result<crate::DefaultTransport, http_ng_core::Error> {
         let rt = http_ng_rt_tokio::Tokio;
         let tls = http_ng_tls_rustls::Rustls::with_platform_verifier()?;

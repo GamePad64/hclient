@@ -1,33 +1,34 @@
-//! `Native<R, T, D>: Transport` — интеграционные тесты этого крейта против
-//! `http_ng::Client`, не только против `crate::testing::*` напрямую: то, что
-//! проверяют тесты ниже (категория ошибки, честность `Capabilities`,
-//! проверка таймаутов на `build()`) — свойства ШВА `Client::execute` ↔
-//! `Transport`, а не одной функции этого крейта, так что и проверяются они
-//! через реальный `Client`.
+//! `Native<R, T, D>: Transport` — this crate's integration tests against
+//! `http_ng::Client`, not just against `crate::testing::*` directly: what
+//! the tests below check (the error category, `Capabilities` honesty,
+//! timeout enforcement at `build()`) are properties of the SEAM between
+//! `Client::execute` and `Transport`, not of one function in this crate,
+//! so they're checked through a real `Client`.
 //!
-//! # Почему тут нет `filter_map`-резолюции из брифа задачи
+//! # Why there's no `filter_map` resolution from the task brief here
 //!
-//! Черновик задачи (`task-13-brief.md`) собирал адреса вручную —
-//! `self.dns.lookup_ipv6(&host).filter_map(|r| async { r.ok()... })` — что
-//! отбрасывает ЛЮБУЮ ошибку резолвера (`ErrorKind::Cancelled` включительно)
-//! и синтезирует единый `ErrorKind::Resolve`, если оба стрима пусты. Review
-//! Task 7 уже поймал это ровно на этом месте: `Cancelled` (обычное
-//! завершение рантайма) неотличимо от «имя не резолвится», а
-//! circuit-breaker, ключующийся на `Resolve`, ошибочно занёс бы живой хост в
-//! чёрный список во время обычного shutdown.
+//! The task's draft (`task-13-brief.md`) collected addresses by hand —
+//! `self.dns.lookup_ipv6(&host).filter_map(|r| async { r.ok()... })` —
+//! which discards ANY resolver error (`ErrorKind::Cancelled` included)
+//! and synthesizes a single `ErrorKind::Resolve` if both streams are
+//! empty. Review Task 7 already caught this in exactly this spot:
+//! `Cancelled` (an ordinary runtime shutdown) is indistinguishable from
+//! "this name doesn't resolve," and a circuit breaker keyed on `Resolve`
+//! would wrongly blacklist a live host during an ordinary shutdown.
 //!
-//! Task 11 решила это ОДИН РАЗ, структурно, в `connect::drive`/
-//! `ResolveErrors::distinguishing_error` — она проверяется ДО обеих веток
-//! отказа, так что отбрасывание кода ошибки, отличного от синтетического
-//! `Resolve`, структурно недостижимо. `Native::execute` (`src/lib.rs`)
-//! поэтому не резолвит сам: он вызывает `connect::connect`, ту же самую
-//! точку входа, которую уже гоняют юнит-тесты `connect.rs` — и
+//! Task 11 solved this ONCE, structurally, in `connect::drive`/
+//! `ResolveErrors::distinguishing_error` — it's checked BEFORE both
+//! failure branches, so discarding an error code other than the
+//! synthetic `Resolve` is structurally unreachable. `Native::execute`
+//! (`src/lib.rs`) therefore doesn't resolve on its own: it calls
+//! `connect::connect`, the same entry point `connect.rs`'s unit tests
+//! already exercise — and
 //! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
-//! ниже проверяет, что это свойство доживает до ВЕСЬ путь: от
-//! `Resolve::lookup_ipv4`/`lookup_ipv6`, через `Native::execute`, через
-//! `Client::execute` (у которого есть собственный шаг `.map_err(|e|
-//! self.transport.to_error(e))`), и до `kind()`, который видит вызывающая
-//! сторона.
+//! below checks that this property survives the WHOLE path: from
+//! `Resolve::lookup_ipv4`/`lookup_ipv6`, through `Native::execute`,
+//! through `Client::execute` (which has its own step,
+//! `.map_err(|e| self.transport.to_error(e))`), to the `kind()` the
+//! caller sees.
 mod net_fixtures;
 
 use http_ng::Client;
@@ -149,11 +150,11 @@ async fn capabilities_are_honest_about_v01_limits() {
     assert!(caps.timeouts.connect);
     assert!(
         !caps.timeouts.first_byte,
-        "нет пула и таймера ответа — заявлять нельзя"
+        "there's no pool and no response timer — can't be claimed"
     );
     assert!(
         !caps.timeouts.between_bytes,
-        "нет таймера ответа — заявлять нельзя"
+        "there's no response timer — can't be claimed"
     );
     assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
@@ -182,11 +183,11 @@ async fn capabilities_are_honest_about_v01_limits() {
 /// silent pass) exists exactly once, inside `http-ng-core`'s own
 /// `Capabilities::none_is_the_conservative_base` — `#[non_exhaustive]` makes
 /// that guarantee structurally unavailable to any test outside the crate
-/// that owns the type, this one included (design-doc **amendment C6** —
-/// `docs/superpowers/specs/2026-08-05-http-ng-design.md`, `## Поправки к
-/// дизайну`; recorded there with this exact evidence after this test found
-/// it). Any future capabilities-completeness check belongs in `http-ng-core`,
-/// not in a transport crate like this one. Not the same rule as amendment C3
+/// that owns the type, this one included (design-doc **amendment-C6** —
+/// `docs/superpowers/specs/2026-08-05-http-ng-design.md`, `## Design
+/// amendments`; recorded there with this exact evidence after this test
+/// found it). Any future capabilities-completeness check belongs in `http-ng-core`,
+/// not in a transport crate like this one. Not the same rule as amendment-C3
 /// (which is about where `Send`/`Sync` assertions live, so
 /// `no-declared-send`'s `src`-only grep doesn't trip on its own test text) —
 /// the two share a "belongs elsewhere" shape but are different amendments,
@@ -225,17 +226,17 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
     assert!(forbidden_request_headers.is_empty());
 }
 
-/// Категория, которую проставил `Native`, обязана дожить до вызывающей
-/// стороны через весь путь `Client::execute` (см. doc-комментарий модуля).
-/// Тест проверяет именно этот путь целиком, а не дефолт `to_error` — тот
-/// проверен в `http-ng-core/tests/shape.rs` и сам по себе гарантирует
-/// пропуск `Error` насквозь.
+/// The category `Native` set has to survive all the way to the caller
+/// through `Client::execute`'s whole path (see the module doc comment).
+/// This test checks exactly that whole path, not `to_error`'s default —
+/// that's checked in `http-ng-core/tests/shape.rs` and on its own only
+/// guarantees `Error` passes through unchanged.
 ///
-/// Хост выбран несуществующим намеренно (`.invalid`, RFC 2606 — гарантированно
-/// никогда не резолвится): это единственный отказ, который `execute`
-/// производит без сети и без сервера, и `wasi`-аналог этого теста устроен
-/// так же — гоняет реальный классификатор бэкенда, а не сконструированную
-/// вручную `Error`.
+/// The host is deliberately nonexistent (`.invalid`, RFC 2606 —
+/// guaranteed to never resolve): this is the one failure `execute` can
+/// produce with no network and no server, and the `wasi` counterpart of
+/// this test is built the same way — it runs the real backend
+/// classifier, not a manually constructed `Error`.
 #[tokio::test]
 async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
@@ -248,18 +249,18 @@ async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other
     assert_eq!(
         *err.kind(),
         ErrorKind::Resolve,
-        "категория обязана дожить до вызывающей стороны, а не расплющиться в Other: {err}"
+        "the category must survive to the caller, not flatten into Other: {err}"
     );
     assert!(
         !err.to_string().starts_with("Other:"),
-        "категория печатается один раз, и это настоящая категория: {err}"
+        "the category is printed once, and it's the real category: {err}"
     );
 }
 
-/// Резолвер, который всегда отдаёт `ErrorKind::Cancelled` — синтетическая
-/// замена реального завершения пула фоновых потоков (Task 7), достаточная,
-/// чтобы проверить, что `Native::execute` не заворачивает и не расплющивает
-/// её по дороге к `Client`.
+/// A resolver that always returns `ErrorKind::Cancelled` — a synthetic
+/// stand-in for a real background thread pool shutting down (Task 7),
+/// good enough to check that `Native::execute` doesn't wrap or flatten it
+/// on the way to `Client`.
 struct CancelledDns;
 
 #[derive(Debug)]
@@ -314,7 +315,7 @@ async fn resolver_cancelled_error_reaches_the_caller_through_execute_not_flatten
     assert_eq!(
         *err.kind(),
         ErrorKind::Cancelled,
-        "рантайм завершает работу — это не 'имя не резолвится': {err}"
+        "the runtime is shutting down — this is not 'the name doesn't resolve': {err}"
     );
 }
 
@@ -331,16 +332,17 @@ async fn unsupported_timeout_is_rejected_at_build_time() {
     assert_eq!(err.what, "between_bytes_timeout");
 }
 
-/// TLS-хендшейк, который отказывает (сервер принял TCP-соединение и сразу
-/// его уронил, не сказав ни байта TLS) — проверяет, что категория `Tls`
-/// (`TlsConnect::connect`, Task 8/9) тоже доживает до вызывающей стороны
-/// через `Native::execute`, не только `Resolve`/`Cancelled` выше.
+/// A TLS handshake that fails (the server accepted the TCP connection and
+/// immediately dropped it, without sending a single byte of TLS) — checks
+/// that the `Tls` category (`TlsConnect::connect`, Task 8/9) also survives
+/// to the caller through `Native::execute`, not just `Resolve`/`Cancelled`
+/// above.
 #[tokio::test]
 async fn tls_handshake_failure_reports_tls_kind_through_the_client() {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
-        // Принимает и сразу роняет — ни байта TLS не отправлено.
+        // Accepts and immediately drops it — not a single byte of TLS is sent.
         let _ = l.accept();
     });
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
@@ -821,8 +823,8 @@ impl http_body::Body for TwoFrames {
 }
 
 /// Final review, F3 (major): `Native::new` declared `streaming_request_body
-/// = false` and the crate doc comment claimed the request body "буферизуется
-/// целиком" (buffered whole) — `body.rs`'s own doc comment, written for a
+/// = false` and the crate doc comment claimed the request body was
+/// "buffered whole" — `body.rs`'s own doc comment, written for a
 /// different task, said the opposite about the same code, and this is the
 /// tiebreaker: what actually goes out on the wire. `transfer-encoding:
 /// chunked` plus two separate frames is only possible if `Native` streams

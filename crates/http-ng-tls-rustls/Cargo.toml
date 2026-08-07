@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-tls-rustls"
 version = "0.1.0"
-description = "TLS-бэкенд http-ng на rustls, адаптер написан против hyper::rt"
+description = "http-ng's rustls TLS backend, the adapter written against hyper::rt"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,12 +26,13 @@ http-ng-rt       = { path = "../http-ng-rt" }
 http-ng-rt-smol  = { path = "../http-ng-rt-smol" }
 http-ng-rt-tokio = { path = "../http-ng-rt-tokio" }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-# `client` + `http1`: только эта задача (fix round 2) реально говорит HTTP
-# поверх `TlsStream` — проверить утверждение "framing решает hyper, а не
-# этот поток" можно только настоящим hyper-клиентом, не самодельной
-# заменой. `[dependencies]` выше остаётся `default-features = false` без
-# этих фич — резолвер фич per-target (`resolver = "3"`, workspace root)
-# не даёт им просочиться в библиотечную сборку, проверено `cargo tree`.
+# `client` + `http1`: only this task (fix round 2) actually speaks HTTP
+# over `TlsStream` — the claim "hyper decides framing, not this stream"
+# can only be checked with a real hyper client, not a homegrown
+# substitute. `[dependencies]` above stays `default-features = false`
+# without these features — the per-target feature resolver (`resolver =
+# "3"`, workspace root) keeps them from leaking into the library build,
+# confirmed with `cargo tree`.
 hyper            = { version = "1.11", default-features = false, features = ["client", "http1"] }
 http-body-util   = { workspace = true }
 rcgen            = "0.14"

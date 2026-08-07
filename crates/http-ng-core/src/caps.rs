@@ -2,45 +2,48 @@ use http::HeaderName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectSupport {
-    /// Редиректов нет и наблюдать нечего.
+    /// No redirects, and nothing to observe.
     ///
-    /// Консервативная база: это же значение отдаёт `Capabilities::none()`,
-    /// так что «бэкенд про редиректы ничего не сказал» и «бэкенд сказал
-    /// `None`» — одно и то же наблюдение. Именно поэтому для «3xx доходит
-    /// как есть» есть отдельный `Transparent`: смешивать «поле не
-    /// заполнили» с содержательным утверждением о поведении бэкенда
-    /// значит иметь способность, которая врёт (M2 финального ревью ветки).
+    /// The conservative base: `Capabilities::none()` returns this same
+    /// value, so "the backend said nothing about redirects" and "the
+    /// backend said `None`" are the same observation. This is exactly why
+    /// "3xx arrives as-is" gets its own `Transparent`: conflating "the
+    /// field wasn't filled in" with a substantive claim about backend
+    /// behavior means having a capability that lies (branch final review
+    /// M2).
     None,
-    /// Бэкенд не следует редиректам сам: 3xx доходит до нас как обычный
-    /// ответ, и вести цепочку — работа стадии редиректа в `Client`.
+    /// The backend doesn't follow redirects itself: the 3xx arrives at us
+    /// as an ordinary response, and following the chain is the job of the
+    /// redirect stage in `Client`.
     ///
-    /// Не то же самое, что `None`, хотя `Capabilities::none()` и отдаёт
-    /// `None`: здесь редиректы наблюдаемы и управляемы полностью, просто не
-    /// бэкендом. `RedirectPolicy` работает и делает ровно то, что обещает.
+    /// Not the same as `None`, even though `Capabilities::none()` also
+    /// returns `None`: here redirects are fully observable and controllable,
+    /// just not by the backend. `RedirectPolicy` works and does exactly
+    /// what it promises.
     ///
-    /// Это то, что делает `wasi:http` (резолюция review Task 16, находка
-    /// B-9 — измерено на живом хосте wasmtime: 3xx-ответ доходит до гостя
-    /// как есть). До M2 финального ревью ветки `WasiHttp` вынужденно
-    /// заявлял `None` за неимением этого варианта, и вызывающая сторона,
-    /// решившая по `redirects == None`, что редиректы здесь невозможны,
-    /// была неправа насчёт единственного существующего бэкенда.
+    /// This is what `wasi:http` does (review Task 16 resolution, finding
+    /// B-9 — measured on a live wasmtime host: the 3xx response reaches the
+    /// guest as-is). Before branch final review M2, `WasiHttp` was forced to
+    /// claim `None` for lack of this variant, and a caller who concluded
+    /// from `redirects == None` that redirects were impossible here was
+    /// wrong about the one backend that actually existed.
     Transparent,
-    /// Бэкенд следует сам, мы не управляем и не видим.
+    /// The backend follows redirects itself; we neither control nor see it.
     ///
-    /// Пример — не в этом workspace: браузерный `fetch()` с
-    /// `redirect: "follow"` (поведение по умолчанию) следует редиректу
-    /// внутри браузера, а JS-код видит только финальный ответ, не имея
-    /// возможности перехватить промежуточные хопы.
+    /// Example — not in this workspace: a browser's `fetch()` with
+    /// `redirect: "follow"` (the default) follows the redirect inside the
+    /// browser, and the JS code sees only the final response, with no way
+    /// to intercept the intermediate hops.
     ///
-    /// Для такого бэкенда стадия редиректа `Client`'а не увидит ни одного
-    /// 3xx, и заданный `RedirectPolicy` станет тихим no-op. `check_supported`
-    /// сегодня намеренно не проверяет это поле (`config.rs`) — проверять
-    /// нечего, пока `Internal`-бэкенда не существует; вертикаль 3 — тот
-    /// момент, когда проверка обязана появиться вместе с ним.
+    /// For such a backend, `Client`'s redirect stage will never see a
+    /// single 3xx, and whatever `RedirectPolicy` was set becomes a silent
+    /// no-op. `check_supported` deliberately doesn't check this field today
+    /// (`config.rs`) — there's nothing to check until an `Internal` backend
+    /// exists; vertical 3 is the moment the check must appear alongside it.
     Internal,
-    /// Мы задаём политику.
+    /// We set the policy.
     Configurable,
-    /// Мы задаём политику и видим каждый хоп.
+    /// We set the policy and see every hop.
     Inspectable,
 }
 
@@ -66,14 +69,15 @@ pub struct TimeoutSupport {
     pub between_bytes: bool,
 }
 
-/// Тройка таймаутов — форма `wasi:http`, богатейшая из ambient-моделей.
+/// The timeout triple — `wasi:http`'s shape, the richest of the ambient
+/// models.
 ///
-/// В fetch схлопывается в один `AbortController`, в native раскладывается на
-/// коннектор / ожидание ответа / idle тела. Один `Duration` выбрасывает
-/// информацию, которой WASI-бэкенд умеет пользоваться.
+/// Collapses to a single `AbortController` in fetch; on native it splits
+/// into connector / response-wait / body-idle. A single `Duration` throws
+/// away information the WASI backend knows how to use.
 ///
-/// Живёт в `http-ng-core`, потому что транспорты читают её из
-/// `http::Extensions` запроса, а от `http-ng` они не зависят.
+/// Lives in `http-ng-core` because transports read it from the request's
+/// `http::Extensions`, and they don't depend on `http-ng`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Option<core::time::Duration>,
@@ -81,10 +85,10 @@ pub struct Timeouts {
     pub between_bytes: Option<core::time::Duration>,
 }
 
-/// Что транспорт умеет **в этом процессе, сейчас**.
+/// What the transport can do **in this process, right now**.
 ///
-/// Именно рантайм, а не `cfg!`: один wasm-бинарь работает и в Chrome
-/// (streaming request body есть с 131), и в Safari (нет).
+/// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
+/// (streaming request body available since 131) and Safari (not available).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Capabilities {
@@ -107,7 +111,7 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Всё выключено. База, от которой бэкенд включает то, что действительно умеет.
+    /// Everything off. The base from which a backend turns on what it actually supports.
     pub const fn none() -> Self {
         Self {
             streaming_request_body: false,
@@ -134,10 +138,10 @@ impl Capabilities {
     }
 }
 
-/// Настройка, которую выбранный транспорт не может выполнить.
+/// A setting the chosen transport cannot honor.
 ///
-/// Возвращается из `build()`, а не игнорируется молча. Образец — сам wasi:http,
-/// где сеттеры возвращают `request-options-error::not-supported`.
+/// Returned from `build()` rather than silently ignored. The model is
+/// wasi:http itself, whose setters return `request-options-error::not-supported`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedCapability {
     pub what: &'static str,

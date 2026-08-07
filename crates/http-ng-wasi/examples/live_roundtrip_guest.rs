@@ -1,41 +1,44 @@
-//! Гость для `tests/live_roundtrip.rs` (Task 16) — единственное место в
-//! проекте, где `Transport::execute` реально исполняется против настоящего
-//! хоста `wasi:http`, а не только компилируется.
+//! Guest for `tests/live_roundtrip.rs` (Task 16) — the one place in the
+//! project where `Transport::execute` is actually run against a real
+//! `wasi:http` host, not just compiled.
 //!
-//! Не `fn main()`. Обычный `fn main()` на `wasm32-wasip2` компилируется в
-//! СИНХРОННЫЙ экспорт `wasi:cli/run@0.2.0` — тот, что даёт rustc-таргет из
-//! коробки. Синхронная (не async-lifted) корневая задача Component Model не
-//! может по-настоящему асинхронно ЖДАТЬ (`task.wait`) свои сабтаски: первая
-//! версия этого гостя была именно `fn main()` со своими `std::net`-сокетами
-//! внутри самого гостя, и как только `wasip3::http::client::send(..).await`
-//! доходил до точки, где ему нечего было опрашивать неблокирующе и
-//! требовалось по-настоящему подождать, wasmtime трапал:
-//! `cannot block a synchronous task before returning`. `wasip3::cli::command::export!`
-//! экспортирует АСИНХРОННЫЙ `wasi:cli/run@0.3.0`, которому ждать сабтаски
-//! можно — именно этого и требует настоящий вызов `WasiHttp::execute`, раз
-//! `wasi:http` 0.3 — асинхронный протокол. Мок-сервер поэтому живёт не
-//! здесь, а нативно на стороне `tests/live_roundtrip.rs`, вне WASI вообще —
-//! никакого смешения синхронных `wasi:sockets`-вызовов с этой асинхронной
-//! задачей.
+//! Not `fn main()`. An ordinary `fn main()` on `wasm32-wasip2` compiles
+//! to a SYNCHRONOUS `wasi:cli/run@0.2.0` export — the one the rustc
+//! target gives you out of the box. A synchronous (not async-lifted)
+//! root task in the Component Model can't genuinely WAIT (`task.wait`)
+//! on its subtasks: the first version of this guest was exactly
+//! `fn main()` with its own `std::net` sockets inside the guest itself,
+//! and as soon as `wasip3::http::client::send(..).await` reached a point
+//! with nothing left to poll non-blockingly and needed a genuine wait,
+//! wasmtime trapped: `cannot block a synchronous task before returning`.
+//! `wasip3::cli::command::export!` exports the ASYNCHRONOUS
+//! `wasi:cli/run@0.3.0`, which can wait on subtasks — exactly what a
+//! real `WasiHttp::execute` call requires, since `wasi:http` 0.3 is an
+//! asynchronous protocol. The mock server therefore doesn't live here
+//! but natively on the `tests/live_roundtrip.rs` side, outside WASI
+//! entirely — no mixing synchronous `wasi:sockets` calls with this
+//! asynchronous task.
 //!
-//! # Почему ответ — chunked с трейлерами, а не просто `Content-Length`
+//! # Why the response is chunked with trailers, not just `Content-Length`
 //!
-//! Эмпирически проверено (см. `wasip3::http_compat::IncomingBody::poll_frame`
+//! Empirically verified (see `wasip3::http_compat::IncomingBody::poll_frame`
 //! /`is_end_stream`, `wasip3-0.7.0+wasi-0.3.0/src/http_compat/mod.rs:216-283`):
-//! для тела без трейлеров `i.is_end_stream()` становится `true` РОВНО в тот
-//! же вызов `poll_frame`, что возвращает `Ready(None)` — то есть ровно тогда
-//! же, когда наш `Body::poll_frame` сам переводит `self.inner` в
-//! `Inner::Done`. В этом случае у хардкод-`false`-мутации нет внешне
-//! наблюдаемого отличия от честной реализации: обе ветки недостижимы порознь
-//! (проверено вручную обоими способами при подготовке этого теста).
-//! Но когда есть трейлеры, `IncomingBody` выставляет свой внутренний
-//! `IncomingState::Done` РАНЬШЕ — в момент, когда он ещё возвращает
-//! `Ready(Some(Ok(trailers_frame)))`, а не `Ready(None)`. Наш `Body::poll_frame`
-//! на ветке `Ready(Some(Ok(f)))` состояние `self.inner` не меняет — значит в
-//! этот момент оно ещё `Inner::Incoming`, а `i.is_end_stream()` уже `true`.
-//! Вот это окно и проверяется ниже: единственное место, где
-//! `Inner::Incoming(i) => i.is_end_stream()` реально отличим от
-//! `Inner::Incoming(_) => false`.
+//! for a body without trailers, `i.is_end_stream()` becomes `true` in
+//! EXACTLY the same `poll_frame` call that returns `Ready(None)` — that
+//! is, exactly when our own `Body::poll_frame` itself transitions
+//! `self.inner` to `Inner::Done`. In that case the hardcoded-`false`
+//! mutation has no externally observable difference from the honest
+//! implementation: both branches are unreachable on their own (checked
+//! by hand both ways while preparing this test). But when there are
+//! trailers, `IncomingBody` sets its internal `IncomingState::Done`
+//! EARLIER — at the moment it's still returning
+//! `Ready(Some(Ok(trailers_frame)))`, not `Ready(None)`. Our own
+//! `Body::poll_frame`, on the `Ready(Some(Ok(f)))` branch, doesn't
+//! change `self.inner`'s state — meaning at that moment it's still
+//! `Inner::Incoming`, while `i.is_end_stream()` is already `true`.
+//! That's the exact window checked below: the only place where
+//! `Inner::Incoming(i) => i.is_end_stream()` is actually
+//! distinguishable from `Inner::Incoming(_) => false`.
 //!
 //! `#![cfg(target_arch = "wasm32")]`: `wasip3::cli::command::export!`
 //! generates a component-model export name
@@ -58,7 +61,7 @@ wasip3::cli::command::export!(Guest);
 
 struct Guest;
 
-/// Должно совпадать с данными чанка, который пишет мок-сервер в
+/// Must match the chunk data the mock server writes in
 /// `tests/live_roundtrip.rs`.
 const EXPECTED_BODY: &[u8] = b"hello from a real wasi:http host";
 
@@ -95,8 +98,9 @@ impl wasip3::exports::cli::run::Guest for Guest {
     }
 }
 
-/// Оригинальный сценарий этого гостя: реальный ответ через `WasiHttp::execute`,
-/// закрывающий дыру `Body::is_end_stream()` (см. doc-комментарий модуля).
+/// This guest's original scenario: a real response through
+/// `WasiHttp::execute`, closing the gap in `Body::is_end_stream()` (see
+/// the module doc comment).
 async fn response_roundtrip(port: u16) -> Result<(), ()> {
     let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
         .parse()
@@ -124,16 +128,17 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
         match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
             Some(Ok(f)) => {
                 if f.is_trailers() {
-                    // Ключевая проверка задачи, и ключевая по срокам:
-                    // опрашиваем `is_end_stream()` СРАЗУ после кадра
-                    // трейлеров, ДО следующего `poll_frame` — то есть пока
-                    // `Body::inner` ещё `Inner::Incoming`, а не
-                    // `Inner::Done` (тот наступит только на следующем
-                    // `Ready(None)`). Именно в этом окне честная ветка
-                    // `Inner::Incoming(i) => i.is_end_stream()` реально
-                    // отличима от хардкод-`false` мутации — см.
-                    // doc-комментарий модуля про то, почему без трейлеров
-                    // такого окна нет вовсе.
+                    // The task's key check, and key on timing: poll
+                    // `is_end_stream()` RIGHT AFTER the trailers frame,
+                    // BEFORE the next `poll_frame` — i.e. while
+                    // `Body::inner` is still `Inner::Incoming`, not yet
+                    // `Inner::Done` (that only happens on the next
+                    // `Ready(None)`). This is exactly the window where
+                    // the honest `Inner::Incoming(i) => i.is_end_stream()`
+                    // branch is actually distinguishable from the
+                    // hardcoded-`false` mutation — see the module doc
+                    // comment for why that window doesn't exist at all
+                    // without trailers.
                     saw_trailers = true;
                     end_flagged_at_trailers = body.is_end_stream();
                 } else if let Ok(data) = f.into_data() {
@@ -169,10 +174,10 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
     Ok(())
 }
 
-/// Тело запроса, которое эмитит один кадр данных, затем один кадр
-/// трейлеров (пустой или с полем `x-checksum`, по выбору) — нужно
-/// `request_trailers` ниже, чтобы реально пройти через
-/// `convert::TrailerWatch` в `WasiHttp::execute`.
+/// A request body that emits one data frame, then one trailers frame
+/// (empty or carrying the `x-checksum` field, depending), needed by
+/// `request_trailers` below to actually exercise `convert::TrailerWatch`
+/// inside `WasiHttp::execute`.
 struct DataThenTrailers {
     data: Option<bytes::Bytes>,
     trailers: Option<http::HeaderMap>,
@@ -186,9 +191,9 @@ impl DataThenTrailers {
             trailers: Some(trailers),
         }
     }
-    /// Резолюция review, находка 3 фикс-раунда 2: пустой кадр трейлеров
-    /// ничего не теряет на проводе (нечему теряться) — гвард не должен его
-    /// отвергать, даже без `Trailer:`.
+    /// Review resolution, fix round 2 finding 3: an empty trailers frame
+    /// loses nothing on the wire (there's nothing to lose) — the guard
+    /// must not reject it, even without `Trailer:`.
     fn with_empty_trailer_frame() -> Self {
         Self {
             data: Some(bytes::Bytes::from_static(b"payload")),
@@ -214,29 +219,30 @@ impl HttpBody for DataThenTrailers {
 }
 
 enum TrailerCase {
-    /// Нет `Trailer:`, тело эмитит `x-checksum` — обязана быть ошибка.
+    /// No `Trailer:`, the body emits `x-checksum` — must be an error.
     Undeclared,
-    /// `Trailer: X-Checksum`, тело эмитит `x-checksum` — обязан быть успех.
+    /// `Trailer: X-Checksum`, the body emits `x-checksum` — must
+    /// succeed.
     Declared,
-    /// Резолюция review, находка 2 фикс-раунда 2: `Trailer: X-Other`, тело
-    /// эмитит `x-checksum` — заголовок присутствует, но называет НЕ ТО
-    /// поле. Обязана быть та же ошибка, что и при полном отсутствии
-    /// заголовка: измерено на живом хосте, что провод теряет `x-checksum`
-    /// точно так же в обоих случаях.
+    /// Review resolution, fix round 2 finding 2: `Trailer: X-Other`, the
+    /// body emits `x-checksum` — the header is present but names the
+    /// WRONG field. Must be the same error as when the header is absent
+    /// entirely: measured on a live host that the wire loses
+    /// `x-checksum` exactly the same way in both cases.
     WrongName,
-    /// Резолюция review, находка 3 фикс-раунда 2: нет `Trailer:`, тело
-    /// эмитит ПУСТОЙ кадр трейлеров — терять нечего, обязан быть успех.
+    /// Review resolution, fix round 2 finding 3: no `Trailer:`, the body
+    /// emits an EMPTY trailers frame — nothing to lose, must succeed.
     EmptyFrame,
 }
 
-/// Резолюция review, находка B-1, живой прогон (уточнена находками 2 и 3
-/// фикс-раунда 2): `Streaming`-тело запроса реально эмитит трейлеры
-/// (`DataThenTrailers`) в одной из четырёх конфигураций. `Undeclared` и
-/// `WrongName` обязаны провалиться типизированной ошибкой
-/// (`convert::undeclared_trailers`) — оба теряют `x-checksum` на проводе
-/// одинаково. `Declared` и `EmptyFrame` обязаны пройти успешно: гвард не
-/// должен ложно срабатывать ни на корректно объявленное имя, ни на кадр,
-/// которому нечего терять.
+/// Review resolution, finding B-1, live run (refined by fix round 2
+/// findings 2 and 3): a `Streaming` request body really does emit
+/// trailers (`DataThenTrailers`) in one of four configurations.
+/// `Undeclared` and `WrongName` must fail with a typed error
+/// (`convert::undeclared_trailers`) — both lose `x-checksum` on the wire
+/// the same way. `Declared` and `EmptyFrame` must succeed: the guard
+/// must not false-positive on either a correctly declared name or a
+/// frame that has nothing to lose.
 async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
     let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
         .parse()
@@ -272,8 +278,8 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
         }
         (false, Err(e)) if e.kind() == &http_ng_core::ErrorKind::Body => {
             let msg = e.to_string();
-            // Находка 2: сообщение обязано назвать конкретное поле, не
-            // просто "отказано".
+            // Finding 2: the message must name the specific field, not
+            // just "rejected".
             if !msg.contains("x-checksum") {
                 eprintln!("error must name the specific field `x-checksum`: {msg}");
                 return Err(());

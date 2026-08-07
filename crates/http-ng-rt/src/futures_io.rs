@@ -2,38 +2,39 @@ use hyper::rt::ReadBufCursor;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Мост `futures_io::{AsyncRead, AsyncWrite}` → `hyper::rt::{Read, Write}`.
+/// Bridges `futures_io::{AsyncRead, AsyncWrite}` → `hyper::rt::{Read, Write}`.
 ///
-/// В hyper-util есть только `TokioIo`; `smol-hyper` 0.1.1 мёртв с 2023-12-29 и
-/// мостит в противоположную сторону. Без этого моста smol-бэкенда (Task 4)
-/// не существует.
+/// hyper-util only ships `TokioIo`; `smol-hyper` 0.1.1 has been dead since
+/// 2023-12-29 and bridges in the opposite direction. Without this bridge,
+/// the smol backend (Task 4) doesn't exist.
 ///
-/// Реализация **без `unsafe`**: читаем во временный буфер и копируем через
-/// безопасный `ReadBufCursor::put_slice` — именно этот приём рекомендует
-/// документация `hyper::rt::Read`. Цена — одно копирование на чтение;
-/// zero-copy потребовал бы `unsafe` (`ReadBufCursor::as_mut`/`advance`), а
-/// крейт объявляет `#![forbid(unsafe_code)]` — отложено намеренно.
+/// The implementation is **`unsafe`-free**: it reads into a scratch buffer
+/// and copies out through the safe `ReadBufCursor::put_slice` — exactly the
+/// technique `hyper::rt::Read`'s documentation recommends. The cost is one
+/// copy per read; zero-copy would require `unsafe`
+/// (`ReadBufCursor::as_mut`/`advance`), and the crate declares
+/// `#![forbid(unsafe_code)]` — deliberately deferred.
 pub struct FuturesIo<S> {
     inner: S,
-    /// Буфер выделяется и обнуляется ОДИН раз, в [`FuturesIo::new`] — не на
-    /// каждый `poll_read`.
+    /// The buffer is allocated and zeroed ONCE, in [`FuturesIo::new`] — not
+    /// on every `poll_read`.
     ///
-    /// Черновик задачи держал его как `[0u8; SCRATCH]` на стеке внутри
-    /// `poll_read`. Измерено (`rustc -O --emit=asm` на изолированном
-    /// воспроизведении обеих версий вне остального крейта): стековый
-    /// вариант зовёт `memset` на КАЖДЫЙ вызов (`subq $4096,%rsp` дважды —
-    /// это и есть 8192 байта — затем `callq *memset@GOTPCREL`), тогда как
-    /// версия с полем структуры этого вызова не делает вовсе — читающая
-    /// функция вызывается прямо на уже готовом буфере. Аллокация и
-    /// единственное обнуление происходят в `new()`
-    /// (`__rust_alloc_zeroed`), один раз на соединение, а не на каждое
-    /// чтение. `poll_read` — горячий путь каждого запроса на smol; лишний
-    /// `memset` там не гипотетическая цена.
+    /// An earlier draft of this task kept it as `[0u8; SCRATCH]` on the
+    /// stack inside `poll_read`. Measured (`rustc -O --emit=asm` on an
+    /// isolated reproduction of both versions outside the rest of the
+    /// crate): the stack variant calls `memset` on EVERY invocation
+    /// (`subq $4096,%rsp` twice — that's the 8192 bytes — then `callq
+    /// *memset@GOTPCREL`), whereas the struct-field version makes no such
+    /// call at all — the reading function is called directly on an
+    /// already-ready buffer. The allocation and the single zeroing happen
+    /// in `new()` (`__rust_alloc_zeroed`), once per connection, not once
+    /// per read. `poll_read` is the hot path of every request on smol; a
+    /// stray `memset` there is not a hypothetical cost.
     scratch: Box<[u8]>,
 }
 
-/// Размер буфера. 8 KiB — типичный размер чтения у hyper, поэтому лишних
-/// итераций не возникает.
+/// Buffer size. 8 KiB is hyper's typical read size, so no extra iterations
+/// result.
 const SCRATCH: usize = 8 * 1024;
 
 impl<S> FuturesIo<S> {
@@ -53,10 +54,10 @@ impl<S> FuturesIo<S> {
     }
 }
 
-// Ручной `Debug`, а не `#[derive]`: `derive` дампил бы все 8 KiB `scratch`
-// как список чисел при каждом форматировании — бесполезно и шумно в логах.
-// Тот же приём уже применён в `http_ng_core::RequestBody` (длина вместо
-// содержимого).
+// A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
+// `scratch` as a list of numbers on every format call — useless and noisy
+// in logs. The same technique is already used in
+// `http_ng_core::RequestBody` (length instead of contents).
 impl<S: std::fmt::Debug> std::fmt::Debug for FuturesIo<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FuturesIo")
@@ -76,8 +77,9 @@ impl<S: futures_io::AsyncRead + Unpin> hyper::rt::Read for FuturesIo<S> {
         if want == 0 {
             return Poll::Ready(Ok(()));
         }
-        // Разбираем на непересекающиеся поля явно: `inner` и `scratch`
-        // заимствуются одновременно, но независимо друг от друга.
+        // Destructure into disjoint fields explicitly: `inner` and
+        // `scratch` are borrowed at the same time, but independently of
+        // each other.
         let Self { inner, scratch } = &mut *self;
         let n = std::task::ready!(Pin::new(inner).poll_read(cx, &mut scratch[..want]))?;
         buf.put_slice(&scratch[..n]);
@@ -110,28 +112,29 @@ impl<S: futures_io::AsyncWrite + Unpin> hyper::rt::Write for FuturesIo<S> {
         Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
     }
 
-    /// `futures_io::AsyncWrite` не даёт способа спросить `S`, эффективна ли у
-    /// него векторная запись: в трейте нет метода `is_write_vectored` вовсе
-    /// — только `poll_write`, `poll_write_vectored`, `poll_flush`,
-    /// `poll_close`. Дефолтная реализация `poll_write_vectored` в
-    /// `futures-io` 0.3.33 пишет только первый непустой буфер
-    /// (`futures_io::AsyncWrite::poll_write_vectored`, проверено по
-    /// исходнику зависимости); для любого `S`, не переопределившего её,
-    /// векторная запись молча деградирует в одну обычную — больше
-    /// сисколов, не меньше.
+    /// `futures_io::AsyncWrite` gives no way to ask `S` whether its
+    /// vectored write is efficient: the trait has no `is_write_vectored`
+    /// method at all — only `poll_write`, `poll_write_vectored`,
+    /// `poll_flush`, `poll_close`. The default `poll_write_vectored`
+    /// implementation in `futures-io` 0.3.33 writes only the first
+    /// non-empty buffer (`futures_io::AsyncWrite::poll_write_vectored`,
+    /// checked against the dependency's source); for any `S` that hasn't
+    /// overridden it, a vectored write silently degrades into one ordinary
+    /// write — more syscalls, not fewer.
     ///
-    /// hyper документирует этот метод как обещание "efficient"
-    /// `poll_write_vectored`-реализации и ветвится по нему, решая, стоит ли
-    /// объединять буферы перед записью. Вернуть здесь `true` значило бы
-    /// утверждать то, что нечем подтвердить — а способность, которая лжёт,
-    /// хуже отсутствующей, потому что вызывающий код (здесь — сам hyper)
-    /// ветвится по ней. Честный консервативный ответ — `false`.
+    /// hyper documents this method as a promise of an "efficient"
+    /// `poll_write_vectored` implementation and branches on it to decide
+    /// whether to coalesce buffers before writing. Returning `true` here
+    /// would assert something we have no way to back up — and a capability
+    /// that lies is worse than one that's absent, because the calling code
+    /// (here, hyper itself) branches on it. The honest, conservative
+    /// answer is `false`.
     ///
-    /// Если появится конкретный `S`, для которого векторная запись заведомо
-    /// эффективна, правильный путь — отдельный конструктор с explicit
-    /// opt-in, а не оптимистичный дефолт здесь. Сегодня такого потребителя
-    /// нет — Task 4 (`http-ng-rt-smol`) ещё не написан — так что добавлять
-    /// его сейчас было бы спекулятивным API без вызывающей стороны.
+    /// If a concrete `S` shows up for which vectored writes are provably
+    /// efficient, the right path is a separate constructor with an
+    /// explicit opt-in, not an optimistic default here. Today there is no
+    /// such consumer — Task 4 (`http-ng-rt-smol`) hasn't been written yet
+    /// — so adding one now would be speculative API with no caller.
     fn is_write_vectored(&self) -> bool {
         false
     }
@@ -143,7 +146,7 @@ mod tests {
     use futures_executor::block_on;
     use std::pin::Pin;
 
-    /// Источник, отдающий данные порциями, чтобы поймать частичные чтения.
+    /// A source that hands out data in chunks, to catch partial reads.
     struct Chunked {
         data: Vec<u8>,
         at: usize,
@@ -191,7 +194,7 @@ mod tests {
 
     #[test]
     fn never_writes_more_than_remaining() {
-        // step больше, чем ёмкость буфера: put_slice не должен паниковать.
+        // step is larger than the buffer's capacity: put_slice must not panic.
         let io = FuturesIo::new(Chunked {
             data: vec![7u8; 64],
             at: 0,
@@ -213,13 +216,13 @@ mod tests {
 
     #[test]
     fn read_request_larger_than_scratch_buffer_does_not_panic() {
-        // `buf.remaining()` управляется вызывающей стороной (hyper) и может
-        // быть больше `scratch.len()` — `want` обязан ограничиваться сверху
-        // размером буфера, иначе `&mut scratch[..want]` индексирует за
-        // пределы и паникует. Раньше это не проверялось ни одним тестом:
-        // `never_writes_more_than_remaining` использует буфер вызывающей
-        // стороны на 8 байт, что всегда меньше `SCRATCH`, и снятие `.min(..)`
-        // там не ловилось.
+        // `buf.remaining()` is controlled by the caller (hyper) and can be
+        // larger than `scratch.len()` — `want` must be clamped to the
+        // buffer's size, or `&mut scratch[..want]` indexes out of bounds
+        // and panics. This was previously untested by anything:
+        // `never_writes_more_than_remaining` uses an 8-byte caller buffer,
+        // which is always smaller than `SCRATCH`, so removing the
+        // `.min(..)` wouldn't have been caught there.
         let len = super::SCRATCH + 137;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
         let mut io = FuturesIo::new(Chunked {
@@ -244,8 +247,8 @@ mod tests {
         assert_eq!(out, data);
     }
 
-    /// Заглушка `AsyncWrite`, которая всегда "успешна" — нужна только чтобы
-    /// проверить `is_write_vectored()`, а не поведение записи.
+    /// An `AsyncWrite` stub that's always "successful" — needed only to
+    /// check `is_write_vectored()`, not write behavior.
     struct NullWrite;
     impl futures_io::AsyncWrite for NullWrite {
         fn poll_write(
@@ -271,9 +274,10 @@ mod tests {
 
     #[test]
     fn is_write_vectored_reports_false_not_an_unverifiable_claim() {
-        // `futures_io::AsyncWrite` не даёт способа спросить `S`, эффективна ли
-        // у него векторная запись — значит `true` здесь была бы утверждением,
-        // которое нечем подтвердить. См. doc-комментарий на impl.
+        // `futures_io::AsyncWrite` gives no way to ask `S` whether its
+        // vectored write is efficient — so `true` here would be an
+        // assertion we have no way to back up. See the doc comment on the
+        // impl.
         let io = FuturesIo::new(NullWrite);
         assert!(!hyper::rt::Write::is_write_vectored(&io));
     }

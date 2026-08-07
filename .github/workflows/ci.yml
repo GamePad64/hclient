@@ -1,42 +1,44 @@
 name: ci
 on: [push, pull_request]
 
-# Крейты появляются по ходу вертикали. Каждая проверка активируется, как только
-# её крейт существует, и до тех пор ЯВНО печатает, что пропущена. Молчаливый
-# зелёный чек опаснее красного: после опечатки в имени крейта он остаётся
-# зелёным навсегда.
+# Crates appear over the course of the vertical. Each check activates as soon as
+# its crate exists, and until then EXPLICITLY prints that it was skipped. A silent
+# green check is more dangerous than a red one: after a typo in a crate name it
+# stays green forever.
 
 jobs:
-  # Резолюция review (Task 16, fix round 2, находка 1): этот файл был
-  # невалидным YAML с `68d91f3` (многострочное `echo "::error::…"` в
-  # `sse-complexity-guard` переносилось на новую строку с нулевым отступом
-  # внутри `run: |` — YAML block scalar завершается первой строкой с
-  # отступом МЕНЬШЕ базового, так что парсер читал продолжение сообщения
-  # как начало нового документа и падал с `ScannerError`). Следствие: ни
-  # один job в этом файле не запускался вовсе — ни sans-io проверка, ни
-  # `no-declared-send`, ни clippy-гейт, ни сканер сеттеров, ни guard
-  # сложности, ни живой тест. Единственная проверка YAML была ручной, один
-  # раз, при создании файла (Task 1) — и ни разу больше, ровно тот класс
-  # дефекта "прогон один раз не защищает ничего, что напишут позже",
-  # против которого вся эта вертикаль. Job внутри файла не может спасти
-  # уже сломанный файл — но предотвращает СЛЕДУЮЩУЮ поломку, что и есть
-  # реалистичный риск здесь. Локально: `python3 -c "import yaml;
-  # yaml.safe_load(open('.github/workflows/ci.yml'))"` (тот же вызов, что
-  # ниже) — стоит прогонять перед каждым коммитом, трогающим этот файл.
+  # Review resolution (Task 16, fix round 2, finding 1): this file was
+  # invalid YAML as of `68d91f3` (a multi-line `echo "::error::…"` in
+  # `sse-complexity-guard` wrapped onto a new line at zero indentation
+  # inside a `run: |` block — a YAML block scalar ends at the first line
+  # whose indentation is LESS than the base indentation, so the parser read
+  # the continuation of the message as the start of a new document and
+  # failed with `ScannerError`). Consequence: not a single job in this file
+  # ran at all — not the sans-io check, not `no-declared-send`, not the
+  # clippy gate, not the setter scanner, not the complexity guard, not the
+  # live test. The only YAML check was manual, done once, when the file was
+  # created (Task 1) — and never again, exactly the class of defect "a
+  # single run protects nothing written later" that this whole vertical
+  # exists to fight. A job inside the file cannot save an already-broken
+  # file — but it prevents the NEXT breakage, which is the realistic risk
+  # here. Locally: `python3 -c "import yaml;
+  # yaml.safe_load(open('.github/workflows/ci.yml'))"` (the same call as
+  # below) is worth running before every commit that touches this file.
   #
-  # Находка 3 (Task 16, fix round 3) — что ЭТА проверка НЕ гарантирует, явно,
-  # а не по умолчанию понятно из названия и позиции джобы первой в файле:
-  # это ЧИСТО синтаксическая проверка YAML (`yaml.safe_load` не падает), а
-  # не валидация схемы GitHub Actions. Ревью построило четыре файла, каждый
-  # — валидный YAML, но невалидный workflow: неизвестный top-level ключ,
-  # некорректный `on:`, job без `runs-on:`, битый `uses:` — и все четыре
-  # проходят эту проверку зелёной. Это осознанная граница охвата, а не
-  # недосмотр: закрыть весь класс значило бы тащить схему Actions (её нет в
-  # PyYAML) или реально прогонять workflow на раннере GitHub, а не только
-  # парсить файл — цена явно выше, чем стоит редкость такой ошибки. Гарантия
-  # этой джобы ровно одна: файл не будет отвергнут YAML-парсером. GitHub
-  # всё ещё может отказать в запуске workflow по причинам, которые этот
-  # гейт не видит вообще.
+  # Finding 3 (Task 16, fix round 3) — what THIS check does NOT guarantee,
+  # explicitly, since it is not obvious by default from the name and the
+  # job's position first in the file: this is a PURELY syntactic YAML check
+  # (`yaml.safe_load` doesn't raise), not GitHub Actions schema validation.
+  # The review built four files, each valid YAML but an invalid workflow:
+  # an unknown top-level key, a malformed `on:`, a job without `runs-on:`,
+  # a broken `uses:` — and all four pass this check green. This is a
+  # deliberate boundary of coverage, not an oversight: closing the whole
+  # class would mean pulling in the Actions schema (not in PyYAML) or
+  # actually running the workflow on a GitHub runner instead of just
+  # parsing the file — the cost is clearly higher than such an error is
+  # rare. This job guarantees exactly one thing: the file will not be
+  # rejected by the YAML parser. GitHub can still refuse to run the
+  # workflow for reasons this gate does not see at all.
   workflow-yaml-is-valid:
     runs-on: ubuntu-latest
     steps:
@@ -44,13 +46,13 @@ jobs:
       - shell: bash
         run: |
           set -euo pipefail
-          # `actions/runner-images`' ubuntu-latest обычно уже несёт PyYAML, но
-          # не гарантированно — проверяем импортом и ставим только при
-          # необходимости. `--break-system-packages`: PEP 668
-          # ("externally-managed-environment") на некоторых образах
-          # запрещает голый `pip install` в системный Python; для
-          # одноразового CI-раннера это ровно тот случай, для которого флаг
-          # существует.
+          # `actions/runner-images`' ubuntu-latest usually already carries PyYAML,
+          # but not guaranteed — check via import and only install if
+          # needed. `--break-system-packages`: PEP 668
+          # ("externally-managed-environment") on some images
+          # forbids a bare `pip install` into the system Python; for
+          # a one-shot CI runner this is exactly the case the flag
+          # exists for.
           python3 -c "import yaml" 2>/dev/null || \
             python3 -m pip install --quiet --break-system-packages pyyaml || \
             python3 -m pip install --quiet pyyaml
@@ -82,39 +84,39 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::в workspace ещё нет крейтов — тесты пропущены"
+            echo "::notice::no crates in workspace yet — tests skipped"
             exit 0
           fi
-          # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) исключён
-          # отсюда намеренно (Task 14, review round 1, Finding 4): этот job
-          # гоняет `cargo test --workspace --all-features` целиком, и именно
-          # это соседство — несколько тяжёлых тестовых процессов на одном
-          # раннере одновременно — было измеренным источником флейка теста
-          # сложности. У него свой job, `sse-complexity-guard` ниже, где он
-          # не делит раннер ни с чем.
+          # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) is excluded
+          # from here deliberately (Task 14, review round 1, Finding 4): this job
+          # runs `cargo test --workspace --all-features` as a whole, and exactly
+          # that neighborhood — several heavy test processes on one
+          # runner at the same time — was the measured source of the complexity
+          # test's flakiness. It has its own job, `sse-complexity-guard` below,
+          # where it does not share the runner with anything.
           #
-          # У `--skip` здесь НЕТ отдельной проверки "нашёл ли он что пропустить":
-          # непереименованный на этой стороне тест просто вернётся в общий прогон
-          # и рискует флейком под нагрузкой (деградация, не слепая зона — тест
-          # всё равно выполняется и рано или поздно поймает настоящую регрессию).
-          # Симметричный дефект — на стороне `sse-complexity-guard`, где
-          # несовпадение имени даёт ПОЛНОСТЬЮ немой зелёный джоб без единого
-          # прогона теста — и именно там стоит проверка (Finding 1, review round
-          # 2). Она красная останавливает мердж и вынуждает поправить оба места
-          # разом, так что дублировать проверку здесь избыточно.
+          # `--skip` here has NO separate check for "did it actually find something
+          # to skip": a test that wasn't renamed on this side simply falls back into
+          # the shared run and risks flaking under load (degradation, not a blind
+          # spot — the test still runs and will eventually catch a real regression
+          # sooner or later). The symmetric defect — on the `sse-complexity-guard`
+          # side, where a name mismatch produces a COMPLETELY silent green job with
+          # not a single test run — is where the check actually belongs (Finding 1,
+          # review round 2). It going red blocks the merge and forces both spots to
+          # be fixed together, so duplicating the check here would be redundant.
           cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
 
-  # m2 финального ревью ветки. `no-discarded-wasi-setters` ниже обосновывает
-  # свой переход с построчного grep на Python тем, что перенос строки делает
-  # «сам форматтер, которым эта же CI и гейтит (`fmt`-джоб)» — а `fmt`-джоба
-  # в файле не было, и форматирование не проверялось нигде. Обоснование
-  # сканера верно и без этого (rustfmt переносит строку независимо от того,
-  # гейтит ли его CI), но ссылаться на несуществующий job оно не должно.
-  # Дешевле и полезнее добавить job, чем вычеркнуть фразу: `rustfmt.toml` в
-  # workspace есть, а каждая задача вертикали и так гоняла `cargo fmt`
-  # вручную и рапортовала «чисто» — то есть дисциплина держалась ровно на
-  # том же соглашении, которое для clippy сочли недостаточным (Task 15,
-  # review round 1, Finding 3).
+  # m2 of the branch's final review. `no-discarded-wasi-setters` below justifies
+  # its switch from a line-by-line grep to Python by saying the line wrap is done
+  # by "the very formatter this same CI gates with (the `fmt` job)" — but there
+  # was no `fmt` job in the file, and formatting was not checked anywhere. The
+  # scanner's justification is true regardless (rustfmt wraps the line whether or
+  # not CI gates it), but it shouldn't reference a job that doesn't exist.
+  # Cheaper and more useful to add the job than to strike the phrase:
+  # `rustfmt.toml` exists in the workspace, and every task of the vertical
+  # already ran `cargo fmt` by hand and reported "clean" — meaning the discipline
+  # rested on exactly the same convention that was judged insufficient for
+  # clippy (Task 15, review round 1, Finding 3).
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -125,18 +127,18 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::в workspace ещё нет крейтов — fmt пропущен"
+            echo "::notice::no crates in workspace yet — fmt skipped"
             exit 0
           fi
           cargo fmt --all --check
 
-  # До этого джоба clippy нигде в CI не гонялся: каждая задача вертикали
-  # запускала `cargo clippy --workspace --all-targets --all-features -- -D
-  # warnings` вручную и рапортовала "чисто", но ничего не проверяло, что это
-  # действительно происходит на каждый пуш — дисциплина держалась только на
-  # соглашении (Task 15, review round 1, Finding 3). Тот же guard-паттерн,
-  # что у `test`: печатает `::notice::` и выходит нулём, пока в workspace
-  # нет ни одного крейта, вместо того чтобы быть тихо-зелёным по умолчанию.
+  # Before this job, clippy did not run anywhere in CI: every task of the
+  # vertical ran `cargo clippy --workspace --all-targets --all-features -- -D
+  # warnings` by hand and reported "clean", but nothing verified that this
+  # actually happens on every push — the discipline rested only on
+  # convention (Task 15, review round 1, Finding 3). Same guard pattern as
+  # `test`: prints `::notice::` and exits zero while the workspace has
+  # no crate yet, instead of being silently green by default.
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -147,18 +149,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::в workspace ещё нет крейтов — clippy пропущен"
+            echo "::notice::no crates in workspace yet — clippy skipped"
             exit 0
           fi
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  # Изолированный запуск теста-регресса на квадратичность (`sse/lines.rs`).
-  # Не часть `test` выше — см. комментарий у `--skip` там. `best-of-3`
-  # внутри самого теста — вторичная защита от разового шума; первичная
-  # защита — вот эта изоляция: собственный job, ничего больше не гоняется
-  # параллельно на этом раннере. Подробное обоснование, включая измеренные
-  # цифры (best-of-5 флеканул 25 раз из 25 под устойчивым overcommit,
-  # single-sample — 9 из 25) — в doc-комментарии самого теста.
+  # Isolated run of the quadratic-regression test (`sse/lines.rs`). Not
+  # part of `test` above — see the comment at `--skip` there. `best-of-3`
+  # inside the test itself is secondary protection against one-off noise;
+  # the primary protection is this isolation: its own job, with nothing
+  # else running in parallel on this runner. Detailed rationale, including
+  # measured numbers (best-of-5 flaked 25 times out of 25 under sustained
+  # overcommit, single-sample — 9 out of 25) — in the doc comment of the
+  # test itself.
   sse-complexity-guard:
     runs-on: ubuntu-latest
     steps:
@@ -168,21 +171,21 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto ещё нет — проверка сложности пропущена"
+            echo "::notice::http-ng-proto not present yet — complexity check skipped"
             exit 0
           fi
-          # `cargo test ... -- --exact NAME`, если NAME ни с чем не совпал,
-          # выходит с кодом 0 и печатает "0 passed" — тот же класс дефекта,
-          # что уже правился в Task 1 (`cargo tree | grep` и `grep -rn`,
-          # молча зелёные при отсутствующем крейте). Переименование или
-          # перенос теста дало бы здесь ПОЛНОСТЬЮ немой зелёный джоб — ноль
-          # прогонов, ничего не проверено — если не проверить явно, что тест
-          # реально нашёлся и выполнился (review round 2, Finding 1).
+          # `cargo test ... -- --exact NAME`, if NAME matched nothing,
+          # exits with code 0 and prints "0 passed" — the same class of defect
+          # already fixed in Task 1 (`cargo tree | grep` and `grep -rn`,
+          # silently green when the crate is missing). Renaming or moving the
+          # test would produce a COMPLETELY silent green job here — zero
+          # runs, nothing checked — unless we explicitly verify that the test
+          # actually was found and executed (review round 2, Finding 1).
           out="$(cargo test -p http-ng-proto --all-features \
             sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact)"
           printf '%s\n' "$out"
           if ! printf '%s\n' "$out" | grep -qE '^test result: ok\. 1 passed;'; then
-            echo "::error::sse-complexity-guard не запустил ровно один тест — похоже, parsing_scales_linearly_not_quadratically переименован или перемещён. Поправьте путь здесь И значение --skip в job'е test."
+            echo "::error::sse-complexity-guard did not run exactly one test — parsing_scales_linearly_not_quadratically appears to have been renamed or moved. Fix the path here AND the --skip value in the test job."
             exit 1
           fi
 
@@ -199,71 +202,74 @@ jobs:
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
-            echo "::notice::крейтов ядра ещё нет — MSRV не проверяется"
+            echo "::notice::core crates not present yet — MSRV not checked"
             exit 0
           fi
-          # `--all-targets` — резолюция финального ревью ветки (§4, «only
-          # appears protected»). Без него проверялись только lib-таргеты, а
-          # `tests/` не проверялись при 1.85 НИ РАЗУ за всю вертикаль: MSRV
-          # — опубликованное обещание в `rust-version`, и тест, не
-          # собирающийся при заявленном минимуме, ломает ровно того
-          # потребителя, который этому обещанию поверил и захотел прогнать
-          # набор тестов у себя.
+          # `--all-targets` — resolution from the branch's final review (§4,
+          # "only appears protected"). Without it, only lib targets were
+          # checked, and `tests/` were NEVER checked at 1.85 during the
+          # whole vertical: MSRV is a published promise in `rust-version`,
+          # and a test that fails to build at the stated minimum breaks
+          # exactly the consumer who trusted that promise and wanted to run
+          # the test suite themselves.
           #
-          # `http-ng-wasi` в этот job не входит намеренно: у него собственный
-          # `rust-version = "1.90"` (требование `wasip3`), расхождение
-          # задокументировано в его Cargo.toml. `http-ng-rt` (Task 1
-          # вертикали 2) в список добавлен: workspace `rust-version = "1.85"`
-          # — общее обещание, и plan Global Constraints вертикали не
-          # закрепляет за `http-ng-rt` собственный, более высокий минимум
-          # (в отличие от `http-ng-wasi`), значит он проверяется здесь же, с
-          # остальными. `http-ng-rt-tokio` (Task 3) добавлен по той же
-          # причине: собственного `rust-version` не объявляет, значит несёт
-          # workspace-минимум и обязан собираться при 1.85. `http-ng-rt-smol`
-          # (Task 4) — тот же случай в третий раз: своего `rust-version` тоже
-          # не объявляет. `http-ng-rt-pair-check` (Task 4, fix round 1) —
-          # четвёртый: `publish = false` (это доказательство свойства, а не
-          # публикуемый крейт), но `rust-version.workspace = true` в его
-          # Cargo.toml — то же самое обещание, которое уже проверяется у
-          # остальных пяти, и `publish = false` его не отменяет.
-          # `http-ng-dns` (Task 6 вертикали 2) — восьмой: своего
-          # `rust-version` тоже не объявляет (`rust-version.workspace = true`
-          # в его Cargo.toml), значит несёт тот же workspace-минимум, что и
-          # остальные семь.
-          # `http-ng-dns-system` (Task 7 вертикали 2) — девятый: тот же
-          # случай в четвёртый раз (после `http-ng-rt`, `http-ng-rt-tokio`,
-          # `http-ng-rt-smol`) — собственного `rust-version` не объявляет,
-          # `rust-version.workspace = true` в его Cargo.toml, значит несёт
-          # workspace-минимум 1.85 и обязан собираться при нём наравне с
-          # остальными восемью.
-          # `http-ng-tls` (Task 8 вертикали 2) — десятый: тот же случай в
-          # пятый раз — собственного `rust-version` тоже не объявляет
-          # (`rust-version.workspace = true` в его Cargo.toml), несёт
-          # workspace-минимум 1.85 и обязан собираться при нём наравне с
-          # остальными девятью.
-          # `http-ng-tls-rustls` (Task 9 вертикали 2) — одиннадцатый: тот же
-          # случай в шестой раз — своего `rust-version` тоже не объявляет
-          # (`rust-version.workspace = true` в его Cargo.toml). Он тянет
-          # `rustls` (0.23, требует `std`+`ring`+`tls12`) и, под
-          # `--all-features` здесь, ещё `rustls-platform-verifier` и
-          # `webpki-roots` — ни одна из этих зависимостей своего `rust-version`
-          # выше workspace-минимума не объявляет, так что крейт обязан
-          # собираться при 1.85 наравне с остальными десятью.
-          # `http-ng-native` (Task 10 вертикали 2) — двенадцатый: тот же
-          # случай в седьмой раз — своего `rust-version` тоже не объявляет
-          # (`rust-version.workspace = true` в его Cargo.toml). Тянет `hyper`
-          # (уже проверен через `http-ng-rt`/`http-ng-tls`) и сам ядерный
-          # `http-ng-core`/`http-ng-proto` — ни один не поднимает минимум
-          # выше 1.85, так что крейт обязан собираться при нём наравне с
-          # остальными одиннадцатью. Список `$pkgs` — двенадцать крейтов, и
-          # `--all-targets` его не расширяет.
+          # `http-ng-wasi` is deliberately excluded from this job: it has its
+          # own `rust-version = "1.90"` (a `wasip3` requirement), the
+          # divergence is documented in its Cargo.toml. `http-ng-rt` (Task 1
+          # of vertical 2) was added to the list: the workspace
+          # `rust-version = "1.85"` is a shared promise, and the vertical's
+          # Global Constraints plan does not pin `http-ng-rt` to its own,
+          # higher minimum (unlike `http-ng-wasi`), so it is checked here
+          # along with the rest. `http-ng-rt-tokio` (Task 3) was added for
+          # the same reason: it declares no own `rust-version`, so it
+          # carries the workspace minimum and must build at 1.85.
+          # `http-ng-rt-smol` (Task 4) is the same case a third time: it
+          # also declares no own `rust-version`. `http-ng-rt-pair-check`
+          # (Task 4, fix round 1) is the fourth: `publish = false` (this is
+          # a property proof, not a publishable crate), but
+          # `rust-version.workspace = true` in its Cargo.toml is the same
+          # promise already checked for the other five, and
+          # `publish = false` does not cancel it. `http-ng-dns` (Task 6 of
+          # vertical 2) is the eighth: it also declares no own
+          # `rust-version` (`rust-version.workspace = true` in its
+          # Cargo.toml), so it carries the same workspace minimum as the
+          # other seven.
+          # `http-ng-dns-system` (Task 7 of vertical 2) is the ninth: the
+          # same case a fourth time (after `http-ng-rt`, `http-ng-rt-tokio`,
+          # `http-ng-rt-smol`) — it declares no own `rust-version`,
+          # `rust-version.workspace = true` in its Cargo.toml, so it carries
+          # the workspace minimum of 1.85 and must build at it alongside the
+          # other eight.
+          # `http-ng-tls` (Task 8 of vertical 2) is the tenth: the same case
+          # a fifth time — it also declares no own `rust-version`
+          # (`rust-version.workspace = true` in its Cargo.toml), carries the
+          # workspace minimum of 1.85 and must build at it alongside the
+          # other nine.
+          # `http-ng-tls-rustls` (Task 9 of vertical 2) is the eleventh: the
+          # same case a sixth time — it also declares no own `rust-version`
+          # (`rust-version.workspace = true` in its Cargo.toml). It pulls in
+          # `rustls` (0.23, requires `std`+`ring`+`tls12`) and, under
+          # `--all-features` here, also `rustls-platform-verifier` and
+          # `webpki-roots` — none of these dependencies declares an own
+          # `rust-version` above the workspace minimum, so the crate must
+          # build at 1.85 alongside the other ten.
+          # `http-ng-native` (Task 10 of vertical 2) is the twelfth: the
+          # same case a seventh time — it also declares no own
+          # `rust-version` (`rust-version.workspace = true` in its
+          # Cargo.toml). It pulls in `hyper` (already checked via
+          # `http-ng-rt`/`http-ng-tls`) and the core crates themselves,
+          # `http-ng-core`/`http-ng-proto` — none raises the minimum above
+          # 1.85, so the crate must build at it alongside the other eleven.
+          # The `$pkgs` list is twelve crates, and `--all-targets` does not
+          # expand it.
           cargo check $pkgs --all-features --all-targets
 
-  # Task 14: сквозная приёмка вертикали — один и тот же обобщённый код
-  # (`fetch_once` в `two_runtimes.rs`) реально бегает по сети на tokio и на
-  # smol без единого `#[cfg]`. Матрица трёх ОС, потому что рантайм-шов —
-  # именно то место, где платформенная разница (epoll/kqueue/IOCP под
-  # `async-io`, планировщик tokio) могла бы незаметно просочиться наружу.
+  # Task 14: end-to-end acceptance of the vertical — the same generic code
+  # (`fetch_once` in `two_runtimes.rs`) really runs over the network on
+  # tokio and on smol without a single `#[cfg]`. Matrix of three OSes,
+  # because the runtime seam is exactly the place where a platform
+  # difference (epoll/kqueue/IOCP under `async-io`, tokio's scheduler)
+  # could leak out unnoticed.
   two-runtimes:
     strategy:
       matrix:
@@ -276,82 +282,84 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng ]; then
-            echo "::notice::http-ng ещё нет — сквозной прогон на двух рантаймах пропущен"
+            echo "::notice::http-ng not present yet — end-to-end run on two runtimes skipped"
             exit 0
           fi
           cargo test -p http-ng --test two_runtimes
-      # Черновик задачи (task-14-brief.md, Step 5) предлагал буквальный
-      # `grep -E '^(tokio|async-compat)'` по `cargo tree -p http-ng-rt-smol
-      # -e normal` и ожидал пустой результат — проверено на этом дереве и
-      # НЕ подтвердилось: `tokio` в нём есть. Причина — не регрессия
-      # смол-пути, а уже задокументированный (README, «Что в графе
-      # зависимостей») факт: `hyper` зависит от `tokio` БЕЗУСЛОВНО, не по
-      # фиче, и попадает в граф `http-ng-rt-smol` транзитивно через
-      # `http-ng-rt` (который зависит от `hyper` ради типажей моста
-      # `hyper::rt::{Read,Write}`, нужных всем рантайм-бэкендам одинаково —
-      # не только tokio). Буквальная проверка брифа обязана была бы падать
-      # на каждом пуше — не потому, что смол-путь что-то нарушил, а потому
-      # что она проверяла факт, который эта же вертикаль сама и
-      # опровергла заранее. Настоящее свойство, которое стоит держать
-      # зелёным: смол-путь не тянет РАНТАЙМ tokio (реактор, `tokio::spawn`,
-      # `tokio::net`) — только пассивный лист (`tokio::sync::oneshot`,
-      # который `hyper::upgrade` использует внутри, никогда не
-      # исполняется на этом пути) — и не тянет `async-compat` (шим для
-      # запуска tokio-специфичного кода на чужом executor'е, который был
-      # бы нужен, если бы граф ниже был устроен иначе).
-      # Fix round 1, находка 1: первая версия этой проверки чернила список
-      # ЗАПРЕЩЁННЫХ имён фич (`rt`, `net`, `time`, ...) — тот же класс
-      # дефекта, что этот файл уже правил в других местах (`cargo tree |
-      # grep`, немой при отсутствующем крейте; `--exact NAME`, зелёный при
-      # 0 совпадений): если tokio выше по течению переименует или
-      # перегруппирует свои фичи, чёрный список просто перестанет что-либо
-      # находить, и джоб останется зелёным, хотя проверка больше ничего не
-      # видит — "чисто" и "не смотрел" неотличимы. Решение — белый список:
-      # набор фич, который сегодня ДЕЙСТВИТЕЛЬНО присутствует
-      # (`default`, `sync` — инертный лист `hyper::upgrade`'s
-      # `tokio::sync::oneshot`, см. комментарий выше), обязан совпасть С
-      # ТОЧНОСТЬЮ; любое имя вне этого набора — ошибка независимо от того,
-      # "опаснее" оно на вид (`rt`) или нет: цель не отличить опасные имена
-      # от безопасных, а заметить, что состав вообще изменился, и позвать
-      # человека проверить, что это значит. То же самое для факта
-      # присутствия: если `tokio` совсем пропадёт из графа (в теории —
-      # улучшение, hyper перестал бы требовать его), проверка тоже падает,
-      # а не молча радуется, потому что "пропал" неотличимо для этого
-      # скрипта от "cargo tree сменил формат вывода и парсинг сломался".
-      # Оба исхода требуют одного и того же: человек смотрит на вывод джоба
-      # и либо чинит регресс, либо обновляет allowlist и этот комментарий
-      # вместе с README ("Что в графе зависимостей").
+      # The task brief (task-14-brief.md, Step 5) proposed a literal
+      # `grep -E '^(tokio|async-compat)'` over `cargo tree -p http-ng-rt-smol
+      # -e normal` and expected an empty result — checked on this tree and
+      # it did NOT hold: `tokio` is present. The reason is not a smol-path
+      # regression but an already-documented (README, "What's in the
+      # dependency graph") fact: `hyper` depends on `tokio`
+      # UNCONDITIONALLY, not behind a feature, and enters the
+      # `http-ng-rt-smol` graph transitively through `http-ng-rt` (which
+      # depends on `hyper` for the `hyper::rt::{Read,Write}` bridge traits,
+      # needed identically by every runtime backend — not only tokio). A
+      # literal check per the brief would have had to fail on every push —
+      # not because the smol path violated anything, but because it was
+      # checking a fact that this very vertical had already disproved in
+      # advance. The actual property worth keeping green: the smol path
+      # does not pull in the tokio RUNTIME (the reactor, `tokio::spawn`,
+      # `tokio::net`) — only an inert leaf (`tokio::sync::oneshot`, which
+      # `hyper::upgrade` uses internally and which never executes on this
+      # path) — and does not pull in `async-compat` (a shim for running
+      # tokio-specific code on someone else's executor, which would be
+      # needed if the graph below were structured differently).
+      # Fix round 1, finding 1: the first version of this check blacklisted
+      # a set of FORBIDDEN feature names (`rt`, `net`, `time`, ...) — the
+      # same class of defect this file already fixed elsewhere (`cargo tree |
+      # grep`, silent when the crate is missing; `--exact NAME`, green on
+      # 0 matches): if tokio upstream renames or regroups its features, the
+      # blacklist simply stops finding anything, and the job stays green
+      # even though the check no longer sees anything — "clean" and
+      # "didn't look" become indistinguishable. The fix is a whitelist: the
+      # set of features that today ACTUALLY are present (`default`, `sync`
+      # — the inert leaf of `hyper::upgrade`'s `tokio::sync::oneshot`, see
+      # the comment above) must match EXACTLY; any name outside this set is
+      # an error regardless of whether it "looks" more dangerous (`rt`) or
+      # not: the goal is not to tell dangerous names from safe ones, but to
+      # notice that the composition changed at all, and call a human to
+      # check what it means. Same for the fact of presence: if `tokio`
+      # disappears from the graph entirely (in theory an improvement —
+      # hyper would have stopped requiring it), the check also fails rather
+      # than silently celebrating, because "disappeared" is
+      # indistinguishable to this script from "cargo tree changed its
+      # output format and the parsing broke". Both outcomes require the
+      # same thing: a human looks at the job output and either fixes the
+      # regression or deliberately updates the allowlist and this comment
+      # together with the README ("What's in the dependency graph").
       - name: smol path pulls no tokio runtime and no async-compat
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-rt-smol ]; then
-            echo "::notice::http-ng-rt-smol ещё нет — проверка пропущена"
+            echo "::notice::http-ng-rt-smol not present yet — check skipped"
             exit 0
           fi
           tree="$(cargo tree -p http-ng-rt-smol -e normal --prefix none)"
           printf '%s\n' "$tree"
           if printf '%s\n' "$tree" | grep -qE '^async-compat'; then
-            echo "::error::смол-путь подтащил async-compat — шим для чужого рантайма, которого здесь быть не должно"
+            echo "::error::the smol path pulled in async-compat — a shim for a foreign runtime that should not be here"
             exit 1
           fi
 
           feat_line="$(cargo tree -p http-ng-rt-smol -e normal -i tokio --prefix none -f '{p} [{f}]' | head -1)"
           echo "tokio feature line: ${feat_line:-<EMPTY>}"
           if [ -z "$feat_line" ]; then
-            echo "::error::tokio исчез из графа смол-пути. Сегодня это ЛОЖНО: hyper зависит от tokio безусловно (README, «Что в графе зависимостей»), так что либо (а) hyper действительно перестал требовать tokio — обновите этот allowlist-блок и README вместе, проверка не обязана оставаться пустой молча, либо (б) 'cargo tree -f' сменил формат вывода и парсинг ниже сломался — тоже требует обновления, а не тихого прохождения."
+            echo "::error::tokio has disappeared from the smol path's graph. Today this is FALSE: hyper depends on tokio unconditionally (README, \"What's in the dependency graph\"), so either (a) hyper genuinely stopped requiring tokio — update this allowlist block and the README together, the check is not obligated to stay silently empty, or (b) 'cargo tree -f' changed its output format and the parsing below broke — this too requires an update, not a silent pass."
             exit 1
           fi
 
           feats="$(printf '%s\n' "$feat_line" | grep -oE '\[[^]]*\]' | tr -d '[]')"
           if [ -z "$feats" ]; then
-            echo "::error::не удалось разобрать список фич tokio из строки '$feat_line' — формат вывода 'cargo tree -f {p} [{f}]' изменился, скрипт нужно обновить, а не считать это чистым прогоном"
+            echo "::error::failed to parse the tokio feature list from line '$feat_line' — the output format of 'cargo tree -f {p} [{f}]' changed, the script needs updating, this must not be treated as a clean run"
             exit 1
           fi
           echo "tokio features: $feats"
 
-          # Белый список — единственные имена, которые сегодня измерены как
-          # присутствующие и инертные (см. комментарий выше и README).
+          # Whitelist — the only names that today are measured to be
+          # present and inert (see the comment above and the README).
           saw_sync=0
           IFS=',' read -ra feat_arr <<< "$feats"
           for f in "${feat_arr[@]}"; do
@@ -359,16 +367,16 @@ jobs:
               sync) saw_sync=1 ;;
               default) ;;
               *)
-                echo "::error::tokio в смол-пути несёт фичу '$f', не входящую в измеренный инертный набор (default, sync). Либо это настоящий реактор — регресс смол-пути, который эта проверка и обязана ловить, — либо hyper/tokio перегруппировали фичи выше по течению и allowlist нужно обновить сознательно, а не молча расширять чёрным списком. В обоих случаях — красный джоб с этим сообщением, не тихий зелёный."
+                echo "::error::tokio in the smol path carries feature '$f', which is not in the measured inert set (default, sync). Either this is a real reactor — a smol-path regression that this check is meant to catch — or hyper/tokio regrouped their features upstream and the allowlist needs a deliberate update, not a silent blacklist expansion. Either way — a red job with this message, not a silent green."
                 exit 1
                 ;;
             esac
           done
           if [ "$saw_sync" -ne 1 ]; then
-            echo "::error::tokio в смол-пути БОЛЬШЕ НЕ несёт фичу 'sync' (hyper::upgrade's tokio::sync::oneshot, единственная известная причина, по которой tokio вообще здесь есть) — состав изменился, проверьте фактическую причину и обновите allowlist/README вместе, а не только код."
+            echo "::error::tokio in the smol path NO LONGER carries the 'sync' feature (hyper::upgrade's tokio::sync::oneshot, the only known reason tokio is here at all) — the composition changed, check the actual reason and update the allowlist/README together, not just the code."
             exit 1
           fi
-          echo "OK: tokio ограничен инертным набором фич {default, sync}, async-compat отсутствует"
+          echo "OK: tokio is confined to the inert feature set {default, sync}, async-compat is absent"
 
   wasip2:
     runs-on: ubuntu-latest
@@ -380,87 +388,89 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi ещё нет — сборка под wasip2 пропущена"
+            echo "::notice::http-ng-wasi not present yet — wasip2 build skipped"
             exit 0
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
-          # Task 17: сквозной пример `examples/fetch.rs` — единственный код в
-          # репозитории, который реально проходит через пользовательский
-          # `http_ng::Client`, а не напрямую через `Transport::execute`.
-          # `cargo check` его не видит (он не lib/bin-таргет по умолчанию для
-          # `check` без `--examples`), так что нужен отдельный `cargo build`.
+          # Task 17: the end-to-end example `examples/fetch.rs` — the only
+          # code in the repository that actually goes through the user-facing
+          # `http_ng::Client`, rather than directly through
+          # `Transport::execute`. `cargo check` does not see it (it is not a
+          # lib/bin target by default for `check` without `--examples`), so
+          # a separate `cargo build` is needed.
           cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
-      # Резолюция review (Task 16, находка B-7): `tests/live_roundtrip.rs` —
-      # единственная автоматическая защита свойства, ради которого
-      # существует вся эта вертикаль (`Body::is_end_stream()` против
-      # настоящего хоста), и раньше не гонялся ни в одном CI job'е вовсе.
-      # При отсутствии `wasmtime` он печатал `::notice::` и молча возвращал
-      # `ok` — зелёный `cargo test` в этом случае ничего не говорит о том,
-      # была ли эта ветка вообще проверена; тот же класс вакуумной проверки,
-      # что правился во всех остальных job'ах вертикали. `cargo install`, а
-      # не готовый бинарь — тот же паттерн, что у `cargo-fuzz` в
-      # `fuzz-smoke` ниже.
+      # Review resolution (Task 16, finding B-7): `tests/live_roundtrip.rs` —
+      # the only automated protection of the property this whole vertical
+      # exists for (`Body::is_end_stream()` against a real host) — previously
+      # did not run in any CI job at all. When `wasmtime` was absent it
+      # printed `::notice::` and silently returned `ok` — a green
+      # `cargo test` in that case says nothing about whether this path was
+      # exercised at all; the same class of vacuous check that was fixed in
+      # every other job of the vertical. `cargo install`, rather than a
+      # prebuilt binary — the same pattern as `cargo-fuzz` in `fuzz-smoke`
+      # below.
       - run: cargo install wasmtime-cli --locked
       - shell: bash
         env:
-          # Резолюция финального ревью ветки, находка B3. Раньше
-          # `require_wasmtime` в `tests/live_roundtrip.rs` ключился на `CI` —
-          # переменную, которую GitHub Actions выставляет для КАЖДОГО job'а,
-          # тогда как `wasmtime` ставит ровно этот. Матричный job `test`
-          # гоняет `cargo test --workspace --all-features`, подхватывает
-          # `live_roundtrip.rs` (он нативный) и падал на всех трёх раннерах:
-          # `0 passed; 5 failed`. Гвард был прав по замыслу и неверен по
-          # сигналу — `CI` значит «какой-то job где-то», а нужно «тот job,
-          # который обещал поставить wasmtime». Здесь обещание дано шагом
-          # выше, поэтому строгость — здесь, и только здесь.
+          # Resolution of the branch's final review, finding B3. Previously
+          # `require_wasmtime` in `tests/live_roundtrip.rs` keyed off `CI` —
+          # a variable GitHub Actions sets for EVERY job, whereas `wasmtime`
+          # is installed by exactly this one. The matrix job `test` runs
+          # `cargo test --workspace --all-features`, picks up
+          # `live_roundtrip.rs` (it's native) and failed on all three
+          # runners: `0 passed; 5 failed`. The guard was right in intent and
+          # wrong in signal — `CI` means "some job somewhere", but what's
+          # needed is "the job that promised to install wasmtime". Here the
+          # promise is made by the step above, so the strictness belongs
+          # here, and only here.
           HTTP_NG_REQUIRE_WASMTIME: "1"
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi ещё нет — живой прогон wasip2 пропущен"
+            echo "::notice::http-ng-wasi not present yet — live wasip2 run skipped"
             exit 0
           fi
-          # Чистые юнит-тесты — реально исполняются под настоящим
-          # `wasmtime` через раннер из `.cargo/config.toml`, не только
-          # компилируются.
+          # Plain unit tests — actually execute under real `wasmtime` via
+          # the runner from `.cargo/config.toml`, not just compiled.
           cargo test -p http-ng-wasi --target wasm32-wasip2
-          # `live_roundtrip`/`shape` — нативные (см. doc-комментарий
-          # `tests/live_roundtrip.rs` про то, почему им нельзя быть
-          # `wasm32-wasip2`-таргетом): сами поднимают мок-сервер и
-          # запускают `wasmtime` подпроцессом. `HTTP_NG_REQUIRE_WASMTIME`
-          # (см. `env:` выше) заставляет `require_wasmtime()` внутри
-          # `live_roundtrip.rs` паниковать, если `wasmtime` всё-таки не
-          # нашёлся, вместо того чтобы тихо пропустить проверку — здесь он
-          # обязан найтись, раз только что установлен шагом выше.
-          # `--nocapture` не для читаемости, а РАДИ проверки ниже: libtest
-          # проглатывает stdout/stderr прошедшего теста, так что `NOTICE`
-          # пропущенного живого прогона без этого флага не доходит до
-          # `grep` вообще — проверено, `0` совпадений против `5` с флагом.
-          # Без него следующая проверка была бы вакуумной, то есть ровно тем
-          # же дефектом, против которого написана.
+          # `live_roundtrip`/`shape` — native (see the doc comment in
+          # `tests/live_roundtrip.rs` on why they cannot be a
+          # `wasm32-wasip2` target): they spin up a mock server themselves
+          # and launch `wasmtime` as a subprocess. `HTTP_NG_REQUIRE_WASMTIME`
+          # (see `env:` above) makes `require_wasmtime()` inside
+          # `live_roundtrip.rs` panic if `wasmtime` still wasn't found,
+          # instead of quietly skipping the check — here it is required to
+          # be found, since it was just installed by the step above.
+          # `--nocapture` is not for readability, it's FOR the check below:
+          # libtest swallows the stdout/stderr of a passing test, so the
+          # `NOTICE` of a skipped live run doesn't reach `grep` at all
+          # without this flag — verified, `0` matches versus `5` with the
+          # flag. Without it, the next check would be vacuous, exactly the
+          # defect it is written against.
           out="$(cargo test -p http-ng-wasi --test live_roundtrip -- --test-threads=1 --nocapture 2>&1)"
           printf '%s\n' "$out"
-          # Вторая половина той же защиты. Маркер выше делает пропуск
-          # ПАДЕНИЕМ, но только пока он действительно доезжает до теста:
-          # опечатка в имени, переезд `env:` не на тот шаг, `cargo install`,
-          # тихо поставивший бинарь мимо `PATH` — и пять живых тестов снова
-          # печатают `NOTICE` и рапортуют `ok`, а джоб зелёный, ничего не
-          # проверив. Симметрия имён между гвардом и этим файлом держится
-          # тестом внутри `live_roundtrip.rs`; здесь проверяется, что
-          # пропуска не случилось по ЛЮБОЙ причине.
-          if printf '%s\n' "$out" | grep -q 'NOTICE: `wasmtime` не найден'; then
-            echo "::error::живой прогон wasip2 пропустил тесты вместо того, чтобы их выполнить — HTTP_NG_REQUIRE_WASMTIME не доехала до теста или wasmtime не в PATH"
+          # Second half of the same protection. The marker above turns a
+          # skip into a FAILURE, but only as long as it actually reaches the
+          # test: a typo in the name, `env:` moved to the wrong step,
+          # `cargo install` silently installing the binary outside `PATH` —
+          # and the five live tests print `NOTICE` again and report `ok`,
+          # while the job stays green, having checked nothing. The name
+          # symmetry between the guard and this file is held by a test
+          # inside `live_roundtrip.rs`; here we verify that the skip did not
+          # happen for ANY reason.
+          if printf '%s\n' "$out" | grep -q 'NOTICE: `wasmtime` not found'; then
+            echo "::error::the live wasip2 run skipped the tests instead of executing them — HTTP_NG_REQUIRE_WASMTIME did not reach the test or wasmtime is not on PATH"
             exit 1
           fi
           cargo test -p http-ng-wasi --test shape
 
-  # Task 16: `wasi:http` 0.3 возвращает `result<_, ...>` из сеттеров опций
-  # запроса (`set_connect_timeout`, `set_method`, `set_scheme`, ...) именно
-  # для того, чтобы хост мог отказать — предшественник этого крейта,
-  # `wasi-fetch`, отбрасывал семь таких `Result` через `let _ =`. Черновик
-  # задачи проверял это один раз, вручную, на этапе реализации — единственный
-  # прогон не защищает ничего, что напишут позже. Тот же guard-паттерн, что у
-  # остальных job'ов: `::notice::` и выход нулём, пока крейта нет.
+  # Task 16: `wasi:http` 0.3 returns `result<_, ...>` from the setters of
+  # request options (`set_connect_timeout`, `set_method`, `set_scheme`, ...)
+  # precisely so the host can refuse — this crate's predecessor,
+  # `wasi-fetch`, discarded seven such `Result`s via `let _ =`. The task
+  # brief checked this once, by hand, during implementation — a single run
+  # protects nothing written later. The same guard pattern as the other
+  # jobs: `::notice::` and exit zero while the crate doesn't exist.
   no-discarded-wasi-setters:
     runs-on: ubuntu-latest
     steps:
@@ -469,169 +479,178 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi/src ]; then
-            echo "::notice::http-ng-wasi ещё нет — проверка отброшенных сеттеров пропущена"
+            echo "::notice::http-ng-wasi not present yet — discarded-setters check skipped"
             exit 0
           fi
-          # Ревью (Task 16, находка B-4) нашло исходную grep-версию этой
-          # проверки дефектной по двум независимым осям:
+          # The review (Task 16, finding B-4) found the original grep-based
+          # version of this check defective along two independent axes:
           #
-          # 1. Построчный `grep` матчит `.set_x(...)` и способ отбросить его
-          #    `Result` только если оба на ОДНОЙ строке. `cargo fmt` в этом
-          #    workspace переносит длинный вызов сеттера на новую строку
-          #    (`max_width = 100`) — `opts\n    .set_between_bytes_timeout(..)\n    .unwrap_or_default();`
-          #    после форматирования сам форматтер, которым эта же CI и гейтит
-          #    (`fmt`-джоб), делает нарушение невидимым для построчного
-          #    поиска. Девять форм, засеянных ревью, доказали это на живом
-          #    прогоне: три исходных ловились, шесть — нет, и первый же
-          #    промах был не гипотетическим, а именно этим переносом.
-          # 2. Список форм отброса был неполон: `.ok()`/`.unwrap_or_default()`
-          #    — не единственные способы молча выбросить `Result`, не давая
-          #    компилятору повода предупредить о `#[must_use]` (голый
-          #    `foo.set_x(y);` без обёртки САМ не собрался бы под `-D
-          #    warnings` — этот случай уже защищён обычной сборкой).
+          # 1. A line-by-line `grep` matches `.set_x(...)` and the way its
+          #    `Result` gets discarded only if both are on the SAME line.
+          #    `cargo fmt` in this workspace wraps a long setter call onto a
+          #    new line (`max_width = 100`) —
+          #    `opts\n    .set_between_bytes_timeout(..)\n    .unwrap_or_default();`
+          #    after formatting, the very formatter this same CI gates with
+          #    (the `fmt` job) makes the violation invisible to a
+          #    line-by-line search. Nine forms seeded by the review proved
+          #    this on a live run: three of the original ones were caught,
+          #    six were not, and the very first miss was not hypothetical —
+          #    it was exactly this wrap.
+          # 2. The list of discard forms was incomplete: `.ok()`/
+          #    `.unwrap_or_default()` are not the only ways to silently
+          #    throw away a `Result` without giving the compiler a reason to
+          #    warn about `#[must_use]` (a bare `foo.set_x(y);` without a
+          #    wrapper would itself fail to compile under `-D warnings` —
+          #    that case is already protected by the ordinary build).
           #    `.unwrap_or(..)`, `.is_ok()`, `.is_err()`, `let _ident = ..`
-          #    (не только буквально `let _ =`) и `drop(..)` — тоже.
+          #    (not only the literal `let _ =`), and `drop(..)` — also count.
           #
-          # Оба исправлены переходом на Python: вместо построчного `grep`
-          # склеиваем содержимое каждого файла (без комментариев — см. ниже)
-          # в один нормализованный по пробелам поток, сохраняя для каждого
-          # символа исходный номер строки — перенос rustfmt'а перестаёт быть
-          # невидимым, а диагностика всё равно называет строку, где вызов
-          # начался. Вызовы `.set_xxx(...)` находятся вручную подсчитанным
-          # балансом скобок (обычный regex не умеет вложенные `Some(ns)`
-          # внутри `set_connect_timeout(Some(ns))`), а следом за закрывающей
-          # скобкой проверяется расширенный список форм отброса — на
-          # нормализованном потоке, а не на исходных строках.
+          # Both are fixed by switching to Python: instead of a line-by-line
+          # `grep`, we glue the contents of each file (minus comments — see
+          # below) into a single whitespace-normalized stream, keeping the
+          # original line number for every character — rustfmt's line wrap
+          # stops being invisible, and the diagnostic still names the line
+          # where the call started. `.set_xxx(...)` calls are located by a
+          # manually counted paren balance (an ordinary regex can't handle
+          # the nested `Some(ns)` inside `set_connect_timeout(Some(ns))`),
+          # and right after the closing paren the extended list of discard
+          # forms is checked — on the normalized stream, not on the source
+          # lines.
           #
-          # Round 1: проверено на девяти засеянных нарушениях (три исходных
-          # плюс перенос rustfmt для каждой) и на существующем дереве.
-          # Round 2 (находка 6) добавил три формы (`if let Err(_e) = .. { }`,
-          # голое `_ = ..`, `let _: Тип = ..`) и починил `//`-внутри-строки/
-          # `/* */`-комментарий в самом сканере; заодно нашёл и починил
-          # собственный баг с `?`-пропагацией, ложно ловившейся как discard.
+          # Round 1: checked against nine seeded violations (three original
+          # plus the rustfmt wrap for each) and against the existing tree.
+          # Round 2 (finding 6) added three forms (`if let Err(_e) = .. { }`,
+          # a bare `_ = ..`, `let _: Type = ..`) and fixed `//`-inside-a-string/
+          # `/* */`-comment handling in the scanner itself; it also found and
+          # fixed its own bug with `?`-propagation being falsely caught as a
+          # discard.
           #
-          # Round 3 закрыл два новых открытых места и задокументировал два,
-          # что остались открытыми сознательно:
-          # - Находка 1: `if let Err(_e) = call { }` ловился ЛЮБОЙ формы,
-          #   включая `if let Err(_e) = call { return Err(_e.into()); }` —
-          #   честную пропагацию, где `_e` реально использован. Ведущее
-          #   подчёркивание в имени не делает биндинг неиспользуемым — это
-          #   просто соглашение об именовании. Сужено до пустого блока:
-          #   находим `{` сразу после конца цепочки вызовов, балансируем до
-          #   парной `}`, флагим только если между ними пусто.
-          # - Находка 2, и это важнее всего остального в этой проверке:
-          #   ЛЮБОЙ комбинатор между `.set_x(..)` и финальным discard прятал
-          #   его — `.set_connect_timeout(Some(ns)).map(|_| ()).ok();`
-          #   реально теряет `RequestOptionsError`, компилируется чисто,
-          #   clippy- и fmt-чисто, а сканер (проверено побайтово тем же
-          #   скриптом, что здесь) не находил ничего. Раньше DISCARD-проверка
-          #   смотрела только на то, что идёт СРАЗУ после закрывающей скобки
-          #   вызова; теперь `walk_chain` проходит всю цепочку
-          #   `.metod(..).method(..)...` (тем же посчитанным балансом скобок)
-          #   и ищет discard-форму в любой позиции, останавливаясь на `?`
-          #   (честная пропагация) или на первом не-цепочечном токене.
-          #   Заодно добавлены `.unwrap_or_else(..)` и `.map_or(..)` —
-          #   тот же класс терминальных форм, что `.unwrap_or(..)`, просто
-          #   не названные явно раньше.
-          #   Тестирование фикстурой для этого раунда само нашло третий,
-          #   ничьей находкой не бывший баг: символьный литерал с кавычкой
-          #   внутри (`'"'`) сбивал построчный `in_string`-трекер для
-          #   `//`-комментариев на оставшуюся часть строки — редкий, но
-          #   реальный источник ЛОЖНЫХ срабатываний (закомментированный код
-          #   внутри `// ...` начинал читаться как настоящий, если перед
-          #   `//` на той же строке был символьный литерал с `"`). Починено:
-          #   `strip_line_comment` теперь распознаёт символьные литералы
-          #   (`'x'`, `'\n'`, `'"'`, `'\u{...}'`) целиком, не путая их с
-          #   лайфтаймами (`'a`, не закрываются `'`).
-          # - Ревью также предложило считать находку про рассинхронизацию
-          #   после символьного литерала внутри более узкого случая —
-          #   ПОДТВЕРЖДЕНО собственным тестированием ПОСЛЕ фикса выше: не
-          #   через `walk_chain` (та не смотрит на комментарии вообще), а
-          #   через отдельный, но родственный фикс в `strip_line_comment`.
-          # - Собственный поиск новых форм для этого раунда (после фикса)
-          #   нашёл ДВЕ формы, которые сканер по-прежнему не ловит, и они
-          #   ОСТАВЛЕНЫ открытыми сознательно, а не втихую:
+          # Round 3 closed two newly found open spots and documented two
+          # that remain open deliberately:
+          # - Finding 1: `if let Err(_e) = call { }` was caught for ANY form,
+          #   including `if let Err(_e) = call { return Err(_e.into()); }` —
+          #   an honest propagation where `_e` is actually used. A leading
+          #   underscore in a name does not make the binding unused — it is
+          #   just a naming convention. Narrowed to an empty block: find the
+          #   `{` right after the end of the call chain, balance to the
+          #   matching `}`, flag only if the content between them is empty.
+          # - Finding 2, and this matters more than everything else in this
+          #   check: ANY combinator between `.set_x(..)` and the final
+          #   discard hid it — `.set_connect_timeout(Some(ns)).map(|_| ()).ok();`
+          #   really loses the `RequestOptionsError`, compiles cleanly, is
+          #   clippy- and fmt-clean, and the scanner (checked byte for byte
+          #   with the very script here) found nothing. Previously the
+          #   DISCARD check only looked at what comes RIGHT AFTER the
+          #   closing paren of the call; now `walk_chain` walks the entire
+          #   `.method(..).method(..)...` chain (with the same counted paren
+          #   balance) and looks for a discard form at any position, stopping
+          #   at `?` (honest propagation) or at the first non-chain token.
+          #   `.unwrap_or_else(..)` and `.map_or(..)` were added along the
+          #   way — the same class of terminal forms as `.unwrap_or(..)`,
+          #   simply not named explicitly before.
+          #   Fixture testing for this round found, on its own, a third bug
+          #   that was nobody's finding: a character literal with a quote
+          #   inside (`'"'`) desynced the line-by-line `in_string` tracker
+          #   for `//`-comments for the rest of the line — a rare but real
+          #   source of FALSE positives (commented-out code inside `// ...`
+          #   started reading as real if a character literal with `"` came
+          #   before the `//` on the same line). Fixed:
+          #   `strip_line_comment` now recognizes character literals
+          #   (`'x'`, `'\n'`, `'"'`, `'\u{...}'`) as whole units, without
+          #   confusing them with lifetimes (`'a`, not closed by a `'`).
+          # - The review also proposed treating the finding about
+          #   desynchronization after a character literal as a narrower
+          #   case — CONFIRMED by our own testing AFTER the fix above: not
+          #   via `walk_chain` (which doesn't look at comments at all), but
+          #   via a separate, related fix in `strip_line_comment`.
+          # - A search of our own for new forms for this round (after the
+          #   fix) found TWO forms the scanner still doesn't catch, and they
+          #   are LEFT open deliberately, not quietly:
           #   * `match opts.set_x(y) { Ok(()) => { .. }, Err(_) => { .. } }`
-          #     с непустыми, но не читающими содержимое `Err` ветками —
-          #     clippy's `single_match`/`match_single_binding` ловят
-          #     ТРИВИАЛЬНЫЕ формы этого (`Ok(_) => {}, Err(_) => {}` или
-          #     `_ => {}`), но не эту. Закрыть это в общем виде значит
-          #     разбирать тело `match`-рукавов — вне бюджета
-          #     regex-эвристики; нужен настоящий парсер (`syn` или
-          #     аналог), которого этот job сознательно избегает.
-          #   * `let (_,) = (opts.set_x(y),);` (и похожие деструктуризации
-          #     кортежа в `_`) — компилируется и clippy-чисто. Не закрыто:
-          #     насколько мы можем судить, эта форма не встречается
-          #     органически, только как намеренный обход конкретно этой
-          #     проверки — расширение периметра на все мыслимые
-          #     деструктуризации ради одной надуманной формы того не стоит.
-          #   * `let _ = if cond { opts.set_x(y) } else { Ok(()) };` (и
-          #     эквивалентно — голый блок `let _ = { opts.set_x(y) };`) —
-          #     найдено ВТОРЫМ самостоятельным поиском в этом же раунде,
-          #     ПОСЛЕ починки находок 1 и 2, планированием в реальный
-          #     `apply_timeouts` и подтверждением clippy- и fmt-чистоты. В
-          #     отличие от двух форм выше, это ОБЫЧНЫЙ, идиоматичный Rust —
-          #     не станет более редким по мере роста крейта, скорее наоборот.
-          #     Причина промаха структурная, не эвристическая: вызов
-          #     `.set_x(..)` лежит ВНУТРИ собственного `{ }` (тела if/else-
-          #     ветки или голого блока-выражения), а `stmt_start` находит
-          #     БЛИЖАЙШУЮ `{` перед вызовом — это открывающая скобка ветки,
-          #     а не начало инструкции — так что текст `let _ =` вообще не
-          #     попадает в `prefix`, который проверяют
-          #     LET_UNDERSCORE/DROP_CALL/BARE_UNDERSCORE_ASSIGN. Закрыть это
-          #     значило бы отслеживать вложенность блоков-выражений и то,
-          #     что́ является их последним (не завершённым `;`) значением —
-          #     ровно то же превышение бюджета regex-эвристики, что и выше;
-          #     нужен настоящий парсер. Не закрыто сознательно, а не
-          #     потому, что не нашли, как — записано здесь, чтобы не
-          #     пришлось искать заново.
+          #     with non-empty branches for `Err` that don't read its
+          #     content — clippy's `single_match`/`match_single_binding`
+          #     catch TRIVIAL forms of this (`Ok(_) => {}, Err(_) => {}` or
+          #     `_ => {}`), but not this one. Closing this in general means
+          #     parsing the body of `match` arms — beyond the budget of a
+          #     regex heuristic; a real parser is needed (`syn` or the
+          #     like), which this job deliberately avoids.
+          #   * `let (_,) = (opts.set_x(y),);` (and similar tuple
+          #     destructurings into `_`) — compiles and is clippy-clean.
+          #     Not closed: as far as we can tell, this form does not occur
+          #     organically, only as a deliberate workaround for this
+          #     specific check — extending the perimeter to every
+          #     conceivable destructuring for the sake of one contrived form
+          #     is not worth it.
+          #   * `let _ = if cond { opts.set_x(y) } else { Ok(()) };` (and
+          #     equivalently — a bare block `let _ = { opts.set_x(y) };`) —
+          #     found by a SECOND independent search in this same round,
+          #     AFTER fixing findings 1 and 2, by planting it into the real
+          #     `apply_timeouts` and confirming clippy- and fmt-cleanliness.
+          #     Unlike the two forms above, this is ORDINARY, idiomatic
+          #     Rust — it won't become rarer as the crate grows, if
+          #     anything the opposite. The reason for the miss is
+          #     structural, not heuristic: the `.set_x(..)` call sits
+          #     INSIDE its own `{ }` (the body of an if/else branch or a
+          #     bare block expression), and `stmt_start` finds the NEAREST
+          #     `{` before the call — which is the branch's opening brace,
+          #     not the start of the statement — so the text `let _ =`
+          #     never enters the `prefix` that
+          #     LET_UNDERSCORE/DROP_CALL/BARE_UNDERSCORE_ASSIGN check.
+          #     Closing this would mean tracking the nesting of block
+          #     expressions and what their final (not `;`-terminated) value
+          #     is — exactly the same regex-heuristic budget overrun as
+          #     above; a real parser is needed. Not closed deliberately, not
+          #     because we couldn't find how — recorded here so it doesn't
+          #     have to be rediscovered.
           #
-          # Проверено на двадцати с лишним формах (двенадцать нарушений
-          # round 1+2, семь новых нарушений round 3 — комбинатор перед
-          # `.ok()`, несколько комбинаторов подряд, `.unwrap_or_else(..)`,
-          # `.map_or(..)`, комбинатор перед `let _ =`, плюс легитимные —
-          # `?`-пропагация в т.ч. с именованной `_`-переменной, `match` с
-          # реальной обработкой обеих веток, `if let Err(_e) = call {
-          # return Err(_e.into()); }`, переменная `foo_`, строка с `//`
-          # перед настоящим `?`, символьный литерал с кавычкой перед
-          # настоящим `//`-комментарием) в изолированной фикстуре, третьим
-          # прогоном байт-в-байт того же скрипта, что здесь — zero ложных
-          # срабатываний ни в одну сторону, и на существующем дереве (`OK`).
+          # Checked against twenty-odd forms (twelve violations from
+          # round 1+2, seven new violations from round 3 — a combinator
+          # before `.ok()`, several combinators in a row,
+          # `.unwrap_or_else(..)`, `.map_or(..)`, a combinator before
+          # `let _ =`, plus legitimate ones — `?`-propagation including with
+          # a named `_`-variable, a `match` that genuinely handles both
+          # branches, `if let Err(_e) = call { return Err(_e.into()); }`, a
+          # variable named `foo_`, a string containing `//` before a real
+          # `?`, a character literal with a quote before a real
+          # `//`-comment) in an isolated fixture, in a third byte-for-byte
+          # run of the same script as here — zero false positives in either
+          # direction, and on the existing tree (`OK`).
           python3 - <<'PYEOF'
           import re, sys, pathlib
 
           ROOT = pathlib.Path("crates/http-ng-wasi/src")
 
-          # Терминальные формы, теряющие Err — независимо от того, стоят ли
-          # они СРАЗУ после `.set_x(..)` или после сколь угодно длинной
-          # цепочки прозрачных комбинаторов (`.map(..)`, `.map_err(..)`,
-          # `.and_then(..)`, ...) — находка 2 round 3, см. `walk_chain`.
+          # Terminal forms that lose Err — regardless of whether they sit
+          # RIGHT AFTER `.set_x(..)` or after an arbitrarily long chain of
+          # transparent combinators (`.map(..)`, `.map_err(..)`,
+          # `.and_then(..)`, ...) — finding 2 round 3, see `walk_chain`.
           TERMINAL_DISCARD_NO_ARGS = {"ok", "is_ok", "is_err", "unwrap_or_default"}
           TERMINAL_DISCARD_WITH_ARGS = {"unwrap_or", "unwrap_or_else", "map_or"}
 
-          # `(:[^=;{}]*)?` — необязательная аннотация типа между `_<ident>`
-          # и `=` (`let _: Result<(), E> = ..`), иначе не матчилась.
+          # `(:[^=;{}]*)?` — an optional type annotation between `_<ident>`
+          # and `=` (`let _: Result<(), E> = ..`), otherwise it wouldn't match.
           LET_UNDERSCORE = re.compile(r'\blet\s+_\w*\s*(:[^=;{}]*)?=\s*[^;{}]*$')
           DROP_CALL = re.compile(r'\bdrop\s*\([^;{}]*$')
-          # Голое `_ = expr;` (destructuring assignment, не `let`). `\b`
-          # перед `_` не даёт словить конец обычного идентификатора вроде
-          # `foo_ = ..` (там между `o` и `_` нет границы слова — оба словные
-          # символы); `(?!>)` не даёт словить `_ => ..` (match-рукав).
+          # A bare `_ = expr;` (destructuring assignment, not `let`). The `\b`
+          # before `_` avoids catching the end of an ordinary identifier like
+          # `foo_ = ..` (there's no word boundary between `o` and `_` — both
+          # are word characters); `(?!>)` avoids catching `_ => ..` (a match
+          # arm).
           BARE_UNDERSCORE_ASSIGN = re.compile(r'\b_\s*=(?!>)\s*[^;{}]*$')
-          # `if let Err(_e) = ..` — в т.ч. внутри let-цепочки (`if let Some(x)
-          # = y && let Err(_e) = ..`), где `if` не стоит вплотную перед `let
-          # Err` — поэтому без `\bif\s+` в начале, ищем сам `let Err(_ident)
-          # =` где угодно в préfix'е. Само по себе не значит нарушение —
-          # см. проверку пустоты блока ниже (находка 1 round 3).
+          # `if let Err(_e) = ..` — including inside a let-chain (`if let
+          # Some(x) = y && let Err(_e) = ..`), where `if` doesn't sit
+          # immediately before `let Err` — hence no `\bif\s+` at the start,
+          # we look for `let Err(_ident) =` itself anywhere in the prefix.
+          # By itself this does not mean a violation — see the empty-block
+          # check below (finding 1 round 3).
           IF_LET_ERR_UNDERSCORE = re.compile(r'\blet\s+Err\s*\(\s*_\w*\s*\)\s*=\s*[^;{}]*$')
           BLOCK_COMMENT = re.compile(r'/\*.*?\*/', re.DOTALL)
 
           def strip_block_comments(text):
-              # Заменяет содержимое `/* .. */` пробелами, СОХРАНЯЯ переносы
-              # строк внутри — номера строк для всего, что после, не
-              # съезжают. Не умеет вложенные `/* /* */ */` (Rust это
-              # разрешает) — сознательно незакрытая граница, редкий случай
-              # для этого файла.
+              # Replaces the contents of `/* .. */` with spaces, PRESERVING
+              # newlines inside — line numbers for everything after don't
+              # shift. Doesn't handle nested `/* /* */ */` (Rust allows this)
+              # — a deliberately unclosed gap, a rare case for this file.
               def repl(m):
                   return ''.join(c if c == '\n' else ' ' for c in m.group(0))
               return BLOCK_COMMENT.sub(repl, text)
@@ -639,11 +658,11 @@ jobs:
           CHAR_LITERAL = re.compile(r"'(\\u\{[0-9a-fA-F]+\}|\\.|[^'\\])'")
 
           def strip_line_comment(line):
-              # Наивный `line.split("//", 1)[0]` резал строку и по `//`
-              # ВНУТРИ строкового литерала (`"http://x"`), пряча всё, что
-              # шло дальше на той же строке, включая настоящий discard.
-              # `set_path_with_query`/`set_authority` в этом крейте реально
-              # принимают строки такого вида — не гипотетический риск.
+              # A naive `line.split("//", 1)[0]` would cut the line at `//`
+              # INSIDE a string literal too (`"http://x"`), hiding everything
+              # further along the same line, including a real discard.
+              # `set_path_with_query`/`set_authority` in this crate genuinely
+              # accept strings of this shape — not a hypothetical risk.
               in_string = False
               i, n = 0, len(line)
               while i < n:
@@ -661,16 +680,16 @@ jobs:
                       i += 1
                       continue
                   if c == "'":
-                      # Может быть символьный литерал ('x', '\n', '"',
-                      # '\u{1F600}') или лайфтайм ('a, 'static) —
-                      # символьный литерал целиком пропускаем, чтобы `"`
-                      # внутри него ('"') не десинхронизировал трекер строк
-                      # выше (находка round 3, найдена собственным
-                      # тестированием, а не ревью — false positive: без
-                      # этого закомментированный код после '"' на той же
-                      # строке читался бы как настоящий). Лайфтайм не
-                      # закрывается `'`, регэксп не совпадёт, одиночная `'`
-                      # пройдёт как обычный символ.
+                      # Could be a character literal ('x', '\n', '"',
+                      # '\u{1F600}') or a lifetime ('a, 'static) — we skip a
+                      # character literal whole, so that a `"` inside it
+                      # ('"') doesn't desync the string tracker above
+                      # (a round 3 finding, found by our own testing, not by
+                      # the review — a false positive: without this,
+                      # commented-out code after '"' on the same line would
+                      # read as real). A lifetime isn't closed by `'`, the
+                      # regex won't match, a lone `'` passes through as an
+                      # ordinary character.
                       m = CHAR_LITERAL.match(line, i)
                       if m:
                           i = m.end()
@@ -697,11 +716,11 @@ jobs:
               return None
 
           def walk_chain(stream, pos):
-              # Начиная с `pos` (сразу после закрывающей скобки
-              # `.set_x(..)`), проходит по цепочке `.method(args)...`, пока
-              # не встретит `?` (пропагация — дальше не в счёт) либо
-              # не-цепочечный символ. Возвращает (имена_методов,
-              # позиция_конца_цепочки, propagated).
+              # Starting at `pos` (right after the closing paren of
+              # `.set_x(..)`), walks the `.method(args)...` chain until it
+              # hits `?` (propagation — nothing further counts) or a
+              # non-chain character. Returns (method_names,
+              # chain_end_position, propagated).
               methods = []
               i, n = pos, len(stream)
               while i < n:
@@ -789,13 +808,14 @@ jobs:
                       violations.append((path, line_no, f"{p[-40:]} {snippet}"))
                       continue
 
-                  # Находка 1 round 3: `{` ищем от `chain_end`, не `end` —
-                  # чтобы `if let Err(_e) = opts.set_x(y).map_err(..) { }`
-                  # тоже находил ПРАВИЛЬНУЮ скобку, а не одну из скобок
-                  # внутри `map_err`. Флагим только если содержимое между
-                  # `{` и парной `}` — только пробелы: непустой блок
-                  # (`{ return Err(_e.into()); }`) — честная пропагация,
-                  # `_e` использован, а не отброшен.
+                  # Finding 1 round 3: we search for `{` starting at
+                  # `chain_end`, not `end` — so that
+                  # `if let Err(_e) = opts.set_x(y).map_err(..) { }` also
+                  # finds the CORRECT brace, not one of the braces inside
+                  # `map_err`. Flag only if the content between `{` and its
+                  # matching `}` is whitespace only: a non-empty block
+                  # (`{ return Err(_e.into()); }`) is honest propagation,
+                  # `_e` is used, not discarded.
                   if IF_LET_ERR_UNDERSCORE.search(prefix):
                       brace_pos = stream.find('{', chain_end)
                       if brace_pos != -1:
@@ -820,13 +840,13 @@ jobs:
 
           if violations:
               print(
-                  "::error::найден отброшенный Result у сеттера wasi:http "
-                  "(let _ / let _ident / let _: Тип / .ok() / .unwrap_or_default() / "
+                  "::error::found a discarded Result from a wasi:http setter "
+                  "(let _ / let _ident / let _: Type / .ok() / .unwrap_or_default() / "
                   ".unwrap_or(..) / .unwrap_or_else(..) / .map_or(..) / .is_ok() / .is_err() "
-                  "— в любой позиции цепочки комбинаторов, не только сразу после вызова — "
-                  "/ drop(..) / голое `_ = ..` / `if let Err(_e) = ..` с пустым блоком — "
-                  "в одну строку или через перенос rustfmt) — каждый отказ хоста обязан "
-                  "стать типизированной Error, см. crates/http-ng-wasi/src/convert.rs"
+                  "— at any position in a combinator chain, not only right after the call — "
+                  "/ drop(..) / a bare `_ = ..` / `if let Err(_e) = ..` with an empty block — "
+                  "on one line or via a rustfmt wrap) — every host refusal must "
+                  "become a typed Error, see crates/http-ng-wasi/src/convert.rs"
               )
               sys.exit(1)
           PYEOF
@@ -842,7 +862,7 @@ jobs:
       - run: cargo fuzz run sse_accounting -- -max_total_time=30 -max_len=256
         working-directory: crates/http-ng-proto/fuzz
 
-  # ── инварианты из спеки ───────────────────────────────────────────────
+  # ── invariants from the spec ────────────────────────────────────────────
   proto-is-sans-io:
     runs-on: ubuntu-latest
     steps:
@@ -853,12 +873,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            echo "::notice::http-ng-proto not present yet — check skipped"
             exit 0
           fi
           tree="$(cargo tree -p http-ng-proto -e normal --prefix none)"
           if printf '%s\n' "$tree" | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
-            echo "::error::http-ng-proto подцепил async-зависимость"
+            echo "::error::http-ng-proto picked up an async dependency"
             exit 1
           fi
       - name: no async fn in http-ng-proto
@@ -866,12 +886,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto/src ]; then
-            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            echo "::notice::http-ng-proto not present yet — check skipped"
             exit 0
           fi
           if grep -rn "async fn" crates/http-ng-proto/src \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
-            echo "::error::sans-io крейт содержит async fn"
+            echo "::error::the sans-io crate contains an async fn"
             exit 1
           fi
 
@@ -884,163 +904,178 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # `http-ng-wasi/src` в списке с Task 15 (review round 1, Finding 4):
-          # инвариант защищает потребителей от бондов Send/Sync, которые их
-          # ограничивают, а транспорт способен утечь такой же бонд в своём
-          # публичном API не хуже ядра — было выбором никого не сканировать
-          # его, а не осознанным решением, что он не в области действия.
-          # Маркер `send-bound-exception` по-прежнему разрешает обоснованные
-          # исключения, так что расширение охвата ничего не стоит там, где
-          # бонд оправдан.
+          # `http-ng-wasi/src` has been in the list since Task 15 (review
+          # round 1, Finding 4): the invariant protects consumers from
+          # Send/Sync bounds that constrain them, and a transport can leak
+          # the same class of bound in its public API no less than the core
+          # — leaving it unscanned had been a default, not a deliberate
+          # decision that it's out of scope. The `send-bound-exception`
+          # marker still allows justified exceptions, so widening the
+          # coverage costs nothing wherever the bound is warranted.
           #
-          # `http-ng-proto/src` — m3 финального ревью ветки. Ревью засеяло
-          # `pub trait Probe: Send + Sync {}` в `http-ng-proto/src/redirect.rs`
-          # и проверка осталась зелёной, тогда как та же строка в
-          # `http-ng/src/client.rs` ловилась. Сегодня безвредно — proto
-          # никаких таких бондов не объявляет и его типы до шва не доходят;
-          # перестанет быть безвредным, когда там появятся кэш Alt-Svc и
-          # планировщик Happy Eyeballs (spec §5.4, §5.6) и их типы пойдут
-          # через `Client`. Одно слово в списке, добавленное до того, а не
-          # после.
+          # `http-ng-proto/src` — m3 of the branch's final review. The
+          # review seeded `pub trait Probe: Send + Sync {}` into
+          # `http-ng-proto/src/redirect.rs` and the check stayed green,
+          # whereas the same line in `http-ng/src/client.rs` was caught.
+          # Harmless today — proto declares no such bounds and its types
+          # don't reach the seam yet; it will stop being harmless once the
+          # Alt-Svc cache and the Happy Eyeballs scheduler (spec §5.4, §5.6)
+          # show up there and their types start flowing through `Client`.
+          # One word added to the list ahead of time, not after.
           #
-          # `http-ng-rt/src` — Task 1 вертикали 2. Тот же класс промаха, что
-          # выше с `http-ng-proto/src`: крейт не существовал, когда список
-          # писался, значит его отсутствие здесь было бы фактом истории, а
-          # не решением, что бонды в нём вне области действия. `Blocking::run`
-          # в этом крейте объявляет `Send` в самом трейте способности (см.
-          # `amendment-C5` ниже по фильтру и в спеке) — ровно тот случай,
-          # который эта проверка обязана видеть и пропускать по маркеру, а
-          # не молчать по недосмотру.
+          # `http-ng-rt/src` — Task 1 of vertical 2. The same class of miss
+          # as above with `http-ng-proto/src`: the crate didn't exist when
+          # the list was written, so its absence here would be a fact of
+          # history, not a decision that bounds in it are out of scope.
+          # `Blocking::run` in this crate declares `Send` in the capability
+          # trait itself (see `amendment-C5` further down in the filter and
+          # in the spec) — exactly the case this check must see and pass via
+          # the marker, not miss by oversight.
           #
-          # `http-ng-native/src` — Task 13 вертикали 2. Список здесь
-          # ЧАСТИЧНЫЙ НАМЕРЕННО (в отличие от `no-unsafe-code`'s
-          # `crates/*/src`): рантайм- и бэкенд-крейты вроде `http-ng-rt`
-          # легитимно несут `Send` на СПОСОБНОСТЯХ (бонды в трейте, как
-          # `Blocking::run` выше) и на impl'ах конкретных типов под
-          # конкретный чужой API (например, `Spawn<F: Send + 'static> for
-          # Tokio` в `http-ng-rt-tokio` — не в этом списке, и не должен
-          # быть: сканировать бэкенды рантайма целиком означало бы требовать
-          # маркер на каждом таком impl'е, которых там много и которые не
-          # про инвариант «ядро не объявляет Send/Sync»). `http-ng-native`
-          # раньше не было смысла сканировать — до Task 13 крейт не
-          # экспортировал ничего публично, кроме `testing` (см.
-          # `#[doc(hidden)] pub mod testing` в `src/lib.rs`). С Task 13 у
-          # него появился настоящий публичный тип, `Native: Transport`, и он
-          # способен утечь тот же класс `Send`-бонда в свой публичный API,
-          # что и ядро — тот же аргумент, что уже привёл сюда
-          # `http-ng-wasi/src`. Проверено перед добавлением (не после):
-          # `Native`'s struct, `impl Transport for Native`, и его собственные
-          # публичные методы не объявляют ни `Send`, ни `Sync` нигде — все
-          # бонды в его where-клаузе (`R::Stream: 'static`, `T::Stream<R::
-          # Stream>: 'static` и т.п.) не про `Send`/`Sync` вовсе. Добавление
-          # этого каталога НЕ потребовало ни одного нового маркера на самом
-          # `Native` — ровно то, что Task 11 уже проверила для остального
-          # крейта. Единственное, что проверка нашла в `src/` этого крейта —
-          # `body.rs`'s `Inner::Streaming(Box<dyn Body<..> + Unpin + Send>)`,
-          # тот же C2-бонд, что уже промаркирован в
-          # `http-ng-core/src/body.rs:59`, и один C3-нарушающий тест
-          # (`B::Error: .. + Send + Sync` внутри `#[cfg(test)] mod tests`),
-          # перенесённый в `tests/shape.rs` тем же приёмом, что и
-          # аналогичные тесты в `http-ng-core`/`http-ng-wasi`. Ни то, ни
-          # другое не было «impl bound» — то самое условие, при котором бриф
-          # Task 13 просил переформулировать это правило вместо того, чтобы
-          # маркировать код, здесь не сработало: оба найденных случая —
-          # ровно тот класс «объявленный Send на структуре данных / тесте»,
-          # для которого маркер и C3-перенос уже существуют как стандартный
-          # ответ везде в этом файле.
+          # `http-ng-native/src` — Task 13 of vertical 2. The list here is
+          # DELIBERATELY PARTIAL (unlike `no-unsafe-code`'s
+          # `crates/*/src`): runtime- and backend crates like `http-ng-rt`
+          # legitimately carry `Send` on CAPABILITIES (bounds on a trait,
+          # like `Blocking::run` above) and on impls of concrete types
+          # against a concrete foreign API (e.g. `Spawn<F: Send + 'static>
+          # for Tokio` in `http-ng-rt-tokio` — not in this list, and
+          # shouldn't be: scanning runtime backends wholesale would mean
+          # requiring a marker on every such impl, of which there are many
+          # and which aren't about the invariant "the core doesn't declare
+          # Send/Sync"). There used to be no point scanning
+          # `http-ng-native` — before Task 13 the crate exported nothing
+          # publicly except `testing` (see `#[doc(hidden)] pub mod testing`
+          # in `src/lib.rs`). With Task 13 it gained a genuine public type,
+          # `Native: Transport`, and it is just as able to leak the same
+          # class of `Send` bound in its public API as the core — the same
+          # argument that already brought `http-ng-wasi/src` here. Checked
+          # before adding (not after): `Native`'s struct,
+          # `impl Transport for Native`, and its own public methods declare
+          # neither `Send` nor `Sync` anywhere — all the bounds in its
+          # where-clause (`R::Stream: 'static`, `T::Stream<R::
+          # Stream>: 'static`, etc.) aren't about `Send`/`Sync` at all.
+          # Adding this directory required NOT ONE new marker on `Native`
+          # itself — exactly what Task 11 already verified for the rest of
+          # the crate. The only thing the check found in this crate's
+          # `src/` was `body.rs`'s
+          # `Inner::Streaming(Box<dyn Body<..> + Unpin + Send>)`, the same
+          # C2 bound already marked in `http-ng-core/src/body.rs:59`, and
+          # one C3-violating test (`B::Error: .. + Send + Sync` inside
+          # `#[cfg(test)] mod tests`), moved into `tests/shape.rs` by the
+          # same technique as the analogous tests in
+          # `http-ng-core`/`http-ng-wasi`. Neither was an "impl bound" —
+          # exactly the condition under which the Task 13 brief asked to
+          # reformulate this rule instead of marking the code — that
+          # condition didn't apply here: both cases found are exactly the
+          # class "declared Send on a data structure / a test" for which
+          # the marker and the C3 relocation already exist as the standard
+          # answer everywhere in this file.
           dirs=""
           for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src \
                    crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
-            echo "::notice::крейтов ядра ещё нет — проверка пропущена"
+            echo "::notice::core crates not present yet — check skipped"
             exit 0
           fi
-          # Ищем ОБЪЯВЛЕННЫЕ бонды, а не упоминания в доках: строки, у которых
-          # содержимое начинается с комментария, отбрасываются вторым grep.
+          # We look for DECLARED bounds, not mentions in docs: lines whose
+          # content starts with a comment are dropped by the second grep.
           #
-          # Третий grep вычитает строки с маркером `send-bound-exception` —
-          # ПОСТРОЧНОЕ, а не файловое исключение. До Task 12 fix round 1 этот
-          # список был файловым (`! -path .../error.rs` и `.../body.rs`):
-          # ревью нашло, что это слепая зона на весь файл — например,
-          # `trait FakeSeamTrait: Send + Sync {}`, вставленный куда угодно в
-          # такой файл, проходил бы CI незамеченным, и `client.rs` был
-          # третьим таким файлом ещё до того, как Task 13 начал его менять
-          # дальше. Маркер сужает исключение до конкретной строки: только она
-          # пропускается, весь остальной текст файла (включая новый код,
-          # который допишут поздние задачи) по-прежнему сканируется.
+          # The third grep subtracts lines carrying the `send-bound-exception`
+          # marker — a PER-LINE, not a per-file, exception. Before Task 12
+          # fix round 1 this list was per-file (`! -path .../error.rs` and
+          # `.../body.rs`): the review found this to be a blind spot for the
+          # whole file — for example, `trait FakeSeamTrait: Send + Sync {}`
+          # inserted anywhere in such a file would pass CI unnoticed, and
+          # `client.rs` was a third such file even before Task 13 started
+          # changing it further. The marker narrows the exception to a
+          # specific line: only that line is skipped, the rest of the
+          # file's text (including new code later tasks will add) is still
+          # scanned.
           #
-          # Маркер — это ЗАЯВКА, а не способ заглушить проверку: каждая
-          # маркированная строка обязана называть поправку (C1, C2 или C5,
-          # Latin C) из `docs/superpowers/specs/2026-08-05-http-ng-design.md`,
-          # которая её оправдывает.
+          # The marker is a CLAIM, not a way to silence the check: every
+          # marked line must name the amendment (C1, C2, or C5, Latin C)
+          # from `docs/superpowers/specs/2026-08-05-http-ng-design.md` that
+          # justifies it.
           #
-          # ПРАВИЛО, а не список конкретных строк (Task 13 fix round 2):
-          # всякая обобщённая функция, которая заворачивает чужую ошибку в
-          # `Error::new` — а значит требует `Send + Sync` от неё, потому что
-          # `Error` хранит источник как `Arc<dyn Error + Send + Sync>` — обязана
-          # повторить этот бонд в своей собственной where-клаузе: Rust не
-          # пробрасывает бонды через вызов. Число маркеров растёт не построчно
-          # с ростом крейта, а вместе с числом НЕЗАВИСИМЫХ таких цепочек
-          # вызова; сегодня их четыре: `Client::execute` (client.rs),
-          # `Response::chunk`+`collect`, разделяющие один бонд (response.rs),
-          # `RequestBuilder::send`, который зовёт `Client::execute` и обязан
-          # повторить её бонд (request.rs), и `SseStream::next` (Task 14,
-          # sse.rs), который зовёт `Response::chunk` и по той же причине обязан
-          # повторить её бонд — плюс два исходных места вне этой цепочки:
-          # `http-ng-core/src/error.rs` (поле `source` и бонд `Error::new`
-          # самого типа) и `http-ng-core/src/body.rs` (`RewindFactory`,
-          # `Streaming`-вариант и бонд `rewindable` — C2, про то же стирание
-          # auto-traits, но в объектах-трейтах `RequestBody`, а не в
-          # `Error::new`). Список конкретных строк дважды переписывался вручную
-          # вслед за счётом (5→6→8) и настолько же легко разойдётся снова;
-          # проверяйте правило, а не пересчитывайте маркеры.
+          # A RULE, not a list of specific lines (Task 13 fix round 2): any
+          # generic function that wraps a foreign error into `Error::new` —
+          # and therefore requires `Send + Sync` from it, because `Error`
+          # stores its source as `Arc<dyn Error + Send + Sync>` — must
+          # repeat that bound in its own where-clause: Rust does not
+          # propagate bounds through a call. The number of markers grows
+          # not line-by-line with the crate, but with the number of
+          # INDEPENDENT such call chains; today there are four:
+          # `Client::execute` (client.rs), `Response::chunk`+`collect`,
+          # sharing one bound (response.rs), `RequestBuilder::send`, which
+          # calls `Client::execute` and must repeat its bound (request.rs),
+          # and `SseStream::next` (Task 14, sse.rs), which calls
+          # `Response::chunk` and for the same reason must repeat its bound
+          # — plus two original spots outside this chain:
+          # `http-ng-core/src/error.rs` (the `source` field and the
+          # `Error::new` bound of the type itself) and
+          # `http-ng-core/src/body.rs` (`RewindFactory`, the `Streaming`
+          # variant, and the `rewindable` bound — C2, about the same
+          # auto-trait erasure, but in the `RequestBody` trait objects,
+          # not in `Error::new`). The list of specific lines has been
+          # manually rewritten twice already, chasing the count (5→6→8),
+          # and will drift again just as easily; check the rule, don't
+          # recount the markers.
           #
-          # Ревью Task 13 разобрало и отвергло две альтернативы этому правилу:
-          # (1) общий хелпер-обёртка для `Error::new` — не помогает, компилятор
-          # всё равно требует бонд в точке вызова хелпера, чистый +1 маркер без
-          # выигрыша; (2) поднять бонд на весь `impl`-блок `Client<T>` —
-          # компилируется, но ломает `Client::builder`, `.get`, `.transport`,
-          # `.config` для транспорта с честно `!Send` ошибкой — регресс именно
-          # того свойства, ради которого бонды живут в отдельных
-          # where-клаузах, а не в трейте. Трейт-алиас, прячущий бонд от grep
-          # (`MaybeSend`-подобная обёртка), был бы не сужением исключения, а
-          # его сокрытием — дизайн прямо отвергает этот приём.
+          # The Task 13 review considered and rejected two alternatives to
+          # this rule: (1) a shared wrapper helper for `Error::new` —
+          # doesn't help, the compiler still requires the bound at the
+          # helper's call site, a clean +1 marker for no gain; (2) raise the
+          # bound onto the whole `impl` block of `Client<T>` — compiles, but
+          # breaks `Client::builder`, `.get`, `.transport`, `.config` for a
+          # transport with an honestly `!Send` error — a regression of
+          # exactly the property bounds live in separate where-clauses,
+          # rather than on the trait, for. A trait alias that hides the
+          # bound from grep (a `MaybeSend`-like wrapper) would not narrow
+          # the exception but conceal it — the design explicitly rejects
+          # this trick.
           #
-          # Новый маркер без соответствующей поправки в спеке — повод для
-          # ревью, а не для зелёного CI. Сам фильтр маркера тоже сузили
-          # (Task 13 fix round 1): раньше `grep -v 'send-bound-exception'`
-          # пропускал ЛЮБУЮ строку, содержащую эту подстроку — включая маркер
-          # с выдуманным обоснованием. Теперь строка обязана содержать
-          # `send-bound-exception:` и реальную ссылку на поправку C1, C2 или
-          # C5.
+          # A new marker without a matching amendment in the spec is grounds
+          # for review, not for a green CI. The marker filter itself was
+          # also narrowed (Task 13 fix round 1): previously
+          # `grep -v 'send-bound-exception'` skipped ANY line containing
+          # that substring — including a marker with a made-up
+          # justification. Now the line must contain
+          # `send-bound-exception:` and an actual reference to amendment
+          # C1, C2, or C5.
           #
-          # Round 2 латинизировал сам токен поправки (`C1`/`C2`, было
-          # `С1`/`С2`): кириллическая `С` (U+0421) неотличима на глаз от
-          # латинской `C`, из-за чего ASCII-поиск вроде `grep -rn
-          # "amendment-C1" .` не находил ни маркер, ни заголовок в спеке,
-          # который его оправдывает — ревьюер, добросовестно искавший
-          # поправку С1, её не нашёл и корректно репортовал исключение как
-          # необоснованное. Это не закрывает дыру полностью (выдумать можно и
-          # «amendment-C1»), но поднимает планку выше «любая строка» и делает
-          # каждую заявку находимой обычным ASCII-поиском по двум
-          # существующим сегодня поправкам.
+          # Round 2 latinized the amendment token itself (`C1`/`C2`,
+          # previously written with U+0421 CYRILLIC CAPITAL LETTER ES in
+          # place of the Latin C, so it read as "C1"/"C2" but wasn't): that
+          # Cyrillic letter is visually indistinguishable from the Latin
+          # `C`, which meant an ASCII search like
+          # `grep -rn "amendment-C1" .` found neither the marker nor the
+          # heading in the spec that justifies it — a reviewer who
+          # conscientiously searched for amendment C1 didn't find it
+          # (because the marker used the Cyrillic lookalike, not the ASCII
+          # letter) and correctly reported the exception as unjustified.
+          # This doesn't close the hole completely (one could still make up
+          # "amendment-C1"), but it raises the bar above "any string" and
+          # makes every claim findable by an ordinary ASCII search against
+          # the two amendments that exist today.
           #
-          # Task 1 вертикали 2 расширил класс фильтра с `C[12]` до `C[125]`:
-          # `http-ng-rt::Blocking` — первое исключение, чей источник бонда не
-          # стирание auto-traits на пути `Client -> Transport` (C1/C2), а
-          # чужой API (`tokio::task::spawn_blocking`, `blocking::unblock`),
-          # который требует `Send + 'static` в своей сигнатуре — новый класс,
-          # значит новая поправка (C5 в спеке), не переиспользование C1/C2.
-          # `C3` и `C4` в фильтр не входят намеренно: они не про исключения из
-          # этого инварианта (C3 — соглашение о месте `assert_send`-тестов, C4
-          # — про `&'static [HeaderName]`) и ни разу не встречаются как
-          # `send-bound-exception`-маркер в коде.
+          # Task 1 of vertical 2 widened the filter class from `C[12]` to
+          # `C[125]`: `http-ng-rt::Blocking` — the first exception whose
+          # bound doesn't come from auto-trait erasure on the
+          # `Client -> Transport` path (C1/C2), but from a foreign API
+          # (`tokio::task::spawn_blocking`, `blocking::unblock`) that
+          # requires `Send + 'static` in its own signature — a new class,
+          # hence a new amendment (C5 in the spec), not a reuse of C1/C2.
+          # `C3` and `C4` are deliberately not in the filter: they aren't
+          # about exceptions to this invariant (C3 is the convention for
+          # where `assert_send` tests live, C4 is about
+          # `&'static [HeaderName]`) and never appear as a
+          # `send-bound-exception` marker in the code.
           if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE 'send-bound-exception:[[:space:]]*amendment-C[125]\b'; then
-            echo "::error::в ядре объявлен бонд Send или Sync без маркера send-bound-exception"
+            echo "::error::the core declares a Send or Sync bound without a send-bound-exception marker"
             exit 1
           fi
 
@@ -1052,119 +1087,124 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # ПЕРЕСМОТРЕНО в Task 6, fix round 1 (см. ниже, после истории).
+          # REVISED in Task 6, fix round 1 (see below, after the history).
           #
-          # ПЕРВАЯ и главная линия защиты — не этот job, а сам компилятор:
-          # каждый крейт несёт `#![forbid(unsafe_code)]` (не `#![deny(...)]`
-          # — решение из Task 2, fix round 1), и он проверяется на каждой
-          # сборке матрицы `test` (linux/macos/windows). Разница между
-          # `forbid` и `deny` не косметическая — проверено планированием
-          # пробника прямо в этом дереве и откатом через `cp`: с
-          # `#![deny(unsafe_code)]` локальный `#[allow(unsafe_code)]` рядом
-          # с `unsafe`-блоком компилировался ЧИСТО (компилятор молчал, `-D
-          # warnings` тоже не помогал — `allow` гасит лint, а не превращает
-          # его в предупреждение); с `#![forbid(unsafe_code)]` тот же файл
-          # падает с `E0453 (allow incompatible with previous forbid)` —
-          # `forbid` не переопределим изнутри крейта НИКАК. Компилятор
-          # ловит то же самое, что ловил бы этот job, но раньше (на этапе
-          # компиляции, а не отдельным CI-шагом) и без единого
-          # grep-паттерна, который можно обмануть форматированием, строкой
-          # или атрибутом на две строки.
+          # The FIRST and primary line of defense is not this job but the
+          # compiler itself: every crate carries `#![forbid(unsafe_code)]`
+          # (not `#![deny(...)]` — a decision from Task 2, fix round 1), and
+          # it is checked on every build of the `test` matrix
+          # (linux/macos/windows). The difference between `forbid` and
+          # `deny` is not cosmetic — verified by planting a probe right in
+          # this tree and reverting via `cp`: with `#![deny(unsafe_code)]` a
+          # local `#[allow(unsafe_code)]` next to an `unsafe` block compiled
+          # CLEANLY (the compiler stayed silent, `-D warnings` didn't help
+          # either — `allow` suppresses a lint rather than turning it into
+          # a warning); with `#![forbid(unsafe_code)]` the same file fails
+          # with `E0453 (allow incompatible with previous forbid)` —
+          # `forbid` cannot be overridden from inside a crate, PERIOD. The
+          # compiler catches the same thing this job would, but earlier (at
+          # compile time, rather than as a separate CI step) and without a
+          # single grep pattern that can be defeated by formatting, a
+          # string, or an attribute split across two lines.
           #
-          # ЭТОТ job — второй, независимый слой, а не первый: он ловит
-          # СЛУЧАЙ, КОГДА САМ `#![forbid(unsafe_code)]` ПРОПАЛ ИЗ ФАЙЛА
-          # (стёрт при рефакторинге, потерян при мерже, скопирован файл без
-          # шапки) — тогда компилятор больше не участвует вовсе, и только
-          # текстовый скан снаружи ловит регресс. Эта причина — пропажа
-          # строки из файла — не имеет ничего общего с тем, делает ли крейт
-          # I/O: файл теряет атрибут одинаково легко что в мосте
-          # `futures-io` → `hyper::rt`, что в чистом трейт-контракте без
-          # единого системного вызова. Поэтому область действия — каждый
-          # крейт workspace'а, `crates/*/src`, а не подмножество,
-          # угаданное по тому, что каждый крейт умел на момент, когда этот
-          # job писался.
+          # THIS job is a second, independent layer, not the first: it
+          # catches the CASE WHERE `#![forbid(unsafe_code)]` ITSELF
+          # DISAPPEARED FROM THE FILE (erased during a refactor, lost in a
+          # merge, a file copied without its header) — at that point the
+          # compiler no longer participates at all, and only an external
+          # text scan catches the regression. This cause — a line vanishing
+          # from a file — has nothing to do with whether the crate does
+          # I/O: a file loses the attribute just as easily in the
+          # `futures-io` → `hyper::rt` bridge as in a plain trait contract
+          # with not a single system call. Hence the scope is every crate in
+          # the workspace, `crates/*/src`, not a subset guessed from what
+          # each crate could do at the moment this job was written.
           #
-          # ИСТОРИЯ (почему список раньше был коротким и почему это было
-          # ошибкой масштабирования, а не решением по существу). Job начался
-          # в Task 2 вертикали 2 с одним каталогом (`http-ng-rt/src`,
-          # первый крейт с мостом `futures-io` → `hyper::rt`), и следующие
-          # три задачи каждая добавляла свой каталог по мере появления
-          # своего крейта: Task 3 — `http-ng-rt-tokio` (свой мост, `TokioIo`
-          # → `hyper::rt`), Task 4 — `http-ng-rt-smol` (не пишет мост
-          # заново, но собственный неблокирующий `connect()`), Task 6 —
-          # `http-ng-dns`, добавленный по прямому пункту чек-листа вертикали,
-          # НЕСМОТРЯ на то что это уже не мост и вообще не I/O — первый
-          # сигнал, что рамка "мосты рантайма" была описанием истории
-          # добавления, а не осознанной границей охвата. Ревью этого раунда
-          # (fix round 1) указало на это прямо: рамка объясняла, КОГДА job
-          # был написан, а не ДЛЯ ЧЕГО он существует, а "для чего" —
-          # обнаружить пропажу атрибута — верно для `http-ng-core` и
-          # `http-ng-proto` точно так же, как для `http-ng-rt-smol`, и оба
-          # были МОЛЧА вне охвата не по решению, а по недосмотру списка,
-          # который рос по одному каталогу за задачу. Список каталогов,
-          # который надо не забыть пополнить при десятом крейте — ровно тот
-          # класс дрейфа, что уже ломал `sse-complexity-guard` (см. его
-          # комментарий) и сам workflow-файл (см. `workflow-yaml-is-valid`)
-          # в этом репозитории раньше. Решение — не "не забыть в одиннадцатый
-          # раз", а не оставлять забывания как варианта: глоб `crates/*/src`
-          # ниже подхватывает будущие крейты сам, без правки этого файла.
+          # HISTORY (why the list used to be short, and why that was a
+          # scaling mistake, not a decision on the merits). The job began in
+          # Task 2 of vertical 2 with one directory (`http-ng-rt/src`, the
+          # first crate with the `futures-io` → `hyper::rt` bridge), and
+          # each of the next three tasks added its own directory as its own
+          # crate appeared: Task 3 — `http-ng-rt-tokio` (its own bridge,
+          # `TokioIo` → `hyper::rt`), Task 4 — `http-ng-rt-smol` (doesn't
+          # write a bridge again, but has its own non-blocking `connect()`),
+          # Task 6 — `http-ng-dns`, added per a direct checklist item of the
+          # vertical, DESPITE the fact that it is no longer a bridge and not
+          # I/O at all — the first signal that the "runtime bridges" frame
+          # was a description of the history of additions, not a deliberate
+          # boundary of coverage. This round's review (fix round 1) pointed
+          # this out directly: the frame explained WHEN the job was written,
+          # not WHAT FOR it exists, and the "what for" — detecting a missing
+          # attribute — is true for `http-ng-core` and `http-ng-proto`
+          # exactly as much as for `http-ng-rt-smol`, and both were SILENTLY
+          # out of scope not by decision but by the oversight of a list that
+          # grew one directory per task. A list of directories that has to
+          # be remembered at the tenth crate is exactly the class of drift
+          # that already broke `sse-complexity-guard` (see its comment) and
+          # this very workflow file (see `workflow-yaml-is-valid`) earlier
+          # in this repository. The fix is not "remember it an eleventh
+          # time" but not leaving forgetting as an option: the
+          # `crates/*/src` glob below picks up future crates by itself,
+          # with no edit to this file.
           #
-          # Разовая проверка руками (`! grep -rn "unsafe" crates/http-ng-rt/src
-          # && echo OK`, буквальный Step 5 брифа задачи 2) была отвергнута по
-          # двум причинам, обе найдены эмпирически при её прогоне на реальном
-          # дереве, а не предположены:
+          # A one-time manual check (`! grep -rn "unsafe" crates/http-ng-rt/src
+          # && echo OK`, the literal Step 5 of task 2's brief) was rejected
+          # for two reasons, both found empirically by running it against
+          # the real tree, not assumed:
           #
-          # 1. Она печатает `OK`, когда каталога вообще не существует
-          #    (`grep -r` на отсутствующий путь падает с ошибкой, `!`
-          #    инвертирует это в успех) — "прошло" и "нечего было проверять"
-          #    неотличимы, ровно тот класс проверки, что вводит в
-          #    заблуждение молчаливым зелёным.
-          # 2. Голый `grep -rn "unsafe"` на СЕГОДНЯШНЕМ, чистом от unsafe
-          #    коде уже находит совпадения и провалился бы: `lib.rs`
-          #    объявляет `#![forbid(unsafe_code)]` (подстрока `unsafe`
-          #    внутри имени лита `unsafe_code`), а doc-комментарии
-          #    некоторых крейтов (например, `http-ng-rt/src/futures_io.rs`)
-          #    обсуждают, почему zero-copy потребовал бы `unsafe`. Простой
-          #    grep не отличает "код объявляет unsafe запрещённым" и "текст
-          #    упоминает unsafe" от настоящего `unsafe`-блока.
+          # 1. It prints `OK` when the directory doesn't exist at all
+          #    (`grep -r` on a missing path fails with an error, `!`
+          #    inverts that into success) — "passed" and "nothing to check"
+          #    become indistinguishable, exactly the class of check that
+          #    misleads with a silent green.
+          # 2. A bare `grep -rn "unsafe"` on TODAY's code, clean of unsafe,
+          #    already finds matches and would have failed: `lib.rs`
+          #    declares `#![forbid(unsafe_code)]` (the substring `unsafe`
+          #    inside the literal name `unsafe_code`), and doc comments in
+          #    some crates (e.g. `http-ng-rt/src/futures_io.rs`) discuss why
+          #    zero-copy would require `unsafe`. A plain grep does not
+          #    distinguish "the code declares unsafe forbidden" and "the
+          #    text mentions unsafe" from an actual `unsafe` block.
           #
-          # Фильтр ниже решает оба: (а) отбрасывает строки, начинающиеся с
-          # комментария — тот же приём, что и в `no-declared-send`; (б)
-          # отдельно отбрасывает `deny(unsafe_code)`/`forbid(unsafe_code)` —
-          # это ОБЪЯВЛЕНИЕ запрета, а не обход. `allow(unsafe_code)` и
-          # `expect(unsafe_code)` НЕ отбрасываются намеренно — если крейт
-          # когда-нибудь откатится на `deny` (регресс сам по себе, но этот
-          # job его не проверяет отдельно) или лишится атрибута вовсе,
-          # `allow(unsafe_code)` рядом с настоящим `unsafe`-блоком обязан
-          # остаться видимым текстовому скану. Проверено на синтетической
-          # фикстуре вне дерева: `unsafe { … }` и `#[allow(unsafe_code)]`
-          # оба ловятся, `#![deny(unsafe_code)]` — нет.
+          # The filter below solves both: (a) it drops lines whose content
+          # starts with a comment — the same trick as in
+          # `no-declared-send`; (b) it separately drops
+          # `deny(unsafe_code)`/`forbid(unsafe_code)` — that is a
+          # DECLARATION of the ban, not a workaround. `allow(unsafe_code)`
+          # and `expect(unsafe_code)` are NOT dropped, deliberately — if a
+          # crate ever rolls back to `deny` (a regression in itself, but
+          # this job doesn't check that separately) or loses the attribute
+          # altogether, `allow(unsafe_code)` next to a real `unsafe` block
+          # must remain visible to the text scan. Verified on a synthetic
+          # fixture outside the tree: `unsafe { … }` and
+          # `#[allow(unsafe_code)]` are both caught, `#![deny(unsafe_code)]`
+          # is not.
           #
-          # И разовый прогон защищает код только на момент прогона:
-          # следующий коммит, добавляющий unsafe месяцем позже, никто не
-          # ловит. Поэтому — постоянный job с явным `if`/`then`/`exit 1`, а
-          # не однострочный grep-трюк.
+          # And a one-time run only protects the code at the moment it
+          # runs: nobody catches the next commit that adds unsafe a month
+          # later. Hence a standing job with an explicit `if`/`then`/`exit 1`,
+          # rather than a one-line grep trick.
           #
-          # `shopt -s nullglob` + явная проверка на пустой массив ниже — та
-          # же дисциплина, что во всех guard-job'ах этого файла ("прошло" и
-          # "нечего было проверять" не должны быть неотличимы), но с
-          # противоположным исходом по умолчанию: остальные guard'ы в этом
-          # файле печатают `::notice::` и выходят нулём, пока их крейт ещё
-          # не появился (легитимно на ранних задачах вертикали). Здесь же
-          # `crates/` — не будущий каталог, а существующий с Task 1; если
-          # `crates/*/src` не совпал ни с чем, это не "рано", а сломанная
-          # раскладка workspace'а или сломанный сам глоб, и job обязан
-          # упасть, а не тихо пройти.
+          # `shopt -s nullglob` plus the explicit empty-array check below is
+          # the same discipline as all the guard jobs in this file
+          # ("passed" and "nothing to check" must not be indistinguishable),
+          # but with the opposite default outcome: the other guards in this
+          # file print `::notice::` and exit zero while their crate hasn't
+          # appeared yet (legitimate in the vertical's early tasks). Here,
+          # though, `crates/` is not a future directory but one that has
+          # existed since Task 1; if `crates/*/src` matched nothing, that is
+          # not "too early" but a broken workspace layout or a broken glob
+          # itself, and the job must fail rather than pass quietly.
           shopt -s nullglob
           dirs=(crates/*/src)
           if [ ${#dirs[@]} -eq 0 ]; then
-            echo "::error::crates/*/src не нашёл ни одного каталога — раскладка workspace'а изменилась или сам глоб сломан; эта проверка обязана видеть хотя бы один крейт"
+            echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
             exit 1
           fi
           if grep -rn "unsafe" "${dirs[@]}" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE '(deny|forbid)\(unsafe_code\)'; then
-            echo "::error::найден unsafe (включая возможный #[allow(unsafe_code)]) в одном из ${#dirs[@]} каталогов (${dirs[*]}) — каждый крейт обязан оставаться безопасным"
+            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe"
             exit 1
           fi
-          echo "unsafe: не найден ни в одном из ${#dirs[@]} каталогов (${dirs[*]})"
+          echo "unsafe: not found in any of ${#dirs[@]} directories (${dirs[*]})"

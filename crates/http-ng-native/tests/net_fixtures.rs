@@ -1,43 +1,46 @@
-//! Общие сетевые фикстуры для интеграционных тестов этого крейта. Не
-//! содержит `#[test]` сама — подключается через `mod net_fixtures;` в
-//! `connect.rs` и `dual_runtime.rs` (тот же приём, что `server.rs` в
-//! `http-ng-tls-rustls/tests/`: обычный файл `tests/*.rs`, который cargo
-//! всё равно скомпилирует как отдельный — пустой — тестовый бинарник, но
-//! который также подключается как модуль там, где нужна общая логика).
+//! Shared network fixtures for this crate's integration tests. Doesn't
+//! contain any `#[test]` itself — pulled in via `mod net_fixtures;` from
+//! `connect.rs` and `dual_runtime.rs` (the same technique as `server.rs`
+//! in `http-ng-tls-rustls/tests/`: an ordinary `tests/*.rs` file, which
+//! cargo will compile as its own — empty — test binary regardless, but
+//! which is also pulled in as a module wherever the shared logic is
+//! needed).
 //!
-//! # Почему это отдельный файл, а не просто "будь внимательнее в каждом"
+//! # Why this is a separate file, rather than just "be more careful everywhere"
 //!
-//! Review round 1 нашло один и тот же класс бага дважды в одной задаче:
-//! `tests/connect.rs`'s первая версия `falls_over_from_a_dead_address_to_a_live_one`
-//! комбинировала IP закрытого порта с портом ЖИВОГО слушателя (у обоих
-//! адресов один и тот же порт нужен — `connect_for_test`/`connect` берут
-//! ОДИН порт на все кандидатовские адреса, Happy Eyeballs пробует один и
-//! тот же порт на разных IP, не разные порты на одном), что было поймано
-//! и исправлено. Двадцать минут спустя та же ошибка независимо
-//! воспроизвелась в `tests/dual_runtime.rs`'s `dead_and_live()`: она
-//! возвращала IP закрытого слушателя вместе с портом ОТДЕЛЬНОГО живого
-//! слушателя — оба слушателя были на `127.0.0.1`, так что "мёртвый" адрес
-//! на самом деле совпадал с живым (`dead == live.ip()`), и тест реально
-//! соединялся с живым слушателем за ~230µs, не проверяя отказ вообще.
+//! Review round 1 found the same class of bug twice within one task:
+//! the first version of `tests/connect.rs`'s
+//! `falls_over_from_a_dead_address_to_a_live_one` combined a closed
+//! port's IP with the LIVE listener's port (both addresses need the same
+//! port — `connect_for_test`/`connect` take ONE port for every candidate
+//! address, Happy Eyeballs tries the same port on different IPs, not
+//! different ports on one), which was caught and fixed. Twenty minutes
+//! later, the same mistake independently reappeared in
+//! `tests/dual_runtime.rs`'s `dead_and_live()`: it returned the closed
+//! listener's IP together with a SEPARATE live listener's port — both
+//! listeners were on `127.0.0.1`, so the "dead" address actually
+//! coincided with the live one (`dead == live.ip()`), and the test
+//! genuinely connected to the live listener in ~230µs, never exercising
+//! the failure path at all.
 //!
-//! Вывод не "быть внимательнее" — бдительность уже не сработала один раз
-//! в тех же двадцати минутах. Вывод: ловушка была в ФОРМЕ конструктора
-//! (звать `TcpListener::bind` дважды и вручную комбинировать `.ip()` с
-//! чужим `.port()`), а не в конкретном месте, где её один раз забыли
-//! проверить. `dead_and_live()` ниже устраняет саму форму: "мёртвый" IP —
-//! ЛИТЕРАЛЬНАЯ константа (`127.0.0.2`), не производная от какого-либо
-//! слушателя, так что скомбинировать её с портом живого слушателя и
-//! случайно получить живой адрес попросту невозможно — не проверить
-//! перед использованием, а невозможно написать. Оба файла берут эту
-//! функцию отсюда, а не пишут свою.
-// `#![allow(dead_code)]`, не `#[cfg(test)]`-манипуляции и не `#[expect]`:
-// каждый `tests/*.rs`-файл, включающий этот через `mod net_fixtures;`,
-// компилирует его заново как ОТДЕЛЬНЫЙ бинарник, и не каждый использует
-// ОБЕ функции (`dual_runtime.rs` берёт только `dead_and_live`, не
-// `closed_port`) — `#[expect(dead_code)]` был бы то удовлетворён, то нет
-// в зависимости от того, какой бинарник компилируется, и заменил бы одно
-// предупреждение другим (`unfulfilled_lint_expectations`) в тех
-// бинарниках, где функция как раз используется.
+//! The lesson isn't "be more careful" — vigilance had already failed once
+//! within that same twenty minutes. The lesson: the trap was in the
+//! constructor's SHAPE (calling `TcpListener::bind` twice and manually
+//! combining one's `.ip()` with the other's `.port()`), not in the one
+//! spot where someone forgot to check it. `dead_and_live()` below removes
+//! the shape itself: the "dead" IP is a LITERAL constant (`127.0.0.2`),
+//! not derived from any listener, so combining it with a live listener's
+//! port and accidentally getting a live address is simply not possible —
+//! not "unchecked before use," but impossible to write. Both files get
+//! this function from here rather than writing their own.
+// `#![allow(dead_code)]`, not `#[cfg(test)]` tricks and not `#[expect]`:
+// every `tests/*.rs` file that pulls this in via `mod net_fixtures;`
+// recompiles it fresh as a SEPARATE binary, and not every one uses BOTH
+// functions (`dual_runtime.rs` only takes `dead_and_live`, not
+// `closed_port`) — `#[expect(dead_code)]` would be satisfied in some of
+// those binaries and not others, and would just swap one warning for
+// another (`unfulfilled_lint_expectations`) in the binaries where the
+// function is actually used.
 #![allow(dead_code)]
 
 use std::net::{IpAddr, SocketAddr};

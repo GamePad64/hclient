@@ -1,102 +1,108 @@
-//! Коннектор: Happy Eyeballs (RFC 8305) по TCP, затем опциональный TLS с
+//! Connector: Happy Eyeballs (RFC 8305) over TCP, then optional TLS with
 //! ALPN.
 //!
-//! # Где здесь живёт "Resolution Delay"
+//! # Where "Resolution Delay" lives here
 //!
-//! `http_ng_dns::Resolve` нарочно отдаёт `Stream`, а не `Future<Output =
-//! Vec<_>>` — единственная причина в том, что RFC 8305 §3 требует начинать
-//! попытки по IPv6, не дожидаясь ответа по IPv4, а `Scheduler` (Task 5)
-//! умеет реагировать на это только если его кормят по мере поступления, а
-//! не одним блоком после того, как резолвер закончил оба семейства. Если
-//! бы этот файл сначала собирал оба стрима в `Vec`, а потом одним вызовом
-//! отдавал их `Scheduler::offer_v6`/`offer_v4` с немедленным
-//! `mark_v6_done`/`mark_v4_done`, "Resolution Delay" была бы мертва: между
-//! `offer` и `mark_done` не проходило бы никакого времени, и `Scheduler`
-//! никогда не оказался бы в состоянии "AAAA ещё не пришли, но резолвер не
-//! закончил" — том самом состоянии, ради которого он вообще устроен как
-//! автомат, а не как сортировка уже готового списка.
+//! `http_ng_dns::Resolve` deliberately returns a `Stream`, not a
+//! `Future<Output = Vec<_>>` — the only reason is that RFC 8305 §3
+//! requires starting IPv6 attempts without waiting for the IPv4 answer,
+//! and `Scheduler` (Task 5) can only react to that if it's fed as results
+//! arrive, not as one block after the resolver has finished both
+//! families. If this file first collected both streams into a `Vec` and
+//! then handed them to `Scheduler::offer_v6`/`offer_v4` in one call with
+//! an immediate `mark_v6_done`/`mark_v4_done`, "Resolution Delay" would be
+//! dead: no time would pass between `offer` and `mark_done`, and
+//! `Scheduler` would never end up in the state "AAAA hasn't arrived yet,
+//! but the resolver isn't done either" — the very state it's built as a
+//! state machine, rather than a sort over an already-ready list, to
+//! handle.
 //!
-//! `drive` ниже — единственное место, которое опрашивает `Scheduler`, и оно
-//! кормит его РЕАЛЬНЫМИ стримами: `connect` передаёт туда
-//! `dns.lookup_ipv6`/`lookup_ipv4` как есть, по одному элементу за раз, и
-//! вызывает `mark_*_done` только когда стрим действительно закончился (`None`
-//! от `poll_next`), а не заранее. `race_connect` — вторая, более простая
-//! точка входа: ей нечего резолвить (адреса уже даны целиком), поэтому она
-//! оборачивает их в `stream::iter` (стрим, который отдаёт всё на первом же
-//! опросе и сразу заканчивается) и передаёт в тот же `drive`. Обе точки входа
-//! проходят через один и тот же автомат не из экономии кода: это гарантирует,
-//! что мутация в правилах интерливинга/паузы одинаково ловится тестами через
-//! оба пути, а не только через один из них.
+//! `drive` below is the only place that polls `Scheduler`, and it feeds it
+//! REAL streams: `connect` passes `dns.lookup_ipv6`/`lookup_ipv4` into it
+//! as-is, one item at a time, and calls `mark_*_done` only once the
+//! stream has actually finished (`None` from `poll_next`), not ahead of
+//! time. `race_connect` is the second, simpler entry point: it has
+//! nothing to resolve (the addresses are already given whole), so it
+//! wraps them in `stream::iter` (a stream that yields everything on the
+//! first poll and immediately ends) and passes that into the same
+//! `drive`. Both entry points go through the same state machine not to
+//! save code: it guarantees that a mutation in the interleaving/pacing
+//! rules is caught equally by tests through either path, not just one of
+//! them.
 //!
-//! # Зачем `race_connect` больше не строит `select_biased!` из брифа задачи
+//! # Why `race_connect` no longer builds the brief's `select_biased!`
 //!
-//! Черновик задачи показывал `race_connect` с ровно двумя источниками
-//! события в момент `HeAction::Wait`: попытки (`attempts.next()`) и таймер
-//! (`rt.sleep(d)`). `select_biased!`/`select!` из `futures-util` это умеют
-//! (FusedFuture на обоих плечах), но `drive` ниже кормится ЕЩЁ и двумя
-//! DNS-стримами, а `select_biased!` не поддерживает условно исключаемые
-//! плечи — плечо, которое обязано замолчать навсегда после того, как стрим
-//! семейства закончился, синтаксисом макроса не выразить без отдельного
-//! `enum`-обёртки на каждое плечо. `std::future::poll_fn` с explicit `if
-//! !done { poll }` перед каждым источником решает то же самое прямым
-//! Rust-кодом: источник, который сейчас нечего спрашивать (стрим уже
-//! кончился, `attempts` пуст), просто не опрашивается в этом раунде — и не
-//! нуждается в `Waker`, потому что у него объективно не может появиться
-//! новое событие (см. комментарий на месте про `attempts.is_empty()`
-//! ниже — тот же приём, что и в брифе, только обобщённый на четыре
-//! источника вместо двух).
+//! This task's draft showed `race_connect` with exactly two event sources
+//! at the moment of `HeAction::Wait`: attempts (`attempts.next()`) and the
+//! timer (`rt.sleep(d)`). `select_biased!`/`select!` from `futures-util`
+//! can handle that (FusedFuture on both arms), but `drive` below is fed by
+//! TWO MORE sources, the DNS streams, and `select_biased!` doesn't support
+//! conditionally-excluded arms — an arm that must go silent forever once
+//! its family's stream has finished can't be expressed in the macro's
+//! syntax without a separate `enum` wrapper for each arm.
+//! `std::future::poll_fn` with an explicit `if !done { poll }` before each
+//! source solves the same problem with plain Rust code: a source that
+//! currently has nothing to ask (its stream is already done, `attempts`
+//! is empty) simply isn't polled this round — and doesn't need a `Waker`,
+//! because it objectively cannot produce a new event (see the comment at
+//! the `attempts.is_empty()` site below — the same technique as the
+//! brief, just generalized from two sources to four).
 //!
-//! # RFC 6724 (Destination Address Selection) НЕ реализован здесь — принятый, названный пробел
+//! # RFC 6724 (Destination Address Selection) is NOT implemented here — an accepted, named gap
 //!
-//! `http_ng_dns::Resolve`'s doc-комментарий изначально называл эту задачу
-//! местом, где адреса ОДНОГО семейства обязаны быть отсортированы по RFC 6724
-//! §6 перед `offer_v4`/`offer_v6`. Проверка перед реализацией показала, что
-//! это неисполнимо в заявленном виде: полная реализация (Rule 1–Rule 10 RFC
-//! 6724 §6, часть из которых требует Source Address Selection — то есть
-//! знания о таблице маршрутизации, которого ни один трейт этой вертикали не
-//! предоставляет) — самостоятельная, большая задача, а не то, что уместно
-//! додумать по ходу коннектора. Симулировать часть правил без остальных
-//! значило бы утверждать частичную совместимость, которой на самом деле нет —
-//! тот же принцип, что развёл `RedirectSupport::None`/`Transparent`
-//! (`способность, которая лжёт о своём состоянии, хуже способности, которой
-//! просто нет`, см. doc-комментарии `http_ng_dns::Resolve` и
-//! `http_ng_tls::TlsInfo`). Поэтому: адреса каждого семейства идут в
-//! `Scheduler::offer_v6`/`offer_v4` в том порядке, в котором их отдал
-//! резолвер — `Scheduler` документирует, что сортировка не его забота,
-//! `http_ng_dns::Resolve` (доработан вместе с этой находкой) теперь говорит то
-//! же самое с другого конца шва, и этот файл её тоже не берёт на себя.
+//! `http_ng_dns::Resolve`'s doc comment originally named this task as the
+//! place where addresses of a SINGLE family must be sorted per RFC 6724
+//! §6 before `offer_v4`/`offer_v6`. Checking before implementing it showed
+//! this isn't achievable as stated: a full implementation (Rule 1–Rule 10
+//! of RFC 6724 §6, some of which require Source Address Selection — i.e.,
+//! knowledge of the routing table, which no trait in this vertical
+//! provides) is its own, large task, not something to improvise along the
+//! way in the connector. Simulating some of the rules without the rest
+//! would mean claiming partial compatibility that doesn't actually exist
+//! — the same principle that split `RedirectSupport::None`/`Transparent`
+//! apart (`a capability that lies about its own state is worse than a
+//! capability that simply doesn't exist`, see the doc comments on
+//! `http_ng_dns::Resolve` and `http_ng_tls::TlsInfo`). So: addresses of
+//! each family go into `Scheduler::offer_v6`/`offer_v4` in whatever order
+//! the resolver handed them over — `Scheduler` documents that sorting
+//! isn't its concern, `http_ng_dns::Resolve` (updated alongside this
+//! finding) now says the same thing from the other end of the seam, and
+//! this file doesn't take it on either.
 //!
-//! Это больше не открытый вопрос: зафиксировано как явный пробел в §9 "Что
-//! явно не делаем" `docs/superpowers/specs/2026-08-05-http-ng-design.md`, а
-//! не недосмотр, который кто-то переоткроет в третий раз. Закрыть его
-//! возможно, если появится отдельная способность Source Address Selection —
-//! до тех пор ни `Resolve`, ни `Scheduler`, ни этот файл сортировкой не
-//! занимаются. (Для системного резолвера конкретно ОС часто уже отдаёт
-//! адреса в RFC 6724-порядке сама — см. `http-ng-dns-system` — но это
-//! свойство конкретного бэкенда, не гарантия трейта.)
+//! This is no longer an open question: it's recorded as an explicit gap
+//! in §9, "What we explicitly don't do", of
+//! `docs/superpowers/specs/2026-08-05-http-ng-design.md`, not an
+//! oversight for someone to rediscover a third time. Closing it is
+//! possible if a separate Source Address Selection capability shows up —
+//! until then, neither `Resolve`, nor `Scheduler`, nor this file does any
+//! sorting. (For the system resolver specifically, the OS itself often
+//! already hands back addresses in RFC 6724 order — see
+//! `http-ng-dns-system` — but that's a property of a particular backend,
+//! not a guarantee of the trait.)
 //!
-//! # RFC 9460 SVCB/ECH тоже не подключены здесь
+//! # RFC 9460 SVCB/ECH isn't wired up here either
 //!
-//! `TlsRequest::ech` заведён в Task 8 заранее, а `Resolve::lookup_svcb`/
-//! `SvcbEndpoint::ech_config_list` — в Task 6, но ни то, ни другое не входит
-//! в Interfaces-блок этой задачи (`connect` там принимает `alpn: &[&[u8]]`,
-//! но не список SVCB-точек и не ECH). `connect` ниже передаёт `ech: None` —
-//! честно: он не запрашивает SVCB и не может предложить ECH-конфиг,
-//! которого у него нет, а не притворяется, что запрашивал и не нашёл (то же
-//! разграничение, что `supports_svcb()` уже проводит на уровне `Resolve`).
+//! `TlsRequest::ech` was added ahead of time in Task 8, and
+//! `Resolve::lookup_svcb`/`SvcbEndpoint::ech_config_list` in Task 6, but
+//! neither is part of this task's Interfaces block (`connect` there takes
+//! `alpn: &[&[u8]]`, but no SVCB endpoint list and no ECH). `connect`
+//! below passes `ech: None` — honestly: it doesn't query SVCB and can't
+//! offer an ECH config it doesn't have, rather than pretending it queried
+//! and found none (the same distinction `supports_svcb()` already draws
+//! at the `Resolve` level).
 //!
-//! # `connect` больше не мёртвый код вне тестов
+//! # `connect` is no longer dead code outside tests
 //!
-//! До Task 13 ничего в крейте не вызывало DNS-потребляющий `connect` вне
-//! `#[cfg(test)] mod tests` этого файла (только `race_connect`, через
-//! `crate::testing::connect_for_test`), так что здесь стоял
-//! `cfg_attr(not(test), expect(dead_code, ..))` — тот же приём, что и в
-//! `body.rs` до Task 12. С Task 13 `Native::execute` (`src/lib.rs`) зовёт
-//! `connect` по-настоящему, не только в тестах — атрибут снят, а не сужен:
-//! не осталось ни одного пути этого файла (`connect`, `Conn`, `host`,
-//! `port`, `wants_tls`), который был бы живым только в тестовой сборке
-//! (тот же вывод, что doc-комментарий `body.rs` сделал для `Inner`/
-//! `OutgoingBody` годом раньше в той же вертикали).
+//! Before Task 13, nothing in the crate called the DNS-consuming `connect`
+//! outside this file's `#[cfg(test)] mod tests` (only `race_connect`, via
+//! `crate::testing::connect_for_test`), so `cfg_attr(not(test),
+//! expect(dead_code, ..))` used to sit here — the same technique as
+//! `body.rs` before Task 12. With Task 13, `Native::execute`
+//! (`src/lib.rs`) genuinely calls `connect`, not just in tests — the
+//! attribute is removed, not narrowed: there's no path left in this file
+//! (`connect`, `Conn`, `host`, `port`, `wants_tls`) that's only alive in
+//! test builds (the same conclusion `body.rs`'s doc comment reached for
+//! `Inner`/`OutgoingBody` a year earlier in the same vertical).
 #![allow(clippy::too_many_arguments)]
 
 use futures_util::Stream;
@@ -113,7 +119,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// Соединение: с TLS или без. Оба варианта — `hyper::rt` IO.
+/// A connection: with or without TLS. Both variants are `hyper::rt` IO.
 #[derive(Debug)]
 pub(crate) enum Conn<P, T> {
     Plain(P),
@@ -158,14 +164,14 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
     }
 }
 
-// --- Типизированные ошибки этого модуля --------------------------------
+// --- Typed errors for this module ---------------------------------------
 //
-// "No silent no-ops": ни одно из мест ниже не схлопывает отказ в
-// `AllAttemptsFailed`/`ErrorKind::Connect` молча — каждое различие
-// (резолвер отказал / резолвер честно нашёл ноль адресов / TCP-попытки
-// реально были и все отказали / конфиг Happy Eyeballs вышел за
-// RFC-рекомендованный диапазон) остаётся видимым через отдельный тип и
-// отдельный `ErrorKind`.
+// "No silent no-ops": none of the sites below collapse a failure into
+// `AllAttemptsFailed`/`ErrorKind::Connect` silently — every distinction
+// (the resolver failed / the resolver honestly found zero addresses /
+// TCP attempts genuinely happened and all failed / the Happy Eyeballs
+// config was outside the RFC-recommended range) stays visible through a
+// separate type and a separate `ErrorKind`.
 
 #[derive(Debug)]
 pub(crate) struct AllAttemptsFailed(pub(crate) usize);
@@ -176,14 +182,13 @@ impl std::fmt::Display for AllAttemptsFailed {
 }
 impl std::error::Error for AllAttemptsFailed {}
 
-/// Ни одного адреса не пришло ни по одному семейству — и ЭТО РАЗЛИЧАЕТ,
-/// была ли причина в том, что резолвер отказал, или в том, что он честно
-/// отработал и нашёл ноль записей (например, `NXDOMAIN`). Схлопнуть оба
-/// случая в `AllAttemptsFailed(0)` было бы ровно тем "resolver error
-/// becomes 'no addresses'", против которого это поле существует: он бы
-/// звучал как "ноль TCP-попыток отказали", хотя ни одной TCP-попытки не
-/// было вовсе — не потому что не пытались, а потому что нечего было
-/// пробовать.
+/// No address arrived for either family — and THIS DISTINGUISHES whether
+/// the cause was the resolver failing, or the resolver honestly finishing
+/// and finding zero records (e.g. `NXDOMAIN`). Collapsing both cases into
+/// `AllAttemptsFailed(0)` would be exactly the "resolver error becomes
+/// 'no addresses'" this field exists to prevent: it would read as "zero
+/// TCP attempts failed," even though there was no TCP attempt at all —
+/// not because none were tried, but because there was nothing to try.
 #[derive(Debug, Default)]
 struct ResolveErrors {
     v6: Option<Error>,
@@ -223,21 +228,22 @@ impl std::error::Error for ResolveErrors {
 }
 
 impl ResolveErrors {
-    /// Первая записанная ошибка резолва (любого из двух семейств), чей
-    /// `kind()` — НЕ `ErrorKind::Resolve`. Review round 1, finding 1:
-    /// `drive` раньше заворачивала любую ошибку резолва (при
-    /// `launched == 0`) в свежий `Error::new(ErrorKind::Resolve, errs)`, а
-    /// при `launched > 0` не читала `errs` вообще — оба пути стирали
-    /// `ErrorKind::Cancelled` (Task 7: пул фоновых потоков ушёл раньше,
-    /// чем резолв успел отработать) неотличимо от «имя не резолвится».
-    /// Конкретный найденный случай — `Cancelled`, но правило общее: ЛЮБОЙ
-    /// `kind()`, отличный от того `Resolve`, который этот модуль сам
-    /// синтезирует, несёт информацию, которую коннектор не производил и
-    /// не вправе переименовывать. Вызывается ДО обеих веток отказа в
-    /// `drive`'s `HeAction::Exhausted`, так что ни `AllAttemptsFailed`,
-    /// ни синтетический `ErrorKind::Resolve` не достижимы, минуя эту
-    /// проверку — отбрасывание становится структурно невозможным, а не
-    /// просто обработанным по одному найденному случаю.
+    /// The first recorded resolve error (from either family) whose
+    /// `kind()` is NOT `ErrorKind::Resolve`. Review round 1, finding 1:
+    /// `drive` used to wrap any resolve error (when `launched == 0`) in a
+    /// fresh `Error::new(ErrorKind::Resolve, errs)`, and when
+    /// `launched > 0` didn't read `errs` at all — both paths erased
+    /// `ErrorKind::Cancelled` (Task 7: the background thread pool shut
+    /// down before the resolve finished) indistinguishably from "this
+    /// name doesn't resolve." The specific case found was `Cancelled`,
+    /// but the rule is general: ANY `kind()` other than the `Resolve`
+    /// this module synthesizes itself carries information the connector
+    /// didn't produce and has no right to rename. Called BEFORE both
+    /// failure branches in `drive`'s `HeAction::Exhausted`, so neither
+    /// `AllAttemptsFailed` nor the synthetic `ErrorKind::Resolve` is
+    /// reachable without going through this check — discarding becomes
+    /// structurally impossible, not merely handled for the one case that
+    /// was found.
     fn distinguishing_error(&self) -> Option<&Error> {
         [&self.v6, &self.v4]
             .into_iter()
@@ -246,11 +252,11 @@ impl ResolveErrors {
     }
 }
 
-/// `attempt_delay` запрошенного `HeConfig` вне рекомендованного RFC 8305
-/// диапазона. `Scheduler::new` (Task 5) молча зажимает такое значение,
-/// потому что его сигнатура зафиксирована интерфейсом задачи — `Self`, не
-/// `Result`. Сигнатура ЭТОГО модуля ничем не зафиксирована, так что здесь
-/// это типизированная ошибка, а не тот же тихий clamp двумя уровнями ниже.
+/// The requested `HeConfig`'s `attempt_delay` is outside the RFC 8305
+/// recommended range. `Scheduler::new` (Task 5) silently clamps such a
+/// value, because its signature is fixed by the task's interface — `Self`,
+/// not `Result`. THIS module's signature isn't fixed by anything, so here
+/// it's a typed error rather than the same silent clamp two layers down.
 #[derive(Debug)]
 struct InvalidHeConfig {
     requested: Duration,
@@ -268,18 +274,18 @@ impl std::fmt::Display for InvalidHeConfig {
 }
 impl std::error::Error for InvalidHeConfig {}
 
-/// Строит [`Scheduler`], отклоняя `attempt_delay` вне диапазона как
-/// типизированную ошибку — вместо того, чтобы принять тихий clamp
-/// `Scheduler::new` как есть.
+/// Builds a [`Scheduler`], rejecting an out-of-range `attempt_delay` as a
+/// typed error — instead of accepting `Scheduler::new`'s silent clamp
+/// as-is.
 ///
-/// Обнаруживается без единого знания о границах `ATTEMPT_MIN`/`ATTEMPT_MAX`
-/// (они приватны для `http_ng_proto::happy_eyeballs` и не должны
-/// дублироваться здесь вторым источником истины): эффективное значение
-/// вычитывается обратно через `Scheduler::config()` и сравнивается с
-/// запрошенным — ровно тот механизм, который doc-комментарий
-/// `Scheduler::new` называет напрямую ("эффективный конфиг всегда можно
-/// сверить с запрошенным через `config()`"), просто применённый вызывающей
-/// стороной, а не оставленный ей как "могли бы, но не обязаны".
+/// Detected without knowing the `ATTEMPT_MIN`/`ATTEMPT_MAX` bounds at all
+/// (they're private to `http_ng_proto::happy_eyeballs` and shouldn't be
+/// duplicated here as a second source of truth): the effective value is
+/// read back through `Scheduler::config()` and compared against the
+/// requested one — exactly the mechanism `Scheduler::new`'s doc comment
+/// names directly ("the effective config can always be checked against
+/// the requested one via `config()`"), just actually applied by the
+/// caller, instead of being left to it as "could, but doesn't have to."
 fn build_scheduler(cfg: HeConfig) -> Result<Scheduler, Error> {
     let requested = cfg.attempt_delay;
     let sched = Scheduler::new(cfg);
@@ -305,25 +311,26 @@ impl std::fmt::Display for UriError {
 }
 impl std::error::Error for UriError {}
 
-/// Хост из `uri`, независимо от схемы: URI без authority (например,
-/// origin-form `/path`) отвергается здесь же, до того как вообще встаёт
-/// вопрос "какая схема" — незачем спрашивать про TLS у URI, к которому
-/// заведомо некуда подключаться.
+/// The host from `uri`, regardless of scheme: a URI with no authority
+/// (e.g., origin-form `/path`) is rejected right here, before the
+/// question "which scheme" even comes up — there's no point asking a URI
+/// with nowhere to connect to about TLS.
 fn host(uri: &Uri) -> Result<&str, Error> {
     uri.host()
         .ok_or_else(|| Error::new(ErrorKind::Connect, UriError))
 }
 
-/// Порт из `uri`, с подстановкой умолчания по УЖЕ проверенной схеме
-/// (`use_tls` приходит от [`wants_tls`], которая одна отвечает за отказ на
-/// неподдерживаемой схеме) — `https`→443, `http`→80. Ровно то же правило,
-/// что `http_ng_proto::redirect::port_of` использует для той же цели: не
-/// импортировано оттуда напрямую (та функция `fn`-приватна модулю
-/// `redirect`), но обязано остаться тем же самым по факту, не только по
-/// совпадению — расхождение здесь означало бы, что редирект на
-/// `https://a:443/` и первоначальный коннект на тот же адрес видят разные
-/// порты. Раз схема уже ограничена до `http`/`https` на входе, дефолтный
-/// порт есть всегда — отдельной ошибки "нет порта" здесь больше не бывает.
+/// The port from `uri`, defaulted based on the ALREADY-checked scheme
+/// (`use_tls` comes from [`wants_tls`], which alone is responsible for
+/// rejecting an unsupported scheme) — `https` → 443, `http` → 80. Exactly
+/// the same rule `http_ng_proto::redirect::port_of` uses for the same
+/// purpose: not imported directly from there (that function is private to
+/// the `redirect` module), but it has to stay identical as a fact, not
+/// just by coincidence — a divergence here would mean a redirect to
+/// `https://a:443/` and the original connect to the same address see
+/// different ports. Since the scheme is already constrained to
+/// `http`/`https` on the way in, a default port always exists — there's
+/// no separate "no port" error here anymore.
 fn port(uri: &Uri, use_tls: bool) -> u16 {
     uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 })
 }
@@ -337,9 +344,9 @@ impl std::fmt::Display for UnsupportedScheme {
 }
 impl std::error::Error for UnsupportedScheme {}
 
-/// `true` — нужен TLS (`https`), `false` — обычный TCP (`http`). Любая
-/// другая (или отсутствующая) схема — типизированная `ErrorKind::Unsupported`,
-/// а не молчаливое обращение с ней как с `http`.
+/// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). Any
+/// other (or missing) scheme is a typed `ErrorKind::Unsupported`, not a
+/// silent treatment as `http`.
 fn wants_tls(uri: &Uri) -> Result<bool, Error> {
     match uri.scheme_str() {
         Some("http") => Ok(false),
@@ -351,15 +358,17 @@ fn wants_tls(uri: &Uri) -> Result<bool, Error> {
     }
 }
 
-/// Happy Eyeballs по RFC 8305, единый автомат для обеих точек входа этого
-/// модуля (`connect` и `race_connect`) — см. doc-комментарий модуля про то,
-/// почему им обеим нужен именно этот, а не раздельные циклы.
+/// Happy Eyeballs per RFC 8305, a single state machine for both of this
+/// module's entry points (`connect` and `race_connect`) — see the module
+/// doc comment for why both of them need exactly this, rather than
+/// separate loops.
 ///
-/// **Без `spawn`**: попытки живут в `FuturesUnordered`, не в задачах —
-/// `spawn` потребовал бы `Send + 'static` и закрыл бы однопоточные рантаймы
-/// (см. тесты `race_connect_never_requires_send_even_through_the_wait_path`
-/// и `crates/http-ng-native/tests/dual_runtime.rs`, которые гоняют этот же
-/// путь через `smol` без единого потока планировщика).
+/// **No `spawn`**: attempts live in a `FuturesUnordered`, not in tasks —
+/// `spawn` would require `Send + 'static` and would shut out
+/// single-threaded runtimes (see the tests
+/// `race_connect_never_requires_send_even_through_the_wait_path` and
+/// `crates/http-ng-native/tests/dual_runtime.rs`, which run this same
+/// path through `smol` without a single scheduler thread).
 async fn drive<R, V6, V4>(
     rt: &R,
     mut sched: Scheduler,
@@ -373,9 +382,10 @@ where
     V6: Stream<Item = Result<ResolvedAddr, Error>>,
     V4: Stream<Item = Result<ResolvedAddr, Error>>,
 {
-    /// Что стряслось первым, пока мы ждали (`HeAction::Wait`): пришёл
-    /// элемент одного из DNS-стримов (или стрим закончился — `None`),
-    /// завершилась одна из попыток соединения, или истекло время ожидания.
+    /// What happened first while we were waiting (`HeAction::Wait`): an
+    /// item arrived from one of the DNS streams (or the stream finished —
+    /// `None`), one of the connection attempts completed, or the wait
+    /// timed out.
     enum Event<T> {
         V6(Option<Result<ResolvedAddr, Error>>),
         V4(Option<Result<ResolvedAddr, Error>>),
@@ -405,23 +415,24 @@ where
                 let mut sleep_fut = std::pin::pin!(sleep_fut);
 
                 let ev = std::future::poll_fn(|cx| {
-                    // Каждый источник опрашивается только пока у него в
-                    // принципе может появиться новое событие. Источник,
-                    // который уже закончился (DNS-стрим отдал `None`) или
-                    // никогда не начинался (`attempts` пуст), пропускается
-                    // БЕЗ вызова `poll` — не только чтобы не нарушить
-                    // контракт `Stream` ("не опрашивать после `None`"), но
-                    // и чтобы не повторить брифовскую ошибку в другом
-                    // месте: опрос пустого `FuturesUnordered` возвращает
-                    // `Ready(None)` НЕМЕДЛЕННО (проверено чтением
-                    // `futures-util` 0.3.33,
+                    // Each source is polled only while it could, in
+                    // principle, still produce a new event. A source that
+                    // has already finished (a DNS stream returned `None`)
+                    // or never started (`attempts` is empty) is skipped
+                    // WITHOUT calling `poll` — not just to avoid violating
+                    // the `Stream` contract ("don't poll after `None`"),
+                    // but also to avoid repeating the brief's mistake in a
+                    // different spot: polling an empty `FuturesUnordered`
+                    // returns `Ready(None)` IMMEDIATELY (checked by
+                    // reading `futures-util` 0.3.33,
                     // `stream/futures_unordered/mod.rs`: `is_terminated`
-                    // стартует `false`, значит пустая пустая коллекция
-                    // была бы опрошена, а не пропущена, и такое `Ready`
-                    // выигрывало бы гонку у ещё не сработавшего таймера на
-                    // каждом раунде) — тот самый случай, ради которого
-                    // бриф оригинального `race_connect` явно проверял
-                    // `attempts.is_empty()` перед гонкой.
+                    // starts out `false`, meaning an empty collection
+                    // would be polled rather than skipped, and that
+                    // `Ready` would win the race against a timer that
+                    // hasn't fired yet, every round) — exactly the case
+                    // the original `race_connect` brief explicitly
+                    // guarded against by checking `attempts.is_empty()`
+                    // before the race.
                     if !v6_done {
                         if let Poll::Ready(item) = v6_stream.as_mut().poll_next(cx) {
                             return Poll::Ready(Event::V6(item));
@@ -459,15 +470,15 @@ where
                     }
                     Event::Attempt(Some(Ok(s))) => return Ok(s),
                     Event::Attempt(Some(Err(_))) => {
-                        // Одна попытка отказала — не повод останавливать
-                        // гонку остальных; `Scheduler` сам решит, стартовать
-                        // ли ещё, на следующем `poll`.
+                        // One attempt failed — no reason to stop the rest
+                        // of the race; `Scheduler` itself decides whether
+                        // to start another one on the next `poll`.
                     }
                     Event::Attempt(None) => {
                         unreachable!(
-                            "poll_next на attempts опрашивается только когда attempts \
-                             непуст (см. проверку `!attempts.is_empty()` выше), а \
-                             FuturesUnordered не возвращает None для непустой коллекции"
+                            "poll_next on attempts is only polled when attempts is \
+                             non-empty (see the `!attempts.is_empty()` check above), and \
+                             FuturesUnordered never returns None for a non-empty collection"
                         );
                     }
                     Event::TimedOut => {}
@@ -479,23 +490,22 @@ where
                         return Ok(s);
                     }
                 }
-                // Review round 1, finding 1: проверяется ДО обеих веток
-                // ниже, а не как частный случай внутри одной из них — так
-                // отбрасывание отличающегося kind() (в частности,
-                // ErrorKind::Cancelled) становится структурно
-                // недостижимым, а не просто обработанным для одного
-                // найденного случая. Возвращается КЛОН исходной ошибки
-                // резолвера как есть — без повторной обёртки в
-                // Error::new — потому что она уже несёт свой правильный
-                // kind() и свою цепочку source(); заворачивать её ещё раз
-                // значило бы повторить ровно ту же ошибку категоризации
-                // другим способом.
+                // Review round 1, finding 1: checked BEFORE both branches
+                // below, not as a special case inside one of them — so
+                // discarding a differing kind() (in particular,
+                // ErrorKind::Cancelled) becomes structurally unreachable,
+                // not merely handled for the one case that was found.
+                // Returns a CLONE of the original resolver error as-is —
+                // without re-wrapping it in Error::new — because it
+                // already carries its correct kind() and its own
+                // source() chain; wrapping it again would repeat the same
+                // categorization mistake in a different way.
                 if let Some(distinguishing) = errs.distinguishing_error() {
                     return Err(distinguishing.clone());
                 }
                 if launched == 0 {
-                    // Ни одной TCP-попытки не было — значит нечего было
-                    // пробовать, а не что все попытки отказали.
+                    // Not a single TCP attempt happened — meaning there
+                    // was nothing to try, not that every attempt failed.
                     return Err(Error::new(ErrorKind::Resolve, errs));
                 }
                 return Err(Error::new(ErrorKind::Connect, AllAttemptsFailed(launched)));
@@ -504,13 +514,14 @@ where
     }
 }
 
-/// Happy Eyeballs над уже разрешённым списком адресов — примитив без DNS.
-/// "Resolution Delay" в этом вызове недостижима не по недосмотру, а
-/// структурно: вызывающая сторона уже знает оба списка целиком, ждать
-/// действительно нечего, и `stream::iter` ниже — честное отражение этого
-/// факта (стрим, отдающий всё на первом опросе), а не костыль, который
-/// притворяется потоком. За настоящим кормлением по мере поступления — см.
-/// [`connect`] и doc-комментарий модуля.
+/// Happy Eyeballs over an already-resolved address list — a DNS-free
+/// primitive. "Resolution Delay" is unreachable in this call not by
+/// oversight but structurally: the caller already knows both lists in
+/// full, there's genuinely nothing to wait for, and `stream::iter` below
+/// honestly reflects that fact (a stream that yields everything on the
+/// first poll), not a workaround pretending to be a stream. For real
+/// feed-as-it-arrives behavior, see [`connect`] and the module doc
+/// comment.
 pub(crate) async fn race_connect<R>(
     rt: &R,
     addrs_v6: Vec<IpAddr>,
@@ -536,12 +547,12 @@ where
     drive(rt, sched, v6, v4, port, opts).await
 }
 
-/// DNS-потребляющий коннектор: резолвит `uri`, гоняет Happy Eyeballs
-/// (кормя [`Scheduler`] по мере того, как приходят результаты — см.
-/// doc-комментарий модуля), затем опционально проводит TLS-хендшейк с
-/// заданным ALPN. Схема `uri` решает, нужен ли TLS вообще (`https` — да,
-/// `http` — нет); любая другая схема — `ErrorKind::Unsupported`, а не
-/// молчаливая трактовка как `http`.
+/// DNS-consuming connector: resolves `uri`, runs Happy Eyeballs (feeding
+/// [`Scheduler`] as results arrive — see the module doc comment), then
+/// optionally runs a TLS handshake with the given ALPN. `uri`'s scheme
+/// decides whether TLS is needed at all (`https` — yes, `http` — no); any
+/// other scheme is `ErrorKind::Unsupported`, not a silent treatment as
+/// `http`.
 pub(crate) async fn connect<R, D, L>(
     rt: &R,
     dns: &D,
@@ -601,27 +612,27 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    // --- FakeRt: детерминированные `TcpConnect`+`Timer` без реальной сети
-    // и без реального сна ------------------------------------------------
+    // --- FakeRt: deterministic `TcpConnect`+`Timer` with no real network
+    // and no real sleeping --------------------------------------------
     //
-    // `sleep` не ждёт по-настоящему — она СИНХРОННО двигает общие вперёд
-    // виртуальные часы и сразу резолвится. Это не имитация приближённого
-    // поведения: `now`/`elapsed_since` читают те же самые часы, так что
-    // тест видит РОВНО ту арифметику времени, которую строит `drive`, без
-    // ни одной реальной миллисекунды ожидания и без associated jitter,
-    // который сделал бы assert на точное значение задержки хрупким.
+    // `sleep` doesn't really wait — it SYNCHRONOUSLY advances a shared
+    // virtual clock and resolves immediately. This isn't an approximation
+    // of the real behavior: `now`/`elapsed_since` read that same clock, so
+    // the test sees EXACTLY the time arithmetic `drive` builds, with not a
+    // single real millisecond of waiting and no associated jitter that
+    // would make an assert on an exact delay value fragile.
     //
-    // `log` записывает `(IpAddr, время_на_момент_старта)` для каждой
-    // попытки — этим либо доказывается "пауза между стартами равна ровно
-    // attempt_delay" (staggering), либо "адреса чередуются между
-    // семействами в правильном порядке" (interleaving), либо и то, и
-    // другое сразу.
+    // `log` records `(IpAddr, time_at_start)` for each attempt — this
+    // proves either "the pause between starts equals exactly
+    // attempt_delay" (staggering), or "addresses alternate between
+    // families in the right order" (interleaving), or both at once.
     #[derive(Clone)]
     struct FakeRt {
         clock: Rc<RefCell<Duration>>,
         log: Rc<RefCell<Vec<(IpAddr, Duration)>>>,
-        /// `None` — соединение с этим адресом никогда не завершится (пока
-        /// тест не решит иначе); `Some(true)` — успех; `Some(false)` — отказ.
+        /// `None` — a connection to this address will never complete
+        /// (until the test decides otherwise); `Some(true)` — success;
+        /// `Some(false)` — failure.
         outcomes: Rc<RefCell<HashMap<IpAddr, bool>>>,
     }
 
@@ -635,14 +646,15 @@ mod tests {
         }
     }
 
-    /// `hyper::rt` IO без единого настоящего байта — `drive`/`race_connect`
-    /// никогда не читают и не пишут в успешно "соединённый" поток, только
-    /// возвращают его вызывающей стороне. Несёт `Rc<()>` НАРОЧНО: это и
-    /// есть пробник "нигде не требуется `Send`" — если бы `race_connect`
-    /// или `drive` требовали `R::Stream: Send` (или любой другой путь
-    /// втянул `Send` через `FuturesUnordered`/`poll_fn` вместо явного
-    /// бонда), этот файл не скомпилировался бы вовсе. См.
-    /// `race_connect_never_requires_send_even_through_the_wait_path` ниже.
+    /// `hyper::rt` IO with not a single real byte — `drive`/`race_connect`
+    /// never read from or write to a successfully "connected" stream, they
+    /// only hand it back to the caller. Carries an `Rc<()>` ON PURPOSE:
+    /// this is the probe for "`Send` is never required" — if
+    /// `race_connect` or `drive` required `R::Stream: Send` (or any other
+    /// path pulled in `Send` through `FuturesUnordered`/`poll_fn` instead
+    /// of an explicit bound), this file wouldn't compile at all. See
+    /// `race_connect_never_requires_send_even_through_the_wait_path`
+    /// below.
     #[derive(Debug)]
     struct FakeStream(#[allow(dead_code)] Rc<()>);
 
@@ -711,7 +723,7 @@ mod tests {
         }
     }
 
-    /// `futures_executor::block_on`, но bounded: `FakeRt` never sleeps for
+    /// `futures_executor::block_on`, but bounded: `FakeRt` never sleeps for
     /// real (its `Timer::sleep` just advances a virtual clock and resolves
     /// immediately), so nothing below should ever take real wall-clock time
     /// — UNLESS a bug (or a mutation, see the mutation-testing notes in
@@ -750,9 +762,9 @@ mod tests {
 
     #[test]
     fn attempt_staggering_delay_is_respected_through_the_connector() {
-        // Два мёртвых адреса одного семейства: единственная причина между
-        // ними будет пауза — Connection Attempt Delay. Виртуальные часы,
-        // поэтому проверяется РОВНОЕ значение, не "примерно".
+        // Two dead addresses of one family: the only reason for a pause
+        // between them is the Connection Attempt Delay. A virtual clock,
+        // so we check an EXACT value, not "approximately."
         let rt = FakeRt::new([]);
         let out = bounded_block_on(race_connect(
             &rt,
@@ -762,7 +774,7 @@ mod tests {
             &TcpOpts::default(),
             he(100),
         ));
-        assert!(out.is_err(), "оба адреса мертвы");
+        assert!(out.is_err(), "both addresses are dead");
         let log = rt.log.borrow().clone();
         assert_eq!(log, vec![(v6(1), ms(0)), (v6(2), ms(100))]);
     }
@@ -794,7 +806,7 @@ mod tests {
             &TcpOpts::default(),
             he(100),
         ))
-        .expect_err("все три адреса мертвы");
+        .expect_err("all three addresses are dead");
         assert_eq!(err.kind(), &ErrorKind::Connect);
         assert_eq!(rt.log.borrow().len(), 3);
     }
@@ -822,21 +834,21 @@ mod tests {
             vec![],
             81,
             &TcpOpts::default(),
-            he(1), // ниже ATTEMPT_MIN (100 мс) — было бы зажато молча
+            he(1), // below ATTEMPT_MIN (100ms) — would be clamped silently
         ))
-        .expect_err("out-of-range attempt_delay обязан быть отвергнут");
+        .expect_err("an out-of-range attempt_delay must be rejected");
         assert_eq!(err.kind(), &ErrorKind::Connect);
-        // Не запущено ни одной попытки: отказ произошёл ДО гонки.
+        // No attempt was launched: the failure happened BEFORE the race.
         assert!(rt.log.borrow().is_empty());
     }
 
-    /// `Rc`-хранящий поток (`FakeStream`) реально проезжает через
-    /// `Wait`-ветку (не только через мгновенный успех): мёртвый адрес,
-    /// затем живой — та же форма, что и интеграционный тест
-    /// `falls_over_from_a_dead_address_to_a_live_one`, только на `FakeRt`.
-    /// Если бы `drive`/`race_connect` (через `FuturesUnordered`, `poll_fn`
-    /// или сигнатуру `TcpConnect`) требовали `Send` где бы то ни было, этот
-    /// файл не скомпилировался бы: `FakeStream` — `!Send` по построению.
+    /// A stream carrying an `Rc` (`FakeStream`) genuinely goes through the
+    /// `Wait` branch (not just an immediate success): a dead address, then
+    /// a live one — the same shape as the integration test
+    /// `falls_over_from_a_dead_address_to_a_live_one`, just on `FakeRt`.
+    /// If `drive`/`race_connect` (through `FuturesUnordered`, `poll_fn`,
+    /// or `TcpConnect`'s signature) required `Send` anywhere, this file
+    /// wouldn't compile: `FakeStream` is `!Send` by construction.
     #[test]
     fn race_connect_never_requires_send_even_through_the_wait_path() {
         let rt = FakeRt::new([(v4(1), true)]);
@@ -849,21 +861,22 @@ mod tests {
             he(100),
         ));
         assert!(stream.is_ok());
-        // RFC 8305 interleaving (first_family_count по умолчанию 1) ставит
-        // v4(1) ВТОРОЙ попыткой (v6(1), v4(1), v6(2), ...) — успех на ней
-        // останавливает гонку раньше, чем до v6(2) вообще доходит очередь.
-        // Обе уже стартовавшие попытки (v6(1) мёртвая, v4(1) живая) прошли
-        // именно через Wait-ветку `drive`, не только через мгновенный успех
-        // на первом же `Start` — это и есть предмет теста.
+        // RFC 8305 interleaving (first_family_count defaults to 1) makes
+        // v4(1) the SECOND attempt (v6(1), v4(1), v6(2), ...) — a success
+        // on it stops the race before v6(2)'s turn ever comes up. Both
+        // attempts that did start (v6(1), dead, and v4(1), live) went
+        // through `drive`'s Wait branch exactly, not just an immediate
+        // success on the very first `Start` — that's what this test is
+        // about.
         assert_eq!(rt.log.borrow().len(), 2);
     }
 
-    // --- Виртуальные DNS-стримы для `drive` -----------------------------
+    // --- Virtual DNS streams for `drive` --------------------------------
     //
-    // `poll_next` сверяется с ТЕМИ ЖЕ виртуальными часами, что и
-    // `FakeRt::Timer` (тот же `Rc<RefCell<Duration>>`), так что "AAAA
-    // приходит через N мс" — не реальная задержка, а точка на общей оси
-    // времени, которую `FakeRt::sleep` продвигает вперёд.
+    // `poll_next` checks against the SAME virtual clock as `FakeRt::Timer`
+    // (the same `Rc<RefCell<Duration>>`), so "AAAA arrives after N ms"
+    // isn't a real delay, it's a point on the shared time axis that
+    // `FakeRt::sleep` advances.
     struct AtVirtualTime {
         clock: Rc<RefCell<Duration>>,
         resolve_at: Duration,
@@ -891,13 +904,13 @@ mod tests {
 
     #[test]
     fn resolution_delay_is_honored_when_ipv6_is_still_pending() {
-        // AAAA "приходит" в 80 мс — позже дефолтного Resolution Delay
-        // (50 мс). A "приходит" сразу (0 мс). Если бы `drive` не уважал
-        // Resolution Delay (то есть если бы код, собиравший стрим целиком
-        // в Vec перед тем, как звать Scheduler, вернулся), IPv4 стартовал
-        // бы мгновенно, до 50 мс; правильное поведение — подождать ровно
-        // 50 мс, затем пойти по IPv4 (RFC 8305 §3: подождать Resolution
-        // Delay, не резолвер целиком).
+        // AAAA "arrives" at 80ms — later than the default Resolution Delay
+        // (50ms). A "arrives" immediately (0ms). If `drive` didn't honor
+        // Resolution Delay (i.e., if the code that collected the whole
+        // stream into a Vec before calling Scheduler had come back), IPv4
+        // would start instantly, before 50ms; correct behavior is to wait
+        // exactly 50ms, then go with IPv4 (RFC 8305 §3: wait the
+        // Resolution Delay, not the whole resolver).
         let rt = FakeRt::new([(v4(9), true)]);
         let clock = rt.clock.clone();
         let v6s = AtVirtualTime {
@@ -914,31 +927,31 @@ mod tests {
         };
         let sched = build_scheduler(HeConfig::default()).unwrap();
         let out = bounded_block_on(drive(&rt, sched, v6s, v4s, 81, &TcpOpts::default()));
-        assert!(out.is_ok(), "IPv4 обязан быть испробован после ожидания");
+        assert!(out.is_ok(), "IPv4 must have been tried after waiting");
         let log = rt.log.borrow();
         assert_eq!(
             log.len(),
             1,
-            "AAAA пришли только в 80мс — уже после победы IPv4"
+            "AAAA only arrived at 80ms — already after IPv4 had won"
         );
         assert_eq!(log[0].0, v4(9));
         assert_eq!(
             log[0].1,
             ms(50),
-            "старт IPv4 обязан произойти РОВНО через Resolution Delay (50мс), \
-             не раньше (не дождались бы AAAA) и не позже (ждали бы резолвер \
-             целиком вместо фиксированной паузы)"
+            "IPv4's start must happen EXACTLY after the Resolution Delay (50ms), \
+             not earlier (wouldn't have waited for AAAA) and not later (would have \
+             waited for the whole resolver instead of a fixed pause)"
         );
     }
 
     #[test]
     fn late_ipv6_arrival_after_resolution_delay_is_still_attempted() {
-        // RFC 8305 §3: поздний AAAA всё равно учитывается, не отбрасывается
-        // — тот же сценарий, что и `Scheduler`'s собственный
+        // RFC 8305 §3: a late AAAA is still taken into account, not
+        // dropped — the same scenario as `Scheduler`'s own
         // `late_ipv6_arrival_after_resolution_delay_is_still_attempted`
-        // (happy_eyeballs.rs), но здесь — через реальный DNS-стрим и
-        // реальный `drive`, а не прямые вызовы `offer_v6`/`poll`.
-        let rt = FakeRt::new([]); // все мертвы: IPv4 не отвечает, IPv6 тоже
+        // (happy_eyeballs.rs), but here through a real DNS stream and a
+        // real `drive`, not direct calls to `offer_v6`/`poll`.
+        let rt = FakeRt::new([]); // all dead: IPv4 doesn't answer, neither does IPv6
         let clock = rt.clock.clone();
         let v6s = AtVirtualTime {
             clock: clock.clone(),
@@ -959,7 +972,7 @@ mod tests {
         assert_eq!(
             log.iter().map(|(a, _)| *a).collect::<Vec<_>>(),
             vec![v4(7), v6(7)],
-            "поздний AAAA обязан быть испробован, а не отброшен"
+            "a late AAAA must be tried, not dropped"
         );
     }
 
@@ -991,24 +1004,24 @@ mod tests {
             81,
             &TcpOpts::default(),
         ))
-        .expect_err("ни одного адреса не пришло ни по одному семейству");
+        .expect_err("no address arrived for either family");
         assert_eq!(
             err.kind(),
             &ErrorKind::Resolve,
-            "резолвер отказал — это НЕ 'все TCP-попытки провалились', а 'нечего было пробовать'"
+            "the resolver failed — this is NOT 'all TCP attempts failed', it's 'nothing to try'"
         );
         assert!(
             rt.log.borrow().is_empty(),
-            "ни одной TCP-попытки не должно было быть"
+            "there should not have been a single TCP attempt"
         );
     }
 
     #[test]
     fn zero_addresses_without_any_resolver_error_also_surfaces_as_resolve_kind() {
-        // NXDOMAIN-подобный случай: резолвер честно отработал, нашёл ноль
-        // адресов, ни разу не вернул Err. Всё равно ErrorKind::Resolve, не
-        // Connect с launched=0 — "0 TCP-попыток отказали" звучало бы так,
-        // будто мы вообще пытались.
+        // An NXDOMAIN-like case: the resolver finished honestly, found
+        // zero addresses, never returned an Err. Still
+        // ErrorKind::Resolve, not Connect with launched=0 — "0 TCP
+        // attempts failed" would sound as though we tried at all.
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
         let err = bounded_block_on(drive(
@@ -1019,14 +1032,14 @@ mod tests {
             81,
             &TcpOpts::default(),
         ))
-        .expect_err("оба семейства пусты");
+        .expect_err("both families are empty");
         assert_eq!(err.kind(), &ErrorKind::Resolve);
     }
 
-    /// Как `ErrOnce` (см. выше), но с настраиваемым `ErrorKind` — нужен,
-    /// чтобы смоделировать `ErrorKind::Cancelled` (Task 7: пул фоновых
-    /// потоков ушёл раньше, чем `getaddrinfo` успел отработать), а не
-    /// только `ErrorKind::Resolve`.
+    /// Like `ErrOnce` (see above), but with a configurable `ErrorKind` —
+    /// needed to simulate `ErrorKind::Cancelled` (Task 7: the background
+    /// thread pool shut down before `getaddrinfo` finished), not just
+    /// `ErrorKind::Resolve`.
     struct ErrOnceWithKind(bool, ErrorKind);
     impl futures_util::Stream for ErrOnceWithKind {
         type Item = Result<ResolvedAddr, Error>;
@@ -1045,12 +1058,13 @@ mod tests {
     }
 
     /// Review round 1, finding 1, loss path A ("flattened to Resolve").
-    /// Раньше `drive` заворачивал ЛЮБУЮ ошибку резолва при `launched == 0`
-    /// в свежий `Error::new(ErrorKind::Resolve, errs)`, отбрасывая
-    /// исходный `kind()`. `ErrorKind::Cancelled` (Task 7) существует
-    /// ровно для того, чтобы вызывающая сторона отличила «рантайм
-    /// завершает работу» от «это имя не резолвится» без даункаста, просто
-    /// сравнив `kind()` — а флэттенинг в `Resolve` стирал это различие.
+    /// `drive` used to wrap ANY resolve error when `launched == 0` into a
+    /// fresh `Error::new(ErrorKind::Resolve, errs)`, discarding the
+    /// original `kind()`. `ErrorKind::Cancelled` (Task 7) exists
+    /// specifically so a caller can tell "the runtime is shutting down"
+    /// apart from "this name doesn't resolve" without downcasting, just
+    /// by comparing `kind()` — and flattening into `Resolve` erased that
+    /// distinction.
     #[test]
     fn a_cancelled_resolve_error_is_not_flattened_to_resolve_kind_when_nothing_launched() {
         let rt = FakeRt::new([]);
@@ -1063,31 +1077,31 @@ mod tests {
             81,
             &TcpOpts::default(),
         ))
-        .expect_err("v6-резолвер отменён, v4 ничего не нашёл");
+        .expect_err("v6 resolver was cancelled, v4 found nothing");
         assert_eq!(
             err.kind(),
             &ErrorKind::Cancelled,
-            "вызывающая сторона обязана видеть 'рантайм завершает работу', а не 'это имя не \
-             резолвится' — иначе circuit breaker на ErrorKind::Resolve ошибочно занесёт живой \
-             хост в чёрный список во время обычного shutdown"
+            "the caller must see 'the runtime is shutting down', not 'this name doesn't \
+             resolve' — otherwise a circuit breaker keyed on ErrorKind::Resolve would \
+             wrongly blacklist a live host during an ordinary shutdown"
         );
         assert!(
             rt.log.borrow().is_empty(),
-            "ни одной TCP-попытки не должно было быть"
+            "there should not have been a single TCP attempt"
         );
     }
 
-    /// Review round 1, finding 1, loss path B ("silently discarded") — тот
-    /// же принцип, но `launched > 0`: v6 отменён, v4 нашёл один мёртвый
-    /// адрес и реально его испробовал. Раньше `drive` возвращал
-    /// `AllAttemptsFailed`/`ErrorKind::Connect` в этой ветке, и `errs`
-    /// (держащий Cancelled-сигнал) вообще не читался — не в `.source()`,
-    /// нигде. Это худший из двух путей потери: ошибку, которой нет даже в
-    /// цепочке источников, не восстановит никакой даже самый
-    /// внимательный вызывающий код.
+    /// Review round 1, finding 1, loss path B ("silently discarded") — the
+    /// same principle, but with `launched > 0`: v6 was cancelled, v4 found
+    /// one dead address and genuinely tried it. `drive` used to return
+    /// `AllAttemptsFailed`/`ErrorKind::Connect` in this branch, and `errs`
+    /// (holding the Cancelled signal) was never read at all — not in
+    /// `.source()`, nowhere. This is the worse of the two loss paths: an
+    /// error that isn't even in the source chain can't be recovered by
+    /// any caller code, however careful.
     #[test]
     fn a_cancelled_resolve_error_is_not_discarded_when_the_other_family_launched_and_failed() {
-        let rt = FakeRt::new([]); // единственный адрес v4 не в outcomes -> отказ
+        let rt = FakeRt::new([]); // the single v4 address isn't in outcomes -> failure
         let sched = build_scheduler(HeConfig::default()).unwrap();
         let err = bounded_block_on(drive(
             &rt,
@@ -1100,20 +1114,20 @@ mod tests {
             81,
             &TcpOpts::default(),
         ))
-        .expect_err("единственный адрес v4 мёртв");
+        .expect_err("the single v4 address is dead");
         assert_eq!(
             err.kind(),
             &ErrorKind::Cancelled,
-            "отмена v6 обязана остаться видимой, даже когда v4 реально запустился и отказал"
+            "the v6 cancellation must stay visible even when v4 genuinely started and failed"
         );
         assert_eq!(
             rt.log.borrow().len(),
             1,
-            "единственный (мёртвый) адрес v4 действительно был испробован"
+            "the single (dead) v4 address really was tried"
         );
     }
 
-    // --- Плюмбинг `connect`: URI → host/port/схема, TLS/plain ------------
+    // --- `connect` plumbing: URI -> host/port/scheme, TLS/plain ---------
 
     struct StaticResolve {
         v6: Vec<IpAddr>,
@@ -1144,9 +1158,10 @@ mod tests {
         }
     }
 
-    /// Не шифрует ничего — только доказывает, что `connect` реально зовёт
-    /// `TlsConnect::connect` для `https` и не зовёт для `http`. Тот же
-    /// приём, что `NoOpTls` в тестах самого `http_ng_tls` (Task 8).
+    /// Doesn't encrypt anything — it only proves that `connect` genuinely
+    /// calls `TlsConnect::connect` for `https` and doesn't call it for
+    /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
+    /// tests (Task 8).
     struct NoOpTls;
     impl TlsConnect for NoOpTls {
         type Stream<S>
@@ -1209,14 +1224,13 @@ mod tests {
             &TcpOpts::default(),
             &[],
         ))
-        .expect("v4-адрес обязан выиграть гонку");
+        .expect("the v4 address must win the race");
         assert!(matches!(conn, Conn::Plain(_)));
-        // v6(2) так и не получил очереди — гонка остановилась, как только
-        // выиграл v4.
+        // v6(2) never got its turn — the race stopped as soon as v4 won.
         assert_eq!(
             rt.log.borrow().len(),
             2,
-            "v6(1) (мёртвый), затем живой v4 — v6(2) не запускался"
+            "v6(1) (dead), then a live v4 — v6(2) never started"
         );
     }
 
@@ -1282,18 +1296,19 @@ mod tests {
             &TcpOpts::default(),
             &[],
         ))
-        .expect_err("ftp не поддерживается");
+        .expect_err("ftp isn't supported");
         assert_eq!(err.kind(), &ErrorKind::Unsupported);
     }
 
     #[test]
     fn connect_defaults_the_port_from_the_scheme_when_absent() {
-        // Порт не указан явно в URI — берётся дефолт схемы (https -> 443).
-        // Реального сервера на 443 в тестовом окружении нет и не должно
-        // быть: проверяем только то, что `connect` ДОШЁЛ до попытки
-        // соединения на правильный порт, а не остановился раньше на
-        // "не могу определить порт". `FakeRt` с отказом на любой адрес —
-        // достаточно: интересует лог попыток, не успех.
+        // No port given explicitly in the URI — the scheme's default is
+        // used (https -> 443). There's no real server on 443 in the test
+        // environment and there doesn't need to be: we're only checking
+        // that `connect` GOT AS FAR AS attempting a connection on the
+        // right port, not that it stopped earlier on "can't determine a
+        // port." `FakeRt` refusing any address is enough — we care about
+        // the attempt log, not success.
         let dns = StaticResolve {
             v6: vec![],
             v4: vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))],
@@ -1319,7 +1334,7 @@ mod tests {
             v6: vec![],
             v4: vec![],
         };
-        // `http::Uri`, у которого нет authority вовсе (origin-form).
+        // An `http::Uri` with no authority at all (origin-form).
         let uri: Uri = "/just/a/path".parse().unwrap();
         let err = bounded_block_on(super::connect(
             &FakeRt::new([]),
@@ -1329,7 +1344,7 @@ mod tests {
             &TcpOpts::default(),
             &[],
         ))
-        .expect_err("нет host — некуда коннектиться");
+        .expect_err("no host — nowhere to connect to");
         assert_eq!(err.kind(), &ErrorKind::Connect);
     }
 }

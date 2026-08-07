@@ -1,108 +1,116 @@
-//! Подключаемый TLS.
+//! Pluggable TLS.
 //!
-//! Трейт типизирован на `hyper::rt::Read`/`Write`, а **не** на futures-io или
-//! tokio-io. Следствие: per-runtime TLS-склейки не существует вообще — один
-//! адаптер (Task 9, rustls) обслуживает все рантаймы (`http-ng-rt-tokio`,
-//! `http-ng-rt-smol`, и любой будущий), потому что `hyper::rt::{Read, Write}`
-//! — единственная точка, к которой уже приведён любой `S` этой вертикали
-//! (`http_ng_rt::FuturesIo`, `TokioIo`), а не ещё одна прослойка сверху.
+//! The trait is typed on `hyper::rt::Read`/`Write`, and **not** on
+//! futures-io or tokio-io. Consequence: there is no such thing as a
+//! per-runtime TLS glue crate — one adapter (Task 9, rustls) serves every
+//! runtime (`http-ng-rt-tokio`, `http-ng-rt-smol`, and any future one),
+//! because `hyper::rt::{Read, Write}` is the one point every `S` in this
+//! vertical is already normalized to (`http_ng_rt::FuturesIo`, `TokioIo`),
+//! not one more layer stacked on top.
 #![forbid(unsafe_code)]
 
 use http_ng_core::Error;
 use std::future::Future;
 
-/// Параметры одного TLS-подключения.
+/// Parameters for a single TLS connection.
 ///
-/// ALPN живёт на **коннекте**, а не на конфиге: пин версии и
-/// h2-prior-knowledge требуют разных наборов ALPN для разных соединений к
-/// одному origin (например, одна попытка форсирует `h2`-only, следующая —
-/// `http/1.1`-фоллбэк). Реализация, которой это дорого пересчитывать на
-/// каждый коннект, вправе кэшировать TLS-конфиг по конкретному набору ALPN у
-/// себя — это её дело, не дело этого трейта.
+/// ALPN lives on the **connect call**, not on the config: version pinning
+/// and h2-prior-knowledge each require different ALPN sets for different
+/// connections to the same origin (for example, one attempt forces
+/// `h2`-only, the next falls back to `http/1.1`). An implementation for
+/// which recomputing this on every connect is expensive is free to cache
+/// its TLS config per concrete ALPN set internally — that's its own
+/// business, not this trait's.
 #[derive(Debug, Clone, Copy)]
 pub struct TlsRequest<'a> {
     pub server_name: &'a str,
     pub alpn: &'a [&'a [u8]],
-    /// RFC 9849 Encrypted Client Hello. `EchConfigList` приходит из
-    /// HTTPS/SVCB-записи (`http_ng_dns::SvcbEndpoint::ech_config_list`, Task
-    /// 6). Слот заложен сразу, а не добавлен по факту первой реализации:
-    /// добавление нового поля в структуру запроса позже было бы ломающим
-    /// изменением для всех уже написанных реализаций `TlsConnect`.
+    /// RFC 9849 Encrypted Client Hello. The `EchConfigList` comes from an
+    /// HTTPS/SVCB record (`http_ng_dns::SvcbEndpoint::ech_config_list`,
+    /// Task 6). The slot is reserved up front, not bolted on once the
+    /// first implementation needed it: adding a new field to a request
+    /// struct later would be a breaking change for every already-written
+    /// `TlsConnect` implementation.
     pub ech: Option<&'a [u8]>,
 }
 
-/// Результат TLS-рукопожатия, доступный вызывающей стороне.
+/// The outcome of a TLS handshake, as visible to the caller.
 ///
-/// **Все поля `Option`**: native-tls (единственный бэкенд, доступный без
-/// выбора конкретной crypto-библиотеки) отдаёт только leaf-сертификат, ALPN
-/// и tls-server-end-point — не полную цепочку, не версию протокола, не
-/// шифр-сьют. Трейт обязан допускать бэкенд с таким урезанным набором.
-/// Симметрично: бэкенд, который не может сообщить поле, обязан оставить его
-/// `None`, а не подставлять правдоподобное значение — способность, которая
-/// лжёт о своём состоянии, хуже способности, которой просто нет (тот же
-/// принцип, что развёл `RedirectSupport::None`/`Transparent` в
-/// `http-ng-core` и `supports_svcb()`/пустой стрим в `http-ng-dns`).
+/// **Every field is `Option`**: native-tls (the only backend available
+/// without picking a specific crypto library) hands back only the leaf
+/// certificate, ALPN, and tls-server-end-point — not the full chain, not
+/// the protocol version, not the cipher suite. The trait must allow for a
+/// backend with that reduced a set. Symmetrically: a backend that can't
+/// report a field must leave it `None`, not substitute a plausible-looking
+/// value — a capability that lies about its own state is worse than a
+/// capability that's simply absent (the same principle that split
+/// `RedirectSupport::None`/`Transparent` in `http-ng-core` and
+/// `supports_svcb()`/the empty stream in `http-ng-dns`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsInfo {
-    /// Согласованный ALPN-протокол этого соединения — один элемент, итог
-    /// согласования, а не весь список-предложение из `TlsRequest::alpn`.
+    /// The negotiated ALPN protocol for this connection — a single item,
+    /// the result of negotiation, not the whole proposed list from
+    /// `TlsRequest::alpn`.
     pub alpn: Option<Vec<u8>>,
-    /// Цепочка сертификатов пира, DER, в порядке leaf → root. Бэкенды вроде
-    /// native-tls отдают только leaf — тогда `Vec` из одного элемента, не
-    /// `None`: сертификат есть, просто цепочка неполна.
+    /// The peer's certificate chain, DER, in leaf → root order. Backends
+    /// like native-tls hand back only the leaf — in that case a
+    /// single-element `Vec`, not `None`: there is a certificate, the chain
+    /// is just incomplete.
     pub peer_certificates: Option<Vec<Vec<u8>>>,
-    /// Версия протокола TLS, согласованная на этом соединении.
+    /// The TLS protocol version negotiated on this connection.
     ///
-    /// `String`, а не перечисление этого крейта: перечисления версий у
-    /// разных бэкендов (rustls, native-tls поверх OpenSSL/SChannel/
-    /// SecureTransport) не совпадают одно с другим по набору вариантов, и
-    /// заводить здесь объединяющее перечисление значило бы либо отставать от
-    /// нового бэкенда, либо тащить варианты, которых конкретный бэкенд
-    /// никогда не вернёт. Чтобы два бэкенда не называли одну и ту же версию
-    /// по-разному, значение обязано быть строкой реестрового вида, которую
-    /// используют и `openssl`'s `SSL_get_version()`, и rustls:
-    /// `"TLSv1.3"`, `"TLSv1.2"`, `"TLSv1.1"`, `"TLSv1.0"` — не
-    /// `Debug`-форматирование внутреннего перечисления бэкенда (у rustls,
-    /// например, `Debug` для `ProtocolVersion::TLSv1_3` печатает
-    /// `TLSv1_3`, с подчёркиванием вместо точки — реализация обязана
-    /// привести это к канонической форме, а не прокинуть `Debug`
-    /// как есть).
+    /// A `String`, not an enum defined by this crate: version enums differ
+    /// across backends (rustls, native-tls over OpenSSL/SChannel/
+    /// SecureTransport) in exactly which variants they carry, and defining
+    /// a unifying enum here would mean either lagging behind a new backend
+    /// or carrying variants a given backend will never produce. So that
+    /// two backends don't name the same version differently, the value
+    /// must be a registry-style string, the same one used by both
+    /// `openssl`'s `SSL_get_version()` and rustls: `"TLSv1.3"`,
+    /// `"TLSv1.2"`, `"TLSv1.1"`, `"TLSv1.0"` — not the `Debug` formatting
+    /// of the backend's internal enum (rustls's `Debug` for
+    /// `ProtocolVersion::TLSv1_3`, for example, prints `TLSv1_3`, with an
+    /// underscore instead of a dot — the implementation must normalize
+    /// this to the canonical form, not pass `Debug`'s output through as
+    /// is).
     pub protocol_version: Option<String>,
-    /// Шифр-сьют, согласованный на этом соединении.
+    /// The cipher suite negotiated on this connection.
     ///
-    /// Тот же аргумент, что у `protocol_version`, и по той же причине —
-    /// `String`, не перечисление. Значение обязано быть именем из реестра
-    /// IANA TLS Cipher Suites, например `"TLS_AES_128_GCM_SHA256"` — это имя
-    /// использует и rustls (`CipherSuite::TLS13_AES_128_GCM_SHA256` обязан
-    /// быть приведён к реестровому имени без версии-префикса, а не отдан как
-    /// есть через `Debug`), тогда как OpenSSL по умолчанию называет тот же
-    /// шифр-сьют алиасом вроде `"ECDHE-RSA-AES128-GCM-SHA256"` — реализация
-    /// поверх OpenSSL обязана перевести алиас в реестровое имя, иначе два
-    /// бэкенда сообщат об одном и том же шифре двумя разными строками, и
-    /// вызывающая сторона, сравнивающая их, ошибётся.
+    /// The same argument as `protocol_version`, for the same reason — a
+    /// `String`, not an enum. The value must be a name from the IANA TLS
+    /// Cipher Suites registry, e.g. `"TLS_AES_128_GCM_SHA256"` — the same
+    /// name rustls uses (`CipherSuite::TLS13_AES_128_GCM_SHA256` must be
+    /// normalized to the registry name with its version prefix stripped,
+    /// not passed through `Debug` as is), whereas OpenSSL by default names
+    /// the same cipher suite with an alias like
+    /// `"ECDHE-RSA-AES128-GCM-SHA256"` — an implementation on top of
+    /// OpenSSL must translate the alias to the registry name, or two
+    /// backends will report the same cipher as two different strings, and
+    /// a caller comparing them will get it wrong.
     pub cipher_suite: Option<String>,
 }
 
-/// Подключаемый TLS-хендшейк поверх произвольного транспорта.
+/// A pluggable TLS handshake over an arbitrary transport.
 ///
-/// Один метод, `connect`, а не отдельно "handshake" и "wrap": разделять их
-/// нечем пользоваться — ни один вызывающий код этой вертикали не хочет
-/// голый хендшейк без обёрнутого потока или наоборот.
+/// One method, `connect`, not separate "handshake" and "wrap" steps:
+/// there's nothing to gain from splitting them — no caller anywhere in
+/// this vertical wants a bare handshake without a wrapped stream, or the
+/// reverse.
 pub trait TlsConnect {
-    /// Обёрнутый поток после хендшейка. `S: hyper::rt::Read + Write + Unpin`
-    /// в обоих местах (на самом типе и в его where-клаузе) — реализация не
-    /// может обещать обёртку только для части возможных `S`; каждый `S`,
-    /// который умеет `connect`, обязан получить обратно и рабочий
-    /// `Stream<S>`.
+    /// The wrapped stream after the handshake. `S: hyper::rt::Read + Write
+    /// + Unpin` appears in both places (on the type itself and in its
+    /// where clause) — an implementation can't promise a wrapper for only
+    /// some possible `S`; every `S` capable of `connect` must get back a
+    /// working `Stream<S>` too.
     type Stream<S>: hyper::rt::Read + hyper::rt::Write + Unpin
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
-    /// Выполняет TLS-хендшейк поверх уже установленного `io` (TCP-сокет от
-    /// `http_ng_rt::TcpConnect`, обёрнутый в `FuturesIo`/`TokioIo` — сам
-    /// `connect` про транспорт ничего не знает) и возвращает зашифрованный
-    /// поток вместе с тем, что реализация может честно сообщить о
-    /// согласованных параметрах.
+    /// Performs a TLS handshake over an already established `io` (a TCP
+    /// socket from `http_ng_rt::TcpConnect`, wrapped in
+    /// `FuturesIo`/`TokioIo` — `connect` itself knows nothing about the
+    /// transport) and returns the encrypted stream along with whatever
+    /// negotiated parameters the implementation can honestly report.
     fn connect<S>(
         &self,
         io: S,
@@ -121,25 +129,24 @@ mod tests {
     use std::pin::{Pin, pin};
     use std::task::{Context, Poll, Waker};
 
-    /// Опрашивает один `Future`/`poll_fn` синхронно и требует немедленной
-    /// готовности. Каждый future в тестах этого модуля опирается на
-    /// `Loopback`, который никогда не возвращает `Pending`, — настоящий
-    /// экзекьютор здесь ничего не даёт; `Waker::noop()` (стабилен с 1.85,
-    /// той же версии, что MSRV этой вертикали) закрывает вопрос без лишней
-    /// зависимости вроде `futures-executor` ради единственного синхронного
-    /// опроса.
+    /// Polls a single `Future`/`poll_fn` synchronously and demands
+    /// immediate readiness. Every future in this module's tests is built
+    /// on `Loopback`, which never returns `Pending` — a real executor
+    /// would add nothing here; `Waker::noop()` (stable since 1.85, this
+    /// vertical's MSRV) settles the matter without an extra dependency
+    /// like `futures-executor` for a single synchronous poll.
     fn poll_once<F: Future>(mut fut: Pin<&mut F>) -> F::Output {
         let mut cx = Context::from_waker(Waker::noop());
         match fut.as_mut().poll(&mut cx) {
             Poll::Ready(v) => v,
-            Poll::Pending => panic!("тестовый ввод-вывод не должен возвращать Pending"),
+            Poll::Pending => panic!("test I/O must not return Pending"),
         }
     }
 
-    /// `hyper::rt::Read + Write` без единой сторонней зависимости: пишет в
-    /// общий буфер, читает из него же. Не мок для подсчёта вызовов — рабочий
-    /// ввод-вывод, достаточный, чтобы реально прогнать байты через
-    /// `TlsConnect::Stream<S>` туда-обратно.
+    /// `hyper::rt::Read + Write` with zero third-party dependencies:
+    /// writes into a shared buffer, reads from that same buffer. Not a
+    /// call-counting mock — working I/O, enough to actually push bytes
+    /// through `TlsConnect::Stream<S>` and back.
     #[derive(Default)]
     struct Loopback {
         buf: VecDeque<u8>,
@@ -175,10 +182,11 @@ mod tests {
         }
     }
 
-    /// Пропускающая реализация `TlsConnect::Stream<S>` — обёртка вокруг `S`,
-    /// а не `type Stream<S> = S`: настоящий адаптер (Task 9, rustls) обязан
-    /// оборачивать `S` в состояние TLS-сессии, и тождественный GAT такую
-    /// форму вообще не проверил бы. Ничего не шифрует, только форвардит.
+    /// A pass-through implementation of `TlsConnect::Stream<S>` — a
+    /// wrapper around `S`, not `type Stream<S> = S`: a real adapter (Task
+    /// 9, rustls) must wrap `S` in TLS session state, and an identity GAT
+    /// wouldn't exercise that shape at all. Encrypts nothing, just
+    /// forwards.
     struct PassThrough<S>(S);
 
     impl<S: Read + Unpin> Read for PassThrough<S> {
@@ -207,11 +215,11 @@ mod tests {
         }
     }
 
-    /// Не шифрует ничего: репортит первый предложенный ALPN как
-    /// "согласованный" и фиксированную версию протокола — ровно то, что
-    /// нужно тесту, чтобы было что проверить в `TlsInfo`, ничего больше
-    /// (`peer_certificates`/`cipher_suite` остаются `None` — честно, у
-    /// заглушки их взять неоткуда).
+    /// Encrypts nothing: reports the first proposed ALPN as "negotiated"
+    /// and a fixed protocol version — exactly enough for the test to have
+    /// something to check in `TlsInfo`, nothing more
+    /// (`peer_certificates`/`cipher_suite` stay `None` — honestly, the
+    /// stub has no way to produce them).
     struct NoOpTls;
 
     impl TlsConnect for NoOpTls {
@@ -245,12 +253,13 @@ mod tests {
 
     #[test]
     fn connect_wraps_the_stream_and_negotiates_alpn() {
-        // Байты ALPN построены из ЛОКАЛЬНЫХ `Vec<u8>`, не из `&'static
-        // [u8]`-литералов — доказывает, что `TlsRequest<'a>` с ОДНОЙ и той же
-        // `'a` на внешнем срезе и на байтах каждого элемента реально
-        // конструируема без `'static` и без хранения `req` где-либо дольше
-        // самого вызова `connect`, для которого она и задумана ("ALPN живёт
-        // на коннекте" — см. doc-комментарий поля).
+        // The ALPN bytes are built from LOCAL `Vec<u8>`s, not `&'static
+        // [u8]` literals — proof that `TlsRequest<'a>`, with the SAME `'a`
+        // on both the outer slice and each element's bytes, is actually
+        // constructible without `'static` and without `req` needing to be
+        // stored anywhere longer than the `connect` call it was designed
+        // for ("ALPN lives on the connect call" — see the field's doc
+        // comment).
         let h2 = b"h2".to_vec();
         let http11 = b"http/1.1".to_vec();
         let alpn = [h2.as_slice(), http11.as_slice()];
@@ -260,10 +269,10 @@ mod tests {
             ech: None,
         };
 
-        // `io` уже содержит данные ДО хендшейка — доказывает ниже, что
-        // возвращённый `Stream<S>` реально оборачивает ЭТОТ `io`, а не
-        // подставляет независимый источник, который случайно тоже
-        // реализует `Read`/`Write`.
+        // `io` already contains data BEFORE the handshake — proves below
+        // that the returned `Stream<S>` actually wraps THIS `io`, rather
+        // than substituting an independent source that just happens to
+        // also implement `Read`/`Write`.
         let mut io = Loopback::default();
         io.buf.extend(*b"preexisting");
 
@@ -276,18 +285,18 @@ mod tests {
         assert!(info.peer_certificates.is_none());
         assert!(info.cipher_suite.is_none());
 
-        // Данные, лежавшие в `io` ДО `connect`, видны через возвращённый
-        // `Stream<S>` — значит это обёртка над переданным `io`, не новый
-        // отсоединённый поток.
+        // Data that was sitting in `io` BEFORE `connect` is visible
+        // through the returned `Stream<S>` — meaning it's a wrapper over
+        // the passed-in `io`, not a new, disconnected stream.
         let mut preexisting = [0u8; 11];
         let mut rb = hyper::rt::ReadBuf::new(&mut preexisting);
         let read = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
         poll_once(pin!(read).as_mut()).unwrap();
         assert_eq!(&preexisting, b"preexisting");
 
-        // `Stream<S>` реально реализует `hyper::rt::Write`, не только
-        // типизируется как таковой: пишем и читаем обратно через тот же
-        // общий буфер `Loopback`.
+        // `Stream<S>` actually implements `hyper::rt::Write`, not just
+        // types as one: write and read it back through the same shared
+        // `Loopback` buffer.
         let write = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, b"ping"));
         let n = poll_once(pin!(write).as_mut()).unwrap();
         assert_eq!(n, 4);

@@ -1,61 +1,60 @@
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// Можно ли переиграть это тело — известно **до** отправки.
+/// Whether this body can be replayed — known **before** sending.
 ///
-/// `reqwest::Request::try_clone() -> Option<Request>` отвечает на тот же вопрос
-/// после того, как retry-слой уже решил ретраить, и поэтому молча выключает
-/// ретраи на стриминговых телах.
+/// `reqwest::Request::try_clone() -> Option<Request>` answers the same
+/// question after the retry layer has already decided to retry, and so
+/// silently disables retries on streaming bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryKind {
-    /// Переигрывается бесплатно.
+    /// Replays for free.
     Free,
-    /// Переигрывается вызовом фабрики.
+    /// Replays by calling the factory.
     ViaFactory,
-    /// Переиграть нельзя.
+    /// Cannot be replayed.
     Impossible,
 }
 
-/// Границы `Send + Sync` — задокументированное исключение из инварианта
-/// крейта "нигде не объявляем `Send`/`Sync`" (spec amendment C2, сестра C1
-/// у [`crate::Error`]). Без них `RequestBody` был бы `!Send`, значит
-/// `http::Request<RequestBody>` был бы `!Send`, значит футура, которую
-/// возвращает `Transport::execute`, была бы `!Send` для любого бэкенда —
-/// `tokio::spawn(client.get(u).send())` не собрался бы никогда. `Sync`
-/// нужен только здесь, у `Arc`: `Arc<T>: Send` требует `T: Send + Sync`,
-/// тогда как `Box<T>: Send` (см. [`RequestBody::Streaming`]) требует лишь
-/// `T: Send`.
+/// `Send + Sync` bounds — a documented exception to the crate invariant
+/// "declare `Send`/`Sync` nowhere" (spec amendment-C2, sibling of C1 on
+/// [`crate::Error`]). Without them `RequestBody` would be `!Send`, so
+/// `http::Request<RequestBody>` would be `!Send`, so the future
+/// `Transport::execute` returns would be `!Send` for every backend —
+/// `tokio::spawn(client.get(u).send())` would never build. `Sync` is only
+/// needed here, for `Arc`: `Arc<T>: Send` requires `T: Send + Sync`, whereas
+/// `Box<T>: Send` (see [`RequestBody::Streaming`]) requires only `T: Send`.
 pub type RewindFactory = Arc<dyn Fn() -> RequestBody + Send + Sync>; // send-bound-exception: amendment-C2
 
-/// Тело запроса с явным контрактом переигрывания.
+/// A request body with an explicit replay contract.
 #[derive(Default)]
 pub enum RequestBody {
     #[default]
     Empty,
     Full(Bytes),
-    /// Переигрывается вызовом фабрики.
+    /// Replays by calling the factory.
     ///
-    /// **Контракт фабрики.** Она обязана быть чистой: каждый вызов должен
-    /// производить тело, эквивалентное предыдущему (то же содержимое, тот же
-    /// размер). Фабрика со скрытым состоянием, отдающая на каждый вызов
-    /// разное тело — это лежащий на поверхности, но недокументированный
-    /// источник багов, поэтому `size_hint()` для этого варианта намеренно
-    /// возвращает `None`: гадать по первому вызову опасно, если контракт
-    /// нарушен.
+    /// **Factory contract.** It must be pure: every call must produce a body
+    /// equivalent to the previous one (same content, same size). A factory
+    /// with hidden state that hands back a different body on each call is a
+    /// bug source that's obvious in hindsight but undocumented otherwise,
+    /// which is why `size_hint()` deliberately returns `None` for this
+    /// variant: guessing from the first call is dangerous if the contract
+    /// is violated.
     ///
-    /// Фабрика вправе легально вернуть `RequestBody::Streaming` — это не
-    /// живая ложь, потому что `retry_kind()` и `rewind()` всегда
-    /// вычисляются заново по тому объекту, который сейчас лежит внутри
-    /// `RequestBody`, а не кэшируются на момент создания `Rewindable`.
-    /// **Инвариант, важный для retry-слоя (Task 8): всегда переспрашивай
-    /// `retry_kind()` у того тела, которое сейчас на руках, и никогда не
-    /// кэшируй его через `rewind()`.**
+    /// The factory is legally allowed to return `RequestBody::Streaming` —
+    /// that isn't a live lie, because `retry_kind()` and `rewind()` are
+    /// always recomputed from whatever object currently sits inside
+    /// `RequestBody`, not cached at the moment `Rewindable` was created.
+    /// **Invariant that matters for the retry layer (Task 8): always ask
+    /// `retry_kind()` of the body you're currently holding, and never cache
+    /// it across a `rewind()`.**
     Rewindable(RewindFactory),
-    /// Однопроходное тело. Конкретный поток задаёт транспорт; в v0.1 ядру
-    /// достаточно знать, что переиграть его нельзя.
+    /// A single-pass body. The concrete stream is set by the transport; in
+    /// v0.1 the core only needs to know it can't be replayed.
     ///
-    /// `+ Send` — то же исключение C2, что у [`RewindFactory`]: `Box<T>: Send`
-    /// требует только `T: Send`, `Sync` здесь не нужен.
+    /// `+ Send` — the same C2 exception as [`RewindFactory`]: `Box<T>: Send`
+    /// requires only `T: Send`, `Sync` isn't needed here.
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
@@ -129,9 +128,9 @@ mod tests {
     #[test]
     fn full_rewind_preserves_the_payload() {
         let b = RequestBody::Full(Bytes::from_static(b"abc"));
-        match b.rewind().expect("Full реиграется") {
+        match b.rewind().expect("Full replays") {
             RequestBody::Full(x) => assert_eq!(&x[..], b"abc"),
-            other => panic!("ожидался Full, получен {other:?}"),
+            other => panic!("expected Full, got {other:?}"),
         }
     }
 
@@ -145,22 +144,22 @@ mod tests {
             RequestBody::Full(Bytes::from_static(b"same"))
         });
         for _ in 0..3 {
-            let again = b.rewind().expect("rewindable реиграется");
+            let again = b.rewind().expect("rewindable replays");
             assert!(matches!(again, RequestBody::Full(ref x) if &x[..] == b"same"));
             assert_eq!(
                 b.retry_kind(),
                 RetryKind::ViaFactory,
-                "вид не меняется от повторов"
+                "kind doesn't change across replays"
             );
         }
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
-    /// Пара `Empty`/`Full` — единственные варианты, для которых размер
-    /// известен заранее. `Rewindable` и `Streaming` покрыты отдельно
+    /// The `Empty`/`Full` pair are the only variants whose size is known
+    /// ahead of time. `Rewindable` and `Streaming` are covered separately
     /// (`rewindable_replays_through_factory`,
-    /// `streaming_is_honest_about_being_unreplayable`) и туда не входят —
-    /// имя теста не должно обещать охват, которого здесь нет.
+    /// `streaming_is_honest_about_being_unreplayable`) and aren't included
+    /// here — the test's name shouldn't promise coverage it doesn't have.
     #[test]
     fn size_hint_is_known_for_empty_and_full_bodies() {
         assert_eq!(RequestBody::Empty.size_hint(), Some(0));
@@ -170,10 +169,10 @@ mod tests {
         );
     }
 
-    /// Тело без единого байта в буфере: `poll_frame` сразу возвращает
-    /// `Ready(None)`. Нужно только для того, чтобы сконструировать
-    /// `RequestBody::Streaming` в тестах — конкретный транспорт задаёт
-    /// свою реализацию.
+    /// A body with not a single byte in its buffer: `poll_frame` returns
+    /// `Ready(None)` immediately. Needed only to construct
+    /// `RequestBody::Streaming` in tests — the concrete transport supplies
+    /// its own implementation.
     struct EmptyStream;
     impl http_body::Body for EmptyStream {
         type Data = Bytes;
@@ -190,13 +189,13 @@ mod tests {
     fn streaming_is_honest_about_being_unreplayable() {
         let b = RequestBody::Streaming(Box::new(EmptyStream));
         assert_eq!(b.retry_kind(), RetryKind::Impossible);
-        assert!(b.rewind().is_none(), "должен вернуть None, а не паниковать");
+        assert!(b.rewind().is_none(), "must return None, not panic");
         assert_eq!(b.size_hint(), None);
     }
 
     // `RequestBody: Send` and `http::Request<RequestBody>: Send` (spec
-    // amendment C2) — moved to `crates/http-ng-core/tests/shape.rs` per
-    // amendment C3, for the same reason as the sibling removal in
+    // amendment-C2) — moved to `crates/http-ng-core/tests/shape.rs` per
+    // amendment-C3, for the same reason as the sibling removal in
     // `error.rs`: a bare `fn assert_send<T: Send>() {}` inside `src` is
     // exactly what the `no-declared-send` guard's regex matches, and Task
     // 12's fix round 1 replaced this file's blanket exclusion with

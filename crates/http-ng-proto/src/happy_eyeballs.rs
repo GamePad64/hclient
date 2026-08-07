@@ -1,5 +1,5 @@
-//! Планировщик Happy Eyeballs v2 (RFC 8305). Чистый: время приходит
-//! параметром `elapsed`, поэтому константы проверяются без `sleep`.
+//! The Happy Eyeballs v2 scheduler (RFC 8305). Pure: time comes in as the
+//! `elapsed` parameter, so the constants can be checked without `sleep`.
 
 use core::time::Duration;
 use std::collections::VecDeque;
@@ -9,18 +9,19 @@ use std::net::IpAddr;
 pub struct HeConfig {
     /// RFC 8305 §3: "This delay will be referred to as the 'Resolution
     /// Delay'. The recommended value for the Resolution Delay is 50
-    /// milliseconds." — сколько ждать AAAA-ответ, прежде чем идти по A.
+    /// milliseconds." — how long to wait for the AAAA response before
+    /// falling back to A.
     pub resolution_delay: Duration,
     /// RFC 8305 §5: "This delay is referred to as the 'Connection Attempt
     /// Delay'. One recommended value for a default delay is 250
-    /// milliseconds." — пауза между запуском попыток. Фактическое значение
-    /// после конструирования `Scheduler` зажато в диапазон, см. `ATTEMPT_MIN`
-    /// и `ATTEMPT_MAX`.
+    /// milliseconds." — the pause between launching attempts. The actual
+    /// value is clamped to a range after `Scheduler` is constructed, see
+    /// `ATTEMPT_MIN` and `ATTEMPT_MAX`.
     pub attempt_delay: Duration,
     /// RFC 8305 §4/§8: "Recommended to be 1; 2 may be used to more
-    /// aggressively favor a particular address family." — сколько адресов
-    /// первого (IPv6) семейства подряд идёт, прежде чем чередовать с
-    /// другим.
+    /// aggressively favor a particular address family." — how many
+    /// addresses of the first (IPv6) family go consecutively before
+    /// interleaving with the other.
     pub first_family_count: usize,
 }
 
@@ -38,13 +39,13 @@ impl Default for HeConfig {
 /// minimum value is 100 milliseconds ... This minimum value is required to
 /// avoid congestion collapse in the presence of high packet-loss rates."
 ///
-/// RFC отдельно называет ещё меньшее число — "a subsequent connection MUST
-/// NOT be started within 10 milliseconds of the previous attempt" (§5) — но
-/// это его абсолютный жёсткий пол, а не рекомендация: сам RFC называет
-/// рекомендованным значением именно 100 мс и объясняет зачем (защита от
-/// congestion collapse при высоком packet loss). Раз этот крейт заявляет
-/// совместимость с RFC 8305, clamp по умолчанию берёт рекомендованное
-/// значение, а не легальный минимум.
+/// The RFC separately names an even smaller number — "a subsequent
+/// connection MUST NOT be started within 10 milliseconds of the previous
+/// attempt" (§5) — but that's its absolute hard floor, not a
+/// recommendation: the RFC itself names 100 ms as the recommended value and
+/// explains why (protection against congestion collapse under high packet
+/// loss). Since this crate claims RFC 8305 compatibility, the default
+/// clamp takes the recommended value, not the legal minimum.
 const ATTEMPT_MIN: Duration = Duration::from_millis(100);
 
 /// RFC 8305 §5/§8, "Maximum Connection Attempt Delay": "The current
@@ -58,22 +59,22 @@ pub enum HeAction {
     Exhausted,
 }
 
-/// Состояние планировщика Happy Eyeballs v2 для одной попытки соединения.
+/// The Happy Eyeballs v2 scheduler's state for a single connection attempt.
 ///
-/// Чистый автомат: ничего не знает о часах или сокетах. Вызывающая сторона
-/// (Task 11, коннектор) кормит его результатами резолвера через `offer_v6`
-/// / `offer_v4` / `mark_v6_done` / `mark_v4_done` и продвигает его вызовами
-/// `poll(elapsed)`, где `elapsed` — время с начала попытки по часам
-/// вызывающей стороны. `elapsed` должен быть монотонно неубывающим между
-/// вызовами; при уменьшении `poll` не паникует, но `Wait` перестаёт быть
-/// ограничен `max(attempt_delay, resolution_delay)` — это предпосылка
-/// интерфейса, а не проверяемый инвариант.
+/// A pure state machine: it knows nothing about clocks or sockets. The
+/// caller (Task 11, the connector) feeds it resolver results through
+/// `offer_v6` / `offer_v4` / `mark_v6_done` / `mark_v4_done` and advances
+/// it with calls to `poll(elapsed)`, where `elapsed` is the time since the
+/// attempt started, on the caller's clock. `elapsed` must be monotonically
+/// non-decreasing across calls; `poll` doesn't panic if it decreases, but
+/// `Wait` stops being bounded by `max(attempt_delay, resolution_delay)` —
+/// that's a precondition of the interface, not a checked invariant.
 ///
-/// `Scheduler` не сортирует адреса внутри семейства и отдаёт их в том
-/// порядке, в котором они пришли в `offer_v6` / `offer_v4`. Сортировка по
-/// Destination Address Selection (RFC 8305 §4, RFC 6724 §6) — забота
-/// вызывающей стороны, до `offer_*`; здесь её нет намеренно, не по
-/// недосмотру.
+/// `Scheduler` doesn't sort addresses within a family and hands them back
+/// in the order they arrived in `offer_v6` / `offer_v4`. Sorting by
+/// Destination Address Selection (RFC 8305 §4, RFC 6724 §6) is the
+/// caller's concern, before `offer_*`; it isn't done here, deliberately,
+/// not by oversight.
 #[derive(Debug)]
 pub struct Scheduler {
     cfg: HeConfig,
@@ -83,20 +84,20 @@ pub struct Scheduler {
     v4_done: bool,
     started: usize,
     last_start: Option<Duration>,
-    /// Сколько адресов первого семейства (IPv6) уже выдано подряд с
-    /// последнего переключения на другое семейство.
+    /// How many addresses of the first family (IPv6) have already been
+    /// handed out consecutively since the last switch to the other family.
     run_in_first_family: usize,
 }
 
 impl Scheduler {
-    /// Конструирует планировщик. `cfg.attempt_delay` вне диапазона
-    /// `[ATTEMPT_MIN, ATTEMPT_MAX]` зажимается, а не отвергается ошибкой:
-    /// `Duration` вне этого диапазона — не бессмысленный ввод (в отличие,
-    /// скажем, от невалидного URI), а значение, для которого сам RFC 8305
-    /// §5 задаёт только рекомендации, а не обязательный протокольный
-    /// формат, и на вход эта функция обязана по интерфейсу задачи вернуть
-    /// `Self`, а не `Result`. Значение не отбрасывается молча: эффективный
-    /// конфиг всегда можно сверить с запрошенным через `config()`.
+    /// Constructs the scheduler. `cfg.attempt_delay` outside the
+    /// `[ATTEMPT_MIN, ATTEMPT_MAX]` range is clamped, not rejected with an
+    /// error: a `Duration` outside this range isn't meaningless input
+    /// (unlike, say, an invalid URI), but a value for which RFC 8305 §5
+    /// itself gives only recommendations, not a mandatory protocol format,
+    /// and by this task's interface, this function must return `Self`, not
+    /// `Result`. The value isn't discarded silently: the effective config
+    /// can always be checked against the requested one via `config()`.
     pub fn new(mut cfg: HeConfig) -> Self {
         cfg.attempt_delay = cfg.attempt_delay.clamp(ATTEMPT_MIN, ATTEMPT_MAX);
         Self {
@@ -111,7 +112,7 @@ impl Scheduler {
         }
     }
 
-    /// Эффективный конфиг после clamp — см. doc-комментарий `new`.
+    /// The effective config after clamping — see `new`'s doc comment.
     pub fn config(&self) -> &HeConfig {
         &self.cfg
     }
@@ -129,18 +130,20 @@ impl Scheduler {
         self.v4_done = true;
     }
 
-    /// Продвигает автомат. `elapsed` — время с начала попытки по часам
-    /// вызывающей стороны (см. doc-комментарий структуры про монотонность).
+    /// Advances the state machine. `elapsed` is the time since the attempt
+    /// started, on the caller's clock (see the struct's doc comment on
+    /// monotonicity).
     pub fn poll(&mut self, elapsed: Duration) -> HeAction {
-        // Больше предложить нечего, и оба резолвера подтвердили, что новых
-        // адресов не будет: сообщаем сразу, не дожидаясь Connection Attempt
-        // Delay с последнего старта — ждать там нечего дожидаться.
+        // Nothing left to offer, and both resolvers have confirmed no new
+        // addresses are coming: report it immediately, without waiting out
+        // the Connection Attempt Delay from the last start — there's
+        // nothing left to wait for.
         if self.v6.is_empty() && self.v4.is_empty() && self.v6_done && self.v4_done {
             return HeAction::Exhausted;
         }
 
-        // RFC 8305 §5: пауза между запуском попыток (Connection Attempt
-        // Delay).
+        // RFC 8305 §5: the pause between launching attempts (Connection
+        // Attempt Delay).
         if let Some(last) = self.last_start {
             let next_at = last + self.cfg.attempt_delay;
             if elapsed < next_at {
@@ -148,20 +151,20 @@ impl Scheduler {
             }
         }
 
-        // RFC 8305 §3: пока AAAA не пришли и резолвер не закончил, придержать
-        // IPv4 на Resolution Delay.
+        // RFC 8305 §3: while AAAA hasn't arrived and the resolver isn't
+        // done, hold IPv4 back for the Resolution Delay.
         if self.v6.is_empty() && !self.v6_done && elapsed < self.cfg.resolution_delay {
             return HeAction::Wait(self.cfg.resolution_delay - elapsed);
         }
 
-        // RFC 8305 §4: IPv6 идёт первым; после `first_family_count` адресов
-        // подряд чередуем семейства, пока одно из них не иссякнет — тогда
-        // добираем оставшееся без чередования.
+        // RFC 8305 §4: IPv6 goes first; after `first_family_count`
+        // addresses in a row, we interleave families, until one of them
+        // runs dry — then we drain the rest without interleaving.
         let take_v6 = if self.v6.is_empty() {
             false
         } else if self.v4.is_empty() || self.started == 0 {
-            // Другого семейства нет вовсе, либо это самый первый выбор —
-            // а первым всегда идёт IPv6.
+            // Either the other family doesn't exist at all, or this is the
+            // very first pick — and IPv6 always goes first.
             true
         } else {
             self.run_in_first_family < self.cfg.first_family_count
@@ -174,10 +177,11 @@ impl Scheduler {
         };
 
         let Some(addr) = picked else {
-            // Оба семейства пусты прямо сейчас, но хотя бы один резолвер ещё
-            // не сказал "готово" (иначе сработал бы ранний выход выше) —
-            // возможно, адреса ещё придут. Просим спросить снова не раньше
-            // чем через Resolution Delay.
+            // Both families are empty right now, but at least one resolver
+            // hasn't said "done" yet (otherwise the early return above
+            // would have fired) — addresses may still arrive. Ask the
+            // caller to poll again no sooner than one Resolution Delay
+            // from now.
             return HeAction::Wait(self.cfg.resolution_delay);
         };
 
@@ -223,7 +227,7 @@ mod tests {
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v4(&[v4(1)]);
         s.mark_v4_done();
-        // AAAA ещё не пришли: RFC 8305 §3 велит подождать Resolution Delay.
+        // AAAA hasn't arrived yet: RFC 8305 §3 says wait out the Resolution Delay.
         assert_eq!(s.poll(ms(0)), HeAction::Wait(ms(50)));
         assert_eq!(s.poll(ms(50)), HeAction::Start(v4(1)));
     }
@@ -244,8 +248,8 @@ mod tests {
     #[test]
     fn interleaves_with_a_first_family_count_greater_than_one() {
         // RFC 8305 §4/§8: "2 may be used to more aggressively favor a
-        // particular address family" — здесь 2, чтобы отличить блочный
-        // паттерн от строгого 1:1-чередования в тесте выше.
+        // particular address family" — 2 here, to distinguish the block
+        // pattern from the strict 1:1 interleaving in the test above.
         let cfg = HeConfig {
             first_family_count: 2,
             ..Default::default()
@@ -286,10 +290,10 @@ mod tests {
 
     #[test]
     fn exhausted_is_reported_immediately_even_before_the_attempt_delay_elapses() {
-        // Резолюция ревью: наивная реализация держит Exhausted за тем же
-        // гейтом, что и паузу между попытками (Connection Attempt Delay), и
-        // отвечает Wait(240 мс) вместо Exhausted, хотя стартовать больше
-        // нечего — ждать там нечего дожидаться.
+        // Review resolution: a naive implementation gates Exhausted behind
+        // the same check as the pause between attempts (Connection Attempt
+        // Delay), and answers Wait(240 ms) instead of Exhausted, even
+        // though there's nothing left to start — nothing left to wait for.
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v6(&[v6(1)]);
         s.mark_v6_done();
@@ -298,7 +302,7 @@ mod tests {
         assert_eq!(
             s.poll(ms(10)),
             HeAction::Exhausted,
-            "адресов больше нет и оба резолвера закончили — незачем ждать остаток attempt_delay"
+            "no addresses left and both resolvers are done — no reason to wait out the rest of attempt_delay"
         );
     }
 
@@ -313,7 +317,7 @@ mod tests {
         assert_eq!(
             s.poll(ms(50_000)),
             HeAction::Exhausted,
-            "повторный poll после Exhausted не должен паниковать или менять ответ"
+            "a repeat poll after Exhausted must not panic or change the answer"
         );
     }
 
@@ -321,12 +325,12 @@ mod tests {
     fn falls_back_to_ipv4_immediately_when_ipv6_resolver_reports_zero_addresses() {
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v4(&[v4(1)]);
-        s.mark_v6_done(); // резолвер AAAA отработал и не вернул адресов
+        s.mark_v6_done(); // the AAAA resolver ran and returned no addresses
         s.mark_v4_done();
         assert_eq!(
             s.poll(ms(0)),
             HeAction::Start(v4(1)),
-            "AAAA уже точно не придёт — незачем ждать Resolution Delay"
+            "AAAA is definitely not coming — no reason to wait out the Resolution Delay"
         );
     }
 
@@ -335,7 +339,7 @@ mod tests {
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v6(&[v6(1), v6(2)]);
         s.mark_v6_done();
-        s.mark_v4_done(); // резолвер A отработал и не вернул адресов
+        s.mark_v4_done(); // the A resolver ran and returned no addresses
         assert_eq!(s.poll(ms(0)), HeAction::Start(v6(1)));
         assert_eq!(s.poll(ms(250)), HeAction::Start(v6(2)));
         assert_eq!(s.poll(ms(500)), HeAction::Exhausted);
@@ -348,16 +352,17 @@ mod tests {
         s.mark_v4_done();
         assert_eq!(s.poll(ms(0)), HeAction::Wait(ms(50)));
         assert_eq!(s.poll(ms(50)), HeAction::Start(v4(1)));
-        // AAAA-ответ приходит поздно, уже во время попыток по IPv4 — RFC
-        // 8305 §3: "the newly received IPv6 addresses are incorporated into
-        // the list of available candidate addresses ... and the process of
-        // connection attempts will continue with the IPv6 addresses added".
+        // The AAAA response arrives late, already during IPv4 attempts —
+        // RFC 8305 §3: "the newly received IPv6 addresses are incorporated
+        // into the list of available candidate addresses ... and the
+        // process of connection attempts will continue with the IPv6
+        // addresses added".
         s.offer_v6(&[v6(1)]);
         s.mark_v6_done();
         assert_eq!(
             s.poll(ms(300)),
             HeAction::Start(v6(1)),
-            "поздний AAAA должен быть учтён, а не отброшен"
+            "a late AAAA must be taken into account, not dropped"
         );
         assert_eq!(s.poll(ms(550)), HeAction::Start(v4(2)));
     }
@@ -366,11 +371,11 @@ mod tests {
     fn more_addresses_offered_after_the_queues_run_dry_mid_schedule() {
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v6(&[v6(1)]);
-        // Ни один резолвер ещё не сказал "готово" — второй адрес может
-        // прийти позже.
+        // Neither resolver has said "done" yet — the second address may
+        // arrive later.
         assert_eq!(s.poll(ms(0)), HeAction::Start(v6(1)));
-        // Очереди пусты, но резолверы не done — это НЕ Exhausted, а сигнал
-        // "спроси ещё раз попозже".
+        // The queues are empty, but the resolvers aren't done — this is
+        // NOT Exhausted, it's a signal to "ask again later."
         assert_eq!(s.poll(ms(250)), HeAction::Wait(ms(50)));
 
         s.offer_v4(&[v4(1)]);
@@ -400,14 +405,14 @@ mod tests {
 
     #[test]
     fn ipv6_still_goes_first_when_first_family_count_is_zero() {
-        // `first_family_count` не зажат (RFC не даёт для него границы), так
-        // 0 — легальное, достижимое значение (и proptest ниже его
-        // генерирует). Для FAFC >= 1 условие `run_in_first_family <
-        // first_family_count` само по себе уже выбрало бы IPv6 первым (run
-        // стартует с 0), так что дизъюнкт `|| self.started == 0` в `poll`
-        // ничего не меняет на большинстве значений FAFC — кроме нуля, где
-        // он единственное, что не даёт обещанию "IPv6 первым" (RFC 8305 §2)
-        // тихо сломаться.
+        // `first_family_count` isn't clamped (the RFC gives no bounds for
+        // it), so 0 is a legal, reachable value (and the proptest below
+        // generates it). For FAFC >= 1 the condition `run_in_first_family <
+        // first_family_count` alone would already pick IPv6 first (the run
+        // starts at 0), so the `|| self.started == 0` disjunct in `poll`
+        // changes nothing for most FAFC values — except zero, where it's
+        // the only thing keeping the "IPv6 first" promise (RFC 8305 §2)
+        // from silently breaking.
         let cfg = HeConfig {
             first_family_count: 0,
             ..Default::default()
@@ -427,11 +432,11 @@ mod tests {
     #[test]
     fn attempt_delay_is_clamped_to_the_rfc_recommended_range() {
         // RFC 8305 §5/§8, "Minimum Connection Attempt Delay": "The
-        // recommended minimum value is 100 milliseconds". НЕ 10 мс — тот
-        // меньший порог в тексте RFC описывает другое: абсолютный жёсткий
-        // пол ("a subsequent connection MUST NOT be started within 10
-        // milliseconds of the previous attempt"), а не рекомендацию по
-        // умолчанию для clamp.
+        // recommended minimum value is 100 milliseconds". NOT 10 ms — that
+        // smaller threshold in the RFC's text describes something else: an
+        // absolute hard floor ("a subsequent connection MUST NOT be started
+        // within 10 milliseconds of the previous attempt"), not the
+        // default recommendation for the clamp.
         let c = HeConfig {
             attempt_delay: ms(1),
             ..Default::default()
@@ -456,11 +461,11 @@ mod tests {
 
     #[test]
     fn clamped_attempt_delay_is_discoverable_via_config() {
-        // Резолюция по "no silent no-ops": `Scheduler::new` не может вернуть
-        // Result (сигнатура зафиксирована в интерфейсе задачи) и не
-        // паникует на out-of-range attempt_delay, но и не прячет замену —
-        // эффективное значение всегда можно сравнить с запрошенным через
-        // `config()`.
+        // Resolution for "no silent no-ops": `Scheduler::new` can't return
+        // a Result (the signature is fixed by this task's interface) and
+        // doesn't panic on an out-of-range attempt_delay, but it doesn't
+        // hide the substitution either — the effective value can always be
+        // compared against the requested one via `config()`.
         let requested = ms(1);
         let s = Scheduler::new(HeConfig {
             attempt_delay: requested,
@@ -469,17 +474,19 @@ mod tests {
         assert_ne!(
             s.config().attempt_delay,
             requested,
-            "подмена значения обязана быть видна через config()"
+            "a substituted value must be visible via config()"
         );
     }
 
-    /// Гоняет планировщик до `Exhausted`, накапливая `elapsed`, и попутно
-    /// проверяет, что каждый `Wait` не превышает `max(attempt_delay,
-    /// resolution_delay)`. Возвращает адреса в порядке выдачи `Start`.
+    /// Runs the scheduler until `Exhausted`, accumulating `elapsed`, and
+    /// along the way checks that every `Wait` doesn't exceed
+    /// `max(attempt_delay, resolution_delay)`. Returns addresses in the
+    /// order `Start` handed them out.
     ///
-    /// `MAX_STEPS` — не неограниченное ожидание (тест синхронный, `sleep`
-    /// нигде нет): это верхняя граница числа шагов, паника при превышении
-    /// сигнализирует баг сходимости, а не реальный таймаут.
+    /// `MAX_STEPS` isn't an unbounded wait (the test is synchronous,
+    /// there's no `sleep` anywhere): it's an upper bound on the number of
+    /// steps, and a panic on exceeding it signals a convergence bug, not a
+    /// real timeout.
     fn drain_to_exhausted(s: &mut Scheduler) -> Vec<IpAddr> {
         const MAX_STEPS: usize = 10_000;
         let bound = s.config().attempt_delay.max(s.config().resolution_delay);
@@ -491,32 +498,35 @@ mod tests {
                 HeAction::Wait(d) => {
                     assert!(
                         d <= bound,
-                        "Wait({d:?}) превышает max(attempt_delay, resolution_delay) = {bound:?}"
+                        "Wait({d:?}) exceeds max(attempt_delay, resolution_delay) = {bound:?}"
                     );
                     elapsed += d;
                 }
                 HeAction::Exhausted => return starts,
             }
         }
-        panic!("планировщик не сошёлся к Exhausted за {MAX_STEPS} шагов");
+        panic!("scheduler failed to converge to Exhausted within {MAX_STEPS} steps");
     }
 
-    /// Независимый оракул для правила интерливинга RFC 8305 §4: раунд —
-    /// блок первого семейства (IPv6) размером `first_family_count` (но не
-    /// меньше 1 в самом первом раунде — RFC 8305 §2, IPv6 первым всегда),
-    /// затем один адрес второго; раунды повторяются, пока одно из семейств
-    /// не иссякнет, после чего остаток другого добирается подряд, без
-    /// дальнейшего чередования — реплицирует ветку `v4.is_empty() /
-    /// v6.is_empty()` в `poll`, не блочную арифметику.
+    /// An independent oracle for RFC 8305 §4's interleaving rule: a round
+    /// is a block of the first family (IPv6) sized `first_family_count`
+    /// (but no less than 1 in the very first round — RFC 8305 §2, IPv6
+    /// always goes first), followed by one address of the second; rounds
+    /// repeat until one of the families runs dry, after which the rest of
+    /// the other is drained in a row, with no further interleaving —
+    /// replicating the `v4.is_empty() / v6.is_empty()` branch in `poll`,
+    /// not the block arithmetic.
     ///
-    /// Реализован иначе, чем `Scheduler::poll`: явным циклом по индексам двух
-    /// срезов с размером блока, вычисляемым на раунд, а не накоплением
-    /// состояния через счётчик вроде `run_in_first_family` и флаг `started`.
-    /// Цель разницы в форме — чтобы баг именно в state-machine-версии внутри
-    /// `poll` (например, в сравнении `<` на границе блока или в сбросе
-    /// счётчика при переключении семейства) с меньшей вероятностью
-    /// воспроизвёлся тем же способом здесь и был пойман сравнением, а не
-    /// прошёл мимо теста, который на самом деле проверяет сам себя.
+    /// Implemented differently from `Scheduler::poll`: an explicit loop
+    /// over the indices of two slices, with a block size computed per
+    /// round, rather than accumulating state through a counter like
+    /// `run_in_first_family` and a `started` flag. The point of the
+    /// difference in form is that a bug specifically in the state-machine
+    /// version inside `poll` (say, in the `<` comparison at a block
+    /// boundary, or in resetting the counter on a family switch) is less
+    /// likely to reproduce the same way here and get caught by the
+    /// comparison, rather than slip past a test that's really just
+    /// checking itself.
     fn expected_interleave(v6: &[IpAddr], v4: &[IpAddr], first_family_count: usize) -> Vec<IpAddr> {
         if v4.is_empty() {
             return v6.to_vec();
@@ -537,8 +547,9 @@ mod tests {
             out.extend_from_slice(&v6[vi..vi + take]);
             vi += take;
             if vi >= v6.len() {
-                // IPv6 иссяк внутри раунда — оставшийся IPv4 добирается ниже
-                // без чередования, этот раунд IPv4 не получает.
+                // IPv6 ran dry mid-round — the remaining IPv4 is drained
+                // below without interleaving; this round doesn't get an
+                // IPv4 pick.
                 break;
             }
             out.push(v4[fi]);
@@ -578,10 +589,10 @@ mod tests {
             let starts = drain_to_exhausted(&mut s);
             let expected = expected_interleave(&v6_addrs, &v4_addrs, first_family_count);
 
-            // Совпадение полных последовательностей подразумевает и
-            // "каждый адрес ровно один раз" (перестановочное равенство —
-            // более слабое следствие покомпонентного), так что отдельная
-            // проверка мультимножества избыточна.
+            // Matching full sequences already implies "every address
+            // exactly once" (permutation equality is a weaker consequence
+            // of componentwise equality), so a separate multiset check
+            // would be redundant.
             prop_assert_eq!(starts, expected);
         }
     }

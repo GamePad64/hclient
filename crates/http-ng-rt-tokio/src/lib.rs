@@ -1,4 +1,4 @@
-//! Реализация способностей `http-ng-rt` поверх tokio.
+//! `http-ng-rt` capabilities implemented on top of tokio.
 #![forbid(unsafe_code)]
 
 mod io;
@@ -10,8 +10,9 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// ZST: tokio-хендл берётся из окружающего рантайма, как это делает reqwest.
-/// Вне рантайма `spawn`/`sleep` паникуют — задокументировано.
+/// ZST: the tokio handle is picked up from the ambient runtime, the same
+/// way reqwest does it. Outside a runtime, `spawn`/`sleep` panic —
+/// documented behavior.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tokio;
 
@@ -35,20 +36,23 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio {
 }
 
 impl Blocking for Tokio {
-    /// `tokio::task::spawn_blocking` возвращает `JoinError` в двух разных
-    /// случаях, и `caps::Blocking`'s контракт (fix round 1, координатор)
-    /// обязывает не путать их: замыкание паникнуло, ИЛИ пул фоновых потоков
-    /// исчез раньше, чем задача успела начать выполняться (не гипотетически
-    /// — происходит, когда `spawn_blocking`-задача всё ещё стоит в очереди
-    /// пула, а рантайм начинает shutdown). Первое перевызывается как паника
-    /// (`resume_unwind`, оригинальный payload доходит до вызывающего кода
-    /// как есть); второе — типизированная `Cancelled`, не паника: это не
-    /// баг вызывающего кода, а обычное событие жизненного цикла рантайма.
+    /// `tokio::task::spawn_blocking` returns `JoinError` for two distinct
+    /// cases, and `caps::Blocking`'s contract (fix round 1, coordinator)
+    /// requires not conflating them: the closure panicked, OR the
+    /// background thread pool went away before the task got to start (not
+    /// hypothetical — happens when a `spawn_blocking` task is still queued
+    /// on the pool and the runtime starts shutting down). The first is
+    /// re-raised as a panic (`resume_unwind`, the original payload reaches
+    /// the calling code as-is); the second is a typed `Cancelled`, not a
+    /// panic: it isn't a bug in the calling code, but an ordinary runtime
+    /// lifecycle event.
     ///
-    /// `classify` вынесена отдельной функцией и покрыта модульным тестом на
-    /// РЕАЛЬНОМ `JoinError` — см. `tests::classify_reports_cancelled_for_a_join_error_that_is_not_a_panic`
-    /// и его комментарий про то, почему `JoinError` там получен через
-    /// `AbortHandle::abort()`, а не через гонку с shutdown целого рантайма.
+    /// `classify` is factored out into its own function and covered by a
+    /// unit test against a REAL `JoinError` — see
+    /// `tests::classify_reports_cancelled_for_a_join_error_that_is_not_a_panic`
+    /// and its comment on why the `JoinError` there is obtained via
+    /// `AbortHandle::abort()` rather than by racing a whole-runtime
+    /// shutdown.
     async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
@@ -69,9 +73,10 @@ impl TcpConnect for Tokio {
     type Stream = TokioIo;
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<TokioIo> {
-        // Опции применяются на `socket2::Socket` **один раз**, а рантайм
-        // усыновляет готовый дескриптор. Это и есть шов `TcpAdoptStd`:
-        // без него каждый рантайм-крейт переписывал бы эту простыню заново.
+        // Options are applied on the `socket2::Socket` **once**, and the
+        // runtime adopts the finished descriptor. This is exactly the seam
+        // `TcpAdoptStd` provides: without it, every runtime crate would
+        // rewrite this whole rigmarole again.
         let sock = build_socket(addr, opts)?;
         sock.set_nonblocking(true)?;
         let std_stream: std::net::TcpStream = sock.into();
@@ -89,19 +94,21 @@ impl TcpAdoptStd for Tokio {
     }
 }
 
-/// Весь `TcpOpts`-лист применяется здесь, на `socket2::Socket`, ДО того как
-/// дескриптор вообще передаётся tokio — ровно то, что обещает doc-комментарий
-/// на `TcpConnect::connect`: рантайм только усыновляет готовый сокет.
+/// The whole `TcpOpts` list is applied here, on the `socket2::Socket`,
+/// BEFORE the descriptor is ever handed to tokio — exactly what the doc
+/// comment on `TcpConnect::connect` promises: the runtime only adopts a
+/// finished socket.
 ///
-/// Fix round 1 (координатор): было — `nodelay`/`keepalive` применялись
-/// отдельным шагом ПОСЛЕ `connect()`, на уже tokio-обёрнутом `TcpStream`
-/// (`apply_post_connect`), тогда как этот комментарий уже тогда обещал "один
-/// раз, на `socket2::Socket`". Не баг (`TCP_NODELAY`/`SO_KEEPALIVE`
-/// одинаково действуют что до, что после `connect()`), но расхождение между
-/// текстом и кодом — а Task 4 (`http-ng-rt-smol`) собирался бы копировать
-/// именно этот файл. И `nodelay`, и `keepalive` у `socket2::Socket` можно
-/// выставить до `connect()`; исключений, которые пришлось бы оставить
-/// пост-коннекту, не нашлось — весь лист теперь в одном месте.
+/// Fix round 1 (coordinator): previously, `nodelay`/`keepalive` were
+/// applied in a separate step AFTER `connect()`, on the already
+/// tokio-wrapped `TcpStream` (`apply_post_connect`), even though this
+/// comment already promised "once, on the `socket2::Socket`" at the time.
+/// Not a bug (`TCP_NODELAY`/`SO_KEEPALIVE` behave identically whether set
+/// before or after `connect()`), but a mismatch between the text and the
+/// code — and Task 4 (`http-ng-rt-smol`) was going to copy this exact
+/// file. Both `nodelay` and `keepalive` can be set on a `socket2::Socket`
+/// before `connect()`; no exception turned up that would have to stay
+/// post-connect — the whole list now lives in one place.
 fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::Socket> {
     let domain = socket2::Domain::for_address(addr);
     let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
@@ -151,38 +158,37 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "boom")]
     async fn blocking_propagates_the_original_panic_payload() {
-        // Проверяет `resume_unwind`, а не текст `.expect(...)`: если бы
-        // `run` просто делал `.expect("blocking task panicked")`, сообщение
-        // паники здесь было бы этой строкой, а не `"boom"` — оригинальный
-        // payload замыкания терялся бы.
+        // Checks `resume_unwind`, not the text of `.expect(...)`: if `run`
+        // simply did `.expect("blocking task panicked")`, the panic
+        // message here would be that string, not `"boom"` — the closure's
+        // original payload would be lost.
         let _ = Tokio.run(|| panic!("boom")).await;
     }
 
     #[test]
     fn classify_reports_cancelled_for_a_join_error_that_is_not_a_panic() {
-        // `Tokio::run`'s собственный `spawn_blocking`-хендл приватный — извне
-        // нет крючка, чтобы вызвать `.abort()` именно на нём. Вместо этого
-        // тест строит РЕАЛЬНЫЙ `tokio::task::JoinError` с `is_cancelled() ==
-        // true, is_panic() == false` — ровно ту форму, которую `classify`
-        // обязана превращать в `Cancelled` — тем же способом, которым его
-        // производит сам tokio: `spawn_blocking`-задача, всё ещё стоящая в
-        // очереди пула, отменяется до того, как рабочий поток успевает её
-        // забрать.
+        // `Tokio::run`'s own `spawn_blocking` handle is private — there's no
+        // hook from outside to call `.abort()` on it specifically. Instead,
+        // the test builds a REAL `tokio::task::JoinError` with
+        // `is_cancelled() == true, is_panic() == false` — exactly the shape
+        // `classify` must turn into `Cancelled` — the same way tokio itself
+        // produces it: a `spawn_blocking` task still queued on the pool is
+        // cancelled before a worker thread gets to pick it up.
         //
-        // Гонка с НАСТОЯЩИМ shutdown рантайма была опробована первой и
-        // отвергнута: с `max_blocking_threads(1)`, занятым единственным
-        // потоком, второй `spawn_blocking` ставится в очередь, наблюдающая
-        // задача (`tokio::spawn(async { Tokio.run(f).await })`) ждёт его, и
-        // `Runtime::shutdown_timeout` вызывается сразу же — но саму
-        // наблюдающую задачу shutdown стабильно убивал раньше, чем она
-        // успевала отчитаться о результате, ДАЖЕ в прогонах, где блокирующее
-        // замыкание уже успело выполниться (`BLOCKING_RAN=true`, но канал
-        // всё равно `Disconnected`). Подтверждено эмпирически (5/5 прогонов)
-        // одноразовым пробником на tokio 1.53.1 вне этого крейта — гонка
-        // с shutdown целого рантайма ненадёжна как основа для теста.
-        // `AbortHandle::abort()` на ещё не забранной из очереди задаче —
-        // детерминированный, документированный способ получить ту же форму
-        // `JoinError` без этой гонки (тоже проверено эмпирически, 5/5).
+        // Racing an ACTUAL runtime shutdown was tried first and rejected:
+        // with `max_blocking_threads(1)` occupied by its single thread, a
+        // second `spawn_blocking` gets queued, an observer task
+        // (`tokio::spawn(async { Tokio.run(f).await })`) awaits it, and
+        // `Runtime::shutdown_timeout` is called immediately after — but
+        // shutdown consistently killed the observer task itself before it
+        // could report its result, EVEN in runs where the blocking closure
+        // had already executed (`BLOCKING_RAN=true`, yet the channel was
+        // still `Disconnected`). Confirmed empirically (5/5 runs) with a
+        // throwaway probe on tokio 1.53.1 outside this crate — racing a
+        // whole-runtime shutdown is not a reliable basis for a test.
+        // `AbortHandle::abort()` on a task not yet picked up from the queue
+        // is a deterministic, documented way to get the same `JoinError`
+        // shape without that race (also confirmed empirically, 5/5).
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .max_blocking_threads(1)
@@ -191,9 +197,9 @@ mod tests {
             .unwrap();
 
         rt.block_on(async {
-            // Занимаем единственный блокирующий поток, чтобы второй
-            // `spawn_blocking` гарантированно встал в очередь, а не начал
-            // выполняться немедленно.
+            // Occupy the single blocking thread so the second
+            // `spawn_blocking` is guaranteed to queue up rather than start
+            // running immediately.
             let (started_tx, started_rx) = mpsc::channel::<()>();
             let (release_tx, release_rx) = mpsc::channel::<()>();
             let occupier = tokio::task::spawn_blocking(move || {
@@ -207,22 +213,22 @@ mod tests {
             let handle = tokio::task::spawn_blocking(move || {
                 ran_inner.store(true, Ordering::SeqCst);
             });
-            // Дать планировщику время реально протолкнуть задачу в очередь
-            // пула (в этой версии это происходит синхронно внутри
-            // `spawn_blocking`, но щедрый запас не вредит).
+            // Give the scheduler time to actually push the task into the
+            // pool's queue (in this version it happens synchronously
+            // inside `spawn_blocking`, but a generous margin doesn't hurt).
             tokio::time::sleep(Duration::from_millis(20)).await;
 
             handle.abort();
-            // Освобождаем "оккупанта", чтобы рабочий поток вообще дошёл до
-            // очереди и обработал отменённую задачу.
+            // Release the "occupier" so the worker thread actually reaches
+            // the queue and processes the cancelled task.
             let _ = release_tx.send(());
             let join_err = handle
                 .await
-                .expect_err("aborted-до-запуска задача обязана вернуть JoinError");
+                .expect_err("a task aborted before it ran must return a JoinError");
 
             assert!(
                 !ran.load(Ordering::SeqCst),
-                "замыкание не должно было выполниться"
+                "the closure should never have run"
             );
             assert!(join_err.is_cancelled());
             assert!(!join_err.is_panic());
@@ -246,25 +252,26 @@ mod tests {
             ..Default::default()
         };
         let s = Tokio.connect(addr, &opts).await.expect("connect");
-        // Не только "соединение состоялось" (это прошло бы даже если
-        // `build_socket` тихо игнорировал `opts`), а что `nodelay: true`
-        // реально долетело до сокета: читаем опцию обратно с самого
-        // `TcpStream`, а не полагаемся на факт вызова.
+        // Not just "the connection succeeded" (that would pass even if
+        // `build_socket` silently ignored `opts`), but that `nodelay: true`
+        // actually reached the socket: read the option back from the
+        // `TcpStream` itself, rather than relying on the call having
+        // happened.
         assert!(
             s.get_ref().nodelay().expect("nodelay query"),
-            "TcpOpts::nodelay не применилась к соединённому сокету"
+            "TcpOpts::nodelay was not applied to the connected socket"
         );
     }
 
     #[tokio::test]
     async fn connects_with_keepalive_enabled() {
-        // Тот же принцип, что и у nodelay-теста выше, для второй опции,
-        // переехавшей в `build_socket` в этом раунде правок: `keepalive`
-        // читается обратно, а не только проверяется, что `connect()`
-        // вернул `Ok`. `tokio::net::TcpStream` не даёт геттер для
-        // `SO_KEEPALIVE` напрямую — используем `socket2::SockRef`, как и
-        // `apply_post_connect` (в прежней версии этого файла) использовал
-        // его же, только для записи, а не для чтения.
+        // The same principle as the nodelay test above, for the second
+        // option that moved into `build_socket` in this round of fixes:
+        // `keepalive` is read back, not just checked for `connect()`
+        // returning `Ok`. `tokio::net::TcpStream` gives no direct getter
+        // for `SO_KEEPALIVE` — use `socket2::SockRef`, the same type
+        // `apply_post_connect` (in the earlier version of this file) used,
+        // just for reading instead of writing.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -281,7 +288,7 @@ mod tests {
             .expect("keepalive query");
         assert!(
             enabled,
-            "TcpOpts::keepalive не применилась к соединённому сокету"
+            "TcpOpts::keepalive was not applied to the connected socket"
         );
     }
 }

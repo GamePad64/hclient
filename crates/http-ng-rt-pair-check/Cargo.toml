@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-rt-pair-check"
 version = "0.1.0"
-description = "Доказательство: один и тот же клиентский код гоняет способности рантайма на tokio и на smol без единого #[cfg]"
+description = "Proof: the same client code runs the runtime capabilities on both tokio and smol without a single #[cfg]"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

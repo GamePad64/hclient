@@ -1,44 +1,47 @@
-//! Сквозной пример: тот же прикладной код, который в вертикали 2 заработает
-//! на native, а в вертикали 3 — в браузере. Между вертикалями меняется
-//! только тип транспорта (`WasiHttp` здесь, что-то вроде `NativeHttp`/
-//! `TokioHttp` в вертикали 2, `FetchHttp` в вертикали 3) — вызов
-//! `Client::builder(transport).build()` и всё, что после него, нет.
+//! End-to-end example: the same application code that will work on native
+//! in vertical 2, and in the browser in vertical 3. Only the transport
+//! type changes between verticals (`WasiHttp` here, something like
+//! `NativeHttp`/`TokioHttp` in vertical 2, `FetchHttp` in vertical 3) —
+//! the `Client::builder(transport).build()` call and everything after it,
+//! no.
 //!
-//! # Почему это не `fn main()`
+//! # Why this isn't `fn main()`
 //!
-//! Установлено, а не предположено — Task 16 воспроизвёл это на живом
-//! прогоне под wasmtime, и тот же вывод независимо получен при подготовке
-//! этого примера. Обычный `fn main()`, вызывающий
-//! `futures::executor::block_on(fut)`, на `wasm32-wasip2` компилируется в
-//! СИНХРОННЫЙ экспорт `wasi:cli/run@0.2.0` — тот, что даёт rustc-таргет из
-//! коробки. Синхронная (не async-lifted) корневая задача Component Model не
-//! умеет по-настоящему асинхронно ЖДАТЬ (`task.wait`) свои сабтаски, а
-//! `wasip3::http::client::send(..).await` внутри `WasiHttp::execute` именно
-//! этого и требует, раз `wasi:http` 0.3 — асинхронный протокол. Как только
-//! исполнение доходит до точки, где неблокирующе опрашивать больше нечего и
-//! нужно по-настоящему подождать сабтаску, wasmtime трапает: `cannot block a
-//! synchronous task before returning`. Ждать сабтаски может только
-//! АСИНХРОННЫЙ корневой экспорт `wasi:cli/run@0.3.0`, которому его даёт
-//! `wasip3::cli::command::export!` — отсюда форма ниже, а не `fn main()`.
-//! Подробнее и с источниками (`wasip3::http_compat`) — doc-комментарий
-//! `examples/live_roundtrip_guest.rs`, где та же коллизия была найдена
-//! первой.
+//! Established, not assumed — Task 16 reproduced this on a live run
+//! under wasmtime, and the same conclusion was independently reached
+//! while preparing this example. An ordinary `fn main()` calling
+//! `futures::executor::block_on(fut)` compiles, on `wasm32-wasip2`, to a
+//! SYNCHRONOUS `wasi:cli/run@0.2.0` export — the one the rustc target
+//! gives you out of the box. A synchronous (not async-lifted) root task
+//! in the Component Model can't genuinely WAIT (`task.wait`) on its
+//! subtasks, and `wasip3::http::client::send(..).await` inside
+//! `WasiHttp::execute` requires exactly that, since `wasi:http` 0.3 is an
+//! asynchronous protocol. The moment execution reaches a point with
+//! nothing left to poll non-blockingly and a genuine wait on a subtask is
+//! needed, wasmtime traps: `cannot block a synchronous task before
+//! returning`. Only an ASYNCHRONOUS root export, `wasi:cli/run@0.3.0`,
+//! can wait on subtasks, and `wasip3::cli::command::export!` is what
+//! gives you that — hence the shape below, not `fn main()`. More detail
+//! and sources (`wasip3::http_compat`) — the doc comment on
+//! `examples/live_roundtrip_guest.rs`, where this same collision was
+//! found first.
 //!
-//! Собрать: `cargo build -p http-ng-wasi --example fetch --target
-//! wasm32-wasip2`. Запустить (нужен исходящий доступ к сети):
-//! `wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm`
-//! (флаг `-S http` подключает `wasi:http` 0.3 хосту — без него импорт
-//! `wasi:http/outgoing-handler` не свяжется, см. `.cargo/config.toml`, где
-//! тот же флаг подключён для `cargo run`/`cargo test`).
+//! Build: `cargo build -p http-ng-wasi --example fetch --target
+//! wasm32-wasip2`. Run (needs outbound network access): `wasmtime run -S
+//! http -- target/wasm32-wasip2/debug/examples/fetch.wasm` (the `-S http`
+//! flag wires `wasi:http` 0.3 up to the host — without it the
+//! `wasi:http/outgoing-handler` import won't link, see
+//! `.cargo/config.toml`, where the same flag is wired up for `cargo
+//! run`/`cargo test`).
 //!
-//! `#![cfg(target_arch = "wasm32")]`: та же причина, что у
-//! `live_roundtrip_guest.rs` — `wasip3::cli::command::export!` генерирует
-//! имя экспорта Component Model, которое нативный линковщик отвергает, а
-//! `cargo test --workspace` (без `--target`, то есть каждый non-wasip2 CI
-//! job) всё равно собирает каждый `[[example]]` воркспейса под хост. Без
-//! этого гейта одно только существование файла ломало бы
-//! `cargo test --workspace` на всех платформах; с ним — пустой безобидный
-//! нативный `cdylib`.
+//! `#![cfg(target_arch = "wasm32")]`: same reason as
+//! `live_roundtrip_guest.rs` — `wasip3::cli::command::export!` generates
+//! a Component Model export name the native linker rejects, and `cargo
+//! test --workspace` (without `--target`, i.e. every non-wasip2 CI job)
+//! still builds every `[[example]]` in the workspace for the host
+//! regardless. Without this gate, the mere existence of this file would
+//! break `cargo test --workspace` on every platform; with it, an empty,
+//! harmless native `cdylib` instead.
 #![cfg(target_arch = "wasm32")]
 
 use http_ng::Client;

@@ -1,25 +1,29 @@
-/// Разбивает байтовый поток на строки по правилам WHATWG EventSource:
-/// снимается ровно один ведущий BOM, терминаторы — CRLF, LF или одиночный CR.
-/// Переживает разрыв чанка в любом месте, включая середину BOM и между CR и LF.
+/// Splits a byte stream into lines per the WHATWG EventSource rules:
+/// exactly one leading BOM is stripped, terminators are CRLF, LF, or a lone
+/// CR. Survives a chunk break at any point, including mid-BOM and between
+/// CR and LF.
 #[derive(Debug)]
 pub(crate) struct LineSplitter {
     buf: Vec<u8>,
-    /// Сколько байт с начала `buf` уже отдано наружу.
+    /// How many bytes from the start of `buf` have already been handed out.
     ///
-    /// Существует ради сложности: сдвигать буфер на каждой строке
-    /// (`drain(..pos)` + `remove(0)`) стоит O(n·k) для чанка с k строками.
-    /// Замерено на прошлой версии: 50k коротких строк — 51 мс, 100k — 225 мс,
-    /// 200k — 925 мс, то есть 4× на каждое удвоение. Это парсер недоверенного
-    /// тела ответа, так что квадратичность здесь — вектор атаки.
+    /// Exists for complexity reasons: shifting the buffer on every line
+    /// (`drain(..pos)` + `remove(0)`) costs O(n·k) for a chunk with k
+    /// lines. Measured on the previous version: 50k short lines — 51 ms,
+    /// 100k — 225 ms, 200k — 925 ms, i.e. 4× per doubling. This is a
+    /// parser for an untrusted response body, so quadratic behavior here
+    /// is an attack vector.
     start: usize,
-    /// Сколько байт BOM уже подтверждено. 3 = BOM обработан (снят или отвергнут).
+    /// How many BOM bytes have already been confirmed. 3 = the BOM has
+    /// been resolved (stripped or rejected).
     bom_seen: usize,
     bom_done: bool,
-    /// Предыдущий байт был CR — следующий LF надо проглотить.
+    /// The previous byte was CR — the next LF must be swallowed.
     pending_cr: bool,
-    /// Байт терминатора, проглоченный на границе чанка (LF, догнавший CR из
-    /// предыдущего `push`). Начисляется следующей возвращённой строке: иначе
-    /// лимит размера события недоучитывает до ~1.5× при побайтовой доставке.
+    /// A terminator byte swallowed at a chunk boundary (an LF that caught
+    /// up with a CR from the previous `push`). Credited to the next line
+    /// returned: otherwise the event size limit undercounts by up to ~1.5×
+    /// under byte-at-a-time delivery.
     carried_terminator: usize,
 }
 
@@ -38,7 +42,7 @@ impl LineSplitter {
     }
 
     pub(crate) fn push(&mut self, chunk: &[u8]) {
-        // Компактация раз в push, а не раз в строку: суммарно линейно.
+        // Compaction once per push, not once per line: linear overall.
         if self.start > 0 {
             self.buf.drain(..self.start);
             self.start = 0;
@@ -46,17 +50,17 @@ impl LineSplitter {
 
         let mut rest = chunk;
 
-        // Фаза BOM: копим до трёх байт, решаем один раз.
+        // BOM phase: accumulate up to three bytes, decide once.
         while !self.bom_done && !rest.is_empty() {
             let b = rest[0];
             if b == BOM[self.bom_seen] {
                 self.bom_seen += 1;
                 rest = &rest[1..];
                 if self.bom_seen == 3 {
-                    self.bom_done = true; // BOM снят целиком
+                    self.bom_done = true; // BOM stripped in full
                 }
             } else {
-                // Не BOM: то, что накопили, — обычные данные.
+                // Not a BOM: what we accumulated is ordinary data.
                 self.buf.extend_from_slice(&BOM[..self.bom_seen]);
                 self.bom_done = true;
             }
@@ -74,38 +78,39 @@ impl LineSplitter {
         }
     }
 
-    /// Возвращает строку и число реально потреблённых байт **включая
-    /// терминатор**. Потребитель обязан считать лимит по этому числу, а не по
-    /// `line.len() + 1`: CRLF занимает два байта, и предположение об
-    /// однобайтовом терминаторе даёт недоучёт, растущий с числом строк.
+    /// Returns the line and the number of bytes actually consumed
+    /// **including the terminator**. The consumer must count the limit
+    /// against this number, not against `line.len() + 1`: CRLF takes two
+    /// bytes, and assuming a one-byte terminator undercounts, growing with
+    /// the number of lines.
     ///
-    /// Точен и при разрыве CRLF границей чанка: проглоченный в `push` LF
-    /// накапливается в `carried_terminator` и начисляется здесь той строке,
-    /// что вернётся первой после его прихода.
+    /// Accurate even when a CRLF is split by a chunk boundary: the LF
+    /// swallowed in `push` accumulates in `carried_terminator` and is
+    /// credited here to whichever line is returned first after it arrives.
     pub(crate) fn next_line(&mut self) -> Option<(Vec<u8>, usize)> {
         let hay = &self.buf[self.start..];
         let pos = hay.iter().position(|&b| b == b'\n' || b == b'\r')?;
         let term = hay[pos];
         let line = hay[..pos].to_vec();
         let mut consumed = pos + 1 + core::mem::take(&mut self.carried_terminator);
-        self.start += pos + 1; // строка плюс сам терминатор
+        self.start += pos + 1; // the line plus the terminator itself
         if term == b'\r' {
             if self.buf.get(self.start) == Some(&b'\n') {
                 self.start += 1; // CRLF
                 consumed += 1;
             } else if self.start == self.buf.len() {
-                self.pending_cr = true; // CR в конце — LF может прийти следующим чанком
+                self.pending_cr = true; // CR at the end — the LF may arrive in the next chunk
             }
         }
         Some((line, consumed))
     }
 
     pub(crate) fn buffered_len(&self) -> usize {
-        // Байты BOM, по которым решение ещё не принято, физически удержаны.
-        // Не учитывать их — значит дать обойти лимит размера события в декодере.
-        // carried_terminator — тот же случай: LF, проглоченный на границе чанка,
-        // ещё не отдан ни одной строке (следующей строки пока просто нет), но
-        // он уже реально потреблён с провода.
+        // BOM bytes not yet resolved are physically held. Not counting
+        // them would let the event size limit in the decoder be bypassed.
+        // carried_terminator is the same case: an LF swallowed at a chunk
+        // boundary, not yet handed to any line (there simply isn't a next
+        // line yet), but already actually consumed off the wire.
         (self.buf.len() - self.start)
             + if self.bom_done { 0 } else { self.bom_seen }
             + self.carried_terminator
@@ -139,7 +144,7 @@ mod tests {
     #[test]
     fn strips_exactly_one_bom() {
         assert_eq!(collect(&[b"\xEF\xBB\xBFa\n"]), vec![b"a".to_vec()]);
-        // второй BOM — обычные данные
+        // a second BOM is ordinary data
         assert_eq!(
             collect(&[b"\xEF\xBB\xBF\xEF\xBB\xBFa\n"]),
             vec![b"\xEF\xBB\xBFa".to_vec()]
@@ -162,16 +167,21 @@ mod tests {
         );
     }
 
-    /// Регресс на недоучёт LF, проглоченного на границе чанка. До фикса
-    /// `carried_terminator` этот байт нигде не начислялся: сумма `consumed`
-    /// по обеим строкам получалась 6 вместо 7 реально потреблённых байт.
+    /// Regression for undercounting an LF swallowed at a chunk boundary.
+    /// Before the `carried_terminator` fix, this byte was never credited
+    /// anywhere: the sum of `consumed` across both lines came out to 6
+    /// instead of the 7 bytes actually consumed.
     #[test]
     fn carries_swallowed_lf_across_push_to_next_line_accounting() {
         let mut s = LineSplitter::new();
         s.push(b"ab\r");
         let (line1, consumed1) = s.next_line().expect("CR terminates the first line");
         assert_eq!(line1, b"ab");
-        assert_eq!(s.next_line(), None, "буфер пуст, CR ждёт возможный LF");
+        assert_eq!(
+            s.next_line(),
+            None,
+            "the buffer is empty, CR is waiting for a possible LF"
+        );
 
         s.push(b"\ncd\n");
         let (line2, consumed2) = s.next_line().expect("LF terminates the second line");
@@ -180,21 +190,22 @@ mod tests {
         assert_eq!(
             consumed1 + consumed2,
             7,
-            "суммарно потреблено должно совпадать с суммой длин чанков \
-             (\"ab\\r\" = 3 + \"\\ncd\\n\" = 4 = 7), иначе LF, проглоченный на \
-             границе чанка, потерян и лимит размера события недоучитывает"
+            "total consumed must match the sum of chunk lengths \
+             (\"ab\\r\" = 3 + \"\\ncd\\n\" = 4 = 7), otherwise the LF swallowed \
+             at the chunk boundary is lost and the event size limit undercounts"
         );
     }
 
-    /// Регресс на недоучёт в `buffered_len()`: между двумя разрывами CRLF
-    /// подряд `carried_terminator` может держать 1 байт, который ещё не
-    /// отдан ни одной строке (следующей строки в буфере пока нет вовсе), но
-    /// уже реально потреблён с провода. `"x\r"` → строка "x" (CR в конце,
-    /// LF неизвестен); `"\ny\r"` → LF из предыдущего чанка проглочен и
-    /// начислен строке "y", новый CR снова повисает; `"\nz"` → LF из
-    /// предыдущего чанка проглочен, строки нет (в "z" нет терминатора), и
-    /// этот байт обязан быть виден в `buffered_len()`, иначе сумма
-    /// потреблённого меньше суммы поданного.
+    /// Regression for undercounting in `buffered_len()`: between two
+    /// consecutive CRLF splits, `carried_terminator` can hold 1 byte not
+    /// yet handed to any line (there isn't a next line in the buffer at
+    /// all yet), but already actually consumed off the wire. `"x\r"` → line
+    /// "x" (CR at the end, LF unknown); `"\ny\r"` → the LF from the
+    /// previous chunk is swallowed and credited to line "y", a new CR
+    /// hangs again; `"\nz"` → the LF from the previous chunk is swallowed,
+    /// there's no line (there's no terminator in "z"), and this byte must
+    /// be visible in `buffered_len()`, or the sum consumed is less than the
+    /// sum fed in.
     #[test]
     fn buffered_len_counts_a_pending_carried_terminator() {
         let mut s = LineSplitter::new();
@@ -213,15 +224,15 @@ mod tests {
         assert_eq!(
             s.next_line(),
             None,
-            "\"z\" не терминирована, строки ещё нет"
+            "\"z\" isn't terminated, there's no line yet"
         );
 
         assert_eq!(
             consumed1 + consumed2 + s.buffered_len(),
             7,
-            "суммарно учтено (consumed обеих строк + buffered_len) должно \
-             совпадать с суммой длин чанков (\"x\\r\" = 2 + \"\\ny\\r\" = 3 + \
-             \"\\nz\" = 2 = 7); иначе непринятый carried_terminator потерян"
+            "total accounted for (consumed of both lines + buffered_len) must \
+             match the sum of chunk lengths (\"x\\r\" = 2 + \"\\ny\\r\" = 3 + \
+             \"\\nz\" = 2 = 7); otherwise an unclaimed carried_terminator is lost"
         );
     }
 
@@ -249,20 +260,21 @@ mod tests {
         );
     }
 
-    /// Единственный тест, покрывающий учёт байт BOM, по которым решение ещё не
-    /// принято. `incomplete_line_is_withheld` его не покрывает: там BOM нет вовсе.
+    /// The one test covering accounting for BOM bytes not yet resolved.
+    /// `incomplete_line_is_withheld` doesn't cover this: there's no BOM
+    /// there at all.
     #[test]
     fn buffered_len_counts_bytes_held_inside_an_undecided_bom() {
         let mut s = LineSplitter::new();
-        s.push(&[0xEF, 0xBB]); // два из трёх байт BOM — решение ещё не принято
+        s.push(&[0xEF, 0xBB]); // two of the three BOM bytes — not yet resolved
         assert_eq!(
             s.buffered_len(),
             2,
-            "недоучёт даёт обойти лимит размера события в декодере"
+            "undercounting lets the event size limit in the decoder be bypassed"
         );
         assert_eq!(s.next_line(), None);
 
-        s.push(&[0xBF]); // BOM собрался целиком и снят
+        s.push(&[0xBF]); // the BOM is complete and stripped
         assert_eq!(s.buffered_len(), 0);
 
         s.push(b"ab");
@@ -278,17 +290,17 @@ mod tests {
             data: Vec<u8>,
             splits in proptest::collection::vec(0usize..4096, 0..4),
         ) {
-            // Случайный Vec<u8> практически никогда не начнётся с EF BB BF
-            // (1 к 16 млн), поэтому BOM подставляется явно.
+            // A random Vec<u8> will almost never start with EF BB BF
+            // (1 in 16 million), so the BOM is inserted explicitly.
             let mut input = Vec::new();
             if prefix_bom { input.extend_from_slice(&[0xEF, 0xBB, 0xBF]) }
             input.extend_from_slice(&data);
 
             let whole = collect(&[&input]);
 
-            // Произвольное число кусков в произвольных местах: двух мало —
-            // состояние (pending_cr, фаза BOM) должно переживать несколько
-            // границ подряд.
+            // An arbitrary number of pieces at arbitrary points: two isn't
+            // enough — the state (pending_cr, the BOM phase) must survive
+            // several consecutive boundaries.
             let mut cuts: Vec<usize> = splits.iter().map(|s| s % (input.len() + 1)).collect();
             cuts.sort_unstable();
             let mut chunks: Vec<&[u8]> = Vec::new();
@@ -303,56 +315,63 @@ mod tests {
         }
     }
 
-    /// Регресс на квадратичность.
+    /// Regression for quadratic behavior.
     ///
-    /// Порог по абсолютному времени бесполезен, и это проверено: ре-ревью
-    /// скопировало тело прежней версии этого теста в квадратичный код, и оно
-    /// прошло за 0.26 с при бюджете 2 с. Поэтому проверяется КЛАСС сложности —
-    /// отношение времён при четырёхкратном росте входа. Линейность предсказывает
-    /// ~4×, квадратичность ~16×; порог 8× оставляет запас на шум планировщика и
-    /// при этом отделяет один класс от другого.
+    /// A threshold on absolute time is useless, and this has been verified:
+    /// a re-review copied the body of this test's previous version into
+    /// quadratic code, and it passed in 0.26 s against a 2 s budget. So
+    /// what's checked is the complexity CLASS — the ratio of times under a
+    /// fourfold growth in input. Linearity predicts ~4×, quadratic behavior
+    /// ~16×; an 8× threshold leaves headroom for scheduler noise while
+    /// still separating one class from the other.
     ///
-    /// Гоняется в собственном CI-джобе (`sse-complexity-guard`, `ci.yml`),
-    /// НЕ разделяя раннер с `cargo test --workspace --all-features` — это и
-    /// есть первичная защита от флейка (Task 14, review round 1, Finding 4).
-    /// Устойчивый overcommit раннера (несколько тяжёлых `cargo test` процессов
-    /// одновременно) измеренно ломает best-of-N как основной антидот: у
-    /// длинного "large"-замера нет структурной возможности увернуться от
-    /// вытеснения ни в одной из попыток, а у короткого "small" — есть, так
-    /// что минимум по пяти попыткам сходился к тому же завышенному отношению
-    /// (до 18.9× при пороге 8.0×), что и одиночный замер, а не фильтровал
-    /// его — best-of-N усиливал смещение, а не гасил его. Изоляция устраняет
-    /// именно устойчивый overcommit; `best_of_three` ниже — вторичная защита
-    /// ТОЛЬКО от разового шума планировщика (GC-пауза, случайный сосед по
-    /// гипервизору на общем облачном раннере), который изоляция не исключает
-    /// сама по себе. Порог 8× не тронут: это единственная часть, которая и
-    /// так работала, и именно она отделяет линейность от O(n²) — расширение
-    /// порога не годится: под тем же устойчивым overcommit заведомо линейный
-    /// код доходил до 18.9×, так что порог, устойчивый к такому шуму, пропустил
-    /// бы и настоящую квадратичную регрессию.
+    /// Runs in its own CI job (`sse-complexity-guard`, `ci.yml`), NOT
+    /// sharing a runner with `cargo test --workspace --all-features` — this
+    /// is the primary defense against flakiness (Task 14, review round 1,
+    /// Finding 4). Sustained runner overcommit (several heavy `cargo test`
+    /// processes at once) has been measured to break best-of-N as the main
+    /// antidote: the long "large" measurement has no structural way to
+    /// dodge preemption in any of its attempts, while the short "small" one
+    /// does, so the minimum over five attempts converged to the same
+    /// inflated ratio (up to 18.9× against an 8.0× threshold) as a single
+    /// measurement, rather than filtering it out — best-of-N amplified the
+    /// bias instead of damping it. Isolation eliminates specifically
+    /// sustained overcommit; `best_of_three` below is a secondary defense
+    /// ONLY against one-off scheduler noise (a GC pause, a random neighbor
+    /// on a shared cloud runner's hypervisor), which isolation alone
+    /// doesn't rule out. The 8× threshold is untouched: it's the one part
+    /// that already worked, and it's exactly what separates linearity from
+    /// O(n²) — widening the threshold doesn't work: under that same
+    /// sustained overcommit, known-linear code reached 18.9×, so a
+    /// threshold robust to that kind of noise would let a genuine quadratic
+    /// regression through too.
     ///
-    /// Калибровка (порог 30 мс, а не 1 мс) — отдельный фикс поверх изоляции
-    /// (review round 3): изоляция убрала шум overcommit'а, но обнажила ДРУГОЙ
-    /// шум, бывший всегда, — просто раньше его перекрывал шум overcommit'а.
-    /// При пороге калибровки 1 мс тест останавливался на n порядка 8–16
-    /// тысяч строк, где сам замер укладывается в 1–7 мс — это глубоко в шуме
-    /// таймера/аллокатора/кэша: 8 прогонов изолированного джоба с намеренно
-    /// возвращённым квадратичным `next_line` (до фикса на `start`, посимвольный
-    /// `drain`/`remove(0)`) дали 5 честных провалов и 3 ложных прохода, с
-    /// отношениями 7.7–7.9 против порога 8.0 — тест путал шум измерения с
-    /// сигналом. Замерено отдельно: та же квадратичная мутация при n от 50к до
-    /// 400к даёт устойчивое ~4× время на удвоение входа (а не ~2×, как у
-    /// линейного кода) — сам сигнал реален, недостаточен был только размер
-    /// замера. При пороге 30 мс калибровка на этой машине останавливается на
-    /// n=400 000 (small ≈ 47–53 мс, large ≈ 195–197 мс, отношение 3.7–4.16 на
-    /// линейном коде за 10 прогонов подряд, без единого промаха) — тот же
-    /// порядок величины, что у исходных замеров Task 2 (50к/100к/200к строк —
-    /// 51/225/925 мс, но то была СТАРАЯ квадратичная реализация; нынешняя
-    /// линейная на том же диапазоне входа кладёт сигнал далеко за пределы
-    /// шума, а не только-только его касается). Cтоимость всего теста на этом
-    /// же порядке (доли секунды) приемлема именно потому, что изоляция из
-    /// review round 1 избавила его от необходимости делить раннер с чем-либо
-    /// ещё — раньше эта же цена считалась бы неприемлемой в общем прогоне.
+    /// Calibration (a 30 ms threshold, not 1 ms) is a separate fix on top
+    /// of isolation (review round 3): isolation removed the overcommit
+    /// noise, but exposed a DIFFERENT noise that had always been there —
+    /// it was just previously masked by the overcommit noise. At a 1 ms
+    /// calibration threshold, the test would stop at n on the order of
+    /// 8–16 thousand lines, where the measurement itself lands at 1–7 ms —
+    /// deep in timer/allocator/cache noise: 8 runs of the isolated job with
+    /// a deliberately reintroduced quadratic `next_line` (before the fix on
+    /// `start`, character-by-character `drain`/`remove(0)`) gave 5 honest
+    /// failures and 3 false passes, with ratios of 7.7–7.9 against the 8.0
+    /// threshold — the test was confusing measurement noise with signal.
+    /// Measured separately: the same quadratic mutation at n from 50k to
+    /// 400k gives a steady ~4× time per input doubling (not ~2×, as for
+    /// linear code) — the signal itself is real, only the measurement's
+    /// size was insufficient. At a 30 ms threshold, calibration on this
+    /// machine stops at n=400,000 (small ≈ 47–53 ms, large ≈ 195–197 ms,
+    /// ratio 3.7–4.16 on linear code across 10 consecutive runs, without a
+    /// single miss) — the same order of magnitude as Task 2's original
+    /// measurements (50k/100k/200k lines — 51/225/925 ms, but that was the
+    /// OLD quadratic implementation; the current linear one over the same
+    /// input range puts the signal well clear of the noise, rather than
+    /// just barely touching it). The whole test's cost, on that same order
+    /// (fractions of a second), is acceptable precisely because the
+    /// isolation from review round 1 freed it from having to share a
+    /// runner with anything else — previously this same cost would have
+    /// been considered unacceptable in the shared run.
     #[test]
     fn parsing_scales_linearly_not_quadratically() {
         fn parse_millis(lines: usize) -> f64 {
@@ -367,23 +386,24 @@ mod tests {
             elapsed
         }
 
-        // Минимум из трёх попыток — вторичная защита, см. doc-комментарий
-        // теста про то, почему это не первичная защита.
+        // Minimum of three attempts — secondary defense, see the test's
+        // doc comment for why this isn't the primary defense.
         fn best_of_three(lines: usize) -> f64 {
             (0..3)
                 .map(|_| parse_millis(lines))
                 .fold(f64::INFINITY, f64::min)
         }
 
-        // Разогрев: первый прогон платит за аллокатор и прогрев кэша.
+        // Warm-up: the first run pays for the allocator and cache warming.
         let _ = parse_millis(2_000);
 
-        // Поднимаем базовый размер, пока замер тонет в разрешении таймера:
-        // отношение двух шумов не значит ничего. Калибровка — одиночным
-        // замером: тут нужна только грубая оценка порядка величины, а не
-        // борьба с шумом (та начинается только у настоящего измерения ниже).
-        // Порог 30 мс (не 1 мс) и потолок 4 000 000 (не 64 000) — см.
-        // doc-комментарий теста про промахи на прежнем пороге.
+        // Raise the base size while the measurement is drowning in timer
+        // resolution: the ratio of two noises means nothing. Calibration
+        // uses a single measurement: only a rough order-of-magnitude
+        // estimate is needed here, not a fight against noise (that only
+        // starts with the real measurement below). The 30 ms threshold
+        // (not 1 ms) and the 4,000,000 ceiling (not 64,000) — see the
+        // test's doc comment on the misses at the previous threshold.
         let mut n = 50_000;
         while parse_millis(n) < 30.0 && n < 4_000_000 {
             n *= 2;
@@ -395,8 +415,8 @@ mod tests {
         let ratio = large / small.max(0.001);
         assert!(
             ratio < 8.0,
-            "вход вырос в 4 раза, время — в {ratio:.1} ({small:.2} мс -> {large:.2} мс \
-             при n={n}): похоже на O(n^2)"
+            "input grew 4×, time grew {ratio:.1}× ({small:.2} ms -> {large:.2} ms \
+             at n={n}): looks like O(n^2)"
         );
     }
 }

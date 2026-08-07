@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-native"
 version = "0.1.0"
-description = "Native-транспорт http-ng: TCP + TLS + HTTP/1.1 на hyper"
+description = "Native transport for http-ng: TCP + TLS + HTTP/1.1 on hyper"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

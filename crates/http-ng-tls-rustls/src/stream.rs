@@ -5,12 +5,13 @@ use std::task::{Context, Poll, ready};
 
 const SCRATCH: usize = 16 * 1024;
 
-/// TLS поверх любого `hyper::rt`-транспорта.
+/// TLS over any `hyper::rt` transport.
 ///
-/// Построен на поверхности rustls, стабильной с 0.20: `read_tls` /
-/// `process_new_packets` / `wants_write` / `write_tls`. **Не** на `unbuffered`
-/// — тот удалён в main rustls (PR #2905, 2026-02-06), и адаптер на нём пришлось
-/// бы переписывать целиком под 0.24.
+/// Built on the rustls surface that's been stable since 0.20: `read_tls` /
+/// `process_new_packets` / `wants_write` / `write_tls`. **Not**
+/// `unbuffered` — that was removed on rustls main (PR #2905, 2026-02-06),
+/// and an adapter built on it would have to be rewritten wholesale for
+/// 0.24.
 #[derive(Debug)]
 pub struct TlsStream<S> {
     io: S,
@@ -33,29 +34,31 @@ fn tls_err<E: std::error::Error + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(format!("tls: {e}"))
 }
 
-/// Мост `hyper::rt::Write` (асинхронный, poll) → `std::io::Write`
-/// (синхронный, блокирующий) — тот интерфейс, на который написан
-/// `ClientConnection::write_tls`. `Poll::Pending` становится
-/// `Err(WouldBlock)`; вызывающий, получивший `WouldBlock`, обязан отличить
-/// его от настоящей ошибки и вернуть `Poll::Pending` сам, а не ошибку
-/// наверх.
+/// Bridges `hyper::rt::Write` (async, poll-based) → `std::io::Write`
+/// (synchronous, blocking) — the interface `ClientConnection::write_tls`
+/// is written against. `Poll::Pending` becomes `Err(WouldBlock)`; a
+/// caller that gets `WouldBlock` must tell it apart from a real error and
+/// return `Poll::Pending` itself, rather than propagating an error
+/// upward.
 ///
-/// Тот же приём, каким `tokio-rustls` закрывает ровно эту же задачу
-/// (`common/mod.rs::SyncWriteAdapter`, `tokio-rustls-0.26.4`) — не
-/// изобретение этого фикса, а перенос уже проверенного паттерна. Критично
-/// здесь то, что `write_tls` реализован через `ChunkVecBuffer::write_to`
-/// (`rustls-0.23.43 src/vecbuf.rs`), который делает
-/// `wr.write_vectored(bufs)?` и продвигает внутреннюю очередь
-/// (`self.consume(used)`) СТРОГО на то, что вернул `wr` — если `wr` вернул
-/// `Err` (в том числе наш `WouldBlock`), `?` прерывает `write_tls` РАНЬШЕ
-/// `consume`, и внутренняя очередь rustls остаётся нетронутой, сколько бы
-/// раз это ни повторилось. Раньше между rustls и транспортом стоял голый
-/// `Vec<u8>` — `impl Write for Vec<u8>` никогда не отказывает и не умеет
-/// сказать "нет, не всё принял", поэтому `write_tls` безусловно решал, что
-/// записал всё (и продвигал sequence/nonce соответственно), а сам транспорт
-/// эти байты мог ни разу не увидеть, если следующий шаг (перекачка `Vec` в
-/// транспорт) возвращал `Pending` — тогда `Vec` просто терялся вместе с
-/// байтами при досрочном возврате (review finding 1, fix round 1).
+/// The same technique `tokio-rustls` uses to close exactly this same gap
+/// (`common/mod.rs::SyncWriteAdapter`, `tokio-rustls-0.26.4`) — not
+/// invented for this fix, but a proven pattern carried over. What's
+/// critical here is that `write_tls` is implemented via
+/// `ChunkVecBuffer::write_to` (`rustls-0.23.43 src/vecbuf.rs`), which does
+/// `wr.write_vectored(bufs)?` and advances the internal queue
+/// (`self.consume(used)`) STRICTLY by what `wr` returned — if `wr`
+/// returns `Err` (including our `WouldBlock`), the `?` aborts `write_tls`
+/// BEFORE `consume`, and rustls's internal queue is left untouched no
+/// matter how many times this repeats. Previously, a bare `Vec<u8>` sat
+/// between rustls and the transport — `impl Write for Vec<u8>` never
+/// fails and has no way to say "no, I didn't take it all," so
+/// `write_tls` unconditionally decided it had written everything (and
+/// advanced the sequence/nonce accordingly), while the transport itself
+/// might never see those bytes at all if the next step (draining the
+/// `Vec` into the transport) returned `Pending` — the `Vec` would simply
+/// be lost along with the bytes on an early return (review finding 1, fix
+/// round 1).
 struct PollWriter<'a, 'cx, S> {
     io: &'a mut S,
     cx: &'a mut Context<'cx>,
@@ -64,12 +67,12 @@ struct PollWriter<'a, 'cx, S> {
 impl<S: Write + Unpin> std::io::Write for PollWriter<'_, '_, S> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match Pin::new(&mut *self.io).poll_write(self.cx, buf) {
-            // `hyper::rt::Write::poll_write`'s собственный контракт: "A
-            // return value of `0` means that the underlying object is no
-            // longer able to accept bytes" — терминальный отказ, не сигнал
-            // "попробуй ещё раз попозже" (для этого есть `Pending`). Та же
-            // трактовка, что и раньше была на уровне `flush_outgoing`
-            // (`WriteZero`), просто теперь она нужна здесь, а не снаружи.
+            // `hyper::rt::Write::poll_write`'s own contract: "A return
+            // value of `0` means that the underlying object is no longer
+            // able to accept bytes" — a terminal failure, not a "try
+            // again later" signal (that's what `Pending` is for). The
+            // same interpretation `flush_outgoing` used to apply
+            // (`WriteZero`), just needed here now instead of outside.
             Poll::Ready(Ok(0)) if !buf.is_empty() => Err(std::io::ErrorKind::WriteZero.into()),
             Poll::Ready(r) => r,
             Poll::Pending => Err(std::io::ErrorKind::WouldBlock.into()),
@@ -84,15 +87,15 @@ impl<S: Write + Unpin> std::io::Write for PollWriter<'_, '_, S> {
     }
 }
 
-/// Прокачать всё, что rustls хочет записать, в нижележащий транспорт.
+/// Drains everything rustls wants to write into the underlying transport.
 ///
-/// Байты, уже извлечённые из rustls через `write_tls`, никогда не могут
-/// потеряться на `Pending`: `write_tls` вызывается напрямую против моста
-/// `PollWriter`, а не против промежуточного буфера — если транспорт не готов
-/// принять ни байта, `write_tls` возвращает ошибку (пойманную ниже как
-/// `WouldBlock`) ДО того, как продвинет свою очередь, так что терять
-/// нечего — очередь rustls (`wants_write()`) остаётся ровно такой же, какой
-/// была до вызова.
+/// Bytes already pulled out of rustls via `write_tls` can never be lost
+/// to `Pending`: `write_tls` is called directly against the `PollWriter`
+/// bridge, not against an intermediate buffer — if the transport isn't
+/// ready to accept a single byte, `write_tls` returns an error (caught
+/// below as `WouldBlock`) BEFORE advancing its queue, so there's nothing
+/// to lose — rustls's queue (`wants_write()`) is left exactly as it was
+/// before the call.
 pub(crate) fn flush_outgoing<S: Write + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
@@ -109,32 +112,34 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
     Pin::new(io).poll_flush(cx)
 }
 
-/// Вычитать из транспорта и скормить rustls. `Ok(false)` — сырой транспорт
-/// дошёл до EOF на этом чтении (0 байт из `poll_read`); `Ok(true)` — что-то
-/// реально прочитано.
+/// Reads from the transport and feeds rustls. `Ok(false)` — the raw
+/// transport hit EOF on this read (0 bytes from `poll_read`); `Ok(true)`
+/// — something was actually read.
 ///
-/// EOF отдаётся rustls'у ЯВНО, тем же вызовом `read_tls`, каким передаются
-/// обычные байты — не перехватывается заранее, до того как rustls его
-/// увидит. `read_tls` на 0-байтовом чтении выставляет внутренний
-/// `has_seen_eof` (`rustls-0.23.43 src/conn.rs:776`), и именно этот флаг
-/// отличает резкий обрыв TCP без `close_notify` от честного `close_notify`:
-/// `Reader::check_no_bytes_state` (`src/conn.rs:183`) на СЛЕДУЮЩЕМ вызове
-/// `conn.reader().read()` возвращает `Err(UnexpectedEof)` для первого
-/// случая и `Ok(0)` для второго — но только если `read_tls` вообще увидел
-/// этот 0-байтовый исход хотя бы раз. Раньше эта функция перехватывала
-/// `filled.is_empty()` СРАЗУ и возвращала `Ok(false)`, ни разу не передав
-/// пустое чтение rustls'у — truncation-attack дыра (fix round 2 review):
-/// голый TCP FIN без `close_notify` резолвился идентично честному
-/// `close_notify` на уровне `TlsStream::poll_read`, потому что встроенное
-/// различение rustls попросту никогда не запускалось. Решение — не здесь:
-/// эта функция обязана честно отдать rustls'у то, что он умеет различить, а
-/// не решать за него, что "нечего читать" и "поток оборван без
-/// предупреждения" — одно и то же. Терпимость к серверам, закрывающимся без
-/// `close_notify` (их немало на практике), если она вообще нужна, — решение
-/// HTTP-слоя поверх `hyper::rt::Read`, который знает про framing
-/// (`Content-Length`/chunked) и способен отличить "тело уже дочитано
-/// целиком, TLS оборвался ПОСЛЕ" от "тело оборвано на середине" — этот
-/// поток не может и не должен угадывать это сам.
+/// EOF is handed to rustls EXPLICITLY, through the same `read_tls` call
+/// that carries ordinary bytes — it is not intercepted beforehand, before
+/// rustls gets to see it. `read_tls` on a 0-byte read sets the internal
+/// `has_seen_eof` flag (`rustls-0.23.43 src/conn.rs:776`), and it is
+/// exactly this flag that tells a raw TCP close without `close_notify`
+/// apart from a genuine `close_notify`: `Reader::check_no_bytes_state`
+/// (`src/conn.rs:183`), on the NEXT call to `conn.reader().read()`,
+/// returns `Err(UnexpectedEof)` for the first case and `Ok(0)` for the
+/// second — but only if `read_tls` ever saw that 0-byte outcome at all.
+/// This function used to intercept `filled.is_empty()` IMMEDIATELY and
+/// return `Ok(false)`, never once passing an empty read through to
+/// rustls — a truncation-attack hole (fix round 2 review): a bare TCP FIN
+/// with no `close_notify` resolved identically to a genuine
+/// `close_notify` at the `TlsStream::poll_read` level, because rustls's
+/// own built-in distinction simply never ran. The fix does not belong
+/// here: this function's job is to honestly hand rustls what it knows how
+/// to tell apart, not to decide on its behalf that "nothing to read" and
+/// "the connection was cut without warning" are the same thing.
+/// Tolerating servers that close without `close_notify` (there are plenty
+/// of those in practice), if that's ever needed, is a decision for the
+/// HTTP layer on top of `hyper::rt::Read`, which knows about framing
+/// (`Content-Length`/chunked) and can tell "the body was already read in
+/// full, TLS was cut AFTER" apart from "the body was cut mid-stream" —
+/// this stream cannot and must not guess that on its own.
 pub(crate) fn pump_incoming<S: Read + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
@@ -146,9 +151,10 @@ pub(crate) fn pump_incoming<S: Read + Unpin>(
     let filled = rb.filled();
     let had_bytes = !filled.is_empty();
     let mut cursor = std::io::Cursor::new(filled);
-    // do-while: даже пустой (EOF) срез обязан дойти до `read_tls` хотя бы
-    // раз — обычный `while (pos as usize) < filled.len()` пропустил бы тело
-    // цикла целиком при `filled.len() == 0`, вернувшись к старому багу.
+    // do-while: even an empty (EOF) slice must reach `read_tls` at least
+    // once — a plain `while (pos as usize) < filled.len()` would skip the
+    // loop body entirely when `filled.len() == 0`, reintroducing the old
+    // bug.
     loop {
         conn.read_tls(&mut cursor).map_err(tls_err)?;
         conn.process_new_packets().map_err(tls_err)?;
@@ -167,23 +173,23 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
     ) -> Poll<std::io::Result<()>> {
         let this = &mut *self;
         loop {
-            // 1. Отдать уже расшифрованное.
+            // 1. Hand back whatever's already decrypted.
             let mut scratch = [0u8; SCRATCH];
             let want = buf.remaining().min(SCRATCH);
             if want == 0 {
                 return Poll::Ready(Ok(()));
             }
             match this.conn.reader().read(&mut scratch[..want]) {
-                // rustls гарантирует `Ok(0)` СТРОГО при чистом
-                // `close_notify` (`has_received_close_notify`) —
-                // терминальный сигнал "данных больше не будет", а не
-                // "данных пока нет" (для этого есть `WouldBlock` веткой
-                // ниже). Раньше обе ветки схлопывались в одно и то же
-                // "читать транспорт ещё раз" — если пир прислал
-                // `close_notify`, но не закрыл сам TCP-сокет (TLS этого не
-                // требует), `poll_read` ждал транспортного чтения, которое
-                // никогда не придёт: зависание навсегда (review finding 2,
-                // fix round 1).
+                // rustls guarantees `Ok(0)` STRICTLY on a clean
+                // `close_notify` (`has_received_close_notify`) — a
+                // terminal "there will be no more data" signal, not "no
+                // data yet" (that's what the `WouldBlock` arm below is
+                // for). These two used to collapse into the same "read
+                // the transport again" — if the peer sent `close_notify`
+                // but didn't close the TCP socket itself (TLS doesn't
+                // require that), `poll_read` waited on a transport read
+                // that would never come: a permanent hang (review finding
+                // 2, fix round 1).
                 Ok(0) => return Poll::Ready(Ok(())),
                 Ok(n) => {
                     buf.put_slice(&scratch[..n]);
@@ -192,40 +198,43 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Poll::Ready(Err(e)),
             }
-            // 2. Отдать всё исходящее (renegotiation, close_notify и т.п.).
+            // 2. Flush everything outgoing (renegotiation, close_notify, etc).
             ready!(flush_outgoing(&mut this.io, &mut this.conn, cx))?;
-            // 3. Дочитать из транспорта. Не короткое замыкание на "сырой
-            // транспорт вернул 0 байт" — `pump_incoming` уже скормила этот
-            // исход rustls'у (см. её doc-комментарий), и следующая итерация
-            // цикла вернётся на шаг 1, где `conn.reader().read()` теперь
-            // честно различит `close_notify` (`Ok(0)`) и резкий обрыв без
-            // него (`Err(UnexpectedEof)`) — здесь эту разницу решать не
-            // нужно и нельзя.
+            // 3. Read more from the transport. No short-circuit on "the
+            // raw transport returned 0 bytes" — `pump_incoming` has
+            // already fed that outcome to rustls (see its doc comment),
+            // and the next loop iteration goes back to step 1, where
+            // `conn.reader().read()` now honestly tells `close_notify`
+            // (`Ok(0)`) apart from a raw cut without one
+            // (`Err(UnexpectedEof)`) — that distinction is neither needed
+            // nor allowed to be made here.
             ready!(pump_incoming(&mut this.io, &mut this.conn, cx))?;
         }
     }
 }
 
 impl<S: Read + Write + Unpin> Write for TlsStream<S> {
-    /// Порядок здесь принципиален (review finding 1, fix round 1): дослать
-    /// хвост с прошлого вызова, прежде чем трогать `data` этого — иначе
-    /// `conn.writer().write(data)` ниже заквьюит те же самые байты ЕЩЁ РАЗ
-    /// поверх ещё не отправленных с прошлого раза. Контракт
-    /// `hyper::rt::Write` требует повторять `poll_write` с ТЕМ ЖЕ `data`
-    /// после `Pending`, а `rustls::Writer::write` не идемпотентен — каждый
-    /// вызов безусловно буферизует и шифрует новые байты, без дедупликации
-    /// (`Writer::write`'s doc: "buffers plaintext sent... and sends it as
-    /// soon as it can" — про повторные вызовы с уже виденными байтами там
-    /// ни слова, потому что с точки зрения rustls это просто НОВЫЕ данные).
-    /// Тот же класс рассинхронизации, что и в исходном баге
-    /// `flush_outgoing`, только на уровне plaintext, а не ciphertext —
-    /// исходная форма кода была уязвима для него независимо от починки
-    /// `flush_outgoing` выше: `ready!(flush_outgoing(...))` СРАЗУ ПОСЛЕ
-    /// `conn.writer().write(data)` пробрасывал `Pending` наверх уже ПОСЛЕ
-    /// того, как `data` была поставлена в очередь — то есть само по себе
-    /// исправление `flush_outgoing` (см. `PollWriter` выше) не теряет
-    /// байты, но не мешает повторной постановке в очередь ПРИ retry с тем
-    /// же `data`, если та же функция ещё раз попадёт в этот порядок вызовов.
+    /// The order here is critical (review finding 1, fix round 1): flush
+    /// the leftover from the previous call before touching this call's
+    /// `data` — otherwise `conn.writer().write(data)` below would queue
+    /// the same bytes AGAIN on top of ones not yet sent from last time.
+    /// The `hyper::rt::Write` contract requires repeating `poll_write`
+    /// with the SAME `data` after a `Pending`, and `rustls::Writer::write`
+    /// is not idempotent — every call unconditionally buffers and
+    /// encrypts new bytes, with no deduplication (`Writer::write`'s doc:
+    /// "buffers plaintext sent... and sends it as soon as it can" — not a
+    /// word there about repeated calls with already-seen bytes, because
+    /// from rustls's point of view that's simply NEW data). The same
+    /// class of desync as the original `flush_outgoing` bug, just at the
+    /// plaintext level instead of ciphertext — the original shape of the
+    /// code was vulnerable to this independently of the `flush_outgoing`
+    /// fix above: `ready!(flush_outgoing(...))` placed RIGHT AFTER
+    /// `conn.writer().write(data)` would propagate a `Pending` upward
+    /// AFTER `data` had already been queued — meaning the
+    /// `flush_outgoing` fix on its own (see `PollWriter` above) doesn't
+    /// lose bytes, but doesn't stop them from being queued a second time
+    /// on a retry with the same `data`, should the same function land in
+    /// this call order again.
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -236,27 +245,29 @@ impl<S: Read + Write + Unpin> Write for TlsStream<S> {
 
         let n = this.conn.writer().write(data)?;
         if n == 0 && !data.is_empty() {
-            // Внутренний буфер исходящего plaintext у rustls
-            // (`set_buffer_limit`, по умолчанию 64 КиБ,
-            // `common_state::DEFAULT_BUFFER_LIMIT`) переполнен —
-            // временный бэкпрешер на уровне rustls, а НЕ "транспорт больше
-            // никогда не примет байт", который означает `Ok(0)` в
-            // контракте `hyper::rt::Write::poll_write`. Освободить место
-            // можно, только дослав уже поставленное в очередь транспорту.
+            // rustls's internal outgoing-plaintext buffer
+            // (`set_buffer_limit`, 64 KiB by default,
+            // `common_state::DEFAULT_BUFFER_LIMIT`) is full — temporary
+            // backpressure at the rustls level, NOT "the transport will
+            // never accept another byte," which is what `Ok(0)` means in
+            // the `hyper::rt::Write::poll_write` contract. The only way
+            // to free up room is to flush what's already queued to the
+            // transport.
             return match flush_outgoing(&mut this.io, &mut this.conn, cx) {
                 Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Ready(Ok(())) | Poll::Pending => Poll::Pending,
             };
         }
 
-        // Best-effort: `n` байт уже приняты И зашифрованы rustls'ом, который
-        // гарантированно отправит их сам, когда сможет (это подтвердит шаг
-        // дренажа в начале следующего вызова) — потерять их он больше не
-        // может (см. `PollWriter`/`flush_outgoing` выше). Поэтому
-        // отчитываемся `Ready(Ok(n))` независимо от того, добрался ли флаш
-        // до транспорта прямо сейчас; пробросить здесь `Pending` значило бы
-        // заставить вызывающий код повторить `poll_write` с ТЕМИ ЖЕ байтами
-        // `data` — см. doc-комментарий метода.
+        // Best-effort: `n` bytes have already been accepted AND encrypted
+        // by rustls, which is guaranteed to send them itself once it can
+        // (the drain step at the start of the next call will confirm
+        // this) — it can no longer lose them (see `PollWriter`/
+        // `flush_outgoing` above). So we report `Ready(Ok(n))` regardless
+        // of whether the flush reached the transport right now;
+        // propagating `Pending` here would force the caller to repeat
+        // `poll_write` with the SAME `data` bytes — see the method's doc
+        // comment.
         match flush_outgoing(&mut this.io, &mut this.conn, cx) {
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Ready(Ok(())) | Poll::Pending => Poll::Ready(Ok(n)),

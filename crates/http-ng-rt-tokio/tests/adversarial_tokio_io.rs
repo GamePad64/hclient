@@ -37,7 +37,7 @@ use std::time::Duration;
 
 const SCRATCH: usize = 8 * 1024; // must match the private const in io.rs
 
-/// Fix round 3 (координатор): every direct wait on `poll_read` in this file
+/// Fix round 3 (coordinator): every direct wait on `poll_read` in this file
 /// goes through this helper instead of a bare `.await` on `poll_fn(...)`, so
 /// a regression that makes `poll_read` never resolve (return `Pending`
 /// forever) reports `FAILED` with a named test and a clear message, instead

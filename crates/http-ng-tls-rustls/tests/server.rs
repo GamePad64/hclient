@@ -1,5 +1,5 @@
-//! Минимальный TLS-эхо-сервер на самоподписанном сертификате.
-//! Живёт в dev-dependencies и в публичный граф не попадает.
+//! A minimal TLS echo server on a self-signed certificate.
+//! Lives in dev-dependencies and never reaches the public dependency graph.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

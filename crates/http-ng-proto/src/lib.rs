@@ -1,7 +1,7 @@
-//! Чистые автоматы протокольных слоёв http-ng.
+//! Pure state machines for http-ng's protocol layers.
 //!
-//! Инвариант крейта: ни одного `async fn`, ни одной зависимости от рантайма.
-//! Всё, что зависит от времени, принимает `now` параметром. Проверяется в CI.
+//! Crate invariant: no `async fn`, no runtime dependency, anywhere. Anything
+//! that depends on time takes `now` as a parameter. Enforced in CI.
 #![forbid(unsafe_code)]
 
 pub mod happy_eyeballs;

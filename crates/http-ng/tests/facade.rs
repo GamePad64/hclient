@@ -1,33 +1,32 @@
-//! Проверка фасада: типы, участвующие в публичном API `http-ng`, обязаны быть
-//! достижимы из крейта, который зависит только от `http-ng`.
+//! A facade check: types participating in `http-ng`'s public API must be
+//! reachable from a crate that depends only on `http-ng`.
 //!
-//! Живёт в `tests/`, а не в `src/`, по двум причинам: во-первых, `tests/`
-//! компилируется как внешний потребитель, поэтому видит ровно ту
-//! поверхность, что и downstream-пользователь (внутренний `use super::*`
-//! этого не проверил бы). Во-вторых, `no-declared-send` в CI сканирует
-//! только `crates/*/src` (amendment C3) — здесь это не имеет значения,
-//! `Send`/`Sync` тут не объявляются, но место всё равно правильное для
-//! любого будущего теста в этом духе.
+//! Lives in `tests/`, not `src/`, for two reasons: first, `tests/` compiles
+//! as an external consumer, so it sees exactly the surface a downstream
+//! user does (an internal `use super::*` wouldn't verify this). Second,
+//! CI's `no-declared-send` only scans `crates/*/src` (amendment-C3) — that
+//! doesn't matter here, no `Send`/`Sync` is declared in this file, but this
+//! is still the right place for any future test in that spirit.
 
 #[test]
 fn public_api_types_are_reachable_from_the_facade() {
-    // `Config.redirect` имеет этот тип.
+    // `Config.redirect` has this type.
     let _p: http_ng::RedirectPolicy = http_ng::RedirectPolicy::default();
-    // `check_supported` принимает это и возвращает вот это.
+    // `check_supported` takes this and returns that.
     let caps: http_ng::Capabilities = http_ng::Capabilities::none();
     let cfg = http_ng::Config::default();
     let _: Result<(), http_ng::UnsupportedCapability> =
         http_ng::check_supported(&cfg, &caps, "probe");
 }
 
-/// `Response`, `Collected` и `RequestBuilder` (Task 13) не имели проверки
-/// достижимости из фасада (Task 13 fix round 1, Finding 6). В отличие от
-/// типов выше, у них нет публичного конструктора без транспорта — значение
-/// сконструировать здесь нечем, поэтому достижимость и форма (арность
-/// дженериков) проверяются компиляцией никогда не вызываемой функции: если
-/// `Response`/`Collected`/`RequestBuilder` перестанут реэкспортироваться из
-/// `http_ng::` или сменят число параметров, этот файл — как внешний
-/// потребитель — перестанет собираться.
+/// `Response`, `Collected`, and `RequestBuilder` (Task 13) had no
+/// reachability check from the facade (Task 13 fix round 1, Finding 6).
+/// Unlike the types above, they have no public constructor without a
+/// transport — there's nothing here to construct a value with, so
+/// reachability and shape (generic arity) are checked by compiling a
+/// function that's never called: if `Response`/`Collected`/`RequestBuilder`
+/// stop being re-exported from `http_ng::`, or their parameter count
+/// changes, this file — as an external consumer — stops compiling.
 #[allow(dead_code)]
 fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
     _r: http_ng::Response<B>,
@@ -36,13 +35,13 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
 ) {
 }
 
-/// `SseStream`, `SseEvent` и `DEFAULT_MAX_EVENT_SIZE` (Task 14) на самом деле
-/// живут в `http-ng-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) и `http-ng`
-/// (`SseStream`), но обязаны быть именуемы из `http_ng::` без прямой
-/// зависимости от `http-ng-proto` — тот же контракт, что и выше. Тот же
-/// приём для `SseStream`, что и для `Response`/`Collected`/`RequestBuilder`:
-/// конструктора без транспорта нет, поэтому достижимость и форма (арность
-/// дженерика) проверяются компиляцией никогда не вызываемой функции.
+/// `SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` (Task 14) actually
+/// live in `http-ng-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) and
+/// `http-ng` (`SseStream`), but must be nameable from `http_ng::` with no
+/// direct dependency on `http-ng-proto` — the same contract as above. The
+/// same trick for `SseStream` as for `Response`/`Collected`/`RequestBuilder`:
+/// no constructor without a transport exists, so reachability and shape
+/// (generic arity) are checked by compiling a function that's never called.
 #[allow(dead_code)]
 fn sse_types_are_reachable_from_the_facade<B>(_s: http_ng::SseStream<B>) {
     let _event: http_ng::SseEvent = http_ng::SseEvent::Comment(String::new());
@@ -51,22 +50,23 @@ fn sse_types_are_reachable_from_the_facade<B>(_s: http_ng::SseStream<B>) {
 
 // ── Task 17 fix round 1 ─────────────────────────────────────────────────
 //
-// `Error` был именно тем типом, что делает предыдущий раунд теста неполным:
-// `Client::execute`, `RequestBuilder::send`, `Response::chunk`/`collect`,
-// `Collected::text`, `SseStream::new`/`next` все возвращают его, а
-// `public_api_types_are_reachable_from_the_facade` выше ни разу его не
-// называет. Тесты ниже не просто проверяют компиляцию (как
-// `#[allow(dead_code)]`-функции выше, у которых нет конструктора без
-// транспорта) — они реально СОЗДАЮТ и СРАВНИВАЮТ значения каждого нового
-// реэкспорта, потому что тест, который лишь называет тип, ничего не говорит
-// о том, действительно ли с ним можно работать (сравнивать, деструктурировать,
-// передавать по значению).
+// `Error` was exactly the type that made the previous round of testing
+// incomplete: `Client::execute`, `RequestBuilder::send`, `Response::chunk`/
+// `collect`, `Collected::text`, `SseStream::new`/`next` all return it, and
+// `public_api_types_are_reachable_from_the_facade` above never once names
+// it. The tests below don't just check compilation (like the
+// `#[allow(dead_code)]` functions above, which have no constructor without
+// a transport) — they actually CREATE and COMPARE values of every new
+// re-export, because a test that merely names a type says nothing about
+// whether you can actually work with it (compare it, destructure it, pass
+// it by value).
 
-/// `Error`/`ErrorKind`/`Phase` — типы `Result`, которые фасад обязан уметь
-/// назвать сам, без обращения к `http-ng-core`. `Result`-алиас ниже — именно
-/// то, что не могла написать функция, возвращающая `Result<_, http_ng::Error>`,
-/// до этого раунда фикса (см. отчёт задачи 17, история с примером в брифе,
-/// который называл несуществующий `http_ng::Error`).
+/// `Error`/`ErrorKind`/`Phase` are `Result` types the facade must be able
+/// to name on its own, with no reach into `http-ng-core`. The `Result`
+/// alias below is exactly what a function returning `Result<_,
+/// http_ng::Error>` couldn't write before this fix round (see task 17's
+/// report, the story with the example in the brief that named a
+/// nonexistent `http_ng::Error`).
 #[test]
 fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
     type FacadeResult<T> = Result<T, http_ng::Error>;
@@ -78,11 +78,11 @@ fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
         ))
     }
 
-    let err = probe().expect_err("probe всегда возвращает Err");
-    // `ErrorKind` — `#[non_exhaustive]`: снаружи крейта матч обязан иметь
-    // catch-all-ветку независимо от того, сколько вариантов перечислено —
-    // это само по себе часть проверки достижимости из фасада, не только
-    // компиляции.
+    let err = probe().expect_err("probe always returns Err");
+    // `ErrorKind` is `#[non_exhaustive]`: outside the crate a match must
+    // have a catch-all arm regardless of how many variants are listed —
+    // that's itself part of checking reachability from the facade, not
+    // just compilation.
     match err.kind() {
         http_ng::ErrorKind::Timeout(phase) => assert_eq!(*phase, http_ng::Phase::Connect),
         other => panic!("unexpected kind: {other:?}"),
@@ -90,10 +90,11 @@ fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
     assert!(err.is_timeout());
 }
 
-/// `RetryKind` — вариант возврата `RequestBody::retry_kind()`, `RewindFactory`
-/// — тип поля `RequestBody::Rewindable`. Строится и `Full`, и `Rewindable`,
-/// а не только один вариант — иначе тест доказал бы достижимость `RetryKind`,
-/// но не `RewindFactory`.
+/// `RetryKind` is `RequestBody::retry_kind()`'s return variant,
+/// `RewindFactory` is the type of the `RequestBody::Rewindable` field.
+/// Both `Full` and `Rewindable` are constructed, not just one variant —
+/// otherwise the test would prove `RetryKind` reachable but not
+/// `RewindFactory`.
 #[test]
 fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
     let full = http_ng::RequestBody::Full(bytes::Bytes::from_static(b"x"));
@@ -103,18 +104,17 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
         std::sync::Arc::new(|| http_ng::RequestBody::Full(bytes::Bytes::from_static(b"y")));
     let rewindable = http_ng::RequestBody::Rewindable(factory);
     assert_eq!(rewindable.retry_kind(), http_ng::RetryKind::ViaFactory);
-    let replay = rewindable
-        .rewind()
-        .expect("Rewindable всегда переигрывается");
+    let replay = rewindable.rewind().expect("Rewindable always replays");
     assert!(matches!(replay, http_ng::RequestBody::Full(ref b) if &b[..] == b"y"));
 }
 
-/// `RedirectSupport`/`TlsSupport`/`TimeoutSupport`/`UpgradeSupport` — поля
-/// `Capabilities`. Нужны не только для чтения (`Capabilities` читаема и без
-/// них — `#[non_exhaustive]` на структуре не блокирует доступ к `pub`-полям),
-/// а для ЗАПИСИ: собрать свой `Capabilities` для мок-транспорта (например,
-/// `MockTransport::with_capabilities`) без них нельзя — тип поля должен быть
-/// именуем на стороне вызывающего.
+/// `RedirectSupport`/`TlsSupport`/`TimeoutSupport`/`UpgradeSupport` are
+/// `Capabilities` fields. Needed not just for reading (`Capabilities` is
+/// readable even without them — `#[non_exhaustive]` on the struct doesn't
+/// block access to `pub` fields), but for WRITING: you can't assemble your
+/// own `Capabilities` for a mock transport (e.g.
+/// `MockTransport::with_capabilities`) without them — the field's type has
+/// to be nameable on the caller's side.
 #[test]
 fn capability_support_types_are_reachable_from_the_facade() {
     let mut caps = http_ng::Capabilities::none();
@@ -132,16 +132,16 @@ fn capability_support_types_are_reachable_from_the_facade() {
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
 }
 
-/// Сквозной прогон через `mock`: не набор изолированных проверок
-/// достижимости, а то, ради чего достижимость вообще нужна — реальный внешний
-/// потребитель, зависящий только от `http-ng` (с фичей `test-util`), строит
-/// клиент на `MockTransport`, шлёт запрос и читает как успешный, так и
-/// оборванный ошибкой ответ, ни разу не написав `http_ng_core::`/
-/// `use http_ng_core::unversioned::Transport` — `Client::builder`,
-/// `RequestBuilder::send`, `MockTransport::requests()` и
-/// `MockTransport::push_response_frames_then_error()` — все обычные
-/// (не трейтовые) методы, вызывать которые трейт `Transport` в области
-/// видимости не требуется.
+/// An end-to-end run through `mock`: not a set of isolated reachability
+/// checks, but the thing reachability is for in the first place — a real
+/// external consumer, depending only on `http-ng` (with the `test-util`
+/// feature), builds a client on `MockTransport`, sends a request, and
+/// reads both a successful response and one broken off by an error,
+/// without ever writing `http_ng_core::`/`use http_ng_core::unversioned::
+/// Transport` — `Client::builder`, `RequestBuilder::send`,
+/// `MockTransport::requests()`, and `MockTransport::
+/// push_response_frames_then_error()` are all ordinary (non-trait) methods,
+/// which don't require the `Transport` trait in scope to call.
 #[cfg(feature = "test-util")]
 #[test]
 fn mock_transport_round_trip_uses_only_facade_types() {
@@ -160,23 +160,23 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     .expect("mock replies");
     assert_eq!(resp.status(), 200);
 
-    // `RecordedRequest::retry_kind` — поле, набранное отдельно от
-    // `retry_kind_and_rewind_factory_are_reachable_from_the_facade` выше:
-    // там `RetryKind` пришёл из `RequestBody::retry_kind()` напрямую, здесь —
-    // из поля структуры, которую собрал транспорт. Разные пути к одному и
-    // тому же типу, оба обязаны быть именуемы.
+    // `RecordedRequest::retry_kind` is a field scored separately from
+    // `retry_kind_and_rewind_factory_are_reachable_from_the_facade` above:
+    // there `RetryKind` came straight from `RequestBody::retry_kind()`,
+    // here it comes from a field on a struct the transport assembled.
+    // Different paths to the same type, both must be nameable.
     let recorded = client.transport().requests();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].retry_kind, http_ng::RetryKind::Free);
 
-    // `push_response_frames_then_error` — единственное место в публичном API
-    // `http-ng`, где `Error` приходит ПАРАМЕТРОМ, а не результатом. Кадр
-    // ошибки долетает до `Response::chunk()` как есть: с финального ревью
-    // вертикали 2 (находка F2) `chunk()` пропускает уже классифицированную
-    // `http_ng_core::Error` насквозь, не переклеивая её в `ErrorKind::Body`
-    // (см. `Response::classify_body_error`) — так что `kind()` здесь обязан
-    // остаться тем же `Other`, каким его завели строкой выше, а не стать
-    // `Body`.
+    // `push_response_frames_then_error` is the only spot in `http-ng`'s
+    // public API where `Error` arrives as a PARAMETER, not a result. The
+    // error frame reaches `Response::chunk()` unchanged: since vertical
+    // 2's final review (finding F2), `chunk()` passes an already-
+    // classified `http_ng_core::Error` straight through without
+    // relabeling it as `ErrorKind::Body` (see `Response::
+    // classify_body_error`) — so `kind()` here must stay the same `Other`
+    // it was set up with one line above, not become `Body`.
     let m2 = http_ng::mock::MockTransport::new();
     let empty_frames: Vec<&'static str> = Vec::new();
     m2.push_response_frames_then_error(
@@ -247,32 +247,31 @@ fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
 fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
     let client: http_ng::Client<http_ng::DefaultTransport> =
         http_ng::Client::new().expect("default transport supports the default config");
-    // Присвоение в переменную с аннотацией ГОЛОГО `Client` (без `<...>`)
-    // компилируется, только если дефолт генерик-параметра действительно
-    // резолвится в `DefaultTransport` — не просто проверка, что `new()`
-    // существует, а проверка самого дефолта.
+    // Assigning into a variable annotated with a BARE `Client` (no
+    // `<...>`) only compiles if the generic parameter's default actually
+    // resolves to `DefaultTransport` — not just a check that `new()`
+    // exists, but a check of the default itself.
     let _client_no_param: http_ng::Client = client;
 }
 
 // ── Fix round 1 ──────────────────────────────────────────────────────────
 
-/// `Client::try_new()` — не паникующая альтернатива `Client::new()`
-/// (fix round 1, находка 2: `new()` паникует на отказе `with_platform_
-/// verifier()`, а у крейта не было пути получить эту же ошибку как `Err`).
-/// Возвращаемый тип — `http_ng::Error` (уже реэкспортирован ради
-/// `Client::execute`), не `UnsupportedCapability`: в отличие от `new()`,
-/// эта функция обязана уметь назвать ОБЕ причины отказа (хранилище
-/// доверия — `ErrorKind::Tls`, неподдерживаемая настройка —
-/// `ErrorKind::Unsupported`) одним типом, а `UnsupportedCapability`
-/// вторую категорию назвать не может.
+/// `Client::try_new()` is the non-panicking alternative to `Client::new()`
+/// (fix round 1, finding 2: `new()` panics on `with_platform_verifier()`
+/// failing, and the crate had no path to get that same error as an `Err`).
+/// The return type is `http_ng::Error` (already re-exported for
+/// `Client::execute`), not `UnsupportedCapability`: unlike `new()`, this
+/// function must be able to name BOTH failure causes (trust store —
+/// `ErrorKind::Tls`, unsupported setting — `ErrorKind::Unsupported`) with
+/// one type, and `UnsupportedCapability` can't name the second category.
 ///
-/// Тестирует только успешный путь — то же самое окружение с рабочим
-/// системным хранилищем доверия, что и у `default_transport_is_
-/// reachable_and_is_the_bare_clients_default_param` выше, так что путь
-/// отказа `with_platform_verifier()` здесь структурно (типами), а не
-/// поведением: нет переносимого способа заставить системное хранилище
-/// сертификатов отказать по требованию в тесте, который должен идти
-/// на linux/macos/windows одинаково.
+/// Tests only the success path — the same environment with a working
+/// system trust store as `default_transport_is_
+/// reachable_and_is_the_bare_clients_default_param` above, so
+/// `with_platform_verifier()`'s failure path is checked here
+/// structurally (by type), not behaviorally: there's no portable way to
+/// make the system certificate store fail on demand in a test that has to
+/// run identically on linux/macos/windows.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 #[test]
 fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {

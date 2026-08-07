@@ -1,16 +1,17 @@
-//! Композиция таймаутов клиента и запроса — та самая, которую обещают
-//! doc-комментарии `ClientBuilder::timeouts` и `RequestBuilder::timeouts`, и
-//! которой до финального ревью всей ветки не существовало ни в одну сторону
-//! (B1/M3): клиентские проверялись на `build()` и **не доезжали** до
-//! транспорта, запросные доезжали и **не проверялись** против `Capabilities`.
+//! Composition of client and request timeouts — the exact thing the doc
+//! comments on `ClientBuilder::timeouts` and `RequestBuilder::timeouts`
+//! promise, and which didn't exist in either direction before the whole
+//! branch's final review (B1/M3): client-level ones were checked at
+//! `build()` and **never reached** the transport, request-level ones
+//! reached it but were **never checked** against `Capabilities`.
 //!
-//! Все три свойства проверяются через `MockTransport`, а не юнит-тестом на
-//! `effective_timeouts`: у той функции три собственных юнит-теста в
-//! `config.rs`, и они были зелёными всё время, пока никто её не вызывал.
-//! Красный здесь может дать только реально пройденный путь
-//! `Client::execute` → `Transport::execute`.
+//! All three properties are checked through `MockTransport`, not a unit
+//! test on `effective_timeouts`: that function already has three unit
+//! tests of its own in `config.rs`, and they stayed green the whole time
+//! nothing called it. Red here can only come from an actually-exercised
+//! `Client::execute` → `Transport::execute` path.
 
-// `http_ng::mock` живёт за фичей `test-util` (см. `mock.rs`).
+// `http_ng::mock` lives behind the `test-util` feature (see `mock.rs`).
 #![cfg(feature = "test-util")]
 
 use http_ng::mock::MockTransport;
@@ -21,8 +22,9 @@ fn secs(n: u64) -> Option<Duration> {
     Some(Duration::from_secs(n))
 }
 
-/// Транспорт, который умеет все три фазы — иначе `check_supported` отвергнет
-/// конфигурацию раньше, чем тест доберётся до проверяемого свойства.
+/// A transport that supports all three phases — otherwise `check_supported`
+/// would reject the configuration before the test reaches the property
+/// under test.
 fn all_timeouts_supported() -> Capabilities {
     let mut caps = Capabilities::none();
     caps.timeouts = TimeoutSupport {
@@ -33,10 +35,11 @@ fn all_timeouts_supported() -> Capabilities {
     caps
 }
 
-/// B1. `ClientBuilder::timeouts()` был тихим no-op: `effective_timeouts`
-/// существовала, была публична и покрыта тремя юнит-тестами — и не
-/// вызывалась ниоткуда в продакшн-коде. Единственный канал к транспорту —
-/// `http::Extensions`, и клиентская конфигурация в них не попадала.
+/// B1. `ClientBuilder::timeouts()` was a silent no-op: `effective_timeouts`
+/// existed, was public, and was covered by three unit tests — and was
+/// called from nowhere in production code. The only channel to the
+/// transport is `http::Extensions`, and the client's configuration never
+/// made it in there.
 #[test]
 fn client_level_timeouts_reach_the_transport() {
     let m = MockTransport::new().with_capabilities(all_timeouts_supported());
@@ -59,10 +62,11 @@ fn client_level_timeouts_reach_the_transport() {
     assert_eq!(t.connect, secs(7));
 }
 
-/// B1, вторая половина: «request-first, client-fallback» **поле за полем**, а
-/// не «всё или ничего». Запрос задаёт только `first_byte`; две другие фазы
-/// обязаны прийти от клиента. Наивная реализация («в extensions уже лежит
-/// `Timeouts` — значит клиента не смотрим») оставила бы здесь `None`.
+/// B1, second half: "request-first, client-fallback" **field by field**,
+/// not "all or nothing". The request sets only `first_byte`; the other two
+/// phases must come from the client. A naive implementation ("extensions
+/// already has a `Timeouts` — so don't look at the client") would leave
+/// `None` here.
 #[test]
 fn request_timeouts_override_the_client_field_by_field() {
     let m = MockTransport::new().with_capabilities(all_timeouts_supported());
@@ -91,23 +95,27 @@ fn request_timeouts_override_the_client_field_by_field() {
         .extensions
         .get::<Timeouts>()
         .expect("merged timeouts");
-    assert_eq!(t.connect, secs(1), "не перекрыт запросом — берём клиента");
-    assert_eq!(t.first_byte, secs(9), "запрос перекрывает");
+    assert_eq!(
+        t.connect,
+        secs(1),
+        "not overridden by request — take the client's"
+    );
+    assert_eq!(t.first_byte, secs(9), "request overrides");
     assert_eq!(
         t.between_bytes,
         secs(3),
-        "не перекрыт запросом — берём клиента"
+        "not overridden by request — take the client's"
     );
 }
 
-/// M3. `check_supported` гоняется один раз, на `build()`, по
-/// `config.timeouts`. `RequestBuilder::timeouts()` писал прямо в
-/// `Extensions`, минуя `Capabilities` вовсе — то есть неподдерживаемый
-/// таймаут на уровне запроса принимался молча, ровно там, где тот же таймаут
-/// на уровне клиента давал типизированную ошибку.
+/// M3. `check_supported` runs once, at `build()`, over `config.timeouts`.
+/// `RequestBuilder::timeouts()` used to write straight into `Extensions`,
+/// bypassing `Capabilities` entirely — meaning an unsupported timeout at
+/// the request level was accepted silently, in exactly the place where the
+/// same timeout at the client level produced a typed error.
 #[test]
 fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
-    // `MockTransport::new()` — `Capabilities::none()`, все три фазы `false`.
+    // `MockTransport::new()` — `Capabilities::none()`, all three phases `false`.
     let m = MockTransport::new();
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
@@ -120,35 +128,38 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
             })
             .send(),
     )
-    .expect_err("транспорт не умеет connect-таймаут — это ошибка, а не тихо отброшенное значение");
+    .expect_err(
+        "the transport can't do a connect timeout — that's an error, not a silently dropped value",
+    );
 
     assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
-    let src = std::error::Error::source(&err).expect("Error::new всегда кладёт source");
+    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
     let unsupported = src
         .downcast_ref::<UnsupportedCapability>()
-        .expect("источник обязан называть саму неподдерживаемую настройку, а не быть строкой");
+        .expect("the source must name the specific unsupported setting, not just be a string");
     assert_eq!(unsupported.what, "connect_timeout");
 
-    // И запрос не должен был уйти: отвергнутая настройка не превращается в
-    // «отправили как есть, просто без таймаута».
+    // And the request must not have gone out: a rejected setting doesn't
+    // turn into "sent as-is, just without the timeout".
     assert!(
         c.transport().requests().is_empty(),
-        "запрос с неподдерживаемой настройкой не должен доходить до транспорта"
+        "a request with an unsupported setting must not reach the transport"
     );
 }
 
-/// Обратная сторона безусловной вставки: `Client::execute` кладёт слитый
-/// `Timeouts` в `extensions` ВСЕГДА, в том числе когда не задано ни одного
-/// таймаута. Два следствия, и оба обязаны быть правдой, иначе безусловная
-/// вставка была бы регрессией:
+/// The flip side of the unconditional insert: `Client::execute` puts the
+/// merged `Timeouts` into `extensions` ALWAYS, including when not a single
+/// timeout was set. Two consequences, and both must hold, or the
+/// unconditional insert would be a regression:
 ///
-/// 1. Транспорт с `Capabilities::none()` (все три фазы не поддержаны) от
-///    этого не отказывает — гейт смотрит на значения, а не на присутствие.
-/// 2. Расширение при этом всё-таки лежит, и все его поля `None`.
+/// 1. A transport with `Capabilities::none()` (all three phases
+///    unsupported) doesn't reject this — the gate looks at the values, not
+///    at presence.
+/// 2. The extension is still stored anyway, with all its fields `None`.
 ///
-/// Второе — то, из-за чего doc-комментарий `Transport::execute` предупреждает
-/// бэкенды не читать присутствие как намерение: `extensions.get::<Timeouts>()
-/// .is_some()` истинно для КАЖДОГО запроса, пришедшего через `Client`.
+/// The second point is why `Transport::execute`'s doc comment warns
+/// backends not to read presence as intent: `extensions.get::<Timeouts>()
+/// .is_some()` is true for EVERY request that comes through `Client`.
 #[test]
 fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate() {
     let m = MockTransport::new();
@@ -156,16 +167,16 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
 
     let c = Client::builder(m).build().unwrap();
     futures_executor::block_on(c.get("https://a/x").send())
-        .expect("ни одного таймаута не задано — отказывать не за что");
+        .expect("no timeout was set — nothing to reject");
 
     let seen = c.transport().requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
-        .expect("слитый Timeouts кладётся безусловно");
+        .expect("the merged Timeouts is inserted unconditionally");
     assert_eq!(
         *t,
         Timeouts::default(),
-        "и он пуст: присутствие расширения не значит, что таймауты просили"
+        "and it's empty: the extension's presence doesn't mean timeouts were requested"
     );
 }

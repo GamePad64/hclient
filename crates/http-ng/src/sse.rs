@@ -6,13 +6,14 @@ use http_ng_proto::sse::{SseDecoder, SseEvent};
 
 const MIME: &str = "text/event-stream";
 
-/// `Content-Type` совпадает с MIME SSE ровно как токен, а не как префикс:
-/// `text/event-stream` без учёта регистра (HTTP media types регистронезависимы
-/// — RFC 9110 §5.5), и следующий байт — конец строки, `;` (граница параметра,
-/// например `; charset=utf-8`) или пробельный символ. Голый `starts_with`
-/// (review round 1, Finding 2) принимал `"text/event-streamfoo"` как валидный
-/// тип и отвергал `"Text/Event-Stream"` из-за регистра — оба дефекта здесь
-/// закрыты одной проверкой границы токена.
+/// `Content-Type` matches the SSE MIME type exactly as a token, not as a
+/// prefix: `text/event-stream` case-insensitively (HTTP media types are
+/// case-insensitive — RFC 9110 §5.5), and the next byte is either end of
+/// string, `;` (a parameter boundary, e.g. `; charset=utf-8`), or
+/// whitespace. A bare `starts_with` (review round 1, Finding 2) accepted
+/// `"text/event-streamfoo"` as a valid type and rejected
+/// `"Text/Event-Stream"` over case — both defects are closed here by one
+/// token-boundary check.
 fn is_event_stream_content_type(v: &str) -> bool {
     let v = v.trim_start();
     let Some(head) = v.get(..MIME.len()) else {
@@ -28,27 +29,29 @@ fn is_event_stream_content_type(v: &str) -> bool {
     }
 }
 
-/// Поток событий SSE поверх любого тела ответа.
+/// A stream of SSE events over any response body.
 ///
-/// Реконнект здесь **не** реализован: он требует повторной отправки запроса и
-/// приедет со стадией retry в v0.2. `last_event_id()` уже доступен, поэтому
-/// добавление реконнекта не изменит публичный API.
+/// Reconnection is **not** implemented here: it requires resending the
+/// request and will arrive with the retry stage in v0.2. `last_event_id()`
+/// is already available, so adding reconnection won't change the public
+/// API.
 #[derive(Debug)]
 pub struct SseStream<B> {
     resp: Response<B>,
     decoder: SseDecoder,
-    /// Фатальная ошибка, придержанная до опустошения очереди декодера: уже
-    /// разобранные события были получены целиком и корректно, терять их ради
-    /// более раннего сообщения об ошибке — потеря корректных данных (review
-    /// round 1, Finding 1). Кладётся сюда и телом-ошибкой транспорта
-    /// (`Response::chunk` вернул `Some(Err(_))`), и превышением лимита
-    /// декодера — оба пути обязаны дать уже готовым событиям выйти первыми.
-    /// `next()` отдаёт её ровно один раз (`Option::take`), после чего `done`
-    /// гарантирует бесконечный `None` — а не воскрешение или повтор ошибки.
+    /// A fatal error, held back until the decoder's queue is drained:
+    /// events already parsed were received whole and correctly, and
+    /// losing them for the sake of an earlier error message would mean
+    /// losing correct data (review round 1, Finding 1). Stored here both
+    /// by a transport body error (`Response::chunk` returned
+    /// `Some(Err(_))`) and by the decoder's limit being exceeded — both
+    /// paths must let already-ready events out first. `next()` hands it
+    /// back exactly once (`Option::take`), after which `done` guarantees
+    /// an infinite `None` — not a resurrection or a repeat of the error.
     fatal: Option<Error>,
-    /// Больше не читать у тела новые чанки. Не совпадает по смыслу с
-    /// `fatal.is_some()`: чистый EOF (`chunk()` вернул `None`, без ошибки)
-    /// тоже взводит `done`, но `fatal` при этом остаётся `None`.
+    /// Stop reading new chunks from the body. Not the same as
+    /// `fatal.is_some()`: a clean EOF (`chunk()` returned `None`, no
+    /// error) also sets `done`, but `fatal` stays `None` in that case.
     done: bool,
 }
 
@@ -64,22 +67,23 @@ impl std::error::Error for SseRejected {}
 impl<B> SseStream<B>
 where
     B: HttpBody<Data = Bytes> + Unpin,
-    // `next()` зовёт `self.resp.chunk()`, а тот определён (`response.rs`)
-    // только при `B::Error: Send + Sync + 'static` (spec amendment C1).
-    // Rust не пробрасывает бонды через вызов: обобщённая функция обязана
-    // повторить бонд своего callee в собственной where-клаузе — тот же приём,
-    // что у `RequestBuilder::send` относительно `Client::execute`
-    // (`request.rs`). Четвёртая независимая цепочка такого рода в крейте,
-    // после `Client::execute` (client.rs), `Response::chunk`+`collect`,
-    // разделяющих один бонд (response.rs), и `RequestBuilder::send`
-    // (request.rs) — см. счётчик и правило в `.github/workflows/ci.yml`.
+    // `next()` calls `self.resp.chunk()`, which is only defined
+    // (`response.rs`) under `B::Error: Send + Sync + 'static` (spec
+    // amendment-C1). Rust doesn't propagate bounds through a call: a
+    // generic function must repeat its callee's bound in its own
+    // where-clause — the same trick `RequestBuilder::send` uses relative
+    // to `Client::execute` (`request.rs`). The fourth independent chain of
+    // this kind in the crate, after `Client::execute` (client.rs),
+    // `Response::chunk`+`collect` sharing one bound (response.rs), and
+    // `RequestBuilder::send` (request.rs) — see the counter and the rule
+    // in `.github/workflows/ci.yml`.
     B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
-    /// Строит поток из ответа. Терминальные правила WHATWG проверяются здесь,
-    /// а не откладываются до первого `next()`: статус ≠ 200 — ошибка (204 в
-    /// частности значит «прекрати навсегда», а не «пустой поток»);
-    /// `Content-Type` ≠ `text/event-stream` — тоже ошибка, а не молчаливое
-    /// приведение типа содержимого.
+    /// Builds a stream from a response. WHATWG's terminal rules are
+    /// checked here, not deferred to the first `next()`: status ≠ 200 is
+    /// an error (204 in particular means "stop forever", not "empty
+    /// stream"); `Content-Type` ≠ `text/event-stream` is also an error,
+    /// not a silent coercion of the content type.
     pub fn new(resp: Response<B>, max_event_size: usize) -> Result<Self, Error> {
         if resp.status() != http::StatusCode::OK {
             return Err(Error::new(
@@ -110,15 +114,17 @@ where
         self.decoder.last_event_id()
     }
 
-    /// Следующее декодированное событие. Читает у тела ровно столько чанков,
-    /// сколько нужно декодеру, чтобы набрать хотя бы одно готовое событие —
-    /// границы чанков транспорта не обязаны совпадать с границами событий SSE.
+    /// The next decoded event. Reads exactly as many chunks from the body
+    /// as the decoder needs to assemble at least one ready event —
+    /// transport chunk boundaries aren't required to line up with SSE
+    /// event boundaries.
     ///
-    /// Порядок при фатальной ошибке (превышение лимита или ошибка тела)
-    /// важен: события, уже полностью и корректно разобранные ДО того, как
-    /// ошибка случилась, отдаются первыми — очередь декодера опустошается
-    /// раньше, чем `next()` вернёт `Err`. После этого поток кончен навсегда:
-    /// `Err` отдаётся ровно один раз, дальнейшие вызовы — всегда `None`.
+    /// The order on a fatal error (limit exceeded or a body error)
+    /// matters: events already fully and correctly parsed BEFORE the error
+    /// happened are handed back first — the decoder's queue drains before
+    /// `next()` returns `Err`. After that the stream is over for good:
+    /// `Err` is handed back exactly once, every call after that is
+    /// `None`.
     pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
         loop {
             if let Some(e) = self.decoder.next() {
@@ -133,39 +139,42 @@ where
             match self.resp.chunk().await {
                 Some(Ok(chunk)) => {
                     if let Err(e) = self.decoder.push(&chunk) {
-                        // Превышение лимита фатально и не ретраится — но не
-                        // раньше, чем события, уже осевшие в очереди декодера
-                        // за этот же `push`, дойдут до вызывающего: цикл выше
-                        // их сначала сольёт через `self.decoder.next()`.
+                        // Exceeding the limit is fatal and isn't retried —
+                        // but not before events that already settled into
+                        // the decoder's queue from this same `push` reach
+                        // the caller: the loop above drains them first via
+                        // `self.decoder.next()`.
                         self.done = true;
                         self.fatal = Some(Error::new(ErrorKind::Decode, e));
                     }
                 }
                 Some(Err(e)) => {
-                    // Тот же порядок, что и при превышении лимита: уже
-                    // готовые события не приносятся в жертву более раннему
-                    // сообщению об ошибке тела. На практике этот `chunk()`
-                    // вызывается только когда `self.decoder.next()` в начале
-                    // цикла уже пуст (иначе цикл вернул бы `Ok` раньше и до
-                    // сюда не дошёл бы), и сам `chunk()` не трогает очередь
-                    // декодера — так что здесь очередь всегда пуста, и
-                    // немедленный `return` был бы неотличим от текущего
-                    // fall-through ни одним тестом (review round 2, Finding 2:
-                    // проверено мутацией). Оставлено симметрично пути
-                    // превышения лимита ради единообразия и на случай, если
-                    // это условие перестанет выполняться при будущем
-                    // рефакторинге `next()`.
+                    // The same ordering as the limit-exceeded case:
+                    // already-ready events aren't sacrificed for an
+                    // earlier body-error message. In practice this
+                    // `chunk()` is only called once `self.decoder.next()`
+                    // at the top of the loop is already empty (otherwise
+                    // the loop would have returned `Ok` earlier and never
+                    // reached here), and `chunk()` itself never touches
+                    // the decoder's queue — so the queue is always empty
+                    // here, and an immediate `return` would be
+                    // indistinguishable from the current fall-through by
+                    // any test (review round 2, Finding 2: verified by
+                    // mutation). Left symmetric with the limit-exceeded
+                    // path for consistency, and in case this condition
+                    // stops holding under a future refactor of `next()`.
                     self.done = true;
                     self.fatal = Some(e);
                 }
                 None => {
-                    // Конец тела без финальной пустой строки: недодиспетченный
-                    // "хвост" в буфере данных декодера теряется молча — это
-                    // осознанное поведение WHATWG (событие диспетчится только
-                    // по пустой строке; браузерный EventSource делает то же
-                    // самое при закрытии соединения без финального
-                    // разделителя), а не дефект `SseStream` (review round 1,
-                    // Finding 5).
+                    // End of body without a final empty line: an
+                    // undispatched "tail" left in the decoder's data
+                    // buffer is dropped silently — this is WHATWG's
+                    // deliberate behavior (an event is only dispatched on
+                    // an empty line; the browser's EventSource does the
+                    // same thing when the connection closes without a
+                    // final delimiter), not a defect in `SseStream`
+                    // (review round 1, Finding 5).
                     self.done = true;
                 }
             }

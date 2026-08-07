@@ -1,70 +1,71 @@
 [package]
 name = "http-ng-wasi"
 version = "0.1.0"
-description = "Транспорт http-ng поверх wasi:http 0.3"
+description = "http-ng transport over wasi:http 0.3"
 edition.workspace = true
-# Выше workspace-минимума (1.85): требование `wasip3` — 1.87. MSRV job в CI
-# проверяет только три ядровых крейта, так что расхождение намеренное.
+# Above the workspace minimum (1.85): the `wasip3` requirement is 1.87. The
+# CI MSRV job only checks the three core crates, so the divergence is
+# intentional.
 rust-version = "1.90"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 bytes        = { workspace = true }
-# Нужен для `futures::future::select` в `convert::race_send_with_body`:
-# запись тела в `BodyWriter` гонится наперегонки с `client::send`, чтобы
-# ранний отказ хоста не ждал конца записи (находка B-5).
+# Needed for `futures::future::select` in `convert::race_send_with_body`:
+# writing the body to `BodyWriter` races against `client::send`, so an
+# early host rejection doesn't wait for the write to finish (finding B-5).
 #
-# Прежняя версия этого комментария говорила про `join!` и называла
-# происходящее «честным `full_duplex`» — неверно вдвойне (m1 финального
-# ревью ветки): `join!` заменён на `select` ещё в фикс-раунде Task 16 и
-# выжил только в прозе, а `WasiHttp::new()` тремя файлами дальше заявляет
-# `full_duplex = false` и подробно объясняет, почему. Параллельная запись —
-# не дуплекс: `execute` всё равно не возвращается, пока запись не
-# закончится.
+# An earlier version of this comment talked about `join!` and called what
+# was happening "honest `full_duplex`" — wrong on both counts (M1 of the
+# branch's final review): `join!` was replaced with `select` back in the
+# Task 16 fix round and survived only in the prose, and `WasiHttp::new()`
+# three files down declares `full_duplex = false` and explains at length
+# why. Racing the write is not duplex: `execute` still doesn't return
+# until the write finishes.
 #
-# Только `async-await` — `default-features = false` без `std`/`executor`:
-# свой executor этому крейту не нужен, вызовы `wasip3` уже управляются
-# рантаймом хоста.
+# `async-await` only — `default-features = false` without `std`/`executor`:
+# this crate doesn't need its own executor, `wasip3` calls are already
+# driven by the host runtime.
 futures      = { version = "0.3", default-features = false, features = ["async-await"] }
 http         = { workspace = true }
 http-body    = { workspace = true }
 http-ng-core = { workspace = true }
-# `http-compat`: даёт `IncomingBody`/`IncomingResponseBody` и типы
-# `wasi:http` (`ErrorCode` и т.д.) вместо голых WIT-байндингов. Фичи по
-# умолчанию (`std`, `bitflags`) не отключаем: этот крейт нужен только на
-# `wasm32-wasip2`, `no_std`-сборка тут не сценарий.
+# `http-compat`: gives us `IncomingBody`/`IncomingResponseBody` and
+# `wasi:http` types (`ErrorCode` etc.) instead of raw WIT bindings. We don't
+# disable the default features (`std`, `bitflags`): this crate only ever
+# targets `wasm32-wasip2`, a `no_std` build isn't a scenario here.
 wasip3       = { version = "0.7.0", features = ["http-compat"] }
 
-# Гость для интеграционного прогона `tests/live_roundtrip.rs` (Task 16) —
-# см. doc-комментарий в самом файле про то, почему это `cdylib`-пример через
-# `wasip3::cli::command::export!`, а не обычный `fn main()`.
+# Guest for the `tests/live_roundtrip.rs` integration run (Task 16) — see
+# the doc comment in the file itself for why this is a `cdylib` example via
+# `wasip3::cli::command::export!` rather than an ordinary `fn main()`.
 [[example]]
 name = "live_roundtrip_guest"
 path = "examples/live_roundtrip_guest.rs"
 crate-type = ["cdylib"]
 
-# Сквозной пример (Task 17): та же форма `wasip3::cli::command::export!`, что
-# у `live_roundtrip_guest` выше и по той же причине — см. doc-комментарий
-# `examples/fetch.rs` про то, почему не `fn main()`.
+# End-to-end example (Task 17): the same `wasip3::cli::command::export!`
+# shape as `live_roundtrip_guest` above and for the same reason — see the
+# doc comment in `examples/fetch.rs` for why not `fn main()`.
 [[example]]
 name = "fetch"
 path = "examples/fetch.rs"
 crate-type = ["cdylib"]
 
 [dev-dependencies]
-# Только для `tests/live_roundtrip.rs`: разобрать
-# `cargo build --message-format=json`, чтобы взять настоящий путь
-# собранного гостя у cargo, а не гадать его по относительному пути (тот
-# гадает неверно при нестандартном `CARGO_TARGET_DIR`). Дев-зависимость не
-# входит в граф зависимостей публикуемого крейта.
+# Only for `tests/live_roundtrip.rs`: parses
+# `cargo build --message-format=json` to get the built guest's real path
+# from cargo instead of guessing it from a relative path (that guess is
+# wrong under a non-standard `CARGO_TARGET_DIR`). A dev-dependency doesn't
+# enter the published crate's dependency graph.
 serde_json = "1"
-# Только для `examples/fetch.rs`: сквозной пример собирает прикладной код
-# через пользовательский `http_ng::Client`, а не напрямую через
-# `Transport::execute` (как `live_roundtrip_guest`) — именно это и есть код,
-# который вертикали 2 и 3 переиспользуют без изменений. Нет обратного цикла:
-# `http-ng` не зависит от `http-ng-wasi`, а dev-dependency в цикл графа сборки
-# библиотеки не входит в любом случае.
+# Only for `examples/fetch.rs`: the end-to-end example builds application
+# code through a user-facing `http_ng::Client`, rather than directly through
+# `Transport::execute` (as `live_roundtrip_guest` does) — that's exactly the
+# code verticals 2 and 3 reuse unchanged. No cycle back: `http-ng` doesn't
+# depend on `http-ng-wasi`, and a dev-dependency doesn't enter the library
+# build graph's cycle anyway.
 http-ng = { workspace = true }
 
 [lints]

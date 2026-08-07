@@ -1,8 +1,8 @@
-# Раннер тестов под `wasm32-wasip2` (Task 16). Компилятор даёт бинарь
-# компонента, но исполнить его умеет только настоящий хост `wasi:http` —
-# `cargo test`/`cargo run` для этой цели без раннера собирают, но не
-# запускают. `-S http` подключает `wasi:http` 0.3 (аутбаунд через реальные
-# сокеты хоста) — без этого флага `wasip3::http::client::send` был бы
-# недоступен гостю и падал бы на связывании импорта.
+# Test runner for `wasm32-wasip2` (Task 16). The compiler produces a component
+# binary, but only a real `wasi:http` host can execute it — without a runner,
+# `cargo test`/`cargo run` for this target build but never run. `-S http`
+# enables `wasi:http` 0.3 (outbound through the host's real sockets); without
+# that flag `wasip3::http::client::send` would be unavailable to the guest and
+# would fail at import linking.
 [target.wasm32-wasip2]
 runner = "wasmtime run -S http --"

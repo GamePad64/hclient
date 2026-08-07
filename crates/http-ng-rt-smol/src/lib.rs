@@ -1,8 +1,8 @@
-//! Реализация способностей `http-ng-rt` поверх smol.
+//! `http-ng-rt` capabilities implemented on top of smol.
 //!
-//! **Никакого `async-compat`.** Он поднимает второй рантайм в процессе, если
-//! tokio-контекст не найден, — то есть скрывает ровно ту проблему, которую эта
-//! вертикаль должна выявить.
+//! **No `async-compat`.** It spins up a second runtime in-process if no
+//! tokio context is found — which hides exactly the problem this vertical
+//! is meant to surface.
 #![forbid(unsafe_code)]
 
 use http_ng_rt::{Blocking, Cancelled, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
@@ -15,9 +15,9 @@ pub struct Smol;
 
 impl Timer for Smol {
     type Instant = Instant;
-    // `async fn`, не `fn sleep(...) -> impl Future<Output = ()> { async move
-    // { ... } }`: та форма триггерит `clippy::manual_async_fn`, включённый
-    // по умолчанию под `-D warnings` этого workspace.
+    // `async fn`, not `fn sleep(...) -> impl Future<Output = ()> { async move
+    // { ... } }`: that form triggers `clippy::manual_async_fn`, on by
+    // default under this workspace's `-D warnings`.
     async fn sleep(&self, d: Duration) {
         async_io::Timer::after(d).await;
     }
@@ -31,8 +31,8 @@ impl Timer for Smol {
 
 impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Smol {
     fn spawn(&self, f: F) {
-        // `detach` намеренно: время жизни задачи привязано к соединению,
-        // а не к вызывающему.
+        // `detach` is deliberate: the task's lifetime is tied to the
+        // connection, not to the caller.
         smol_spawn(f);
     }
 }
@@ -58,28 +58,28 @@ fn smol_spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
 }
 
 impl Blocking for Smol {
-    /// `blocking::unblock`'s `Task<T>` — это `Future<Output = T>`: ни
-    /// `Result`, ни аналога `JoinError` вообще нет, потому что пул фоновых
-    /// потоков `blocking` (`blocking::unblock`) — лениво инициализируемый
-    /// процесс-глобальный `static`, без жизненного цикла остановки,
-    /// привязанного к какому-либо конкретному экзекьютору или к конкретному
-    /// значению `Smol`. У этого пула нет события "ушёл, пока задача ещё
-    /// стояла в очереди" — в отличие от `tokio::task::spawn_blocking`,
-    /// который может гоняться с `Runtime::shutdown_timeout` целого рантайма.
-    /// `Cancelled` для этого бэкенда структурно недостижим, а не просто
-    /// непроверен: тут действительно неоткуда взяться отказу такой формы.
-    /// Всегда возвращать `Ok(..)` здесь — честное отражение этого факта, а
-    /// не подлог: трейт обещает "ЕСЛИ происходит отказ именно такой формы —
-    /// он типизирован", а не "каждый бэкенд обязан уметь его произвести".
+    /// `blocking::unblock`'s `Task<T>` is a `Future<Output = T>`: there's
+    /// no `Result`, no `JoinError` analogue at all, because `blocking`'s
+    /// background thread pool (`blocking::unblock`) is a lazily
+    /// initialized process-global `static`, with no shutdown lifecycle
+    /// tied to any particular executor or any particular `Smol` value.
+    /// This pool has no "went away while the task was still queued" event
+    /// — unlike `tokio::task::spawn_blocking`, which can race a whole
+    /// runtime's `Runtime::shutdown_timeout`. `Cancelled` is structurally
+    /// unreachable for this backend, not merely untested: there's really
+    /// nowhere for a failure of that shape to come from. Always returning
+    /// `Ok(..)` here is an honest reflection of that fact, not a fudge:
+    /// the trait promises "IF a failure of exactly this shape occurs, it
+    /// is typed", not "every backend must be capable of producing one".
     ///
-    /// Панику `f` реализации тоже не нужно как-то специально обрабатывать:
-    /// `blocking::unblock` строит свою задачу через
-    /// `async_task::Builder::new().propagate_panic(true)`, а `Task::poll`
-    /// самого `async-task` перевызывает распространённую панику через
-    /// `std::panic::resume_unwind` с оригинальным payload — тем же самым
-    /// механизмом и с той же гарантией "оригинальный payload, без
-    /// stringify", которую `http-ng-rt-tokio`'s `classify()` собирает
-    /// вручную. Простой `.await` над `Task<T>` уже делает то, что нужно.
+    /// A panic in `f` also needs no special handling in this impl:
+    /// `blocking::unblock` builds its task through
+    /// `async_task::Builder::new().propagate_panic(true)`, and
+    /// `async-task`'s own `Task::poll` re-raises the propagated panic via
+    /// `std::panic::resume_unwind` with the original payload — the same
+    /// mechanism, and the same "original payload, no stringifying"
+    /// guarantee, that `http-ng-rt-tokio`'s `classify()` assembles by
+    /// hand. A plain `.await` on `Task<T>` already does what's needed.
     async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
@@ -92,36 +92,38 @@ impl TcpConnect for Smol {
     type Stream = FuturesIo<async_net::TcpStream>;
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<Self::Stream> {
-        // Опции применяются здесь, на `socket2::Socket`, ДО того как
-        // дескриптор вообще передаётся рантайму — тот же шов, что и в
-        // `http-ng-rt-tokio::build_socket`, и намеренно тот же порядок
-        // операций: рантайм только усыновляет уже настроенный сокет.
+        // Options are applied here, on the `socket2::Socket`, BEFORE the
+        // descriptor is ever handed to the runtime — the same seam as
+        // `http-ng-rt-tokio::build_socket`, and deliberately the same
+        // order of operations: the runtime only adopts an already
+        // configured socket.
         let sock = build_socket(addr, opts)?;
         sock.set_nonblocking(true)?;
         begin_connect(&sock, addr)?;
 
         let std_stream: std::net::TcpStream = sock.into();
-        // `async_io::Async::new_nonblocking` регистрирует дескриптор в
-        // реакторе smol БЕЗ повторной установки неблокирующего режима —
-        // `sock.set_nonblocking(true)` двумя строками выше уже сделал это
-        // один раз. `Async::new` (обычный, не `_nonblocking` вариант) сам
-        // устроен как `set_nonblocking(io) + Self::new_nonblocking(io)`
-        // (`async-io-2.6.0/src/lib.rs:658-663` и `:752-757`, для unix- и
-        // windows-`impl`-блока — прочитано, не предположено): вызвать его
-        // здесь значило бы платить второй, избыточный синскол на каждый
-        // `connect()`. `new_nonblocking` — обычная `pub fn` на обоих
-        // `impl`-блоках, экспортирована наравне с `new`.
+        // `async_io::Async::new_nonblocking` registers the descriptor with
+        // smol's reactor WITHOUT setting non-blocking mode again —
+        // `sock.set_nonblocking(true)` two lines above already did that
+        // once. `Async::new` (the plain, non-`_nonblocking` variant) is
+        // itself built as `set_nonblocking(io) + Self::new_nonblocking(io)`
+        // (`async-io-2.6.0/src/lib.rs:658-663` and `:752-757`, for both the
+        // unix and windows `impl` blocks — read, not assumed): calling it
+        // here would mean paying a second, redundant syscall on every
+        // `connect()`. `new_nonblocking` is an ordinary `pub fn` on both
+        // `impl` blocks, exported alongside `new`.
         let async_stream = async_io::Async::new_nonblocking(std_stream)?;
-        // Сокет становится writable, когда неблокирующий `connect()`
-        // завершается — успехом или ошибкой. Тот же приём, что и в
-        // `async_io::Async::<TcpStream>::connect` (единственная причина,
-        // почему это МОЖНО не изобретать заново, а списать: `async-io` сам
-        // не даёт способа передать туда уже настроенный сокет — у него нет
-        // перегрузки `connect`, принимающей `socket2::Socket`).
+        // The socket becomes writable once the non-blocking `connect()`
+        // finishes — whether with success or an error. The same technique
+        // `async_io::Async::<TcpStream>::connect` uses (the only reason
+        // this CAN be borrowed instead of reinvented: `async-io` itself
+        // gives no way to pass in an already configured socket — it has no
+        // `connect` overload that takes a `socket2::Socket`).
         async_stream.writable().await?;
-        // `connect()` неблокирующего сокета не гарантирует, что "стал
-        // writable" значит "подключился успешно" — ошибка тоже делает сокет
-        // writable. `take_error` — единственный надёжный способ различить.
+        // A non-blocking socket's `connect()` doesn't guarantee that
+        // "became writable" means "connected successfully" — an error also
+        // makes the socket writable. `take_error` is the only reliable way
+        // to tell them apart.
         if let Some(err) = async_stream.get_ref().take_error()? {
             return Err(err);
         }
@@ -137,16 +139,16 @@ impl TcpAdoptStd for Smol {
     }
 }
 
-/// Инициирует неблокирующий `connect(2)` на уже настроенном сокете и
-/// классифицирует немедленный результат: `Ok(())` (редко, но случается для
-/// localhost) — коннект уже завершился; `WouldBlock`/`EINPROGRESS` — коннект
-/// в процессе, ожидается снаружи через `writable()`; что угодно ещё —
-/// настоящая ошибка.
+/// Initiates a non-blocking `connect(2)` on an already configured socket
+/// and classifies the immediate result: `Ok(())` (rare, but happens for
+/// localhost) — the connect already finished; `WouldBlock`/`EINPROGRESS` —
+/// the connect is in progress, waited on externally via `writable()`;
+/// anything else — a real error.
 ///
-/// `EINPROGRESS` не наблюдаем через `std::io::ErrorKind`
-/// (`ErrorKind::InProgress` до сих пор `#[unstable]`), поэтому сверяем
-/// `raw_os_error()` напрямую — тем же способом, каким `socket2`'s
-/// собственный `Socket::connect_timeout` решает ровно эту же проблему.
+/// `EINPROGRESS` can't be observed through `std::io::ErrorKind`
+/// (`ErrorKind::InProgress` is still `#[unstable]`), so we compare
+/// `raw_os_error()` directly — the same way `socket2`'s own
+/// `Socket::connect_timeout` solves this exact problem.
 fn begin_connect(sock: &socket2::Socket, addr: SocketAddr) -> std::io::Result<()> {
     match sock.connect(&addr.into()) {
         Ok(()) => Ok(()),
@@ -157,11 +159,11 @@ fn begin_connect(sock: &socket2::Socket, addr: SocketAddr) -> std::io::Result<()
     }
 }
 
-/// Идентична `http_ng_rt_tokio::build_socket` по списку и порядку опций —
-/// намеренно: обе функции реализуют один и тот же контракт `TcpOpts`, и
-/// расхождение между ними означало бы, что один из двух рантаймов лжёт о
-/// какой-то опции. Единственное отличие — тип, в который в итоге
-/// заворачивается сокет.
+/// Identical to `http_ng_rt_tokio::build_socket` in the list and order of
+/// options — deliberately: both functions implement the same `TcpOpts`
+/// contract, and a divergence between them would mean one of the two
+/// runtimes is lying about some option. The only difference is the type
+/// the socket ends up wrapped in.
 fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::Socket> {
     let domain = socket2::Domain::for_address(addr);
     let sock = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
@@ -210,8 +212,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "boom-from-smol")]
     fn blocking_propagates_the_original_panic_payload() {
-        // `blocking::unblock`'s `propagate_panic(true)` даёт это бесплатно,
-        // без какого-либо аналога `classify()` в этой реализации.
+        // `blocking::unblock`'s `propagate_panic(true)` gives us this for
+        // free, with no `classify()` analogue needed in this
+        // implementation.
         let _ = futures_executor::block_on(Smol.run(|| panic!("boom-from-smol")));
     }
 
@@ -233,24 +236,24 @@ mod tests {
                 )
                 .await
                 .expect("connect");
-            // Не только "соединение состоялось" (это прошло бы даже если
-            // `build_socket` тихо игнорировал `opts`), а что `nodelay: true`
-            // реально долетело до сокета: читаем опцию обратно, а не
-            // полагаемся на факт вызова.
+            // Not just "the connection succeeded" (that would pass even if
+            // `build_socket` silently ignored `opts`), but that
+            // `nodelay: true` actually reached the socket: read the option
+            // back, rather than relying on the call having happened.
             assert!(
                 s.get_ref().nodelay().expect("nodelay query"),
-                "TcpOpts::nodelay не применилась к соединённому сокету"
+                "TcpOpts::nodelay was not applied to the connected socket"
             );
         });
     }
 
     #[test]
     fn connects_with_keepalive_enabled() {
-        // Тот же принцип, что и у nodelay-теста выше, для второй опции,
-        // применяемой в `build_socket` до `connect()`.
-        // `async_net::TcpStream` не даёт геттер для `SO_KEEPALIVE` напрямую —
-        // используем `socket2::SockRef`, как и `http-ng-rt-tokio`'s
-        // одноимённый тест.
+        // The same principle as the nodelay test above, for the second
+        // option applied in `build_socket` before `connect()`.
+        // `async_net::TcpStream` gives no direct getter for
+        // `SO_KEEPALIVE` — use `socket2::SockRef`, the same as
+        // `http-ng-rt-tokio`'s test of the same name.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -272,7 +275,7 @@ mod tests {
                 .expect("keepalive query");
             assert!(
                 enabled,
-                "TcpOpts::keepalive не применилась к соединённому сокету"
+                "TcpOpts::keepalive was not applied to the connected socket"
             );
         });
     }

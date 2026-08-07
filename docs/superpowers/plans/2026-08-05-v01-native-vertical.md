@@ -1,95 +1,103 @@
-> **`Transport::to_error` и `Native`.** Вертикаль 1 (находка B2 её финального
-> ревью) добавила в шов дефолтный хук
-> `fn to_error(&self, e: Self::Error) -> Error`, превращающий ошибку бэкенда в
-> ошибку библиотеки. У `Native` `type Error = Error`, то есть категория УЖЕ
-> проставлена там, где отказ произошёл (`ErrorKind::Resolve` в `execute`,
-> `Connect` в `race_connect`, `Tls` в `TlsConnect`, `Body` в `h1`).
+> **`Transport::to_error` and `Native`.** Vertical 1 (finding B2 of its final
+> review) added a default hook to the seam,
+> `fn to_error(&self, e: Self::Error) -> Error`, that turns a backend error
+> into a library error. `Native` has `type Error = Error`, meaning the
+> category is ALREADY assigned at the point where the failure occurred
+> (`ErrorKind::Resolve` in `execute`, `Connect` in `race_connect`, `Tls` in
+> `TlsConnect`, `Body` in `h1`).
 >
-> **Потерять её нельзя.** Дефолт хука сперва проверяет, не является ли
-> `Self::Error` в точности `http_ng_core::Error`, и если да — пропускает её
-> насквозь. Так что для `Native` правильное поведение есть поведение по
-> умолчанию, и «забыл переопределить» перестало быть дефектом. Первая версия
-> хука заворачивала безусловно, и забывчивый бэкенд молча терял всю свою
-> таксономию: `kind()` становился `Other`, предикаты `is_*` — `false` для
-> всего сразу, `Display` печатал категорию дважды. Защитой служила проза;
-> фикс-раунд 3 заменил её механизмом.
+> **It must not be lost.** The hook's default first checks whether
+> `Self::Error` is exactly `http_ng_core::Error`, and if so, passes it
+> straight through. So for `Native` the correct behavior is the default
+> behavior, and "forgot to override it" has stopped being a defect. The
+> first version of the hook wrapped unconditionally, and a forgetful backend
+> would silently lose its entire taxonomy: `kind()` became `Other`, the
+> `is_*` predicates all became `false` at once, `Display` printed the
+> category twice. Prose was the safeguard; fix round 3 replaced it with a
+> mechanism.
 >
-> **Переопределять всё равно надо — явно, тождеством** (Step 3 ниже). Не ради
-> корректности, а ради читаемости: явное `fn to_error(&self, e: Self::Error)
-> -> Error { e }` называет намерение в точке, где его читают, и переживёт
-> возможное изменение дефолта. И тест из Step 1 обязателен: он проверяет не
-> дефолт (тот проверен в `http-ng-core`), а что категория `Native` реально
-> доезжает до вызывающей стороны через весь путь `Client::execute`.
+> **Overriding it is still required — explicitly, as an identity function**
+> (Step 3 below). Not for correctness, but for readability: an explicit `fn
+> to_error(&self, e: Self::Error) -> Error { e }` states the intent right
+> where it's read, and survives a possible future change to the default.
+> And the test from Step 1 is mandatory: it doesn't verify the default (that's
+> covered in `http-ng-core`) — it verifies that `Native`'s category actually
+> makes it to the caller through the whole `Client::execute` path.
 >
-> **Дефолт не покрывает** бэкенд, чья ошибка — СВОЙ тип, несущий категорию
-> внутри: угадать чужое перечисление он не может, и без переопределения такая
-> ошибка станет `ErrorKind::Other`. К `Native` это не относится, но относится
-> к любому будущему бэкенду, который решит завести собственный тип ошибки.
+> **The default doesn't cover** a backend whose error is ITS OWN type,
+> carrying the category inside: it can't guess a foreign enum, and without an
+> override such an error becomes `ErrorKind::Other`. That doesn't apply to
+> `Native`, but it applies to any future backend that decides to grow its own
+> error type.
 
-# http-ng v0.1, вертикаль 2: native — план реализации
+# http-ng v0.1, vertical 2: native — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Тот же прикладной код, что в вертикали 1, ходит по настоящей сети —
-TCP + TLS + HTTP/1.1 — и работает **на tokio и на smol** без единого `#[cfg]` в
-общем коде.
+**Goal:** The same application code as in vertical 1 goes over a real
+network — TCP + TLS + HTTP/1.1 — and works **on tokio and on smol** with not
+a single `#[cfg]` in the shared code.
 
-**Architecture:** Рантайм разложен не на один `Runtime`, а на раздельные
-способности (`Spawn`, `TcpConnect`, `TcpAdoptStd`, `Blocking`), чтобы транспорт
-требовал только то, чем пользуется. TLS-адаптер пишется напрямую под
-`hyper::rt::Read/Write`, а не под futures-io или tokio-io — поэтому
-per-runtime TLS-склейки не существует вообще. HTTP/1-соединение драйвится
-**инлайн**, без spawn: это доказывает, что рантайм-шов настоящий, потому что
-клиент едет на голом `futures`-executor'е.
+**Architecture:** The runtime isn't broken into one `Runtime`, but into
+separate capabilities (`Spawn`, `TcpConnect`, `TcpAdoptStd`, `Blocking`), so
+the transport only requires what it actually uses. The TLS adapter is
+written directly against `hyper::rt::Read/Write`, not futures-io or
+tokio-io — so per-runtime TLS glue simply doesn't exist. The HTTP/1
+connection is driven **inline**, with no spawn: this proves the runtime seam
+is real, because the client runs on a bare `futures` executor.
 
-**Tech Stack:** `hyper` 1.11 (только `client` + `http1`), `rustls` 0.23,
+**Tech Stack:** `hyper` 1.11 (`client` + `http1` only), `rustls` 0.23,
 `rustls-pki-types` 1.15, `rustls-platform-verifier` 0.7, `webpki-roots` 1.0,
 `socket2` 0.6, `tokio` 1 (`net`,`rt`,`time`,`sync`), `smol` / `async-io` 2 +
 `async-net` 2, `futures` 0.3.
 
 ## Global Constraints
 
-Наследуются из плана вертикали 1 и дополняются:
+Inherited from vertical 1's plan, and extended:
 
-- **`http-ng-core` и `http-ng` по-прежнему не содержат ни одного объявленного
-  бонда `Send`/`Sync`.** Все требования `Send` заперты в `http-ng-native`,
-  `http-ng-tls-*`, `http-ng-dns-hickory` и приходят от чужого кода.
-- **`http-ng-rt` сам не выбирает рантайм и не содержит рантайм-специфичного
-  кода.** Прямые зависимости — только `hyper` (ради `rt`-трейтов) и
-  `futures-io`; реализации живут в `-rt-tokio` / `-rt-smol`. Это про прямые
-  зависимости, НЕ про граф целиком: `hyper` 1.11.0 сам тянет `tokio`
-  (`features = ["sync"]`) безусловно, без `optional = true` — воспроизведено
-  сборкой: `cargo clean -p tokio && cargo build -p http-ng-rt` печатает
-  `Compiling tokio v1.53.1`. README вертикали 1 уже честно документирует
-  фичу `sync`; противоречия нет, только прежняя формулировка читалась как
-  утверждение о графе целиком (найдено ревью Task 2, round 1).
-- **Ни один тип hyper, rustls или socket2 не появляется в публичном API**
-  `http-ng-native`. `hyper::upgrade::Upgraded` — под особым запретом.
-- **`unsafe` запрещён везде** (`#![forbid(unsafe_code)]`, не `deny` — `deny`
-  переопределим локальным `#[allow(unsafe_code)]` изнутри крейта, `forbid`
-  нет; см. Task 2 fix round 1). Шим futures-io → hyper::rt пишется через
-  безопасный `ReadBufCursor::put_slice`, как советует документация самого
-  hyper.
-- **Бэкенд, чей `Transport::Error` — СВОЙ тип, несущий категорию внутри,
-  обязан переопределить `Transport::to_error`.** Дефолт узнаёт только
-  `http_ng_core::Error` (её он пропускает насквозь — то есть `Native` с
-  `type Error = Error` защищён структурно); чужое перечисление он угадать не
-  может, и без переопределения такая ошибка станет `ErrorKind::Other`.
-  Переопределять тождеством стоит и там, где дефолт уже прав — явная строка
-  называет намерение. Подробности — в блоке над Step 1 задачи 13 и в
-  doc-комментарии самого метода в `http-ng-core`.
-- Пул соединений **не входит** в эту вертикаль: одно соединение на запрос.
-- MSRV: 1.85. `rust-version` у всех крейтов вертикали — `"1.85"`. Job `msrv`
-  в CI гоняет `cargo check --all-features --all-targets` (с `--all-targets` —
-  с фикс-раунда финального ревью вертикали 1; до него тестовые таргеты не
-  проверялись при 1.85 ни разу), но его список пакетов — три ядровых крейта.
-  Крейты этой вертикали нужно в него добавить.
+- **`http-ng-core` and `http-ng` still don't contain a single declared
+  `Send`/`Sync` bound.** Every `Send` requirement is locked inside
+  `http-ng-native`, `http-ng-tls-*`, `http-ng-dns-hickory`, and comes from
+  someone else's code.
+- **`http-ng-rt` itself doesn't choose a runtime and contains no
+  runtime-specific code.** Its direct dependencies are only `hyper` (for the
+  `rt` traits) and `futures-io`; implementations live in `-rt-tokio` /
+  `-rt-smol`. This is about direct dependencies, NOT the whole graph: hyper
+  1.11.0 itself pulls in `tokio` (`features = ["sync"]`) unconditionally,
+  with no `optional = true` — reproduced by building: `cargo clean -p tokio
+  && cargo build -p http-ng-rt` prints `Compiling tokio v1.53.1`. Vertical
+  1's README already documents the `sync` feature honestly; there's no
+  contradiction, only that the earlier phrasing read like a claim about the
+  whole graph (found by Task 2's review, round 1).
+- **Not a single hyper, rustls or socket2 type appears in `http-ng-native`'s
+  public API.** `hyper::upgrade::Upgraded` is under a special ban.
+- **`unsafe` is forbidden everywhere** (`#![forbid(unsafe_code)]`, not
+  `deny` — `deny` we could override with a local `#[allow(unsafe_code)]`
+  inside the crate, `forbid` we can't; see Task 2 fix round 1). The
+  futures-io → hyper::rt shim is written using the safe
+  `ReadBufCursor::put_slice`, as hyper's own documentation recommends.
+- **A backend whose `Transport::Error` is ITS OWN type, carrying the
+  category inside, must override `Transport::to_error`.** The default only
+  recognizes `http_ng_core::Error` (which it passes straight through — i.e.
+  `Native`, with `type Error = Error`, is structurally protected); it can't
+  guess a foreign enum, and without an override such an error becomes
+  `ErrorKind::Other`. Overriding with an identity function is worthwhile even
+  where the default is already correct — the explicit line states the
+  intent. Details are in the block above Step 1 of Task 13, and in the doc
+  comment on the method itself in `http-ng-core`.
+- Connection pooling is **not part of** this vertical: one connection per
+  request.
+- MSRV: 1.85. Every crate in this vertical has `rust-version = "1.85"`. The
+  `msrv` CI job runs `cargo check --all-features --all-targets` (with
+  `--all-targets` — as of vertical 1's final-review fix round; before that,
+  test targets had never once been checked against 1.85), but its package
+  list is the three core crates. This vertical's crates need to be added to it.
 
-## Файловая структура
+## File layout
 
 ```
 crates/http-ng-rt/
-  src/lib.rs                 реэкспорт Timer из core, TcpOpts
+  src/lib.rs                 re-export Timer from core, TcpOpts
   src/caps.rs                Spawn, TcpConnect, TcpAdoptStd, Blocking
   src/futures_io.rs          FuturesIo<S>: futures-io -> hyper::rt
 crates/http-ng-rt-tokio/src/lib.rs
@@ -105,21 +113,21 @@ crates/http-ng-tls-rustls/
 crates/http-ng-native/
   src/lib.rs                 Native<R, T, D>: Transport
   src/connect.rs             Happy Eyeballs + TCP + TLS + ALPN
-  src/h1.rs                  handshake + инлайн-драйв соединения
-  src/body.rs                мост RequestBody -> http_body::Body с Send-ошибкой
+  src/h1.rs                  handshake + driving the connection inline
+  src/body.rs                RequestBody -> http_body::Body bridge with a Send error
 crates/http-ng-proto/
-  src/happy_eyeballs.rs      чистый планировщик RFC 8305 (задача 5)
+  src/happy_eyeballs.rs      pure RFC 8305 scheduler (task 5)
 crates/http-ng/
   src/lib.rs                 DefaultTransport + Client<T = DefaultTransport>
 ```
 
 ---
 
-### Task 1: `http-ng-rt` — раздельные способности рантайма
+### Task 1: `http-ng-rt` — separate runtime capabilities
 
 **Files:**
 - Create: `crates/http-ng-rt/Cargo.toml`, `src/lib.rs`, `src/caps.rs`
-- Test: внутри `caps.rs`
+- Test: inside `caps.rs`
 
 **Interfaces:**
 - Consumes: `http_ng_core::unversioned::Timer`.
@@ -131,7 +139,7 @@ crates/http-ng/
   - `pub struct TcpOpts { pub nodelay: bool, pub keepalive: Option<Duration>, pub local_address: Option<IpAddr>, pub send_buffer_size: Option<usize>, pub recv_buffer_size: Option<usize>, pub reuse_address: bool }` (`Default`)
   - `pub use http_ng_core::unversioned::Timer;`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-rt/src/caps.rs
@@ -142,7 +150,7 @@ mod tests {
     #[test]
     fn tcp_opts_default_is_conservative() {
         let o = TcpOpts::default();
-        assert!(!o.nodelay, "nodelay включает пользователь, не мы");
+        assert!(!o.nodelay, "the user turns nodelay on, not us");
         assert!(o.keepalive.is_none());
         assert!(o.local_address.is_none());
         assert!(!o.reuse_address);
@@ -150,34 +158,34 @@ mod tests {
 
     #[test]
     fn spawn_is_generic_over_the_future_not_boxed() {
-        // Форма скопирована у hyper::rt::Executor: генерик по F, ноль бондов
-        // в объявлении. Send добавляет impl, а не трейт.
+        // The shape is copied from hyper::rt::Executor: generic over F, zero
+        // bounds in the declaration. Send comes from the impl, not the trait.
         struct Immediate;
         impl<F: std::future::Future<Output = ()>> Spawn<F> for Immediate {
             fn spawn(&self, f: F) { futures_executor::block_on(f) }
         }
         let done = std::rc::Rc::new(std::cell::Cell::new(false));
         let d = done.clone();
-        // !Send future — трейт это допускает.
+        // A !Send future — the trait allows it.
         Immediate.spawn(async move { d.set(true) });
         assert!(done.get());
     }
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-rt`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт**
+- [ ] **Step 3: Create the crate**
 
 ```toml
 # crates/http-ng-rt/Cargo.toml
 [package]
 name = "http-ng-rt"
 version = "0.1.0"
-description = "Способности рантайма, нужные native-транспорту http-ng"
+description = "Runtime capabilities needed by http-ng's native transport"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -197,11 +205,11 @@ workspace = true
 
 ```rust
 // crates/http-ng-rt/src/lib.rs
-//! Способности рантайма для native-транспорта http-ng.
+//! Runtime capabilities for http-ng's native transport.
 //!
-//! Раздельные трейты, а не один `Runtime`: транспорт требует только то, чем
-//! пользуется, а бэкенд без сокетов не обязан реализовывать `connect` заглушкой,
-//! которая паникует.
+//! Separate traits, not one `Runtime`: the transport only requires what it
+//! actually uses, and a backend with no sockets isn't forced to implement
+//! `connect` as a stub that panics.
 #![deny(unsafe_code)]
 
 mod caps;
@@ -210,8 +218,8 @@ mod futures_io;
 pub use caps::{Blocking, Spawn, TcpAdoptStd, TcpConnect, TcpOpts};
 pub use futures_io::FuturesIo;
 
-/// `Timer` определён один раз, в `http-ng-core`: он нужен портативному ядру
-/// для таймаутов и backoff. Здесь только реэкспорт.
+/// `Timer` is defined once, in `http-ng-core`: the portable core needs it
+/// for timeouts and backoff. This is just a re-export.
 pub use http_ng_core::unversioned::Timer;
 ```
 
@@ -221,16 +229,18 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-/// Форма скопирована у `hyper::rt::Executor` намеренно: генерик по future,
-/// ноль бондов в объявлении. `Send` добавляет `impl`, а не трейт, поэтому
-/// однопоточные рантаймы реализуют его честно.
+/// The shape is deliberately copied from `hyper::rt::Executor`: generic
+/// over the future, zero bounds in the declaration. `Send` comes from the
+/// `impl`, not the trait, so single-threaded runtimes can implement it
+/// honestly.
 pub trait Spawn<F: Future<Output = ()>> {
     fn spawn(&self, f: F);
 }
 
-/// Опции сокета применяются в http-ng **один раз**, на `socket2::Socket`, и
-/// рантайм только усыновляет дескриптор (`TcpAdoptStd`). Иначе каждый
-/// рантайм-крейт переписывал бы эту простыню заново.
+/// Socket options get applied in http-ng **exactly once**, on a
+/// `socket2::Socket`, and the runtime only adopts the descriptor
+/// (`TcpAdoptStd`). Otherwise every runtime crate would rewrite this whole
+/// sheet of options over again.
 #[derive(Debug, Clone, Default)]
 pub struct TcpOpts {
     pub nodelay: bool,
@@ -251,20 +261,21 @@ pub trait TcpConnect {
     ) -> impl Future<Output = std::io::Result<Self::Stream>>;
 }
 
-/// На платформах с файловыми дескрипторами весь набор socket-опций
-/// применяется вне рантайма, а рантайм только усыновляет готовый сокет.
+/// On platforms with file descriptors, the whole set of socket options gets
+/// applied outside the runtime, and the runtime only adopts the finished
+/// socket.
 pub trait TcpAdoptStd: TcpConnect {
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<Self::Stream>;
 }
 
-/// Отдельный трейт, а не метод: `getaddrinfo` блокирующий, а на wasm и
-/// embedded блокирующего пула нет вовсе. Отсутствие способности должно быть
-/// ошибкой компиляции, а не `unimplemented!()` в рантайме.
+/// A separate trait, not a method: `getaddrinfo` is blocking, and on wasm
+/// and embedded there's no blocking pool at all. The absence of the
+/// capability should be a compile error, not `unimplemented!()` at runtime.
 ///
-/// **Единственное место во всём проекте, где `Send` объявляем мы сами**, и он
-/// здесь честен: и `tokio::task::spawn_blocking`, и `blocking::unblock`
-/// требуют `Send + 'static`, а способности `Blocking` на wasm нет вовсе —
-/// заражать ей нечего.
+/// **The only place in the entire project where we declare `Send`
+/// ourselves**, and it's honest here: both `tokio::task::spawn_blocking` and
+/// `blocking::unblock` require `Send + 'static`, and the `Blocking`
+/// capability doesn't exist on wasm at all — there's nothing for it to infect.
 pub trait Blocking {
     fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
@@ -273,16 +284,16 @@ pub trait Blocking {
 }
 ```
 
-- [ ] **Step 4: Создать заглушку `futures_io.rs` и запустить тесты**
+- [ ] **Step 4: Create a `futures_io.rs` stub and run the tests**
 
 ```rust
 // crates/http-ng-rt/src/futures_io.rs
-// Реализация — Task 2.
+// Implementation — Task 2.
 pub struct FuturesIo<S> { pub(crate) inner: S }
 ```
 
 Run: `cargo test -p http-ng-rt`
-Expected: PASS, два теста.
+Expected: PASS, two tests.
 
 - [ ] **Step 5: Commit**
 
@@ -293,15 +304,15 @@ git commit -m "feat(rt): separate runtime capability traits instead of one Runti
 
 ---
 
-### Task 2: `http-ng-rt` — шим `futures-io` → `hyper::rt`
+### Task 2: `http-ng-rt` — a `futures-io` → `hyper::rt` shim
 
-Этого моста нет нигде: в hyper-util только `TokioIo`, а `smol-hyper` 0.1.1
-мёртв с 2023-12-29 **и** реализует направление не в ту сторону. Без него
-smol-бэкенда не существует.
+This bridge doesn't exist anywhere: hyper-util only has `TokioIo`, and
+`smol-hyper` 0.1.1 has been dead since 2023-12-29 **and** bridges in the
+wrong direction. Without it, no smol backend exists.
 
 **Files:**
 - Modify: `crates/http-ng-rt/src/futures_io.rs`
-- Test: внутри `futures_io.rs`
+- Test: inside `futures_io.rs`
 
 **Interfaces:**
 - Consumes: `futures_io::{AsyncRead, AsyncWrite}`.
@@ -310,7 +321,7 @@ smol-бэкенда не существует.
   `impl<S: AsyncRead + Unpin> hyper::rt::Read for FuturesIo<S>`;
   `impl<S: AsyncWrite + Unpin> hyper::rt::Write for FuturesIo<S>`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-rt/src/futures_io.rs
@@ -320,7 +331,7 @@ mod tests {
     use futures_executor::block_on;
     use std::pin::Pin;
 
-    /// Источник, отдающий данные порциями, чтобы поймать частичные чтения.
+    /// A source that hands out data in portions, to catch partial reads.
     struct Chunked { data: Vec<u8>, at: usize, step: usize }
     impl futures_io::AsyncRead for Chunked {
         fn poll_read(mut self: Pin<&mut Self>, _: &mut std::task::Context<'_>,
@@ -355,7 +366,7 @@ mod tests {
 
     #[test]
     fn never_writes_more_than_remaining() {
-        // step больше, чем ёмкость буфера: put_slice не должен паниковать.
+        // step is bigger than the buffer's capacity: put_slice must not panic.
         let io = FuturesIo::new(Chunked { data: vec![7u8; 64], at: 0, step: 64 });
         assert_eq!(read_all(io).len(), 64);
     }
@@ -369,12 +380,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-rt futures_io`
 Expected: FAIL — `no function new`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-rt/src/futures_io.rs
@@ -382,22 +393,23 @@ use hyper::rt::ReadBufCursor;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Мост `futures_io::{AsyncRead, AsyncWrite}` → `hyper::rt::{Read, Write}`.
+/// A bridge from `futures_io::{AsyncRead, AsyncWrite}` to `hyper::rt::{Read, Write}`.
 ///
-/// В hyper-util есть только `TokioIo`; `smol-hyper` 0.1.1 мёртв с 2023-12-29 и
-/// мостит в противоположную сторону. Поэтому мост наш.
+/// hyper-util only has `TokioIo`; `smol-hyper` 0.1.1 has been dead since
+/// 2023-12-29 and bridges the opposite direction. So this bridge is ours.
 ///
-/// Реализация **без `unsafe`**: читаем во временный буфер на стеке и копируем
-/// через безопасный `ReadBufCursor::put_slice` — именно этот приём рекомендует
-/// документация `hyper::rt::Read`. Цена — одно копирование на чтение;
-/// zero-copy требует `unsafe as_mut`/`advance` и отложен.
+/// Implemented **with no `unsafe`**: we read into a temporary stack buffer
+/// and copy through the safe `ReadBufCursor::put_slice` — exactly the
+/// technique `hyper::rt::Read`'s own documentation recommends. The price is
+/// one copy per read; zero-copy would need `unsafe as_mut`/`advance` and is
+/// deferred.
 #[derive(Debug)]
 pub struct FuturesIo<S> {
     inner: S,
 }
 
-/// Размер стекового буфера. 8 KiB — типичный размер чтения у hyper,
-/// поэтому лишних итераций не возникает.
+/// The size of the stack buffer. 8 KiB is a typical read size for hyper,
+/// so no extra iterations occur.
 const SCRATCH: usize = 8 * 1024;
 
 impl<S> FuturesIo<S> {
@@ -468,12 +480,12 @@ impl<S: futures_io::AsyncWrite + Unpin> hyper::rt::Write for FuturesIo<S> {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-rt`
-Expected: PASS, пять тестов.
+Expected: PASS, five tests.
 
-- [ ] **Step 5: Проверить, что unsafe действительно нет**
+- [ ] **Step 5: Verify there's really no unsafe**
 
 Run: `! grep -rn "unsafe" crates/http-ng-rt/src && echo OK`
 Expected: `OK`.
@@ -491,18 +503,18 @@ git commit -m "feat(rt): safe futures-io to hyper::rt bridge, missing from the e
 
 **Files:**
 - Create: `crates/http-ng-rt-tokio/Cargo.toml`, `src/lib.rs`
-- Test: внутри `lib.rs`
+- Test: inside `lib.rs`
 
 **Interfaces:**
-- Consumes: трейты Task 1, `FuturesIo` Task 2.
+- Consumes: Task 1's traits, `FuturesIo` from Task 2.
 - Produces: `pub struct Tokio`; `impl Timer for Tokio { type Instant = tokio::time::Instant }`;
   `impl<F: Future<Output=()> + Send + 'static> Spawn<F> for Tokio`;
   `impl TcpConnect for Tokio { type Stream = TokioIo }`; `impl TcpAdoptStd for Tokio`;
   `impl Blocking for Tokio`; `pub struct TokioIo(tokio::net::TcpStream)` —
-  реализует `hyper::rt::Read/Write` напрямую (без `FuturesIo`, потому что у
-  tokio свои IO-трейты).
+  implements `hyper::rt::Read/Write` directly (without `FuturesIo`, because
+  tokio has its own IO traits).
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-rt-tokio/src/lib.rs
@@ -539,19 +551,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-rt-tokio`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт и реализовать**
+- [ ] **Step 3: Create the crate and implement**
 
 ```toml
 # crates/http-ng-rt-tokio/Cargo.toml
 [package]
 name = "http-ng-rt-tokio"
 version = "0.1.0"
-description = "Реализация способностей рантайма http-ng поверх tokio"
+description = "tokio implementation of http-ng's runtime capabilities"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -572,7 +584,7 @@ workspace = true
 
 ```rust
 // crates/http-ng-rt-tokio/src/lib.rs
-//! Реализация способностей `http-ng-rt` поверх tokio.
+//! tokio implementation of `http-ng-rt`'s capabilities.
 #![deny(unsafe_code)]
 
 mod io;
@@ -584,8 +596,8 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-/// ZST: tokio-хендл берётся из окружающего рантайма, как это делает reqwest.
-/// Вне рантайма `spawn`/`sleep` паникуют — задокументировано.
+/// A ZST: the tokio handle is taken from the ambient runtime, the same way
+/// reqwest does it. Outside a runtime, `spawn`/`sleep` panic — documented.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tokio;
 
@@ -622,9 +634,10 @@ impl TcpConnect for Tokio {
     type Stream = TokioIo;
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<TokioIo> {
-        // Опции применяются на `socket2::Socket` **один раз**, а рантайм
-        // усыновляет готовый дескриптор. Это и есть шов `TcpAdoptStd`:
-        // без него каждый рантайм-крейт переписывал бы эту простыню заново.
+        // The options get applied on a `socket2::Socket` **exactly once**,
+        // and the runtime adopts the finished descriptor. This is the
+        // `TcpAdoptStd` seam: without it, every runtime crate would rewrite
+        // this whole sheet of options over again.
         let sock = build_socket(addr, opts)?;
         sock.set_nonblocking(true)?;
         let std_stream: std::net::TcpStream = sock.into();
@@ -680,8 +693,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// Мост `tokio::net::TcpStream` → `hyper::rt`. Без `unsafe`: читаем во
-/// временный буфер и копируем безопасным `put_slice`.
+/// A bridge from `tokio::net::TcpStream` to `hyper::rt`. No `unsafe`: we
+/// read into a temporary buffer and copy through the safe `put_slice`.
 #[derive(Debug)]
 pub struct TokioIo(tokio::net::TcpStream);
 
@@ -727,10 +740,10 @@ impl hyper::rt::Write for TokioIo {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-rt-tokio`
-Expected: PASS, три теста.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 
@@ -743,22 +756,23 @@ git commit -m "feat(rt-tokio): tokio implementation of the runtime capabilities"
 
 ### Task 4: `http-ng-rt-smol`
 
-Тот же набор способностей на smol. Именно эта задача доказывает, что шов
-настоящий: если здесь понадобится `#[cfg]` в общем коде — шов декоративен.
+The same set of capabilities on smol. This is exactly the task that proves
+the seam is real: if a `#[cfg]` is needed in the shared code here, the seam
+is decorative.
 
 **Files:**
 - Create: `crates/http-ng-rt-smol/Cargo.toml`, `src/lib.rs`
-- Test: внутри `lib.rs`
+- Test: inside `lib.rs`
 
 **Interfaces:**
-- Consumes: то же, что Task 3, плюс `FuturesIo` (у smol IO уже `futures-io`,
-  поэтому отдельный `SmolIo` не нужен).
+- Consumes: the same as Task 3, plus `FuturesIo` (smol's IO is already
+  `futures-io`, so a separate `SmolIo` isn't needed).
 - Produces: `pub struct Smol`; `impl Timer for Smol { type Instant = std::time::Instant }`;
   `impl<F: Future<Output=()> + Send + 'static> Spawn<F> for Smol`;
   `impl TcpConnect for Smol { type Stream = FuturesIo<async_net::TcpStream> }`;
   `impl TcpAdoptStd for Smol`; `impl Blocking for Smol`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-rt-smol/src/lib.rs
@@ -798,19 +812,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-rt-smol`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт и реализовать**
+- [ ] **Step 3: Create the crate and implement**
 
 ```toml
 # crates/http-ng-rt-smol/Cargo.toml
 [package]
 name = "http-ng-rt-smol"
 version = "0.1.0"
-description = "Реализация способностей рантайма http-ng поверх smol"
+description = "smol implementation of http-ng's runtime capabilities"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -833,11 +847,11 @@ workspace = true
 
 ```rust
 // crates/http-ng-rt-smol/src/lib.rs
-//! Реализация способностей `http-ng-rt` поверх smol.
+//! smol implementation of `http-ng-rt`'s capabilities.
 //!
-//! **Никакого `async-compat`.** Он поднимает второй рантайм в процессе, если
-//! tokio-контекст не найден, — то есть скрывает ровно ту проблему, которую эта
-//! вертикаль должна выявить.
+//! **No `async-compat`.** It spins up a second runtime in the process if a
+//! tokio context isn't found — which hides exactly the problem this vertical
+//! is supposed to expose.
 #![deny(unsafe_code)]
 
 use http_ng_rt::{Blocking, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
@@ -861,8 +875,8 @@ impl Timer for Smol {
 
 impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Smol {
     fn spawn(&self, f: F) {
-        // `detach` намеренно: время жизни задачи привязано к соединению,
-        // а не к вызывающему.
+        // `detach` is deliberate: the task's lifetime is tied to the
+        // connection, not to the caller.
         smol_spawn(f);
     }
 }
@@ -885,7 +899,7 @@ fn smol_spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
 
 impl Blocking for Smol {
     fn run<T, F: FnOnce() -> T>(&self, f: F) -> impl Future<Output = T> {
-        // `blocking` — тот же пул, что использует сам smol.
+        // `blocking` is the same pool smol itself uses.
         async move { blocking::unblock(f).await }
     }
 }
@@ -914,15 +928,15 @@ impl TcpAdoptStd for Smol {
 }
 ```
 
-Добавить `async-executor = "1"` в зависимости. Бонды `Send + 'static` на
-`Blocking::run` уже стоят в Task 1 — их требует `blocking::unblock`.
+Add `async-executor = "1"` to the dependencies. The `Send + 'static` bounds
+on `Blocking::run` already exist from Task 1 — `blocking::unblock` requires them.
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-rt-smol`
-Expected: PASS, три теста.
+Expected: PASS, three tests.
 
-- [ ] **Step 5: Убедиться, что `async-compat` не появился в графе**
+- [ ] **Step 5: Verify `async-compat` hasn't shown up in the graph**
 
 Run: `! cargo tree -p http-ng-rt-smol -e normal --prefix none | grep -q async-compat && echo OK`
 Expected: `OK`.
@@ -936,29 +950,30 @@ git commit -m "feat(rt-smol): smol implementation without async-compat"
 
 ---
 
-### Task 5: `http-ng-proto` — планировщик Happy Eyeballs (RFC 8305)
+### Task 5: `http-ng-proto` — the Happy Eyeballs scheduler (RFC 8305)
 
-Готового нет: `happy-eyeballs` 0.2.1 мёртв с 2023-05, `happyeyeballs` сам
-объявляет себя не-RFC-совместимым, а hyper-util реализует **RFC 6555** за
-запечатанным трейтом. Планировщик чистый и принимает `now` параметром — значит
-константы 50 мс и 250 мс тестируются **без единого `sleep`**.
+Nothing off the shelf: `happy-eyeballs` 0.2.1 has been dead since 2023-05,
+`happyeyeballs` declares itself non-RFC-compliant, and hyper-util implements
+**RFC 6555** behind a sealed trait. The scheduler is pure and takes `now` as
+a parameter — meaning the 50ms and 250ms constants are tested **without a
+single `sleep`**.
 
 **Files:**
 - Create: `crates/http-ng-proto/src/happy_eyeballs.rs`
 - Modify: `crates/http-ng-proto/src/lib.rs`
-- Test: внутри `happy_eyeballs.rs`
+- Test: inside `happy_eyeballs.rs`
 
 **Interfaces:**
-- Consumes: ничего.
+- Consumes: nothing.
 - Produces:
-  - `pub struct HeConfig { pub resolution_delay: Duration, pub attempt_delay: Duration, pub first_family_count: usize }` (`Default` = 50 мс / 250 мс / 1)
+  - `pub struct HeConfig { pub resolution_delay: Duration, pub attempt_delay: Duration, pub first_family_count: usize }` (`Default` = 50ms / 250ms / 1)
   - `pub struct Scheduler`; `Scheduler::new(cfg: HeConfig) -> Self`
   - `Scheduler::offer_v6(&mut self, addrs: &[IpAddr])`, `offer_v4(&mut self, addrs: &[IpAddr])`
   - `Scheduler::mark_v6_done(&mut self)`, `mark_v4_done(&mut self)`
   - `Scheduler::poll(&mut self, elapsed: Duration) -> HeAction`
   - `pub enum HeAction { Start(IpAddr), Wait(Duration), Exhausted }`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-proto/src/happy_eyeballs.rs
@@ -985,7 +1000,7 @@ mod tests {
         let mut s = Scheduler::new(HeConfig::default());
         s.offer_v4(&[v4(1)]);
         s.mark_v4_done();
-        // AAAA ещё не пришли: RFC 8305 §3 велит подождать Resolution Delay.
+        // AAAA hasn't arrived yet: RFC 8305 §3 says wait the Resolution Delay.
         assert_eq!(s.poll(ms(0)), HeAction::Wait(ms(50)));
         assert_eq!(s.poll(ms(50)), HeAction::Start(v4(1)));
     }
@@ -1024,25 +1039,25 @@ mod tests {
     #[test]
     fn attempt_delay_is_clamped_to_the_rfc_range() {
         let c = HeConfig { attempt_delay: ms(1), ..Default::default() };
-        assert_eq!(Scheduler::new(c).config().attempt_delay, ms(10), "нижняя граница RFC 8305");
+        assert_eq!(Scheduler::new(c).config().attempt_delay, ms(10), "RFC 8305's lower bound");
         let c = HeConfig { attempt_delay: Duration::from_secs(30), ..Default::default() };
         assert_eq!(Scheduler::new(c).config().attempt_delay, Duration::from_secs(2),
-                   "верхняя граница RFC 8305");
+                   "RFC 8305's upper bound");
     }
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-proto happy`
 Expected: FAIL — `cannot find type Scheduler`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-proto/src/happy_eyeballs.rs
-//! Планировщик Happy Eyeballs v2 (RFC 8305). Чистый: время приходит
-//! параметром `elapsed`, поэтому константы проверяются без `sleep`.
+//! The Happy Eyeballs v2 scheduler (RFC 8305). Pure: time comes in as the
+//! `elapsed` parameter, so the constants are tested without `sleep`.
 
 use core::time::Duration;
 use std::collections::VecDeque;
@@ -1050,11 +1065,11 @@ use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeConfig {
-    /// RFC 8305 §3: ждать AAAA столько, прежде чем идти по A.
+    /// RFC 8305 §3: how long to wait for AAAA before going with A.
     pub resolution_delay: Duration,
-    /// RFC 8305 §5: пауза между запусками попыток. Clamp 10 мс…2 с.
+    /// RFC 8305 §5: pause between attempt starts. Clamped to 10ms…2s.
     pub attempt_delay: Duration,
-    /// RFC 8305 §4: сколько адресов первого семейства идёт подряд.
+    /// RFC 8305 §4: how many addresses of the first family go in a row.
     pub first_family_count: usize,
 }
 
@@ -1087,7 +1102,7 @@ pub struct Scheduler {
     v4_done: bool,
     started: usize,
     last_start: Option<Duration>,
-    /// Сколько адресов первого семейства уже выдано подряд.
+    /// How many addresses of the first family have been handed out in a row so far.
     run_in_first_family: usize,
 }
 
@@ -1114,7 +1129,7 @@ impl Scheduler {
     pub fn mark_v4_done(&mut self) { self.v4_done = true }
 
     pub fn poll(&mut self, elapsed: Duration) -> HeAction {
-        // Пауза между попытками.
+        // Pause between attempts.
         if let Some(last) = self.last_start {
             let next_at = last + self.cfg.attempt_delay;
             if elapsed < next_at {
@@ -1122,8 +1137,8 @@ impl Scheduler {
             }
         }
 
-        // RFC 8305 §3: пока AAAA не пришли и резолвер не закончил, придержать
-        // IPv4 на Resolution Delay.
+        // RFC 8305 §3: while AAAA hasn't arrived and the resolver isn't
+        // done, hold IPv4 back for the Resolution Delay.
         if self.v6.is_empty() && !self.v6_done && elapsed < self.cfg.resolution_delay {
             return HeAction::Wait(self.cfg.resolution_delay - elapsed);
         }
@@ -1133,10 +1148,10 @@ impl Scheduler {
         } else if self.v4.is_empty() {
             true
         } else if self.started == 0 {
-            true // первым всегда IPv6
+            true // IPv6 always goes first
         } else {
-            // Интерливинг: после First Address Family Count адресов первого
-            // семейства чередуем.
+            // Interleaving: after First Address Family Count addresses of
+            // the first family, alternate.
             self.run_in_first_family < self.cfg.first_family_count
         };
 
@@ -1156,14 +1171,14 @@ impl Scheduler {
 }
 ```
 
-- [ ] **Step 4: Подключить и запустить**
+- [ ] **Step 4: Wire it up and run**
 
-Добавить `pub mod happy_eyeballs;` в `crates/http-ng-proto/src/lib.rs`.
+Add `pub mod happy_eyeballs;` to `crates/http-ng-proto/src/lib.rs`.
 
 Run: `cargo test -p http-ng-proto`
-Expected: PASS, шесть тестов Happy Eyeballs плюс всё из вертикали 1.
+Expected: PASS, six Happy Eyeballs tests plus everything from vertical 1.
 
-- [ ] **Step 5: Добавить фазз-таргет**
+- [ ] **Step 5: Add a fuzz target**
 
 ```rust
 // crates/http-ng-proto/fuzz/fuzz_targets/happy_eyeballs.rs
@@ -1173,7 +1188,7 @@ use http_ng_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
 use std::net::{IpAddr, Ipv4Addr};
 use core::time::Duration;
 
-// Инвариант: планировщик всегда сходится к Exhausted и не паникует.
+// Invariant: the scheduler always converges to Exhausted and never panics.
 fuzz_target!(|data: &[u8]| {
     let mut s = Scheduler::new(HeConfig::default());
     let addrs: Vec<IpAddr> = data.iter().take(16)
@@ -1193,10 +1208,10 @@ fuzz_target!(|data: &[u8]| {
 });
 ```
 
-Добавить второй `[[bin]]` в `crates/http-ng-proto/fuzz/Cargo.toml`.
+Add a second `[[bin]]` to `crates/http-ng-proto/fuzz/Cargo.toml`.
 
 Run: `cd crates/http-ng-proto/fuzz && cargo +nightly fuzz run happy_eyeballs -- -max_total_time=60`
-Expected: 60 секунд без паник.
+Expected: 60 seconds with no panics.
 
 - [ ] **Step 6: Commit**
 
@@ -1207,11 +1222,11 @@ git commit -m "feat(proto): RFC 8305 Happy Eyeballs scheduler testable without s
 
 ---
 
-### Task 6: `http-ng-dns` — трейт резолвера
+### Task 6: `http-ng-dns` — the resolver trait
 
 **Files:**
 - Create: `crates/http-ng-dns/Cargo.toml`, `src/lib.rs`
-- Test: внутри `lib.rs`
+- Test: inside `lib.rs`
 
 **Interfaces:**
 - Produces:
@@ -1219,7 +1234,7 @@ git commit -m "feat(proto): RFC 8305 Happy Eyeballs scheduler testable without s
   - `pub struct SvcbEndpoint { pub priority: u16, pub target: String, pub alpn: Vec<Vec<u8>>, pub port: Option<u16>, pub ipv4hint: Vec<Ipv4Addr>, pub ipv6hint: Vec<Ipv6Addr>, pub ech_config_list: Option<bytes::Bytes> }`
   - `pub trait Resolve { fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>; fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>; fn lookup_svcb(&self, _name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> { futures_util::stream::empty() } }`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-dns/src/lib.rs
@@ -1238,14 +1253,14 @@ mod tests {
         fn lookup_ipv6(&self, _: &str) -> impl futures_core::Stream<Item = Result<ResolvedAddr, Error>> {
             futures_util::stream::empty()
         }
-        // lookup_svcb намеренно не реализован — дефолт обязан работать.
+        // lookup_svcb is deliberately not implemented — the default has to work.
     }
 
     #[test]
     fn svcb_has_a_default_returning_empty() {
         let got: Vec<_> = futures_executor::block_on(Static.lookup_svcb("x").collect());
         assert!(got.is_empty(),
-            "иначе getaddrinfo, wasi и embedded не смогли бы реализовать трейт");
+            "otherwise getaddrinfo, wasi and embedded couldn't implement the trait");
     }
 
     #[test]
@@ -1253,24 +1268,24 @@ mod tests {
         let v4: Vec<_> = futures_executor::block_on(Static.lookup_ipv4("x").collect());
         let v6: Vec<_> = futures_executor::block_on(Static.lookup_ipv6("x").collect());
         assert_eq!(v4.len(), 1);
-        assert_eq!(v6.len(), 0, "по AAAA надо коннектиться, не дожидаясь A");
+        assert_eq!(v6.len(), 0, "you should connect on AAAA without waiting for A");
     }
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-dns`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать и реализовать**
+- [ ] **Step 3: Create and implement**
 
 ```toml
 # crates/http-ng-dns/Cargo.toml
 [package]
 name = "http-ng-dns"
 version = "0.1.0"
-description = "Трейт подключаемого резолвера для http-ng"
+description = "http-ng's pluggable resolver trait"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1291,12 +1306,12 @@ workspace = true
 
 ```rust
 // crates/http-ng-dns/src/lib.rs
-//! Подключаемое разрешение имён.
+//! Pluggable name resolution.
 //!
-//! Раздельные стримы по семействам, а не `Vec<SocketAddr>`: RFC 8305 требует
-//! начинать соединяться по AAAA, не дожидаясь A. `lookup_svcb` имеет
-//! дефолтную реализацию, возвращающую пусто, — иначе `getaddrinfo`, `wasi:http`
-//! и embedded не смогли бы реализовать трейт.
+//! Separate streams per family, not a `Vec<SocketAddr>`: RFC 8305 requires
+//! starting to connect on AAAA without waiting for A. `lookup_svcb` has a
+//! default implementation returning empty — otherwise `getaddrinfo`,
+//! `wasi:http` and embedded couldn't implement the trait.
 #![deny(unsafe_code)]
 
 use bytes::Bytes;
@@ -1311,11 +1326,11 @@ pub struct ResolvedAddr {
     pub ttl: Option<Duration>,
 }
 
-/// RFC 9460 HTTPS/SVCB. `alpn` даёт обнаружение h3 без Alt-Svc,
-/// `ech_config_list` кормит `rustls::EchConfig` напрямую.
+/// RFC 9460 HTTPS/SVCB. `alpn` gives h3 discovery without Alt-Svc,
+/// `ech_config_list` feeds `rustls::EchConfig` directly.
 ///
-/// Заложено с первого дня: если зафиксировать резолвер на `SocketAddr`, ECH и
-/// h3-discovery закрыты навсегда без ломающего изменения.
+/// Built in from day one: pin the resolver to `SocketAddr`, and ECH and
+/// h3 discovery are closed off forever without a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SvcbEndpoint {
     pub priority: u16,
@@ -1337,10 +1352,10 @@ pub trait Resolve {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-dns`
-Expected: PASS, два теста.
+Expected: PASS, two tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1351,18 +1366,18 @@ git commit -m "feat(dns): Resolve trait with per-family streams and a defaulted 
 
 ---
 
-### Task 7: `http-ng-dns-system` — getaddrinfo через `Blocking`
+### Task 7: `http-ng-dns-system` — getaddrinfo through `Blocking`
 
 **Files:**
 - Create: `crates/http-ng-dns-system/Cargo.toml`, `src/lib.rs`
-- Test: внутри `lib.rs`
+- Test: inside `lib.rs`
 
 **Interfaces:**
 - Consumes: `Resolve` (Task 6), `Blocking` (Task 1).
 - Produces: `pub struct SystemDns<B> { blocking: B }`; `SystemDns::new(b: B) -> Self`;
   `impl<B: Blocking> Resolve for SystemDns<B>`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-dns-system/src/lib.rs
@@ -1383,13 +1398,13 @@ mod tests {
         let r = SystemDns::new(Inline);
         let v4: Vec<_> = futures_executor::block_on(r.lookup_ipv4("localhost").collect());
         let v4: Vec<_> = v4.into_iter().filter_map(Result::ok).collect();
-        assert!(v4.iter().all(|a| a.addr.is_ipv4()), "в v4-стриме только v4");
+        assert!(v4.iter().all(|a| a.addr.is_ipv4()), "only v4 in the v4 stream");
 
         let v6: Vec<_> = futures_executor::block_on(r.lookup_ipv6("localhost").collect());
         let v6: Vec<_> = v6.into_iter().filter_map(Result::ok).collect();
-        assert!(v6.iter().all(|a| a.addr.is_ipv6()), "в v6-стриме только v6");
+        assert!(v6.iter().all(|a| a.addr.is_ipv6()), "only v6 in the v6 stream");
 
-        assert!(!v4.is_empty() || !v6.is_empty(), "localhost должен резолвиться");
+        assert!(!v4.is_empty() || !v6.is_empty(), "localhost must resolve");
     }
 
     #[test]
@@ -1398,7 +1413,7 @@ mod tests {
         let got: Vec<_> = futures_executor::block_on(
             r.lookup_ipv4("invalid.invalid.").collect());
         assert!(got.iter().any(|x| x.is_err()),
-                "пустой стрим неотличим от «политика всё отфильтровала»");
+                "an empty stream is indistinguishable from \"policy filtered everything out\"");
     }
 
     #[test]
@@ -1410,19 +1425,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-dns-system`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать и реализовать**
+- [ ] **Step 3: Create and implement**
 
 ```toml
 # crates/http-ng-dns-system/Cargo.toml
 [package]
 name = "http-ng-dns-system"
 version = "0.1.0"
-description = "Системный резолвер (getaddrinfo) для http-ng через способность Blocking"
+description = "http-ng's system resolver (getaddrinfo) via the Blocking capability"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1444,14 +1459,15 @@ workspace = true
 
 ```rust
 // crates/http-ng-dns-system/src/lib.rs
-//! Системный резолвер поверх `std::net::ToSocketAddrs` (то есть `getaddrinfo`).
+//! A system resolver over `std::net::ToSocketAddrs` (i.e. `getaddrinfo`).
 //!
-//! `getaddrinfo` блокирующий на всех платформах, поэтому крейт требует
-//! способности `Blocking` — и потому недоступен там, где её нет (wasm).
+//! `getaddrinfo` is blocking on every platform, so this crate requires the
+//! `Blocking` capability — and is therefore unavailable wherever that
+//! capability doesn't exist (wasm).
 //!
-//! **Ограничение, которое надо знать:** `getaddrinfo` никогда не вернёт
-//! HTTPS/SVCB-записи. Значит на системном резолвере недостижимы ни ECH, ни
-//! обнаружение HTTP/3 на первом запросе. `lookup_svcb` честно пуст.
+//! **A limitation worth knowing:** `getaddrinfo` will never return
+//! HTTPS/SVCB records. So neither ECH nor HTTP/3 discovery on the first
+//! request are reachable on the system resolver. `lookup_svcb` is honestly empty.
 #![deny(unsafe_code)]
 
 use futures_core::Stream;
@@ -1514,16 +1530,16 @@ impl<B: Blocking> Resolve for SystemDns<B> {
 }
 ```
 
-> **Известное ограничение, задокументировать в rustdoc:** здесь один вызов
-> `getaddrinfo` на оба семейства, а curl 8.20 делает **два**, в разных потоках,
-> чтобы частичные результаты запускали Happy Eyeballs раньше. Разделение на два
-> слота — задача v0.2; сейчас важнее, чтобы форма трейта это допускала, а она
-> допускает.
+> **A known limitation, to document in rustdoc:** this makes one
+> `getaddrinfo` call for both families, while curl 8.20 makes **two**, on
+> separate threads, so partial results can kick off Happy Eyeballs sooner.
+> Splitting into two slots is a v0.2 task; what matters now is that the
+> trait's shape allows it, and it does.
 
-- [ ] **Step 4: Обновить бонды `Blocking` в `http-ng-rt`**
+- [ ] **Step 4: Update `Blocking`'s bounds in `http-ng-rt`**
 
-`blocking::unblock` и `tokio::spawn_blocking` требуют `Send + 'static`.
-Привести трейт к:
+`blocking::unblock` and `tokio::spawn_blocking` require `Send + 'static`.
+Bring the trait to:
 
 ```rust
 pub trait Blocking {
@@ -1532,10 +1548,11 @@ pub trait Blocking {
 }
 ```
 
-Это единственное место во всей вертикали, где `Send` объявлен нами, и он честен:
-способности `Blocking` на wasm нет вовсе, поэтому заражать ей нечего.
+This is the only place in the whole vertical where `Send` is declared by us,
+and it's honest: the `Blocking` capability doesn't exist on wasm at all, so
+there's nothing for it to infect.
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng-dns-system && cargo test -p http-ng-rt-tokio && cargo test -p http-ng-rt-smol`
 Expected: PASS.
@@ -1549,19 +1566,19 @@ git commit -m "feat(dns-system): getaddrinfo resolver over the Blocking capabili
 
 ---
 
-### Task 8: `http-ng-tls` — трейт TLS
+### Task 8: `http-ng-tls` — the TLS trait
 
 **Files:**
 - Create: `crates/http-ng-tls/Cargo.toml`, `src/lib.rs`
-- Test: внутри `lib.rs`
+- Test: inside `lib.rs`
 
 **Interfaces:**
 - Produces:
   - `pub struct TlsRequest<'a> { pub server_name: &'a str, pub alpn: &'a [&'a [u8]], pub ech: Option<&'a [u8]> }`
-  - `pub struct TlsInfo { pub alpn: Option<Vec<u8>>, pub peer_certificates: Option<Vec<Vec<u8>>>, pub protocol_version: Option<String>, pub cipher_suite: Option<String> }` — **все поля `Option`**
+  - `pub struct TlsInfo { pub alpn: Option<Vec<u8>>, pub peer_certificates: Option<Vec<Vec<u8>>>, pub protocol_version: Option<String>, pub cipher_suite: Option<String> }` — **every field is `Option`**
   - `pub trait TlsConnect { type Stream<S>: hyper::rt::Read + hyper::rt::Write + Unpin where S: hyper::rt::Read + hyper::rt::Write + Unpin; fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> impl Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>> where S: hyper::rt::Read + hyper::rt::Write + Unpin; }`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-tls/src/lib.rs
@@ -1571,8 +1588,8 @@ mod tests {
 
     #[test]
     fn tls_info_is_all_optional() {
-        // native-tls отдаёт только leaf-сертификат, ALPN и
-        // tls-server-end-point; трейт обязан это допускать.
+        // native-tls only gives back the leaf certificate, ALPN, and
+        // tls-server-end-point; the trait has to allow for that.
         let i = TlsInfo::default();
         assert!(i.alpn.is_none());
         assert!(i.peer_certificates.is_none());
@@ -1582,35 +1599,35 @@ mod tests {
 
     #[test]
     fn alpn_lives_on_the_request_not_the_config() {
-        // Пин версии и h2-prior-knowledge требуют разного набора ALPN для
-        // разных соединений к одному origin.
+        // Version pinning and h2 prior-knowledge require different ALPN
+        // sets for different connections to the same origin.
         let req = TlsRequest { server_name: "example.com", alpn: &[b"http/1.1"], ech: None };
         assert_eq!(req.alpn, &[b"http/1.1".as_slice()]);
     }
 
     #[test]
     fn ech_slot_exists_before_it_is_implemented() {
-        // ECH — RFC 9849; EchConfigList приходит из HTTPS/SVCB. Не заложи мы
-        // поле сразу, добавление стало бы ломающим изменением.
+        // ECH is RFC 9849; EchConfigList comes from HTTPS/SVCB. If we didn't
+        // build the field in now, adding it later would be a breaking change.
         let req = TlsRequest { server_name: "e.com", alpn: &[], ech: Some(&[1, 2, 3]) };
         assert_eq!(req.ech, Some(&[1u8, 2, 3][..]));
     }
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-tls`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать и реализовать**
+- [ ] **Step 3: Create and implement**
 
 ```toml
 # crates/http-ng-tls/Cargo.toml
 [package]
 name = "http-ng-tls"
 version = "0.1.0"
-description = "Трейт подключаемого TLS для http-ng"
+description = "http-ng's pluggable TLS trait"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1626,30 +1643,31 @@ workspace = true
 
 ```rust
 // crates/http-ng-tls/src/lib.rs
-//! Подключаемый TLS.
+//! Pluggable TLS.
 //!
-//! Трейт типизирован на `hyper::rt::Read/Write`, а **не** на futures-io или
-//! tokio-io. Следствие: per-runtime TLS-склейки не существует вообще — один
-//! адаптер обслуживает все рантаймы.
+//! The trait is typed against `hyper::rt::Read/Write`, and **not** against
+//! futures-io or tokio-io. Consequence: per-runtime TLS glue simply doesn't
+//! exist — one adapter serves every runtime.
 #![deny(unsafe_code)]
 
 use http_ng_core::Error;
 use std::future::Future;
 
-/// ALPN живёт на **коннекте**, а не на конфиге: пин версии и
-/// h2-prior-knowledge требуют разных наборов для разных соединений к одному
-/// origin. Реализация кэширует конфиг по набору ALPN у себя.
+/// ALPN lives on the **connect**, not the config: version pinning and h2
+/// prior-knowledge require different sets for different connections to the
+/// same origin. An implementation caches its config keyed by ALPN set.
 #[derive(Debug, Clone, Copy)]
 pub struct TlsRequest<'a> {
     pub server_name: &'a str,
     pub alpn: &'a [&'a [u8]],
-    /// RFC 9849 Encrypted Client Hello. Берётся из HTTPS/SVCB-записи.
-    /// Слот заложен сразу: добавить его позже — ломающее изменение.
+    /// RFC 9849 Encrypted Client Hello. Comes from an HTTPS/SVCB record.
+    /// The slot is built in from day one: adding it later would be a
+    /// breaking change.
     pub ech: Option<&'a [u8]>,
 }
 
-/// Все поля `Option`, потому что native-tls отдаёт только leaf-сертификат,
-/// ALPN и tls-server-end-point.
+/// Every field is `Option`, because native-tls only gives back the leaf
+/// certificate, ALPN, and tls-server-end-point.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsInfo {
     pub alpn: Option<Vec<u8>>,
@@ -1673,10 +1691,10 @@ pub trait TlsConnect {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-tls`
-Expected: PASS, три теста.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1687,12 +1705,12 @@ git commit -m "feat(tls): TlsConnect trait typed on hyper::rt, ALPN per connect,
 
 ---
 
-### Task 9: `http-ng-tls-rustls` — поток
+### Task 9: `http-ng-tls-rustls` — the stream
 
-Самая большая единица вертикали. Адаптер строится на поверхности rustls,
-стабильной с 0.20 (`process_new_packets`, `wants_read`/`wants_write`,
-`read_tls`/`write_tls`), **не** на `unbuffered` — тот удалён в main rustls
-(PR #2905, 2026-02-06).
+The biggest single unit of this vertical. The adapter is built on the
+surface of rustls that's been stable since 0.20 (`process_new_packets`,
+`wants_read`/`wants_write`, `read_tls`/`write_tls`), **not** on `unbuffered`
+— that's been removed on rustls main (PR #2905, 2026-02-06).
 
 **Files:**
 - Create: `crates/http-ng-tls-rustls/Cargo.toml`, `src/lib.rs`, `src/stream.rs`
@@ -1706,19 +1724,20 @@ git commit -m "feat(tls): TlsConnect trait typed on hyper::rt, ALPN per connect,
   - `pub struct TlsStream<S>`; `impl<S> hyper::rt::Read + hyper::rt::Write for TlsStream<S>`
   - `impl TlsConnect for Rustls { type Stream<S> = TlsStream<S>; }`
 
-- [ ] **Step 1: Написать падающий интеграционный тест**
+- [ ] **Step 1: Write a failing integration test**
 
 ```rust
 // crates/http-ng-tls-rustls/tests/handshake.rs
-//! Тест поднимает настоящий TLS-сервер на rustls и проверяет, что наш адаптер
-//! доводит хендшейк до конца и прокачивает байты в обе стороны.
+//! This test brings up a real TLS server on rustls and checks that our
+//! adapter carries the handshake through to completion and pumps bytes in
+//! both directions.
 
 use http_ng_rt::{TcpConnect, TcpOpts};
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls::{TlsConnect, TlsRequest};
 use http_ng_tls_rustls::Rustls;
 
-mod server;  // см. Step 3: минимальный TLS-эхо-сервер на самоподписанном серте
+mod server;  // see Step 3: a minimal TLS echo server on a self-signed cert
 
 #[tokio::test]
 async fn completes_handshake_and_echoes() {
@@ -1737,9 +1756,9 @@ async fn completes_handshake_and_echoes() {
     }).await.expect("handshake");
 
     assert_eq!(info.alpn.as_deref(), Some(b"http/1.1".as_slice()),
-               "согласованный ALPN должен быть виден");
+               "the negotiated ALPN must be visible");
 
-    // Прокачка байтов через hyper::rt-интерфейс.
+    // Pump bytes through the hyper::rt interface.
     let sent = b"ping";
     let n = std::future::poll_fn(|cx|
         hyper::rt::Write::poll_write(std::pin::Pin::new(&mut stream), cx, sent)
@@ -1757,7 +1776,7 @@ async fn completes_handshake_and_echoes() {
 #[tokio::test]
 async fn rejects_an_untrusted_certificate() {
     let (addr, _ca) = server::spawn_tls_echo();
-    let tls = Rustls::with_webpki_roots(); // публичные корни — наш серт им неизвестен
+    let tls = Rustls::with_webpki_roots(); // public roots — our cert is unknown to them
     let tcp = Tokio.connect(addr, &TcpOpts::default()).await.unwrap();
     let err = tls.connect(tcp, TlsRequest {
         server_name: "localhost", alpn: &[], ech: None,
@@ -1766,19 +1785,19 @@ async fn rejects_an_untrusted_certificate() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-tls-rustls`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт и тестовый сервер**
+- [ ] **Step 3: Create the crate and the test server**
 
 ```toml
 # crates/http-ng-tls-rustls/Cargo.toml
 [package]
 name = "http-ng-tls-rustls"
 version = "0.1.0"
-description = "TLS-бэкенд http-ng на rustls, адаптер написан против hyper::rt"
+description = "http-ng's TLS backend on rustls, the adapter is written against hyper::rt"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1812,8 +1831,8 @@ workspace = true
 
 ```rust
 // crates/http-ng-tls-rustls/tests/server.rs
-//! Минимальный TLS-эхо-сервер на самоподписанном сертификате.
-//! Живёт в dev-dependencies и в публичный граф не попадает.
+//! A minimal TLS echo server on a self-signed certificate.
+//! Lives in dev-dependencies and never lands in the public graph.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -1863,7 +1882,7 @@ pub fn spawn_tls_echo() -> (SocketAddr, Vec<u8>) {
 }
 ```
 
-- [ ] **Step 4: Реализовать поток**
+- [ ] **Step 4: Implement the stream**
 
 ```rust
 // crates/http-ng-tls-rustls/src/stream.rs
@@ -1875,17 +1894,18 @@ use std::task::{Context, Poll, ready};
 
 const SCRATCH: usize = 16 * 1024;
 
-/// TLS поверх любого `hyper::rt`-транспорта.
+/// TLS over any `hyper::rt` transport.
 ///
-/// Построен на поверхности rustls, стабильной с 0.20: `read_tls` /
-/// `process_new_packets` / `wants_write` / `write_tls`. **Не** на `unbuffered`
-/// — тот удалён в main rustls (PR #2905, 2026-02-06), и адаптер на нём пришлось
-/// бы переписывать целиком под 0.24.
+/// Built on the surface of rustls that's been stable since 0.20: `read_tls`
+/// / `process_new_packets` / `wants_write` / `write_tls`. **Not** on
+/// `unbuffered` — that's been removed on rustls main (PR #2905,
+/// 2026-02-06), and an adapter built on it would have to be rewritten
+/// entirely for 0.24.
 #[derive(Debug)]
 pub struct TlsStream<S> {
     io: S,
     conn: rustls::ClientConnection,
-    /// Байты, вычитанные из сокета, но ещё не скормленные rustls.
+    /// Bytes read from the socket but not yet fed to rustls.
     read_pending: bool,
 }
 
@@ -1903,7 +1923,7 @@ fn tls_err<E: std::error::Error + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(format!("tls: {e}"))
 }
 
-/// Прокачать всё, что rustls хочет записать, в нижележащий транспорт.
+/// Pump everything rustls wants to write into the underlying transport.
 pub(crate) fn flush_outgoing<S: Write + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
@@ -1924,7 +1944,7 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
     Pin::new(io).poll_flush(cx)
 }
 
-/// Вычитать из транспорта и скормить rustls. `Ok(false)` — EOF.
+/// Read from the transport and feed it to rustls. `Ok(false)` means EOF.
 pub(crate) fn pump_incoming<S: Read + Unpin>(
     io: &mut S,
     conn: &mut rustls::ClientConnection,
@@ -1951,7 +1971,7 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
     {
         let this = &mut *self;
         loop {
-            // 1. Отдать уже расшифрованное.
+            // 1. Hand back whatever's already decrypted.
             let mut scratch = [0u8; SCRATCH];
             let want = buf.remaining().min(SCRATCH);
             if want == 0 { return Poll::Ready(Ok(())) }
@@ -1961,9 +1981,9 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Poll::Ready(Err(e)),
             }
-            // 2. Отдать всё исходящее (renegotiation, close_notify и т.п.).
+            // 2. Send off everything outgoing (renegotiation, close_notify, etc.).
             ready!(flush_outgoing(&mut this.io, &mut this.conn, cx))?;
-            // 3. Дочитать из транспорта.
+            // 3. Read more from the transport.
             let more = ready!(pump_incoming(&mut this.io, &mut this.conn, cx))?;
             if !more { return Poll::Ready(Ok(())) } // EOF
             this.read_pending = true;
@@ -2000,16 +2020,16 @@ impl<S: Read + Write + Unpin> Write for TlsStream<S> {
 }
 ```
 
-- [ ] **Step 5: Реализовать `Rustls` и хендшейк**
+- [ ] **Step 5: Implement `Rustls` and the handshake**
 
 ```rust
 // crates/http-ng-tls-rustls/src/lib.rs
-//! TLS-бэкенд на rustls.
+//! A TLS backend on rustls.
 //!
-//! **rustls не появляется в публичном API `http-ng`** — иначе выход 0.24 стал
-//! бы нашим ломающим релизом. В 0.24 ожидаются: удалённая фича `std`,
-//! провайдеры вынесены в `rustls-ring`/`rustls-aws-lc-rs`, MSRV 1.85,
-//! edition 2024. Один переписанный крейт заложен в бюджет.
+//! **rustls never appears in `http-ng`'s public API** — otherwise the 0.24
+//! release would become our breaking release. Expected in 0.24: the `std`
+//! feature removed, providers split out into `rustls-ring`/`rustls-aws-lc-rs`,
+//! MSRV 1.85, edition 2024. One rewritten crate is budgeted for.
 #![deny(unsafe_code)]
 
 mod stream;
@@ -2024,9 +2044,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug)]
 pub struct Rustls {
     base: Arc<rustls::ClientConfig>,
-    /// ALPN задаётся на коннект, а `ClientConfig` его хранит внутри — поэтому
-    /// кэшируем конфиг по набору ALPN. Без кэша каждый запрос строил бы
-    /// конфиг заново, а это самая дорогая операция в rustls.
+    /// ALPN is set per connect, and `ClientConfig` stores it inside itself —
+    /// so we cache the config keyed by ALPN set. Without the cache, every
+    /// request would build the config over again, and that's the most
+    /// expensive operation in rustls.
     by_alpn: Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>,
 }
 
@@ -2081,7 +2102,7 @@ impl TlsConnect for Rustls {
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         let mut stream = TlsStream::new(io, conn);
 
-        // Довести хендшейк до конца, прежде чем отдавать поток наверх.
+        // Carry the handshake through to completion before handing the stream up.
         std::future::poll_fn(|cx| {
             let (io, conn) = stream.parts_mut();
             loop {
@@ -2114,15 +2135,15 @@ impl TlsConnect for Rustls {
 }
 ```
 
-Сделать `stream::{flush_outgoing, pump_incoming}` `pub(crate)` и добавить
-`ErrorKind::Tls` в маппинг ошибок хендшейка.
+Make `stream::{flush_outgoing, pump_incoming}` `pub(crate)` and add
+`ErrorKind::Tls` to the handshake error mapping.
 
-- [ ] **Step 6: Запустить тесты**
+- [ ] **Step 6: Run the tests**
 
 Run: `cargo test -p http-ng-tls-rustls --features webpki-roots`
-Expected: PASS, два теста.
+Expected: PASS, two tests.
 
-- [ ] **Step 7: Проверить, что rustls не течёт в публичный API `http-ng`**
+- [ ] **Step 7: Verify rustls doesn't leak into `http-ng`'s public API**
 
 Run: `! grep -rn "rustls" crates/http-ng/src crates/http-ng-core/src && echo OK`
 Expected: `OK`.
@@ -2136,24 +2157,24 @@ git commit -m "feat(tls-rustls): TLS stream over hyper::rt on the 0.20-stable ru
 
 ---
 
-### Task 10: `http-ng-native` — тело запроса с Send-ошибкой
+### Task 10: `http-ng-native` — a request body with a Send error
 
-`hyper::client::conn::http1::handshake<T, B>` требует
-`B::Error: Into<Box<dyn StdError + Send + Sync>>` и `B::Data: Send`. Наш
-`http_ng_core::Error` держит `Arc<dyn Error + 'static>` и **не** `Send + Sync`.
-Требование запирается здесь и в ядро не течёт.
+`hyper::client::conn::http1::handshake<T, B>` requires
+`B::Error: Into<Box<dyn StdError + Send + Sync>>` and `B::Data: Send`. Our
+`http_ng_core::Error` holds an `Arc<dyn Error + 'static>` and is **not**
+`Send + Sync`. The requirement gets locked up here and doesn't leak into the core.
 
 **Files:**
 - Create: `crates/http-ng-native/Cargo.toml`, `src/lib.rs`, `src/body.rs`
-- Test: внутри `body.rs`
+- Test: inside `body.rs`
 
 **Interfaces:**
 - Consumes: `http_ng_core::RequestBody`.
 - Produces: `pub(crate) struct OutgoingBody`; `OutgoingBody::from_request_body(RequestBody) -> Self`;
   `impl http_body::Body for OutgoingBody { type Data = Bytes; type Error = BoxError; }`
-  где `pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>`.
+  where `pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-native/src/body.rs
@@ -2193,19 +2214,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-native`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт и реализовать тело**
+- [ ] **Step 3: Create the crate and implement the body**
 
 ```toml
 # crates/http-ng-native/Cargo.toml
 [package]
 name = "http-ng-native"
 version = "0.1.0"
-description = "Native-транспорт http-ng: TCP + TLS + HTTP/1.1 на hyper"
+description = "http-ng's native transport: TCP + TLS + HTTP/1.1 on hyper"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -2239,9 +2260,9 @@ use http_ng_core::RequestBody;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// hyper требует `B::Error: Into<Box<dyn StdError + Send + Sync>>`, а наш
-/// `http_ng_core::Error` держит `Arc<dyn Error + 'static>` без `Send`.
-/// Требование `Send` запирается здесь и в ядро не течёт.
+/// hyper requires `B::Error: Into<Box<dyn StdError + Send + Sync>>`, and our
+/// `http_ng_core::Error` holds an `Arc<dyn Error + 'static>` with no `Send`.
+/// The `Send` requirement gets locked up here and doesn't leak into the core.
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug)]
@@ -2251,9 +2272,9 @@ pub(crate) struct OutgoingBody {
 
 impl OutgoingBody {
     pub(crate) fn from_request_body(body: RequestBody) -> Self {
-        // В v0.1 native-транспорт отправляет только буферизованные тела.
-        // Стриминговые приедут вместе с пулом и retry — форма `RequestBody`
-        // это уже допускает.
+        // In v0.1 the native transport only sends buffered bodies. Streaming
+        // ones arrive together with the pool and retry — `RequestBody`'s
+        // shape already allows for that.
         let inner = match body {
             RequestBody::Empty => None,
             RequestBody::Full(b) if b.is_empty() => None,
@@ -2289,10 +2310,10 @@ impl Body for OutgoingBody {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-native`
-Expected: PASS, четыре теста.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2303,7 +2324,7 @@ git commit -m "feat(native): outgoing body confining hyper's Send bound to this 
 
 ---
 
-### Task 11: `http-ng-native` — коннектор
+### Task 11: `http-ng-native` — the connector
 
 **Files:**
 - Create: `crates/http-ng-native/src/connect.rs`
@@ -2314,15 +2335,15 @@ git commit -m "feat(native): outgoing body confining hyper's Send bound to this 
 - Consumes: `Scheduler`/`HeAction` (Task 5), `Resolve` (Task 6), `TcpConnect`,
   `Timer` (Task 1), `TlsConnect` (Task 8).
 - Produces:
-  - `pub(crate) enum Conn<P, T> { Plain(P), Tls(T) }` — реализует `hyper::rt::Read + Write`
+  - `pub(crate) enum Conn<P, T> { Plain(P), Tls(T) }` — implements `hyper::rt::Read + Write`
   - `pub(crate) async fn connect<R, D, L>(rt: &R, dns: &D, tls: &L, uri: &http::Uri, opts: &TcpOpts, alpn: &[&[u8]]) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-native/tests/connect.rs
-//! Проверяем, что коннектор действительно гоняет Happy Eyeballs: сначала
-//! пробуется мёртвый адрес, затем живой, и соединение получается.
+//! Verifies that the connector really does run Happy Eyeballs: a dead
+//! address is tried first, then a live one, and the connection succeeds.
 
 use http_ng_native::testing::connect_for_test;
 use http_ng_rt_tokio::Tokio;
@@ -2333,10 +2354,10 @@ async fn falls_over_from_a_dead_address_to_a_live_one() {
     let addr = live.local_addr().unwrap();
     std::thread::spawn(move || { let _ = live.accept(); });
 
-    // 198.51.100.1 — TEST-NET-2, гарантированно не отвечает.
+    // 198.51.100.1 is TEST-NET-2, guaranteed not to answer.
     let dead: std::net::IpAddr = "198.51.100.1".parse().unwrap();
     let conn = connect_for_test(&Tokio, &[dead, addr.ip()], addr.port()).await;
-    assert!(conn.is_ok(), "должны дойти до живого адреса");
+    assert!(conn.is_ok(), "must reach the live address");
 }
 
 #[tokio::test]
@@ -2347,12 +2368,12 @@ async fn reports_connect_kind_when_everything_is_dead() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-native --test connect`
-Expected: FAIL — `connect_for_test` не найден.
+Expected: FAIL — `connect_for_test` not found.
 
-- [ ] **Step 3: Реализовать коннектор**
+- [ ] **Step 3: Implement the connector**
 
 ```rust
 // crates/http-ng-native/src/connect.rs
@@ -2365,7 +2386,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Соединение: с TLS или без. Оба варианта — `hyper::rt` IO.
+/// A connection: with TLS or without. Both variants are `hyper::rt` IO.
 #[derive(Debug)]
 pub enum Conn<P, T> { Plain(P), Tls(T) }
 
@@ -2411,9 +2432,9 @@ impl std::fmt::Display for AllAttemptsFailed {
 }
 impl std::error::Error for AllAttemptsFailed {}
 
-/// Happy Eyeballs по RFC 8305 **без `spawn`**: попытки живут в
-/// `FuturesUnordered`, а не в задачах, потому что `spawn` потребовал бы
-/// `Send + 'static` и закрыл бы однопоточные рантаймы.
+/// Happy Eyeballs per RFC 8305 **with no `spawn`**: attempts live in a
+/// `FuturesUnordered`, not in tasks, because `spawn` would require
+/// `Send + 'static` and would shut out single-threaded runtimes.
 pub(crate) async fn race_connect<R>(
     rt: &R,
     addrs_v6: Vec<IpAddr>,
@@ -2463,17 +2484,17 @@ where R: TcpConnect + Timer
 }
 ```
 
-Для `select_biased!` добавить `futures-util` с фичей `async-await-macro`.
+For `select_biased!`, add `futures-util` with the `async-await-macro` feature.
 
-- [ ] **Step 4: Экспортировать тестовый хелпер**
+- [ ] **Step 4: Export a test helper**
 
 ```rust
-// в crates/http-ng-native/src/lib.rs
+// in crates/http-ng-native/src/lib.rs
 #[doc(hidden)]
 pub mod testing {
     use super::*;
-    /// Только для интеграционных тестов: гонит Happy Eyeballs по готовому
-    /// списку адресов, минуя DNS.
+    /// For integration tests only: runs Happy Eyeballs over a ready-made
+    /// list of addresses, bypassing DNS.
     pub async fn connect_for_test<R>(rt: &R, addrs: &[std::net::IpAddr], port: u16)
         -> Result<R::Stream, http_ng_core::Error>
     where R: http_ng_rt::TcpConnect + http_ng_rt::Timer
@@ -2484,11 +2505,11 @@ pub mod testing {
 }
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng-native --test connect`
-Expected: PASS, два теста. Второй занимает ~несколько секунд (ожидание
-таймаута на TEST-NET-2) — это нормально.
+Expected: PASS, two tests. The second one takes a few seconds (waiting out
+the TEST-NET-2 timeout) — that's expected.
 
 - [ ] **Step 6: Commit**
 
@@ -2499,12 +2520,12 @@ git commit -m "feat(native): RFC 8305 connector racing attempts without spawn"
 
 ---
 
-### Task 12: `http-ng-native` — HTTP/1 с инлайн-драйвом соединения
+### Task 12: `http-ng-native` — HTTP/1 with the connection driven inline
 
-Технический центр вертикали. h1-handshake не требует ни executor'а, ни таймера,
-а `Connection` поллится **рядом** с ответом — значит клиент едет на голом
-`futures`-executor'е с нулевой способностью спавнить. Это и доказывает, что
-рантайм-шов настоящий.
+The technical center of this vertical. The h1 handshake needs neither an
+executor nor a timer, and `Connection` is polled **alongside** the response
+— meaning the client runs on a bare `futures` executor with zero ability to
+spawn. This is exactly what proves the runtime seam is real.
 
 **Files:**
 - Create: `crates/http-ng-native/src/h1.rs`
@@ -2514,16 +2535,16 @@ git commit -m "feat(native): RFC 8305 connector racing attempts without spawn"
 **Interfaces:**
 - Consumes: `OutgoingBody` (Task 10), `Conn` (Task 11).
 - Produces:
-  - `pub struct NativeBody` — тело ответа, которое **само драйвит соединение**;
+  - `pub struct NativeBody` — a response body that **drives the connection itself**;
     `impl http_body::Body for NativeBody { type Data = Bytes; type Error = Error }`
   - `pub(crate) async fn exchange<I>(io: I, req: http::Request<OutgoingBody>) -> Result<http::Response<NativeBody>, Error>`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-native/tests/h1.rs
-//! Сервер — голый `std::net::TcpListener`, говорящий HTTP/1.1 руками.
-//! Никаких серверных фреймворков: тест проверяет наш клиент, а не чужой сервер.
+//! The server is a bare `std::net::TcpListener` speaking HTTP/1.1 by hand.
+//! No server frameworks: the test verifies our client, not someone else's server.
 
 use std::io::{Read, Write};
 
@@ -2544,15 +2565,15 @@ fn spawn_h1_server(response: &'static str) -> std::net::SocketAddr {
 
 #[test]
 fn works_on_a_bare_futures_executor_with_no_spawn() {
-    // Ключевой тест вертикали: ни tokio, ни smol — только futures::block_on.
+    // The key test of the vertical: no tokio, no smol — just futures::block_on.
     let addr = spawn_h1_server(
         "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
 
     futures_executor::block_on(async move {
         let std_tcp = std::net::TcpStream::connect(addr).unwrap();
         std_tcp.set_nonblocking(false).unwrap();
-        // Блокирующий сокет в блокирующем executor'е — допустимо для теста:
-        // проверяется, что hyper не требует ни spawn, ни таймера.
+        // A blocking socket on a blocking executor is fine for a test:
+        // it verifies that hyper needs neither spawn nor a timer.
         let io = http_ng_native::testing::blocking_io(std_tcp);
         let req = http::Request::builder().uri("/").body(
             http_ng_native::testing::empty_body()).unwrap();
@@ -2565,8 +2586,8 @@ fn works_on_a_bare_futures_executor_with_no_spawn() {
 
 #[test]
 fn body_keeps_driving_the_connection_after_headers() {
-    // Тело приходит отдельным чанком после заголовков: если бы соединение
-    // перестали поллить, чтение зависло бы.
+    // The body arrives as a separate chunk after the headers: if the
+    // connection stopped being polled, the read would hang.
     let addr = spawn_h1_server(
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
     futures_executor::block_on(async move {
@@ -2581,12 +2602,12 @@ fn body_keeps_driving_the_connection_after_headers() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-native --test h1`
-Expected: FAIL — `exchange_for_test` не найден.
+Expected: FAIL — `exchange_for_test` not found.
 
-- [ ] **Step 3: Реализовать обмен с инлайн-драйвом**
+- [ ] **Step 3: Implement the exchange with an inline drive**
 
 ```rust
 // crates/http-ng-native/src/h1.rs
@@ -2598,12 +2619,12 @@ use hyper::client::conn::http1;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// Тело ответа, которое **само поллит соединение**.
+/// A response body that **polls the connection itself**.
 ///
-/// Без этого после прихода заголовков соединение перестало бы двигаться:
-/// hyper требует, чтобы кто-то драйвил `Connection`, а мы принципиально не
-/// спавним — иначе понадобился бы `Send + 'static` и однопоточные рантаймы
-/// оказались бы закрыты.
+/// Without this, the connection would stop moving once the headers
+/// arrived: hyper requires someone to drive `Connection`, and we
+/// deliberately don't spawn — otherwise `Send + 'static` would be needed
+/// and single-threaded runtimes would be shut out.
 pub struct NativeBody {
     incoming: hyper::body::Incoming,
     conn: Option<Pin<Box<dyn std::future::Future<Output = hyper::Result<()>>>>>,
@@ -2623,7 +2644,7 @@ impl Body for NativeBody {
         -> Poll<Option<Result<Frame<Bytes>, Error>>>
     {
         let this = &mut *self;
-        // Сначала подвинуть соединение — иначе данные не приедут.
+        // Move the connection forward first — otherwise data won't arrive.
         if let Some(conn) = this.conn.as_mut() {
             match conn.as_mut().poll(cx) {
                 Poll::Ready(Ok(())) => { this.conn = None }
@@ -2646,7 +2667,7 @@ impl Body for NativeBody {
     fn is_end_stream(&self) -> bool { self.incoming.is_end_stream() }
 }
 
-/// Один запрос по одному соединению. Пула в v0.1 нет.
+/// One request per connection. There's no pool in v0.1.
 pub(crate) async fn exchange<I>(io: I, req: http::Request<OutgoingBody>)
     -> Result<http::Response<NativeBody>, Error>
 where I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static
@@ -2654,7 +2675,7 @@ where I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static
     let (mut sender, conn) = http1::handshake::<I, OutgoingBody>(io).await
         .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
-    // Драйвим соединение и запрос **вместе**, без spawn.
+    // Drive the connection and the request **together**, with no spawn.
     let mut conn = Box::pin(conn);
     let mut send = Box::pin(sender.send_request(req));
 
@@ -2679,27 +2700,28 @@ where I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static
 }
 ```
 
-Пояснение к `Box<dyn Future>`: это **единственное** место в вертикали, где мы
-боксим, и боксим не ради стирания `Send`, а чтобы сложить соединение в поле
-тела. Тип остаётся `!Send`-совместимым — бонд `Send` не объявляется.
+A note on `Box<dyn Future>`: this is the **only** place in the vertical
+where we box, and we're not boxing to erase `Send` — we're boxing to store
+the connection in the body's field. The type stays `!Send`-compatible — no
+`Send` bound is declared.
 
-- [ ] **Step 4: Добавить тестовые хелперы**
+- [ ] **Step 4: Add test helpers**
 
 ```rust
-// в crates/http-ng-native/src/lib.rs, mod testing
+// in crates/http-ng-native/src/lib.rs, mod testing
     pub use crate::h1::NativeBody;
 
     pub fn empty_body() -> crate::body::OutgoingBody {
         crate::body::OutgoingBody::from_request_body(http_ng_core::RequestBody::Empty)
     }
 
-    /// Блокирующий `std::net::TcpStream` как `hyper::rt` IO — только для тестов
-    /// на голом executor'е, где реактора нет вовсе.
+    /// A blocking `std::net::TcpStream` as `hyper::rt` IO — for tests on a
+    /// bare executor only, where there's no reactor at all.
     pub fn blocking_io(s: std::net::TcpStream) -> BlockingIo { BlockingIo(s) }
 
     pub struct BlockingIo(std::net::TcpStream);
-    // impl hyper::rt::Read / Write через std::io::{Read, Write},
-    // всегда возвращая Poll::Ready — сокет блокирующий.
+    // impl hyper::rt::Read / Write via std::io::{Read, Write},
+    // always returning Poll::Ready — the socket is blocking.
 
     pub async fn exchange_for_test<I>(io: I, req: http::Request<crate::body::OutgoingBody>)
         -> Result<http::Response<crate::h1::NativeBody>, http_ng_core::Error>
@@ -2714,15 +2736,16 @@ where I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static
     }
 ```
 
-`BlockingIo` реализовать полностью: `poll_read` читает в стековый буфер и
-кладёт через `put_slice`, `poll_write`/`poll_flush` — прямые вызовы
-`std::io::Write`, `poll_shutdown` — `shutdown(Both)`. Всегда `Poll::Ready`.
+Implement `BlockingIo` fully: `poll_read` reads into a stack buffer and
+delivers via `put_slice`, `poll_write`/`poll_flush` are direct
+`std::io::Write` calls, `poll_shutdown` is `shutdown(Both)`. Always
+`Poll::Ready`.
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng-native --test h1`
-Expected: PASS, два теста. **Это и есть доказательство рантайм-нейтральности:**
-ни tokio, ни smol в тесте нет.
+Expected: PASS, two tests. **This is the proof of runtime neutrality:**
+neither tokio nor smol appears in the test.
 
 - [ ] **Step 6: Commit**
 
@@ -2740,45 +2763,49 @@ git commit -m "feat(native): HTTP/1 exchange driving the connection inline, no s
 - Test: `crates/http-ng-native/tests/transport.rs`
 
 **Interfaces:**
-- Consumes: всё предыдущее.
+- Consumes: everything so far.
 - Produces:
   - `pub struct Native<R, T, D> { rt: R, tls: T, dns: D, opts: TcpOpts }`
   - `Native::new(rt: R, tls: T, dns: D) -> Self`; `Native::tcp_opts(self, o: TcpOpts) -> Self`
-  - `impl<R, T, D> Transport for Native<R, T, D>` с `type Body = NativeBody; type Error = Error;`
-  - **`Transport::to_error` ОБЯЗАН быть переопределён тождеством** — см. блок
-    ниже, это не необязательная деталь
+  - `impl<R, T, D> Transport for Native<R, T, D>` with `type Body = NativeBody; type Error = Error;`
+  - **`Transport::to_error` MUST be overridden with an identity function** —
+    see the block below, this isn't an optional detail
   - `Capabilities`: `streaming_request_body: false` (v0.1), `redirects: Configurable`,
     `tls_config: Full`, `version_reported: true`, `timeouts.connect: true`,
     `timeouts.first_byte: false`, `timeouts.between_bytes: false`,
-    `upgrade: UpgradeSupport::None` (h1-upgrade — v0.3)
+    `upgrade: UpgradeSupport::None` (h1 upgrade is v0.3)
 
-> **Обязательное переопределение `Transport::to_error`.** Вертикаль 1
-> (находка B2 её финального ревью) добавила в шов дефолтный хук
-> `fn to_error(&self, e: Self::Error) -> Error`, превращающий ошибку бэкенда
-> в ошибку библиотеки. Дефолт заворачивает её с `ErrorKind::Other` — это верно
-> ровно для бэкенда, которому нечего сказать о категории. `Native` — не он:
-> его `type Error = Error`, то есть категория УЖЕ проставлена
-> (`ErrorKind::Resolve` в `execute`, `Connect` в `race_connect`, `Tls` в
-> `TlsConnect`, `Body` в `h1`). Без переопределения `Client::execute` завернёт
-> её во вторую ошибку, и у потребителя `kind()` станет `Other`, а
-> `is_timeout()`/`is_connect()`/`is_unsupported()` — `false` для всего сразу;
-> `Display` вдобавок напечатает категорию дважды (`Other: Connect: …`).
+> **Mandatory override of `Transport::to_error`.** Vertical 1
+> (finding B2 of its final review) added a default hook to the seam,
+> `fn to_error(&self, e: Self::Error) -> Error`, that turns a backend error
+> into a library error. The default wraps it with `ErrorKind::Other` — which
+> is correct exactly for a backend that has nothing to say about the
+> category. `Native` isn't one of those: its `type Error = Error`, meaning
+> the category is ALREADY assigned (`ErrorKind::Resolve` in `execute`,
+> `Connect` in `race_connect`, `Tls` in `TlsConnect`, `Body` in `h1`).
+> Without an override, `Client::execute` would wrap it in a second error, and
+> a consumer's `kind()` would become `Other`, with
+> `is_timeout()`/`is_connect()`/`is_unsupported()` all `false` at once;
+> `Display` would additionally print the category twice
+> (`Other: Connect: …`).
 >
-> Именно так вертикаль 1 и отгрузилась бы: `http-ng-wasi` раскладывал 39
-> вариантов `ErrorCode` на восемь `ErrorKind` сорока строками, и всё это
-> выбрасывалось слоем выше. 165 тестов этого не видели, потому что ни один не
-> проверял, что категория транспорта доживает до вызывающей стороны.
+> This is exactly how vertical 1 would have shipped: `http-ng-wasi` was
+> sorting 39 `ErrorCode` variants into eight `ErrorKind`s across forty lines,
+> and all of it was getting thrown away one layer up. 165 tests didn't catch
+> it, because none of them checked that the transport's category survives to
+> the caller.
 >
-> Компилятор эту обязанность не проверяет и не может: дефолт остаётся
-> дефолтом сознательно (альтернативы потребовали бы `Send + Sync` от ошибки
-> КАЖДОГО бэкенда на уровне трейта, а поправка C1 сохраняет представимость
-> транспорта с честно `!Send` ошибкой). Проверяет её только тест — он в Step 1
-> ниже, и он обязателен, а не «желателен». Образцы:
+> The compiler doesn't check this obligation and can't: the default stays a
+> default deliberately (an alternative would require `Send + Sync` from
+> EVERY backend's error at the trait level, and amendment C1 keeps a
+> transport with an honestly `!Send` error representable). Only a test
+> verifies it — it's Step 1 below, and it's mandatory, not "nice to have."
+> Examples:
 > `to_error_is_the_identity_so_the_classification_survives_the_client`
-> (`crates/http-ng-wasi/src/convert.rs`) и
+> (`crates/http-ng-wasi/src/convert.rs`) and
 > `crates/http-ng/tests/transport_error.rs`.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-native/tests/transport.rs
@@ -2818,23 +2845,23 @@ async fn capabilities_are_honest_about_v01_limits() {
     use http_ng_core::unversioned::Transport;
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     let caps = t.capabilities();
-    assert!(!caps.streaming_request_body, "в v0.1 тело буферизовано");
+    assert!(!caps.streaming_request_body, "the body is buffered in v0.1");
     assert!(caps.timeouts.connect);
-    assert!(!caps.timeouts.first_byte, "нет пула и таймера ответа — заявлять нельзя");
+    assert!(!caps.timeouts.first_byte, "no pool and no response timer — can't declare it");
     assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
 }
 
-/// Категория, которую проставил `Native`, обязана дожить до вызывающей
-/// стороны через весь путь `Client::execute` (см. блок над Step 1). Тест
-/// проверяет именно этот путь целиком, а не дефолт `to_error` — тот
-/// проверен в `http-ng-core/tests/shape.rs` и сам по себе гарантирует
-/// пропуск `Error` насквозь.
+/// The category `Native` assigned must survive to the caller through the
+/// whole `Client::execute` path (see the block above Step 1). This test
+/// checks exactly that whole path, not `to_error`'s default — that's
+/// verified in `http-ng-core/tests/shape.rs` and guarantees on its own that
+/// `Error` passes straight through.
 ///
-/// Хост выбран несуществующим намеренно: это единственный отказ, который
-/// `execute` производит без сети и без сервера, и `wasi`-аналог этого
-/// теста устроен так же — гоняет реальный классификатор бэкенда, а не
-/// сконструированную вручную `Error`.
+/// The host is deliberately nonexistent: it's the only failure `execute`
+/// produces with no network and no server, and the `wasi` counterpart of
+/// this test is built the same way — it runs the backend's real classifier,
+/// not a hand-constructed `Error`.
 #[tokio::test]
 async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
@@ -2844,11 +2871,11 @@ async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other
     assert_eq!(
         *err.kind(),
         http_ng::ErrorKind::Resolve,
-        "категория обязана дожить до вызывающей стороны, а не расплющиться в Other: {err}"
+        "the category must survive to the caller, not flatten into Other: {err}"
     );
     assert!(
         !err.to_string().starts_with("Other:"),
-        "категория печатается один раз, и это настоящая категория: {err}"
+        "the category is printed once, and it's the real category: {err}"
     );
 }
 
@@ -2864,15 +2891,15 @@ async fn unsupported_timeout_is_rejected_at_build_time() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-native --test transport`
-Expected: FAIL — `Native` не найден.
+Expected: FAIL — `Native` not found.
 
-- [ ] **Step 3: Реализовать транспорт**
+- [ ] **Step 3: Implement the transport**
 
 ```rust
-// в crates/http-ng-native/src/lib.rs
+// in crates/http-ng-native/src/lib.rs
 use futures_util::StreamExt;
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{Capabilities, Error, ErrorKind, RedirectSupport, RequestBody,
@@ -2893,7 +2920,7 @@ pub struct Native<R, T, D> {
 impl<R, T, D> Native<R, T, D> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let mut caps = Capabilities::none();
-        // Честно про v0.1: пула нет, стриминга тела запроса нет, upgrade нет.
+        // Honest about v0.1: no pool, no streaming request body, no upgrade.
         caps.streaming_request_body = false;
         caps.redirects = RedirectSupport::Configurable;
         caps.tls_config = TlsSupport::Full;
@@ -2936,7 +2963,7 @@ where
         let https = parts.uri.scheme_str() == Some("https");
         let port = parts.uri.port_u16().unwrap_or(if https { 443 } else { 80 });
 
-        // Раздельные стримы: коннектимся по AAAA, не дожидаясь A.
+        // Separate streams: connect on AAAA without waiting for A.
         let v6: Vec<_> = self.dns.lookup_ipv6(&host)
             .filter_map(|r| async { r.ok().map(|a| a.addr) }).collect().await;
         let v4: Vec<_> = self.dns.lookup_ipv4(&host)
@@ -2949,7 +2976,7 @@ where
 
         let outgoing = body::OutgoingBody::from_request_body(body);
         let mut req = http::Request::from_parts(parts, outgoing);
-        // hyper h1 требует origin-form и заголовок Host.
+        // hyper's h1 requires origin-form and a Host header.
         strip_to_origin_form(&mut req, &host, port, https);
 
         if https {
@@ -2962,12 +2989,13 @@ where
         }
     }
 
-    /// Тождество: `Self::Error` — уже `http_ng_core::Error`, и категория в
-    /// ней проставлена там, где отказ произошёл (`Resolve` выше, `Connect` в
-    /// `race_connect`, `Tls` в `TlsConnect`, `Body` в `h1`). Дефолт хука
-    /// сделал бы ровно это же (он узнаёт нашу `Error` и пропускает её
-    /// насквозь), так что строка избыточна по поведению и нужна по смыслу:
-    /// называет намерение там, где его читают. См. блок над Step 1.
+    /// The identity function: `Self::Error` is already `http_ng_core::Error`,
+    /// and its category is assigned right where the failure occurred
+    /// (`Resolve` above, `Connect` in `race_connect`, `Tls` in `TlsConnect`,
+    /// `Body` in `h1`). The hook's default would do exactly the same thing
+    /// (it recognizes our `Error` and passes it straight through), so this
+    /// line is redundant behaviorally and needed semantically: it states the
+    /// intent right where it's read. See the block above Step 1.
     fn to_error(&self, e: Self::Error) -> Error { e }
 
     fn capabilities(&self) -> &Capabilities { &self.caps }
@@ -2997,10 +3025,10 @@ fn strip_to_origin_form(
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-native`
-Expected: PASS, все тесты крейта.
+Expected: PASS, every test in the crate.
 
 - [ ] **Step 5: Commit**
 
@@ -3011,28 +3039,28 @@ git commit -m "feat(native): Native transport wiring runtime, TLS and DNS togeth
 
 ---
 
-### Task 14: `http-ng` — `DefaultTransport` и сквозной прогон на двух рантаймах
+### Task 14: `http-ng` — `DefaultTransport` and an end-to-end run on two runtimes
 
 **Files:**
 - Modify: `crates/http-ng/Cargo.toml`, `crates/http-ng/src/client.rs`, `src/lib.rs`
 - Create: `crates/http-ng/tests/two_runtimes.rs`
 - Modify: `.github/workflows/ci.yml`
-- Create: `README.md` (обновить раздел «Статус»)
+- Create: `README.md` (update the "Status" section)
 
 **Interfaces:**
 - Consumes: `Native` (Task 13), `Tokio` (Task 3), `Smol` (Task 4).
 - Produces:
-  - `pub type DefaultTransport` — cfg-выбранный по таргету
-  - `pub struct Client<T = DefaultTransport>` — добавлен дефолтный параметр
-  - `Client::new() -> Result<Client<DefaultTransport>, UnsupportedCapability>` под
-    фичей `default-transport`
+  - `pub type DefaultTransport` — cfg-selected by target
+  - `pub struct Client<T = DefaultTransport>` — a default parameter added
+  - `Client::new() -> Result<Client<DefaultTransport>, UnsupportedCapability>` behind
+    the `default-transport` feature
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng/tests/two_runtimes.rs
-//! Один и тот же код, два рантайма, ноль cfg. Если этот файл потребует
-//! `#[cfg]`, рантайм-шов декоративен и вертикаль провалена.
+//! The same code, two runtimes, zero cfg. If this file needs a `#[cfg]`,
+//! the runtime seam is decorative and this vertical has failed.
 
 use http_ng::{Client, Timeouts};
 use http_ng_dns_system::SystemDns;
@@ -3054,7 +3082,7 @@ fn spawn_server() -> std::net::SocketAddr {
     addr
 }
 
-/// Обобщённая функция: её тело — тот самый «один код на все рантаймы».
+/// A generic function: its body is exactly that "one piece of code for every runtime."
 async fn fetch_once<R>(rt: R, addr: std::net::SocketAddr) -> String
 where
     R: http_ng_rt::TcpConnect + http_ng_rt::Timer + http_ng_rt::Blocking + Clone,
@@ -3086,20 +3114,21 @@ fn identical_code_on_smol() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --test two_runtimes`
-Expected: FAIL — dev-зависимостей нет.
+Expected: FAIL — the dev-dependencies don't exist.
 
-- [ ] **Step 3: Добавить `DefaultTransport` и дефолтный параметр**
+- [ ] **Step 3: Add `DefaultTransport` and the default parameter**
 
 ```rust
-// в crates/http-ng/src/lib.rs
-/// Транспорт по умолчанию, выбираемый **таргетом, а не пользователем**.
+// in crates/http-ng/src/lib.rs
+/// The default transport, chosen by the **target, not the user**.
 ///
-/// Дефолт — мнение, а не ограничение: `Client` без параметра означает
-/// `Client<DefaultTransport>`, а `Client<ЧтоУгодно>` работает так же.
-/// Взаимоисключающих cargo-фич не возникает, потому что выбирает таргет.
+/// The default is an opinion, not a restriction: `Client` with no parameter
+/// means `Client<DefaultTransport>`, and `Client<Whatever>` works the same
+/// way. No mutually exclusive cargo features arise, because the target does
+/// the choosing.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultTransport = http_ng_native::Native<
     http_ng_rt_tokio::Tokio,
@@ -3111,7 +3140,7 @@ pub type DefaultTransport = http_ng_native::Native<
 pub type DefaultTransport = http_ng_wasi::WasiHttp;
 ```
 
-В `client.rs` заменить объявление на:
+In `client.rs`, replace the declaration with:
 
 ```rust
 #[cfg(feature = "default-transport")]
@@ -3120,16 +3149,17 @@ pub struct Client<T = crate::DefaultTransport> { transport: T, config: Config }
 pub struct Client<T> { transport: T, config: Config }
 ```
 
-и добавить:
+and add:
 
 ```rust
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 impl Client<crate::DefaultTransport> {
-    /// Клиент с транспортом по умолчанию.
+    /// A client with the default transport.
     ///
-    /// На native требует окружающего tokio-рантайма: `tokio::spawn` и
-    /// `tokio::time::sleep` вне рантайма паникуют. Ровно так же ведёт себя
-    /// reqwest. Явный путь — `Client::builder(Native::new(rt, tls, dns))`.
+    /// On native, this requires an ambient tokio runtime: `tokio::spawn` and
+    /// `tokio::time::sleep` panic outside a runtime. reqwest behaves exactly
+    /// the same way. The explicit path is
+    /// `Client::builder(Native::new(rt, tls, dns))`.
     pub fn new() -> Result<Self, http_ng_core::UnsupportedCapability> {
         let rt = http_ng_rt_tokio::Tokio;
         Self::builder(http_ng_native::Native::new(
@@ -3142,7 +3172,7 @@ impl Client<crate::DefaultTransport> {
 }
 ```
 
-В `Cargo.toml` добавить фичу и target-зависимости:
+In `Cargo.toml`, add the feature and the target dependencies:
 
 ```toml
 [features]
@@ -3167,23 +3197,23 @@ http-ng-dns-system = { path = "../http-ng-dns-system" }
 tokio              = { version = "1", features = ["rt-multi-thread"] }
 ```
 
-Фичу `default-transport` дополнить списком `dep:` для не-wasm таргетов.
+Extend the `default-transport` feature with a `dep:` list for non-wasm targets.
 
-- [ ] **Step 4: Запустить сквозной тест**
+- [ ] **Step 4: Run the end-to-end test**
 
 Run: `cargo test -p http-ng --test two_runtimes`
-Expected: PASS, два теста. Убедиться, что в `two_runtimes.rs` **нет ни одного
-`#[cfg]`** — это и есть критерий приёмки вертикали.
+Expected: PASS, two tests. Verify that `two_runtimes.rs` has **not a single
+`#[cfg]`** — that's exactly this vertical's acceptance criterion.
 
-- [ ] **Step 5: Проверить, что смол-путь не подтащил async-compat и tokio-рантайм**
+- [ ] **Step 5: Verify the smol path hasn't pulled in async-compat or a tokio runtime**
 
 Run: `cargo tree -p http-ng-rt-smol -e normal --prefix none | grep -E '^(tokio|async-compat)' && exit 1 || echo OK`
 Expected: `OK`.
 
-- [ ] **Step 6: Обновить CI**
+- [ ] **Step 6: Update CI**
 
 ```yaml
-  # добавить job
+  # add a job
   two-runtimes:
     strategy:
       matrix:
@@ -3208,19 +3238,19 @@ git commit -m "feat(http-ng): DefaultTransport and identical code proven on toki
 
 ---
 
-## Что эта вертикаль доказала и что осталось
+## What this vertical proved, and what's left
 
-**Доказано:** рантайм-шов настоящий — один и тот же обобщённый код работает на
-tokio и smol без `#[cfg]`, а h1-обмен едет даже на голом `futures`-executor'е
-без spawn и без таймера. TLS-адаптер один на все рантаймы, потому что написан
-против `hyper::rt`. `Send` объявлен ровно в одном месте (`Blocking`) и не
-заражает ядро.
+**Proven:** the runtime seam is real — the same generic code works on tokio
+and smol with no `#[cfg]`, and the h1 exchange runs even on a bare `futures`
+executor with no spawn and no timer. The TLS adapter is one for every
+runtime, because it's written against `hyper::rt`. `Send` is declared in
+exactly one place (`Blocking`) and doesn't infect the core.
 
-**Не доказано и переходит в вертикаль 3:** рантайм-модель `Capabilities`
-(нужен fetch с его различием Chrome/Safari); реконнект `SseStream`; приёмка
-`act`.
+**Not proven, and carried over into vertical 3:** the `Capabilities` runtime
+model (needs fetch with its Chrome/Safari difference); `SseStream`
+reconnect; `act` acceptance.
 
-**Осознанно не сделано в v0.1, записать в rustdoc:** пул соединений (одно
-соединение на запрос); стриминговые тела запроса; `first_byte`/`between_bytes`
-таймауты (заявлены как неподдерживаемые, а не сделаны молча); один
-`getaddrinfo` на оба семейства вместо двух слотов; h1-upgrade.
+**Deliberately not done in v0.1, to record in rustdoc:** connection pooling
+(one connection per request); streaming request bodies; `first_byte`/
+`between_bytes` timeouts (declared unsupported, not silently unimplemented);
+a single `getaddrinfo` call for both families instead of two slots; h1 upgrade.

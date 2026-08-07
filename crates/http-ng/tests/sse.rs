@@ -1,9 +1,9 @@
-//! `SseStream`: декодированный поток SSE-событий поверх `Response::chunk`.
+//! `SseStream`: a decoded stream of SSE events over `Response::chunk`.
 //!
-//! `#![cfg(feature = "test-util")]` — этот файл тянет `http_ng::mock`, а он
-//! гейтед за `test-util` (см. `mock.rs`); без гейта здесь голый
-//! `cargo test -p http-ng` не собрался бы (тот же паттерн, что в `shape.rs`
-//! и `response.rs`).
+//! `#![cfg(feature = "test-util")]` — this file pulls in `http_ng::mock`,
+//! which is gated behind `test-util` (see `mock.rs`); without the gate, a
+//! bare `cargo test -p http-ng` here wouldn't compile (the same pattern as
+//! in `shape.rs` and `response.rs`).
 #![cfg(feature = "test-util")]
 
 use http_ng::mock::MockTransport;
@@ -64,11 +64,12 @@ fn rejects_wrong_content_type() {
     assert!(SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).is_err());
 }
 
-// ── Content-Type: границы токена, не префикс (review round 1, Finding 2) ──
+// ── Content-Type: token boundaries, not a prefix (review round 1, Finding 2) ──
 //
-// `starts_with(MIME)` принимал `"text/event-streamfoo"` и отвергал
-// `"Text/Event-Stream"`. Четыре формы ниже покрывают обе стороны дефекта:
-// точное совпадение уже проверено `parses_events_from_a_response` выше.
+// `starts_with(MIME)` accepted `"text/event-streamfoo"` and rejected
+// `"Text/Event-Stream"`. The four forms below cover both sides of the
+// defect: the exact match is already checked by `parses_events_from_a_response`
+// above.
 
 fn sse_response_with_content_type(
     body: &'static str,
@@ -141,26 +142,26 @@ fn rejects_non_200_status() {
     let resp = futures_executor::block_on(c.get("https://a/s").send()).unwrap();
     assert!(
         SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).is_err(),
-        "204 означает «прекрати навсегда», а не «пустой поток»"
+        "204 means \"stop forever\", not \"empty stream\""
     );
 }
 
-// ── Порядок фатальной ошибки (review round 1, Finding 1) ──────────────────
+// ── Ordering of a fatal error (review round 1, Finding 1) ─────────────────
 //
-// Раньше `next()` возвращал `Err` на превышении лимита СРАЗУ, до того как
-// уже разобранное валидное событие того же `push` дошло бы до вызывающего
-// через отдельный вызов `next()` — и вдобавок стрим не был по-настоящему
-// кончен: следующий вызов молча отдавал это событие как `Ok`, а уже ПОСЛЕ
-// него — `None`. Наблюдаемая последовательность была `Err, Ok("a"), None` —
-// теряло и «`Err` раньше `Ok`», и собственно «фатальность».
+// `next()` used to return `Err` on a limit violation IMMEDIATELY, before an
+// already-parsed valid event from the same `push` could reach the caller
+// through a separate `next()` call — and on top of that the stream wasn't
+// truly over: the next call silently handed back that event as `Ok`, and
+// only AFTER it, `None`. The observed sequence was `Err, Ok("a"), None` —
+// losing both "`Err` before `Ok`" and "fatality" itself.
 #[test]
 fn oversized_event_is_fatal_but_does_not_lose_events_decoded_before_it() {
     let m = MockTransport::new();
-    // Валидное событие под лимитом, затем — то же переразмеренное событие,
-    // что использует юнит-тест декодера `oversized_event_is_a_fatal_error`
-    // (sse/decode.rs), в одном кадре: оба разбираются за один `push`, так что
-    // декодер успевает продиспетчить первое ДО того, как второе провалит
-    // проверку лимита.
+    // A valid event under the limit, then the same oversized event the
+    // decoder's unit test `oversized_event_is_a_fatal_error` (sse/decode.rs)
+    // uses, in a single frame: both are parsed in one `push`, so the decoder
+    // gets to dispatch the first one BEFORE the second fails the limit
+    // check.
     m.push_response(sse_response("data: a\n\ndata: 0123456789abcdefghij\n\n"));
 
     let c = Client::builder(m).build().unwrap();
@@ -271,16 +272,16 @@ fn tracks_last_event_id_for_future_reconnects() {
     assert_eq!(s.last_event_id(), Some("99"));
 }
 
-// ── Разрыв на границе чанка ─────────────────────────────────────────────
+// ── Split at a chunk boundary ───────────────────────────────────────────
 //
-// Ни один тест выше не пересекает границу чанка транспорта:
-// `MockTransport::push_response` отдаёт всё тело одним кадром, так что
-// склейка на уровне `SseStream` (а не только внутри `SseDecoder`/
-// `LineSplitter`, уже покрытых в http-ng-proto) остаётся непроверенной.
-// `push_response_frames` существует ровно для этого.
+// No test above crosses a transport chunk boundary: `MockTransport::
+// push_response` hands back the whole body as one frame, so the
+// stitching-together at the `SseStream` level (not just inside
+// `SseDecoder`/`LineSplitter`, already covered in http-ng-proto) stays
+// unverified. `push_response_frames` exists exactly for this.
 
-/// Событие разорвано посреди поля (`"on" | "e\n\n..."`) — самый частый
-/// реальный случай: TCP-чанк почти никогда не совпадает с границей строки.
+/// An event split mid-field (`"on" | "e\n\n..."`) — the most common real
+/// case: a TCP chunk almost never lines up with a line boundary.
 #[test]
 fn event_split_mid_field_across_frames_still_yields_two_events() {
     let m = MockTransport::new();
@@ -318,17 +319,18 @@ fn event_split_mid_field_across_frames_still_yields_two_events() {
     );
 }
 
-/// CRLF-терминатор разорван ровно между CR и LF границей кадра транспорта, на
-/// строке `data:` — не на границе пустой строки. (review round 1, Finding 3:
-/// разрыв на границе *пустой* строки не был диагностическим — мутация,
-/// отключающая `carried_terminator`, всё равно давала верный результат,
-/// потому что фантомная пустая строка приходилась на уже опустевший буфер
-/// данных и `dispatch()` на ней no-op'ился. Здесь же непроглоченный LF
-/// стартует ПРЕЖДЕВРЕМЕННЫЙ dispatch между двумя `data:`-строками одного
-/// события: сломанный `carried_terminator` даёт два события `"ab"`/`"cd"`
-/// вместо одного `"ab\ncd"`.) `carried_terminator` сам по себе уже покрыт
-/// юнит-тестами `sse/lines.rs`; здесь он впервые проверяется сквозь весь
-/// стек — транспорт -> `Response::chunk` -> `SseDecoder` -> `SseStream`.
+/// A CRLF terminator split exactly between CR and LF at a transport frame
+/// boundary, on a `data:` line — not at an empty-line boundary. (review
+/// round 1, Finding 3: a split at an *empty*-line boundary wasn't
+/// diagnostic — a mutation disabling `carried_terminator` still gave the
+/// right result, because the phantom empty line landed on an already-
+/// drained data buffer and `dispatch()` was a no-op on it. Here, though,
+/// the unconsumed LF triggers a PREMATURE dispatch between two `data:`
+/// lines of the same event: a broken `carried_terminator` produces two
+/// events `"ab"`/`"cd"` instead of one `"ab\ncd"`.) `carried_terminator`
+/// itself is already covered by `sse/lines.rs`'s unit tests; here it's
+/// checked for the first time across the whole stack — transport ->
+/// `Response::chunk` -> `SseDecoder` -> `SseStream`.
 #[test]
 fn crlf_terminator_split_mid_event_across_frame_boundary_joins_the_data_lines() {
     let m = MockTransport::new();

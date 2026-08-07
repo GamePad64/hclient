@@ -1,29 +1,30 @@
-//! Утверждения о форме публичного API `http-ng-wasi`, вынесенные за пределы
-//! `src` — тот же приём, что у `http-ng-core/tests/shape.rs` (см. его
-//! doc-комментарий): `no-declared-send` в CI сканирует только `crates/*/src`,
-//! так что обычный `T: Send` здесь не путается с инвариантом "ядро не
-//! объявляет Send/Sync" в продакшн-коде.
+//! Assertions about `http-ng-wasi`'s public API shape, kept outside `src`
+//! — the same trick as `http-ng-core/tests/shape.rs` (see its doc
+//! comment): CI's `no-declared-send` only scans `crates/*/src`, so an
+//! ordinary `T: Send` here doesn't get confused with the "core doesn't
+//! declare Send/Sync" invariant in production code.
 //!
-//! Компилируется и запускается на любом таргете (не гейтится под
-//! `wasm32-wasip2`): тест ниже никогда не поллит футуру, которую строит, —
-//! только проверяет её ТИП. Ни `WasiHttp::new()`, ни сборка `http::Request`,
-//! ни вызов `async fn execute` сами по себе не трогают ни один вызов
-//! `wasi:http`: `execute` — `async fn`, его тело не выполняется, пока футуру
-//! не поллят, а конструкторы `WasiHttp`/`http::Request` не делают host-вызовов
-//! вовсе.
+//! Compiles and runs on any target (not gated under `wasm32-wasip2`): the
+//! test below never polls the future it builds — it only checks its
+//! TYPE. Neither `WasiHttp::new()`, nor building an `http::Request`, nor
+//! calling the `async fn execute` itself touches a single `wasi:http`
+//! call: `execute` is an `async fn`, its body doesn't run until the
+//! future is polled, and the `WasiHttp`/`http::Request` constructors make
+//! no host calls at all.
 
 fn assert_send<T: Send>(_: T) {}
 
-/// Резолюция review (Task 16, находка B-13): `convert::Payload::Streaming`
-/// несёт `+ Send` (`send-bound-exception: amendment-C2`) именно затем, чтобы
-/// будущее `WasiHttp::execute` оставалось `Send` для потоковых тел запроса.
-/// Ревью нашло, что маркер был обоснован — но если бы бонд и маркер убрали
-/// ВМЕСТЕ, `no-declared-send` остался бы зелёным (маркер просто исчез бы
-/// вместе с тем, что он разрешал), а это свойство сломалось бы молча. Этот
-/// тест ловит именно такую регрессию извне: `pub(crate) enum Payload` отсюда
-/// не виден (`tests/` видит только публичный API крейта), так что
-/// единственный способ проверить его Send-ность — понаблюдать за формой
-/// футуры, которую производит `execute`, на реальном потоковом теле.
+/// Review resolution (Task 16, finding B-13): `convert::Payload::Streaming`
+/// carries `+ Send` (`send-bound-exception: amendment-C2`) precisely so
+/// that `WasiHttp::execute`'s future stays `Send` for streaming request
+/// bodies. The review found the marker was justified — but if the bound
+/// and the marker were removed TOGETHER, `no-declared-send` would stay
+/// green (the marker would just disappear along with what it permitted),
+/// and this property would break silently. This test catches exactly
+/// that regression from the outside: `pub(crate) enum Payload` isn't
+/// visible from here (`tests/` only sees the crate's public API), so the
+/// only way to check its Send-ness is to observe the shape of the future
+/// `execute` produces on a real streaming body.
 #[test]
 fn execute_future_is_send_even_for_a_streaming_request_body() {
     use http_ng_core::RequestBody;
@@ -53,9 +54,9 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
     assert_send(fut);
 }
 
-/// Симметрия: тело `Empty` тоже не должно случайно перестать быть `Send` —
-/// эта ветка не проходит через `Payload::Streaming` вовсе, так что у неё
-/// свой путь до `Send`-ности футуры.
+/// Symmetry: an `Empty` body shouldn't accidentally stop being `Send`
+/// either — this branch never goes through `Payload::Streaming` at all,
+/// so it has its own path to a `Send` future.
 #[test]
 fn execute_future_is_send_for_an_empty_request_body() {
     use http_ng_core::RequestBody;

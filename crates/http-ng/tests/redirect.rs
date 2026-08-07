@@ -1,12 +1,12 @@
-//! Тесты стадии redirect на уровне `Client`: `http-ng-proto::redirect::decide`
-//! уже протестирован как чистая функция (Task 5) — здесь проверяется, что
-//! плагин `client.rs`/`stages/redirect.rs` не искажает её решение при
-//! перекладывании данных между хопами.
+//! Tests for the redirect stage at the `Client` level:
+//! `http-ng-proto::redirect::decide` is already tested as a pure function
+//! (Task 5) — this checks that the `client.rs`/`stages/redirect.rs` plumbing
+//! doesn't distort its decision while shuffling data between hops.
 
-// `http_ng::mock` живёт за фичей `test-util` (см. `mock.rs`); без этой строки
-// `cargo test -p http-ng` без флагов падал с E0432 вместо того, чтобы
-// собраться в пустоту — как уже было сделано для `shape.rs` в Task 12. Task
-// 13 fix round 2, Residual 3.
+// `http_ng::mock` lives behind the `test-util` feature (see `mock.rs`);
+// without this line `cargo test -p http-ng` with no flags used to fail
+// with E0432 instead of compiling down to nothing — the same fix already
+// made for `shape.rs` in Task 12. Task 13 fix round 2, Residual 3.
 #![cfg(feature = "test-util")]
 
 use http_ng::mock::MockTransport;
@@ -60,15 +60,15 @@ fn strips_authorization_when_the_host_changes() {
     let seen = c.transport().requests();
     assert!(
         seen[0].headers.contains_key("authorization"),
-        "первый хоп сохраняет"
+        "the first hop keeps it"
     );
     assert!(
         !seen[1].headers.contains_key("authorization"),
-        "второй хоп снимает"
+        "the second hop strips it"
     );
     assert!(
         seen[1].headers.contains_key("x-safe"),
-        "несекретные заголовки остаются"
+        "non-secret headers remain"
     );
 }
 
@@ -115,7 +115,7 @@ fn enforces_the_hop_limit() {
     assert_eq!(
         c.transport().requests().len(),
         3,
-        "исходный запрос плюс два хопа"
+        "the original request plus two hops"
     );
 }
 
@@ -141,7 +141,7 @@ fn redirect_limit_of_zero_sends_only_the_original_request() {
     assert_eq!(
         c.transport().requests().len(),
         1,
-        "только исходный запрос, ни одного хопа"
+        "only the original request, not a single hop"
     );
 }
 
@@ -161,22 +161,23 @@ fn post_becomes_get_and_drops_body_on_302() {
 
     let seen = c.transport().requests();
     assert_eq!(seen[1].method, http::Method::GET);
-    // Найдено ревью: имя теста обещает, что тело отброшено, но исходная
-    // версия проверяла только метод. Проверяем форму тела на обоих хопах —
-    // на первом оно было (7 байт полезной нагрузки "payload"), на втором
-    // обязано стать пустым, а не проехать до кросс-оригинного назначения.
+    // Found by review: the test's name promises the body is dropped, but
+    // the original version only checked the method. Check the body's
+    // shape on both hops — it was present on the first one (7 bytes of
+    // "payload"), and must become empty on the second, rather than riding
+    // along to a cross-origin destination.
+    assert_eq!(seen[1].body_size_hint, Some(0), "the body must be dropped");
     assert_eq!(
-        seen[1].body_size_hint,
-        Some(0),
-        "тело обязано быть отброшено"
+        seen[0].body_size_hint,
+        Some(7),
+        "it was there on the first hop"
     );
-    assert_eq!(seen[0].body_size_hint, Some(7), "на первом хопе оно было");
 }
 
 #[test]
 fn build_rejects_a_timeout_the_backend_cannot_honour() {
     use http_ng::Timeouts;
-    let m = MockTransport::new(); // Capabilities::none() — таймауты не поддержаны
+    let m = MockTransport::new(); // Capabilities::none() — timeouts unsupported
     let err = Client::builder(m)
         .timeouts(Timeouts {
             connect: Some(std::time::Duration::from_secs(1)),
@@ -187,12 +188,12 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
     assert_eq!(err.what, "connect_timeout");
 }
 
-/// Только `Location` читается из ответа при построении следующего хопа.
-/// Ничто в `next_hop`/`decide()` сегодня не трогает остальные заголовки
-/// ответа, но до fix round 1 ни один тест не проверял это поведенчески —
-/// мутация, сливающая `resp.headers()` в заголовки следующего запроса
-/// (`Set-Cookie` от сервера или что угодно ещё утёкшее в цепочку), проходила
-/// бы все шесть тестов из брифа незамеченной.
+/// Only `Location` is read from the response when building the next hop.
+/// Nothing in `next_hop`/`decide()` today touches any other response
+/// header, but before fix round 1 no test checked this behaviorally — a
+/// mutation merging `resp.headers()` into the next request's headers
+/// (`Set-Cookie` from the server, or anything else leaking into the chain)
+/// would have slipped past all six tests from the brief unnoticed.
 #[test]
 fn response_headers_do_not_leak_into_the_next_hop() {
     let m = MockTransport::new();
@@ -225,18 +226,19 @@ fn response_headers_do_not_leak_into_the_next_hop() {
     );
 }
 
-/// `Timeouts` (Task 10) едет к транспорту через `http::Extensions` запроса —
-/// весь механизм, ради которого оно там лежит, полагается на то, что
-/// `extensions` доживают до каждого хопа, а не только до первого.
+/// `Timeouts` (Task 10) travels to the transport via the request's
+/// `http::Extensions` — the entire mechanism it lives there for relies on
+/// `extensions` surviving to every hop, not just the first one.
 #[test]
 fn per_request_extensions_survive_a_hop_unchanged() {
     use http_ng_core::Timeouts;
     use std::time::Duration;
 
-    // Возможности не декоративны с тех пор, как `Client::execute` проверяет
-    // слитые таймауты (M3 финального ревью ветки): мок с
-    // `Capabilities::none()` теперь честно отвергает `connect`-таймаут, а
-    // этот тест про перенос `extensions` между хопами, не про гейт.
+    // Capabilities aren't decorative anymore now that `Client::execute`
+    // checks the merged timeouts (M3 of the branch's final review): a mock
+    // with `Capabilities::none()` now honestly rejects the `connect`
+    // timeout, and this test is about carrying `extensions` across hops,
+    // not about the gate.
     let mut caps = http_ng::Capabilities::none();
     caps.timeouts = http_ng::TimeoutSupport {
         connect: true,
@@ -275,14 +277,16 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     );
 }
 
-/// Тело `Streaming` невоспроизводимо: `RequestBody::rewind()` вернёт `None`.
-/// Честное поведение — вернуть 3xx как есть и не отправлять второй запрос с
-/// пустым телом туда, где сервер ждёт оригинальный payload.
+/// A `Streaming` body isn't replayable: `RequestBody::rewind()` returns
+/// `None`. The honest behavior is to return the 3xx as-is and not send a
+/// second request with an empty body where the server expects the
+/// original payload.
 ///
-/// Статус — 307, не 302: `decide()` понижает метод (и с ним отбрасывает тело
-/// осознанно, `drop_body`) только для POST на 301/302/303. На 307/308 метод и
-/// тело обязаны выжить как есть — это и есть путь, где непереигрываемость
-/// тела действительно встаёт в полный рост, а не маскируется даунгрейдом.
+/// Status is 307, not 302: `decide()` only downgrades the method (and
+/// deliberately drops the body along with it, `drop_body`) for POST on
+/// 301/302/303. On 307/308 the method and body must survive unchanged —
+/// this is the path where the body's non-replayability actually matters
+/// in full, rather than being masked by the downgrade.
 #[test]
 fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_request() {
     struct OneShot(Option<bytes::Bytes>);
@@ -316,12 +320,12 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
         .unwrap();
     let resp = futures_executor::block_on(c.execute(req)).unwrap();
 
-    // Ни один второй запрос не был отправлен: мок видел только исходный хоп.
-    assert_eq!(resp.status(), 307, "3xx возвращён как есть");
+    // No second request was ever sent: the mock only saw the original hop.
+    assert_eq!(resp.status(), 307, "the 3xx is returned as-is");
     let seen = c.transport().requests();
     assert_eq!(
         seen.len(),
         1,
-        "второй запрос с пустым телом не отправляется"
+        "no second request with an empty body is sent"
     );
 }

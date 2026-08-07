@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-rt-smol"
 version = "0.1.0"
-description = "Реализация способностей рантайма http-ng поверх smol"
+description = "http-ng runtime capabilities implemented on top of smol"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,21 +16,21 @@ futures-lite   = "2"
 http-ng-rt     = { path = "../http-ng-rt", version = "0.1.0" }
 socket2        = { version = "0.6", features = ["all"] }
 
-# `EINPROGRESS` не наблюдаем через `std::io::ErrorKind`: соответствующий
-# вариант (`ErrorKind::InProgress`) до сих пор `#[unstable(feature =
-# "io_error_inprogress")]` в стандартной библиотеке — недоступен на stable.
-# `socket2` сталкивается с той же проблемой в собственном
-# `Socket::connect_timeout` и решает её тем же способом: читает
-# `raw_os_error()` и сравнивает с `libc::EINPROGRESS` под `cfg(unix)`. Версия
-# — та же нижняя граница, что и у `socket2` для этой же зависимости.
+# `EINPROGRESS` can't be observed through `std::io::ErrorKind`: the
+# corresponding variant (`ErrorKind::InProgress`) is still `#[unstable(feature
+# = "io_error_inprogress")]` in the standard library — unavailable on stable.
+# `socket2` hits the same problem in its own `Socket::connect_timeout` and
+# solves it the same way: reads `raw_os_error()` and compares it against
+# `libc::EINPROGRESS` under `cfg(unix)`. The version pin is the same lower
+# bound `socket2` uses for this same dependency.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.172"
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-# Только для `tests/adversarial_smol_io.rs`: `hyper` — нормальная (не dev)
-# зависимость `http-ng-rt`, а не этого крейта, поэтому интеграционному тесту
-# она не видна без собственного dev-dependency.
+# Only for `tests/adversarial_smol_io.rs`: `hyper` is a normal (non-dev)
+# dependency of `http-ng-rt`, not of this crate, so it's not visible to an
+# integration test here without its own dev-dependency.
 hyper            = { version = "1.11", default-features = false }
 
 [lints]

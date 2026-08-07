@@ -1,13 +1,15 @@
-//! Доказательство того же тезиса, что `http-ng-rt-pair-check` (Task 4) и
-//! `http-ng-tls-rustls`'s `dual_runtime.rs` (Task 9) доказывают для своих
-//! слоёв: ОДНО тело — здесь `connect_for_test`, ровно тот код, который
-//! `race_connect` гоняет через `Wait`-ветку `drive` (не только мгновенный
-//! успех на первом `Start`) — работает и на tokio, и на smol без единого
-//! `#[cfg]` и без спавна задач. Это прямая, а не только типовая проверка
-//! требования брифа "`race_connect` не использует `spawn`": `smol`
-//! однопоточен по умолчанию у `futures_executor::block_on`, и если бы где-то
-//! в `drive` протёк `spawn`/`Send`-бонд через комбинатор (а не через явное
-//! объявление), этот файл не скомпилировался и не прошёл бы здесь.
+//! Proof of the same thesis that `http-ng-rt-pair-check` (Task 4) and
+//! `http-ng-tls-rustls`'s `dual_runtime.rs` (Task 9) prove for their own
+//! layers: ONE body — here, `connect_for_test`, exactly the code
+//! `race_connect` runs through `drive`'s `Wait` branch (not just an
+//! immediate success on the first `Start`) — works on both tokio and
+//! smol with not a single `#[cfg]` and no task spawning. This is a
+//! direct check of the brief's requirement "`race_connect` doesn't use
+//! `spawn`," not just a type-level one: `smol` is single-threaded by
+//! default under `futures_executor::block_on`, and if a `spawn`/`Send`
+//! bound had leaked into `drive` anywhere through a combinator (rather
+//! than through an explicit declaration), this file would fail to
+//! compile, or fail to pass, right here.
 mod net_fixtures;
 
 use http_ng_native::testing::connect_for_test;

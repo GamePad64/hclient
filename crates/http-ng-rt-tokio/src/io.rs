@@ -3,29 +3,31 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// Мост `tokio::net::TcpStream` → `hyper::rt`. Без `unsafe`: читаем во
-/// временный буфер и копируем безопасным `put_slice` — тот же приём, что и
-/// в `http_ng_rt::FuturesIo` (Task 2), но здесь напрямую поверх
-/// `tokio::io::{AsyncRead, AsyncWrite}`, а не `futures_io`: у tokio свои
-/// IO-трейты, и лишний слой через `FuturesIo` только добавил бы копирование.
+/// Bridges `tokio::net::TcpStream` → `hyper::rt`. `unsafe`-free: reads into
+/// a scratch buffer and copies out with the safe `put_slice` — the same
+/// technique as `http_ng_rt::FuturesIo` (Task 2), but here directly on top
+/// of `tokio::io::{AsyncRead, AsyncWrite}` rather than `futures_io`: tokio
+/// has its own IO traits, and an extra layer through `FuturesIo` would only
+/// add a copy.
 pub struct TokioIo {
     inner: tokio::net::TcpStream,
-    /// Буфер выделяется и обнуляется ОДИН раз, в [`TokioIo::new`] — не на
-    /// каждый `poll_read`.
+    /// The buffer is allocated and zeroed ONCE, in [`TokioIo::new`] — not
+    /// on every `poll_read`.
     ///
-    /// Черновик задачи держал его как `[0u8; SCRATCH]` на стеке внутри
-    /// `poll_read`. Task 2 уже измерил цену этого паттерна
-    /// (`rustc -O --emit=asm`, см. комментарий на `FuturesIo::scratch`):
-    /// стековый вариант зовёт `memset` на КАЖДЫЙ вызов, тогда как поле
-    /// структуры, выделенное один раз в конструкторе, этого не делает —
-    /// `poll_read` вызывается прямо на уже готовом буфере. `poll_read` —
-    /// горячий путь каждого запроса; лишний `memset` там не гипотетическая
-    /// цена, а измеренная.
+    /// An earlier draft of this task kept it as `[0u8; SCRATCH]` on the
+    /// stack inside `poll_read`. Task 2 already measured the cost of this
+    /// pattern (`rustc -O --emit=asm`, see the comment on
+    /// `FuturesIo::scratch`): the stack variant calls `memset` on EVERY
+    /// invocation, whereas a struct field allocated once in the
+    /// constructor does not — `poll_read` is called directly on an
+    /// already-ready buffer. `poll_read` is the hot path of every request;
+    /// a stray `memset` there is not a hypothetical cost, but a measured
+    /// one.
     scratch: Box<[u8]>,
 }
 
-/// Размер буфера. 8 KiB — типичный размер чтения у hyper, поэтому лишних
-/// итераций не возникает. Совпадает с `http_ng_rt::FuturesIo::SCRATCH`.
+/// Buffer size. 8 KiB is hyper's typical read size, so no extra iterations
+/// result. Matches `http_ng_rt::FuturesIo::SCRATCH`.
 const SCRATCH: usize = 8 * 1024;
 
 impl TokioIo {
@@ -36,9 +38,9 @@ impl TokioIo {
         }
     }
 
-    /// Ссылка на нижележащий `tokio::net::TcpStream` — например, чтобы
-    /// прочитать применённые `TcpOpts` обратно (`nodelay()`, …) в тестах или
-    /// диагностике.
+    /// A reference to the underlying `tokio::net::TcpStream` — for example,
+    /// to read applied `TcpOpts` back (`nodelay()`, …) in tests or
+    /// diagnostics.
     pub fn get_ref(&self) -> &tokio::net::TcpStream {
         &self.inner
     }
@@ -48,9 +50,9 @@ impl TokioIo {
     }
 }
 
-// Ручной `Debug`, а не `#[derive]`: `derive` дампил бы все 8 KiB `scratch`
-// как список чисел при каждом форматировании — бесполезно и шумно в логах.
-// Тот же приём уже применён в `http_ng_rt::FuturesIo`.
+// A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
+// `scratch` as a list of numbers on every format call — useless and noisy
+// in logs. The same technique is already used in `http_ng_rt::FuturesIo`.
 impl std::fmt::Debug for TokioIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioIo")
@@ -70,8 +72,9 @@ impl hyper::rt::Read for TokioIo {
         if want == 0 {
             return Poll::Ready(Ok(()));
         }
-        // Разбираем на непересекающиеся поля явно: `inner` и `scratch`
-        // заимствуются одновременно, но независимо друг от друга.
+        // Destructure into disjoint fields explicitly: `inner` and
+        // `scratch` are borrowed at the same time, but independently of
+        // each other.
         let Self { inner, scratch } = &mut *self;
         let mut rb = tokio::io::ReadBuf::new(&mut scratch[..want]);
         std::task::ready!(Pin::new(inner).poll_read(cx, &mut rb))?;
@@ -106,10 +109,11 @@ impl hyper::rt::Write for TokioIo {
         Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
     }
 
-    /// В отличие от `FuturesIo` (где `futures_io::AsyncWrite` не даёт способа
-    /// спросить это у `S` вовсе), `tokio::io::AsyncWrite` несёт
-    /// `is_write_vectored` как метод трейта — здесь это честная делегация
-    /// нижележащему `TcpStream`, а не решение за него.
+    /// Unlike `FuturesIo` (where `futures_io::AsyncWrite` gives no way to
+    /// ask `S` at all), `tokio::io::AsyncWrite` carries
+    /// `is_write_vectored` as a trait method — here it's an honest
+    /// delegation to the underlying `TcpStream`, not a decision made on
+    /// its behalf.
     fn is_write_vectored(&self) -> bool {
         self.inner.is_write_vectored()
     }
@@ -133,10 +137,11 @@ mod tests {
 
     #[tokio::test]
     async fn reads_bytes_larger_than_the_scratch_buffer() {
-        // Как и `read_request_larger_than_scratch_buffer_does_not_panic` в
-        // `http_ng_rt::FuturesIo`: `buf.remaining()` управляется вызывающей
-        // стороной и может быть больше `scratch.len()` — без `.min(..)`
-        // `&mut scratch[..want]` индексирует за пределы и паникует.
+        // Same as `read_request_larger_than_scratch_buffer_does_not_panic`
+        // in `http_ng_rt::FuturesIo`: `buf.remaining()` is controlled by
+        // the caller and can be larger than `scratch.len()` — without
+        // `.min(..)`, `&mut scratch[..want]` indexes out of bounds and
+        // panics.
         let (mut client, mut server) = connected_pair();
         let len = SCRATCH + 137;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
@@ -168,10 +173,10 @@ mod tests {
     #[tokio::test]
     async fn is_write_vectored_delegates_to_the_inner_stream() {
         let (client, _server) = connected_pair();
-        // `TcpStream::is_write_vectored` — честная делегация, не
-        // консервативная заглушка: сверяем с самим `TcpStream`, а не
-        // жёстко закодированным значением, чтобы тест не разошёлся с
-        // платформой независимо от `TokioIo`.
+        // `TcpStream::is_write_vectored` is an honest delegation, not a
+        // conservative stub: compare against `TcpStream` itself, not a
+        // hardcoded value, so the test doesn't drift from the platform
+        // independently of `TokioIo`.
         assert_eq!(
             hyper::rt::Write::is_write_vectored(&client),
             client.get_ref().is_write_vectored()

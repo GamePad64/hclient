@@ -1,14 +1,16 @@
-//! Применение решения, принятого в `http-ng-proto`. Здесь только перекладывание
-//! данных: вся логика — чистая функция `proto::redirect::decide`.
+//! Applying the decision made in `http-ng-proto`. Only data shuffling
+//! lives here: all the logic is in the pure function
+//! `proto::redirect::decide`.
 
 use http_ng_core::RequestBody;
 use http_ng_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
-/// Всё, что переносится между хопами, кроме тела.
+/// Everything that carries over between hops, except the body.
 ///
-/// Отдельный тип, потому что `http::request::Parts` **не реализует `Clone`**,
-/// а между хопами метод, URI и заголовки нужны и до, и после отправки.
-/// `HeaderMap`, `Uri`, `Method` и `Extensions` клонируемы — проверено.
+/// A separate type because `http::request::Parts` **doesn't implement
+/// `Clone`**, and between hops the method, URI, and headers are needed
+/// both before and after sending. `HeaderMap`, `Uri`, `Method`, and
+/// `Extensions` are all cloneable — verified.
 #[derive(Debug, Clone)]
 pub(crate) struct HopParts {
     pub(crate) method: http::Method,
@@ -30,21 +32,23 @@ impl HopParts {
     }
 }
 
-/// Построить следующий хоп. `replay` — снимок тела, снятый **до** отправки
-/// предыдущей попытки; `None` означает, что тело невоспроизводимо.
+/// Build the next hop. `replay` is a snapshot of the body taken **before**
+/// the previous attempt was sent; `None` means the body can't be replayed.
 ///
-/// Возвращает `None`, когда тело переиграть нельзя, а метод не понижен: тогда
-/// честнее вернуть 3xx как есть, чем отправить пустое тело туда, где его ждут.
+/// Returns `None` when the body can't be replayed and the method wasn't
+/// downgraded: in that case it's more honest to return the 3xx as-is than
+/// to send an empty body where one is expected.
 ///
-/// **`extensions` переносятся на следующий хоп безусловно, включая
-/// кросс-ориджин** — в отличие от `headers`, откуда `strip_sensitive`
-/// вычищает учётные данные. Асимметрия сегодня без последствий: единственный
-/// тип в `extensions` — `Timeouts`, который через границу источника нести
-/// безопасно и нужно (иначе после редиректа таймауты бы исчезли, а с B1 они
-/// туда именно и кладутся). Записано как известный долг, а не незамеченный:
-/// §4.9 дизайна кладёт в per-request config авторизацию и политику, и в тот
-/// момент `extensions` понадобится тот же фильтр по чувствительности, что
-/// уже есть у заголовков (m7 финального ревью ветки).
+/// **`extensions` carry over to the next hop unconditionally, including
+/// across origins** — unlike `headers`, where `strip_sensitive` scrubs
+/// credentials. The asymmetry has no consequences today: the only type in
+/// `extensions` is `Timeouts`, which is safe, and necessary, to carry
+/// across an origin boundary (otherwise timeouts would vanish after a
+/// redirect, and with B1 that's exactly where they get put). Recorded as a
+/// known debt, not an overlooked one: design §4.9 puts authorization and
+/// policy into the per-request config, and at that point `extensions` will
+/// need the same sensitivity filter headers already have (m7 of the
+/// branch's final review).
 pub(crate) fn next_hop(
     prev: &HopParts,
     replay: Option<RequestBody>,

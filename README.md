@@ -1,35 +1,35 @@
 # http-ng
 
-Кроссплатформенный асинхронный HTTP-клиент. Один и тот же прикладной код
-собирается под native, браузер и WASI — транспорт подменяется, а не
-обкладывается `#[cfg]`.
+Cross-platform async HTTP client. The same application code
+builds for native, browser and WASI — the transport is swapped out, not
+buried under `#[cfg]`.
 
 ```rust
 let client = http_ng::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
-На native, с фичей `default-transport` (Task 14, вертикаль 2) — тот же код
-без выбора транспорта вручную: `Client::new()` резолвит `DefaultTransport`
-(`Native` на `tokio` + `rustls` с системным хранилищем доверия + системный
-`getaddrinfo`) сам, по таргету, а не по фиче, которую выбирает пользователь.
+On native, with the `default-transport` feature (Task 14, vertical 2) — the same
+code without manually choosing a transport: `Client::new()` resolves
+`DefaultTransport` (`Native` on `tokio` + `rustls` with the system trust store +
+system `getaddrinfo`) itself, by target, not by a feature the user picks.
 
 ```rust
-let client = http_ng::Client::new()?; // требует окружающий tokio-рантайм
+let client = http_ng::Client::new()?; // requires an ambient tokio runtime
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
-Сквозное доказательство того, что ЭТОТ ЖЕ обобщённый код (не два
-раздельных примера) реально бегает по сети на двух разных рантаймах без
-единого `#[cfg]` —
+End-to-end proof that this SAME generic code (not two
+separate examples) actually runs over the network on two different runtimes
+without a single `#[cfg]` —
 [`crates/http-ng/tests/two_runtimes.rs`](crates/http-ng/tests/two_runtimes.rs):
-`cargo test -p http-ng --test two_runtimes` инстанцирует одну и ту же
-`fetch_once<R>` под `http_ng_rt_tokio::Tokio` (реальный `tokio::runtime::
-Runtime`) и под `http_ng_rt_smol::Smol` (голый `futures_executor::block_on`,
-без spawn и без `tokio` в графе смол-пути — см. следующий раздел).
+`cargo test -p http-ng --test two_runtimes` instantiates the same
+`fetch_once<R>` under `http_ng_rt_tokio::Tokio` (a real `tokio::runtime::
+Runtime`) and under `http_ng_rt_smol::Smol` (a bare `futures_executor::block_on`,
+no spawn and no `tokio` in the smol path's graph — see the next section).
 
-Рабочий сквозной пример, который реально собирается и исполняется под
-`wasmtime` (не только компилируется) —
+A working end-to-end example that actually builds and runs under
+`wasmtime` (not just compiles) —
 [`crates/http-ng-wasi/examples/fetch.rs`](crates/http-ng-wasi/examples/fetch.rs):
 
 ```
@@ -37,178 +37,182 @@ cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
 wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm
 ```
 
-## Что в графе зависимостей
+## What's in the dependency graph
 
-Первая строка таблицы, как и раньше, проверяема прямо в этом репозитории:
-`cargo tree -p http-ng-wasi -e normal --prefix none` не содержит `tokio`
-вовсе (28 уникальных крейтов всего). Вторая и третья строки, в отличие от
-их же версии в отчёте вертикали 1, теперь тоже измерены, а не предсказаны:
-вертикаль 2 (`http-ng-native`, `http-ng-rt-tokio`, `http-ng-rt-smol`,
-`http-ng-tls-rustls`, `http-ng-dns-system`) собрана, и с Task 14 у `http-ng`
-есть `DefaultTransport` (native, только HTTP/1.1) — фича `default-transport`,
-включающая ровно эти четыре крейта. Строка HTTP/2 остаётся тем же
-исследованием заранее, что и была: `http-ng-h2` в этом репозитории не
-существует (не в плане v0.1 вообще, а не только «пока не собрана»),
-приведена нетронутой ради того же обоснования выбора HTTP/1-first, каким
-она была написана в вертикали 1.
+The first row of the table, as before, is verifiable directly in this
+repository: `cargo tree -p http-ng-wasi -e normal --prefix none` contains no
+`tokio` at all (28 unique crates total). The second and third rows, unlike
+their counterparts in the vertical 1 report, are now measured too, not
+predicted: vertical 2 (`http-ng-native`, `http-ng-rt-tokio`, `http-ng-rt-smol`,
+`http-ng-tls-rustls`, `http-ng-dns-system`) is built, and as of Task 14
+`http-ng` has a `DefaultTransport` (native, HTTP/1.1 only) — the
+`default-transport` feature, pulling in exactly these four crates. The HTTP/2
+row remains the same prior-research row it always was: `http-ng-h2` does not
+exist in this repository (not merely "not built yet" — not in the v0.1 plan at
+all), kept untouched for the same rationale behind the HTTP/1-first choice it
+was written under in vertical 1.
 
-| сборка | tokio |
+| build | tokio |
 |---|---|
-| ambient (`http-ng` + `-wasi` / `-fetch`) — измерено | **нет вообще** |
-| `http-ng` c фичей `default-transport` (native, только HTTP/1.1) — измерено, Task 14 | настоящий: `[default, libc, mio, net, rt, socket2, sync, time]` — реактор `http-ng-rt-tokio` нужен для настоящих `TcpConnect`/`Timer`, это не «просто протащенный тип», см. ниже |
-| `http-ng-rt-smol` в изоляции (без `http-ng`, ту же способность даёт `async-io`) — измерено, Task 14 | `[default, sync]` — лист без реактора, только `tokio::sync::oneshot`, см. ниже |
-| native + HTTP/2 — не в плане v0.1, гипотетическая оценка не пересчитывалась в вертикали 2 | `h2` тянет `tokio` с `io-util` и `tokio-util` с `codec`, а через него `libc` |
+| ambient (`http-ng` + `-wasi` / `-fetch`) — measured | **none at all** |
+| `http-ng` with the `default-transport` feature (native, HTTP/1.1 only) — measured, Task 14 | real: `[default, libc, mio, net, rt, socket2, sync, time]` — the `http-ng-rt-tokio` reactor is needed for real `TcpConnect`/`Timer`, this is not "just a type dragged along", see below |
+| `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
+| native + HTTP/2 — not in the v0.1 plan, a hypothetical estimate not recomputed in vertical 2 | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
 
-**Обе средние строки — один и тот же факт `hyper`, измеренный в двух разных
-местах графа, а не два независимых наблюдения.** `hyper` зависит от `tokio`
-**безусловно, не по фиче** — `http-ng-rt`'s собственный `hyper = { version =
-"1.11", default-features = false }` (нулевой набор фич) и всё равно тянет
-`tokio` с фичей `sync`, проверено `cargo tree -p http-ng-rt -e normal -i
-tokio` в этом дереве. Это тот же вывод, что вертикаль 1 сделала про
-HTTP/1-путь по исходникам hyper (`tokio::sync::oneshot::Receiver` в
-`src/upgrade.rs`, единственное место использования) — теперь подтверждено
-измерением, а не только чтением кода. Крейт `http-ng-rt-smol` зависит от
-`http-ng-rt`, а значит от `hyper`, а значит транзитивно и от этого
-`tokio`-листа — **независимо от того, что сам `http-ng-rt-smol` не тянет ни
-`tokio`, ни `async-compat` напрямую** (`cargo tree -p http-ng-rt-smol -e
-normal` не содержит ни того, ни другого крейта в своих ПРЯМЫХ
-зависимостях — проверяет CI job `two-runtimes`). Разница между строками
-таблицы — не «у смол-пути нет tokio, у native есть», а какой РЕАКТОР
-реально стоит за этим листом: у `http-ng-rt-smol` в изоляции — никакого
-(`sync`-лист инертен, `tokio::sync::oneshot` не исполняется), у `http-ng` с
-`default-transport` — настоящий (`http-ng-rt-tokio`, Task 3, тянет `mio` +
-`net` + `rt` + `time` для настоящих сокетов и таймеров), и оба факта верны
-одновременно: смол-рантайм по-прежнему не запускает НИ ОДНОЙ строчки tokio,
-просто крейт `tokio` физически лежит на диске тем же листом, что и у любой
-другой сборки, использующей `hyper`.
+**Both middle rows are the same `hyper` fact, measured in two different places
+in the graph, not two independent observations.** `hyper` depends on `tokio`
+**unconditionally, not behind a feature** — `http-ng-rt`'s own `hyper = {
+version = "1.11", default-features = false }` (zero feature set) still pulls
+in `tokio` with the `sync` feature, verified with `cargo tree -p http-ng-rt -e
+normal -i tokio` in this tree. This is the same conclusion vertical 1 drew
+about the HTTP/1 path from hyper's source (`tokio::sync::oneshot::Receiver` in
+`src/upgrade.rs`, the only place it's used) — now confirmed by measurement,
+not just by reading the code. The `http-ng-rt-smol` crate depends on
+`http-ng-rt`, and therefore on `hyper`, and therefore transitively on this
+same `tokio` leaf — **regardless of the fact that `http-ng-rt-smol` itself
+pulls in neither `tokio` nor `async-compat` directly** (`cargo tree -p
+http-ng-rt-smol -e normal` contains neither crate among its DIRECT
+dependencies — checked by the `two-runtimes` CI job). The difference between
+the table rows isn't "the smol path has no tokio, native does" — it's which
+REACTOR actually stands behind that leaf: for `http-ng-rt-smol` in isolation,
+none (the `sync` leaf is inert, `tokio::sync::oneshot` is never driven), for
+`http-ng` with `default-transport`, a real one (`http-ng-rt-tokio`, Task 3,
+pulls in `mio` + `net` + `rt` + `time` for real sockets and timers) — and both
+facts hold at once: the smol runtime still doesn't execute a single line of
+tokio, the `tokio` crate simply sits on disk as the same leaf it would for any
+other build that uses `hyper`.
 
-Убрать tokio из hyper-сборок нельзя: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
-(ровно эта замена на `futures-channel`, спрятанная за feature-флагом) отклонена
-мейнтейнером не по техническим причинам, а из-за необратимости решения:
-*«As of 1.0, we are going to be very careful about adding new dependencies to
-the public API… it "exposes" a crate feature that we could never remove»*.
-[hyper#3767](https://github.com/hyperium/hyper/issues/3767) — отдельный тикет
-с тем же выводом про единственное место использования — закрыт как *not
-planned*.
+Tokio can't be removed from hyper builds: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
+(exactly this swap for `futures-channel`, hidden behind a feature flag) was
+rejected by the maintainer not for technical reasons, but because of the
+irreversibility of the decision: *"As of 1.0, we are going to be very careful
+about adding new dependencies to the public API… it "exposes" a crate feature
+that we could never remove"*. [hyper#3767](https://github.com/hyperium/hyper/issues/3767)
+— a separate ticket with the same conclusion about the only call site — was
+closed as *not planned*.
 
-**Второй факт, тоже измеренный, а не предположенный: тест-only busy-spin не
-достигает продакшн-кода.** `http_ng_native::testing::blocking_io` (Task 12) —
-`hyper::rt::Read`/`Write`-обёртка над `std::net::TcpStream` для теста на
-голом `futures`-executor'е без реактора вовсе; при `WouldBlock` она вызывает
-`cx.waker().wake_by_ref()` немедленно вместо настоящего ожидания готовности
-через ОС. Измерено CPU-временем (`/proc/self/stat`) вокруг запроса к
-серверу, отвечающему через 600мс: под `blocking_io` — wall 600.4мс, **cpu
-600мс** (честный busy-spin на 100% времени ожидания); тот же самый код
-обмена (`h1::exchange`/`NativeBody`), но с IO от `http_ng_rt_tokio::Tokio::
-connect` (настоящий `tokio::net::TcpStream`, зарегистрированный в реакторе)
-— wall 601.1мс, **cpu 0мс** (Task 12 review, раздел B). `two_runtimes.rs`
-(Task 14) подтверждает предсказание того же раздела «не произойдёт под
-tokio или smol» на практике: оба теста гоняют `Native` через настоящие
-`http_ng_rt_tokio::Tokio`/`http_ng_rt_smol::Smol`, ни разу не касаясь
-`testing::blocking_io` — он существует только под `#[doc(hidden)] pub mod
-testing` и используется только в `tests/h1.rs` этого же крейта.
+**A second fact, also measured, not assumed: the test-only busy-spin never
+reaches production code.** `http_ng_native::testing::blocking_io` (Task 12) —
+a `hyper::rt::Read`/`Write` wrapper over `std::net::TcpStream` for testing on
+a bare `futures` executor with no reactor at all; on `WouldBlock` it calls
+`cx.waker().wake_by_ref()` immediately instead of actually waiting for
+readiness through the OS. Measured by CPU time (`/proc/self/stat`) around a
+request to a server that responds after 600ms: under `blocking_io` — wall
+600.4ms, **cpu 600ms** (an honest busy-spin for 100% of the wait time); the
+same exchange code (`h1::exchange`/`NativeBody`), but with IO from
+`http_ng_rt_tokio::Tokio::connect` (a real `tokio::net::TcpStream`, registered
+with the reactor) — wall 601.1ms, **cpu 0ms** (Task 12 review, section B).
+`two_runtimes.rs` (Task 14) confirms the same section's prediction of "won't
+happen under tokio or smol" in practice: both tests run `Native` over real
+`http_ng_rt_tokio::Tokio`/`http_ng_rt_smol::Smol`, never touching
+`testing::blocking_io` — it exists only under `#[doc(hidden)] pub mod
+testing` and is used only in this same crate's `tests/h1.rs`.
 
-## Статус
+## Status
 
-v0.1: ядро (`http-ng-core`, `http-ng-proto`, `http-ng`) и два бэкенда —
-`http-ng-wasi` поверх `wasi:http` 0.3 (вертикаль 1) и `http-ng-native`
-поверх `hyper` + `rustls` + системного DNS (вертикаль 2, эта секция).
-Браузер (`fetch`) — вертикаль 3, ещё не начата.
+v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and two backends —
+`http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1) and `http-ng-native` on
+top of `hyper` + `rustls` + system DNS (vertical 2, this section). Browser
+(`fetch`) — vertical 3, not started yet.
 
-### Вертикаль 2 (native): что доказано
+### Vertical 2 (native): what's proven
 
-**Рантайм-шов настоящий, не декоративный.** Один и тот же обобщённый код
-(`fetch_once<R>` в `crates/http-ng/tests/two_runtimes.rs`, границы —
-`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, ни одного `#[cfg]` во
-всём файле) реально гоняет HTTP/1.1-запрос по настоящему TCP до настоящего
-сервера на loopback — один раз под `http_ng_rt_tokio::Tokio` внутри
-`tokio::runtime::Runtime`, один раз под `http_ng_rt_smol::Smol` на голом
-`futures_executor::block_on`. Свойство подтверждено не только зелёным
-прогоном: добавление `R::Instant: PartialEq<std::time::Instant>` к границе
-`fetch_once` (тот же приём мутации, что `http-ng-rt-pair-check`'s
-`pair_property.rs` уже применяла к способностям рантайма отдельно) ломает
-инстанциацию на `Tokio` (`Instant = tokio::time::Instant`, обёртка,
-`E0277: can't compare tokio::time::Instant with std::time::Instant`) и не
-ломает `Smol` (`Instant = std::time::Instant` напрямую) — тест
-чувствителен к регрессии шва, а не только к тому, компилируется ли файл
-вообще.
+**The runtime seam is real, not decorative.** The same generic code
+(`fetch_once<R>` in `crates/http-ng/tests/two_runtimes.rs`, bounded by
+`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, not a single `#[cfg]` in
+the whole file) actually drives an HTTP/1.1 request over real TCP to a real
+server on loopback — once under `http_ng_rt_tokio::Tokio` inside a
+`tokio::runtime::Runtime`, once under `http_ng_rt_smol::Smol` on a bare
+`futures_executor::block_on`. The property is confirmed by more than a green
+run: adding `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s
+bound (the same mutation trick `http-ng-rt-pair-check`'s `pair_property.rs`
+already applied to runtime capabilities individually) breaks instantiation on
+`Tokio` (`Instant = tokio::time::Instant`, a wrapper, `E0277: can't compare
+tokio::time::Instant with std::time::Instant`) and does not break `Smol`
+(`Instant = std::time::Instant` directly) — the test is sensitive to a
+regression of the seam, not just to whether the file compiles at all.
 
-**HTTP/1-обмен едет без spawn и без реактора там, где его нет.**
-`http-ng-native/tests/h1.rs`'s `works_on_a_bare_futures_executor_with_no_spawn`
-проверяет это на IO без реактора вовсе (Task 12); `two_runtimes.rs` выше
-проверяет ту же собственность транспорта (`Native`) уже под настоящими
-рантайм-бэкендами, а не только под тестовым busy-spin.
+**The HTTP/1 exchange runs without spawn and without a reactor where there
+isn't one.** `http-ng-native/tests/h1.rs`'s
+`works_on_a_bare_futures_executor_with_no_spawn` checks this on IO with no
+reactor at all (Task 12); `two_runtimes.rs` above checks the same property of
+the transport (`Native`), now under real runtime backends, not just under the
+test busy-spin.
 
-**`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** —
-фича `default-transport` (`default = []` для `http-ng`, как и для каждого
-крейта вертикали — включать явно). На любом не-wasm таргете резолвится в
-`Native<Tokio, Rustls, SystemDns<Tokio>>` с системным хранилищем доверия
-(`rustls-platform-verifier`, не `webpki-roots` — «просто заработавший»
-клиент, а не клиент с явно выбранными корнями). Без фичи, или на
-`wasm32-unknown-unknown`/`wasm32-wasip2` (`target_os = "wasi"`), тип не
-существует вовсе — обычная ошибка компиляции, а не более слабый молчаливый
-транспорт; на wasip2/wasip1 намеренно нет ветки, использующей уже готовый
-`http_ng_wasi::WasiHttp` через этот механизм — `http-ng` не зависит от
-`http-ng-wasi` (инвариант, записанный в `http-ng-wasi/Cargo.toml`), и
-заводить эту зависимость здесь означало бы путь, который ни один CI job
-в этом репозитории не собирает (`wasip2`-job гоняет `http-ng-wasi`
-напрямую). Прямой путь на WASI остаётся `Client::builder(http_ng_wasi::
-WasiHttp::new())`, как и до этой задачи. Подробности резолюции — doc-
-комментарий `DefaultTransport` в `crates/http-ng/src/lib.rs`.
+**`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** — the
+`default-transport` feature (`default = []` for `http-ng`, as for every crate
+in the vertical — opt in explicitly). On any non-wasm target it resolves to
+`Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
+(`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
+not one with explicitly chosen roots). Without the feature, or on
+`wasm32-unknown-unknown`/`wasm32-wasip2` (`target_os = "wasi"`), the type
+doesn't exist at all — an ordinary compile error, not a silently weaker
+transport; on wasip2/wasip1 there's deliberately no branch that reuses the
+already-built `http_ng_wasi::WasiHttp` through this mechanism — `http-ng`
+doesn't depend on `http-ng-wasi` (an invariant recorded in
+`http-ng-wasi/Cargo.toml`), and adding that dependency here would mean a path
+that no CI job in this repository builds (the `wasip2` job runs `http-ng-wasi`
+directly). The direct path on WASI remains `Client::builder(http_ng_wasi::
+WasiHttp::new())`, same as before this task. Resolution details are in the
+`DefaultTransport` doc comment in `crates/http-ng/src/lib.rs`.
 
-**Что осталось не проверено вживую и переходит в вертикаль 3** (граница из
-брифа вертикали, не сокращена этой задачей): рантайм-модель `Capabilities`
-для fetch с его различием Chrome/Safari; реконнект `SseStream`; приёмка
-`act`.
+**What's still unverified live and carries over into vertical 3** (a boundary
+from the vertical's brief, not narrowed by this task): the `Capabilities`
+runtime model for fetch with its Chrome/Safari difference; `SseStream`
+reconnection; `act` acceptance.
 
-**Осознанно не сделано в v0.1** (записано, не спрятано): пул соединений
-(одно соединение на запрос); стриминговые тела запроса; `first_byte`/
-`between_bytes`-таймауты (заявлены как неподдерживаемые через
-`Capabilities`, а не сделаны молча); один `getaddrinfo`-вызов на оба
-семейства адресов вместо раздельных слотов v4/v6; h1-upgrade.
+**Deliberately not done in v0.1** (recorded, not hidden): connection pooling
+(one connection per request); streaming request bodies; `first_byte`/
+`between_bytes` timeouts (declared unsupported via `Capabilities`, rather than
+silently unimplemented); a single `getaddrinfo` call for both address families
+instead of separate v4/v6 slots; h1 upgrade.
 
-### Вертикаль 1 (WASI): что доказано
+### Vertical 1 (WASI): what's proven
 
-**Доказано.** Форма `Transport` реально работает против ambient-бэкенда без
-собственного сокета гостя — не в теории, а под настоящим хостом `wasmtime`
-(`crates/http-ng-wasi/tests/live_roundtrip.rs`). Настройка, которую транспорт
-не поддерживает, становится типизированной ошибкой `UnsupportedCapability` уже
-на `ClientBuilder::build()`, а не тихо игнорируется; то же самое на уровень
-ниже — хост `wasi:http` отвергает значение опции запроса (таймаут, метод,
-scheme) — тоже становится ошибкой, а не отбрасывается, и это не только
-проверено вручную при реализации, а держится статическим анализом в CI
-(`no-discarded-wasi-setters`) на каждый пуш.
+**Proven.** The `Transport` shape actually works against an ambient backend
+with no socket of its own on the guest side — not in theory, but under a real
+`wasmtime` host (`crates/http-ng-wasi/tests/live_roundtrip.rs`). A setting the
+transport doesn't support becomes a typed `UnsupportedCapability` error
+already at `ClientBuilder::build()`, rather than being silently ignored; the
+same holds one level down — the `wasi:http` host rejecting a request-option
+value (timeout, method, scheme) also becomes an error rather than being
+dropped, and this isn't only verified by hand during implementation — it's
+held in place by static analysis in CI (`no-discarded-wasi-setters`) on every
+push.
 
-**`full_duplex` объявлен `false` — и это про реализацию `http-ng-wasi`, не
-про форму seam.** Сам протокол `wasi:http` 0.3 поддерживает дуплекс тела
-запроса: данные тела могут идти, пока хост ещё не вернул ответ. Отгружаемый
-`WasiHttp::execute` этого не даёт — `convert::race_send_with_body` дожидается
-и `send`, и записи тела целиком (кроме раннего отказа `send`). Измерено на
-живом хосте `wasmtime` (host-специфичное поведение, `wasi:http` его не
-фиксирует): ответ существовал на сервере уже к t≈0.10s, а вызывающая сторона
-видела его к t≈2.00s, когда дописалось тело; для тела без конца — не увидела
-бы никогда.
+**`full_duplex` is declared `false` — and that's about the `http-ng-wasi`
+implementation, not about the shape of the seam.** The `wasi:http` 0.3
+protocol itself supports duplex request bodies: body data can flow while the
+host hasn't yet returned a response. The shipped `WasiHttp::execute` doesn't
+give you that — `convert::race_send_with_body` waits for both `send` and the
+full body write (except on an early `send` failure). Measured on a live
+`wasmtime` host (host-specific behavior, not pinned down by `wasi:http`): the
+response already existed on the server at t≈0.10s, but the caller saw it only
+at t≈2.00s, once the body finished writing; for a body with no end, it would
+never see it.
 
-Ограничение снимается **внутри `http-ng-wasi`, не трогая `Transport`.**
-`Transport::execute` возвращает `http::Response<Self::Body>`, а `Self::Body` —
-`http_ng_wasi::Body`, тип этого же крейта: недописанная футура записи
-проносится в него и доопрашивается из `poll_frame`, отказ передачи становится
-терминальной ошибкой тела. Финальное ревью ветки реализовало это как
-proof-of-concept — около сорока строк, один новый вариант `Inner`, сигнатура
-`Transport::execute` не тронута — и померило на том же госте и сервере:
-ветка как есть висит до убийства на 25s, вариант с футурой в `Body` отдаёт
-`RESPONSE_HEAD_RECEIVED status=200 OK` за 0.094s. Приём не новый: тот же
-doc-комментарий `convert::resolve_send` предлагает ровно его для *другой*
-отброшенной футуры (`transmitted`).
+The limitation is lifted **inside `http-ng-wasi`, without touching
+`Transport`.** `Transport::execute` returns `http::Response<Self::Body>`, and
+`Self::Body` is `http_ng_wasi::Body`, a type from that same crate: the
+unfinished write future is carried into it and polled further from
+`poll_frame`, and a transfer failure becomes a terminal body error. The
+branch's final review implemented this as a proof of concept — around forty
+lines, one new `Inner` variant, the `Transport::execute` signature untouched —
+and measured it on the same host and server: the branch as it stands hangs
+until killed at 25s; the variant with the future in `Body` delivers
+`RESPONSE_HEAD_RECEIVED status=200 OK` in 0.094s. The technique isn't new: the
+same `convert::resolve_send` doc comment proposes exactly this for a
+*different* discarded future (`transmitted`).
 
-Отложено не из-за seam, а из-за трёх реальных цен, которые придётся
-заплатить: (1) гвард необъявленных трейлеров не может отработать до возврата
-`execute` — имена трейлеров известны только когда тело кончилось, так что
-гвард переезжает в `Body` и становится терминальной ошибкой тела; (2) политика
-`resolve_send` «ответ, пришедший поверх провалившейся записи тела, — не успех»
-из ошибки уровня `execute` становится ошибкой уровня тела, то есть слабее;
-(3) вызывающая сторона, которая никогда не читает тело ответа, никогда и не
-дописывает тело запроса — это присуще дуплексу без `spawn` и требует
-документирования. Работа вертикали 2, целиком внутри `http-ng-wasi`.
+Deferred not because of the seam, but because of three real costs it would
+have to pay: (1) the guard against undeclared trailers can't run before
+`execute` returns — trailer names are only known once the body has ended, so
+the guard moves into `Body` and becomes a terminal body error; (2)
+`resolve_send`'s policy that "a response arriving on top of a failed body
+write is not a success" moves from an `execute`-level error to a body-level
+error, i.e. gets weaker; (3) a caller that never reads the response body never
+finishes writing the request body either — that's inherent to duplex without
+`spawn` and needs documenting. Vertical 2's work, entirely inside
+`http-ng-wasi`.
 
-Дизайн: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
+Design: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).

@@ -1,8 +1,8 @@
-//! Способности рантайма для native-транспорта http-ng.
+//! Runtime capabilities for http-ng's native transport.
 //!
-//! Раздельные трейты, а не один `Runtime`: транспорт требует только то, чем
-//! пользуется, а бэкенд без сокетов не обязан реализовывать `connect` заглушкой,
-//! которая паникует.
+//! Separate traits rather than one `Runtime`: the transport demands only
+//! what it uses, and a backend without sockets isn't forced to implement
+//! `connect` with a stub that panics.
 #![forbid(unsafe_code)]
 
 mod caps;
@@ -11,6 +11,6 @@ mod futures_io;
 pub use caps::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts};
 pub use futures_io::FuturesIo;
 
-/// `Timer` определён один раз, в `http-ng-core`: он нужен портативному ядру
-/// для таймаутов и backoff. Здесь только реэкспорт.
+/// `Timer` is defined once, in `http-ng-core`: the portable core needs it
+/// for timeouts and backoff. This is just a re-export.
 pub use http_ng_core::unversioned::Timer;

@@ -3,23 +3,23 @@ use http_body::Body as HttpBody;
 use http_ng_core::{Error, ErrorKind};
 use std::pin::Pin;
 
-/// Ответ с сохранённым URL. `into_parts` отдаёт полную верность;
-/// `chunk`/`collect` — удобство поверх неё.
+/// A response with its URL preserved. `into_parts` gives full fidelity;
+/// `chunk`/`collect` are convenience on top of it.
 #[derive(Debug)]
 pub struct Response<B> {
     parts: http::response::Parts,
     body: B,
     url: http::Uri,
-    /// Взводится, когда `chunk()` отдал `Some(Err(_))`, и после этого
-    /// `chunk()` возвращает `None`, не трогая `body` вовсе.
+    /// Set once `chunk()` has returned `Some(Err(_))`, after which
+    /// `chunk()` returns `None`, never touching `body` again.
     ///
-    /// m6 финального ревью ветки: без него `chunk()` после ошибки заново
-    /// опрашивал нижележащее тело, и вызывающая сторона, работающая с
-    /// `Response::chunk` напрямую, могла крутиться в цикле по телу,
-    /// отдающему ошибку на каждый опрос. `SseStream` компенсировал это
-    /// своим флагом `done` и тестировал его подробно — но только для себя.
-    /// Терминальность здесь ровно та же: ошибка отдаётся один раз, дальше
-    /// конец потока.
+    /// m6 of the branch's final review: without it, `chunk()` after an
+    /// error polled the underlying body again, and a caller working with
+    /// `Response::chunk` directly could spin in a loop over a body that
+    /// returns an error on every poll. `SseStream` compensated for this
+    /// with its own `done` flag and tested it thoroughly — but only for
+    /// itself. Terminality here is exactly the same: the error is handed
+    /// back once, then it's the end of the stream.
     sealed: bool,
 }
 
@@ -53,22 +53,23 @@ impl<B> Response<B> {
 impl<B> Response<B>
 where
     B: HttpBody<Data = Bytes> + Unpin,
-    // `B::Error: Send + Sync` — вторая точка исключения из инварианта «ядро не
-    // объявляет Send/Sync», sestra бонда `Client::execute` в `client.rs`
-    // (spec amendment C1). Без него `Error::new(ErrorKind::Body, e)` ниже не
-    // собрался бы: `Error` хранит источник как `Arc<dyn Error + Send + Sync>`,
-    // и стирание типа не пропускает auto-traits неограниченного
-    // объекта-трейта. Тот же бонд, что и `Client::execute`, только на этот раз
-    // требуется у `T::Body::Error`, а не `T::Error` — тело читается уже после
-    // того, как транспорт его вернул.
+    // `B::Error: Send + Sync` — the second exception point in the "core
+    // declares no Send/Sync" invariant, sibling of the bound on
+    // `Client::execute` in `client.rs` (spec amendment-C1). Without it,
+    // `Error::new(ErrorKind::Body, e)` below wouldn't compile: `Error`
+    // stores its source as `Arc<dyn Error + Send + Sync>`, and type erasure
+    // doesn't let an unbounded trait object's auto-traits through. The same
+    // bound as `Client::execute`, only this time required on
+    // `T::Body::Error` rather than `T::Error` — the body is read after the
+    // transport has already returned it.
     B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
-    /// Следующий чанк данных. Трейлер-фреймы пропускаются — за ними идти в
-    /// `into_parts` и поллить тело напрямую.
+    /// The next data chunk. Trailer frames are skipped — for those, go
+    /// through `into_parts` and poll the body directly.
     ///
-    /// Ошибка терминальна: после `Some(Err(_))` тело запечатано и все
-    /// последующие вызовы отдают `None`, не опрашивая его заново (m6
-    /// финального ревью ветки — см. поле `sealed`).
+    /// The error is terminal: after `Some(Err(_))` the body is sealed and
+    /// all subsequent calls return `None` without polling it again (m6 of
+    /// the branch's final review — see the `sealed` field).
     pub async fn chunk(&mut self) -> Option<Result<Bytes, Error>> {
         if self.sealed {
             return None;
@@ -78,7 +79,7 @@ where
             match frame {
                 Some(Ok(f)) => match f.into_data() {
                     Ok(d) => return Some(Ok(d)),
-                    Err(_) => continue, // трейлеры
+                    Err(_) => continue, // trailers
                 },
                 Some(Err(e)) => {
                     self.sealed = true;
@@ -146,10 +147,10 @@ where
     }
 }
 
-/// Прочитанное тело **вместе** со статусом, заголовками и URL.
+/// The body read **together with** the status, headers, and URL.
 ///
-/// У reqwest `Response::{text,json,bytes}` берут `self` по значению, из-за чего
-/// после чтения тела статус недоступен (issue #1542).
+/// reqwest's `Response::{text,json,bytes}` take `self` by value, which
+/// leaves the status unreachable once the body's been read (issue #1542).
 #[derive(Debug, Clone)]
 pub struct Collected {
     parts: http::response::Parts,
@@ -173,13 +174,14 @@ impl Collected {
     pub fn text(&self) -> Result<String, Error> {
         String::from_utf8(self.body.to_vec()).map_err(|e| Error::new(ErrorKind::Decode, e))
     }
-    /// Десериализует тело как JSON. Часть интерфейса, объявленного для этой
-    /// задачи (`Collected::json<T>()`), но отсутствовавшая в шаге 3 брифа —
-    /// см. отчёт о задаче.
+    /// Deserializes the body as JSON. Part of the interface declared for
+    /// this task (`Collected::json<T>()`), but missing from step 3 of the
+    /// brief — see the task report.
     ///
-    /// За фичей `json`, выключенной по умолчанию: `serde`/`serde_json` не
-    /// нужны потребителю, который тело только стримит или читает как байты —
-    /// см. комментарий у фичи в Cargo.toml про цену на wasm.
+    /// Behind the `json` feature, off by default: `serde`/`serde_json`
+    /// aren't needed by a consumer who only streams the body or reads it
+    /// as bytes — see the comment on the feature in Cargo.toml about the
+    /// cost on wasm.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
         serde_json::from_slice(&self.body).map_err(|e| Error::new(ErrorKind::Decode, e))

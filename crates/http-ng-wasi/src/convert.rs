@@ -1,14 +1,15 @@
-//! Конверсия http-ng <-> `wasi:http` 0.3 и honoring сеттеров хоста.
+//! Conversion between http-ng <-> `wasi:http` 0.3, and honoring the host's
+//! setters.
 //!
-//! `wasi:http` 0.3 возвращает из своих сеттеров `result<_, ...>` именно для
-//! того, чтобы хост мог сказать «не умею» или «неизменяемо». Предшественник
-//! этого крейта, `wasi-fetch`, отбрасывал семь таких `Result` через
-//! `let _ =` (`docs/superpowers/specs/2026-08-05-http-ng-design.md`, §4.6:
+//! `wasi:http` 0.3's setters return `result<_, ...>` for exactly this
+//! reason: so the host can say "unsupported" or "immutable". This crate's
+//! predecessor, `wasi-fetch`, discarded seven such `Result`s via `let _ =`
+//! (`docs/superpowers/specs/2026-08-05-http-ng-design.md`, §4.6:
 //! `set_connect_timeout`, `set_first_byte_timeout`, `set_between_bytes_timeout`,
-//! `set_method`, `set_scheme`, `set_authority`, `set_path_with_query`). Здесь
-//! каждый такой отказ становится типизированной `Error`, а не тихо
-//! исчезает — CI (job `no-discarded-wasi-setters`) проверяет это
-//! структурно, не полагаясь на дисциплину ревью.
+//! `set_method`, `set_scheme`, `set_authority`, `set_path_with_query`). Here
+//! every such rejection becomes a typed `Error` instead of silently
+//! vanishing — CI (the `no-discarded-wasi-setters` job) checks this
+//! structurally, without relying on review discipline.
 
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
@@ -43,11 +44,12 @@ impl std::fmt::Display for BadScheme {
 }
 impl std::error::Error for BadScheme {}
 
-/// Резолюция review, находка B-12: `BadScheme` — тот же класс отказа, что
-/// `Rejected` (ниже) — «это конкретное значение бэкенд не берёт» — и
-/// раньше единственный из них расплющивался в `ErrorKind::Other`, хотя
-/// вызывающей стороне здесь так же полезно уметь отличить «бэкенд это не
-/// умеет» от прочих ошибок через `is_unsupported()`.
+/// Review resolution, finding B-12: `BadScheme` is the same class of
+/// failure as `Rejected` (below) — "the backend just doesn't take this
+/// particular value" — and it used to be the only one of them flattened
+/// into `ErrorKind::Other`, even though it's just as useful for the caller
+/// here to be able to tell "the backend doesn't support this" from other
+/// errors via `is_unsupported()`.
 pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     match uri.scheme_str() {
         Some("https") => Ok(Scheme::Https),
@@ -56,14 +58,14 @@ pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     }
 }
 
-/// Применяет таймауты, **не проглатывая отказы хоста**.
+/// Applies timeouts, **without swallowing host rejections**.
 ///
-/// `wasi:http` 0.3 возвращает из сеттеров
-/// `result<_, request-options-error{not-supported, immutable, other}>` именно
-/// для того, чтобы хост мог сказать «не умею». `wasi-fetch` отбрасывал семь
-/// таких `Result` через `let _ =`; здесь каждый отказ становится ошибкой —
-/// см. `unsupported_timeout` про то, что конкретно уносится в неё из
-/// `RequestOptionsError`.
+/// `wasi:http` 0.3's setters return
+/// `result<_, request-options-error{not-supported, immutable, other}>` for
+/// exactly this reason: so the host can say "unsupported". `wasi-fetch`
+/// discarded seven such `Result`s via `let _ =`; here every rejection
+/// becomes an error — see `unsupported_timeout` for exactly what gets
+/// carried into it from `RequestOptionsError`.
 pub(crate) fn apply_timeouts(
     opts: &RequestOptions,
     connect: Option<u64>,
@@ -89,15 +91,15 @@ fn unsupported_timeout(what: &'static str, source: RequestOptionsError) -> Error
     Error::new(ErrorKind::Unsupported, TimeoutRejected { what, source })
 }
 
-/// Отказ хоста применить таймаут-опцию запроса.
+/// The host's rejection of applying a request timeout option.
 ///
-/// В отличие от `Rejected` (ниже), у этого отказа есть содержательная
-/// причина — `RequestOptionsError::{NotSupported,Immutable,Other}` — и она
-/// не расплющивается в строку: `Display` сообщает и что́ отказано, и чем
-/// именно, а сам `RequestOptionsError` остаётся доступен целиком через
-/// `Error::source()`. Тот же принцип, что у `wasi_err` для `ErrorCode`:
-/// категория (`ErrorKind::Unsupported`) — отдельно от причины, причина —
-/// не строка.
+/// Unlike `Rejected` (below), this rejection has a substantive reason —
+/// `RequestOptionsError::{NotSupported,Immutable,Other}` — and it isn't
+/// flattened into a string: `Display` reports both WHAT was rejected and
+/// WHY, and the `RequestOptionsError` itself stays fully reachable through
+/// `Error::source()`. The same principle as `wasi_err` for `ErrorCode`:
+/// the category (`ErrorKind::Unsupported`) is kept separate from the
+/// reason, and the reason isn't a string.
 #[derive(Debug)]
 pub(crate) struct TimeoutRejected {
     what: &'static str,
@@ -118,11 +120,12 @@ impl std::error::Error for TimeoutRejected {
     }
 }
 
-/// Отказ хоста применить `method`/`scheme`/`authority`/`path_with_query`.
+/// The host's rejection of applying `method`/`scheme`/`authority`/
+/// `path_with_query`.
 ///
-/// В отличие от `TimeoutRejected`, эти сеттеры `wasi:http` возвращают голый
-/// `Result<(), ()>` — от хоста в принципе не приезжает никакой причины,
-/// заворачивать в `source` нечего. `what` — это всё, что можно сообщить.
+/// Unlike `TimeoutRejected`, these `wasi:http` setters return a bare
+/// `Result<(), ()>` — the host never sends back any reason at all,
+/// there's nothing to wrap in `source`. `what` is all there is to report.
 #[derive(Debug)]
 pub(crate) struct Rejected(&'static str);
 impl std::fmt::Display for Rejected {
@@ -135,8 +138,8 @@ pub(crate) fn rejected(what: &'static str) -> Error {
     Error::new(ErrorKind::Unsupported, Rejected(what))
 }
 
-/// `Fields::from_list` отказал: заголовок синтаксически невалиден, запрещён
-/// или превышает лимит хоста.
+/// `Fields::from_list` failed: the header is syntactically invalid,
+/// forbidden, or exceeds a host limit.
 #[derive(Debug)]
 pub(crate) struct FieldsError(HeaderError);
 impl std::fmt::Display for FieldsError {
@@ -149,11 +152,12 @@ impl std::error::Error for FieldsError {
         Some(&self.0)
     }
 }
-/// Резолюция review, находка B-6: `HeaderError::Forbidden`/`::Immutable` —
-/// хост отказывается принять конкретный заголовок, структурно тот же класс
-/// отказа, что `Rejected`/`TimeoutRejected` (`ErrorKind::Unsupported`), а не
-/// общая ошибка. `InvalidSyntax`/`SizeExceeded`/`Other` — не отказ
-/// возможности, а дефект/лимит на стороне вызывающего, остаются `Other`.
+/// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
+/// — the host refuses to accept a specific header — structurally the same
+/// class of failure as `Rejected`/`TimeoutRejected` (`ErrorKind::Unsupported`),
+/// not a generic error. `InvalidSyntax`/`SizeExceeded`/`Other` are not a
+/// capability rejection but a defect/limit on the caller's side, and stay
+/// `Other`.
 pub(crate) fn fields_error(e: HeaderError) -> Error {
     let kind = match &e {
         HeaderError::Forbidden | HeaderError::Immutable => ErrorKind::Unsupported,
@@ -162,17 +166,17 @@ pub(crate) fn fields_error(e: HeaderError) -> Error {
     Error::new(kind, FieldsError(e))
 }
 
-/// `ErrorCode` идёт в `Error::new` как есть, без обёртки — тот же выбор, что
-/// в `body.rs` для ошибок чтения тела ответа: `ErrorCode` уже реализует
-/// `Debug`/`Display`/`core::error::Error` вручную, обёртка не добавила бы
-/// содержательности, а `Error::new` всё равно стирает конкретный тип в
-/// `Arc<dyn Error + Send + Sync>`.
+/// `ErrorCode` goes into `Error::new` as-is, unwrapped — the same choice
+/// as in `body.rs` for response-body read errors: `ErrorCode` already
+/// implements `Debug`/`Display`/`core::error::Error` by hand, a wrapper
+/// wouldn't add substance, and `Error::new` erases the concrete type into
+/// `Arc<dyn Error + Send + Sync>` anyway.
 ///
-/// Категория сохраняется, а не расплющивается в одну строку: `wasi-fetch`
-/// схлопывал всё в `Error::Transport(format!("{e:?}"))`, а хостовая сторона
-/// `act` потом восстанавливала категорию подстрочным матчингом по цепочке
-/// `source()`. Имена вариантов сверены с
-/// `wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206`.
+/// The category is preserved, not flattened into a single string:
+/// `wasi-fetch` collapsed everything into `Error::Transport(format!("{e:?}"))`,
+/// and the host side, `act`, then reconstructed the category by
+/// substring-matching down the `source()` chain. Variant names checked
+/// against `wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206`.
 pub(crate) fn wasi_err(e: ErrorCode) -> Error {
     use http_ng_core::Phase;
     use wasip3::http::types::ErrorCode as EC;
@@ -196,15 +200,16 @@ pub(crate) fn wasi_err(e: ErrorCode) -> Error {
         | EC::HttpResponseBodySize(_)
         | EC::HttpResponseTransferCoding(_)
         | EC::HttpResponseContentCoding(_)
-        // Резолюция review, находка B-8: те же семьи запроса/трейлеров,
-        // что уже даёт `ErrorKind::Body` для ответа выше — 14 из 39
-        // вариантов `ErrorCode` падали в `_ => Other` без разбора; здесь
-        // явно присоединены только те, что очевидно принадлежат уже
-        // существующей категории `Body` (размер/наличие тела или
-        // трейлеров), а не изобретена новая категория под остальные —
+        // Review resolution, finding B-8: the same request/trailer
+        // families that already give `ErrorKind::Body` for the response
+        // above — 14 of the 39 `ErrorCode` variants used to fall into
+        // `_ => Other` without a second look; here only the ones that
+        // obviously belong to the already-existing `Body` category (body
+        // or trailer size/presence) are explicitly folded in, rather than
+        // inventing a new category for the rest —
         // `HttpRequestMethodInvalid`/`HttpRequestUriInvalid`/
-        // `HttpProtocolError` и т.п. по-прежнему честно `Other`: для них
-        // здесь нет очевидной категории.
+        // `HttpProtocolError` and so on honestly stay `Other`: there's no
+        // obvious category for them here.
         | EC::HttpRequestLengthRequired
         | EC::HttpRequestBodySize(_)
         | EC::HttpRequestTrailerSectionSize(_)
@@ -216,15 +221,15 @@ pub(crate) fn wasi_err(e: ErrorCode) -> Error {
     Error::new(kind, e)
 }
 
-/// Запись тела запроса (`BodyWriter::send_http_body`) не удалась.
+/// Writing the request body (`BodyWriter::send_http_body`) failed.
 ///
-/// Оборачивает `wasip3::http_compat::Error` целиком, а не его `Display`:
-/// причина (`HttpBody` — упал наш собственный источник кадров;
-/// `StreamReaderClosed` — хост закрыл читающий конец раньше времени;
-/// `ResultReaderClosed` / `InvalidTrailers` — сбой на хвосте передачи)
-/// остаётся доступна через `Error::source()`, а не расплющена в строку. См.
-/// `resolve_send` про то, когда именно эта ошибка побеждает, а когда —
-/// уступает ошибке `send`.
+/// Wraps the whole `wasip3::http_compat::Error`, not just its `Display`:
+/// the reason (`HttpBody` — our own frame source failed;
+/// `StreamReaderClosed` — the host closed the reading end early;
+/// `ResultReaderClosed` / `InvalidTrailers` — a failure at the tail of the
+/// transfer) stays reachable through `Error::source()` instead of being
+/// flattened into a string. See `resolve_send` for exactly when this
+/// error wins and when it yields to the `send` error.
 #[derive(Debug)]
 pub(crate) struct BodyWriteFailed(wasip3::http_compat::Error);
 impl std::fmt::Display for BodyWriteFailed {
@@ -241,66 +246,69 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
     Error::new(ErrorKind::Body, BodyWriteFailed(e))
 }
 
-/// Сводит исход двух параллельных действий (`client::send` и
-/// `BodyWriter::send_http_body`) в один `Result`. Ни один из двух входных
-/// `Result` не отбрасывается — именно в этой точке черновик задачи
-/// предлагал `let (resp, _written) = join!(..)`.
+/// Folds the outcome of two concurrent actions (`client::send` and
+/// `BodyWriter::send_http_body`) into a single `Result`. Neither of the
+/// two input `Result`s is discarded — this is exactly the point where the
+/// task's draft proposed `let (resp, _written) = join!(..)`.
 ///
-/// **Про третий отброшенный `Result` — резолюция review, находка B-3,
-/// пересмотрена с доказательством, формулировка уточнена в fix round 2
-/// (находка 5: предыдущая версия этого комментария переоценивала то, что
-/// было измерено — см. ниже).** Второй возврат `Request::new` —
-/// `FutureReader<Result<(), ErrorCode>>`, задокументированный upstream как
-/// "resolves to result of transmission of this request" — тоже
-/// отбрасывается (`Transport::execute` дропает его явно, с комментарием на
-/// месте дропа). План ревью — включить его сюда третьим входом — был
-/// реализован и **откачен**: измерено на живом хосте (wasmtime 47,
-/// `wasip3` 0.7.0, дважды — один раз через полный путь этого крейта, один
-/// раз через голые вызовы `wasip3` в обход `http-ng-wasi` целиком, чтобы
-/// исключить баг в собственной логике гонки), что эта футура **не
-/// гарантированно** резолвится до того, как тело ответа вычитано целиком —
-/// НЕ "никогда не резолвится раньше": заново проверено отдельно (12-байтный
-/// `Content-Length`-ответ, `resp` дропнут немедленно, тело не тронуто ни
-/// разу) — `transmitted` резолвится в `Ok(())` без единого вызова
-/// `poll_frame`. Но для `chunked`, ответов с трейлерами и вообще
-/// сколько-нибудь заметных тел измеримо не резолвится, пока `Body` не
-/// вычитан вручную — `send()` возвращал `Ok` немедленно, футура передачи
-/// оставалась `Pending`, пока весь `Body` не был вычитан, и резолвилась
-/// только тогда. `execute()` возвращает `Body` вызывающей стороне ДО того,
-/// как та решит его читать — штатно позже, частично, или никогда. Ждать
-/// эту футуру здесь БЕЗУСЛОВНО означало бы: либо `execute()` не
-/// возвращается для типичного ответа с телом, пока сама не вычитает его
-/// целиком за вызывающую сторону (разрушая стриминг, ради которого
-/// существует `Body`), либо виснет для штатного сценария "тело читают
-/// после получения `Response`" — то есть после того, как `execute()` уже
-/// обязана была вернуться.
+/// **On the third discarded `Result` — review resolution, finding B-3,
+/// revisited with evidence, wording refined in fix round 2 (finding 5: an
+/// earlier version of this comment overstated what had been measured —
+/// see below).** `Request::new`'s second return value — a
+/// `FutureReader<Result<(), ErrorCode>>`, documented upstream as
+/// "resolves to result of transmission of this request" — is also
+/// discarded (`Transport::execute` drops it explicitly, with a comment at
+/// the drop site). The review's plan — fold it in here as a third input —
+/// was implemented and **rolled back**: measured on a live host (wasmtime
+/// 47, `wasip3` 0.7.0, twice — once through this crate's full path, once
+/// through bare `wasip3` calls bypassing `http-ng-wasi` entirely, to rule
+/// out a bug in our own race logic) that this future is **not
+/// guaranteed** to resolve before the response body has been fully
+/// drained — NOT "never resolves earlier": separately re-checked (a
+/// 12-byte `Content-Length` response, `resp` dropped immediately, body
+/// never touched) — `transmitted` resolves to `Ok(())` without a single
+/// `poll_frame` call. But for `chunked`, trailer-bearing responses, and
+/// any body of appreciable size, it measurably does not resolve until
+/// `Body` is drained by hand — `send()` returned `Ok` immediately, the
+/// transmission future stayed `Pending` until the entire `Body` had been
+/// drained, and only resolved then. `execute()` hands `Body` to the
+/// caller BEFORE they decide whether to read it — normally later,
+/// partially, or never. Waiting on this future here UNCONDITIONALLY would
+/// mean either: `execute()` doesn't return for a typical response with a
+/// body until it has drained it entirely on the caller's behalf
+/// (destroying the streaming `Body` exists for), or it hangs for the
+/// ordinary case of "the body is read after getting the `Response`" —
+/// that is, after `execute()` was already obligated to have returned.
 ///
-/// Ни один вариант не совместим с ЭТОЙ формой seam — но третий вариант
-/// совместим и вне объёма этого фикс-раунда: пронести эту футуру в
-/// возвращаемый `Body` и дождаться её на конце потока, выдав отказ
-/// передачи как терминальную ошибку тела вместо чистого `None`. Ровно
-/// измеренное здесь его и оправдывает — футура резолвится в момент, когда
-/// тело закончило вычитываться, а это именно та точка, где живёт `Body`.
-/// Кандидат на v0.2, а не отвергнутый тупик. Подробности и точка дропа —
-/// `Transport::execute` в `lib.rs`.
+/// Neither option is compatible with THIS shape of the seam — but a third
+/// option is compatible, and out of scope for this fix round: carry this
+/// future into the returned `Body` and await it at the end of the
+/// stream, surfacing a transmission failure as a terminal body error
+/// instead of a clean `None`. Exactly what's measured here is what
+/// justifies it — the future resolves at the moment the body finishes
+/// draining, and that's precisely where `Body` lives. A candidate for
+/// v0.2, not a rejected dead end. Details and the drop site —
+/// `Transport::execute` in `lib.rs`.
 ///
-/// **Политика при расхождении исходов.**
-/// - `send` вернул `Err` → он в приоритете независимо от исхода записи:
-///   `ErrorCode` несёт содержательную таксономию (DNS/connect/TLS/…), а
-///   отказ записи тела в этой ситуации почти всегда её симптом (хост
-///   закрыл соединение — значит не дочитает и тело).
-/// - `send` вернул `Ok`, а запись тела — `Err` → результат **не** считается
-///   успехом, даже с ответом на руках. `wasi:http` в этом случае мог
-///   вернуть что угодно, в том числе основанное на не полученных им до
-///   конца данных — ответу нельзя доверять как ответу именно на тот запрос,
-///   который просил вызывающий. Ранний осознанный отказ хоста (сервер
-///   прочитал заголовки, вернул 4xx и закрыл поток запроса, не дочитав
-///   тело) в v0.1 намеренно не выделяется в успешный путь: это осознанное
-///   сужение, а не забытый случай — различать «хост отказался читать
-///   дальше» от «наш источник кадров сломался» по одному только
-///   `wasip3::http_compat::Error` ненадёжно (оба всплывают похожими
-///   вариантами), а расширять `Capabilities` под этот случай — вне объёма
-///   этой задачи.
+/// **Policy on a mismatch between outcomes.**
+/// - `send` returned `Err` → it takes priority regardless of the write's
+///   outcome: `ErrorCode` carries a substantive taxonomy (DNS/connect/
+///   TLS/…), and a body-write failure in this situation is almost always
+///   a symptom of it (the host closed the connection — so it won't
+///   finish reading the body either).
+/// - `send` returned `Ok`, but the body write returned `Err` → the result
+///   is **not** treated as a success, even with a response in hand.
+///   `wasi:http` could have returned anything in that case, including
+///   something based on data it never received in full — the response
+///   can't be trusted as an answer to the specific request the caller
+///   asked for. An early, deliberate host rejection (the server read the
+///   headers, returned a 4xx, and closed the request stream without
+///   reading the body to the end) is deliberately not carved out into a
+///   success path in v0.1: this is a conscious narrowing, not a
+///   forgotten case — telling apart "the host refused to read further"
+///   from "our own frame source broke" from `wasip3::http_compat::Error`
+///   alone is unreliable (both surface as similar variants), and
+///   widening `Capabilities` for this case is out of this task's scope.
 pub(crate) fn resolve_send<T>(
     resp: Result<T, ErrorCode>,
     written: Result<u64, wasip3::http_compat::Error>,
@@ -312,30 +320,32 @@ pub(crate) fn resolve_send<T>(
     }
 }
 
-/// Гонит `client::send` наперегонки с записью тела, а не ждёт оба через
-/// `join!`, — резолюция review, находка B-5. Раньше `join!` держал
-/// `execute` до конца ОБОИХ плеч; отказ хоста, известный за t≈0 (например
-/// `ConnectionRefused`), придерживался до конца записи тела — для
-/// неограниченного потокового тела навсегда, поскольку оно никогда не
-/// допишется само. `resolve_send` и так уже отбрасывает исход записи, когда
-/// `send` проваливается (см. её doc-комментарий) — короткое замыкание
-/// здесь меняет только задержку, не политику: если `send` первым
-/// резолвится в `Err`, эта функция возвращает его немедленно, роняя ещё не
-/// завершённый `write_fut` (безопасно — компонентная модель поддерживает
-/// отмену незавершённой подзадачи через `drop`, см. `TaskCancelOnDrop` в
-/// сгенерированных байндингах). Если `send` резолвится успехом первым (или
-/// вторым), запись всё равно дожидается — `resolve_send` не может
-/// довериться ответу, не зная её исхода.
+/// Races `client::send` against the body write instead of waiting for
+/// both via `join!` — review resolution, finding B-5. `join!` used to
+/// hold `execute` until BOTH arms finished; a host rejection known at
+/// t≈0 (e.g. `ConnectionRefused`) would be held back until the body write
+/// finished — for an unbounded streaming body, forever, since it would
+/// never finish writing on its own. `resolve_send` already discards the
+/// write's outcome when `send` fails (see its doc comment) — the
+/// short-circuit here only changes the latency, not the policy: if `send`
+/// resolves to `Err` first, this function returns it immediately,
+/// dropping the still-unfinished `write_fut` (safe — the component model
+/// supports cancelling an unfinished subtask via `drop`, see
+/// `TaskCancelOnDrop` in the generated bindings). If `send` resolves
+/// successfully first (or second), the write is still awaited —
+/// `resolve_send` can't trust the response without knowing its outcome.
 ///
-/// **Именно это ожидание, и только оно, делает `full_duplex = false`** (M1
-/// финального ревью ветки). Плечо `Either::Left((Ok(r), write_fut))` держит
-/// на руках готовый ответ и блокируется на записи; для бесконечного
-/// `Streaming`-тела — навсегда. Форма `Transport::execute` тут ни при чём:
-/// `write_fut` можно пронести в возвращаемый `Body` (тип этого крейта) и
-/// доопрашивать из `poll_frame` — ровно тот приём, который doc-комментарий
-/// `resolve_send` уже предлагает для `transmitted`. Ревью реализовало это и
-/// померило: 0.094s до головы ответа против зависания. Полное обоснование и
-/// три цены, из-за которых отложено, — в `WasiHttp::new` (`lib.rs`).
+/// **This wait, and only this wait, is what makes `full_duplex = false`**
+/// (M1 of the branch's final review). The `Either::Left((Ok(r), write_fut))`
+/// arm holds a ready response in hand and blocks on the write; for an
+/// infinite `Streaming` body, forever. The shape of `Transport::execute`
+/// has nothing to do with it: `write_fut` can be carried into the
+/// returned `Body` (this crate's type) and polled further from
+/// `poll_frame` — exactly the trick the `resolve_send` doc comment
+/// already proposes for `transmitted`. The review implemented this and
+/// measured it: 0.094s to the response head versus hanging. Full
+/// justification and the three costs it's deferred for — in
+/// `WasiHttp::new` (`lib.rs`).
 pub(crate) async fn race_send_with_body<T>(
     send_fut: impl Future<Output = Result<T, ErrorCode>>,
     write_fut: impl Future<Output = Result<u64, wasip3::http_compat::Error>>,
@@ -350,12 +360,12 @@ pub(crate) async fn race_send_with_body<T>(
     }
 }
 
-/// Разбирает заголовок(и) `Trailer:` запроса в множество объявленных имён
-/// трейлер-полей. `Trailer:` — список через запятую (RFC 9110 §6.5.1),
-/// возможно повторённый несколькими заголовками; оба варианта складываются
-/// в одно множество. `HeaderName` уже сравнивается регистронезависимо
-/// (`http` хранит имя в канонической форме), так что `X-Checksum` и
-/// `x-checksum` — одно и то же имя.
+/// Parses the request's `Trailer:` header(s) into a set of declared
+/// trailer field names. `Trailer:` is a comma-separated list (RFC 9110
+/// §6.5.1), possibly repeated across several headers; both forms fold
+/// into one set. `HeaderName` already compares case-insensitively (`http`
+/// stores the name in canonical form), so `X-Checksum` and `x-checksum`
+/// are the same name.
 pub(crate) fn declared_trailer_names(
     headers: &http::HeaderMap,
 ) -> std::collections::HashSet<http::HeaderName> {
@@ -368,29 +378,31 @@ pub(crate) fn declared_trailer_names(
         .collect()
 }
 
-/// Тело запроса эмитировало трейлер-поле(я), которые `Trailer:` не назвал.
+/// The request body emitted trailer field(s) that `Trailer:` didn't name.
 ///
-/// `wasi:http` честно принимает трейлеры от `BodyWriter` (они уходят в
-/// `result_writer` независимо от заголовков — см.
-/// `wasip3::http_compat::body_writer::send_http_body`), но измерено на
-/// живом хосте (резолюция review, находка B-1), что HTTP/1.1-кодировщик
-/// хоста молча роняет их на проводе, если конкретное имя поля не было
-/// заранее объявлено через `Trailer:` (RFC 9110 §6.5.1: получатель,
-/// решивший не буферизовать тело, обязан игнорировать необъявленные
-/// трейлеры) — резолюция review, находка 2 фикс-раунда 2: сверять надо
-/// именно ИМЕНА полей, а не сам факт присутствия заголовка `Trailer:`.
-/// Заголовок `Trailer: X-Other`, объявляющий не то поле, что реально
-/// эмитировано (`x-checksum`), теряет данные точно так же, как полное
-/// отсутствие заголовка — измерено: `execute` возвращал `Ok(200)`, а
-/// провод показывал `0\r\n\r\n` без трейлера.
+/// `wasi:http` honestly accepts trailers from `BodyWriter` (they go into
+/// `result_writer` regardless of headers — see
+/// `wasip3::http_compat::body_writer::send_http_body`), but it's measured
+/// on a live host (review resolution, finding B-1) that the host's
+/// HTTP/1.1 encoder silently drops them on the wire if the specific field
+/// name wasn't declared in advance via `Trailer:` (RFC 9110 §6.5.1: a
+/// receiver that chooses not to buffer the body is required to ignore
+/// undeclared trailers) — review resolution, fix round 2 finding 2: what
+/// needs comparing is the field NAMES themselves, not just whether the
+/// `Trailer:` header is present. A `Trailer: X-Other` header, declaring a
+/// different field than the one actually emitted (`x-checksum`), loses
+/// data exactly as if the header were absent entirely — measured:
+/// `execute` returned `Ok(200)`, while the wire showed `0\r\n\r\n` with no
+/// trailer.
 ///
-/// **Ошибка приходит постфактум** (резолюция review, находка 4 фикс-раунда
-/// 2): к моменту, когда вызывающая сторона видит эту ошибку, запрос уже
-/// дошёл до сервера и получил ответ — гвард срабатывает уже ПОСЛЕ успешного
-/// `race_send_with_body`, потому что имена трейлер-полей, вообще говоря,
-/// известны только когда тело закончилось, а раньше заголовков это не
-/// предсказать. Не считать это признаком, что запрос можно бездумно
-/// повторить: для неидемпотентного запроса это двойная отправка.
+/// **The error arrives after the fact** (review resolution, fix round 2
+/// finding 4): by the time the caller sees this error, the request has
+/// already reached the server and gotten a response — the guard only
+/// fires AFTER `race_send_with_body` has already succeeded, because
+/// trailer field names, generally speaking, are only known once the body
+/// has ended, and there's no predicting that before the headers. Don't
+/// take this as a sign the request can be blindly retried: for a
+/// non-idempotent request, that's a double send.
 #[derive(Debug)]
 pub(crate) struct UndeclaredTrailers(Vec<http::HeaderName>);
 impl std::fmt::Display for UndeclaredTrailers {
@@ -416,27 +428,27 @@ pub(crate) fn undeclared_trailers(names: Vec<http::HeaderName>) -> Error {
     Error::new(ErrorKind::Body, UndeclaredTrailers(names))
 }
 
-/// Обёртка `http_body::Body`, которая ничего не меняет в передаваемых
-/// кадрах, а только собирает имена полей из кадров трейлеров, которые
-/// реально прошли через обёрнутое тело — нужна `Transport::execute`, чтобы
-/// после успешной отправки сверить их с тем, что объявил `Trailer:`
-/// (находка B-1, уточнена находкой 2 фикс-раунда 2 — именами, не только
-/// фактом присутствия заголовка), в точке, где кадр реально пришёл, не
-/// предсказывая это заранее.
+/// An `http_body::Body` wrapper that leaves the frames passing through
+/// untouched, and only collects field names from trailer frames that
+/// actually pass through the wrapped body — needed by `Transport::execute`
+/// so that, after a successful send, it can check them against what
+/// `Trailer:` declared (finding B-1, refined by fix round 2 finding 2 —
+/// names, not just whether the header is present), right at the point
+/// where a frame actually arrives, without predicting it ahead of time.
 pub(crate) struct TrailerWatch<B> {
     inner: B,
     seen: Arc<Mutex<Vec<http::HeaderName>>>,
 }
 
 impl<B> TrailerWatch<B> {
-    /// Оборачивает `inner` и возвращает список имён полей, увиденных в
-    /// кадрах трейлеров, — растёт по мере опроса. `Arc<Mutex<_>>`, а не
-    /// `Rc<RefCell<_>>`: `Payload::Streaming` уже несёт `+ Send` (amendment
-    /// C2), и обёртка не должна сузить этот бонд для будущего
-    /// `Transport::execute` (`tests/shape.rs` проверяет это свойство
-    /// снаружи крейта). `Mutex`, а не что-то более экзотичное — гость
-    /// однопоточный, конкуренции за блокировку никогда не бывает, `Mutex`
-    /// здесь ровно формальность ради `Sync`.
+    /// Wraps `inner` and returns the list of field names seen in trailer
+    /// frames — grows as it's polled. `Arc<Mutex<_>>`, not
+    /// `Rc<RefCell<_>>`: `Payload::Streaming` already carries `+ Send`
+    /// (amendment-C2), and the wrapper shouldn't narrow that bond for a
+    /// future `Transport::execute` (`tests/shape.rs` checks this property
+    /// from outside the crate). `Mutex`, not something more exotic — the
+    /// guest is single-threaded, there's never any contention for the
+    /// lock, `Mutex` here is purely a formality for `Sync`.
     pub(crate) fn new(inner: B) -> (Self, Arc<Mutex<Vec<http::HeaderName>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         (
@@ -462,11 +474,12 @@ where
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         let poll = Pin::new(&mut self.inner).poll_frame(cx);
         if let Poll::Ready(Some(Ok(f))) = &poll {
-            // Резолюция review, находка 3 фикс-раунда 2: `trailers_ref`
-            // возвращает `Some(&HeaderMap)` и для ПУСТОГО кадра трейлеров
-            // (`Frame::trailers(HeaderMap::new())`) — такой кадр ничего не
-            // теряет на проводе (нечему теряться), так что регистрируем
-            // только непустые карты, а не сам факт "это кадр трейлеров".
+            // Review resolution, fix round 2 finding 3: `trailers_ref`
+            // returns `Some(&HeaderMap)` even for an EMPTY trailers frame
+            // (`Frame::trailers(HeaderMap::new())`) — such a frame loses
+            // nothing on the wire (there's nothing to lose), so we only
+            // register non-empty maps, not the mere fact "this is a
+            // trailers frame".
             if let Some(map) = f.trailers_ref()
                 && !map.is_empty()
             {
@@ -489,23 +502,25 @@ where
     }
 }
 
-/// То, что реально нужно записать в тело запроса, после разворачивания
-/// `RequestBody`. `Bytes` — цельный буфер (`RequestBody::Full`, уже
-/// непустой); `Streaming` — поток кадров как есть, без буферизации.
+/// What actually needs writing to the request body, after unwrapping
+/// `RequestBody`. `Bytes` is a whole buffer (`RequestBody::Full`, already
+/// non-empty); `Streaming` is the frame stream as-is, unbuffered.
 ///
-/// `+ Send` на `Streaming` — то же исключение C2, что у
-/// `RequestBody::Streaming` (`http-ng-core/src/body.rs`), которое сюда и
-/// разворачивается (см. `resolve_payload`): `Box<T>: Send` требует только
-/// `T: Send`, `Sync` не нужен. Не новый бонд, а перенос уже существующего —
-/// `RequestBody::Streaming` был `Send` до того, как попасть сюда.
+/// The `+ Send` on `Streaming` is the same amendment-C2, as on
+/// `RequestBody::Streaming` (`http-ng-core/src/body.rs`), which is
+/// unwrapped into this (see `resolve_payload`): `Box<T>: Send` only
+/// requires `T: Send`, `Sync` isn't needed. Not a new bond, just carrying
+/// forward an existing one — `RequestBody::Streaming` was already `Send`
+/// before it got here.
 pub(crate) enum Payload {
     Bytes(Bytes),
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
-// Ручной `Debug`, не `#[derive]`: `Streaming` несёт `Box<dyn http_body::Body>`
-// — объект-трейт без бонда `Debug`, derive не собрался бы. Тот же приём,
-// что у `body::Inner` в `body.rs` — печатает только имя варианта.
+// Manual `Debug`, not `#[derive]`: `Streaming` carries `Box<dyn
+// http_body::Body>` — a trait object with no `Debug` bound, derive
+// wouldn't have compiled. The same trick as `body::Inner` in `body.rs` —
+// prints only the variant name.
 impl std::fmt::Debug for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -515,12 +530,12 @@ impl std::fmt::Debug for Payload {
     }
 }
 
-/// Верхняя граница вложенности `RequestBody::Rewindable`, чья фабрика сама
-/// возвращает `Rewindable`. Легитимного сценария для этого нет — фабрика,
-/// зовущая другую фабрику, ссылающуюся на третью, ничего не покупает
-/// вызывающей стороне — так что после этой глубины `resolve_payload`
-/// останавливается типизированной ошибкой, а не тихим `None` или
-/// неограниченной рекурсией (резолюция review, находка B-11).
+/// Upper bound on the nesting of `RequestBody::Rewindable`, whose factory
+/// itself returns another `Rewindable`. There's no legitimate scenario for
+/// this — a factory calling another factory referring to a third one buys
+/// the caller nothing — so past this depth `resolve_payload` stops with a
+/// typed error instead of a silent `None` or unbounded recursion (review
+/// resolution, finding B-11).
 const MAX_REWIND_DEPTH: u8 = 16;
 
 #[derive(Debug)]
@@ -536,26 +551,28 @@ impl std::fmt::Display for RewindTooDeep {
 }
 impl std::error::Error for RewindTooDeep {}
 
-/// Разворачивает `RequestBody` в то, что реально нужно отправить: `None`
-/// для пустого тела, иначе — байты или поток.
+/// Unwraps `RequestBody` into what actually needs to be sent: `None` for
+/// an empty body, otherwise bytes or a stream.
 ///
-/// `Rewindable` разворачивается вызовом фабрики — так же, как
-/// `RequestBody::rewind()` в `http-ng-core` разворачивает его для повтора
-/// (см. doc-комментарий у `RequestBody::Rewindable`: контракт фабрики —
-/// чистая функция, каждый вызов производит эквивалентное тело). Без этого
-/// шага тело просто не появлялось бы в исходящем запросе — именно так был
-/// устроен дефект черновика задачи: `Rewindable`- и `Streaming`-тела молча
-/// схлопывались в пустое тело через `_ => None`, при том что
-/// `WasiHttp::new()` заявляет `Capabilities::streaming_request_body = true`.
-/// Здесь оба случая — реальный путь, а не тихая потеря данных: `Streaming`
-/// передаётся в `BodyWriter::send_http_body` как есть (та читает любой
-/// `http_body::Body` кадр за кадром и пишет в поток по мере поступления,
-/// ничего не буферизуя целиком — то есть действительно стримит, оправдывая
-/// заявленную способность), а `Rewindable` — после разворачивания фабрикой.
+/// `Rewindable` is unwrapped by calling its factory — the same way
+/// `RequestBody::rewind()` in `http-ng-core` unwraps it for a retry (see
+/// the doc comment on `RequestBody::Rewindable`: the factory's contract
+/// is a pure function, each call produces an equivalent body). Without
+/// this step the body simply wouldn't show up in the outgoing request at
+/// all — this was exactly the shape of the task draft's defect:
+/// `Rewindable`- and `Streaming`-bodies were silently collapsed into an
+/// empty body via `_ => None`, even though `WasiHttp::new()` declares
+/// `Capabilities::streaming_request_body = true`. Here both cases are a
+/// real path, not a silent data loss: `Streaming` is passed to
+/// `BodyWriter::send_http_body` as-is (which reads any `http_body::Body`
+/// frame by frame and writes to the stream as frames arrive, without
+/// buffering the whole thing — i.e. it genuinely streams, living up to
+/// the declared capability), and `Rewindable` after the factory unwraps
+/// it.
 ///
-/// Итеративно, не рекурсивно, и с границей `MAX_REWIND_DEPTH` — фабрика,
-/// сама возвращающая `Rewindable`, разворачивалась бы бесконечно (или до
-/// переполнения стека) без неё.
+/// Iterative, not recursive, and bounded by `MAX_REWIND_DEPTH` — a
+/// factory that itself returns `Rewindable` would unwrap forever (or
+/// until the stack overflowed) without it.
 pub(crate) fn resolve_payload(body: RequestBody) -> Result<Option<Payload>, Error> {
     let mut body = body;
     for _ in 0..MAX_REWIND_DEPTH {
@@ -591,9 +608,9 @@ mod tests {
         assert!(scheme_of(&none).is_err());
     }
 
-    /// Резолюция review, находка B-12: `BadScheme` — тот же класс отказа,
-    /// что `Rejected`/`TimeoutRejected` — должен классифицироваться как
-    /// `Unsupported`, а не расплющиваться в `Other`.
+    /// Review resolution, finding B-12: `BadScheme` is the same class of
+    /// failure as `Rejected`/`TimeoutRejected` — should be classified as
+    /// `Unsupported`, not flattened into `Other`.
     #[test]
     fn bad_scheme_is_classified_as_unsupported_not_other() {
         let ftp: http::Uri = "ftp://a/x".parse().unwrap();
@@ -605,35 +622,37 @@ mod tests {
     fn capabilities_declare_what_wasi_http_actually_does() {
         let c = super::super::WasiHttp::new();
         let caps = http_ng_core::unversioned::Transport::capabilities(&c);
-        // wasi:http 0.3 богаче нативного по стримингу тела запроса…
+        // wasi:http 0.3 is richer than native for request body streaming…
         assert!(caps.streaming_request_body);
         assert!(caps.request_trailers && caps.response_trailers);
-        // …но НЕ по body-дуплексу: резолюция review, находка B-2.
-        // `WasiHttp::execute` не возвращает ответ, пока не завершится (или
-        // не откажет) запись тела — `race_send_with_body` дожидается обоих
-        // плеч, кроме случая раннего отказа `send` (B-5). Это ограничение
-        // ЭТОЙ реализации: и хост дуплекс даёт, и снять ограничение можно
-        // не трогая `Transport` — футуру записи проносят в `Body` и
-        // доопрашивают из `poll_frame`. Полное обоснование и три цены,
-        // из-за которых отложено, — в `WasiHttp::new` (M1 финального
-        // ревью ветки).
+        // …but NOT for body duplex: review resolution, finding B-2.
+        // `WasiHttp::execute` doesn't return a response until the body
+        // write has finished (or failed) — `race_send_with_body` waits
+        // for both arms, except for an early `send` rejection (B-5). This
+        // is a limitation of THIS implementation: the host does provide
+        // duplex, and the limitation can be lifted without touching
+        // `Transport` — carry the write future into `Body` and poll it
+        // further from `poll_frame`. Full justification and the three
+        // costs it's deferred for — in `WasiHttp::new` (M1 of the
+        // branch's final review).
         assert!(!caps.full_duplex);
-        // И беднее по всему остальному.
-        // `Transparent`, а не `None` (M2 финального ревью ветки): 3xx
-        // доходит до гостя как обычный ответ и стадия редиректа `Client`'а
-        // отрабатывает его полностью. `None` — то же, что отдаёт
-        // `Capabilities::none()`, и означало бы «редиректов тут нет».
+        // And poorer everywhere else.
+        // `Transparent`, not `None` (M2 of the branch's final review): a
+        // 3xx reaches the guest as an ordinary response and the
+        // `Client`'s redirect stage handles it in full. `None` is what
+        // `Capabilities::none()` returns, and would mean "there are no
+        // redirects here".
         assert_eq!(caps.redirects, http_ng_core::RedirectSupport::Transparent);
         assert_ne!(
             caps.redirects,
             http_ng_core::Capabilities::none().redirects,
-            "заявленная способность обязана отличаться от «поле не заполняли»"
+            "a declared capability must differ from \"the field was never filled in\""
         );
         assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
         assert_eq!(caps.tls_config, http_ng_core::TlsSupport::None);
         assert!(!caps.proxy);
-        // Резолюция review, находка B-6: пять заголовков, которые хост
-        // реально отказывается принять от гостя.
+        // Review resolution, finding B-6: five headers the host actually
+        // refuses to accept from the guest.
         for name in [
             http::header::CONNECTION,
             http::header::HeaderName::from_static("keep-alive"),
@@ -648,17 +667,17 @@ mod tests {
         }
     }
 
-    /// B2 финального ревью ветки: вся классификация `wasi_err` (39
-    /// вариантов `ErrorCode` на восемь `ErrorKind`) существует только
-    /// потому, что `Transport::to_error` этого бэкенда — тождество. С
-    /// дефолтной реализацией `Client::execute` завернул бы её ещё раз, в
-    /// `ErrorKind::Other`, и всё, что проверяют тесты выше про
-    /// `is_connect()`/`is_unsupported()`, было бы верно на уровне
-    /// `wasi_err` и ложно у вызывающей стороны.
+    /// B2 of the branch's final review: all of `wasi_err`'s
+    /// classification (39 `ErrorCode` variants into eight `ErrorKind`s)
+    /// only matters because this backend's `Transport::to_error` is the
+    /// identity. With the default `Client::execute` implementation it
+    /// would wrap it again, into `ErrorKind::Other`, and everything the
+    /// tests above check about `is_connect()`/`is_unsupported()` would be
+    /// true at the `wasi_err` level and false for the caller.
     ///
-    /// Проверяются оба наблюдаемых следствия сразу: категория и `Display`
-    /// (тот при обёртывании печатал бы `Other: Tls: …` — отложенный минор
-    /// Task 6 про удвоение).
+    /// Checks both observable consequences at once: the category and the
+    /// `Display` (which, if wrapped, would print `Other: Tls: …` — a
+    /// minor deferred to Task 6, about the doubling).
     #[test]
     fn to_error_is_the_identity_so_the_classification_survives_the_client() {
         use http_ng_core::unversioned::Transport as _;
@@ -670,15 +689,16 @@ mod tests {
         assert_eq!(seen.kind(), &ErrorKind::Tls);
         assert!(
             !seen.to_string().starts_with("Other:"),
-            "категория не должна вкладываться вторично: {seen}"
+            "the category must not be nested a second time: {seen}"
         );
     }
 
-    /// Ревью (резолюция team lead, п.1): у черновика задачи `join!` в
-    /// `Transport::execute` отбрасывал результат записи тела через
-    /// `let (resp, _written) = ..`. `resolve_send` — точка, где это больше
-    /// не происходит; тестируем её как чистую функцию (generic по `T`,
-    /// поэтому `Response` живого хоста не нужен) на всех трёх исходах.
+    /// Review (team lead resolution, item 1): in the task draft, `join!`
+    /// in `Transport::execute` discarded the body write's result via
+    /// `let (resp, _written) = ..`. `resolve_send` is the point where
+    /// that no longer happens; tested here as a pure function (generic
+    /// over `T`, so no live-host `Response` is needed) across all three
+    /// outcomes.
     #[test]
     fn resolve_send_prefers_the_response_when_both_succeed() {
         let got = resolve_send::<u32>(Ok(7), Ok(3));
@@ -691,10 +711,11 @@ mod tests {
         assert!(err.is_connect(), "{err:?}");
     }
 
-    /// Резолюция team lead, п.1: политика на случай, когда `send` вернул
-    /// `Ok`, а запись тела — `Err`. Выбор — не считать это успехом: ответ,
-    /// полученный при недописанном теле запроса, нельзя выдавать вызывающей
-    /// стороне без сигнала, что тело ушло не целиком.
+    /// Team lead resolution, item 1: the policy for when `send` returned
+    /// `Ok` but the body write returned `Err`. The choice is not to treat
+    /// this as a success: a response received while the request body was
+    /// left unfinished can't be handed to the caller without a signal
+    /// that the body didn't go out in full.
     #[test]
     fn resolve_send_does_not_trust_a_response_that_arrived_over_a_failed_body_write() {
         let write_err = wasip3::http_compat::Error::StreamReaderClosed {
@@ -707,9 +728,9 @@ mod tests {
 
     #[test]
     fn resolve_send_send_error_wins_over_a_body_write_error_too() {
-        // Оба провалились: `send`-ошибка всё равно в приоритете (см.
-        // doc-комментарий `resolve_send` — отказ записи здесь почти всегда
-        // симптом того же обрыва, что уронил `send`).
+        // Both failed: the `send` error still takes priority (see the
+        // `resolve_send` doc comment — a write failure here is almost
+        // always a symptom of the same disconnect that took down `send`).
         let write_err = wasip3::http_compat::Error::StreamReaderClosed {
             written: 0,
             unwritten: vec![],
@@ -719,11 +740,11 @@ mod tests {
         assert!(err.is_connect(), "{err:?}");
     }
 
-    /// Крутит будущее вручную ограниченное число раз вместо неограниченного
-    /// цикла — если бы `race_send_with_body` в самом деле ждала
-    /// "никогда не завершающуюся" футуру (баг, который этот тест и должен
-    /// поймать), неограниченный цикл повис бы навсегда вместо честного
-    /// провала теста.
+    /// Polls the future by hand a bounded number of times instead of an
+    /// unbounded loop — if `race_send_with_body` really did wait on a
+    /// future that "never completes" (the bug this test is meant to
+    /// catch), an unbounded loop would hang forever instead of the test
+    /// failing honestly.
     fn poll_bounded<F: Future>(mut fut: Pin<&mut F>, max_polls: usize) -> Option<F::Output> {
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -735,15 +756,15 @@ mod tests {
         None
     }
 
-    /// Резолюция review, находка B-5, доказана детерминированно, а не по
-    /// времени на часах: `write_fut` — `std::future::pending()`, то есть
-    /// буквально никогда не завершается сама. Если бы `race_send_with_body`
-    /// ждала `join!`-ом оба плеча целиком (старое поведение), результат не
-    /// пришёл бы никогда — `poll_bounded` вернул бы `None` за отведённые
-    /// попытки, и `.expect(..)` ниже провалил бы тест. То, что она
-    /// возвращается — прямое доказательство короткого замыкания на ранней
-    /// ошибке `send`, а не измерение таймингов на живом хосте, которое
-    /// могло бы разойтись между прогонами.
+    /// Review resolution, finding B-5, proved deterministically rather
+    /// than by wall-clock time: `write_fut` is `std::future::pending()`,
+    /// i.e. it literally never completes on its own. If
+    /// `race_send_with_body` waited for both arms via `join!` (the old
+    /// behavior), the result would never arrive — `poll_bounded` would
+    /// return `None` within the allotted attempts, and the `.expect(..)`
+    /// below would fail the test. The fact that it returns is direct
+    /// proof of the short-circuit on an early `send` error, not a
+    /// measurement of timing on a live host that could vary between runs.
     #[test]
     fn race_send_with_body_short_circuits_on_early_send_failure() {
         let send_fut = std::future::ready(Err::<u32, ErrorCode>(ErrorCode::ConnectionRefused));
@@ -756,10 +777,10 @@ mod tests {
         assert!(got.unwrap_err().is_connect());
     }
 
-    /// Симметрия: когда `send` успевает раньше и завершается успехом,
-    /// `race_send_with_body` обязана дождаться записи, а не вернуть успех
-    /// преждевременно — короткое замыкание работает только для отказа
-    /// `send`, см. doc-комментарий.
+    /// Symmetry: when `send` finishes first and succeeds,
+    /// `race_send_with_body` must still wait for the write, not return
+    /// success prematurely — the short-circuit only applies to a `send`
+    /// failure, see the doc comment.
     #[test]
     fn race_send_with_body_still_waits_for_the_body_when_send_succeeds() {
         let send_fut = std::future::ready(Ok::<u32, ErrorCode>(7));
@@ -769,12 +790,13 @@ mod tests {
         assert_eq!(got.unwrap(), 7);
     }
 
-    /// Управляемая футура для тестов: `Pending` первые `delay` опросов,
-    /// затем `Ready(value)` — нужна, чтобы детерминированно свести гонку в
-    /// ветку `Either::Right` (запись тела резолвится раньше `send`), а не
-    /// полагаться на то, что `futures::future::select` опрашивает первый
-    /// аргумент первым (с двумя `std::future::ready(..)` он бы всегда
-    /// уходил в `Either::Left`, не проверяя вторую ветку вовсе).
+    /// A controllable future for tests: `Pending` for the first `delay`
+    /// polls, then `Ready(value)` — needed to deterministically drive the
+    /// race into the `Either::Right` branch (the body write resolves
+    /// before `send`), rather than relying on `futures::future::select`
+    /// polling its first argument first (with two `std::future::ready(..)`
+    /// it would always land in `Either::Left`, never actually checking
+    /// the second branch).
     struct DelayedReady<T> {
         delay: usize,
         value: Option<T>,
@@ -792,10 +814,11 @@ mod tests {
         }
     }
 
-    /// Симметрия: когда запись тела завершается первой (успешно), гонка всё
-    /// равно обязана дождаться `send` — не факт, что он тоже успешен.
-    /// Проверяет ветку `Either::Right`, которую предыдущие два теста не
-    /// достигают (там `send` всегда готов на первом опросе).
+    /// Symmetry: when the body write finishes first (successfully), the
+    /// race still has to wait for `send` — it isn't guaranteed to succeed
+    /// too. Checks the `Either::Right` branch, which the previous two
+    /// tests don't reach (there `send` is always ready on the first
+    /// poll).
     #[test]
     fn race_send_with_body_waits_for_send_when_the_write_finishes_first() {
         let send_fut = DelayedReady {
@@ -815,16 +838,16 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("connect_timeout"), "{msg}");
         assert!(msg.contains("wasi:http"), "{msg}");
-        // Уровень 1: `Error::source()` — сама `TimeoutRejected` (то, что
-        // передали в `Error::new`). Уровень 2: её собственный `source()` —
-        // настоящий `RequestOptionsError` хоста, ради сохранения которого
-        // этот тип и заведён (см. doc-комментарий `TimeoutRejected`).
-        let level1 = std::error::Error::source(&e).expect("должен сохранить причину хоста");
+        // Level 1: `Error::source()` is `TimeoutRejected` itself (what was
+        // passed to `Error::new`). Level 2: its own `source()` is the
+        // host's real `RequestOptionsError`, the whole reason this type
+        // exists (see the `TimeoutRejected` doc comment).
+        let level1 = std::error::Error::source(&e).expect("must preserve the host's reason");
         let rejected = level1
             .downcast_ref::<TimeoutRejected>()
-            .expect("верхний source — TimeoutRejected");
+            .expect("top-level source is TimeoutRejected");
         let level2 = std::error::Error::source(rejected)
-            .expect("TimeoutRejected должен хранить причину хоста как свой source");
+            .expect("TimeoutRejected must store the host's reason as its own source");
         assert!(level2.downcast_ref::<RequestOptionsError>().is_some());
     }
 
@@ -835,9 +858,9 @@ mod tests {
         assert!(e.to_string().contains("scheme"));
     }
 
-    /// Резолюция review, находка B-6: `HeaderError::Forbidden`/`::Immutable`
-    /// — хост отказал, тот же класс, что `Rejected` — обязаны быть
-    /// `Unsupported`, а не `Other`.
+    /// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
+    /// — the host refused — the same class as `Rejected` — must be
+    /// `Unsupported`, not `Other`.
     #[test]
     fn fields_error_classifies_host_refusals_as_unsupported() {
         let forbidden = fields_error(HeaderError::Forbidden);
@@ -853,9 +876,10 @@ mod tests {
         assert_eq!(bad.kind(), &ErrorKind::Other);
     }
 
-    /// Резолюция review, находка B-8: варианты `ErrorCode`, явно из той же
-    /// семьи "размер/наличие тела или трейлеров", что уже даёт `Body` для
-    /// ответа — присоединены к той же категории на стороне запроса.
+    /// Review resolution, finding B-8: `ErrorCode` variants that clearly
+    /// belong to the same "body or trailer size/presence" family that
+    /// already gives `Body` for the response — folded into the same
+    /// category on the request side.
     #[test]
     fn wasi_err_categorizes_request_and_trailer_size_errors_as_body() {
         for code in [
@@ -874,9 +898,9 @@ mod tests {
 
     #[test]
     fn wasi_err_leaves_genuinely_uncategorized_codes_as_other() {
-        // `HttpProtocolError` не принадлежит ни одной существующей
-        // категории очевидным образом — остаётся честным `Other`, а не
-        // насильно распределённым по неподходящей корзине.
+        // `HttpProtocolError` doesn't obviously belong to any existing
+        // category — stays an honest `Other` rather than being forced
+        // into an ill-fitting bucket.
         let e = wasi_err(ErrorCode::HttpProtocolError);
         assert_eq!(e.kind(), &ErrorKind::Other);
     }
@@ -899,8 +923,8 @@ mod tests {
         }
     }
 
-    /// Резолюция team lead, п.2: `Rewindable` не должен схлопываться в
-    /// `None` — фабрика обязана быть вызвана, а не проигнорирована.
+    /// Team lead resolution, item 2: `Rewindable` must not collapse into
+    /// `None` — the factory has to be called, not ignored.
     #[test]
     fn resolve_payload_calls_the_rewindable_factory_instead_of_dropping_it() {
         let body = RequestBody::rewindable(|| RequestBody::Full(Bytes::from_static(b"replayed")));
@@ -910,9 +934,9 @@ mod tests {
         }
     }
 
-    /// Резолюция team lead, п.2: `Streaming` тоже не должен схлопываться в
-    /// `None` — иначе `Capabilities::streaming_request_body = true` было бы
-    /// ложью.
+    /// Team lead resolution, item 2: `Streaming` must not collapse into
+    /// `None` either — otherwise `Capabilities::streaming_request_body =
+    /// true` would be a lie.
     #[test]
     fn resolve_payload_keeps_a_streaming_body_instead_of_dropping_it() {
         struct OneShot(Option<Bytes>);
@@ -933,12 +957,12 @@ mod tests {
         ));
     }
 
-    /// Резолюция review, находка B-11: раньше рекурсивная реализация
-    /// разворачивала бы такую фабрику до переполнения стека. `infinite` —
-    /// функция-элемент (не замыкание), поэтому она тривиально `Fn + Send +
-    /// Sync + 'static` без ручных бондов — и каждый её вызов возвращает
-    /// ЕЩЁ один `Rewindable`, ссылающийся на неё же, то есть легитимного
-    /// завершения у этой цепочки нет вообще.
+    /// Review resolution, finding B-11: the old recursive implementation
+    /// would have unwrapped a factory like this until the stack
+    /// overflowed. `infinite` is a function item (not a closure), so it's
+    /// trivially `Fn + Send + Sync + 'static` without manual bounds — and
+    /// each call returns YET ANOTHER `Rewindable` referring to itself,
+    /// i.e. this chain has no legitimate end at all.
     #[test]
     fn resolve_payload_stops_at_a_bounded_depth_instead_of_recursing_forever() {
         fn infinite() -> RequestBody {
@@ -977,9 +1001,9 @@ mod tests {
         Pin::new(b).poll_frame(&mut cx)
     }
 
-    /// Резолюция review, находка B-1: тело эмитит кадр трейлеров —
-    /// `TrailerWatch` обязана это заметить (по имени поля), не трогая сами
-    /// кадры.
+    /// Review resolution, finding B-1: the body emits a trailers frame —
+    /// `TrailerWatch` must notice it (by field name) without touching the
+    /// frames themselves.
     #[test]
     fn trailer_watch_records_the_field_name_without_altering_the_frame() {
         let mut trailers = http::HeaderMap::new();
@@ -991,7 +1015,7 @@ mod tests {
         let (mut watched, seen) = TrailerWatch::new(body);
         assert!(seen.lock().unwrap().is_empty());
 
-        // Кадр данных: список ещё должен быть пуст.
+        // Data frame: the list should still be empty.
         match poll_once(&mut watched) {
             Poll::Ready(Some(Ok(f))) => assert!(f.is_data()),
             other => panic!("expected a data frame, got {other:?}"),
@@ -1001,8 +1025,8 @@ mod tests {
             "data frame is not trailers"
         );
 
-        // Кадр трейлеров: имя поля должно появиться, сам кадр — дойти до
-        // вызывающей стороны нетронутым.
+        // Trailers frame: the field name should show up, and the frame
+        // itself should reach the caller untouched.
         match poll_once(&mut watched) {
             Poll::Ready(Some(Ok(f))) => {
                 assert!(f.is_trailers());
@@ -1019,11 +1043,11 @@ mod tests {
         );
     }
 
-    /// Резолюция review, находка 3 фикс-раунда 2: пустой кадр трейлеров
-    /// (`Frame::trailers(HeaderMap::new())`) ничего не теряет на проводе —
-    /// `TrailerWatch` не должна регистрировать его как "трейлеры были".
-    /// До фикса именно это ловило запрос, который на деле ничего не терял:
-    /// регресс, который этот тест и предотвращает.
+    /// Review resolution, fix round 2 finding 3: an empty trailers frame
+    /// (`Frame::trailers(HeaderMap::new())`) loses nothing on the wire —
+    /// `TrailerWatch` must not register it as "there were trailers".
+    /// Before the fix, this is exactly what flagged a request that
+    /// actually lost nothing: a regression this test now prevents.
     #[test]
     fn trailer_watch_ignores_an_empty_trailers_frame() {
         let body = DataThenTrailers {
@@ -1070,9 +1094,10 @@ mod tests {
         assert!(declared_trailer_names(&headers).is_empty());
     }
 
-    /// Резолюция review, находка 2 фикс-раунда 2: сообщение обязано назвать
-    /// конкретное поле — "generic refusal" недостаточно — и явно
-    /// предупредить о постфактум-природе ошибки (находка 4).
+    /// Review resolution, fix round 2 finding 2: the message must name
+    /// the specific field — "generic refusal" isn't enough — and
+    /// explicitly warn about the error's after-the-fact nature (finding
+    /// 4).
     #[test]
     fn undeclared_trailers_error_names_the_field_and_warns_about_retrying() {
         let e = undeclared_trailers(vec![http::HeaderName::from_static("x-checksum")]);

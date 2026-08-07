@@ -1,6 +1,5 @@
-//! Пусто намеренно: этот крейт существует только чтобы хранить
-//! pair-property-тест в `tests/pair_property.rs` — доказательство того, что
-//! шов способностей рантайма (Task 4 review, verdict item A) настоящий:
-//! одно и то же клиентское тело кода гоняет на tokio и на smol без единого
-//! `#[cfg]`.
+//! Deliberately empty: this crate exists only to hold the pair-property
+//! test in `tests/pair_property.rs` — proof that the runtime capabilities
+//! seam (Task 4 review, verdict item A) is real: the same client-shaped
+//! code body runs on tokio and on smol without a single `#[cfg]`.
 #![forbid(unsafe_code)]

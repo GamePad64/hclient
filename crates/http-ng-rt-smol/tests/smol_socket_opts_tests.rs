@@ -1,23 +1,24 @@
-//! Мирроринг `crates/http-ng-rt-tokio/tests/tokio_socket_opts_tests.rs` для
-//! smol-бэкенда. Существует, потому что именно в `connect()` был дефект
-//! брифа/скелетона: `async_net::TcpStream::connect(addr)` не принимает опций
-//! вовсе, так что `reuse_address`, `send_buffer_size`, `recv_buffer_size` и
-//! `local_address` молча терялись, а `nodelay`/`keepalive` применялись уже
-//! ПОСЛЕ `connect()`. Каждый тест здесь читает опцию обратно с реально
-//! соединённого сокета, а не полагается на факт, что `connect()` вернул `Ok`.
+//! Mirrors `crates/http-ng-rt-tokio/tests/tokio_socket_opts_tests.rs` for
+//! the smol backend. Exists because `connect()` is exactly where the
+//! brief/skeleton had a defect: `async_net::TcpStream::connect(addr)`
+//! accepts no options at all, so `reuse_address`, `send_buffer_size`,
+//! `recv_buffer_size`, and `local_address` were silently lost, and
+//! `nodelay`/`keepalive` were applied only AFTER `connect()`. Each test
+//! here reads the option back from a genuinely connected socket, rather
+//! than relying on `connect()` having returned `Ok`.
 //!
-//! Те же два design-решения, что и в `tokio_socket_opts_tests.rs`, сохранены
-//! намеренно:
+//! The same two design decisions as `tokio_socket_opts_tests.rs` are kept
+//! deliberately:
 //!
-//! 1. Буферные размеры сравниваются как "два РАЗНЫХ явных запроса, больший
-//!    читается обратно бОльшим", а не "явный запрос > дефолт". Причина —
-//!    в этой песочнице `SO_SNDBUF`/`SO_RCVBUF` без явной установки
-//!    авто-тюнятся ядром выше маленького пиннутого запроса, так что "запрос >
-//!    дефолт" не сигнализирует "сеттер сработал" — он может пойти в любую
-//!    сторону в зависимости от того, насколько агрессивно хост уже
-//!    авто-тюнинговал дефолт.
-//! 2. Негативные контроли существуют, чтобы позитивные тесты не проходили
-//!    против дефолта, который уже совпадает со значением под тестом.
+//! 1. Buffer sizes are compared as "two DIFFERENT explicit requests, the
+//!    larger one reads back larger", not "explicit request > default".
+//!    Reason: in this sandbox, `SO_SNDBUF`/`SO_RCVBUF` left unset are
+//!    auto-tuned by the kernel above a small pinned request, so "request >
+//!    default" doesn't signal "the setter worked" — it can go either way
+//!    depending on how aggressively the host has already auto-tuned its
+//!    default.
+//! 2. Negative controls exist so the positive tests don't pass against a
+//!    default that already happens to match the value under test.
 use http_ng_rt::{TcpConnect, TcpOpts};
 use http_ng_rt_smol::Smol;
 use std::net::{IpAddr, Ipv4Addr};
@@ -33,10 +34,11 @@ fn spawn_accepting_listener() -> std::net::SocketAddr {
 
 #[test]
 fn local_address_selects_the_connecting_source_ip() {
-    // 127.0.0.0/8 целиком loopback на Linux, поэтому 127.0.0.2 — валидный,
-    // отличный от дефолтного локальный адрес: различает "опция сработала" от
-    // "дефолт ОС случайно совпал" (наивный тест против 127.0.0.1 этого сделать
-    // не смог бы, поскольку это и есть дефолтный маршрут к 127.0.0.1).
+    // 127.0.0.0/8 is entirely loopback on Linux, so 127.0.0.2 is a valid
+    // local address distinct from the default: it discriminates "the
+    // option took effect" from "the OS default happened to match" (a naive
+    // test against 127.0.0.1 couldn't do this, since that's already the
+    // default route to a 127.0.0.1 destination).
     let addr = spawn_accepting_listener();
     let opts = TcpOpts {
         local_address: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
@@ -55,9 +57,10 @@ fn local_address_selects_the_connecting_source_ip() {
 
 #[test]
 fn default_local_address_is_not_127_0_0_2() {
-    // Контроль для теста выше: без опции источник НЕ должен быть 127.0.0.2
-    // (иначе предыдущий тест проходил бы, даже если local_address тихо
-    // игнорируется, потому что дефолт ОС мог бы случайно совпасть).
+    // Control for the test above: without the option, the source must NOT
+    // be 127.0.0.2 (otherwise the previous test would pass even if
+    // local_address were silently ignored, because the OS default could
+    // coincidentally match).
     let addr = spawn_accepting_listener();
     futures_executor::block_on(async {
         let s = Smol
@@ -171,7 +174,7 @@ fn reuse_address_is_applied_before_connect() {
 
 #[test]
 fn default_reuse_address_is_off() {
-    // Контроль для теста выше.
+    // Control for the test above.
     let addr = spawn_accepting_listener();
     futures_executor::block_on(async {
         let s = Smol

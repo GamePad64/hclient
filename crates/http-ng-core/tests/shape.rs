@@ -1,8 +1,8 @@
-//! Утверждения о форме публичного API, вынесенные за пределы `src`.
+//! Assertions about the public API's shape, kept outside `src`.
 //!
-//! Проверка `no-declared-send` в CI сканирует только `crates/*/src`, поэтому
-//! обычная генерик-форма здесь не конфликтует с ней, а список исключений
-//! сохраняет смысл «обоснованное исключение в продакшн-коде».
+//! The `no-declared-send` CI check scans only `crates/*/src`, so the
+//! ordinary generic form here doesn't conflict with it, and the exception
+//! list keeps its meaning of "a justified exception in production code."
 
 use bytes::Bytes;
 use http_ng_core::unversioned::{Timer, Transport};
@@ -18,12 +18,12 @@ fn capability_types_are_send_and_sync() {
     assert_send_sync::<UnsupportedCapability>();
 }
 
-/// `Error: Send + Sync` — spec amendment C1, the single documented exception
-/// from "ядро не объявляет Send/Sync": `Error::source` обязан быть
-/// `Send + Sync`, иначе future, который возвращает `Client::execute`, не мог
-/// бы попасть в `tokio::spawn` ни для одного бэкенда. Was a compile-time-only
+/// `Error: Send + Sync` — spec amendment-C1, the single documented exception
+/// from "the core declares no Send/Sync": `Error::source` must be
+/// `Send + Sync`, or the future `Client::execute` returns could never make
+/// it into `tokio::spawn` for any backend. Was a compile-time-only
 /// assertion inside `error.rs`'s own `#[cfg(test)] mod tests` until Task 12's
-/// fix round 1 moved it here (amendment C3: such assertions belong in
+/// fix round 1 moved it here (amendment-C3: such assertions belong in
 /// `tests/`, not `src`) — the runtime construction below keeps it from being
 /// a vacuous no-op, same as the original.
 #[test]
@@ -34,7 +34,7 @@ fn error_is_send_sync_and_constructs_a_real_error_not_just_compiles() {
 }
 
 /// `RequestBody: Send` and `http::Request<RequestBody>: Send` — spec
-/// amendment C2: without `+ Send` on both of `RequestBody`'s trait objects,
+/// amendment-C2: without `+ Send` on both of `RequestBody`'s trait objects,
 /// `RequestBody` and therefore `http::Request<RequestBody>` would be
 /// `!Send`, and `Transport::execute`'s future with it. Relocated from
 /// `body.rs`'s own test module for the same C3 reason as the `Error` test
@@ -77,8 +77,8 @@ impl Transport for Echo {
     }
 }
 
-/// Бэкенд со своим типом ошибки, который `to_error` не переопределяет —
-/// то, ради чего у хука вообще есть дефолт (B2 финального ревью ветки).
+/// A backend with its own error type that doesn't override `to_error` —
+/// the whole reason the hook has a default (branch final review B2).
 struct Bare {
     caps: Capabilities,
 }
@@ -106,10 +106,10 @@ impl Transport for Bare {
     }
 }
 
-/// Бэкенд, чья ошибка — уже наша `Error`, и который `to_error` НЕ
-/// переопределяет. Существует только ради теста ниже: оба настоящих бэкенда
-/// переопределяют хук явно, так что без этого двойника гарантию дефолта
-/// нечем было бы наблюдать.
+/// A backend whose error is already our `Error`, and which does NOT
+/// override `to_error`. Exists only for the test below: both real backends
+/// override the hook explicitly, so without this stand-in there'd be
+/// nothing to observe the default's guarantee with.
 struct Forgetful {
     caps: Capabilities,
 }
@@ -123,20 +123,20 @@ impl Transport for Forgetful {
     ) -> Result<http::Response<Self::Body>, Self::Error> {
         Err(Error::new(ErrorKind::Resolve, Never))
     }
-    // `to_error` намеренно НЕ переопределён.
+    // `to_error` is deliberately NOT overridden.
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
 }
 
-/// Главная гарантия дефолта: категорию нельзя потерять, забыв
-/// переопределить хук.
+/// The default's main guarantee: the category can't be lost by forgetting
+/// to override the hook.
 ///
-/// До этого раунда забывчивый бэкенд получал `ErrorKind::Other` и
-/// `Display` вида `Other: Resolve: …`, компилятор был доволен, его
-/// собственные тесты классификации зелены — неверно было только у
-/// потребителя. Защитой служила проза в трёх местах; теперь её держит
-/// структура, и этот тест — то, что не даёт структуре тихо испариться.
+/// Before this round, a forgetful backend got `ErrorKind::Other` and a
+/// `Display` reading `Other: Resolve: …`, the compiler was happy, its own
+/// classification tests were green — only the consumer got it wrong. Prose
+/// in three places was the only guard; now structure holds it, and this
+/// test is what keeps the structure from silently evaporating.
 #[test]
 fn the_default_passes_our_own_error_through_even_when_a_backend_forgets_to_override() {
     let t = Forgetful {
@@ -146,19 +146,19 @@ fn the_default_passes_our_own_error_through_even_when_a_backend_forgets_to_overr
     assert_eq!(
         e.kind(),
         &ErrorKind::Tls,
-        "дефолт обязан узнать собственную `Error` и пропустить её насквозь"
+        "the default must recognize its own `Error` and pass it through unchanged"
     );
     assert_eq!(
         e.to_string(),
         "Tls: never",
-        "и не вкладывать вторую категорию перед настоящей"
+        "and not nest a second category in front of the real one"
     );
 }
 
-/// Дефолт `Transport::to_error` обёртывает с `ErrorKind::Other`,
-/// **сохраняя источник целиком**: бэкенду, которому нечего сказать о
-/// категории, не нужно ничего писать, а вызывающая сторона всё равно
-/// получает типизированный источник, а не строку.
+/// The default `Transport::to_error` wraps with `ErrorKind::Other`,
+/// **keeping the source whole**: a backend that has nothing to say about
+/// the category doesn't need to write anything, and the caller still gets
+/// a typed source, not a string.
 #[test]
 fn to_error_defaults_to_other_and_keeps_the_source_intact() {
     let t = Bare {
@@ -166,18 +166,18 @@ fn to_error_defaults_to_other_and_keeps_the_source_intact() {
     };
     let e = t.to_error(Custom);
     assert_eq!(e.kind(), &ErrorKind::Other);
-    let src = std::error::Error::source(&e).expect("Error::new всегда кладёт source");
+    let src = std::error::Error::source(&e).expect("Error::new always sets a source");
     assert_eq!(
         src.downcast_ref::<Custom>(),
         Some(&Custom),
-        "источник обязан остаться собой, а не стать строкой"
+        "the source must remain itself, not become a string"
     );
 }
 
-/// А бэкенд, чья ошибка уже `Error`, переопределяет хук тождеством — иначе
-/// его категория теряется, а `Display` печатает источник дважды. `Echo`
-/// здесь стоит за `http-ng-wasi`, чей `type Error = http_ng_core::Error` и
-/// который делает ровно это.
+/// And a backend whose error is already `Error` overrides the hook with an
+/// identity — otherwise its category is lost and `Display` prints the
+/// source twice. `Echo` here stands in for `http-ng-wasi`, whose
+/// `type Error = http_ng_core::Error` and which does exactly this.
 #[test]
 fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
     let t = Echo {
@@ -187,17 +187,18 @@ fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
     assert_eq!(
         e.kind(),
         &ErrorKind::Tls,
-        "тождество обязано сохранять категорию, а не пересобирать ошибку"
+        "the identity must preserve the category, not rebuild the error"
     );
     assert_eq!(
         e.to_string(),
         "Tls: never",
-        "и не вкладывать вторую категорию перед настоящей"
+        "and not nest a second category in front of the real one"
     );
 }
 
-/// Утверждает главное архитектурное свойство ядра: `Send` нигде не
-/// объявлен, но выводится auto-traits, когда транспорт действительно Send.
+/// Asserts the core's main architectural property: `Send` is declared
+/// nowhere, yet is inferred by auto-traits when the transport actually is
+/// Send.
 #[test]
 fn send_propagates_without_being_declared() {
     fn assert_send<T: Send>(_: T) {}
@@ -233,23 +234,24 @@ fn non_send_transport_still_satisfies_the_trait() {
     };
 }
 
-/// Тот же инвариант, но по оси, которую `to_error` могла бы сломать
-/// (B2 финального ревью ветки): транспорт, чья ОШИБКА честно `!Send`.
+/// The same invariant, but along the axis `to_error` could have broken
+/// (branch final review B2): a transport whose ERROR is genuinely `!Send`.
 ///
-/// Это единственная причина, по которой `to_error` — дефолтный метод с
-/// where-клаузой, а не `Transport::Error: Into<Error>` на трейте и не
-/// `Error` в качестве типа ошибки шва: любая из тех двух форм потребовала
-/// бы `Send + Sync` от ошибки каждого бэкенда и выбросила бы этот тип из
-/// `Transport` вовсе. Поправка C1 сохраняет его представимым — он не может
-/// пользоваться `Client` (и не может вызвать `to_error`), но `Transport`
-/// реализует. Тест ничего не «проверяет» в рантайме; он не компилируется,
-/// если инвариант нарушен, и `Rc` внутри ошибки — не украшение, а то, что
-/// делает её `!Send` по-настоящему.
+/// This is the one reason `to_error` is a defaulted method with a
+/// where-clause, rather than `Transport::Error: Into<Error>` on the trait
+/// or `Error` as the seam's error type: either of those two forms would
+/// require `Send + Sync` from every backend's error and would throw this
+/// type out of `Transport` entirely. Amendment C1 keeps it representable —
+/// it can't use `Client` (and can't call `to_error`), but it does implement
+/// `Transport`. The test doesn't "check" anything at runtime; it fails to
+/// compile if the invariant is violated, and the `Rc` inside the error
+/// isn't decoration, it's what makes it genuinely `!Send`.
 #[test]
 fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
-    // `PhantomData<Rc<()>>`, а не `Rc<()>` полем: то же самое для auto-traits
-    // (тип честно `!Send`), но без непрочитанного поля — а значит и без
-    // `#[allow(dead_code)]`, которого этой ветке лучше нигде не иметь.
+    // `PhantomData<Rc<()>>`, not `Rc<()>` as a field: the same thing for
+    // auto-traits (the type is genuinely `!Send`), but without an unread
+    // field — and so without `#[allow(dead_code)]`, which this branch is
+    // better off having nowhere.
     #[derive(Debug)]
     struct NotSend(std::marker::PhantomData<std::rc::Rc<()>>);
     impl std::fmt::Display for NotSend {
@@ -281,8 +283,8 @@ fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
     assert!(!t.capabilities().streaming_request_body);
 }
 
-/// Тривиальный `Timer`, чей `Instant` — просто счётчик. Достаточно, чтобы
-/// проверить свойство трейта, а не поведение реального таймера.
+/// A trivial `Timer` whose `Instant` is just a counter. Enough to check a
+/// property of the trait, not the behavior of a real timer.
 struct Fake(std::cell::Cell<u64>);
 
 impl Timer for Fake {
@@ -301,23 +303,24 @@ impl Timer for Fake {
     }
 }
 
-/// Сравнивает два уже захваченных `Instant`, зная о них только то, что даёт
-/// сам трейт `Timer` — то есть **обобщённо** по `T: Timer`, без
-/// монопморфизации до конкретного `Fake::Instant = u64`. Это важно: если бы
-/// тест сравнивал `a < b` на конкретном `u64`, компилятор нашёл бы
-/// `Ord`/`PartialOrd` на `u64` напрямую и пропустил бы отсутствие бонда на
-/// самом трейте незамеченным. Здесь же `a` и `b` имеют абстрактный тип
-/// `T::Instant`, и без `PartialOrd` в объявлении `Timer::Instant` строка
-/// `a < b` не компилируется — `E0369: binary operation '<' cannot be
+/// Compares two already-captured `Instant`s, knowing about them only what
+/// the `Timer` trait itself gives — that is, **generically** over
+/// `T: Timer`, without monomorphizing down to the concrete
+/// `Fake::Instant = u64`. This matters: if the test compared `a < b` on a
+/// concrete `u64`, the compiler would find `Ord`/`PartialOrd` on `u64`
+/// directly and let the missing bound on the trait itself slip by
+/// unnoticed. Here, `a` and `b` have the abstract type `T::Instant`, and
+/// without `PartialOrd` in `Timer::Instant`'s declaration, the line
+/// `a < b` doesn't compile — `E0369: binary operation '<' cannot be
 /// applied to type '<T as Timer>::Instant'`.
 fn are_ordered<T: Timer>(a: T::Instant, b: T::Instant) -> bool {
     a < b
 }
 
-/// Потребитель, держащий на руках два уже захваченных `Instant`, должен
-/// иметь возможность сравнить их напрямую — без третьего вызова `now()`
-/// (третий вызов не эквивалентен: он меряет момент сравнения, а не момент
-/// второго `now()`).
+/// A consumer holding two already-captured `Instant`s must be able to
+/// compare them directly — without a third call to `now()` (a third call
+/// isn't equivalent: it measures the moment of the comparison, not the
+/// moment of the second `now()`).
 #[test]
 fn captured_instants_are_orderable_without_a_third_now_call() {
     let t = Fake(std::cell::Cell::new(0));

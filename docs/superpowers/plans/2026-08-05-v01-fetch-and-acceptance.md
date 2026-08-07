@@ -1,61 +1,62 @@
-# http-ng v0.1, вертикаль 3: fetch и приёмка — план реализации
+# http-ng v0.1, vertical 3: fetch and acceptance — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Тот же прикладной код работает в браузере; рантайм-модель
-`Capabilities` проверена единственным бэкендом, где возможности различаются **в
-рантайме**; SSE умеет переподключаться; и всё это подтверждено живым
-потребителем — компонентом `act`.
+**Goal:** The same application code works in the browser; the `Capabilities`
+runtime model is verified by the one backend whose capabilities differ **at
+runtime**; SSE can reconnect; and all of this is confirmed by a live
+consumer — the `act` component.
 
-**Architecture:** `http-ng-fetch` — третий `Transport`, зависящий только от
-Tier A. Ключевое: свой промис-адаптер на `Arc<Mutex<..>>` вместо
-`wasm_bindgen_futures::JsFuture`, потому что у последнего внутри `Rc<RefCell<..>>`
-и он `!Send` **без нужды**. `Capabilities` заполняется по результатам
-рантайм-проб, а не `cfg!`. Реконнект SSE — стадия поверх уже существующего
-декодера.
+**Architecture:** `http-ng-fetch` is the third `Transport`, depending only on
+Tier A. The key point: our own promise adapter on `Arc<Mutex<..>>` instead of
+`wasm_bindgen_futures::JsFuture`, because the latter has an `Rc<RefCell<..>>`
+inside and is `!Send` **needlessly**. `Capabilities` gets filled from runtime
+probe results, not `cfg!`. SSE reconnect is a stage on top of the decoder
+that already exists.
 
 **Tech Stack:** `wasm-bindgen` 0.2.126, `web-sys` 0.3.103, `js-sys`,
-`wasm-streams` 0.6, `wasm-bindgen-test` 0.3, `wasm-bindgen-futures` (только для
-`spawn_local` в тестах).
+`wasm-streams` 0.6, `wasm-bindgen-test` 0.3, `wasm-bindgen-futures` (only for
+`spawn_local` in tests).
 
 ## Global Constraints
 
-Наследуются из вертикалей 1 и 2 и дополняются:
+Inherited from verticals 1 and 2, and extended:
 
-- **`http-ng-fetch` зависит только от Tier A** (`http-ng-core`, `http-ng-proto`).
-  Ни hyper, ни tokio, ни `http-ng-rt` в его графе быть не должно — проверяется
-  в CI.
-- **Единственный `unsafe impl Send` во всём проекте** живёт в `http-ng-fetch`,
-  на одном типе, под `#[cfg(not(target_feature = "atomics"))]`, и зеркалит то,
-  что делает сам wasm-bindgen для `JsValue`. Крейт получает
-  `#![deny(unsafe_code)]` с одним точечным `#[allow]` и комментарием-обоснованием.
-- **`Capabilities` заполняются рантайм-пробами, а не `cfg!`.** Один и тот же
-  wasm-бинарь работает и в Chrome, и в Safari.
-- **Ни одного тихого no-op.** Всё, чего fetch не может, объявлено в
-  `Capabilities` и отвергается в `build()`.
+- **`http-ng-fetch` depends only on Tier A** (`http-ng-core`, `http-ng-proto`).
+  Neither hyper, nor tokio, nor `http-ng-rt` may appear in its graph —
+  checked in CI.
+- **The only `unsafe impl Send` in the entire project** lives in
+  `http-ng-fetch`, on a single type, under `#[cfg(not(target_feature =
+  "atomics"))]`, and mirrors exactly what wasm-bindgen itself does for
+  `JsValue`. The crate carries `#![deny(unsafe_code)]` with one
+  narrowly-scoped `#[allow]` and a justification comment.
+- **`Capabilities` are filled by runtime probes, not `cfg!`.** The same
+  wasm binary works in both Chrome and Safari.
+- **Not a single silent no-op.** Everything fetch can't do is declared in
+  `Capabilities` and rejected at `build()`.
 - MSRV 1.85.
 
-## Файловая структура
+## File layout
 
 ```
 crates/http-ng-proto/
-  src/backoff.rs             чистый backoff с джиттером (задача 6)
+  src/backoff.rs             pure backoff with jitter (task 6)
 crates/http-ng-fetch/
   src/lib.rs                 Fetch: Transport
-  src/promise.rs             SendJsFuture — Send-совместимый адаптер промисов
-  src/caps.rs                рантайм-пробы возможностей
-  src/convert.rs             http <-> web_sys, запрещённые заголовки
-  src/body.rs                тело ответа поверх ReadableStream
+  src/promise.rs             SendJsFuture — a Send-compatible promise adapter
+  src/caps.rs                runtime capability probes
+  src/convert.rs             http <-> web_sys, forbidden headers
+  src/body.rs                response body over ReadableStream
 crates/http-ng/
-  src/sse.rs                 реконнект (модификация)
+  src/sse.rs                 reconnect (modification)
 ```
 
 ---
 
-### Task 1: `http-ng-fetch` — Send-совместимый адаптер промисов
+### Task 1: `http-ng-fetch` — Send-compatible promise adapter
 
-Проверено спайком заранее: приём собирается без atomics и **корректно
-отвергается компилятором** с atomics.
+Verified by a spike beforehand: the technique compiles without atomics and
+is **correctly rejected by the compiler** with atomics.
 
 **Files:**
 - Create: `crates/http-ng-fetch/Cargo.toml`, `src/lib.rs`, `src/promise.rs`
@@ -65,9 +66,9 @@ crates/http-ng/
 - Produces:
   - `pub(crate) struct SendJsFuture`; `SendJsFuture::new(p: js_sys::Promise) -> Self`;
     `impl Future for SendJsFuture { type Output = Result<JsValue, JsValue>; }`
-  - `pub(crate) struct SingleThreaded<T>(T)` — `Send` только без `+atomics`
+  - `pub(crate) struct SingleThreaded<T>(T)` — `Send` only without `+atomics`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-fetch/tests/promise.rs
@@ -92,26 +93,26 @@ async fn propagates_rejection() {
 
 #[wasm_bindgen_test]
 fn future_is_send_on_the_default_target() {
-    // Главное утверждение: `!Send` — свойство сборки с wasm-потоками,
-    // а не браузера. Без `+atomics` всё Send.
+    // The main claim: `!Send` is a property of building with wasm threads,
+    // not of the browser. Without `+atomics`, everything is Send.
     fn assert_send<T: Send>() {}
     assert_send::<http_ng_fetch::testing::SendJsFutureAlias>();
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт**
+- [ ] **Step 3: Create the crate**
 
 ```toml
 # crates/http-ng-fetch/Cargo.toml
 [package]
 name = "http-ng-fetch"
 version = "0.1.0"
-description = "Транспорт http-ng поверх браузерного fetch"
+description = "http-ng transport over the browser fetch API"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -142,7 +143,7 @@ wasm-bindgen-test = "0.3"
 workspace = true
 ```
 
-- [ ] **Step 4: Реализовать адаптер**
+- [ ] **Step 4: Implement the adapter**
 
 ```rust
 // crates/http-ng-fetch/src/promise.rs
@@ -152,17 +153,17 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 
-/// Тот же приём, который wasm-bindgen применяет к самому `JsValue`.
+/// The same technique wasm-bindgen applies to `JsValue` itself.
 ///
-/// `JsValue` — индекс в таблице, которой владеет сгенерированный JS-glue.
-/// Пока модуль собран **без** `target_feature = "atomics"`, инстанс один,
-/// таблица одна, потоков нет — и upstream сам объявляет
-/// `unsafe impl Send for JsValue` под тем же `cfg`. С `+atomics` каждый worker
-/// получает свою таблицу, и компилятор корректно нас отвергает.
+/// `JsValue` is an index into a table owned by the generated JS glue.
+/// As long as the module is built **without** `target_feature = "atomics"`,
+/// there's one instance, one table, no threads — and upstream itself declares
+/// `unsafe impl Send for JsValue` under the same `cfg`. With `+atomics` each
+/// worker gets its own table, and the compiler correctly rejects us.
 #[repr(transparent)]
 pub(crate) struct SingleThreaded<T>(pub(crate) T);
 
-#[allow(unsafe_code, reason = "зеркалит wasm_bindgen::JsValue: без wasm-потоков процесс однопоточен по построению")]
+#[allow(unsafe_code, reason = "mirrors wasm_bindgen::JsValue: without wasm threads the process is single-threaded by construction")]
 #[cfg(not(target_feature = "atomics"))]
 unsafe impl<T> Send for SingleThreaded<T> {}
 
@@ -172,13 +173,13 @@ struct State {
     waker: Option<Waker>,
 }
 
-/// `Send`-совместимая замена `wasm_bindgen_futures::JsFuture`.
+/// A `Send`-compatible replacement for `wasm_bindgen_futures::JsFuture`.
 ///
-/// `JsFuture` держит внутри `Rc<RefCell<futures::Inner>>`
-/// (js-sys-0.3.103/src/futures/mod.rs:118) и потому `!Send` — но это выбор
-/// реализации, а не свойство платформы: сам `JsValue`, `js_sys::Promise` и
-/// `web_sys::{Request, Response, ReadableStream}` **являются** `Send` на
-/// дефолтном таргете.
+/// `JsFuture` holds an `Rc<RefCell<futures::Inner>>` inside
+/// (js-sys-0.3.103/src/futures/mod.rs:118) and is therefore `!Send` — but
+/// that's an implementation choice, not a platform property: `JsValue`
+/// itself, `js_sys::Promise`, and `web_sys::{Request, Response,
+/// ReadableStream}` **are** `Send` on the default target.
 pub(crate) struct SendJsFuture {
     state: Arc<Mutex<State>>,
     _keepalive: SingleThreaded<(Closure<dyn FnMut(JsValue)>, Closure<dyn FnMut(JsValue)>)>,
@@ -221,9 +222,9 @@ impl Future for SendJsFuture {
 
 ```rust
 // crates/http-ng-fetch/src/lib.rs
-//! Транспорт http-ng поверх браузерного `fetch`.
+//! http-ng transport over the browser's `fetch`.
 //!
-//! Зависит **только** от Tier A: ни hyper, ни tokio, ни `http-ng-rt` в графе.
+//! Depends **only** on Tier A: neither hyper, tokio, nor `http-ng-rt` in the graph.
 #![deny(unsafe_code)]
 
 mod body;
@@ -242,23 +243,23 @@ pub mod testing {
 }
 ```
 
-- [ ] **Step 5: Запустить wasm-тесты**
+- [ ] **Step 5: Run the wasm tests**
 
-Run: `cargo install wasm-bindgen-cli --locked` (если ещё нет), затем
-`wasm-pack test --headless --chrome crates/http-ng-fetch` либо
+Run: `cargo install wasm-bindgen-cli --locked` (if not already installed),
+then `wasm-pack test --headless --chrome crates/http-ng-fetch` or
 `cargo test -p http-ng-fetch --target wasm32-unknown-unknown`
-Expected: PASS, три теста.
+Expected: PASS, three tests.
 
-Если headless-браузера в окружении нет — оставить
-`cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests` как шлюз
-и завести issue; прогон в браузере включается в CI (Task 9).
+If there's no headless browser in the environment, leave
+`cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests` as the
+gate and file an issue; the browser run gets wired into CI (Task 9).
 
-- [ ] **Step 6: Проверить, что с atomics сборка честно ломается**
+- [ ] **Step 6: Check that the build honestly breaks with atomics**
 
 Run: `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check -p http-ng-fetch --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort`
-Expected: FAIL с `*mut u8 cannot be sent between threads safely` — это
-**желаемое** поведение, а не дефект: с wasm-потоками приём небезопасен, и
-компилятор обязан это сказать.
+Expected: FAIL with `*mut u8 cannot be sent between threads safely` — this is
+the **desired** behavior, not a defect: with wasm threads the technique is
+unsafe, and the compiler is obligated to say so.
 
 - [ ] **Step 7: Commit**
 
@@ -269,10 +270,10 @@ git commit -m "feat(fetch): Send-capable promise adapter mirroring wasm-bindgen'
 
 ---
 
-### Task 2: `http-ng-fetch` — рантайм-пробы возможностей
+### Task 2: `http-ng-fetch` — runtime capability probes
 
-Единственное место в проекте, где `Capabilities` **действительно** меняются в
-рантайме. Ради этого мы и выбрали реестр вместо `cfg`.
+The only place in the project where `Capabilities` **actually** change at
+runtime. This is exactly why we chose a registry over `cfg`.
 
 **Files:**
 - Create: `crates/http-ng-fetch/src/caps.rs`
@@ -281,11 +282,11 @@ git commit -m "feat(fetch): Send-capable promise adapter mirroring wasm-bindgen'
 **Interfaces:**
 - Produces:
   - `pub(crate) fn probe() -> Capabilities`
-  - `pub(crate) fn supports_duplex() -> bool` — проверяет, читается ли
-    `Request.prototype.duplex`, как предписывает whatwg/fetch
+  - `pub(crate) fn supports_duplex() -> bool` — checks whether
+    `Request.prototype.duplex` is readable, as whatwg/fetch prescribes
   - `pub const FORBIDDEN_HEADERS: [http::HeaderName; N]`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-fetch/tests/caps.rs
@@ -296,29 +297,29 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen_test]
 fn declares_what_fetch_genuinely_cannot_do() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
-    // Ни трейлеров, ни 1xx, ни выбора версии — whatwg/fetch#772 предлагает
-    // API трейлеров вообще удалить.
+    // No trailers, no 1xx, no version selection — whatwg/fetch#772 proposes
+    // removing the trailers API altogether.
     assert!(!c.request_trailers);
     assert!(!c.response_trailers);
     assert!(!c.informational_1xx);
     assert!(!c.version_select);
     assert!(!c.version_reported);
-    // Ни TLS, ни клиентских сертификатов, ни прокси.
+    // No TLS, no client certificates, no proxy.
     assert_eq!(c.tls_config, http_ng_core::TlsSupport::None);
     assert!(!c.client_certs);
     assert!(!c.proxy);
-    // Cookie и кэш — ambient, ими владеет браузер.
+    // Cookies and cache are ambient, owned by the browser.
     assert!(c.owns_cookie_jar);
     assert!(c.owns_cache);
-    // Upgrade недостижим: WebSocket в браузере — отдельный global.
+    // Upgrade is unreachable: WebSocket in the browser is a separate global.
     assert_eq!(c.upgrade, http_ng_core::UpgradeSupport::None);
 }
 
 #[wasm_bindgen_test]
 fn only_the_connect_deadline_exists_and_it_is_one_for_everything() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
-    // AbortSignal — один дедлайн на весь обмен. Заявлять три раздельных
-    // таймаута было бы ложью.
+    // AbortSignal is one deadline for the whole exchange. Declaring three
+    // separate timeouts would be a lie.
     assert!(!c.timeouts.connect);
     assert!(!c.timeouts.first_byte);
     assert!(!c.timeouts.between_bytes);
@@ -331,40 +332,40 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
         .map(|h| h.as_str()).collect();
     for must in ["host", "connection", "content-length", "cookie", "origin",
                  "transfer-encoding", "te", "upgrade"] {
-        assert!(names.contains(&must), "{must} должен быть в списке");
+        assert!(names.contains(&must), "{must} must be in the list");
     }
 }
 
 #[wasm_bindgen_test]
 fn duplex_support_is_probed_not_assumed() {
-    // В Chrome 131+ — true, в Firefox и Safari — false. Один бинарь.
+    // In Chrome 131+ — true, in Firefox and Safari — false. One binary.
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
     assert_eq!(c.streaming_request_body, c.full_duplex,
-               "в fetch дуплекс и стриминг тела запроса — одно и то же");
+               "in fetch, duplex and streaming request bodies are the same thing");
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
-Expected: FAIL — `Fetch` не найден.
+Expected: FAIL — `Fetch` not found.
 
-- [ ] **Step 3: Реализовать пробы**
+- [ ] **Step 3: Implement the probes**
 
 ```rust
 // crates/http-ng-fetch/src/caps.rs
 use http_ng_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport,
                    UpgradeSupport};
 
-/// Заголовки, которые fetch запрещает выставлять. Список — из спецификации
-/// WHATWG Fetch (forbidden request-headers). Мы их **объявляем**, а не молча
-/// выбрасываем: молчаливое выбрасывание `Proxy-*` или `Cookie` — источник
-/// ошибок безопасности.
-// ВНИМАНИЕ (amendment-C4): `static FORBIDDEN: &[HeaderName] = &[..]` НЕ
-// компилируется на stable — E0492 для любого заголовка, потому что тип
-// HeaderName содержит вариант Custom поверх Bytes с AtomicPtr. Работает
-// const-массив (как здесь) либо Box::leak/OnceLock для среза. Проверить
-// форму компиляцией до написания всего списка.
+/// Headers that fetch forbids setting. The list comes from the WHATWG Fetch
+/// spec (forbidden request-headers). We **declare** them, rather than silently
+/// dropping them: silently dropping `Proxy-*` or `Cookie` is a source of
+/// security bugs.
+// NOTE (amendment-C4): `static FORBIDDEN: &[HeaderName] = &[..]` does NOT
+// compile on stable — E0492 for any header, because the HeaderName type
+// contains a Custom variant over Bytes with an AtomicPtr. A const array
+// (as here) works, or Box::leak/OnceLock for the slice. Verify the shape
+// by compiling before writing out the whole list.
 pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
     http::header::HOST,
     http::header::CONNECTION,
@@ -382,12 +383,12 @@ pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
     http::header::ACCEPT_ENCODING,
 ];
 
-/// Читается ли `Request.prototype.duplex`.
+/// Whether `Request.prototype.duplex` is readable.
 ///
 /// BCD `api.Request.duplex`: chrome/edge/webview **131** (2024-11-12),
 /// Firefox `false` (bugzil.la/1792434), Safari/iOS `false`
-/// (webkit.org/b/245671). Один и тот же wasm-бинарь крутится во всех трёх —
-/// поэтому проба рантаймовая, а не `cfg!`.
+/// (webkit.org/b/245671). The same wasm binary runs on all three — that's
+/// why the probe is runtime-based, not `cfg!`.
 pub(crate) fn supports_duplex() -> bool {
     let Ok(init) = js_sys::Reflect::get(
         &js_sys::global(), &wasm_bindgen::JsValue::from_str("Request")
@@ -402,16 +403,16 @@ pub(crate) fn supports_duplex() -> bool {
 pub(crate) fn probe() -> Capabilities {
     let duplex = supports_duplex();
     let mut c = Capabilities::none();
-    // Стриминг тела запроса в fetch возможен только вместе с duplex:"half".
+    // Streaming request body in fetch is only possible together with duplex:"half".
     c.streaming_request_body = duplex;
     c.full_duplex = duplex;
-    // Браузер владеет редиректами; политику задать можно, наблюдать хопы нельзя
-    // (`redirect: "manual"` даёт opaqueredirect со status 0 и без заголовков).
+    // The browser owns redirects; you can set the policy but can't observe hops
+    // (`redirect: "manual"` gives opaqueredirect with status 0 and no headers).
     c.redirects = RedirectSupport::Configurable;
     c.owns_cookie_jar = true;
     c.owns_cache = true;
-    // AbortSignal — один дедлайн на весь обмен, ни один из трёх фазовых
-    // таймаутов им не выражается.
+    // AbortSignal is one deadline for the whole exchange; none of the three
+    // phase timeouts can be expressed through it.
     c.timeouts = TimeoutSupport { connect: false, first_byte: false, between_bytes: false };
     c.tls_config = TlsSupport::None;
     c.upgrade = UpgradeSupport::None;
@@ -420,10 +421,10 @@ pub(crate) fn probe() -> Capabilities {
 }
 ```
 
-- [ ] **Step 4: Добавить `Fetch` со скелетом и тестовым аксессором**
+- [ ] **Step 4: Add `Fetch` with a skeleton and a test accessor**
 
 ```rust
-// в crates/http-ng-fetch/src/lib.rs
+// in crates/http-ng-fetch/src/lib.rs
 use http_ng_core::Capabilities;
 
 #[derive(Debug)]
@@ -444,11 +445,11 @@ impl Default for Fetch {
 }
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
-Expected: PASS. В Chrome `streaming_request_body == true`; тот же бинарь в
-Firefox даст `false` — это и проверяется в CI (Task 9).
+Expected: PASS. In Chrome `streaming_request_body == true`; the same binary
+in Firefox will give `false` — that's exactly what CI checks (Task 9).
 
 - [ ] **Step 6: Commit**
 
@@ -459,7 +460,7 @@ git commit -m "feat(fetch): runtime capability probing, the reason the registry 
 
 ---
 
-### Task 3: `http-ng-fetch` — конверсия запроса
+### Task 3: `http-ng-fetch` — request conversion
 
 **Files:**
 - Create: `crates/http-ng-fetch/src/convert.rs`
@@ -471,7 +472,7 @@ git commit -m "feat(fetch): runtime capability probing, the reason the registry 
   - `pub(crate) fn to_web_request(req: http::Request<RequestBody>, caps: &Capabilities) -> Result<(web_sys::Request, Option<web_sys::AbortController>), Error>`
   - `pub(crate) fn check_headers(h: &http::HeaderMap, caps: &Capabilities) -> Result<(), Error>`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-fetch/tests/convert.rs
@@ -507,22 +508,22 @@ fn ordinary_headers_pass_through() {
 fn streaming_body_is_rejected_where_duplex_is_absent() {
     let f = http_ng_fetch::Fetch::new();
     if f.capabilities_for_test().streaming_request_body {
-        return; // в Chrome это поддержано — проверять нечего
+        return; // supported in Chrome — nothing to check
     }
     let req = http::Request::builder()
         .uri("https://example.com/")
         .body(RequestBody::rewindable(|| RequestBody::Empty)).unwrap();
-    // Rewindable буферизуемо, поэтому проходит; Streaming — нет.
+    // Rewindable is bufferable, so it passes; Streaming does not.
     assert!(http_ng_fetch::testing::to_web_request(&f, req).is_ok());
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-fetch/src/convert.rs
@@ -555,9 +556,9 @@ pub(crate) fn js_err(v: JsValue) -> Error {
     Error::new(ErrorKind::Other, JsError(msg))
 }
 
-/// Проверяет заголовки **до** отправки. Молчаливое выбрасывание запрещённых
-/// заголовков — источник ошибок безопасности: пользователь думает, что послал
-/// `Cookie`, а его нет.
+/// Checks headers **before** sending. Silently dropping forbidden
+/// headers is a source of security bugs: the user thinks they sent
+/// `Cookie`, but it isn't there.
 pub(crate) fn check_headers(h: &http::HeaderMap, caps: &Capabilities) -> Result<(), Error> {
     for name in h.keys() {
         if caps.forbidden_request_headers.contains(name) {
@@ -604,13 +605,13 @@ pub(crate) fn to_web_request(
                     what: "streaming_request_body", backend: "fetch",
                 }));
             }
-            // Chrome требует `duplex: "half"`, а web-sys 0.3.103 не имеет
-            // `set_duplex` — ставим через Reflect.
+            // Chrome requires `duplex: "half"`, and web-sys 0.3.103 has no
+            // `set_duplex` — set it via Reflect.
             js_sys::Reflect::set(&init, &JsValue::from_str("duplex"),
                                  &JsValue::from_str("half")).map_err(js_err)?;
-            // Полноценный ReadableStream из RequestBody::Streaming — v0.2;
-            // до тех пор сюда попасть нельзя, потому что Capabilities
-            // объявляют streaming_request_body только вместе с duplex.
+            // A full ReadableStream from RequestBody::Streaming is v0.2;
+            // until then this can't be reached, because Capabilities
+            // only declares streaming_request_body together with duplex.
             return Err(Error::new(ErrorKind::Unsupported, UnsupportedCapability {
                 what: "streaming_request_body", backend: "fetch",
             }));
@@ -628,10 +629,10 @@ pub(crate) fn to_web_request(
 }
 ```
 
-- [ ] **Step 4: Экспортировать тестовый хелпер и запустить тесты**
+- [ ] **Step 4: Export the test helper and run the tests**
 
 ```rust
-// в testing-модуле lib.rs
+// in the testing module of lib.rs
     pub fn to_web_request(f: &crate::Fetch, req: http::Request<http_ng_core::RequestBody>)
         -> Result<(web_sys::Request, Option<web_sys::AbortController>), http_ng_core::Error>
     { crate::convert::to_web_request(req, f.capabilities_for_test()) }
@@ -649,7 +650,7 @@ git commit -m "feat(fetch): request conversion rejecting forbidden headers expli
 
 ---
 
-### Task 4: `http-ng-fetch` — тело ответа поверх ReadableStream
+### Task 4: `http-ng-fetch` — response body over ReadableStream
 
 **Files:**
 - Create: `crates/http-ng-fetch/src/body.rs`
@@ -659,7 +660,7 @@ git commit -m "feat(fetch): request conversion rejecting forbidden headers expli
 - Produces: `pub struct Body`; `impl http_body::Body for Body { type Data = Bytes; type Error = Error }`;
   `Body::empty()`; `Body::from_response(&web_sys::Response) -> Result<Self, Error>`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-fetch/tests/body.rs
@@ -669,7 +670,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 async fn streams_a_response_body_in_chunks() {
-    // data:-URL даёт детерминированный ответ без сети.
+    // A data: URL gives a deterministic response with no network.
     let f = http_ng_fetch::Fetch::new();
     let body = http_ng_fetch::testing::fetch_body(
         &f, "data:text/plain,hello%20world").await.unwrap();
@@ -683,12 +684,12 @@ async fn empty_body_is_end_stream() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-fetch/src/body.rs
@@ -700,11 +701,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::JsCast;
 
-/// Тело ответа поверх `ReadableStream`.
+/// A response body over `ReadableStream`.
 ///
-/// Трейлеры не поддерживаются: их нет в fetch ни в одну сторону
-/// (whatwg/fetch#772 предлагает удалить API вовсе). `Capabilities` это
-/// объявляют, поэтому здесь их просто нет.
+/// Trailers aren't supported: fetch has none in either direction
+/// (whatwg/fetch#772 proposes removing the API altogether). `Capabilities`
+/// declares this, so they simply don't exist here.
 pub struct Body {
     inner: Inner,
 }
@@ -768,9 +769,9 @@ impl HttpBody for Body {
 }
 ```
 
-Добавить `futures-util` с фичей `std` ради `StreamExt::map`.
+Add `futures-util` with the `std` feature, for `StreamExt::map`.
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
 Expected: PASS.
@@ -794,7 +795,7 @@ git commit -m "feat(fetch): streaming response body over ReadableStream"
 - Consumes: Tasks 1–4.
 - Produces: `impl Transport for Fetch { type Body = Body; type Error = Error; }`
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng-fetch/tests/transport.rs
@@ -824,15 +825,15 @@ async fn build_rejects_timeouts_fetch_cannot_express() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
-// в crates/http-ng-fetch/src/lib.rs
+// in crates/http-ng-fetch/src/lib.rs
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{Error, ErrorKind, RequestBody};
 use wasm_bindgen::JsCast;
@@ -846,8 +847,8 @@ impl Transport for Fetch {
     {
         let (request, _abort) = convert::to_web_request(req, &self.caps)?;
 
-        // `fetch` живёт и в Window, и в WorkerGlobalScope — берём через global,
-        // чтобы работать в обоих контекстах.
+        // `fetch` lives in both Window and WorkerGlobalScope — go through global,
+        // to work in both contexts.
         let global = js_sys::global();
         let fetch_fn = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
             .map_err(convert::js_err)?
@@ -861,8 +862,8 @@ impl Transport for Fetch {
 
         let value = promise::SendJsFuture::new(promise).await
             .map_err(|e| {
-                // Сетевую ошибку fetch отличает только по TypeError —
-                // большего браузер не даёт, и это записано в Capabilities.
+                // fetch distinguishes a network error only by TypeError —
+                // that's all the browser gives you, and it's recorded in Capabilities.
                 let base = convert::js_err(e);
                 Error::new(ErrorKind::Connect, base)
             })?;
@@ -889,15 +890,15 @@ impl Transport for Fetch {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
 Expected: PASS.
 
-- [ ] **Step 5: Проверить, что в графе нет hyper и tokio**
+- [ ] **Step 5: Check that hyper and tokio aren't in the graph**
 
 Run: `cargo tree -p http-ng-fetch -e normal --prefix none | grep -E '^(hyper|tokio)' && exit 1 || echo OK`
-Expected: `OK` — **это и есть обещание «ambient-сборка без tokio»**.
+Expected: `OK` — **this is exactly the "ambient build with no tokio" promise**.
 
 - [ ] **Step 6: Commit**
 
@@ -908,24 +909,24 @@ git commit -m "feat(fetch): Transport implementation, ambient build with zero to
 
 ---
 
-### Task 6: `http-ng-proto` — backoff с джиттером
+### Task 6: `http-ng-proto` — jittered backoff
 
-Чистый автомат: принимает номер попытки и «случайность» параметром, поэтому
-проверяется без часов и без генератора. Джиттер не делает **ни один** из четырёх
-существующих SSE-крейтов.
+A pure state machine: it takes the attempt number and "randomness" as
+parameters, so it's tested without a clock and without a generator. **Not
+one** of the four existing SSE crates jitters.
 
 **Files:**
 - Create: `crates/http-ng-proto/src/backoff.rs`
 - Modify: `crates/http-ng-proto/src/lib.rs`
-- Test: внутри `backoff.rs`
+- Test: inside `backoff.rs`
 
 **Interfaces:**
 - Produces:
-  - `pub struct Backoff { pub base: Duration, pub max: Duration, pub max_attempts: Option<u32> }` (`Default` = 1 с / 30 с / `None`)
+  - `pub struct Backoff { pub base: Duration, pub max: Duration, pub max_attempts: Option<u32> }` (`Default` = 1s / 30s / `None`)
   - `Backoff::delay(&self, attempt: u32, jitter: f64) -> Option<Duration>` —
-    `jitter` в `[0.0, 1.0)`; `None` означает «прекратить»
+    `jitter` in `[0.0, 1.0)`; `None` means "stop"
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-proto/src/backoff.rs
@@ -944,14 +945,14 @@ mod tests {
 
     #[test]
     fn saturates_at_max_and_never_overflows() {
-        // 2^40 секунд переполнило бы u32::pow — проверяем, что нет паники.
+        // 2^40 seconds would overflow u32::pow — check there's no panic.
         assert_eq!(b().delay(40, 0.0), Some(Duration::from_secs(30)));
         assert_eq!(b().delay(u32::MAX, 0.0), Some(Duration::from_secs(30)));
     }
 
     #[test]
     fn jitter_only_ever_reduces_the_delay() {
-        // Full jitter (AWS-модель): случайная точка в [0, delay].
+        // Full jitter (the AWS model): a random point in [0, delay].
         let full = b().delay(3, 0.0).unwrap();
         let jittered = b().delay(3, 0.999).unwrap();
         assert!(jittered <= full);
@@ -962,30 +963,30 @@ mod tests {
     fn stops_after_max_attempts() {
         let b = Backoff { max_attempts: Some(3), ..Backoff::default() };
         assert!(b.delay(2, 0.0).is_some());
-        assert!(b.delay(3, 0.0).is_none(), "четвёртая попытка запрещена");
+        assert!(b.delay(3, 0.0).is_none(), "a fourth attempt is forbidden");
     }
 
     #[test]
     fn unlimited_by_default_which_must_be_a_conscious_choice() {
-        // ExponentialBackoff у rmcp имеет max_times: None и `2u32.pow(n)`,
-        // который паникует при переполнении примерно после 32 попыток.
+        // rmcp's ExponentialBackoff has max_times: None and `2u32.pow(n)`,
+        // which panics on overflow after about 32 attempts.
         assert!(b().max_attempts.is_none());
-        assert!(b().delay(1000, 0.0).is_some(), "и при этом не паникует");
+        assert!(b().delay(1000, 0.0).is_some(), "and doesn't panic doing it");
     }
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-proto backoff`
 Expected: FAIL.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-proto/src/backoff.rs
-//! Экспоненциальный backoff с full jitter. Чистый: случайность приходит
-//! параметром, поэтому поведение проверяется без генератора и без часов.
+//! Exponential backoff with full jitter. Pure: randomness comes in as a
+//! parameter, so behavior is tested without a generator and without a clock.
 
 use core::time::Duration;
 
@@ -1007,30 +1008,30 @@ impl Default for Backoff {
 }
 
 impl Backoff {
-    /// `attempt` считается с нуля. `jitter` — в `[0.0, 1.0)`.
-    /// `None` означает «больше не пробовать».
+    /// `attempt` is zero-based. `jitter` is in `[0.0, 1.0)`.
+    /// `None` means "stop trying".
     pub fn delay(&self, attempt: u32, jitter: f64) -> Option<Duration> {
         if let Some(limit) = self.max_attempts {
             if attempt >= limit {
                 return None;
             }
         }
-        // Насыщающее возведение в степень: `2u32.pow(n)` паникует примерно
-        // после 32 попыток — ровно этот дефект живёт в rmcp.
+        // Saturating exponentiation: `2u32.pow(n)` panics after about
+        // 32 attempts — this exact defect lives in rmcp.
         let factor = 1u64.checked_shl(attempt.min(63)).unwrap_or(u64::MAX);
         let raw = self.base.checked_mul(factor.min(u32::MAX as u64) as u32)
             .unwrap_or(self.max)
             .min(self.max);
-        // Full jitter: равномерная точка в [0, raw].
+        // Full jitter: a uniform point in [0, raw].
         let scaled = raw.as_secs_f64() * (1.0 - jitter.clamp(0.0, 1.0));
         Some(Duration::from_secs_f64(scaled.max(0.0)))
     }
 }
 ```
 
-- [ ] **Step 4: Подключить и запустить**
+- [ ] **Step 4: Wire it up and run**
 
-Добавить `pub mod backoff;` в `crates/http-ng-proto/src/lib.rs`.
+Add `pub mod backoff;` to `crates/http-ng-proto/src/lib.rs`.
 
 Run: `cargo test -p http-ng-proto`
 Expected: PASS.
@@ -1044,23 +1045,23 @@ git commit -m "feat(proto): jittered exponential backoff that cannot overflow"
 
 ---
 
-### Task 7: `http-ng` — реконнект SSE
+### Task 7: `http-ng` — SSE reconnect
 
 **Files:**
 - Modify: `crates/http-ng/src/sse.rs`
 - Test: `crates/http-ng/tests/sse_reconnect.rs`
 
 **Interfaces:**
-- Consumes: `Backoff` (Task 6), `SseDecoder`, `Client` (вертикаль 1).
+- Consumes: `Backoff` (Task 6), `SseDecoder`, `Client` (vertical 1).
 - Produces:
   - `pub struct SseOptions { pub max_event_size: usize, pub backoff: Backoff, pub reconnect: bool }`
   - `Client::sse(&self, url: &str) -> SseBuilder<'_, T>`; `SseBuilder::{header, options, connect}`
-  - `SseStream::next` теперь переподключается, подставляя `Last-Event-ID`
-  - Терминальные правила: **204 — прекратить навсегда**; статус ≠ 200 —
-    прекратить; `Content-Type` ≠ `text/event-stream` — прекратить;
-    `EventTooLarge` — прекратить (фатально, не ретраится)
+  - `SseStream::next` now reconnects, filling in `Last-Event-ID`
+  - Terminal rules: **204 — stop forever**; status ≠ 200 — stop;
+    `Content-Type` ≠ `text/event-stream` — stop; `EventTooLarge` — stop
+    (fatal, not retried)
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/tests/sse_reconnect.rs
@@ -1075,7 +1076,7 @@ fn sse(body: &'static str) -> http::Response<&'static str> {
 #[test]
 fn reconnects_and_sends_last_event_id() {
     let m = MockTransport::new();
-    m.push_response(sse("id: 7\ndata: first\n\n"));   // поток оборвётся на EOF
+    m.push_response(sse("id: 7\ndata: first\n\n"));   // the stream will break on EOF
     m.push_response(sse("data: second\n\n"));
 
     let c = Client::builder(m).build().unwrap();
@@ -1089,11 +1090,11 @@ fn reconnects_and_sends_last_event_id() {
     assert_eq!(got.len(), 2);
 
     let seen = c.transport().requests();
-    assert_eq!(seen.len(), 2, "второй запрос — это реконнект");
+    assert_eq!(seen.len(), 2, "the second request is the reconnect");
     assert_eq!(seen[1].headers.get("last-event-id").unwrap(), "7",
-               "реконнект обязан подставить последний id");
+               "the reconnect must fill in the last id");
     assert!(seen[0].headers.get("last-event-id").is_none(),
-            "на первом запросе id ещё нет — пустой слать нельзя");
+            "there's no id yet on the first request — can't send an empty one");
 }
 
 #[test]
@@ -1109,7 +1110,7 @@ fn stops_forever_on_204() {
     while futures_executor::block_on(s.next()).is_some() {}
 
     assert_eq!(c.transport().requests().len(), 2,
-               "204 означает «прекрати», а не «попробуй ещё раз»");
+               "204 means \"stop,\" not \"try again\"");
 }
 
 #[test]
@@ -1140,16 +1141,16 @@ fn oversized_event_is_fatal_and_not_retried() {
 
     assert!(futures_executor::block_on(s.next()).unwrap().is_err());
     assert!(futures_executor::block_on(s.next()).is_none());
-    assert_eq!(c.transport().requests().len(), 1, "переподключаться нельзя");
+    assert_eq!(c.transport().requests().len(), 1, "reconnecting is forbidden");
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --features test-util --test sse_reconnect`
 Expected: FAIL — `no method named sse`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng/src/sse.rs
@@ -1229,7 +1230,7 @@ pub struct SseStream<'a, T: Transport> {
     decoder: SseDecoder,
     state: SseState<T::Body>,
     attempt: u32,
-    /// Сервер прислал `retry:` — он перекрывает нашу политику.
+    /// The server sent `retry:` — it overrides our policy.
     server_retry: Option<Duration>,
 }
 
@@ -1249,10 +1250,10 @@ where
 {
     pub fn last_event_id(&self) -> Option<&str> { self.decoder.last_event_id() }
 
-    /// Открыть (или переоткрыть) поток.
+    /// Open (or reopen) the stream.
     ///
-    /// `Last-Event-ID` шлём **только если он непуст**: `reqwest-eventsource`
-    /// шлёт пустой заголовок на первом реконнекте, что спека запрещает.
+    /// We send `Last-Event-ID` **only if it's non-empty**: `reqwest-eventsource`
+    /// sends an empty header on the first reconnect, which the spec forbids.
     async fn open(&mut self) -> Result<(), Error> {
         let mut req = http::Request::builder()
             .uri(self.url.as_str())
@@ -1270,7 +1271,7 @@ where
                 Error::new(ErrorKind::Other, e))?)
             .await?;
 
-        // WHATWG: 204 — прекратить навсегда; любой иной не-200 — тоже стоп.
+        // WHATWG: 204 — stop forever; any other non-200 is also a stop.
         if resp.status() == http::StatusCode::NO_CONTENT {
             self.state = SseState::Terminated;
             return Ok(());
@@ -1311,7 +1312,7 @@ where
                     let jitter = jitter_source();
                     let Some(delay) = self.options.backoff.delay(self.attempt, jitter)
                         else { self.state = SseState::Terminated; return None };
-                    // Серверный `retry:` — нижняя граница, а не подсказка.
+                    // The server's `retry:` is a lower bound, not a suggestion.
                     let delay = self.server_retry.map_or(delay, |s| s.max(delay));
                     self.attempt = self.attempt.saturating_add(1);
                     self.client.timer().sleep(delay).await;
@@ -1320,14 +1321,14 @@ where
                 SseState::Live(resp) => match resp.chunk().await {
                     Some(Ok(chunk)) => {
                         if let Err(e) = self.decoder.push(&chunk) {
-                            // Превышение лимита фатально и не ретраится.
+                            // Exceeding the limit is fatal and not retried.
                             self.state = SseState::Terminated;
                             return Some(Err(Error::new(ErrorKind::Decode, e)));
                         }
                     }
                     Some(Err(e)) => { self.state = SseState::Disconnected; return Some(Err(e)) }
-                    // Штатный конец потока тоже реконнектится: сервер мог
-                    // просто закрыть соединение.
+                    // A normal end of stream also triggers a reconnect: the
+                    // server may have simply closed the connection.
                     None => self.state = SseState::Disconnected,
                 },
             }
@@ -1335,8 +1336,8 @@ where
     }
 }
 
-/// Full jitter. В тестах подменяется детерминированным значением через
-/// `SseOptions::backoff` с нулевым разбросом.
+/// Full jitter. In tests, substituted with a deterministic value via
+/// `SseOptions::backoff` with zero spread.
 fn jitter_source() -> f64 {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).unwrap_or(());
@@ -1344,16 +1345,17 @@ fn jitter_source() -> f64 {
 }
 ```
 
-`Client` получает `pub fn sse(&self, url: &str) -> SseBuilder<'_, T>` и
-`pub(crate) fn timer(&self) -> &impl Timer` — таймер приходит из конфигурации
-клиента; в вертикали 1 его не было, потому что реконнекта не было.
+`Client` gets `pub fn sse(&self, url: &str) -> SseBuilder<'_, T>` and
+`pub(crate) fn timer(&self) -> &impl Timer` — the timer comes from the
+client's configuration; it wasn't there in vertical 1, because there was no
+reconnect.
 
-Добавить `getrandom = "0.4"` в зависимости `http-ng`.
+Add `getrandom = "0.4"` to `http-ng`'s dependencies.
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng --features test-util`
-Expected: PASS, четыре теста реконнекта плюс всё предыдущее.
+Expected: PASS, four reconnect tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
@@ -1364,18 +1366,18 @@ git commit -m "feat(http-ng): SSE reconnect with Last-Event-ID, jitter and WHATW
 
 ---
 
-### Task 8: `http-ng` — `Client::new()` в браузере
+### Task 8: `http-ng` — `Client::new()` in the browser
 
 **Files:**
 - Modify: `crates/http-ng/Cargo.toml`, `src/lib.rs`
 - Test: `crates/http-ng/tests/wasm_default.rs`
 
 **Interfaces:**
-- Produces: `DefaultTransport = http_ng_fetch::Fetch` для
-  `wasm32-unknown-unknown`; `Client::new()` без `Result`, потому что у fetch
-  конструктор не может отказать.
+- Produces: `DefaultTransport = http_ng_fetch::Fetch` for
+  `wasm32-unknown-unknown`; `Client::new()` with no `Result`, because
+  fetch's constructor can never fail.
 
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 1: Write a failing test**
 
 ```rust
 // crates/http-ng/tests/wasm_default.rs
@@ -1385,7 +1387,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 async fn the_two_line_example_from_the_readme_works_in_a_browser() {
-    // Ровно тот же код, что в вертикали 2 работает на native.
+    // Exactly the same code that works on native in vertical 2.
     let client = http_ng::Client::new();
     let text = client.get("data:text/plain,portable")
         .send().await.unwrap()
@@ -1395,12 +1397,12 @@ async fn the_two_line_example_from_the_readme_works_in_a_browser() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo check -p http-ng --target wasm32-unknown-unknown --tests --features default-transport`
-Expected: FAIL — `DefaultTransport` для этого таргета не определён.
+Expected: FAIL — `DefaultTransport` isn't defined for this target.
 
-- [ ] **Step 3: Добавить таргет-зависимость и тип**
+- [ ] **Step 3: Add the target dependency and the type**
 
 ```toml
 # crates/http-ng/Cargo.toml
@@ -1412,16 +1414,16 @@ wasm-bindgen-test = "0.3"
 ```
 
 ```rust
-// в crates/http-ng/src/lib.rs
+// in crates/http-ng/src/lib.rs
 #[cfg(all(feature = "default-transport", target_family = "wasm", target_os = "unknown"))]
 pub type DefaultTransport = http_ng_fetch::Fetch;
 
 #[cfg(all(feature = "default-transport", target_family = "wasm", target_os = "unknown"))]
 impl Client<DefaultTransport> {
-    /// Клиент с браузерным транспортом.
+    /// A client with the browser transport.
     ///
-    /// Без `Result`: у fetch конструктор отказать не может, а несовместимые
-    /// настройки отвергаются в `build()`.
+    /// No `Result`: fetch's constructor can't fail, and incompatible
+    /// settings are rejected in `build()`.
     pub fn new() -> Self {
         Self::builder(http_ng_fetch::Fetch::new())
             .build()
@@ -1430,7 +1432,7 @@ impl Client<DefaultTransport> {
 }
 ```
 
-- [ ] **Step 4: Запустить wasm-тест**
+- [ ] **Step 4: Run the wasm test**
 
 Run: `wasm-pack test --headless --chrome crates/http-ng -- --features default-transport,test-util`
 Expected: PASS.
@@ -1444,14 +1446,14 @@ git commit -m "feat(http-ng): Client::new() on the browser target"
 
 ---
 
-### Task 9: CI — три таргета, два браузера, доказательство отсутствия tokio
+### Task 9: CI — three targets, two browsers, proof of no tokio
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
 
-**Interfaces:** ничего для кода.
+**Interfaces:** nothing for code.
 
-- [ ] **Step 1: Добавить job'ы**
+- [ ] **Step 1: Add the jobs**
 
 ```yaml
   browser:
@@ -1496,15 +1498,15 @@ git commit -m "feat(http-ng): Client::new() on the browser target"
           RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
             cargo +nightly check -p http-ng-fetch \
             --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
-            && { echo "ожидалась ошибка компиляции"; exit 1; } || echo OK
+            && { echo "expected a compile error"; exit 1; } || echo OK
 ```
 
-**Job `browser` — единственный, который проверяет главное решение дизайна:**
-в Chrome `streaming_request_body == true`, в Firefox `false`, и **один и тот же
-бинарь** должен вести себя корректно в обоих. Если тесты `caps.rs` пройдут
-только в одном браузере — рантайм-реестр не работает.
+**The `browser` job is the one that tests the design's central decision:**
+in Chrome `streaming_request_body == true`, in Firefox `false`, and **the
+same binary** must behave correctly in both. If `caps.rs`'s tests pass in
+only one browser, the runtime registry doesn't work.
 
-- [ ] **Step 2: Прогнать локально то, что можно**
+- [ ] **Step 2: Run locally what can be run**
 
 Run: `cargo tree -p http-ng-fetch -e normal --prefix none | grep -E '^(tokio|hyper|h2)' && echo FAIL || echo OK`
 Expected: `OK`.
@@ -1518,24 +1520,24 @@ git commit -m "ci: browser matrix and machine-checked absence of tokio in ambien
 
 ---
 
-### Task 10: Приёмка — компонент `act` собирается без изменений логики
+### Task 10: Acceptance — the `act` component builds with no logic changes
 
-Главная проверка формы `Transport`: живой потребитель, написанный **до** нашей
-библиотеки, должен лечь на неё без переделки.
+The central test of the `Transport` shape: a live consumer, written
+**before** our library, must fit onto it with no rework.
 
 **Files:**
 - Create: `crates/http-ng/examples/portable.rs`
 - Create: `docs/porting-wasi-fetch.md`
 
-**Interfaces:** ничего для кода.
+**Interfaces:** nothing for code.
 
-- [ ] **Step 1: Написать пример, повторяющий `components/http-client`**
+- [ ] **Step 1: Write an example that mirrors `components/http-client`**
 
 ```rust
 // crates/http-ng/examples/portable.rs
-//! Повторяет логику `act/components/http-client/src/lib.rs` на http-ng.
+//! Mirrors the logic of `act/components/http-client/src/lib.rs` on http-ng.
 //!
-//! Собирается под три таргета без единого `#[cfg]` в этом файле:
+//! Builds for three targets with not a single `#[cfg]` in this file:
 //!   cargo build --example portable
 //!   cargo build --example portable --target wasm32-wasip2
 //!   cargo build --example portable --target wasm32-unknown-unknown
@@ -1562,7 +1564,7 @@ where
     if let Some(b) = body {
         req = req.body(RequestBody::Full(bytes::Bytes::from(b)));
     }
-    // Per-request таймаут — то, чего reqwest не умеет вовсе (issue #2641).
+    // Per-request timeout — something reqwest can't do at all (issue #2641).
     if let Some(ms) = timeout_ms {
         req = req.timeouts(Timeouts {
             first_byte: Some(std::time::Duration::from_millis(ms)),
@@ -1571,7 +1573,7 @@ where
     }
 
     let resp = req.send().await?;
-    // Неразрушающее чтение: статус и заголовки живы после чтения тела.
+    // Non-destructive read: status and headers stay alive after reading the body.
     let collected = resp.collect().await?;
     Ok((
         collected.status().as_u16(),
@@ -1581,14 +1583,14 @@ where
 }
 
 fn main() {
-    println!("собирается под native, wasip2 и wasm32-unknown-unknown");
+    println!("builds for native, wasip2 and wasm32-unknown-unknown");
 }
 ```
 
-Если `Response::new` окажется `pub(crate)` — сделать пример через
-`client.get(url).send()`, а не `client.execute`, и убрать хелпер.
+If `Response::new` turns out to be `pub(crate)`, write the example via
+`client.get(url).send()` instead of `client.execute`, and drop the helper.
 
-- [ ] **Step 2: Собрать под три таргета**
+- [ ] **Step 2: Build for three targets**
 
 Run:
 ```
@@ -1596,39 +1598,41 @@ cargo build -p http-ng --example portable
 cargo build -p http-ng --example portable --target wasm32-wasip2
 cargo build -p http-ng --example portable --target wasm32-unknown-unknown
 ```
-Expected: три успешные сборки. **Если хоть одна требует `#[cfg]` в самом
-примере — форма `Transport` неверна, и это критерий остановки из спеки.**
+Expected: three successful builds. **If even one needs a `#[cfg]` in the
+example itself, the `Transport` shape is wrong, and that's the stop
+criterion from the spec.**
 
-- [ ] **Step 3: Написать руководство по переезду `wasi-fetch`**
+- [ ] **Step 3: Write the `wasi-fetch` migration guide**
 
 ```markdown
 <!-- docs/porting-wasi-fetch.md -->
-# Переезд `wasi-fetch` → `http-ng`
+# Migrating `wasi-fetch` → `http-ng`
 
-`wasi-fetch` 0.2.0 (571 строка) раскладывается так:
+`wasi-fetch` 0.2.0 (571 lines) breaks down like this:
 
-| было | стало |
+| was | becomes |
 |---|---|
 | `Client` + `get/post/...` | `http_ng::Client<T>` |
 | `RequestBuilder::{header, headers, body, json}` | `http_ng::RequestBuilder` |
-| `timeout` (ставил connect **и** first_byte) | `Timeouts { connect, first_byte, between_bytes }` |
-| `between_bytes_timeout` | там же, третьим полем |
-| `redirect_limit` + цикл ~60 строк | стадия `Redirect` в `http-ng` |
+| `timeout` (set connect **and** first_byte) | `Timeouts { connect, first_byte, between_bytes }` |
+| `between_bytes_timeout` | same struct, as the third field |
+| `redirect_limit` + a ~60-line loop | the `Redirect` stage in `http-ng` |
 | `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `http-ng-wasi` |
-| `Body::{chunk, bytes, text, json}` | методы `http_ng::Response`/`Collected` |
-| `Error::Transport(String)` | `http_ng::Error` с `ErrorKind` |
-| семь `let _ =` на сеттерах | `Capabilities` + `UnsupportedCapability` |
+| `Body::{chunk, bytes, text, json}` | `http_ng::Response`/`Collected` methods |
+| `Error::Transport(String)` | `http_ng::Error` with `ErrorKind` |
+| seven `let _ =` on setters | `Capabilities` + `UnsupportedCapability` |
 
-Что чинится переездом:
-1. **304 и 305 больше не следуются.** Прежний цикл использовал
+What the migration fixes:
+1. **304 and 305 are no longer followed.** The old loop used
    `status.is_redirection()`.
-2. **`Authorization` и `Cookie` снимаются** при смене host **и scheme**.
-3. **301/302 с POST понижаются до GET** наравне с 303.
-4. **Отказы хоста в сеттерах опций перестают быть тихими.**
+2. **`Authorization` and `Cookie` get stripped** on a host **or** scheme
+   change.
+3. **301/302 with POST get downgraded to GET**, same as 303.
+4. **Host rejections in option setters stop being silent.**
 
-`wasi-fetch` 0.3 остаётся тонким фасадом (~40 строк) над
-`http_ng::Client<WasiHttp>` со старыми именами: крейт остаётся findable,
-пользователи мигрируют одной строкой.
+`wasi-fetch` 0.3 stays a thin facade (~40 lines) over
+`http_ng::Client<WasiHttp>` with the old names: the crate stays findable,
+users migrate with one line.
 ```
 
 - [ ] **Step 4: Commit**
@@ -1640,57 +1644,58 @@ git commit -m "docs: portable example building for all three targets, wasi-fetch
 
 ---
 
-### Task 11: README и финальная сверка со спекой
+### Task 11: README and final check against the spec
 
 **Files:**
 - Modify: `README.md`
 - Create: `docs/v01-acceptance.md`
 
-- [ ] **Step 1: Обновить README**
+- [ ] **Step 1: Update the README**
 
 ```markdown
-## Статус v0.1
+## v0.1 status
 
-| таргет | транспорт | tokio в графе |
+| target | transport | tokio in the graph |
 |---|---|---|
-| native | `http-ng-native` (TCP + rustls + h1) | да, `sync` на h1-пути |
-| WASI | `http-ng-wasi` (`wasi:http` 0.3) | **нет** |
-| браузер | `http-ng-fetch` | **нет** |
+| native | `http-ng-native` (TCP + rustls + h1) | yes, `sync` on the h1 path |
+| WASI | `http-ng-wasi` (`wasi:http` 0.3) | **no** |
+| browser | `http-ng-fetch` | **no** |
 
-Рантаймы в CI: tokio, smol. HTTP/2, HTTP/3, пул соединений, WebSocket — v0.2+.
+Runtimes in CI: tokio, smol. HTTP/2, HTTP/3, connection pooling, WebSocket — v0.2+.
 ```
 
-- [ ] **Step 2: Написать отчёт о приёмке**
+- [ ] **Step 2: Write the acceptance report**
 
 ```markdown
 <!-- docs/v01-acceptance.md -->
-# Приёмка v0.1
+# v0.1 acceptance
 
-Четыре утверждения из спеки §10 и чем каждое доказано.
+The four claims from spec §10, and what proves each one.
 
-| утверждение | доказательство |
+| claim | proof |
 |---|---|
-| Runtime-шов настоящий | `crates/http-ng/tests/two_runtimes.rs` — один обобщённый код на tokio и smol, ноль `#[cfg]`. Плюс `crates/http-ng-native/tests/h1.rs` — обмен на голом `futures`-executor'е без spawn и таймера |
-| Delegation-шов настоящий | `http-ng-wasi` поверх `wasi:http` 0.3, где сокета нет вовсе |
-| Capability-модель деградирует честно | `crates/http-ng-fetch/tests/caps.rs` в CI-матрице Chrome + Firefox: `streaming_request_body` различается **в одном бинаре** |
-| Форма `Transport` угадана верно | `crates/http-ng/examples/portable.rs` собирается под три таргета без `#[cfg]` в самом примере |
+| The runtime seam is real | `crates/http-ng/tests/two_runtimes.rs` — one generic piece of code on tokio and smol, zero `#[cfg]`. Plus `crates/http-ng-native/tests/h1.rs` — an exchange on a bare `futures` executor with no spawn and no timer |
+| The delegation seam is real | `http-ng-wasi` on top of `wasi:http` 0.3, where there's no socket at all |
+| The capability model degrades honestly | `crates/http-ng-fetch/tests/caps.rs` in the Chrome + Firefox CI matrix: `streaming_request_body` differs **in one binary** |
+| The `Transport` shape was guessed correctly | `crates/http-ng/examples/portable.rs` builds for three targets with no `#[cfg]` in the example itself |
 
-## Осознанно не сделано в v0.1
+## Deliberately not done in v0.1
 
-Пул соединений; HTTP/2 и HTTP/3; стриминговые тела запроса; `first_byte` и
-`between_bytes` таймауты на native (объявлены неподдерживаемыми, а не сделаны
-молча); два слота `getaddrinfo` вместо одного; h1-upgrade и WebSocket;
-hickory и DoH; Alt-Svc; middleware и `http-ng-tower`; `http-ng-rmcp`.
+Connection pooling; HTTP/2 and HTTP/3; streaming request bodies;
+`first_byte` and `between_bytes` timeouts on native (declared unsupported,
+not silently unimplemented); two `getaddrinfo` slots instead of one; h1
+upgrade and WebSocket; hickory and DoH; Alt-Svc; middleware and
+`http-ng-tower`; `http-ng-rmcp`.
 
-## Что осталось непроверенным
+## What remains unverified
 
-`RequestBody::Streaming` не проходит ни через один транспорт: native буферизует,
-fetch отвергает по `Capabilities`, wasi берёт только `Full`. Контракт replay
-проверен юнит-тестами, но не сквозным сценарием. Первый настоящий потребитель —
-`http-ng-rmcp` в v0.2.
+`RequestBody::Streaming` doesn't pass through any transport: native buffers
+it, fetch rejects it via `Capabilities`, wasi only takes `Full`. The replay
+contract is covered by unit tests, but not by an end-to-end scenario. The
+first real consumer is `http-ng-rmcp` in v0.2.
 ```
 
-- [ ] **Step 3: Прогнать всё**
+- [ ] **Step 3: Run everything**
 
 Run:
 ```
@@ -1709,10 +1714,11 @@ git commit -m "docs: v0.1 acceptance report mapping spec claims to their proofs"
 
 ---
 
-## Что осталось за пределами v0.1
+## What's left outside v0.1
 
-Всё из §10 спеки для v0.2 и дальше: h2 через ALPN с executor'ом как typestate;
-пул с дренажом тела и idle-эвикцией; `AltSvcCache`; decompression; async
-`CookieStore`; retry с типизированным replayable-телом; middleware и
-`http-ng-tower`; `http-ng-dns-hickory` с SVCB; `http-ng-tls-native`; multipart,
-proxy, base URL; и `http-ng-rmcp` вторым проверочным контуром.
+Everything from spec §10 for v0.2 and beyond: h2 via ALPN with the executor
+as typestate; a pool with body draining and idle eviction; `AltSvcCache`;
+decompression; async `CookieStore`; retry with a typed replayable body;
+middleware and `http-ng-tower`; `http-ng-dns-hickory` with SVCB;
+`http-ng-tls-native`; multipart, proxy, base URL; and `http-ng-rmcp` as the
+second verification loop.

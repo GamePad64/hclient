@@ -1,28 +1,28 @@
-//! Один и тот же код, два рантайма, ноль cfg. Если этот файл потребует
-//! `#[cfg]`, рантайм-шов декоративен и вертикаль провалена.
+//! The same code, two runtimes, zero cfg. If this file needs a single
+//! `#[cfg]`, the runtime seam is decorative and the vertical has failed.
 //!
-//! `fetch_once` ниже — единственное обобщённое тело: оно упоминает `R`
-//! (рантайм) через границы `http_ng_rt::{TcpConnect, Timer, Blocking}` +
-//! `Clone`, собирает `Native<R, Rustls, SystemDns<R>>` и гоняет через него
-//! реальный HTTP/1.1-запрос к настоящему TCP-серверу на loopback. Ниже два
-//! теста инстанцируют его — один раз `http_ng_rt_tokio::Tokio` под
-//! `tokio::runtime::Runtime`, один раз `http_ng_rt_smol::Smol` под голым
-//! `futures_executor::block_on` (без spawn, без реактора smol целиком —
-//! только способности `Smol` сама реализует поверх `async-io`) — и это
-//! единственное различие между двумя прогонами. Критерий приёмки вертикали:
-//! в этом файле нет ни одного `#[cfg]`.
+//! `fetch_once` below is the one generic body: it mentions `R` (the
+//! runtime) through the bounds `http_ng_rt::{TcpConnect, Timer, Blocking} +
+//! Clone`, assembles `Native<R, Rustls, SystemDns<R>>`, and drives a real
+//! HTTP/1.1 request through it against a real TCP server on loopback. The
+//! two tests below instantiate it — once with `http_ng_rt_tokio::Tokio`
+//! under `tokio::runtime::Runtime`, once with `http_ng_rt_smol::Smol`
+//! under a bare `futures_executor::block_on` (no spawn, no smol reactor at
+//! all — only the capabilities `Smol` itself implements on top of
+//! `async-io`) — and that's the only difference between the two runs. The
+//! vertical's acceptance criterion: not a single `#[cfg]` in this file.
 //!
-//! Свойство теста доказано мутацией (см. отчёт задачи 14): добавление
-//! `+ Send` к границе `R` в `fetch_once` не ломает ни одну из инстанциаций
-//! (обе способности `Send`) — ожидаемо, `Send` не тот шов, который здесь
-//! проверяется (единственная известная в этой вертикали Send-асимметрия —
-//! `Blocking::run`, а не сам рантайм-тип). Настоящая асимметрия и,
-//! соответственно, настоящая проверка чувствительности — добавление
-//! `R: PartialEq<std::time::Instant>`-подобной границы через
-//! `http_ng_rt::Timer::Instant` ломает `Tokio` (`Instant =
-//! tokio::time::Instant`, обёртка) и не ломает `Smol` (`Instant =
-//! std::time::Instant`), см. `http-ng-rt-pair-check`'s
-//! `pair_property.rs`, откуда и заимствован сам приём мутации.
+//! The test's property is proven by mutation (see task 14's report):
+//! adding `+ Send` to the `R` bound on `fetch_once` doesn't break either
+//! instantiation (both capabilities are `Send`) — expected, `Send` isn't
+//! the seam being checked here (the only Send asymmetry known in this
+//! vertical is `Blocking::run`, not the runtime type itself). The real
+//! asymmetry, and correspondingly the real sensitivity check, is adding a
+//! bound like `R: PartialEq<std::time::Instant>` via
+//! `http_ng_rt::Timer::Instant`: it breaks `Tokio` (`Instant =
+//! tokio::time::Instant`, a wrapper) and doesn't break `Smol` (`Instant =
+//! std::time::Instant`), see `http-ng-rt-pair-check`'s `pair_property.rs`,
+//! from which the mutation trick itself was borrowed.
 use http_ng::{Client, Timeouts};
 use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;
@@ -46,7 +46,8 @@ fn spawn_server() -> std::net::SocketAddr {
     addr
 }
 
-/// Обобщённая функция: её тело — тот самый «один код на все рантаймы».
+/// The generic function: its body is the actual "one codebase for every
+/// runtime".
 async fn fetch_once<R>(rt: R, addr: std::net::SocketAddr) -> String
 where
     R: http_ng_rt::TcpConnect + http_ng_rt::Timer + http_ng_rt::Blocking + Clone,
@@ -71,16 +72,17 @@ where
         .unwrap()
 }
 
-/// Ограничивает произвольное блокирующее `run` (`tokio::Runtime::block_on`
-/// или `futures_executor::block_on`) сторожевым потоком — тот же приём, что
-/// `http_ng_native::connect::tests::bounded_block_on` и `tests/h1.rs`,
-/// `tests/dual_runtime.rs` этого же workspace: регресс, из-за которого
-/// рантайм-шов перестаёт продвигать `fetch_once` (например, `Native`
-/// начинает молча ждать реактор, которого на голом `futures`-executor'е
-/// нет), обязан дать `FAILED` с диагнозом, а не повесить CI-раннер немым.
-/// Обёрнутая работа передаётся замыканием, а не `F: std::future::Future`
-/// напрямую — граница переносится через `Arc<AtomicBool>`, сам `fetch_once`
-/// внутри замыкания никакого `Send`-бонда не получает.
+/// Bounds an arbitrary blocking `run` (`tokio::Runtime::block_on` or
+/// `futures_executor::block_on`) with a watchdog thread — the same trick
+/// as `http_ng_native::connect::tests::bounded_block_on` and
+/// `tests/h1.rs`, `tests/dual_runtime.rs` in this same workspace: a
+/// regression that stops the runtime seam from driving `fetch_once`
+/// forward (say, `Native` silently waiting on a reactor that doesn't exist
+/// on a bare `futures` executor) must produce a `FAILED` with a diagnosis,
+/// not hang the CI runner mutely. The wrapped work is passed as a closure
+/// rather than `F: std::future::Future` directly — the boundary is
+/// crossed via `Arc<AtomicBool>`, so `fetch_once` itself, inside the
+/// closure, picks up no `Send` bound at all.
 fn with_watchdog<T>(run: impl FnOnce() -> T) -> T {
     const BOUND: Duration = Duration::from_secs(30);
     let done = Arc::new(AtomicBool::new(false));
@@ -89,9 +91,9 @@ fn with_watchdog<T>(run: impl FnOnce() -> T) -> T {
         std::thread::sleep(BOUND);
         if !watchdog_done.load(Ordering::SeqCst) {
             eprintln!(
-                "two_runtimes: не завершилось за {BOUND:?} - похоже, рантайм-шов сломан \
-                 (fetch_once перестал продвигаться); падаем вместо того, чтобы повесить CI \
-                 без имени теста и диагноза"
+                "two_runtimes: did not finish within {BOUND:?} - looks like the runtime seam \
+                 is broken (fetch_once stopped making progress); failing instead of hanging \
+                 CI with no test name and no diagnosis"
             );
             std::process::exit(101);
         }

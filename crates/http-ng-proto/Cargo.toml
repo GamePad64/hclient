@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-proto"
 version = "0.1.0"
-description = "Чистые автоматы протокольных слоёв http-ng: без I/O, без async, без рантайма"
+description = "Pure state machines for http-ng's protocol layers: no I/O, no async, no runtime"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

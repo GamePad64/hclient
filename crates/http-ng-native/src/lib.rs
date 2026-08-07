@@ -1,36 +1,36 @@
-//! Native-транспорт http-ng: TCP + TLS + HTTP/1.1 поверх hyper.
+//! Native transport for http-ng: TCP + TLS + HTTP/1.1 on top of hyper.
 //!
-//! Этот крейт собирает воедино рантайм ([`http_ng_rt`]), DNS ([`http_ng_dns`])
-//! и TLS ([`http_ng_tls`]) поверх `hyper`. Task 10 заложила адаптер тела
-//! запроса ([`body`], `pub(crate)`); Task 11 добавила коннектор
-//! ([`connect`], тоже `pub(crate)`); Task 12 добавила HTTP/1-драйвер
-//! ([`h1`], `pub(crate)`); Task 13 собирает всё это в [`Native`] —
-//! единственный публичный тип крейта, реализующий `http_ng_core::
+//! This crate wires together the runtime ([`http_ng_rt`]), DNS ([`http_ng_dns`])
+//! and TLS ([`http_ng_tls`]) on top of `hyper`. Task 10 laid down the request
+//! body adapter ([`body`], `pub(crate)`); Task 11 added the connector
+//! ([`connect`], also `pub(crate)`); Task 12 added the HTTP/1 driver
+//! ([`h1`], `pub(crate)`); Task 13 assembles all of this into [`Native`] —
+//! the crate's only public type, which implements `http_ng_core::
 //! unversioned::Transport`.
 //!
-//! # `Native::execute` не резолвит DNS сам
+//! # `Native::execute` does not resolve DNS itself
 //!
-//! Черновик этой задачи (`task-13-brief.md`) резолвил адреса вручную —
-//! `.filter_map(|r| async { r.ok() })` над `Resolve::lookup_ipv4`/
-//! `lookup_ipv6`, отбрасывая ЛЮБУЮ ошибку резолвера (в том числе
-//! `ErrorKind::Cancelled` — обычное завершение фонового пула, Task 7) и
-//! синтезируя единый `ErrorKind::Resolve`, если оба стрима оказались пусты.
-//! Review Task 7 уже нашла ровно этот дефект на этом же месте: смешение
-//! «резолвер отказал» и «рантайм завершает работу» ломает circuit breaker,
-//! ключующийся на `Resolve` — он ошибочно занёс бы живой хост в чёрный
-//! список во время обычного shutdown.
+//! This task's draft (`task-13-brief.md`) resolved addresses by hand —
+//! `.filter_map(|r| async { r.ok() })` over `Resolve::lookup_ipv4`/
+//! `lookup_ipv6`, discarding ANY resolver error (including
+//! `ErrorKind::Cancelled` — an ordinary background-pool shutdown, Task 7)
+//! and synthesizing a single `ErrorKind::Resolve` if both streams turned
+//! out empty. Review Task 7 already found exactly this defect in exactly
+//! this spot: conflating "the resolver failed" with "the runtime is
+//! shutting down" breaks a circuit breaker keyed on `Resolve` — it would
+//! wrongly blacklist a live host during an ordinary shutdown.
 //!
-//! Task 11 решила это один раз и структурно в `connect::drive`/
-//! `ResolveErrors::distinguishing_error` (см. doc-комментарий `connect.rs`):
-//! отличающийся от синтетического `Resolve` `kind()` проверяется ДО обеих
-//! веток отказа, так что отбрасывание становится структурно недостижимым, а
-//! не просто обработанным для одного найденного случая. `execute` ниже
-//! поэтому не резолвит и не гоняет Happy Eyeballs сам — он вызывает
-//! `connect::connect`, ту же точку входа, что уже покрыта юнит-тестами
-//! `connect.rs`; `crates/http-ng-native/tests/transport.rs`'s
+//! Task 11 solved this once, structurally, in `connect::drive`/
+//! `ResolveErrors::distinguishing_error` (see `connect.rs`'s doc comment):
+//! a `kind()` that differs from the synthetic `Resolve` is checked BEFORE
+//! either failure branch, so discarding it becomes structurally
+//! unreachable rather than merely handled for the one case that was found.
+//! `execute` below therefore does not resolve or run Happy Eyeballs itself —
+//! it calls `connect::connect`, the same entry point already covered by
+//! `connect.rs`'s unit tests; `crates/http-ng-native/tests/transport.rs`'s
 //! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
-//! проверяет, что это свойство доживает до всего пути `Client::execute`, не
-//! только до `connect::drive` самого по себе.
+//! checks that this property survives the whole `Client::execute` path, not
+//! just `connect::drive` on its own.
 #![forbid(unsafe_code)]
 
 mod body;
@@ -49,16 +49,17 @@ use std::future::Future;
 use std::task::Poll;
 use std::time::Duration;
 
-/// Транспорт http-ng поверх реального TCP/TLS/HTTP1: подключает вместе
-/// рантайм `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
-/// ([`http_ng_tls::TlsConnect`]) и резолвер `D` ([`http_ng_dns::Resolve`]).
+/// The http-ng transport over real TCP/TLS/HTTP1: wires together the
+/// runtime `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
+/// ([`http_ng_tls::TlsConnect`]) and resolver `D` ([`http_ng_dns::Resolve`]).
 ///
-/// v0.1: одно соединение на запрос (пула нет), HTTP/1.1 only, без upgrade —
-/// см. [`Native::new`] и [`Capabilities`], которые эти ограничения
-/// объявляют честно, а не молчат о них. Тело запроса **не** буферизуется
-/// целиком: `RequestBody::Streaming` проходит до провода как поток (см.
-/// [`Native::new`]'s doc-комментарий про `streaming_request_body` — прежняя
-/// версия этого абзаца утверждала обратное и была неверна).
+/// v0.1: one connection per request (no pool), HTTP/1.1 only, no upgrade —
+/// see [`Native::new`] and [`Capabilities`], which state these limits
+/// honestly rather than staying silent about them. The request body is
+/// **not** buffered whole: `RequestBody::Streaming` goes to the wire as a
+/// stream (see [`Native::new`]'s doc comment on `streaming_request_body` —
+/// an earlier version of this paragraph claimed the opposite and was
+/// wrong).
 #[derive(Debug)]
 pub struct Native<R, T, D> {
     rt: R,
@@ -71,30 +72,32 @@ pub struct Native<R, T, D> {
 impl<R, T, D> Native<R, T, D> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let mut caps = Capabilities::none();
-        // Честно про v0.1: пула соединений нет, upgrade нет — остальные поля
-        // остаются на консервативной базе `Capabilities::none()` (см.
-        // `tests/transport.rs`'s
+        // Honest about v0.1: no connection pool, no upgrade — the
+        // remaining fields stay at the conservative baseline of
+        // `Capabilities::none()` (see `tests/transport.rs`'s
         // `undeclared_capability_fields_match_their_conservative_defaults_today`).
         //
-        // `streaming_request_body: true` — НЕ то же самое, что было здесь до
-        // финального ревью ветки (`false`). `body.rs`'s `Inner::Streaming`
-        // отдаёт `RequestBody::Streaming` hyper'у как поток, а не собирает
-        // его в память первым делом (см. doc-комментарий `body.rs` — он это
-        // всегда и утверждал, в отличие от прежней версии ЭТОГО комментария);
-        // измерено на проводе: `tests/transport.rs`'s
-        // `streaming_request_body_is_actually_streamed_not_buffered` видит
-        // `transfer-encoding: chunked` и раздельные кадры двухкадрового тела.
-        // Заявлять `false`, пока код честно стримит, было бы той же самой
-        // ложью способности наоборот — заниженной, но потребитель, который ей
-        // поверит, соберёт большое тело в память сам, хотя мог этого не
-        // делать.
+        // `streaming_request_body: true` — NOT the same as what was here
+        // before the branch's final review (`false`). `body.rs`'s
+        // `Inner::Streaming` hands `RequestBody::Streaming` to hyper as a
+        // stream instead of buffering it into memory first (see `body.rs`'s
+        // doc comment — it has always claimed this, unlike the earlier
+        // version of THIS comment); measured on the wire:
+        // `tests/transport.rs`'s
+        // `streaming_request_body_is_actually_streamed_not_buffered` sees
+        // `transfer-encoding: chunked` and separate frames for a
+        // two-frame body. Claiming `false` while the code honestly
+        // streams would be the same capability lie in reverse —
+        // understated, but a caller who believes it will buffer a large
+        // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         caps.redirects = RedirectSupport::Configurable;
         caps.tls_config = TlsSupport::Full;
         caps.version_reported = true;
         caps.timeouts = TimeoutSupport {
-            // Применяется по-настоящему — см. `execute`'s гонку `connect::
-            // connect` против `rt.sleep(d)`, ниже, и `tests/transport.rs`'s
+            // Actually enforced — see `execute`'s race between
+            // `connect::connect` and `rt.sleep(d)`, below, and
+            // `tests/transport.rs`'s
             // `declared_connect_timeout_is_actually_applied`.
             //
             // Scope, spelled out (final review round 3: the capability
@@ -113,8 +116,9 @@ impl<R, T, D> Native<R, T, D> {
             // Happy Eyeballs attempts two different deadlines let through,
             // not merely that a timeout fires.
             connect: true,
-            // Ни пула, ни таймера ответа в v0.1 нет — заявлять эти фазы
-            // значило бы способность, которая лжёт о своём состоянии.
+            // v0.1 has neither a pool nor a response timer — claiming
+            // these phases would be a capability that lies about its own
+            // state.
             first_byte: false,
             between_bytes: false,
         };
@@ -128,7 +132,7 @@ impl<R, T, D> Native<R, T, D> {
         }
     }
 
-    /// Параметры сокета для КАЖДОЙ TCP-попытки этого транспорта (см.
+    /// Socket parameters for EVERY TCP attempt this transport makes (see
     /// [`http_ng_rt::TcpOpts`]).
     pub fn tcp_opts(mut self, opts: TcpOpts) -> Self {
         self.opts = opts;
@@ -153,29 +157,29 @@ where
     ) -> Result<http::Response<Self::Body>, Error> {
         let (parts, body) = req.into_parts();
 
-        // Финальное ревью ветки, находка F1 (блокирующая): `Capabilities`
-        // заявляла `timeouts.connect = true`, но ничто в этом файле не
-        // читало `Timeouts` из `parts.extensions` — заявленный таймаут был
-        // тихим no-op, ровно тем классом дефекта (B1 финального ревью
-        // вертикали 1), ради искоренения которого этот канал вообще
-        // существует. `Transport::execute`'s doc-комментарий
-        // (`http-ng-core/src/unversioned/transport.rs`) описывает
-        // правильное чтение буквально: «наличие — не намерение»,
-        // `.get::<Timeouts>().copied().unwrap_or_default()`, затем поле за
-        // полем — не ветвиться на `is_some()` расширения целиком.
+        // Branch final review, finding F1 (blocking): `Capabilities`
+        // claimed `timeouts.connect = true`, but nothing in this file read
+        // `Timeouts` from `parts.extensions` — the claimed timeout was a
+        // silent no-op, exactly the class of defect (B1 of vertical 1's
+        // final review) this channel exists to root out.
+        // `Transport::execute`'s doc comment
+        // (`http-ng-core/src/unversioned/transport.rs`) spells out the
+        // correct reading literally: "presence is not intent",
+        // `.get::<Timeouts>().copied().unwrap_or_default()`, then field by
+        // field — don't branch on the extension's `is_some()` as a whole.
         let timeouts = parts
             .extensions
             .get::<Timeouts>()
             .copied()
             .unwrap_or_default();
 
-        // См. doc-комментарий модуля: `connect::connect` — не переиспользование
-        // ради экономии кода, а единственный путь, на котором отличающийся
-        // `ErrorKind` резолвера (в частности, `Cancelled`) структурно не может
-        // быть отброшен. Она же резолвит схему (`http`/`https`, любая другая —
-        // типизированный `ErrorKind::Unsupported`) и опционально проводит
-        // TLS-хендшейк с ALPN `http/1.1` — единственным протоколом, который
-        // умеет `h1::exchange`.
+        // See the module doc comment: `connect::connect` isn't reuse for
+        // code-size's sake, it's the only path on which a resolver
+        // `ErrorKind` that differs from the synthetic one (in particular,
+        // `Cancelled`) structurally cannot be discarded. It also resolves
+        // the scheme (`http`/`https`, anything else is a typed
+        // `ErrorKind::Unsupported`) and optionally runs the TLS handshake
+        // with ALPN `http/1.1` — the only protocol `h1::exchange` speaks.
         let connect_fut = connect::connect(
             &self.rt,
             &self.dns,
@@ -191,21 +195,23 @@ where
 
         let outgoing = body::OutgoingBody::from_request_body(body);
         let mut req = http::Request::from_parts(parts, outgoing);
-        // hyper h1 требует origin-form и заголовок `Host:` — `connect::connect`
-        // уже успел проверить и хост, и схему, так что здесь их не перепроверяем.
+        // hyper h1 requires origin-form and a `Host:` header — `connect::
+        // connect` has already checked both host and scheme, so we don't
+        // recheck them here.
         origin_form(&mut req);
 
         h1::exchange(conn, req).await
     }
 
-    /// Тождество: `Self::Error` — уже `http_ng_core::Error`, и категория в
-    /// ней проставлена там, где отказ произошёл (`Resolve`/`Connect`/
-    /// `Unsupported` в `connect::connect`, `Tls` в `TlsConnect::connect`,
-    /// `Body`/`Connect` в `h1::exchange`). Дефолт хука сделал бы ровно то же
-    /// самое (он узнаёт нашу `Error` и пропускает её насквозь) — строка
-    /// избыточна по поведению и нужна по смыслу: называет намерение там, где
-    /// его читают, и переживёт возможное изменение дефолта. См.
-    /// doc-комментарий `Transport::to_error` в `http-ng-core`.
+    /// Identity: `Self::Error` is already `http_ng_core::Error`, and its
+    /// category is set wherever the failure happened (`Resolve`/`Connect`/
+    /// `Unsupported` in `connect::connect`, `Tls` in `TlsConnect::connect`,
+    /// `Body`/`Connect` in `h1::exchange`). The hook's default would do
+    /// exactly the same thing (it recognizes our `Error` and passes it
+    /// through unchanged) — the line is behaviorally redundant and
+    /// semantically needed: it names the intent where it's read, and it
+    /// will survive the default changing later. See the doc comment on
+    /// `Transport::to_error` in `http-ng-core`.
     fn to_error(&self, e: Self::Error) -> Error {
         e
     }
@@ -215,8 +221,8 @@ where
     }
 }
 
-/// Отказ, которым заканчивается [`with_connect_timeout`], когда таймер
-/// выигрывает гонку у `connect::connect`.
+/// The failure [`with_connect_timeout`] ends in when the timer wins the
+/// race against `connect::connect`.
 #[derive(Debug)]
 struct ConnectTimedOut(Duration);
 impl std::fmt::Display for ConnectTimedOut {
@@ -226,16 +232,16 @@ impl std::fmt::Display for ConnectTimedOut {
 }
 impl std::error::Error for ConnectTimedOut {}
 
-/// Гоняет `fut` наперегонки с `rt.sleep(d)`: `fut`, если она успела первой,
-/// иначе `Err(ErrorKind::Timeout(Phase::Connect))` — закрывает финальное
-/// ревью ветки, находка F1.
+/// Races `fut` against `rt.sleep(d)`: `fut` if it finished first,
+/// otherwise `Err(ErrorKind::Timeout(Phase::Connect))` — closes branch
+/// final review finding F1.
 ///
-/// `std::future::poll_fn`, опрашивающий оба плеча вручную, а не
-/// `futures_util::select!`/`select` — тот же приём и то же обоснование, что
-/// у `connect::drive` (см. его doc-комментарий, раздел про то, почему
-/// брифовский `select_biased!` не подошёл): здесь всего два плеча и оба
-/// нужны ровно один раз, макрос не даёт этой паре ничего, чего не даёт
-/// прямой `poll`.
+/// `std::future::poll_fn`, polling both arms by hand, rather than
+/// `futures_util::select!`/`select` — the same technique and the same
+/// reasoning as `connect::drive` (see its doc comment, the section on why
+/// the brief's `select_biased!` didn't fit): there are only two arms here
+/// and each is needed exactly once, the macro gives this pair nothing that
+/// a direct `poll` doesn't.
 ///
 /// Scope (final review round 3): `fut` is expected to be the whole
 /// `connect::connect(..)` call, passed in as one opaque future — this
@@ -266,14 +272,14 @@ where
     .await
 }
 
-/// Переписывает URI запроса в origin-form (`hyper`'s h1-клиент требует
-/// именно её, не absolute-form) и проставляет `Host:`, если вызывающая
-/// сторона его не задала сама.
+/// Rewrites the request URI into origin-form (`hyper`'s h1 client requires
+/// exactly that, not absolute-form) and sets `Host:` if the caller didn't
+/// set it themselves.
 ///
-/// К моменту вызова `connect::connect` уже успешно отработал — а значит его
-/// собственные проверки (`host()`, `wants_tls()`) уже прошли, так что
-/// `req.uri()` гарантированно несёт хост и поддерживаемую (`http`/`https`)
-/// схему; эта функция их не перепроверяет.
+/// By the time this is called, `connect::connect` has already succeeded —
+/// meaning its own checks (`host()`, `wants_tls()`) already passed, so
+/// `req.uri()` is guaranteed to carry a host and a supported (`http`/
+/// `https`) scheme; this function doesn't recheck them.
 fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
     let uri = req.uri().clone();
     let https = uri.scheme_str() == Some("https");
@@ -287,12 +293,13 @@ fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
         } else {
             format!("{host}:{port}")
         };
-        // Хост, доживший до `connect::connect` (прошедший DNS-резолюцию, а
-        // для `https` — ещё и построение TLS SNI), на практике всегда
-        // валиден как значение заголовка. Если всё же нет — запрос уйдёт без
-        // `Host:`, и это не тихая потеря: ни один сервер, с которым говорит
-        // этот крейт, не примет HTTP/1.1-запрос без `Host:`, так что отказ
-        // будет немедленным и явным протокольным отказом, а не тихим no-op.
+        // A host that made it to `connect::connect` (having passed DNS
+        // resolution, and for `https` also having built a TLS SNI value)
+        // is, in practice, always valid as a header value. If it somehow
+        // isn't, the request goes out without `Host:`, and that's not a
+        // silent loss: no server this crate talks to will accept an
+        // HTTP/1.1 request without `Host:`, so the failure will be an
+        // immediate, explicit protocol failure, not a silent no-op.
         if let Ok(v) = http::HeaderValue::from_str(&authority) {
             req.headers_mut().insert(http::header::HOST, v);
         }
@@ -307,19 +314,19 @@ fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
     }
 }
 
-/// Только для интеграционных тестов этого крейта: `pub`, а не `pub(crate)`,
-/// потому что `tests/*.rs` компилируются как отдельный внешний крейт и не
-/// видят `pub(crate)`-элементы вроде `connect::race_connect`/`h1::exchange`
-/// напрямую. `#[doc(hidden)]` — это не часть публичного API крейта, а щель,
-/// специально проделанная для интеграционных тестов задачи (см.
-/// `tests/connect.rs`, `tests/dual_runtime.rs`, `tests/h1.rs`); Task 13 не
-/// обязана и не должна на неё полагаться.
+/// For this crate's integration tests only: `pub`, not `pub(crate)`,
+/// because `tests/*.rs` compile as a separate external crate and can't see
+/// `pub(crate)` items like `connect::race_connect`/`h1::exchange`
+/// directly. `#[doc(hidden)]` isn't part of the crate's public API, it's a
+/// gap opened specifically for this task's integration tests (see
+/// `tests/connect.rs`, `tests/dual_runtime.rs`, `tests/h1.rs`); Task 13
+/// need not, and must not, rely on it.
 #[doc(hidden)]
 pub mod testing {
-    /// Гоняет Happy Eyeballs по готовому списку адресов, минуя DNS —
-    /// обёртка над `connect::race_connect` с дефолтным `HeConfig` и
-    /// `TcpOpts`, ровно то, что нужно тесту, который контролирует только
-    /// список адресов и порт.
+    /// Runs Happy Eyeballs over a ready-made address list, bypassing DNS —
+    /// a wrapper around `connect::race_connect` with a default `HeConfig`
+    /// and `TcpOpts`, exactly what a test that only controls the address
+    /// list and port needs.
     pub async fn connect_for_test<R>(
         rt: &R,
         addrs: &[std::net::IpAddr],
@@ -343,57 +350,58 @@ pub mod testing {
     pub use crate::body::OutgoingBody;
     pub use crate::h1::NativeBody;
 
-    /// Тело пустого запроса — то, что нужно любому тесту `h1::exchange`,
-    /// которому нечего слать (GET без тела).
+    /// An empty request body — what any `h1::exchange` test with nothing
+    /// to send needs (a bodyless GET).
     pub fn empty_body() -> crate::body::OutgoingBody {
         crate::body::OutgoingBody::from_request_body(http_ng_core::RequestBody::Empty)
     }
 
-    /// `std::net::TcpStream` как `hyper::rt` IO для тестов на голом
-    /// executor'е, где реактора нет вовсе — `works_on_a_bare_futures_
-    /// executor_with_no_spawn` в `tests/h1.rs` нарочно не тянет ни `tokio`,
-    /// ни `smol`.
+    /// `std::net::TcpStream` as `hyper::rt` IO for tests on a bare
+    /// executor with no reactor at all — `works_on_a_bare_futures_
+    /// executor_with_no_spawn` in `tests/h1.rs` deliberately pulls in
+    /// neither `tokio` nor `smol`.
     ///
-    /// # Почему НЕ буквально блокирующий сокет, вопреки названию
+    /// # Why NOT a literally blocking socket, despite the name
     ///
-    /// Первая версия этого хелпера честно блокировала внутри `poll_read`
-    /// (`std::io::Read::read` на сокете в блокирующем режиме,
-    /// `Poll::Ready` без исключений) — и вешала ЛЮБОЙ обмен, а не только
-    /// граничные случаи: `hyper::proto::h1::dispatch::Dispatcher::
-    /// poll_loop` (hyper 1.11.0) на КАЖДОЙ итерации сперва вызывает
-    /// `let _ = self.poll_read(cx)?;` и только потом `self.poll_write(cx)`
-    /// — результат чтения отбрасывается через `let _ =`, что при
-    /// неблокирующем IO означает "чтения ещё нет — не страшно, попробуем
-    /// писать в этой же итерации". Но если `poll_read` сам блокирует
-    /// поток до появления байт, до `poll_write` дело никогда не доходит:
-    /// клиент ждёт ответ, которого не будет, пока сервер ждёт запрос,
-    /// который не отправлен, потому что клиент застрял в чтении. Поймано
-    /// не чтением кода, а тем, что `works_on_a_bare_futures_executor_with_
-    /// no_spawn` реально зависал (см. отчёт Task 12) — до первого байта
-    /// запроса дело не доходило вообще.
+    /// The first version of this helper honestly blocked inside
+    /// `poll_read` (`std::io::Read::read` on a socket in blocking mode,
+    /// `Poll::Ready` with no exceptions) — and hung EVERY exchange, not
+    /// just edge cases: `hyper::proto::h1::dispatch::Dispatcher::
+    /// poll_loop` (hyper 1.11.0) calls `let _ = self.poll_read(cx)?;`
+    /// first on EVERY iteration, and only then `self.poll_write(cx)` — the
+    /// read result is discarded via `let _ =`, which under non-blocking IO
+    /// means "no read yet, that's fine, let's try writing this same
+    /// iteration." But if `poll_read` itself blocks the thread until bytes
+    /// show up, `poll_write` is never reached: the client waits for a
+    /// response that will never come, while the server waits for a
+    /// request that was never sent, because the client is stuck reading.
+    /// Caught not by reading the code but by `works_on_a_bare_futures_
+    /// executor_with_no_spawn` actually hanging (see the Task 12 report) —
+    /// it never got as far as the request's first byte.
     ///
-    /// Значит сокет обязан быть неблокирующим, а `poll_read`/`poll_write`
-    /// — при `WouldBlock` возвращать `Pending`, а не ждать. Но реактора,
-    /// который разбудит нас, когда сокет станет готов, тоже нет — так что
-    /// `Pending` здесь сопровождается немедленным `cx.waker().wake_by_ref()`:
-    /// это busy-spin (`futures_executor::block_on` тут же поллит снова,
-    /// вместо настоящего ожидания готовности через ОС), а не притворство,
-    /// что реактора не нужно. Годится это только для теста на локальном
-    /// сокете с ответом за доли миллисекунды — не паттерн для
-    /// переиспользования где-либо за пределами этого хелпера.
+    /// So the socket has to be non-blocking, and `poll_read`/`poll_write`
+    /// have to return `Pending` on `WouldBlock` instead of waiting. But
+    /// there's also no reactor to wake us once the socket becomes ready —
+    /// so `Pending` here comes paired with an immediate
+    /// `cx.waker().wake_by_ref()`: this is a busy-spin
+    /// (`futures_executor::block_on` just polls again right away, instead
+    /// of a real wait for OS-signaled readiness), not a pretense that no
+    /// reactor is needed. This is only fit for a test against a local
+    /// socket that answers in a fraction of a millisecond — not a pattern
+    /// to reuse anywhere outside this helper.
     pub fn blocking_io(s: std::net::TcpStream) -> BlockingIo {
         s.set_nonblocking(true)
-            .expect("свежий, только что подключённый TcpStream должен принять set_nonblocking");
+            .expect("a freshly connected TcpStream should accept set_nonblocking");
         BlockingIo(s)
     }
 
-    /// См. [`blocking_io`].
+    /// See [`blocking_io`].
     #[derive(Debug)]
     pub struct BlockingIo(std::net::TcpStream);
 
-    /// `Pending` при `WouldBlock`, но с немедленным `wake_by_ref` — см.
-    /// doc-комментарий [`blocking_io`] про то, почему без реактора это
-    /// единственный способ не потерять пробуждение.
+    /// `Pending` on `WouldBlock`, but with an immediate `wake_by_ref` — see
+    /// [`blocking_io`]'s doc comment for why, without a reactor, this is
+    /// the only way not to lose the wakeup.
     fn poll_would_block<T>(
         cx: &std::task::Context<'_>,
         r: std::io::Result<T>,
@@ -413,9 +421,9 @@ pub mod testing {
             cx: &mut std::task::Context<'_>,
             mut buf: hyper::rt::ReadBufCursor<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            // Без `unsafe`: читаем в стековый буфер, затем копируем через
-            // `put_slice` — тот же путь, что и безопасный пример в
-            // doc-комментарии `hyper::rt::Read`.
+            // No `unsafe`: read into a stack buffer, then copy via
+            // `put_slice` — the same path as the safe example in
+            // `hyper::rt::Read`'s doc comment.
             let mut scratch = [0u8; 8192];
             let want = buf.remaining().min(scratch.len());
             match poll_would_block(
@@ -444,8 +452,8 @@ pub mod testing {
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            // `TcpStream::flush` — не-op (нет буферизации в userspace),
-            // никогда не блокирует и не возвращает `WouldBlock`.
+            // `TcpStream::flush` is a no-op (no userspace buffering),
+            // never blocks and never returns `WouldBlock`.
             std::task::Poll::Ready(std::io::Write::flush(&mut self.get_mut().0))
         }
         fn poll_shutdown(

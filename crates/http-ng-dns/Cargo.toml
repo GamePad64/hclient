@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-dns"
 version = "0.1.0"
-description = "Трейт подключаемого резолвера для http-ng"
+description = "Pluggable resolver trait for http-ng"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,12 +13,13 @@ futures-core = { workspace = true }
 http-ng-core = { workspace = true }
 
 [dev-dependencies]
-# Только тесты: `stream::iter`/`stream::empty`/`StreamExt` в тестах ниже, не
-# в самой библиотеке — единственный библиотечный потребитель `stream::empty`
-# (дефолтное тело `Resolve::lookup_svcb`) реализован вручную в `lib.rs`
-# (`EmptyStream`), чтобы не тащить `futures-util` (и вместе с ней
-# `futures-task`, `pin-project-lite`, `slab`) в зависимости библиотеки ради
-# одной функции. Смотри doc-комментарий `EmptyStream` в `lib.rs`.
+# Tests only: `stream::iter`/`stream::empty`/`StreamExt` below, not in the
+# library itself — the one library-side consumer of `stream::empty`
+# (`Resolve::lookup_svcb`'s default body) is hand-implemented in `lib.rs`
+# (`EmptyStream`), so as not to drag `futures-util` (and with it
+# `futures-task`, `pin-project-lite`, `slab`) into the library's
+# dependencies for the sake of one function. See the `EmptyStream` doc
+# comment in `lib.rs`.
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 futures-util     = { version = "0.3", default-features = false, features = ["std"] }
 

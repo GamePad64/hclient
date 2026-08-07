@@ -1,7 +1,7 @@
 [package]
 name = "http-ng"
 version = "0.1.0"
-description = "Кроссплатформенный асинхронный HTTP-клиент: один код под native, browser и WASI"
+description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,28 +9,28 @@ repository.workspace = true
 
 [features]
 default = []
-# Мок-транспорт для тестов потребителей.
+# Mock transport for consumer tests.
 test-util = []
-# `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — см.
-# doc-комментарий `DefaultTransport` в `src/lib.rs` за тем, что именно
-# резолвится по таргету и почему `dep:`-список ниже, а не сами имена
-# крейтов: скрывает неявные фичи, которые cargo иначе завёл бы под каждый
-# опциональный target-dependency, оставляя ровно одну фичу-переключатель.
+# `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — see the
+# `DefaultTransport` doc comment in `src/lib.rs` for what actually resolves
+# per target and why this is a `dep:` list below rather than the crate names
+# themselves: it hides the implicit features cargo would otherwise create for
+# each optional target-dependency, leaving exactly one feature switch.
 default-transport = [
     "dep:http-ng-native",
     "dep:http-ng-rt-tokio",
     "dep:http-ng-tls-rustls",
     "dep:http-ng-dns-system",
 ]
-# `Collected::json`. Выключено по умолчанию: измерено на реальной сборке
-# wasm32-unknown-unknown (opt-level=z, lto=true, strip=true) — 74 байта, когда
-# `.json()` ни разу не вызван (LTO вычищает метод целиком), 46 877 байт и
-# +5 крейтов в графе (41 → 46), как только он вызван хоть раз. Для крейта,
-# чьи целевые платформы включают браузер и чьи собственные примеры — SSE и
-# байтовые сценарии — этим методом не пользуются, это реальная цена, которую
-# не должен платить каждый потребитель по умолчанию. `test` job в CI уже
-# гоняет `--all-features`, так что путь остаётся под тестами, просто не в
-# дефолтной сборке. Тот же приём, что у reqwest, и по той же причине.
+# `Collected::json`. Off by default: measured on a real wasm32-unknown-unknown
+# build (opt-level=z, lto=true, strip=true) — 74 bytes when `.json()` is never
+# called (LTO strips the method entirely), 46,877 bytes and +5 crates in the
+# graph (41 → 46) the moment it's called even once. For a crate whose target
+# platforms include the browser, and whose own examples — SSE and byte
+# scenarios — never touch this method, that's a real cost no consumer should
+# pay by default. CI's `test` job already runs `--all-features`, so the path
+# stays under test, just not in the default build. Same trick reqwest uses,
+# for the same reason.
 json = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
@@ -40,31 +40,32 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
 http-ng-proto = { workspace = true }
-# Только для `Collected::json`, за фичей `json` (см. `[features]` выше). Не в
-# `[workspace.dependencies]`: больше нигде в вертикали не требуется (как и
-# `futures-executor` ниже, локальная зависимость одного крейта).
+# Only for `Collected::json`, behind the `json` feature (see `[features]`
+# above). Not in `[workspace.dependencies]`: nothing else in the vertical
+# needs it (same as `futures-executor` below, a single-crate local
+# dependency).
 serde         = { version = "1", default-features = false, features = ["std"], optional = true }
 serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
 
-# Таргет-зависимые опциональные зависимости `DefaultTransport` (см.
-# `default-transport` в `[features]` выше и doc-комментарий
-# `DefaultTransport` в `src/lib.rs`). `not(target_family = "wasm")` — та же
-# граница, что и у самого type alias'а: native-ветка одна на все не-wasm
-# таргеты (linux/macos/windows), браузер (`wasm32-unknown-unknown`,
-# вертикаль 3) и WASI (`wasm32-wasip2`, уже собранная в `http-ng-wasi`
-# отдельно от этого механизма — см. doc-комментарий про то, почему) в этот
-# блок не попадают вовсе, так что при сборке под них `default-transport`
-# просто ничего не тянет — компиляция падает на отсутствующем
-# `DefaultTransport`, а не молча собирает пустой транспорт.
+# Target-dependent optional dependencies for `DefaultTransport` (see
+# `default-transport` in `[features]` above and the `DefaultTransport` doc
+# comment in `src/lib.rs`). `not(target_family = "wasm")` is the same
+# boundary as the type alias itself: the native branch is one for every
+# non-wasm target (linux/macos/windows); the browser (`wasm32-unknown-
+# unknown`, vertical 3) and WASI (`wasm32-wasip2`, already wired up
+# separately in `http-ng-wasi` — see its doc comment for why) don't fall
+# into this block at all, so building for them leaves `default-transport`
+# pulling in nothing — compilation fails on the missing `DefaultTransport`
+# rather than silently assembling an empty transport.
 #
-# `http-ng-tls-rustls` несёт фичу `platform-verifier` не опционально, а
-# принудительно: `Client::new()` (`src/client.rs`) вызывает
-# `Rustls::with_platform_verifier()`, которая сама `#[cfg(feature =
-# "platform-verifier")]` в `http-ng-tls-rustls` — без этой строки
-# `default-transport` собирался бы у транспорта (`Native`), но не у
-# `Client::new()`, который бы попросту не нашёл метод. Найдено проверкой
-# исходников `http-ng-tls-rustls`, не предположено: черновик этой задачи
-# не называл эту строку явно.
+# `http-ng-tls-rustls` carries the `platform-verifier` feature not as
+# optional but as mandatory: `Client::new()` (`src/client.rs`) calls
+# `Rustls::with_platform_verifier()`, which is itself `#[cfg(feature =
+# "platform-verifier")]` in `http-ng-tls-rustls` — without this line
+# `default-transport` would build for the transport (`Native`) but not for
+# `Client::new()`, which would simply fail to find the method. Found by
+# checking `http-ng-tls-rustls`'s sources, not assumed: this task's brief
+# didn't name this line explicitly.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 http-ng-native     = { path = "../http-ng-native",     version = "0.1.0", optional = true }
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio",   version = "0.1.0", optional = true }
@@ -73,18 +74,19 @@ http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", option
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-# derive живёт только здесь: тесту за фичей `json` нужен
-# `#[derive(Deserialize)]`, самому крейту — нет (`Collected::json` принимает
-# уже сериализуемый T снаружи). dev-dependencies не входят в `-e normal`, так
-# что это не считается в графе потребителя даже когда доступно тестам.
+# The derive lives only here: the test behind the `json` feature needs
+# `#[derive(Deserialize)]`, the crate itself doesn't (`Collected::json`
+# takes an already-serializable T from the caller). dev-dependencies aren't
+# part of `-e normal`, so this doesn't count against the consumer's graph
+# even though it's available to tests.
 serde             = { version = "1", features = ["derive"] }
-# `tests/two_runtimes.rs` — сквозной прогон одного обобщённого тела на
-# tokio и на smol без единого `#[cfg]` (Task 14). `webpki-roots`, не
-# `platform-verifier`: тест никогда не выполняет настоящий TLS-хендшейк
-# (сервер отвечает по чистому HTTP), но конструктору `Native::new` всё
-# равно нужен конкретный тип `T: TlsConnect` — `with_webpki_roots()` не
-# требует доступа к системному хранилищу сертификатов и не тянет
-# `rustls-platform-verifier`, которая в dev-контексте не нужна вовсе.
+# `tests/two_runtimes.rs` — an end-to-end run of one generic body on both
+# tokio and smol without a single `#[cfg]` (Task 14). `webpki-roots`, not
+# `platform-verifier`: the test never performs a real TLS handshake (the
+# server answers over plain HTTP), but the `Native::new` constructor still
+# needs a concrete `T: TlsConnect` type — `with_webpki_roots()` doesn't need
+# access to the system certificate store and doesn't pull in
+# `rustls-platform-verifier`, which isn't needed in a dev context anyway.
 http-ng-native     = { path = "../http-ng-native" }
 http-ng-rt         = { path = "../http-ng-rt" }
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio" }

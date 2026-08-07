@@ -1,5 +1,5 @@
-// `Timeouts` определён в `http-ng-core` (Task 8): его читают транспорты из
-// `http::Extensions`, а от `http-ng` они не зависят.
+// `Timeouts` is defined in `http-ng-core` (Task 8): transports read it from
+// `http::Extensions`, and they don't depend on `http-ng`.
 pub use http_ng_core::Timeouts;
 use http_ng_core::{Capabilities, Error, ErrorKind, UnsupportedCapability};
 use http_ng_proto::redirect::RedirectPolicy;
@@ -11,17 +11,17 @@ pub struct Config {
     pub base_url: Option<http::Uri>,
 }
 
-/// Базовый URL непригоден для разрешения этого запроса.
+/// The base URL is unfit to resolve this request against.
 ///
-/// `pub` и реэкспортируется фасадом не для красоты: вызывающая сторона
-/// обязана уметь отличить именно это от любой другой `ErrorKind::Other`
-/// через `Error::source().downcast_ref::<InvalidBaseUrl>()` — тот же приём,
-/// что у `mock::QueueEmpty`. Оба поля публичны, чтобы диагностика называла
-/// конкретную пару, а не только факт.
+/// `pub` and re-exported by the facade, not for looks: the caller must be
+/// able to tell this apart from any other `ErrorKind::Other` via
+/// `Error::source().downcast_ref::<InvalidBaseUrl>()` — the same trick
+/// `mock::QueueEmpty` uses. Both fields are public so the diagnostic names
+/// the specific pair, not just the fact.
 ///
-/// `requested` — `String`, а не `http::Uri`: разрешение работает на СТРОКЕ
-/// до разбора (см. `effective_uri`), и ровно те ссылки, ради которых база
-/// существует, как `http::Uri` не выражаются вовсе.
+/// `requested` is a `String`, not an `http::Uri`: resolution works on the
+/// STRING before parsing (see `effective_uri`), and exactly the references
+/// the base exists for aren't expressible as `http::Uri` at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidBaseUrl {
     pub base: http::Uri,
@@ -39,29 +39,32 @@ impl std::fmt::Display for InvalidBaseUrl {
 }
 impl std::error::Error for InvalidBaseUrl {}
 
-/// URI, по которому запрос действительно уйдёт: `url`, разрешённый
-/// относительно `base`, если база задана.
+/// The URI the request will actually go out on: `url`, resolved against
+/// `base` if a base is set.
 ///
-/// Правило — RFC 3986 §5, ровно то же, каким `redirect::decide` разрешает
-/// `Location:`; общая реализация — `http_ng_proto::uri::resolve_reference`.
-/// Один клиент не должен понимать `/x` двумя способами в зависимости от
-/// того, прислал его сервер или вызывающая сторона.
+/// The rule is RFC 3986 §5, the exact same one `redirect::decide` uses to
+/// resolve `Location:`; the shared implementation is
+/// `http_ng_proto::uri::resolve_reference`. One client shouldn't understand
+/// `/x` two different ways depending on whether the server sent it or the
+/// caller did.
 ///
-/// **Работает на строке, а не на `http::Uri`, и это вынужденно.**
-/// `http::Uri` не умеет представлять path-relative ссылку вообще: `"v1/things"`,
-/// `"search?q=1"` и `""` — все три `InvalidUri` (измерено). А это ровно те
-/// формы, ради которых база и существует: ссылка с ведущим `/` по RFC
-/// ЗАМЕНЯЕТ путь базы целиком, так что если разрешать уже разобранные
-/// `Uri`, путь базы не смог бы повлиять ни на что и настройка была бы
-/// «задать origin», а не «задать базовый URL».
+/// **Works on the string, not on `http::Uri`, and that's forced.**
+/// `http::Uri` can't represent a path-relative reference at all:
+/// `"v1/things"`, `"search?q=1"`, and `""` are all `InvalidUri` (measured).
+/// And these are exactly the forms the base exists for: a reference with a
+/// leading `/` REPLACES the base's path entirely per RFC, so if already-
+/// parsed `Uri`s were resolved, the base's path could never affect
+/// anything and the setting would amount to "set the origin", not "set the
+/// base URL".
 ///
-/// Без базы — обычный разбор: выдумывать за вызывающую сторону схему и
-/// authority неоткуда, а транспорт, которому нужен absolute-form, отвергнет
-/// относительный URI сам и типизированно (`WasiHttp` → `scheme_of`).
+/// Without a base, it's an ordinary parse: there's nowhere to invent a
+/// scheme and authority for the caller from, and a transport that needs
+/// absolute-form will reject a relative URI itself, with its own type
+/// (`WasiHttp` → `scheme_of`).
 ///
-/// До этого раунда функции не существовало вовсе, а `Config::base_url`
-/// писался сеттером и не читался ниоткуда — третий в проекте случай
-/// «сохранили и проигнорировали» и второй в этой же структуре после
+/// Before this round the function didn't exist at all, and `Config::base_url`
+/// was written by a setter and read by nothing — the third "saved and
+/// ignored" case in the project, and the second in this same struct after
 /// `timeouts` (B1).
 pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http::Uri, Error> {
     let Some(base) = base else {
@@ -80,10 +83,11 @@ pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http:
     })
 }
 
-/// «Request-first, client-fallback», поле за полем.
+/// "Request-first, client-fallback", field by field.
 ///
-/// reqwest этого не умеет (issue #2641 не реализован), из-за чего `act-cli`
-/// вынужден строить отдельный `reqwest::Client` на каждый вызов компонента.
+/// reqwest can't do this (issue #2641 is unimplemented), which forces
+/// `act-cli` to build a separate `reqwest::Client` for every component
+/// call.
 pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts {
     match req.get::<Timeouts>() {
         None => *client,
@@ -95,30 +99,30 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
     }
 }
 
-/// Вызывается из `ClientBuilder::build()`. Ни одного тихого no-op.
+/// Called from `ClientBuilder::build()`. Not a single silent no-op.
 ///
-/// Деструктурирует `cfg` без `..`-остатка — по тому же рецепту, что
-/// `Capabilities::none_is_the_conservative_base` в `http-ng-core`: новое
-/// поле в `Config` становится ошибкой компиляции, называющей его, а не тихо
-/// пропускается (то же для полей `Timeouts` — в
-/// `check_timeouts_supported`). `redirect` и `base_url` сегодня намеренно не
-/// проверяются на поддержку — `_` явно фиксирует это решение, а не забывает
-/// про поле.
+/// Destructures `cfg` without a `..`-remainder — the same recipe as
+/// `Capabilities::none_is_the_conservative_base` in `http-ng-core`: a new
+/// field on `Config` becomes a compile error naming it, instead of being
+/// silently skipped (same for `Timeouts` fields, in
+/// `check_timeouts_supported`). `redirect` and `base_url` are deliberately
+/// not checked for support today — the `_` explicitly records that
+/// decision rather than forgetting the field.
 ///
-/// «Не проверяются **на поддержку**» — это про `Capabilities`, и только про
-/// них. Оба поля при этом ПРИМЕНЯЮТСЯ: `base_url` — в `effective_uri` на
-/// каждом запросе, `redirect` — стадией редиректа в `Client::execute`.
-/// Уточнение здесь потому, что прежняя формулировка легко читалась как
-/// «этими полями никто не занимается», а `base_url` ровно таким и был —
-/// сохранялся и не применялся.
+/// "Not checked **for support**" is about `Capabilities`, and only about
+/// that. Both fields ARE applied: `base_url` in `effective_uri` on every
+/// request, `redirect` by the redirect stage in `Client::execute`. This
+/// note exists because the earlier wording read easily as "nobody handles
+/// these fields", and `base_url` used to be exactly that — saved and never
+/// applied.
 ///
-/// `redirect: _` перестанет быть безобидным, как только появится бэкенд с
-/// `RedirectSupport::Internal`: он следует редиректам сам, стадия
-/// `Client`'а не увидит ни одного 3xx, и заданный `RedirectPolicy` станет
-/// ровно тем тихим no-op, против которого построен весь этот модуль. Ни
-/// один существующий бэкенд не `Internal` (`WasiHttp` — `Transparent`, см.
-/// `RedirectSupport`), так что сегодня проверять нечего; триггер —
-/// браузерный `fetch` вертикали 3.
+/// `redirect: _` will stop being harmless the moment a backend with
+/// `RedirectSupport::Internal` shows up: it follows redirects itself, the
+/// `Client`'s stage never sees a single 3xx, and the configured
+/// `RedirectPolicy` becomes exactly the silent no-op this whole module was
+/// built against. No existing backend is `Internal` (`WasiHttp` is
+/// `Transparent`, see `RedirectSupport`), so there's nothing to check
+/// today; the trigger is vertical 3's browser `fetch`.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
@@ -132,17 +136,18 @@ pub fn check_supported(
     check_timeouts_supported(timeouts, caps, backend)
 }
 
-/// Та же проверка, но по одному `Timeouts`, а не по всему `Config` — потому
-/// что `Client::execute` проверяет **слитый** результат
-/// `effective_timeouts`, а не конфигурацию клиента (B1/M3 финального ревью
-/// ветки: до него per-request таймауты не проверялись вовсе, а клиентские
-/// проверялись здесь и не доезжали до транспорта). Общее тело, а не вторая
-/// копия массива `checks`: разойтись эти две проверки не должны, а два
-/// списка фаз разойдутся при первой же новой фазе.
+/// The same check, but over a single `Timeouts` rather than the whole
+/// `Config` — because `Client::execute` checks the **merged** result of
+/// `effective_timeouts`, not the client's configuration (B1/M3 of the
+/// branch's final review: before it, per-request timeouts weren't checked
+/// at all, and client-level ones were checked here but never reached the
+/// transport). One shared body, not a second copy of the `checks` array:
+/// these two checks must not drift apart, and two phase lists will drift
+/// the moment a new phase shows up.
 ///
-/// `pub(crate)`, в отличие от `check_supported`: фасад `http-ng` и так
-/// экспортирует больше плюмбинга, чем стоило бы (находка §6.7 того же
-/// ревью), и увеличивать этот долг новым именем не за чем.
+/// `pub(crate)`, unlike `check_supported`: the `http-ng` facade already
+/// exports more plumbing than it should (finding §6.7 of the same review),
+/// and there's no reason to grow that debt with a new name.
 pub(crate) fn check_timeouts_supported(
     t: &Timeouts,
     caps: &Capabilities,
@@ -197,12 +202,8 @@ mod tests {
             ..Default::default()
         });
         let eff = effective_timeouts(&ext, &client);
-        assert_eq!(eff.connect, secs(9), "запрос перекрывает");
-        assert_eq!(
-            eff.first_byte,
-            secs(2),
-            "остальное падает обратно на клиент"
-        );
+        assert_eq!(eff.connect, secs(9), "request overrides");
+        assert_eq!(eff.first_byte, secs(2), "the rest falls back to the client");
         assert_eq!(eff.between_bytes, secs(3));
     }
 
@@ -254,15 +255,15 @@ mod tests {
         assert!(check_supported(&cfg, &caps, "wasi:http").is_ok());
     }
 
-    // ── доп. проверки: field-by-field, а не all-or-nothing ─────────────
+    // ── extra checks: field-by-field, not all-or-nothing ─────────────
     //
-    // `request_overrides_client_field_by_field` перекрывает `connect` и
-    // проверяет, что `first_byte`/`between_bytes` падают на клиент — это
-    // уже отличает "поле за полем" от "всё или ничего" (наивная реализация
-    // "raз в extensions есть Timeouts — берём его целиком" вернула бы здесь
-    // `None`, а не `client.first_byte`). Тест ниже бьёт по другому полю
-    // (`first_byte`), чтобы то же свойство не было артефактом того, что
-    // `connect` — первое поле структуры.
+    // `request_overrides_client_field_by_field` overrides `connect` and
+    // checks that `first_byte`/`between_bytes` fall back to the client —
+    // that already tells "field by field" apart from "all or nothing" (a
+    // naive "if extensions has a Timeouts — take it whole" implementation
+    // would return `None` here, not `client.first_byte`). The test below
+    // hits a different field (`first_byte`), so the same property isn't
+    // an artifact of `connect` being the struct's first field.
     #[test]
     fn request_overrides_first_byte_only_leaves_others_from_client() {
         let client = Timeouts {
@@ -276,25 +277,29 @@ mod tests {
             ..Default::default()
         });
         let eff = effective_timeouts(&ext, &client);
-        assert_eq!(eff.connect, secs(1), "не перекрыт запросом — берём клиента");
-        assert_eq!(eff.first_byte, secs(9), "запрос перекрывает");
+        assert_eq!(
+            eff.connect,
+            secs(1),
+            "not overridden by request — take the client's"
+        );
+        assert_eq!(eff.first_byte, secs(9), "request overrides");
         assert_eq!(
             eff.between_bytes,
             secs(3),
-            "не перекрыт запросом — берём клиента"
+            "not overridden by request — take the client's"
         );
     }
 
-    // ── доп. проверки: check_supported называет ИМЕННО ту фазу ──────────
+    // ── extra checks: check_supported names the RIGHT phase ──────────
     //
-    // `unsupported_timeout_is_an_error_not_a_silent_noop` покрывает только
-    // `between_bytes`. Раз `checks` в `check_supported` — массив из трёх
-    // независимых троек, ошибка малого рефакторинга (например, копипаста
-    // индекса) могла бы вернуть верную ошибку для одной фазы и неверную
-    // (не то поле в `what`, либо не та фаза триггерит ошибку) для двух
-    // других незамеченной. Проверяем все три фазы по отдельности: у каждой
-    // запрошено только это поле, и не поддерживается в `Capabilities`
-    // только оно же.
+    // `unsupported_timeout_is_an_error_not_a_silent_noop` covers only
+    // `between_bytes`. Since `checks` in `check_supported` is an array of
+    // three independent triples, a small refactor slip (say, a copy-pasted
+    // index) could return the right error for one phase and a wrong one
+    // (wrong field in `what`, or the wrong phase triggering the error) for
+    // the other two, unnoticed. Check all three phases separately: each
+    // one requests only that field, and only that same field is
+    // unsupported in `Capabilities`.
     #[test]
     fn unsupported_connect_is_named_connect_not_another_phase() {
         let cfg = Config {

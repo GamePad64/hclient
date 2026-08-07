@@ -1,8 +1,8 @@
-//! Решение о следовании редиректу. Чистая функция: ни I/O, ни времени.
+//! The decision to follow a redirect. A pure function: no I/O, no time.
 
 use http::{HeaderName, HeaderValue, Method, StatusCode, Uri};
 
-/// Заголовки, снимаемые при уходе на другой origin.
+/// Headers stripped when moving to a different origin.
 pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::AUTHORIZATION,
     http::header::COOKIE,
@@ -22,33 +22,34 @@ impl Default for RedirectPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Follow {
-    /// Куда переходить. Может нести userinfo, присланный сервером
-    /// (`https://user:pass@host/`) — он не входит в origin по RFC 6454 и
-    /// поэтому не участвует в `strip_sensitive`, но это чужой ввод: не
-    /// продвигать его молча в доверенные credentials ниже по стеку.
+    /// Where to go. May carry userinfo sent by the server
+    /// (`https://user:pass@host/`) — it's not part of the origin per RFC
+    /// 6454 and so doesn't factor into `strip_sensitive`, but it's foreign
+    /// input: don't silently promote it into trusted credentials further
+    /// down the stack.
     pub uri: Uri,
     pub method: Method,
-    /// Снять `SENSITIVE_HEADERS`: сменился host или scheme.
+    /// Strip `SENSITIVE_HEADERS`: the host or scheme changed.
     pub strip_sensitive: bool,
-    /// Метод понижен до GET — тело отправлять нельзя.
+    /// The method was downgraded to GET — the body must not be sent.
     pub drop_body: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectAction {
-    /// Не редирект, либо редирект без `Location` — вернуть ответ как есть.
+    /// Not a redirect, or a redirect with no `Location` — return the response as-is.
     Stop,
     Follow(Follow),
     TooManyRedirects,
     InvalidLocation,
 }
 
-/// Порт с подстановкой умолчания по схеме.
+/// Port with the scheme's default substituted in.
 ///
-/// `http::Uri` сохраняет явный `:443`, а цель редиректа проходит через
-/// `url::Url`, который его срезает. Без нормализации `https://a:443/` →
-/// `https://a/` читался бы как смена origin и снимал бы Authorization
-/// на каждом хопе.
+/// `http::Uri` preserves an explicit `:443`, while the redirect target goes
+/// through `url::Url`, which strips it. Without normalization,
+/// `https://a:443/` → `https://a/` would read as an origin change and
+/// strip Authorization on every hop.
 fn port_of(uri: &Uri) -> Option<u16> {
     uri.port_u16().or_else(|| match uri.scheme_str() {
         Some("https") => Some(443),
@@ -65,9 +66,10 @@ pub fn decide(
     status: StatusCode,
     location: Option<&[u8]>,
 ) -> RedirectAction {
-    // ВАЖНО: не `status.is_redirection()`. 300 Multiple Choices требует выбора
-    // пользователя, 304 Not Modified — ответ на условный запрос, 305 Use Proxy
-    // не следуют с 2014 года, 306 зарезервирован.
+    // IMPORTANT: not `status.is_redirection()`. 300 Multiple Choices
+    // requires user choice, 304 Not Modified is the response to a
+    // conditional request, 305 Use Proxy hasn't been followed since 2014,
+    // 306 is reserved.
     if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
         return RedirectAction::Stop;
     }
@@ -78,22 +80,22 @@ pub fn decide(
         return RedirectAction::TooManyRedirects;
     }
 
-    // Валидируем как значение заголовка: отвергает C0-управляющие и DEL,
-    // то есть закрывает CR/LF-инъекцию через Location. Но НЕ через `to_str()`
-    // — тот отвергает и любой байт >= 0x80, а сырой не-ASCII (не
-    // percent-encoded путь, IDN-хост) формально невалиден и при этом
-    // встречается на практике; reqwest через tower_http его следует
-    // (`str::from_utf8` на сырых байтах, без ограничения по ASCII).
+    // Validate as a header value: rejects C0 control bytes and DEL, i.e.
+    // closes CR/LF injection through Location. But NOT via `to_str()` —
+    // that also rejects any byte >= 0x80, and raw non-ASCII (a
+    // non-percent-encoded path, an IDN host) is formally invalid yet shows
+    // up in practice; reqwest, through tower_http, follows it
+    // (`str::from_utf8` on the raw bytes, with no ASCII restriction).
     let Ok(header) = HeaderValue::from_bytes(location) else {
         return RedirectAction::InvalidLocation;
     };
     let Ok(location) = core::str::from_utf8(header.as_bytes()) else {
         return RedirectAction::InvalidLocation;
     };
-    // Общая с `ClientBuilder::base_url` реализация RFC 3986 §5 — см.
-    // doc-комментарий `crate::uri`: правило разрешения относительной ссылки
-    // в этом клиенте ровно одно, независимо от того, прислал её сервер в
-    // `Location:` или вызывающая сторона в `client.get(..)`.
+    // Shared with `ClientBuilder::base_url`'s RFC 3986 §5 implementation —
+    // see `crate::uri`'s doc comment: this client has exactly one rule for
+    // resolving a relative reference, regardless of whether the server sent
+    // it in `Location:` or the caller sent it in `client.get(..)`.
     let Some(uri) = crate::uri::resolve_reference(current, location) else {
         return RedirectAction::InvalidLocation;
     };
@@ -102,8 +104,9 @@ pub fn decide(
         || uri.scheme_str() != current.scheme_str()
         || port_of(&uri) != port_of(current);
 
-    // 303 — всегда GET (кроме HEAD). 301/302 с POST браузеры и reqwest
-    // понижают до GET; расхождение с 303 было бы непоследовательным.
+    // 303 is always GET (except HEAD). Browsers and reqwest downgrade
+    // 301/302 with POST to GET; diverging from 303 here would be
+    // inconsistent.
     let downgrade = match status.as_u16() {
         303 => *method != Method::HEAD,
         301 | 302 => *method == Method::POST,
@@ -275,12 +278,13 @@ mod tests {
         assert!(matches!(r, RedirectAction::InvalidLocation));
     }
 
-    // ── ревью: находка 1 — асимметрия портов по умолчанию ──────────────
+    // ── review: finding 1 — asymmetry in default ports ──────────────
     //
-    // `current` приходит как есть от вызывающего (может нести явный `:443`),
-    // а цель редиректа всегда проходит через `url::Url`, который срезает
-    // порт по умолчанию при сериализации. Без нормализации это читалось бы
-    // как смена origin и снимало бы Authorization на каждом хопе.
+    // `current` arrives as-is from the caller (it may carry an explicit
+    // `:443`), while the redirect target always goes through `url::Url`,
+    // which strips the default port on serialization. Without
+    // normalization this would read as an origin change and strip
+    // Authorization on every hop.
 
     #[test]
     fn keeps_sensitive_when_current_has_explicit_default_port() {
@@ -327,11 +331,11 @@ mod tests {
         );
     }
 
-    // ── ревью: находка 2 — содержимое SENSITIVE_HEADERS не было проверено ──
+    // ── review: finding 2 — the contents of SENSITIVE_HEADERS were unchecked ──
     //
-    // Мутационный тест ревью: подмена константы на три копии content-type
-    // оставляла все двенадцать тестов зелёными, потому что ничто не читало
-    // саму константу.
+    // Review's mutation test: replacing the constant with three copies of
+    // content-type left all twelve tests green, because nothing read the
+    // constant itself.
 
     #[test]
     fn sensitive_headers_are_exactly_the_three_credential_carriers() {
@@ -352,8 +356,8 @@ mod tests {
         };
         assert!(f.strip_sensitive);
 
-        // Симулируем то, что должен делать вызывающий код: снять только
-        // SENSITIVE_HEADERS, остальные заголовки оставить как есть.
+        // Simulate what the caller code must do: strip only
+        // SENSITIVE_HEADERS, leave the rest of the headers untouched.
         let mut headers = http::HeaderMap::new();
         headers.insert(http::header::AUTHORIZATION, "secret".parse().unwrap());
         headers.insert(
@@ -375,14 +379,14 @@ mod tests {
         );
     }
 
-    // ── ревью: находка 3 — валидация Location была строже экосистемы ──────
+    // ── review: finding 3 — Location validation was stricter than the ecosystem ──────
     //
-    // `HeaderValue::from_bytes` закрывает CR/LF-инъекцию (C0-управляющие и
-    // DEL). Но `to_str()` дополнительно отвергает любой байт >= 0x80, а
-    // сырой не-ASCII в Location — не percent-encoded путь, «сырой» IDN-хост
-    // — встречается на практике; reqwest (через tower_http) такой Location
-    // следует. Проверяем обе стороны: не-ASCII проходит, управляющие байты —
-    // нет.
+    // `HeaderValue::from_bytes` closes CR/LF injection (C0 control bytes
+    // and DEL). But `to_str()` additionally rejects any byte >= 0x80, and
+    // raw non-ASCII in Location — a non-percent-encoded path, a "raw" IDN
+    // host — shows up in practice; reqwest (through tower_http) follows
+    // such a Location. We check both sides: non-ASCII passes, control
+    // bytes don't.
 
     #[test]
     fn raw_utf8_path_is_followed() {

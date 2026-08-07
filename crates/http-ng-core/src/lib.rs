@@ -1,12 +1,12 @@
-//! Контракт плагина http-ng.
+//! Plugin contract for http-ng.
 //!
-//! Инвариант крейта: seam-трейты (`Transport`, `Timer`, middleware) не
-//! объявляют бонды `Send`/`Sync` — Send-ность выводится auto-traits через
-//! `impl Future`. Единственное документированное исключение — [`Error`]: её
-//! `source` обязан быть `Send + Sync`, иначе `Client::execute` не мог бы
-//! вернуть Send-совместимый future ни для одного бэкенда. Бонд
-//! `T::Error: Send + Sync + 'static` живёт в собственном where-клаузе
-//! `Client::execute`, а не в самом трейте `Transport`.
+//! Crate invariant: the seam traits (`Transport`, `Timer`, middleware) do not
+//! declare `Send`/`Sync` bounds — Send-ness is inferred by auto-traits
+//! through `impl Future`. The one documented exception is [`Error`]: its
+//! `source` must be `Send + Sync`, or `Client::execute` could not return a
+//! Send-compatible future for any backend. The bound
+//! `T::Error: Send + Sync + 'static` lives in `Client::execute`'s own
+//! where-clause, not on the `Transport` trait itself.
 #![forbid(unsafe_code)]
 
 mod body;

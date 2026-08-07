@@ -1,14 +1,16 @@
-//! TLS-бэкенд на rustls.
+//! TLS backend on rustls.
 //!
-//! **rustls не появляется в публичном API `http-ng`** — иначе выход 0.24 стал
-//! бы нашим ломающим релизом. В 0.24 ожидаются: удалённая фича `std`,
-//! провайдеры вынесены в `rustls-ring`/`rustls-aws-lc-rs`, MSRV 1.85,
-//! edition 2024. Один переписанный крейт заложен в бюджет.
+//! **rustls does not appear in `http-ng`'s public API** — otherwise 0.24's
+//! release would become our own breaking release. 0.24 is expected to
+//! bring: the `std` feature removed, providers split out into
+//! `rustls-ring`/`rustls-aws-lc-rs`, MSRV 1.85, edition 2024. One
+//! rewritten crate is budgeted for.
 //!
-//! `forbid`, не `deny` (см. `http-ng-rt`, Task 2 вертикали 2, fix round 1):
-//! `deny(unsafe_code)` переопределим локальным `#[allow(unsafe_code)]` рядом
-//! с самим `unsafe`-блоком — компилятор промолчит; `forbid` не переопределим
-//! изнутри крейта никак (`E0453`).
+//! `forbid`, not `deny` (see `http-ng-rt`, Task 2 of vertical 2, fix round
+//! 1): `deny(unsafe_code)` could be overridden with a local
+//! `#[allow(unsafe_code)]` next to the `unsafe` block itself — the
+//! compiler would stay silent; `forbid` cannot be overridden from inside
+//! the crate at all (`E0453`).
 #![forbid(unsafe_code)]
 
 mod stream;
@@ -23,9 +25,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug)]
 pub struct Rustls {
     base: Arc<rustls::ClientConfig>,
-    /// ALPN задаётся на коннект, а `ClientConfig` его хранит внутри — поэтому
-    /// кэшируем конфиг по набору ALPN. Без кэша каждый запрос строил бы
-    /// конфиг заново, а это самая дорогая операция в rustls.
+    /// ALPN is set on connect, and `ClientConfig` stores it internally —
+    /// so the config is cached per ALPN set. Without the cache, every
+    /// request would rebuild the config from scratch, and that's the
+    /// most expensive operation in rustls.
     by_alpn: Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>,
 }
 
@@ -47,13 +50,14 @@ impl Rustls {
         ))
     }
 
-    /// Брифом этой задачи предлагался `rustls_platform_verifier::tls_config()`
-    /// — такой свободной функции в `rustls-platform-verifier` 0.7 не
-    /// существует (проверено по исходникам крейта: `src/lib.rs` экспортирует
-    /// только два extension-трейта, `BuilderVerifierExt` на
-    /// `ConfigBuilder<ClientConfig, WantsVerifier>` и `ConfigVerifierExt` на
-    /// самом `ClientConfig`). Верный вызов — метод расширения
-    /// `ClientConfig::with_platform_verifier()` из `ConfigVerifierExt`.
+    /// This task's brief suggested `rustls_platform_verifier::tls_config()`
+    /// — no such free function exists in `rustls-platform-verifier` 0.7
+    /// (checked against the crate's source: `src/lib.rs` exports only two
+    /// extension traits, `BuilderVerifierExt` on
+    /// `ConfigBuilder<ClientConfig, WantsVerifier>` and
+    /// `ConfigVerifierExt` on `ClientConfig` itself). The correct call is
+    /// the extension method `ClientConfig::with_platform_verifier()` from
+    /// `ConfigVerifierExt`.
     #[cfg(feature = "platform-verifier")]
     pub fn with_platform_verifier() -> Result<Self, Error> {
         use rustls_platform_verifier::ConfigVerifierExt;
@@ -79,23 +83,25 @@ impl Rustls {
     }
 }
 
-/// Приводит версию протокола, которую rustls называет по имени варианта
-/// перечисления (`TLSv1_3`, с подчёркиванием), к реестровому виду, который
-/// документирует `TlsInfo::protocol_version` (`"TLSv1.3"`, с точкой) —
-/// том же самом, что использует `SSL_get_version()` у OpenSSL.
+/// Normalizes the protocol version, which rustls names after its enum
+/// variant (`TLSv1_3`, underscored), to the registry form
+/// `TlsInfo::protocol_version` documents (`"TLSv1.3"`, dotted) — the same
+/// one OpenSSL's `SSL_get_version()` uses.
 ///
-/// Явный `match` по четырём вариантам семейства TLS, а не
-/// `format!("{v:?}").replace('_', ".")`: `rustls::ProtocolVersion`
-/// `#[non_exhaustive]` и несёт варианты вне семейства TLS (`SSLv2`, `SSLv3`,
-/// `DTLSv1_0/2/3`) и вариант `Unknown(u16)` для нераспознанных значений.
-/// `rustls::ClientConnection` в этой сборке (фичи `std`, `ring`, `tls12`, без
-/// `unstable_apis`) никогда не согласует ничего вне TLS 1.0–1.3 — ни SSL, ни
-/// DTLS вообще не реализованы в rustls, — так что ветка `_ => None` здесь не
-/// наблюдаема на практике, а не угадана: это защита от будущего расширения
-/// перечисления, а не текущий кейс. `None` — тот же принцип, что уже
-/// установлен доком `TlsInfo::protocol_version`: значение, которое нечем
-/// подтвердить как одну из четырёх канонических строк, честно остаётся
-/// `None`, а не становится приблизительной или заведомо неверной строкой.
+/// An explicit `match` over the four TLS-family variants, not
+/// `format!("{v:?}").replace('_', ".")`: `rustls::ProtocolVersion` is
+/// `#[non_exhaustive]` and carries variants outside the TLS family
+/// (`SSLv2`, `SSLv3`, `DTLSv1_0/2/3`) plus an `Unknown(u16)` variant for
+/// unrecognized values. `rustls::ClientConnection` in this build
+/// (features `std`, `ring`, `tls12`, without `unstable_apis`) never
+/// negotiates anything outside TLS 1.0–1.3 — neither SSL nor DTLS is
+/// implemented in rustls at all — so the `_ => None` arm here is not
+/// observable in practice, not a guess: it's a guard against a future
+/// enum extension, not the current case. `None` follows the same
+/// principle `TlsInfo::protocol_version`'s doc already establishes: a
+/// value with nothing to back it up as one of the four canonical strings
+/// honestly stays `None`, rather than becoming an approximate or
+/// outright wrong string.
 fn normalize_protocol_version(v: rustls::ProtocolVersion) -> Option<String> {
     use rustls::ProtocolVersion::*;
     match v {
@@ -107,30 +113,30 @@ fn normalize_protocol_version(v: rustls::ProtocolVersion) -> Option<String> {
     }
 }
 
-/// Приводит имя cipher suite, которое rustls называет по имени варианта
-/// перечисления, к реестровому имени IANA, которое документирует
-/// `TlsInfo::cipher_suite`.
+/// Normalizes the cipher suite name, which rustls names after its enum
+/// variant, to the IANA registry name `TlsInfo::cipher_suite` documents.
 ///
-/// Только у сьютов TLS 1.3 имя варианта несёт версионный инфикс `13`
-/// (`TLS13_AES_128_GCM_SHA256` и ещё четыре константы в
-/// `rustls::CipherSuite`) — этот инфикс IANA в имени сьюта не использует
-/// (`TLS_AES_128_GCM_SHA256`), и его обязана снять реализация. У сьютов
-/// TLS 1.2 и старше rustls уже называет вариант ровно так, как называет его
-/// IANA (`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`) — снимать нечего, имя
-/// проходит без изменений.
+/// Only TLS 1.3 suites carry a `13` version infix in their variant name
+/// (`TLS13_AES_128_GCM_SHA256` and four more constants in
+/// `rustls::CipherSuite`) — IANA does not use this infix in the suite
+/// name (`TLS_AES_128_GCM_SHA256`), and the implementation must strip it.
+/// For TLS 1.2-and-older suites, rustls already names the variant exactly
+/// as IANA does (`TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`) — nothing to
+/// strip, the name passes through unchanged.
 ///
-/// `CipherSuite::as_str()` — не `format!("{suite:?}")`: у этого перечисления
-/// (сгенерировано макросом `enum_builder!`, `rustls/src/msgs/macros.rs`) есть
-/// публичный `as_str(&self) -> Option<&'static str>`, вопреки брифу этой
-/// задачи, утверждавшему обратное. Он не отменяет саму нормализацию —
-/// для распознанных вариантов `as_str()` возвращает буквально то же имя, что
-/// и `Debug` (`"TLS13_AES_128_GCM_SHA256"`), с тем же инфиксом, который
-/// всё равно предстоит снять, — но, в отличие от `Debug`, честно отдаёт
-/// `None` для `CipherSuite::Unknown(_)`, а не форматированную строку вида
-/// `"CipherSuite(0x9999)"`, которую потом пришлось бы отдельно распознавать
-/// и отбрасывать. Сьют, для которого криптопровайдер не смог подобрать
-/// имя, — тот же случай "нечем подтвердить каноническую форму", что и у
-/// `normalize_protocol_version`: честный `None`, а не изобретённая строка.
+/// `CipherSuite::as_str()`, not `format!("{suite:?}")`: this enum
+/// (generated by the `enum_builder!` macro, `rustls/src/msgs/macros.rs`)
+/// has a public `as_str(&self) -> Option<&'static str>`, contrary to what
+/// this task's brief claimed. That doesn't make the normalization
+/// unnecessary — for recognized variants, `as_str()` returns literally
+/// the same name as `Debug` (`"TLS13_AES_128_GCM_SHA256"`), with the same
+/// infix that still needs stripping — but, unlike `Debug`, it honestly
+/// returns `None` for `CipherSuite::Unknown(_)`, rather than a formatted
+/// string like `"CipherSuite(0x9999)"` that would then need to be
+/// separately recognized and discarded. A suite the crypto provider
+/// couldn't name is the same case as
+/// `normalize_protocol_version`'s "nothing to back up the canonical
+/// form": an honest `None`, not an invented string.
 fn normalize_cipher_suite(suite: rustls::CipherSuite) -> Option<String> {
     let raw = suite.as_str()?;
     Some(match raw.strip_prefix("TLS13_") {
@@ -156,7 +162,7 @@ impl TlsConnect for Rustls {
             .map_err(|e| Error::new(ErrorKind::Tls, e))?;
         let mut stream = TlsStream::new(io, conn);
 
-        // Довести хендшейк до конца, прежде чем отдавать поток наверх.
+        // Drive the handshake to completion before handing the stream back up.
         std::future::poll_fn(|cx| {
             let (io, conn) = stream.parts_mut();
             loop {
@@ -196,18 +202,18 @@ impl TlsConnect for Rustls {
 mod tests {
     use super::*;
 
-    // Мутационно проверено вручную (см. отчёт задачи): временный откат
-    // `normalize_protocol_version`/`normalize_cipher_suite` на
-    // `format!("{v:?}")`/`format!("{:?}", s.suite())` красит именно эти два
-    // теста в красный — `TLSv1_3`/`TLS13_AES_128_GCM_SHA256` не совпадают с
-    // ожидаемыми `TLSv1.3`/`TLS_AES_128_GCM_SHA256`.
+    // Manually mutation-tested (see the task report): temporarily
+    // reverting `normalize_protocol_version`/`normalize_cipher_suite` to
+    // `format!("{v:?}")`/`format!("{:?}", s.suite())` turns exactly these
+    // two tests red — `TLSv1_3`/`TLS13_AES_128_GCM_SHA256` don't match the
+    // expected `TLSv1.3`/`TLS_AES_128_GCM_SHA256`.
 
     #[test]
     fn protocol_version_is_dotted_not_underscored() {
         assert_eq!(
             normalize_protocol_version(rustls::ProtocolVersion::TLSv1_3).as_deref(),
             Some("TLSv1.3"),
-            "Debug rustls печатает TLSv1_3 (подчёркивание) — реестровая форма с точкой"
+            "rustls's Debug prints TLSv1_3 (underscore) — the registry form is dotted"
         );
         assert_eq!(
             normalize_protocol_version(rustls::ProtocolVersion::TLSv1_2).as_deref(),
@@ -225,10 +231,10 @@ mod tests {
 
     #[test]
     fn protocol_version_outside_tls_family_is_none_not_a_guess() {
-        // Ни SSL, ни DTLS, ни нераспознанный ordinal — rustls-клиент никогда
-        // не согласует ни то, ни другое; ветка защищает `#[non_exhaustive]`
-        // перечисление от будущего расширения, а не текущий наблюдаемый
-        // случай.
+        // Neither SSL, nor DTLS, nor an unrecognized ordinal — the rustls
+        // client never negotiates any of these; the arm guards the
+        // `#[non_exhaustive]` enum against a future extension, not a case
+        // observed today.
         assert_eq!(
             normalize_protocol_version(rustls::ProtocolVersion::SSLv3),
             None
@@ -244,7 +250,7 @@ mod tests {
         assert_eq!(
             normalize_cipher_suite(rustls::CipherSuite::TLS13_AES_128_GCM_SHA256).as_deref(),
             Some("TLS_AES_128_GCM_SHA256"),
-            "Debug rustls печатает TLS13_AES_128_GCM_SHA256 — реестровое имя IANA без инфикса версии"
+            "rustls's Debug prints TLS13_AES_128_GCM_SHA256 — the IANA registry name has no version infix"
         );
         assert_eq!(
             normalize_cipher_suite(rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256).as_deref(),
@@ -263,9 +269,9 @@ mod tests {
 
     #[test]
     fn cipher_suite_unrecognised_by_the_provider_is_none_not_debug_passthrough() {
-        // `CipherSuite::Unknown(_)` — вариант, для которого нет реестрового
-        // имени вообще; `Debug` напечатал бы `CipherSuite(0x9999)`, что не
-        // является ни валидным именем IANA, ни честным `None`.
+        // `CipherSuite::Unknown(_)` is a variant with no registry name at
+        // all; `Debug` would print `CipherSuite(0x9999)`, which is
+        // neither a valid IANA name nor an honest `None`.
         assert_eq!(
             normalize_cipher_suite(rustls::CipherSuite::Unknown(0x9999)),
             None

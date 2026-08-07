@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-dns-system"
 version = "0.1.0"
-description = "Системный резолвер (getaddrinfo) для http-ng через способность Blocking"
+description = "System resolver (getaddrinfo) for http-ng via the Blocking capability"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

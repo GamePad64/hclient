@@ -1,65 +1,69 @@
-# http-ng v0.1, вертикаль 1: ядро + proto + WASI — план реализации
+# http-ng v0.1, vertical 1: core + proto + WASI — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Рабочий асинхронный HTTP-клиент, ходящий по сети через `wasi:http` 0.3,
-с портативным ядром, которое ничего не знает ни про hyper, ни про сокеты.
+**Goal:** A working async HTTP client that goes over the network via
+`wasi:http` 0.3, with a portable core that knows nothing about hyper or
+sockets.
 
-**Architecture:** Три крейта. `http-ng-proto` — чистые автоматы без `async`
-(SSE-декодер, логика редиректов). `http-ng-core` — контракт плагина: трейт
-`Transport`, `Capabilities`, `RequestBody`, `Error`, `Timer`. `http-ng` —
-пользовательская поверхность: `Client<T>`, builder, стадии, `Response`,
-SSE-стрим. `http-ng-wasi` — первый транспорт. Ядро и стадии тестируются на хосте
-против мок-транспорта; wasm нужен только для интеграционных тестов транспорта.
+**Architecture:** Three crates. `http-ng-proto` — pure state machines with no
+`async` (SSE decoder, redirect logic). `http-ng-core` — the plugin contract:
+the `Transport` trait, `Capabilities`, `RequestBody`, `Error`, `Timer`.
+`http-ng` — the user-facing surface: `Client<T>`, builder, stages, `Response`,
+the SSE stream. `http-ng-wasi` — the first transport. The core and the stages
+are tested on the host against a mock transport; wasm is only needed for the
+transport's integration tests.
 
-**Tech Stack:** Rust edition 2024, MSRV 1.85 (1.90 для `http-ng-wasi`).
+**Tech Stack:** Rust edition 2024, MSRV 1.85 (1.90 for `http-ng-wasi`).
 `http` 1.5, `http-body` 1.1, `bytes` 1.12, `futures-core` 0.3, `url` 2.5,
-`wasip3` 0.7.0+wasi-0.3.0. Тесты: `proptest` 1.x, `http-body-util` 0.1.
-Никаких async-рантаймов в графе этой вертикали.
+`wasip3` 0.7.0+wasi-0.3.0. Tests: `proptest` 1.x, `http-body-util` 0.1.
+No async runtimes in this vertical's graph.
 
 ## Global Constraints
 
-Эти требования неявно входят в каждую задачу. Значения скопированы из спеки
-`docs/superpowers/specs/2026-08-05-http-ng-design.md`.
+These requirements implicitly apply to every task. Values are copied from the
+spec, `docs/superpowers/specs/2026-08-05-http-ng-design.md`.
 
-- **`http-ng-proto` не имеет в графе `tokio`, `futures-*`, `async-*`** и не
-  содержит ни одного `async fn`. Проверяется в CI (Task 1).
-- **В `http-ng-core` и `http-ng` нет ни одного объявленного бонда `Send`/`Sync`,
-  ни одного `Box<dyn ...>` на горячем пути, ни одного `#[cfg]`-переключаемого
-  трейт-алиаса.** `Send` выводится auto-traits через `impl Future`.
-- **Плагин-трейты живут в модуле `unversioned`** (`Transport`, `Timer`) с
-  докстрингом: «ломающие изменения в этом модуле едут в minor, а не major».
-- **Ни один чужой тип не появляется в публичном API** `http-ng` и
-  `http-ng-core`, кроме `http`, `http-body`, `bytes`, `futures-core`. В
-  частности `wasip3::*` не реэкспортируется.
-- **Неподдерживаемая настройка — типизированная ошибка, никогда тихий no-op.**
-  Ни одного `let _ =` на `Result` от сеттера возможностей.
-- **`default = []` во всех крейтах.**
-- `edition = "2024"`, `rust-version = "1.85"` (кроме `http-ng-wasi`: `"1.90"`).
-- Каждый крейт: `#![deny(unsafe_code)]`, кроме `http-ng-wasi` (там его тоже нет,
-  но deny оставить).
-- Коммиты — на каждом шаге «Commit», сообщение в императиве, префикс
+- **`http-ng-proto` has no `tokio`, `futures-*`, or `async-*` in its graph**
+  and contains not a single `async fn`. Checked in CI (Task 1).
+- **`http-ng-core` and `http-ng` don't declare a single `Send`/`Sync` bound,
+  don't have a single `Box<dyn ...>` on the hot path, and don't have a single
+  `#[cfg]`-switched trait alias.** `Send` is inferred as an auto-trait through
+  `impl Future`.
+- **Plugin traits live in the `unversioned` module** (`Transport`, `Timer`)
+  with a doc string: "breaking changes in this module ship in minor, not
+  major."
+- **No foreign type appears in the public API** of `http-ng` and
+  `http-ng-core`, other than `http`, `http-body`, `bytes`, `futures-core`. In
+  particular, `wasip3::*` is not re-exported.
+- **An unsupported setting is a typed error, never a silent no-op.** Not a
+  single `let _ =` on a `Result` from a capability setter.
+- **`default = []` in every crate.**
+- `edition = "2024"`, `rust-version = "1.85"` (except `http-ng-wasi`: `"1.90"`).
+- Every crate: `#![deny(unsafe_code)]`, except `http-ng-wasi` (which also has
+  none, but keep the deny anyway).
+- Commits — at every "Commit" step, message in the imperative, prefix
   `feat:`/`test:`/`chore:`/`docs:`.
 
-## Файловая структура
+## File layout
 
 ```
 Cargo.toml                             workspace, [workspace.dependencies], lints
-.github/workflows/ci.yml               матрица + проверки инвариантов
+.github/workflows/ci.yml               matrix + invariant checks
 crates/http-ng-proto/
-  src/lib.rs                           реэкспорты, #![no_std]-совместимость не заявляем
-  src/sse/mod.rs                       SseDecoder — публичный API
-  src/sse/lines.rs                     BOM + разбиение на строки через границы чанков
-  src/sse/decode.rs                    поля, накопление события, диспатч
-  src/redirect.rs                      decide() — чистое решение о редиректе
-  fuzz/fuzz_targets/sse.rs             фаззинг декодера
+  src/lib.rs                           re-exports, we don't claim #![no_std] compatibility
+  src/sse/mod.rs                       SseDecoder — public API
+  src/sse/lines.rs                     BOM + line splitting across chunk boundaries
+  src/sse/decode.rs                    fields, event accumulation, dispatch
+  src/redirect.rs                      decide() — the pure redirect decision
+  fuzz/fuzz_targets/sse.rs             fuzzing the decoder
 crates/http-ng-core/
   src/lib.rs
   src/error.rs                         Error, ErrorKind, Phase
   src/body.rs                          RequestBody, RetryKind
   src/caps.rs                          Capabilities, UnsupportedCapability
-  src/timer.rs                         Timer            (модуль unversioned)
-  src/transport.rs                     Transport        (модуль unversioned)
+  src/timer.rs                         Timer            (unversioned module)
+  src/transport.rs                     Transport        (unversioned module)
 crates/http-ng/
   src/lib.rs
   src/config.rs                        Config, Timeouts, RedirectConfig, lookup
@@ -67,36 +71,36 @@ crates/http-ng/
   src/request.rs                       RequestBuilder
   src/response.rs                      Response, Collected
   src/stages/mod.rs
-  src/stages/redirect.rs               применение решения из proto
-  src/sse.rs                           SseStream — реконнект поверх декодера
-  src/mock.rs                          MockTransport, за фичей `test-util`
+  src/stages/redirect.rs               applying the decision from proto
+  src/sse.rs                           SseStream — reconnect on top of the decoder
+  src/mock.rs                          MockTransport, behind the `test-util` feature
 crates/http-ng-wasi/
   src/lib.rs                           WasiHttp: Transport
   src/body.rs                          Body: http_body::Body
-  src/convert.rs                       http <-> wasi, включая honoring сеттеров
+  src/convert.rs                       http <-> wasi, including honoring setters
 ```
 
-**Не входит в эту вертикаль:** `http-ng-native`, `http-ng-rt*`, `http-ng-tls*`,
-`http-ng-dns*`, `http-ng-fetch`, пул, h2/h3, `Negotiate`. Параметр по умолчанию
-`Client<T = DefaultTransport>` появляется в вертикали 2, когда возникнет
-native-транспорт; добавление дефолтного параметра типа — не ломающее изменение.
+**Not part of this vertical:** `http-ng-native`, `http-ng-rt*`, `http-ng-tls*`,
+`http-ng-dns*`, `http-ng-fetch`, the pool, h2/h3, `Negotiate`. The default
+parameter `Client<T = DefaultTransport>` shows up in vertical 2, once a native
+transport exists; adding a default type parameter isn't a breaking change.
 
-**Осознанное отклонение от спеки §10.** Спека относит `http-ng-fetch` к v0.1 на
-том основании, что fetch — единственный бэкенд с рантайм-различиями возможностей
-(duplex в Chrome 131+, нет в Safari), а значит единственная проверка решения о
-рантайм-реестре `Capabilities`. Здесь он отложен в вертикаль 3 ради того, чтобы
-вертикаль 1 давала запускаемый результат. **Следствие: до вертикали 3 решение
-«рантайм-`Capabilities` вместо cfg» остаётся непроверенным.** Если вертикаль 3
-покажет, что реестр не работает, переделка заденет `http-ng-core` — то есть
-Task 8.
+**Deliberate deviation from spec §10.** The spec assigns `http-ng-fetch` to
+v0.1 on the grounds that fetch is the only backend with runtime differences in
+capabilities (duplex in Chrome 131+, absent in Safari), and is therefore the
+only test of the runtime-registry decision for `Capabilities`. Here it's
+deferred to vertical 3, so vertical 1 delivers a runnable result. **Consequence:
+until vertical 3, the "runtime-`Capabilities` instead of cfg" decision remains
+unverified.** If vertical 3 shows the registry doesn't work, the rework touches
+`http-ng-core` — i.e., Task 8.
 
-**В другом репозитории:** фасад совместимости `wasi-fetch` 0.3 живёт в
-`/mnt/devenv/workspace/act/wasi-fetch` и здесь не планируется. Он делается после
-того, как `http-ng-wasi` заработает, отдельным изменением в том репозитории.
+**In another repository:** the `wasi-fetch` 0.3 compatibility facade lives in
+`/mnt/devenv/workspace/act/wasi-fetch` and isn't planned here. It's done after
+`http-ng-wasi` works, as a separate change in that repository.
 
 ---
 
-### Task 1: Workspace, инварианты и CI
+### Task 1: Workspace, invariants and CI
 
 **Files:**
 - Create: `Cargo.toml`
@@ -104,12 +108,12 @@ Task 8.
 - Create: `rustfmt.toml`
 
 **Interfaces:**
-- Consumes: ничего
-- Produces: `[workspace.dependencies]` с пинами `http = "1.5"`, `http-body = "1.1"`,
+- Consumes: nothing
+- Produces: `[workspace.dependencies]` pinning `http = "1.5"`, `http-body = "1.1"`,
   `bytes = "1.12"`, `futures-core = "0.3"`, `url = "2.5"`, `http-body-util = "0.1"`,
-  `proptest = "1"`. Все последующие крейты берут их через `.workspace = true`.
+  `proptest = "1"`. Every later crate picks them up via `.workspace = true`.
 
-- [ ] **Step 1: Создать workspace-манифест**
+- [ ] **Step 1: Create the workspace manifest**
 
 ```toml
 # Cargo.toml
@@ -142,31 +146,31 @@ missing_debug_implementations = "warn"
 unexpected_cfgs   = { level = "warn", check-cfg = [] }
 ```
 
-- [ ] **Step 2: Создать rustfmt.toml**
+- [ ] **Step 2: Create rustfmt.toml**
 
 ```toml
 edition = "2024"
 max_width = 100
 ```
 
-- [ ] **Step 3: Проверить, что пустой workspace собирается**
+- [ ] **Step 3: Verify the empty workspace builds**
 
 Run: `cargo metadata --no-deps --format-version 1 > /dev/null && echo OK`
-Expected: `OK` (членов пока нет — это нормально, `members = ["crates/*"]` по
-пустому каталогу не ошибка только если каталог существует; создать его:
-`mkdir -p crates`).
+Expected: `OK` (there are no members yet — that's fine; `members =
+["crates/*"]` over an empty directory is only an error if the directory
+doesn't exist; create it: `mkdir -p crates`).
 
-- [ ] **Step 4: Написать CI с проверками инвариантов**
+- [ ] **Step 4: Write CI with invariant checks**
 
 ```yaml
 # .github/workflows/ci.yml
 name: ci
 on: [push, pull_request]
 
-# Крейты появляются по ходу вертикали. Каждая проверка активируется, как только
-# её крейт существует, и до тех пор ЯВНО печатает, что пропущена. Молчаливый
-# зелёный чек опаснее красного: после опечатки в имени крейта он остаётся
-# зелёным навсегда.
+# Crates show up as the vertical progresses. Each check activates as soon as
+# its crate exists, and until then EXPLICITLY prints that it was skipped. A
+# silent green check is more dangerous than a red one: after a typo in a
+# crate name it stays green forever.
 
 jobs:
   test:
@@ -181,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::в workspace ещё нет крейтов — тесты пропущены"
+            echo "::notice::no crates in the workspace yet — tests skipped"
             exit 0
           fi
           cargo test --workspace --all-features
@@ -199,7 +203,7 @@ jobs:
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
-            echo "::notice::крейтов ядра ещё нет — MSRV не проверяется"
+            echo "::notice::no core crates yet — MSRV not checked"
             exit 0
           fi
           cargo check $pkgs --all-features
@@ -214,12 +218,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi ещё нет — сборка под wasip2 пропущена"
+            echo "::notice::http-ng-wasi doesn't exist yet — wasip2 build skipped"
             exit 0
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
 
-  # ── инварианты из спеки ───────────────────────────────────────────────
+  # ── invariants from the spec ────────────────────────────────────────────
   proto-is-sans-io:
     runs-on: ubuntu-latest
     steps:
@@ -230,12 +234,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            echo "::notice::http-ng-proto doesn't exist yet — check skipped"
             exit 0
           fi
           if cargo tree -p http-ng-proto -e normal --prefix none \
                | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
-            echo "::error::http-ng-proto подцепил async-зависимость"
+            echo "::error::http-ng-proto picked up an async dependency"
             exit 1
           fi
       - name: no async fn in http-ng-proto
@@ -243,11 +247,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto/src ]; then
-            echo "::notice::http-ng-proto ещё нет — проверка пропущена"
+            echo "::notice::http-ng-proto doesn't exist yet — check skipped"
             exit 0
           fi
           if grep -rn "async fn" crates/http-ng-proto/src; then
-            echo "::error::sans-io крейт содержит async fn"
+            echo "::error::a sans-io crate contains async fn"
             exit 1
           fi
 
@@ -265,14 +269,14 @@ jobs:
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
-            echo "::notice::крейтов ядра ещё нет — проверка пропущена"
+            echo "::notice::no core crates yet — check skipped"
             exit 0
           fi
-          # Ищем ОБЪЯВЛЕННЫЕ бонды, а не упоминания в доках: строки, у которых
-          # содержимое начинается с комментария, отбрасываются вторым grep.
+          # We look for DECLARED bounds, not mentions in docs: lines whose
+          # content starts with a comment are dropped by the second grep.
           if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
-            echo "::error::в ядре объявлен бонд Send или Sync"
+            echo "::error::a Send or Sync bound is declared in the core"
             exit 1
           fi
 ```
@@ -287,27 +291,27 @@ git commit -m "chore: workspace skeleton with spec invariants enforced in CI"
 
 ---
 
-### Task 2: `http-ng-proto` — разбиение SSE-потока на строки
+### Task 2: `http-ng-proto` — splitting the SSE stream into lines
 
-Самая коварная часть SSE: BOM снимается ровно один, три терминатора строк
-(CRLF/LF/CR), и всё это должно переживать разрыв на границе чанка — включая
-разрыв внутри BOM и разрыв между CR и LF.
+The trickiest part of SSE: exactly one BOM gets stripped, three line
+terminators (CRLF/LF/CR), and all of it has to survive being split at a chunk
+boundary — including a split inside the BOM and a split between CR and LF.
 
 **Files:**
 - Create: `crates/http-ng-proto/Cargo.toml`
 - Create: `crates/http-ng-proto/src/lib.rs`
 - Create: `crates/http-ng-proto/src/sse/mod.rs`
 - Create: `crates/http-ng-proto/src/sse/lines.rs`
-- Test: внутри `crates/http-ng-proto/src/sse/lines.rs` (`#[cfg(test)] mod tests`)
+- Test: inside `crates/http-ng-proto/src/sse/lines.rs` (`#[cfg(test)] mod tests`)
 
 **Interfaces:**
-- Consumes: ничего
+- Consumes: nothing
 - Produces: `pub(crate) struct LineSplitter`; `LineSplitter::new() -> Self`;
   `LineSplitter::push(&mut self, chunk: &[u8])`;
-  `LineSplitter::next_line(&mut self) -> Option<Vec<u8>>` — возвращает строку
-  **без** терминатора; `LineSplitter::buffered_len(&self) -> usize`.
+  `LineSplitter::next_line(&mut self) -> Option<Vec<u8>>` — returns the line
+  **without** its terminator; `LineSplitter::buffered_len(&self) -> usize`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-proto/src/sse/lines.rs
@@ -334,7 +338,7 @@ mod tests {
     #[test]
     fn strips_exactly_one_bom() {
         assert_eq!(collect(&[b"\xEF\xBB\xBFa\n"]), vec![b"a".to_vec()]);
-        // второй BOM — обычные данные
+        // a second BOM is ordinary data
         assert_eq!(collect(&[b"\xEF\xBB\xBF\xEF\xBB\xBFa\n"]),
                    vec![b"\xEF\xBB\xBFa".to_vec()]);
     }
@@ -370,19 +374,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что тесты падают**
+- [ ] **Step 2: Run it and confirm the tests fail**
 
 Run: `cargo test -p http-ng-proto`
 Expected: FAIL — `cannot find type LineSplitter`.
 
-- [ ] **Step 3: Создать манифест и корень крейта**
+- [ ] **Step 3: Create the manifest and crate root**
 
 ```toml
 # crates/http-ng-proto/Cargo.toml
 [package]
 name = "http-ng-proto"
 version = "0.1.0"
-description = "Чистые автоматы протокольных слоёв http-ng: без I/O, без async, без рантайма"
+description = "Pure state machines for http-ng's protocol layers: no I/O, no async, no runtime"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -402,10 +406,10 @@ workspace = true
 
 ```rust
 // crates/http-ng-proto/src/lib.rs
-//! Чистые автоматы протокольных слоёв http-ng.
+//! Pure state machines for http-ng's protocol layers.
 //!
-//! Инвариант крейта: ни одного `async fn`, ни одной зависимости от рантайма.
-//! Всё, что зависит от времени, принимает `now` параметром. Проверяется в CI.
+//! Crate invariant: not a single `async fn`, not a single dependency on a
+//! runtime. Anything time-dependent takes `now` as a parameter. Checked in CI.
 #![deny(unsafe_code)]
 
 pub mod redirect;
@@ -418,21 +422,22 @@ mod lines;
 pub(crate) use lines::LineSplitter;
 ```
 
-- [ ] **Step 4: Реализовать `LineSplitter`**
+- [ ] **Step 4: Implement `LineSplitter`**
 
 ```rust
 // crates/http-ng-proto/src/sse/lines.rs
 
-/// Разбивает байтовый поток на строки по правилам WHATWG EventSource:
-/// снимается ровно один ведущий BOM, терминаторы — CRLF, LF или одиночный CR.
-/// Переживает разрыв чанка в любом месте, включая середину BOM и между CR и LF.
+/// Splits a byte stream into lines per the WHATWG EventSource rules:
+/// exactly one leading BOM is stripped, terminators are CRLF, LF, or a lone
+/// CR. Survives a chunk split anywhere, including mid-BOM and between CR and LF.
 #[derive(Debug)]
 pub(crate) struct LineSplitter {
     buf: Vec<u8>,
-    /// Сколько байт BOM уже подтверждено. 3 = BOM обработан (снят или отвергнут).
+    /// How many BOM bytes have been confirmed so far. 3 = the BOM has been
+    /// resolved (either stripped or rejected).
     bom_seen: usize,
     bom_done: bool,
-    /// Предыдущий байт был CR — следующий LF надо проглотить.
+    /// The previous byte was CR — the next LF needs to be swallowed.
     pending_cr: bool,
 }
 
@@ -446,17 +451,17 @@ impl LineSplitter {
     pub(crate) fn push(&mut self, chunk: &[u8]) {
         let mut rest = chunk;
 
-        // Фаза BOM: копим до трёх байт, решаем один раз.
+        // BOM phase: accumulate up to three bytes, decide once.
         while !self.bom_done && !rest.is_empty() {
             let b = rest[0];
             if b == BOM[self.bom_seen] {
                 self.bom_seen += 1;
                 rest = &rest[1..];
                 if self.bom_seen == 3 {
-                    self.bom_done = true; // BOM снят целиком
+                    self.bom_done = true; // the BOM has been fully stripped
                 }
             } else {
-                // Не BOM: то, что накопили, — обычные данные.
+                // Not a BOM: whatever we accumulated is ordinary data.
                 self.buf.extend_from_slice(&BOM[..self.bom_seen]);
                 self.bom_done = true;
             }
@@ -466,7 +471,7 @@ impl LineSplitter {
             if self.pending_cr {
                 self.pending_cr = false;
                 if b == b'\n' {
-                    continue; // LF после CR уже учтён терминатором
+                    continue; // the LF after CR is already accounted for by the terminator
                 }
             }
             self.buf.push(b);
@@ -477,12 +482,12 @@ impl LineSplitter {
         let pos = self.buf.iter().position(|&b| b == b'\n' || b == b'\r')?;
         let term = self.buf[pos];
         let line: Vec<u8> = self.buf.drain(..pos).collect();
-        self.buf.remove(0); // сам терминатор
+        self.buf.remove(0); // the terminator itself
         if term == b'\r' {
             if self.buf.first() == Some(&b'\n') {
-                self.buf.remove(0); // CRLF внутри буфера
+                self.buf.remove(0); // CRLF inside the buffer
             } else if self.buf.is_empty() {
-                self.pending_cr = true; // CR в конце — LF может прийти следующим чанком
+                self.pending_cr = true; // CR at the end — the LF may arrive in the next chunk
             }
         }
         Some(line)
@@ -494,15 +499,15 @@ impl LineSplitter {
 }
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng-proto`
-Expected: PASS, семь тестов.
+Expected: PASS, seven tests.
 
-- [ ] **Step 6: Добавить property-тест на инвариант «нарезка чанков не влияет на результат»**
+- [ ] **Step 6: Add a property test for the invariant "chunking doesn't affect the result"**
 
 ```rust
-// добавить в тот же mod tests
+// add to the same mod tests
 use proptest::prelude::*;
 
 proptest! {
@@ -517,7 +522,7 @@ proptest! {
 }
 ```
 
-- [ ] **Step 7: Запустить и убедиться, что property-тест проходит**
+- [ ] **Step 7: Run it and confirm the property test passes**
 
 Run: `cargo test -p http-ng-proto -- --include-ignored`
 Expected: PASS.
@@ -531,15 +536,15 @@ git commit -m "feat(proto): SSE line splitter surviving chunk boundaries and BOM
 
 ---
 
-### Task 3: `http-ng-proto` — декодер событий SSE
+### Task 3: `http-ng-proto` — the SSE event decoder
 
 **Files:**
 - Create: `crates/http-ng-proto/src/sse/decode.rs`
 - Modify: `crates/http-ng-proto/src/sse/mod.rs`
-- Test: внутри `decode.rs`
+- Test: inside `decode.rs`
 
 **Interfaces:**
-- Consumes: `LineSplitter` из Task 2.
+- Consumes: `LineSplitter` from Task 2.
 - Produces:
   - `pub enum SseEvent { Message { event: Option<String>, data: String, id: Option<String> }, Comment(String), Retry(core::time::Duration) }`
   - `pub enum SseError { EventTooLarge { limit: usize } }`
@@ -548,7 +553,7 @@ git commit -m "feat(proto): SSE line splitter surviving chunk boundaries and BOM
     `SseDecoder::next(&mut self) -> Option<SseEvent>`;
     `SseDecoder::last_event_id(&self) -> Option<&str>`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-proto/src/sse/decode.rs
@@ -633,7 +638,7 @@ mod tests {
 
     #[test]
     fn field_without_colon_is_name_with_empty_value() {
-        // "data" эквивалентно "data:"
+        // "data" is equivalent to "data:"
         assert_eq!(events(b"data\ndata: x\n\n"),
             vec![SseEvent::Message { event: None, data: "\nx".into(), id: None }]);
     }
@@ -647,12 +652,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-proto`
 Expected: FAIL — `cannot find type SseDecoder`.
 
-- [ ] **Step 3: Реализовать декодер**
+- [ ] **Step 3: Implement the decoder**
 
 ```rust
 // crates/http-ng-proto/src/sse/decode.rs
@@ -660,9 +665,9 @@ use super::LineSplitter;
 use core::time::Duration;
 use std::collections::VecDeque;
 
-/// Событие SSE. `Comment` и `Retry` — первого класса намеренно: без первого
-/// нельзя построить детектор keep-alive, без второго теряются блоки,
-/// содержащие только `retry:`.
+/// An SSE event. `Comment` and `Retry` are first-class deliberately: without
+/// the first you can't build a keep-alive detector, without the second you
+/// lose blocks that contain only `retry:`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SseEvent {
     Message { event: Option<String>, data: String, id: Option<String> },
@@ -672,7 +677,7 @@ pub enum SseEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SseError {
-    /// Превышен лимит размера сырого события. Фатально и **не ретраится**.
+    /// The raw event size limit was exceeded. Fatal and **not retried**.
     EventTooLarge { limit: usize },
 }
 
@@ -690,12 +695,12 @@ impl std::error::Error for SseError {}
 pub struct SseDecoder {
     lines: LineSplitter,
     max_event_size: usize,
-    /// Байт, накопленных в текущем событии (сырых, до парсинга).
+    /// Bytes accumulated in the current event (raw, before parsing).
     event_bytes: usize,
     data: String,
     event_type: Option<String>,
     last_event_id: Option<String>,
-    /// Событие текущего блока уже имело поле `id`.
+    /// The current block's event already had an `id` field.
     ready: VecDeque<SseEvent>,
 }
 
@@ -730,8 +735,8 @@ impl SseDecoder {
             }
             self.handle_line(&line);
         }
-        // Незавершённая строка тоже считается — иначе лимит обходится
-        // бесконечной строкой без терминатора.
+        // An unfinished line counts too — otherwise the limit can be bypassed
+        // with an infinite line that never gets a terminator.
         if self.event_bytes + self.lines.buffered_len() > self.max_event_size {
             return Err(SseError::EventTooLarge { limit: self.max_event_size });
         }
@@ -744,8 +749,9 @@ impl SseDecoder {
 
     fn handle_line(&mut self, line: &[u8]) {
         if line[0] == b':' {
-            // Снимается РОВНО один ведущий пробел, как и у полей.
-            // `trim_start_matches(' ')` снял бы все и потерял бы значащие.
+            // EXACTLY one leading space is stripped, same as for fields.
+            // `trim_start_matches(' ')` would strip all of them and lose
+            // significant ones.
             let raw = &line[1..];
             let raw = if raw.first() == Some(&b' ') { &raw[1..] } else { raw };
             self.ready.push_back(SseEvent::Comment(
@@ -762,15 +768,15 @@ impl SseDecoder {
         };
         match name {
             b"data" => {
-                // WHATWG: к буферу дописывается значение И перевод строки.
-                // Один хвостовой перевод снимается при диспатче. Схема
-                // «разделитель только между непустыми» даёт другой результат
-                // для пустого первого поля.
+                // WHATWG: the value AND a newline get appended to the buffer.
+                // One trailing newline is stripped on dispatch. A "separator
+                // only between non-empty parts" scheme would give a
+                // different result for an empty first field.
                 self.data.push_str(&String::from_utf8_lossy(value));
                 self.data.push('\n');
             }
             b"event" => {
-                // Повтор поля — последнее побеждает, а НЕ ошибка.
+                // A repeated field — last one wins, NOT an error.
                 self.event_type = Some(String::from_utf8_lossy(value).into_owned());
             }
             b"id" => {
@@ -785,15 +791,15 @@ impl SseDecoder {
                     }
                 }
             }
-            _ => {} // неизвестное поле игнорируется
+            _ => {} // an unknown field is ignored
         }
     }
 
     fn dispatch(&mut self) {
         let event = self.event_type.take();
         if self.data.is_empty() {
-            // Пустой буфер данных: сброс без диспатча.
-            // last_event_id при этом НЕ сбрасывается.
+            // Empty data buffer: reset without dispatching.
+            // last_event_id is NOT reset in this case.
             return;
         }
         let mut data = core::mem::take(&mut self.data);
@@ -807,7 +813,7 @@ impl SseDecoder {
 }
 ```
 
-- [ ] **Step 4: Подключить модуль**
+- [ ] **Step 4: Wire up the module**
 
 ```rust
 // crates/http-ng-proto/src/sse/mod.rs
@@ -817,15 +823,15 @@ mod lines;
 pub use decode::{SseDecoder, SseError, SseEvent};
 pub(crate) use lines::LineSplitter;
 
-/// Лимит по умолчанию — совпадает с `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE`,
-/// чтобы адаптер не менял поведение.
+/// The default limit — matches `rmcp::DEFAULT_MAX_SSE_EVENT_SIZE`, so the
+/// adapter doesn't change behavior.
 pub const DEFAULT_MAX_EVENT_SIZE: usize = 16 * 1024 * 1024;
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng-proto`
-Expected: PASS, все двенадцать тестов декодера плюс тесты Task 2.
+Expected: PASS, all twelve decoder tests plus Task 2's tests.
 
 - [ ] **Step 6: Commit**
 
@@ -836,7 +842,7 @@ git commit -m "feat(proto): WHATWG-conformant SSE decoder with first-class comme
 
 ---
 
-### Task 4: `http-ng-proto` — фазз-таргет для SSE
+### Task 4: `http-ng-proto` — a fuzz target for SSE
 
 **Files:**
 - Create: `crates/http-ng-proto/fuzz/Cargo.toml`
@@ -844,15 +850,15 @@ git commit -m "feat(proto): WHATWG-conformant SSE decoder with first-class comme
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
-- Consumes: `SseDecoder::{new, push, next}` из Task 3.
-- Produces: ничего для кода; CI-job `fuzz-smoke`.
+- Consumes: `SseDecoder::{new, push, next}` from Task 3.
+- Produces: nothing for code; the `fuzz-smoke` CI job.
 
-- [ ] **Step 1: Установить cargo-fuzz**
+- [ ] **Step 1: Install cargo-fuzz**
 
 Run: `cargo install cargo-fuzz --locked`
-Expected: успешная установка (требует nightly для запуска, но не для установки).
+Expected: successful install (needs nightly to run, but not to install).
 
-- [ ] **Step 2: Создать фазз-таргет**
+- [ ] **Step 2: Create the fuzz target**
 
 ```toml
 # crates/http-ng-proto/fuzz/Cargo.toml
@@ -885,28 +891,28 @@ bench = false
 use libfuzzer_sys::fuzz_target;
 use http_ng_proto::sse::SseDecoder;
 
-// Инвариант: декодер никогда не паникует и никогда не растёт сверх лимита.
+// Invariant: the decoder never panics and never grows past the limit.
 fuzz_target!(|data: &[u8]| {
     const LIMIT: usize = 4096;
     let mut d = SseDecoder::new(LIMIT);
     for chunk in data.chunks(7) {
         if d.push(chunk).is_err() {
-            return; // EventTooLarge — легальный терминальный исход
+            return; // EventTooLarge is a legitimate terminal outcome
         }
         while d.next().is_some() {}
     }
 });
 ```
 
-- [ ] **Step 3: Прогнать фаззер коротко**
+- [ ] **Step 3: Run the fuzzer briefly**
 
 Run: `cd crates/http-ng-proto/fuzz && cargo +nightly fuzz run sse -- -max_total_time=60`
-Expected: 60 секунд без паник и без падений.
+Expected: 60 seconds with no panics and no crashes.
 
-- [ ] **Step 4: Добавить smoke-job в CI**
+- [ ] **Step 4: Add a smoke job to CI**
 
 ```yaml
-  # добавить в .github/workflows/ci.yml
+  # add to .github/workflows/ci.yml
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -926,19 +932,19 @@ git commit -m "test(proto): fuzz the SSE decoder in CI"
 
 ---
 
-### Task 5: `http-ng-proto` — решение о редиректе
+### Task 5: `http-ng-proto` — the redirect decision
 
-Чистая функция. Исправляет три дефекта нынешнего цикла в `wasi-fetch`: 304/305
-не следуются, чувствительные заголовки снимаются при смене host **и scheme**,
-301/302 с POST понижаются до GET наравне с 303.
+A pure function. Fixes three defects in `wasi-fetch`'s current loop: 304/305
+aren't followed, sensitive headers get stripped on a host **or** scheme
+change, 301/302 with POST get downgraded to GET the same as 303.
 
 **Files:**
 - Create: `crates/http-ng-proto/src/redirect.rs`
 - Modify: `crates/http-ng-proto/src/lib.rs`
-- Test: внутри `redirect.rs`
+- Test: inside `redirect.rs`
 
 **Interfaces:**
-- Consumes: ничего
+- Consumes: nothing
 - Produces:
   - `pub struct RedirectPolicy { pub limit: u8 }`
   - `pub struct Follow { pub uri: http::Uri, pub method: http::Method, pub strip_sensitive: bool, pub drop_body: bool }`
@@ -947,7 +953,7 @@ git commit -m "test(proto): fuzz the SSE decoder in CI"
   - `pub const SENSITIVE_HEADERS: [http::HeaderName; 3]` — `authorization`,
     `cookie`, `proxy-authorization`.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-proto/src/redirect.rs
@@ -1056,20 +1062,20 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-proto redirect`
 Expected: FAIL — `cannot find function decide`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-proto/src/redirect.rs
-//! Решение о следовании редиректу. Чистая функция: ни I/O, ни времени.
+//! The decision on whether to follow a redirect. A pure function: no I/O, no time.
 
 use http::{HeaderName, Method, StatusCode, Uri};
 
-/// Заголовки, снимаемые при уходе на другой origin.
+/// Headers stripped when moving to a different origin.
 pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::AUTHORIZATION,
     http::header::COOKIE,
@@ -1089,15 +1095,15 @@ impl Default for RedirectPolicy {
 pub struct Follow {
     pub uri: Uri,
     pub method: Method,
-    /// Снять `SENSITIVE_HEADERS`: сменился host или scheme.
+    /// Strip `SENSITIVE_HEADERS`: the host or scheme changed.
     pub strip_sensitive: bool,
-    /// Метод понижен до GET — тело отправлять нельзя.
+    /// The method was downgraded to GET — no body may be sent.
     pub drop_body: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectAction {
-    /// Не редирект, либо редирект без `Location` — вернуть ответ как есть.
+    /// Not a redirect, or a redirect with no `Location` — return the response as-is.
     Stop,
     Follow(Follow),
     TooManyRedirects,
@@ -1112,9 +1118,9 @@ pub fn decide(
     status: StatusCode,
     location: Option<&[u8]>,
 ) -> RedirectAction {
-    // ВАЖНО: не `status.is_redirection()`. 300 Multiple Choices требует выбора
-    // пользователя, 304 Not Modified — ответ на условный запрос, 305 Use Proxy
-    // не следуют с 2014 года, 306 зарезервирован.
+    // IMPORTANT: not `status.is_redirection()`. 300 Multiple Choices requires
+    // a user choice, 304 Not Modified is a response to a conditional request,
+    // 305 Use Proxy hasn't been followed since 2014, 306 is reserved.
     if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
         return RedirectAction::Stop;
     }
@@ -1140,8 +1146,8 @@ pub fn decide(
         || uri.scheme_str() != current.scheme_str()
         || uri.port_u16() != current.port_u16();
 
-    // 303 — всегда GET (кроме HEAD). 301/302 с POST браузеры и reqwest
-    // понижают до GET; расхождение с 303 было бы непоследовательным.
+    // 303 is always GET (except HEAD). Browsers and reqwest downgrade
+    // 301/302 with POST to GET; diverging from 303 here would be inconsistent.
     let downgrade = match status.as_u16() {
         303 => *method != Method::HEAD,
         301 | 302 => *method == Method::POST,
@@ -1158,12 +1164,12 @@ pub fn decide(
 }
 ```
 
-- [ ] **Step 4: Подключить и запустить тесты**
+- [ ] **Step 4: Wire it up and run the tests**
 
-`crates/http-ng-proto/src/lib.rs` уже содержит `pub mod redirect;` (Task 2, Step 3).
+`crates/http-ng-proto/src/lib.rs` already contains `pub mod redirect;` (Task 2, Step 3).
 
 Run: `cargo test -p http-ng-proto`
-Expected: PASS, двенадцать тестов редиректа плюс всё предыдущее.
+Expected: PASS, twelve redirect tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
@@ -1174,16 +1180,16 @@ git commit -m "feat(proto): redirect decision honouring 304/305 and stripping on
 
 ---
 
-### Task 6: `http-ng-core` — Error и ErrorKind
+### Task 6: `http-ng-core` — Error and ErrorKind
 
 **Files:**
 - Create: `crates/http-ng-core/Cargo.toml`
 - Create: `crates/http-ng-core/src/lib.rs`
 - Create: `crates/http-ng-core/src/error.rs`
-- Test: внутри `error.rs`
+- Test: inside `error.rs`
 
 **Interfaces:**
-- Consumes: ничего
+- Consumes: nothing
 - Produces:
   - `pub enum ErrorKind { Resolve, Connect, Tls, Redirect, Timeout(Phase), Body, Decode, Status, Unsupported, Other }` (`#[non_exhaustive]`)
   - `pub enum Phase { Connect, FirstByte, BetweenBytes, Total }`
@@ -1191,7 +1197,7 @@ git commit -m "feat(proto): redirect decision honouring 304/305 and stripping on
     `Error::is_timeout()`, `Error::is_redirect()`, `Error::is_connect()`
   - `impl std::error::Error for Error`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-core/src/error.rs
@@ -1209,7 +1215,7 @@ mod tests {
     fn preserves_kind_and_source_without_stringifying() {
         let e = Error::new(ErrorKind::Resolve, Src);
         assert_eq!(e.kind(), &ErrorKind::Resolve);
-        // Источник доступен целиком — не подстрокой сообщения.
+        // The source is available whole — not as a substring of a message.
         let src = std::error::Error::source(&e).unwrap();
         assert!(src.downcast_ref::<Src>().is_some());
     }
@@ -1230,7 +1236,7 @@ mod tests {
 
     #[test]
     fn error_is_not_forced_send() {
-        // Ядро не объявляет Send: ошибка от !Send-источника всё равно строится.
+        // The core doesn't declare Send: an error from a !Send source still builds.
         struct NotSend(std::rc::Rc<()>);
         impl std::fmt::Debug for NotSend {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "ns") }
@@ -1244,19 +1250,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-core`
-Expected: FAIL — крейта ещё нет.
+Expected: FAIL — the crate doesn't exist yet.
 
-- [ ] **Step 3: Создать крейт и реализовать**
+- [ ] **Step 3: Create the crate and implement**
 
 ```toml
 # crates/http-ng-core/Cargo.toml
 [package]
 name = "http-ng-core"
 version = "0.1.0"
-description = "Контракт плагина http-ng: Transport, Capabilities, RequestBody, Error, Timer"
+description = "http-ng's plugin contract: Transport, Capabilities, RequestBody, Error, Timer"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1273,10 +1279,10 @@ workspace = true
 
 ```rust
 // crates/http-ng-core/src/lib.rs
-//! Контракт плагина http-ng.
+//! http-ng's plugin contract.
 //!
-//! Инвариант крейта: ни одного объявленного бонда `Send`/`Sync`. Send-ность
-//! выводится auto-traits через `impl Future`.
+//! Crate invariant: not a single declared `Send`/`Sync` bound. Send-ness is
+//! inferred as an auto-trait through `impl Future`.
 #![deny(unsafe_code)]
 
 mod body;
@@ -1298,8 +1304,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase { Connect, FirstByte, BetweenBytes, Total }
 
-/// Категория ошибки. Существует, чтобы потребителю не приходилось
-/// классифицировать ошибки подстрочным матчингом по `Display`.
+/// The error's category. Exists so a consumer doesn't have to classify
+/// errors by substring-matching on `Display`.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -1315,9 +1321,9 @@ pub enum ErrorKind {
     Other,
 }
 
-/// `Clone` намеренно: непрозрачная и неклонируемая ошибка reqwest — источник
-/// постоянных жалоб (reqwest#1053). `Arc<dyn Error>` не требует `Send`,
-/// поэтому auto-trait прозрачность доходит и до ошибок.
+/// `Clone` on purpose: reqwest's opaque, non-cloneable error is a source
+/// of constant complaints (reqwest#1053). `Arc<dyn Error>` doesn't require
+/// `Send`, so auto-trait transparency reaches errors too.
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
@@ -1348,15 +1354,15 @@ impl std::error::Error for Error {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-core error`
-Expected: PASS, четыре теста.
+Expected: PASS, four tests.
 
-**Модули объявлять по мере появления, а не комментировать.** В этой задаче
-`lib.rs` содержит только `mod error;` и `pub use error::…`; `body`, `caps` и
-`unversioned` добавляются в Task 7, 8 и 9 соответственно. Закомментированный
-код в коммите — дефект.
+**Declare modules as they appear, don't comment them out.** At this task,
+`lib.rs` contains only `mod error;` and `pub use error::…`; `body`, `caps` and
+`unversioned` get added in Task 7, 8 and 9 respectively. Commented-out code
+in a commit is a defect.
 
 - [ ] **Step 5: Commit**
 
@@ -1367,15 +1373,15 @@ git commit -m "feat(core): typed Error with kind enum, Clone and preserved sourc
 
 ---
 
-### Task 7: `http-ng-core` — RequestBody с контрактом replay
+### Task 7: `http-ng-core` — RequestBody with a replay contract
 
 **Files:**
 - Create: `crates/http-ng-core/src/body.rs`
 - Modify: `crates/http-ng-core/src/lib.rs`
-- Test: внутри `body.rs`
+- Test: inside `body.rs`
 
 **Interfaces:**
-- Consumes: ничего
+- Consumes: nothing
 - Produces:
   - `pub enum RetryKind { Free, ViaFactory, Impossible }`
   - `pub enum RequestBody { Empty, Full(bytes::Bytes), Rewindable(RewindFactory), Streaming(BoxedStream) }`
@@ -1384,7 +1390,7 @@ git commit -m "feat(core): typed Error with kind enum, Clone and preserved sourc
   - `RequestBody::rewind(&self) -> Option<RequestBody>`
   - `RequestBody::size_hint(&self) -> Option<u64>`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-core/src/body.rs
@@ -1421,42 +1427,42 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-core body`
 Expected: FAIL — `cannot find type RequestBody`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-core/src/body.rs
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// Можно ли переиграть это тело — известно **до** отправки.
+/// Whether this body can be replayed — known **before** sending.
 ///
-/// `reqwest::Request::try_clone() -> Option<Request>` отвечает на тот же вопрос
-/// после того, как retry-слой уже решил ретраить, и поэтому молча выключает
-/// ретраи на стриминговых телах.
+/// `reqwest::Request::try_clone() -> Option<Request>` answers the same
+/// question after the retry layer has already decided to retry, and so it
+/// silently disables retries on streaming bodies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryKind {
-    /// Переигрывается бесплатно.
+    /// Replayed for free.
     Free,
-    /// Переигрывается вызовом фабрики.
+    /// Replayed by calling a factory.
     ViaFactory,
-    /// Переиграть нельзя.
+    /// Cannot be replayed.
     Impossible,
 }
 
 pub type RewindFactory = Arc<dyn Fn() -> RequestBody>;
 
-/// Тело запроса с явным контрактом переигрывания.
+/// A request body with an explicit replay contract.
 pub enum RequestBody {
     Empty,
     Full(Bytes),
     Rewindable(RewindFactory),
-    /// Однопроходное тело. Конкретный поток задаёт транспорт; в v0.1 ядру
-    /// достаточно знать, что переиграть его нельзя.
+    /// A single-pass body. The concrete stream is supplied by the transport;
+    /// in v0.1 the core only needs to know it can't be replayed.
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin>),
 }
 
@@ -1508,7 +1514,7 @@ impl Default for RequestBody {
 }
 ```
 
-- [ ] **Step 4: Раскомментировать `mod body;` и `pub use` в `lib.rs`, запустить тесты**
+- [ ] **Step 4: Uncomment `mod body;` and `pub use` in `lib.rs`, run the tests**
 
 Run: `cargo test -p http-ng-core`
 Expected: PASS.
@@ -1522,32 +1528,32 @@ git commit -m "feat(core): RequestBody with replay contract knowable before send
 
 ---
 
-### Task 8: `http-ng-core` — Capabilities и UnsupportedCapability
+### Task 8: `http-ng-core` — Capabilities and UnsupportedCapability
 
 **Files:**
 - Create: `crates/http-ng-core/src/caps.rs`
 - Modify: `crates/http-ng-core/src/lib.rs`
-- Test: внутри `caps.rs`
+- Test: inside `caps.rs`
 
 **Interfaces:**
-- Consumes: ничего
+- Consumes: nothing
 - Produces:
-  - `pub struct Capabilities` (`#[non_exhaustive]`, `Debug`, `Clone`) с полями из
-    спеки §4.6
+  - `pub struct Capabilities` (`#[non_exhaustive]`, `Debug`, `Clone`) with the
+    fields from spec §4.6
   - `pub enum RedirectSupport { None, Internal, Configurable, Inspectable }`
   - `pub enum TlsSupport { None, ServerTrustCallbackOnly, Full }`
   - `pub enum UpgradeSupport { None, H1, ExtendedConnect, Both }`
   - `pub struct TimeoutSupport { pub connect: bool, pub first_byte: bool, pub between_bytes: bool }`
-  - `pub struct Timeouts { pub connect: Option<Duration>, pub first_byte: Option<Duration>, pub between_bytes: Option<Duration> }` (`Copy`, `Default` = все `None`)
+  - `pub struct Timeouts { pub connect: Option<Duration>, pub first_byte: Option<Duration>, pub between_bytes: Option<Duration> }` (`Copy`, `Default` = all `None`)
   - `pub struct UnsupportedCapability { pub what: &'static str, pub backend: &'static str }`
-  - `Capabilities::none() -> Self` — всё выключено, база для бэкендов
+  - `Capabilities::none() -> Self` — everything off, the base for backends
 
-> **Почему `Timeouts` здесь, а не в `http-ng`.** Транспорты читают их из
-> `http::Extensions` запроса, а `http-ng-wasi` зависит только от
-> `http-ng-core`. Определи мы `Timeouts` в `http-ng`, транспорт не смог бы их
-> увидеть, и per-request таймауты были бы недостижимы.
+> **Why `Timeouts` lives here, and not in `http-ng`.** Transports read them
+> from the request's `http::Extensions`, and `http-ng-wasi` depends only on
+> `http-ng-core`. Had we defined `Timeouts` in `http-ng`, the transport
+> couldn't have seen them, and per-request timeouts would be unreachable.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng-core/src/caps.rs
@@ -1582,12 +1588,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-core caps`
 Expected: FAIL.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng-core/src/caps.rs
@@ -1595,13 +1601,13 @@ use http::HeaderName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectSupport {
-    /// Редиректов нет и наблюдать нечего.
+    /// No redirects, nothing to observe.
     None,
-    /// Бэкенд следует сам, мы не управляем и не видим (wasi:http).
+    /// The backend follows on its own; we don't control or see it (wasi:http).
     Internal,
-    /// Мы задаём политику.
+    /// We set the policy.
     Configurable,
-    /// Мы задаём политику и видим каждый хоп.
+    /// We set the policy and see every hop.
     Inspectable,
 }
 
@@ -1618,14 +1624,15 @@ pub struct TimeoutSupport {
     pub between_bytes: bool,
 }
 
-/// Тройка таймаутов — форма `wasi:http`, богатейшая из ambient-моделей.
+/// The timeout triple — the `wasi:http` shape, the richest of the ambient
+/// models.
 ///
-/// В fetch схлопывается в один `AbortController`, в native раскладывается на
-/// коннектор / ожидание ответа / idle тела. Один `Duration` выбрасывает
-/// информацию, которой WASI-бэкенд умеет пользоваться.
+/// In fetch it collapses into a single `AbortController`; in native it
+/// spreads across connector / awaiting response / body idle. A single
+/// `Duration` would throw away information the WASI backend knows how to use.
 ///
-/// Живёт в `http-ng-core`, потому что транспорты читают её из
-/// `http::Extensions` запроса, а от `http-ng` они не зависят.
+/// Lives in `http-ng-core` because transports read it from the request's
+/// `http::Extensions`, and they don't depend on `http-ng`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Option<core::time::Duration>,
@@ -1633,10 +1640,10 @@ pub struct Timeouts {
     pub between_bytes: Option<core::time::Duration>,
 }
 
-/// Что транспорт умеет **в этом процессе, сейчас**.
+/// What the transport can do **in this process, right now**.
 ///
-/// Именно рантайм, а не `cfg!`: один wasm-бинарь работает и в Chrome
-/// (streaming request body есть с 131), и в Safari (нет).
+/// Runtime, deliberately, not `cfg!`: one wasm binary works in both Chrome
+/// (streaming request body since 131) and Safari (no).
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Capabilities {
@@ -1659,7 +1666,7 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Всё выключено. База, от которой бэкенд включает то, что действительно умеет.
+    /// Everything off. The base a backend turns on from, for whatever it actually supports.
     pub const fn none() -> Self {
         Self {
             streaming_request_body: false,
@@ -1682,10 +1689,10 @@ impl Capabilities {
     }
 }
 
-/// Настройка, которую выбранный транспорт не может выполнить.
+/// A setting the chosen transport cannot honor.
 ///
-/// Возвращается из `build()`, а не игнорируется молча. Образец — сам wasi:http,
-/// где сеттеры возвращают `request-options-error::not-supported`.
+/// Returned from `build()`, not silently ignored. The model is `wasi:http`
+/// itself, whose setters return `request-options-error::not-supported`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedCapability {
     pub what: &'static str,
@@ -1700,7 +1707,7 @@ impl std::fmt::Display for UnsupportedCapability {
 impl std::error::Error for UnsupportedCapability {}
 ```
 
-- [ ] **Step 4: Раскомментировать в `lib.rs`, запустить тесты**
+- [ ] **Step 4: Uncomment in `lib.rs`, run the tests**
 
 Run: `cargo test -p http-ng-core`
 Expected: PASS.
@@ -1714,7 +1721,7 @@ git commit -m "feat(core): runtime Capabilities registry and typed UnsupportedCa
 
 ---
 
-### Task 9: `http-ng-core` — Transport и Timer в модуле `unversioned`
+### Task 9: `http-ng-core` — Transport and Timer in the `unversioned` module
 
 **Files:**
 - Create: `crates/http-ng-core/src/unversioned/mod.rs`
@@ -1729,12 +1736,13 @@ git commit -m "feat(core): runtime Capabilities registry and typed UnsupportedCa
   - `pub trait Transport { type Body: http_body::Body<Data = Bytes>; type Error: std::error::Error + 'static; fn execute(&self, req: http::Request<RequestBody>) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>; fn capabilities(&self) -> &Capabilities; }`
   - `pub trait Timer { type Instant: Copy; fn sleep(&self, d: core::time::Duration) -> impl Future<Output = ()>; fn now(&self) -> Self::Instant; fn elapsed_since(&self, earlier: Self::Instant) -> core::time::Duration; }`
 
-- [ ] **Step 1: Написать падающий тест формы**
+- [ ] **Step 1: Write a failing shape test**
 
 ```rust
 // crates/http-ng-core/tests/shape.rs
-//! Тест утверждает главное архитектурное свойство ядра: `Send` нигде не
-//! объявлен, но выводится auto-traits, когда транспорт действительно Send.
+//! This test asserts the core's central architectural property: `Send` is
+//! declared nowhere, but it's inferred as an auto-trait when the transport
+//! is genuinely Send.
 
 use bytes::Bytes;
 use http_ng_core::unversioned::Transport;
@@ -1784,14 +1792,14 @@ fn non_send_transport_still_satisfies_the_trait() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-core --test shape`
 Expected: FAIL — `unresolved import http_ng_core::unversioned::Transport`.
 
-- [ ] **Step 3: Добавить dev-зависимость и реализовать трейты**
+- [ ] **Step 3: Add the dev-dependency and implement the traits**
 
-В `crates/http-ng-core/Cargo.toml`:
+In `crates/http-ng-core/Cargo.toml`:
 
 ```toml
 [dev-dependencies]
@@ -1800,15 +1808,15 @@ http-body-util = { workspace = true }
 
 ```rust
 // crates/http-ng-core/src/unversioned/mod.rs
-//! # Карантин semver
+//! # Semver quarantine
 //!
-//! Трейты этого модуля — контракт для авторов бэкендов и рантаймов. Он ещё не
-//! провалидирован против всех бэкендов, поэтому:
+//! This module's traits are the contract for backend and runtime authors.
+//! It hasn't been validated against every backend yet, so:
 //!
-//! **Ломающие изменения в `unversioned` едут в minor-версию, а не в major.**
+//! **Breaking changes in `unversioned` ship in a minor version, not a major one.**
 //!
-//! Приём заимствован у `ureq`. Без него 1.0 неотгружаем: нельзя заморозить
-//! трейт, не проверив его на native, wasi:http и fetch.
+//! The technique is borrowed from `ureq`. Without it, 1.0 can't ship: a
+//! trait can't be frozen without checking it against native, wasi:http, and fetch.
 
 mod timer;
 mod transport;
@@ -1823,13 +1831,14 @@ use crate::{Capabilities, RequestBody};
 use bytes::Bytes;
 use std::future::Future;
 
-/// Единственный шов между http-ng и реальным HTTP.
+/// The single seam between http-ng and real HTTP.
 ///
-/// Форма взята от `wasi:http/client.send` — самого бедного из ambient-API.
-/// Всё, что богаче, деградирует к ней чисто; обратное неверно.
+/// The shape is taken from `wasi:http/client.send` — the poorest of the
+/// ambient APIs. Anything richer degrades to it cleanly; the reverse doesn't
+/// hold.
 ///
-/// Ни `poll_ready`, ни `&mut self`, ни `Send`: Send-ность выводится
-/// auto-traits через возвращаемый `impl Future`.
+/// No `poll_ready`, no `&mut self`, no `Send`: Send-ness is inferred as an
+/// auto-trait through the returned `impl Future`.
 pub trait Transport {
     type Body: http_body::Body<Data = Bytes>;
     type Error: std::error::Error + 'static;
@@ -1839,7 +1848,7 @@ pub trait Transport {
         req: http::Request<RequestBody>,
     ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
 
-    /// Что этот транспорт умеет **сейчас, в этом процессе**.
+    /// What this transport can do **right now, in this process**.
     fn capabilities(&self) -> &Capabilities;
 }
 ```
@@ -1849,12 +1858,12 @@ pub trait Transport {
 use core::time::Duration;
 use std::future::Future;
 
-/// Единственная способность рантайма, нужная портативному ядру: таймауты и
-/// backoff. Сеть и spawn живут в транспортах.
+/// The only runtime capability the portable core needs: timeouts and
+/// backoff. Networking and spawn live in the transports.
 ///
-/// Не `hyper::rt::Timer`: у того `Sleep: Send + Sync` безусловно, `sleep()`
-/// возвращает `Pin<Box<dyn Sleep>>` (аллокация на каждый sleep), а `now()`
-/// типизирован на `std::time::Instant`, который паникует на
+/// Not `hyper::rt::Timer`: theirs has `Sleep: Send + Sync` unconditionally,
+/// `sleep()` returns `Pin<Box<dyn Sleep>>` (an allocation on every sleep),
+/// and `now()` is typed to `std::time::Instant`, which panics on
 /// `wasm32-unknown-unknown`.
 pub trait Timer {
     type Instant: Copy;
@@ -1865,15 +1874,15 @@ pub trait Timer {
 }
 ```
 
-В `lib.rs` добавить `pub mod unversioned;` (уже есть с Task 6, Step 3).
+Add `pub mod unversioned;` to `lib.rs` (already there from Task 6, Step 3).
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng-core`
-Expected: PASS. Тест `send_propagates_without_being_declared` — это проверка
-того, что ядро не нуждается в объявленном `Send`.
+Expected: PASS. The `send_propagates_without_being_declared` test is what
+verifies that the core doesn't need a declared `Send`.
 
-- [ ] **Step 5: Проверить инвариант «нет объявленного Send» вручную**
+- [ ] **Step 5: Manually verify the "no declared Send" invariant**
 
 Run: `! grep -rnE ':\s*Send\b|\+\s*Send\b|MaybeSend' crates/http-ng-core/src && echo OK`
 Expected: `OK`.
@@ -1887,24 +1896,24 @@ git commit -m "feat(core): Transport and Timer traits under the unversioned semv
 
 ---
 
-### Task 10: `http-ng` — Config, Timeouts и per-request lookup
+### Task 10: `http-ng` — Config, Timeouts and per-request lookup
 
 **Files:**
 - Create: `crates/http-ng/Cargo.toml`
 - Create: `crates/http-ng/src/lib.rs`
 - Create: `crates/http-ng/src/config.rs`
-- Test: внутри `config.rs`
+- Test: inside `config.rs`
 
 **Interfaces:**
 - Consumes: `http_ng_core::{Capabilities, TimeoutSupport, UnsupportedCapability}`.
 - Produces:
   - `pub struct Config { pub timeouts: Timeouts, pub redirect: http_ng_proto::redirect::RedirectPolicy, pub base_url: Option<http::Uri> }`
-    (`Timeouts` определён в Task 8, в `http-ng-core`, и здесь только
-    реэкспортируется — транспортам он нужен, а от `http-ng` они не зависят)
-  - `pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts` — «request-first, client-fallback»
+    (`Timeouts` is defined in Task 8, in `http-ng-core`, and only re-exported
+    here — transports need it, and they don't depend on `http-ng`)
+  - `pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts` — "request-first, client-fallback"
   - `pub fn check_supported(cfg: &Config, caps: &Capabilities, backend: &'static str) -> Result<(), UnsupportedCapability>`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/src/config.rs
@@ -1922,8 +1931,8 @@ mod tests {
         let mut ext = http::Extensions::new();
         ext.insert(Timeouts { connect: secs(9), ..Default::default() });
         let eff = effective_timeouts(&ext, &client);
-        assert_eq!(eff.connect, secs(9), "запрос перекрывает");
-        assert_eq!(eff.first_byte, secs(2), "остальное падает обратно на клиент");
+        assert_eq!(eff.connect, secs(9), "the request overrides");
+        assert_eq!(eff.first_byte, secs(2), "the rest falls back to the client");
         assert_eq!(eff.between_bytes, secs(3));
     }
 
@@ -1956,19 +1965,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng`
-Expected: FAIL — крейта нет.
+Expected: FAIL — the crate doesn't exist.
 
-- [ ] **Step 3: Создать крейт и реализовать**
+- [ ] **Step 3: Create the crate and implement**
 
 ```toml
 # crates/http-ng/Cargo.toml
 [package]
 name = "http-ng"
 version = "0.1.0"
-description = "Кроссплатформенный асинхронный HTTP-клиент: один код под native, browser и WASI"
+description = "Cross-platform async HTTP client: one codebase for native, browser and WASI"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1976,7 +1985,7 @@ repository.workspace = true
 
 [features]
 default = []
-# Мок-транспорт для тестов потребителей.
+# Mock transport for consumer tests.
 test-util = []
 
 [dependencies]
@@ -1996,10 +2005,10 @@ workspace = true
 
 ```rust
 // crates/http-ng/src/lib.rs
-//! Кроссплатформенный асинхронный HTTP-клиент.
+//! Cross-platform async HTTP client.
 //!
-//! Инвариант крейта: ни одного объявленного бонда `Send`/`Sync`, ни одного
-//! `#[cfg]`-переключаемого трейт-алиаса. Send-ность выводится auto-traits.
+//! Crate invariant: not a single declared `Send`/`Sync` bound, not a single
+//! `#[cfg]`-switched trait alias. Send-ness is inferred as an auto-trait.
 #![deny(unsafe_code)]
 
 mod client;
@@ -2025,8 +2034,8 @@ pub use sse::SseStream;
 
 ```rust
 // crates/http-ng/src/config.rs
-// `Timeouts` определён в `http-ng-core` (Task 8): его читают транспорты из
-// `http::Extensions`, а от `http-ng` они не зависят.
+// `Timeouts` is defined in `http-ng-core` (Task 8): transports read it from
+// `http::Extensions`, and they don't depend on `http-ng`.
 pub use http_ng_core::Timeouts;
 use http_ng_core::{Capabilities, UnsupportedCapability};
 use http_ng_proto::redirect::RedirectPolicy;
@@ -2038,10 +2047,11 @@ pub struct Config {
     pub base_url: Option<http::Uri>,
 }
 
-/// «Request-first, client-fallback», поле за полем.
+/// "Request-first, client-fallback," field by field.
 ///
-/// reqwest этого не умеет (issue #2641 не реализован), из-за чего `act-cli`
-/// вынужден строить отдельный `reqwest::Client` на каждый вызов компонента.
+/// reqwest can't do this (issue #2641 isn't implemented), which is why
+/// `act-cli` is forced to build a separate `reqwest::Client` for every
+/// component call.
 pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts {
     match req.get::<Timeouts>() {
         None => *client,
@@ -2053,7 +2063,7 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
     }
 }
 
-/// Вызывается из `ClientBuilder::build()`. Ни одного тихого no-op.
+/// Called from `ClientBuilder::build()`. Not a single silent no-op.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
@@ -2074,14 +2084,15 @@ pub fn check_supported(
 }
 ```
 
-**Модули объявлять по мере появления.** В этой задаче `lib.rs` содержит только
-`mod config;` и его реэкспорты; `mock`, `client`, `request`, `response`, `sse`
-и `stages` добавляются в Task 11–14. Закомментированный код в коммите — дефект.
+**Declare modules as they appear.** At this task, `lib.rs` contains only
+`mod config;` and its re-exports; `mock`, `client`, `request`, `response`,
+`sse` and `stages` get added in Task 11–14. Commented-out code in a commit
+is a defect.
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng config`
-Expected: PASS, четыре теста.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2094,25 +2105,26 @@ git commit -m "feat(http-ng): timeout triple with request-first client-fallback 
 
 ### Task 11: `http-ng` — MockTransport
 
-Мок нужен раньше клиента: без него стадии тестируются только через сеть.
+The mock is needed before the client: without it, stages can only be tested
+over the network.
 
 **Files:**
 - Create: `crates/http-ng/src/mock.rs`
 - Modify: `crates/http-ng/src/lib.rs`
-- Test: внутри `mock.rs`
+- Test: inside `mock.rs`
 
 **Interfaces:**
 - Consumes: `Transport`, `Capabilities`, `RequestBody`, `Error`.
 - Produces:
   - `pub struct MockTransport`
   - `MockTransport::new() -> Self`
-  - `MockTransport::push_response(&self, resp: http::Response<&'static str>)` — очередь ответов
+  - `MockTransport::push_response(&self, resp: http::Response<&'static str>)` — a queue of responses
   - `MockTransport::with_capabilities(self, caps: Capabilities) -> Self`
   - `MockTransport::requests(&self) -> Vec<RecordedRequest>`
   - `pub struct RecordedRequest { pub method: http::Method, pub uri: http::Uri, pub headers: http::HeaderMap }`
   - `impl Transport for MockTransport { type Body = http_body_util::Full<Bytes>; type Error = Error; }`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/src/mock.rs
@@ -2146,14 +2158,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --features test-util mock`
 Expected: FAIL — `cannot find type MockTransport`.
 
-- [ ] **Step 3: Добавить dev-зависимость на исполнитель и реализовать**
+- [ ] **Step 3: Add a dev-dependency on an executor and implement**
 
-В `crates/http-ng/Cargo.toml`:
+In `crates/http-ng/Cargo.toml`:
 
 ```toml
 [dev-dependencies]
@@ -2163,8 +2175,8 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 
 ```rust
 // crates/http-ng/src/mock.rs
-//! Мок-транспорт: позволяет тестировать клиент и стадии на хосте, без сети и
-//! без wasm-рантайма. Доступен за фичей `test-util`.
+//! A mock transport: lets the client and stages be tested on the host, with
+//! no network and no wasm runtime. Available behind the `test-util` feature.
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -2247,10 +2259,10 @@ impl Transport for MockTransport {
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng --features test-util mock`
-Expected: PASS, два теста.
+Expected: PASS, two tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2261,7 +2273,7 @@ git commit -m "feat(http-ng): MockTransport for host-side testing of client and 
 
 ---
 
-### Task 12: `http-ng` — Client, ClientBuilder и стадия redirect
+### Task 12: `http-ng` — Client, ClientBuilder and the redirect stage
 
 **Files:**
 - Create: `crates/http-ng/src/client.rs`
@@ -2281,7 +2293,7 @@ git commit -m "feat(http-ng): MockTransport for host-side testing of client and 
     `Client::execute(&self, req: http::Request<RequestBody>) -> impl Future<Output = Result<http::Response<T::Body>, Error>>`
   - `Client::transport(&self) -> &T`, `Client::config(&self) -> &Config`
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/tests/redirect.rs
@@ -2323,9 +2335,9 @@ fn strips_authorization_when_the_host_changes() {
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
     let seen = c.transport().requests();
-    assert!(seen[0].headers.contains_key("authorization"), "первый хоп сохраняет");
-    assert!(!seen[1].headers.contains_key("authorization"), "второй хоп снимает");
-    assert!(seen[1].headers.contains_key("x-safe"), "несекретные заголовки остаются");
+    assert!(seen[0].headers.contains_key("authorization"), "the first hop keeps it");
+    assert!(!seen[1].headers.contains_key("authorization"), "the second hop strips it");
+    assert!(seen[1].headers.contains_key("x-safe"), "non-sensitive headers stay");
 }
 
 #[test]
@@ -2354,7 +2366,7 @@ fn enforces_the_hop_limit() {
     let err = futures_executor::block_on(c.execute(req)).unwrap_err();
 
     assert!(err.is_redirect(), "{err}");
-    assert_eq!(c.transport().requests().len(), 3, "исходный запрос плюс два хопа");
+    assert_eq!(c.transport().requests().len(), 3, "the original request plus two hops");
 }
 
 #[test]
@@ -2375,7 +2387,7 @@ fn post_becomes_get_and_drops_body_on_302() {
 #[test]
 fn build_rejects_a_timeout_the_backend_cannot_honour() {
     use http_ng::Timeouts;
-    let m = MockTransport::new(); // Capabilities::none() — таймауты не поддержаны
+    let m = MockTransport::new(); // Capabilities::none() — timeouts unsupported
     let err = Client::builder(m)
         .timeouts(Timeouts { connect: Some(std::time::Duration::from_secs(1)),
                              ..Default::default() })
@@ -2385,12 +2397,12 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --features test-util --test redirect`
 Expected: FAIL — `cannot find type Client`.
 
-- [ ] **Step 3: Реализовать стадию redirect**
+- [ ] **Step 3: Implement the redirect stage**
 
 ```rust
 // crates/http-ng/src/stages/mod.rs
@@ -2399,17 +2411,18 @@ pub(crate) mod redirect;
 
 ```rust
 // crates/http-ng/src/stages/redirect.rs
-//! Применение решения, принятого в `http-ng-proto`. Здесь только перекладывание
-//! данных: вся логика — чистая функция `proto::redirect::decide`.
+//! Applies the decision made in `http-ng-proto`. Just data shuffling here:
+//! all the logic is the pure function `proto::redirect::decide`.
 
 use http_ng_core::RequestBody;
 use http_ng_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
-/// Всё, что переносится между хопами, кроме тела.
+/// Everything carried between hops, except the body.
 ///
-/// Отдельный тип, потому что `http::request::Parts` **не реализует `Clone`**,
-/// а между хопами метод, URI и заголовки нужны и до, и после отправки.
-/// `HeaderMap`, `Uri`, `Method` и `Extensions` клонируемы — проверено.
+/// A separate type because `http::request::Parts` **doesn't implement
+/// `Clone`**, and between hops the method, URI and headers are needed both
+/// before and after sending. `HeaderMap`, `Uri`, `Method` and `Extensions`
+/// are all cloneable — verified.
 #[derive(Debug, Clone)]
 pub(crate) struct HopParts {
     pub(crate) method: http::Method,
@@ -2431,11 +2444,12 @@ impl HopParts {
     }
 }
 
-/// Построить следующий хоп. `replay` — снимок тела, снятый **до** отправки
-/// предыдущей попытки; `None` означает, что тело невоспроизводимо.
+/// Builds the next hop. `replay` is a snapshot of the body, taken **before**
+/// the previous attempt was sent; `None` means the body can't be reproduced.
 ///
-/// Возвращает `None`, когда тело переиграть нельзя, а метод не понижен: тогда
-/// честнее вернуть 3xx как есть, чем отправить пустое тело туда, где его ждут.
+/// Returns `None` when the body can't be replayed and the method wasn't
+/// downgraded: at that point it's more honest to return the 3xx as-is than
+/// to send an empty body where one is expected.
 pub(crate) fn next_hop(
     prev: &HopParts,
     replay: Option<RequestBody>,
@@ -2467,7 +2481,7 @@ pub(crate) fn next_hop(
 }
 ```
 
-- [ ] **Step 4: Реализовать клиент**
+- [ ] **Step 4: Implement the client**
 
 ```rust
 // crates/http-ng/src/client.rs
@@ -2500,8 +2514,8 @@ impl<T: Transport> ClientBuilder<T> {
         self.config.base_url = Some(uri);
         self
     }
-    /// Проверяет конфигурацию против возможностей транспорта. Ни одного
-    /// тихого no-op: неподдерживаемая настройка — ошибка здесь и сейчас.
+    /// Checks the configuration against the transport's capabilities. Not a
+    /// single silent no-op: an unsupported setting is an error, here and now.
     pub fn build(self) -> Result<Client<T>, UnsupportedCapability> {
         check_supported(&self.config, self.transport.capabilities(), backend_name::<T>())?;
         Ok(Client { transport: self.transport, config: self.config })
@@ -2509,7 +2523,7 @@ impl<T: Transport> ClientBuilder<T> {
 }
 
 fn backend_name<T>() -> &'static str {
-    // Имя типа достаточно информативно для сообщения об ошибке и ничего не стоит.
+    // The type name is informative enough for an error message and costs nothing.
     std::any::type_name::<T>()
 }
 
@@ -2526,8 +2540,8 @@ impl<T: Transport> Client<T> {
     pub fn transport(&self) -> &T { &self.transport }
     pub fn config(&self) -> &Config { &self.config }
 
-    /// Порядок стадий фиксирован и корректен по построению.
-    /// В v0.1 стадия одна — redirect.
+    /// The stage order is fixed and correct by construction.
+    /// In v0.1 there's exactly one stage — redirect.
     pub async fn execute(&self, req: http::Request<RequestBody>)
         -> Result<http::Response<T::Body>, Error>
     {
@@ -2542,9 +2556,9 @@ impl<T: Transport> Client<T> {
         let mut hops: u8 = 0;
 
         loop {
-            // Снимок для переигрывания снимается ДО отправки: после неё тело
-            // уже потреблено. Для `Streaming` вернётся `None` — и это честно
-            // известно заранее, а не после провала ретрая.
+            // The replay snapshot is taken BEFORE sending: after that, the
+            // body is already consumed. For `Streaming` this returns `None`
+            // — and that's known honestly up front, not after a retry fails.
             let replay = body.rewind();
             let sending = std::mem::replace(&mut body, RequestBody::Empty);
 
@@ -2592,14 +2606,14 @@ impl std::fmt::Display for BadLocation {
 impl std::error::Error for BadLocation {}
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng --features test-util --test redirect`
-Expected: PASS, шесть тестов.
+Expected: PASS, six tests.
 
-- [ ] **Step 6: Проверить, что Send всё ещё выводится, а не объявлен**
+- [ ] **Step 6: Verify Send is still inferred, not declared**
 
-Добавить в `crates/http-ng/tests/redirect.rs`:
+Add to `crates/http-ng/tests/redirect.rs`:
 
 ```rust
 #[test]
@@ -2607,8 +2621,9 @@ fn client_future_is_send_when_transport_is() {
     fn assert_send<T: Send>(_: T) {}
     let m = MockTransport::new();
     let c = Client::builder(m).build().unwrap();
-    // MockTransport использует RefCell и потому !Sync; проверяем только,
-    // что бондов Send нет в объявлениях — компиляция теста это и доказывает.
+    // MockTransport uses a RefCell and is therefore !Sync; we're only
+    // checking that no Send bounds appear in the declarations — the test
+    // compiling at all is what proves that.
     let _ = c.execute(http::Request::new(RequestBody::Empty));
     assert_send(async { 1u8 });
 }
@@ -2626,7 +2641,7 @@ git commit -m "feat(http-ng): Client with redirect stage and capability check at
 
 ---
 
-### Task 13: `http-ng` — Response, Collected и RequestBuilder
+### Task 13: `http-ng` — Response, Collected and RequestBuilder
 
 **Files:**
 - Create: `crates/http-ng/src/response.rs`
@@ -2643,13 +2658,13 @@ git commit -m "feat(http-ng): Client with redirect stage and capability check at
     `Response::chunk(&mut self) -> impl Future<Output = Option<Result<Bytes, Error>>>`,
     `Response::collect(self) -> impl Future<Output = Result<Collected, Error>>`
   - `pub struct Collected { .. }`; `Collected::bytes()`, `Collected::text()`,
-    `Collected::json<T>()`, и **сохраняет** `status()`, `headers()`, `url()`
+    `Collected::json<T>()`, and it **keeps** `status()`, `headers()`, `url()`
   - `Client::get/post/put/delete/patch/head/request -> RequestBuilder<'_, T>`
   - `RequestBuilder::{header, headers, body, timeouts, send}` — `timeouts`
-    кладёт `http_ng_core::Timeouts` в `Extensions` запроса, откуда их читает
-    транспорт (lookup «request-first, client-fallback», §4.5 спеки)
+    puts `http_ng_core::Timeouts` into the request's `Extensions`, which the
+    transport reads from (the "request-first, client-fallback" lookup, spec §4.5)
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/tests/response.rs
@@ -2669,7 +2684,7 @@ fn collected_keeps_status_and_headers_after_reading_the_body() {
 
     let collected = futures_executor::block_on(resp.collect()).unwrap();
     assert_eq!(collected.text().unwrap(), "hello");
-    // Ключевое отличие от reqwest, где `.text()` берёт self по значению:
+    // The key difference from reqwest, where `.text()` takes self by value:
     assert_eq!(collected.status(), 201);
     assert_eq!(collected.headers().get("x-trace").unwrap(), "abc");
     assert_eq!(collected.url(), &"https://a/x".parse::<http::Uri>().unwrap());
@@ -2707,12 +2722,12 @@ fn request_builder_sets_method_and_headers() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --features test-util --test response`
 Expected: FAIL — `no method named get`.
 
-- [ ] **Step 3: Реализовать Response и Collected**
+- [ ] **Step 3: Implement Response and Collected**
 
 ```rust
 // crates/http-ng/src/response.rs
@@ -2721,8 +2736,8 @@ use http_body::Body as HttpBody;
 use http_ng_core::{Error, ErrorKind};
 use std::pin::Pin;
 
-/// Ответ с сохранённым URL. `into_parts` отдаёт полную верность;
-/// `chunk`/`collect` — удобство поверх неё.
+/// A response with the URL kept around. `into_parts` gives full fidelity;
+/// `chunk`/`collect` are convenience layered on top of it.
 #[derive(Debug)]
 pub struct Response<B> {
     parts: http::response::Parts,
@@ -2745,15 +2760,15 @@ impl<B> Response<B> {
 impl<B> Response<B>
 where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
 {
-    /// Следующий чанк данных. Трейлер-фреймы пропускаются — за ними идти в
-    /// `into_parts` и поллить тело напрямую.
+    /// The next data chunk. Trailer frames are skipped — go through
+    /// `into_parts` and poll the body directly to get those.
     pub async fn chunk(&mut self) -> Option<Result<Bytes, Error>> {
         loop {
             let frame = std::future::poll_fn(|cx| Pin::new(&mut self.body).poll_frame(cx)).await;
             match frame {
                 Some(Ok(f)) => match f.into_data() {
                     Ok(d) => return Some(Ok(d)),
-                    Err(_) => continue, // трейлеры
+                    Err(_) => continue, // trailers
                 },
                 Some(Err(e)) => return Some(Err(Error::new(ErrorKind::Body, e))),
                 None => return None,
@@ -2770,10 +2785,10 @@ where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
     }
 }
 
-/// Прочитанное тело **вместе** со статусом, заголовками и URL.
+/// The body that's been read, **together** with the status, headers, and URL.
 ///
-/// У reqwest `Response::{text,json,bytes}` берут `self` по значению, из-за чего
-/// после чтения тела статус недоступен (issue #1542).
+/// reqwest's `Response::{text,json,bytes}` take `self` by value, which is
+/// why the status becomes unreachable after reading the body (issue #1542).
 #[derive(Debug, Clone)]
 pub struct Collected {
     parts: http::response::Parts,
@@ -2793,7 +2808,7 @@ impl Collected {
 }
 ```
 
-- [ ] **Step 4: Реализовать RequestBuilder и методы клиента**
+- [ ] **Step 4: Implement RequestBuilder and the client's methods**
 
 ```rust
 // crates/http-ng/src/request.rs
@@ -2836,13 +2851,13 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         self
     }
 
-    /// Таймауты только для этого запроса. Кладутся в `Extensions`, откуда их
-    /// читает транспорт; незаданные поля падают обратно на конфигурацию
-    /// клиента.
+    /// Timeouts for this request only. Put into `Extensions`, which the
+    /// transport reads from; unset fields fall back to the client's
+    /// configuration.
     ///
-    /// reqwest этого не умеет вовсе (issue #2641), из-за чего `act-cli`
-    /// вынужден строить отдельный `reqwest::Client` на каждый вызов
-    /// компонента — со своим пулом соединений.
+    /// reqwest can't do this at all (issue #2641), which is why `act-cli` is
+    /// forced to build a separate `reqwest::Client` for every component
+    /// call — with its own connection pool.
     pub fn timeouts(mut self, t: http_ng_core::Timeouts) -> Self {
         self.extensions.insert(t);
         self
@@ -2861,7 +2876,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
 }
 ```
 
-Добавить в `crates/http-ng/src/client.rs`:
+Add to `crates/http-ng/src/client.rs`:
 
 ```rust
 use crate::request::RequestBuilder;
@@ -2891,10 +2906,10 @@ impl<T: Transport> Client<T> {
 }
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p http-ng --features test-util`
-Expected: PASS, все тесты `redirect.rs` и `response.rs`.
+Expected: PASS, all `redirect.rs` and `response.rs` tests.
 
 - [ ] **Step 6: Commit**
 
@@ -2905,7 +2920,7 @@ git commit -m "feat(http-ng): non-destructive Response, Collected and RequestBui
 
 ---
 
-### Task 14: `http-ng` — SseStream поверх декодера
+### Task 14: `http-ng` — SseStream on top of the decoder
 
 **Files:**
 - Create: `crates/http-ng/src/sse.rs`
@@ -2916,16 +2931,17 @@ git commit -m "feat(http-ng): non-destructive Response, Collected and RequestBui
 - Consumes: `SseDecoder` (Task 3), `Response::chunk` (Task 13).
 - Produces:
   - `pub struct SseStream<B>`; `SseStream::new(resp: Response<B>, max_event_size: usize) -> Result<Self, Error>`
-    — проверяет `Content-Type` и статус;
+    — checks the `Content-Type` and status;
     `SseStream::next(&mut self) -> impl Future<Output = Option<Result<SseEvent, Error>>>`;
     `SseStream::last_event_id(&self) -> Option<&str>`
-  - Терминальные правила: статус ≠ 200 → `Err(ErrorKind::Status)`;
+  - Terminal rules: status ≠ 200 → `Err(ErrorKind::Status)`;
     `Content-Type` ≠ `text/event-stream` → `Err(ErrorKind::Decode)`.
-    **Реконнект в v0.1 не реализуется** — он требует повторной отправки запроса,
-    что приедет вместе со стадией retry в v0.2. `last_event_id()` уже есть,
-    чтобы реконнект встал без изменения API.
+    **Reconnect isn't implemented in v0.1** — it requires resending the
+    request, which arrives together with the retry stage in v0.2.
+    `last_event_id()` already exists so reconnect can slot in without an API
+    change.
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Write failing tests**
 
 ```rust
 // crates/http-ng/tests/sse.rs
@@ -2975,7 +2991,7 @@ fn rejects_non_200_status() {
     let c = Client::builder(m).build().unwrap();
     let resp = futures_executor::block_on(c.get("https://a/s").send()).unwrap();
     assert!(SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).is_err(),
-            "204 означает «прекрати навсегда», а не «пустой поток»");
+            "204 means \"stop forever,\" not \"empty stream\"");
 }
 
 #[test]
@@ -2991,12 +3007,12 @@ fn tracks_last_event_id_for_future_reconnects() {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng --features test-util --test sse`
 Expected: FAIL — `cannot find type SseStream`.
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 3: Implement**
 
 ```rust
 // crates/http-ng/src/sse.rs
@@ -3008,11 +3024,11 @@ use http_ng_proto::sse::{SseDecoder, SseEvent};
 
 const MIME: &str = "text/event-stream";
 
-/// Поток событий SSE поверх любого тела ответа.
+/// An SSE event stream over any response body.
 ///
-/// Реконнект здесь **не** реализован: он требует повторной отправки запроса и
-/// приедет со стадией retry в v0.2. `last_event_id()` уже доступен, поэтому
-/// добавление реконнекта не изменит публичный API.
+/// Reconnect is **not** implemented here: it requires resending the request
+/// and arrives with the retry stage in v0.2. `last_event_id()` is already
+/// available, so adding reconnect won't change the public API.
 #[derive(Debug)]
 pub struct SseStream<B> {
     resp: Response<B>,
@@ -3032,8 +3048,8 @@ impl<B> SseStream<B>
 where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
 {
     pub fn new(resp: Response<B>, max_event_size: usize) -> Result<Self, Error> {
-        // WHATWG: любой статус кроме 200 — прекратить. 204 в частности означает
-        // «больше не подключайся», а не «пустой поток».
+        // WHATWG: any status other than 200 — stop. 204 in particular means
+        // "don't connect again," not "empty stream."
         if resp.status() != http::StatusCode::OK {
             return Err(Error::new(ErrorKind::Status, SseRejected("status is not 200")));
         }
@@ -3064,7 +3080,7 @@ where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
                 Some(Ok(chunk)) => {
                     if let Err(e) = self.decoder.push(&chunk) {
                         self.done = true;
-                        // Превышение лимита фатально и не ретраится.
+                        // Exceeding the limit is fatal and not retried.
                         return Some(Err(Error::new(ErrorKind::Decode, e)));
                     }
                 }
@@ -3076,10 +3092,10 @@ where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p http-ng --features test-util`
-Expected: PASS, четыре теста SSE плюс всё предыдущее.
+Expected: PASS, four SSE tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
@@ -3090,7 +3106,7 @@ git commit -m "feat(http-ng): SseStream with WHATWG terminal rules over the prot
 
 ---
 
-### Task 15: `http-ng-wasi` — тело ответа
+### Task 15: `http-ng-wasi` — the response body
 
 **Files:**
 - Create: `crates/http-ng-wasi/Cargo.toml`
@@ -3102,18 +3118,18 @@ git commit -m "feat(http-ng): SseStream with WHATWG terminal rules over the prot
 - Produces:
   - `pub struct Body`; `impl http_body::Body for Body { type Data = Bytes; type Error = http_ng_core::Error; }`
   - `Body::empty() -> Self`
-  - `is_end_stream()` реализован **корректно** — на хостовой стороне `act`
-    ровно этот дефект (`StreamBody` всегда возвращает `false`) приводил к
-    трапам гостей на HTTP/2.
+  - `is_end_stream()` is implemented **correctly** — on `act`'s host side,
+    this exact defect (`StreamBody` always returning `false`) was causing
+    guests to trap on HTTP/2.
 
-- [ ] **Step 1: Создать крейт**
+- [ ] **Step 1: Create the crate**
 
 ```toml
 # crates/http-ng-wasi/Cargo.toml
 [package]
 name = "http-ng-wasi"
 version = "0.1.0"
-description = "Транспорт http-ng поверх wasi:http 0.3"
+description = "http-ng transport over wasi:http 0.3"
 edition.workspace = true
 rust-version = "1.90"
 license.workspace = true
@@ -3133,10 +3149,10 @@ workspace = true
 
 ```rust
 // crates/http-ng-wasi/src/lib.rs
-//! Транспорт http-ng поверх `wasi:http` 0.3 (пакет `wasip3`).
+//! http-ng transport over `wasi:http` 0.3 (the `wasip3` package).
 //!
-//! Собирается под `wasm32-wasip2`. Ни один тип `wasip3` не появляется в
-//! публичном API этого крейта.
+//! Builds for `wasm32-wasip2`. Not a single `wasip3` type appears in this
+//! crate's public API.
 #![deny(unsafe_code)]
 
 mod body;
@@ -3145,7 +3161,7 @@ mod convert;
 pub use body::Body;
 ```
 
-- [ ] **Step 2: Написать тело**
+- [ ] **Step 2: Write the body**
 
 ```rust
 // crates/http-ng-wasi/src/body.rs
@@ -3156,8 +3172,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasip3::http_compat::IncomingResponseBody;
 
-/// Тело ответа `wasi:http`. Читает поток инлайн, без фоновой задачи, — значит
-/// транспорту не нужна способность `spawn`.
+/// The `wasi:http` response body. Reads the stream inline, with no background
+/// task — meaning the transport doesn't need a `spawn` capability.
 pub struct Body {
     inner: Inner,
 }
@@ -3206,15 +3222,15 @@ impl HttpBody for Body {
         }
     }
 
-    /// Реализовано честно. На хостовой стороне `act` использовался
-    /// `http_body_util::StreamBody`, который всегда возвращает `false`, из-за
-    /// чего гости трапались посреди чтения HTTP/2-ответов.
+    /// Implemented honestly. `act`'s host side used
+    /// `http_body_util::StreamBody`, which always returns `false`, which is
+    /// why guests were trapping mid-read on HTTP/2 responses.
     fn is_end_stream(&self) -> bool {
         matches!(self.inner, Inner::Done)
     }
 }
 
-/// Обёртка над `wasi:http` `ErrorCode`, чтобы он не протёк в публичный API.
+/// A wrapper around `wasi:http`'s `ErrorCode`, so it doesn't leak into the public API.
 #[derive(Debug)]
 pub(crate) struct WasiError(pub(crate) wasip3::http::types::ErrorCode);
 
@@ -3226,11 +3242,11 @@ impl std::fmt::Display for WasiError {
 impl std::error::Error for WasiError {}
 ```
 
-- [ ] **Step 3: Проверить, что крейт собирается под wasip2**
+- [ ] **Step 3: Verify the crate builds for wasip2**
 
 Run: `cargo check -p http-ng-wasi --target wasm32-wasip2`
-Expected: успех (модуль `convert` пока пустой — создать
-`crates/http-ng-wasi/src/convert.rs` с одной строкой `// см. Task 16`).
+Expected: success (the `convert` module is still empty — create
+`crates/http-ng-wasi/src/convert.rs` with a single line, `// see Task 16`).
 
 - [ ] **Step 4: Commit**
 
@@ -3241,14 +3257,14 @@ git commit -m "feat(wasi): response Body with a correct is_end_stream"
 
 ---
 
-### Task 16: `http-ng-wasi` — Transport, конверсия и honoring сеттеров
+### Task 16: `http-ng-wasi` — Transport, conversion, and honoring setters
 
-Здесь исчезают семь `let _ =` из `wasi-fetch`.
+This is where the seven `let _ =` from `wasi-fetch` disappear.
 
 **Files:**
 - Create/Modify: `crates/http-ng-wasi/src/convert.rs`
 - Modify: `crates/http-ng-wasi/src/lib.rs`
-- Test: `crates/http-ng-wasi/src/convert.rs` (`#[cfg(test)]` — только чистые части)
+- Test: `crates/http-ng-wasi/src/convert.rs` (`#[cfg(test)]` — pure parts only)
 
 **Interfaces:**
 - Consumes: `Transport`, `Capabilities`, `RequestBody`, `Error`, `Body` (Task 15).
@@ -3257,12 +3273,12 @@ git commit -m "feat(wasi): response Body with a correct is_end_stream"
   - `impl Transport for WasiHttp { type Body = Body; type Error = Error; }`
   - `pub(crate) fn to_wasi_method(m: &http::Method) -> wasip3::http::types::Method`
   - `pub(crate) fn scheme_of(uri: &http::Uri) -> Result<wasip3::http::types::Scheme, Error>`
-  - Возможности `WasiHttp`: `streaming_request_body: true`, `full_duplex: true`,
+  - `WasiHttp`'s capabilities: `streaming_request_body: true`, `full_duplex: true`,
     `request_trailers: true`, `response_trailers: true`,
-    `redirects: RedirectSupport::None`, `timeouts` — все три `true`,
+    `redirects: RedirectSupport::None`, `timeouts` — all three `true`,
     `upgrade: UpgradeSupport::None`.
 
-- [ ] **Step 1: Написать падающие тесты на чистые части**
+- [ ] **Step 1: Write failing tests for the pure parts**
 
 ```rust
 // crates/http-ng-wasi/src/convert.rs
@@ -3291,10 +3307,10 @@ mod tests {
     fn capabilities_declare_what_wasi_http_actually_does() {
         let c = super::super::WasiHttp::new();
         let caps = http_ng_core::unversioned::Transport::capabilities(&c);
-        // wasi:http 0.3 богаче нативного по стримингу…
+        // wasi:http 0.3 is richer than native on streaming…
         assert!(caps.full_duplex);
         assert!(caps.request_trailers && caps.response_trailers);
-        // …и беднее по всему остальному.
+        // …and poorer on everything else.
         assert_eq!(caps.redirects, http_ng_core::RedirectSupport::None);
         assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
         assert_eq!(caps.tls_config, http_ng_core::TlsSupport::None);
@@ -3303,14 +3319,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Запустить и убедиться, что падает**
+- [ ] **Step 2: Run it and confirm it fails**
 
 Run: `cargo test -p http-ng-wasi --target wasm32-wasip2`
-Expected: FAIL на этапе компиляции — функций нет. (Запуск тестов под wasip2
-требует раннера; см. Step 6. До его настройки использовать
+Expected: FAIL at the compile stage — the functions don't exist yet. (Running
+tests under wasip2 needs a runner; see Step 6. Until it's set up, use
 `cargo check -p http-ng-wasi --target wasm32-wasip2 --tests`.)
 
-- [ ] **Step 3: Реализовать конверсию и honoring сеттеров**
+- [ ] **Step 3: Implement the conversion and honoring setters**
 
 ```rust
 // crates/http-ng-wasi/src/convert.rs
@@ -3347,12 +3363,12 @@ pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     }
 }
 
-/// Применяет таймауты, **не проглатывая отказы хоста**.
+/// Applies timeouts, **without swallowing host rejections**.
 ///
-/// `wasi:http` 0.3 возвращает из сеттеров
-/// `result<_, request-options-error{not-supported, immutable, other}>` именно
-/// для того, чтобы хост мог сказать «не умею». `wasi-fetch` отбрасывал семь
-/// таких `Result` через `let _ =`; здесь каждый отказ становится ошибкой.
+/// `wasi:http` 0.3's setters return
+/// `result<_, request-options-error{not-supported, immutable, other}>`
+/// precisely so the host can say "I can't." `wasi-fetch` discarded seven
+/// such `Result`s via `let _ =`; here every rejection becomes an error.
 pub(crate) fn apply_timeouts(
     opts: &RequestOptions,
     connect: Option<u64>,
@@ -3379,11 +3395,11 @@ pub(crate) fn apply_timeouts(
 pub(crate) fn wasi_err(e: wasip3::http::types::ErrorCode) -> Error {
     use http_ng_core::Phase;
     use wasip3::http::types::ErrorCode as EC;
-    // Категория сохраняется. `wasi-fetch` расплющивал всё в
-    // `Error::Transport(format!("{e:?}"))`, а хостовая сторона `act` потом
-    // восстанавливала её подстрочным матчингом по цепочке `source()`.
+    // The category is preserved. `wasi-fetch` flattened everything into
+    // `Error::Transport(format!("{e:?}"))`, and `act`'s host side then
+    // reconstructed it by substring-matching across the `source()` chain.
     //
-    // Имена вариантов сверены с wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206.
+    // Variant names checked against wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206.
     let kind = match &e {
         EC::DnsTimeout | EC::DnsError(_) => ErrorKind::Resolve,
         EC::DestinationNotFound
@@ -3414,10 +3430,10 @@ pub(crate) fn wasi_err(e: wasip3::http::types::ErrorCode) -> Error {
 }
 ```
 
-- [ ] **Step 4: Реализовать `WasiHttp`**
+- [ ] **Step 4: Implement `WasiHttp`**
 
 ```rust
-// добавить в crates/http-ng-wasi/src/lib.rs
+// add to crates/http-ng-wasi/src/lib.rs
 use bytes::Bytes;
 use futures::join;
 use http_ng_core::unversioned::Transport;
@@ -3434,15 +3450,15 @@ pub struct WasiHttp {
 impl WasiHttp {
     pub fn new() -> Self {
         let mut caps = Capabilities::none();
-        // wasi:http 0.3 симметричен по телам и умеет трейлеры в обе стороны —
-        // богаче нативного.
+        // wasi:http 0.3 is symmetric on bodies and does trailers in both
+        // directions — richer than native.
         caps.streaming_request_body = true;
         caps.full_duplex = true;
         caps.request_trailers = true;
         caps.response_trailers = true;
         caps.timeouts = TimeoutSupport { connect: true, first_byte: true, between_bytes: true };
-        // И беднее по всему остальному: в спеке нет ни редиректов, ни TLS,
-        // ни прокси, ни выбора версии, ни upgrade.
+        // And poorer on everything else: the spec has no redirects, no TLS,
+        // no proxy, no version selection, no upgrade.
         caps.redirects = RedirectSupport::None;
         caps.tls_config = TlsSupport::None;
         caps.upgrade = UpgradeSupport::None;
@@ -3483,7 +3499,7 @@ impl Transport for WasiHttp {
             RequestBody::Empty => None,
             RequestBody::Full(b) if b.is_empty() => None,
             RequestBody::Full(b) => Some(b.clone()),
-            // Стриминговые и rewindable тела приедут вместе со стадией retry.
+            // Streaming and rewindable bodies arrive together with the retry stage.
             _ => None,
         };
 
@@ -3512,8 +3528,9 @@ impl Transport for WasiHttp {
         wasi_request.set_path_with_query(parts.uri.path_and_query().map(|p| p.as_str()))
             .map_err(|_| convert::rejected("path_with_query"))?;
 
-        // Структурная конкуррентность: тело пишется рядом с send, без spawn.
-        // Именно поэтому WASI-транспорту не нужна способность Spawn.
+        // Structured concurrency: the body is written alongside send, with
+        // no spawn. This is exactly why the WASI transport doesn't need a
+        // Spawn capability.
         let wasi_response = match (writer, payload_bytes(&body)) {
             (Some(w), Some(bytes)) => {
                 let mut b = Body::from_bytes(bytes);
@@ -3543,7 +3560,7 @@ fn payload_bytes(body: &RequestBody) -> Option<Bytes> {
 }
 ```
 
-Добавить в `convert.rs` вспомогательные типы:
+Add helper types to `convert.rs`:
 
 ```rust
 #[derive(Debug)] pub(crate) struct Rejected(&'static str);
@@ -3566,22 +3583,22 @@ impl std::fmt::Display for FieldsError {
 impl std::error::Error for FieldsError {}
 ```
 
-Добавить в `body.rs` конструктор `Body::from_bytes(Bytes) -> Self` с вариантом
-`Inner::Buffered(Option<Bytes>)` и соответствующей веткой в `poll_frame`.
+Add a constructor to `body.rs`, `Body::from_bytes(Bytes) -> Self`, with an
+`Inner::Buffered(Option<Bytes>)` variant and a matching arm in `poll_frame`.
 
-- [ ] **Step 5: Проверить сборку и инвариант «нет `let _ =` на Result сеттеров»**
+- [ ] **Step 5: Verify the build and the "no `let _ =` on setter Results" invariant**
 
 Run: `cargo check -p http-ng-wasi --target wasm32-wasip2`
-Expected: успех.
+Expected: success.
 
 Run: `! grep -rn "let _ = .*set_" crates/http-ng-wasi/src && echo OK`
 Expected: `OK`.
 
-- [ ] **Step 6: Настроить раннер тестов под wasip2**
+- [ ] **Step 6: Set up a test runner for wasip2**
 
 Run: `cargo install wasmtime-cli --locked`
 
-Создать `.cargo/config.toml`:
+Create `.cargo/config.toml`:
 
 ```toml
 [target.wasm32-wasip2]
@@ -3589,10 +3606,10 @@ runner = "wasmtime run -S http --"
 ```
 
 Run: `cargo test -p http-ng-wasi --target wasm32-wasip2`
-Expected: PASS, три теста конверсии.
+Expected: PASS, three conversion tests.
 
-Если `wasmtime` установить не удаётся, оставить `cargo check --tests` как
-временный шлюз и завести issue — интеграционный прогон переезжает в вертикаль 3.
+If `wasmtime` can't be installed, leave `cargo check --tests` as a temporary
+gate and file an issue — the integration run moves to vertical 3.
 
 - [ ] **Step 7: Commit**
 
@@ -3603,7 +3620,7 @@ git commit -m "feat(wasi): Transport over wasi:http 0.3 honouring every option s
 
 ---
 
-### Task 17: Сквозной пример и README
+### Task 17: An end-to-end example and README
 
 **Files:**
 - Create: `crates/http-ng-wasi/examples/fetch.rs`
@@ -3611,15 +3628,15 @@ git commit -m "feat(wasi): Transport over wasi:http 0.3 honouring every option s
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
-- Consumes: всё предыдущее.
-- Produces: ничего для кода.
+- Consumes: everything so far.
+- Produces: nothing for code.
 
-- [ ] **Step 1: Написать пример**
+- [ ] **Step 1: Write the example**
 
 ```rust
 // crates/http-ng-wasi/examples/fetch.rs
-//! Тот же код, который в вертикали 2 заработает на native, а в вертикали 3 —
-//! в браузере. Меняется только тип транспорта.
+//! The same code that will work on native in vertical 2, and in the
+//! browser in vertical 3. Only the transport type changes.
 
 use http_ng::Client;
 use http_ng_wasi::WasiHttp;
@@ -3636,51 +3653,51 @@ fn main() {
 }
 ```
 
-- [ ] **Step 2: Проверить, что пример собирается**
+- [ ] **Step 2: Verify the example builds**
 
 Run: `cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2`
-Expected: успех.
+Expected: success.
 
-- [ ] **Step 3: Написать README с таблицей зависимостей**
+- [ ] **Step 3: Write the README with a dependency-graph table**
 
 ````markdown
 # http-ng
 
-Кроссплатформенный асинхронный HTTP-клиент. Один и тот же прикладной код
-собирается под native, браузер и WASI — транспорт подменяется, а не
-обкладывается `#[cfg]`.
+Cross-platform async HTTP client. The same application code builds for
+native, browser and WASI — the transport is swapped out, not buried under
+`#[cfg]`.
 
 ```rust
 let client = http_ng::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
-## Что в графе зависимостей
+## What's in the dependency graph
 
-| сборка | tokio |
+| build | tokio |
 |---|---|
-| ambient (`http-ng` + `-wasi` / `-fetch`) | **нет вообще** |
-| native, только HTTP/1 | есть, но с фичами `sync` + `default`; весь его dep-tree — `pin-project-lite` |
-| native + HTTP/2 | настоящий: `h2` тянет `tokio` с `io-util` и `tokio-util` с `codec`, а через него `libc` |
+| ambient (`http-ng` + `-wasi` / `-fetch`) | **none at all** |
+| native, HTTP/1 only | present, but with the `sync` + `default` features; its whole dep tree is `pin-project-lite` |
+| native + HTTP/2 | real: `h2` pulls `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
 
-Убрать tokio из hyper-сборок нельзя: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
-(ровно эта замена на `futures-channel`) отклонён, а
-[hyper#3767](https://github.com/hyperium/hyper/issues/3767) закрыт как *not planned*.
+Tokio can't be removed from hyper builds: [hyper#3428](https://github.com/hyperium/hyper/pull/3428)
+(exactly this swap for `futures-channel`) was rejected, and
+[hyper#3767](https://github.com/hyperium/hyper/issues/3767) was closed as *not planned*.
 
-## Статус
+## Status
 
-v0.1: ядро, `wasi:http` 0.3. Native и браузер — вертикали 2 и 3.
-Дизайн: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
+v0.1: the core, `wasi:http` 0.3. Native and browser are verticals 2 and 3.
+Design: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
 ````
 
-- [ ] **Step 4: Добавить сборку примера в CI**
+- [ ] **Step 4: Add building the example to CI**
 
 ```yaml
-  # в job `wasip2`, после существующего шага
+  # in the `wasip2` job, after the existing step
       - run: cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
 ```
 
-- [ ] **Step 5: Прогнать всё**
+- [ ] **Step 5: Run everything**
 
 Run: `cargo test --workspace --all-features && cargo check -p http-ng-wasi --target wasm32-wasip2`
 Expected: PASS.
@@ -3694,153 +3711,160 @@ git commit -m "docs: README with dependency-graph table and end-to-end wasi exam
 
 ---
 
-## Что эта вертикаль доказала и что осталось
+## What this vertical proved, and what's left
 
-**Доказано:** форма `Transport` работает против реального ambient-бэкенда без
-сокета; ядро не нуждается в объявленном `Send`; неподдерживаемые настройки
-становятся ошибками, а не тихими no-op; протокольная логика тестируется без
-рантайма и фаззится.
+**Proven:** the `Transport` shape works against a real ambient backend with
+no socket; the core doesn't need a declared `Send`; unsupported settings
+become errors instead of silent no-ops; the protocol logic is tested without
+a runtime and gets fuzzed.
 
-**Не доказано и переходит в вертикаль 2:** рантайм-шов (нужны tokio и smol на
-одном коде); `Client<T = DefaultTransport>`; стриминговые тела запроса
-(требуют `RequestBody::Streaming` в транспорте).
+**Not proven, and carried over into vertical 2:** the runtime seam (needs
+tokio and smol on the same code); `Client<T = DefaultTransport>`; streaming
+request bodies (need `RequestBody::Streaming` in the transport).
 
-**Переходит в вертикаль 3:** `http-ng-fetch` и с ним проверка рантайм-модели
-`Capabilities`; реконнект `SseStream`; приёмка `act`.
+**Carried over into vertical 3:** `http-ng-fetch`, and with it, verifying the
+`Capabilities` runtime model; `SseStream` reconnect; `act` acceptance.
 
 ---
 
-## Поправки после ревью
+## Amendments after review
 
-Разделы Task 2 и Task 3 выше — исторические: они описывают исходный замысел, а
-код ушёл вперёд по итогам ревью. Авторитетен код; здесь — список расхождений,
-чтобы они не потерялись. Правки в тела задач больше не вносятся (индексная
-хирургия по этому файлу однажды уже разрушила markdown-ограждения и сломала
-извлечение задач 3–17).
+The Task 2 and Task 3 sections above are historical: they describe the
+original intent, and the code has since moved on based on review findings.
+The code is authoritative; this is a list of the discrepancies, so they
+don't get lost. No further edits are made to the task bodies themselves
+(surgical edits to this file once already broke the markdown fences and
+corrupted extraction of tasks 3–17).
 
-### П1. `LineSplitter::next_line` возвращает число потреблённых байт
+### R1. `LineSplitter::next_line` returns the count of consumed bytes
 
-**Что не так.** Декодер считал вес строки как `line.len() + 1`, предполагая
-однобайтовый терминатор. CRLF занимает два, поэтому каждая CRLF-строка
-недоучитывалась на байт. Замерено ревью: при `max_event_size = 16` и строках
-`"x:0\r\n"` декодер принял **четыре строки, 25 байт провода**, прежде чем
-вернуть `EventTooLarge` — на 56% сверх бюджета, причём содержимое к тому моменту
-уже разобрано во внутреннее состояние. Лимит существует для защиты от
-враждебного сервера, поэтому недоучёт — не косметика.
+**What was wrong.** The decoder counted a line's weight as `line.len() + 1`,
+assuming a one-byte terminator. CRLF takes two, so every CRLF line was
+undercounted by one byte. Measured in review: with `max_event_size = 16` and
+lines of `"x:0\r\n"`, the decoder accepted **four lines, 25 bytes on the
+wire**, before returning `EventTooLarge` — 56% over budget, with the content
+already parsed into internal state by that point. The limit exists to defend
+against a hostile server, so the undercount isn't cosmetic.
 
-**Как чиним.** `next_line` возвращает `Option<(Vec<u8>, usize)>`, где `usize` —
-реально потреблённые байты **включая терминатор**. Декодер начисляет лимит по
-этому числу.
+**How it's fixed.** `next_line` returns `Option<(Vec<u8>, usize)>`, where
+`usize` is the bytes actually consumed, **including the terminator**. The
+decoder charges the limit against that number.
 
-**Остаточная неточность, принятая осознанно.** Если CRLF разорван границей
-чанка, LF проглатывается в `push` и не начисляется — недоучёт до одного байта на
-каждую такую границу. В отличие от исходного дефекта он не масштабируется с
-числом строк: он ограничен числом чанков, а не повторами внутри чанка.
+**A residual inaccuracy, accepted deliberately.** If a CRLF is split by a
+chunk boundary, the LF is swallowed in `push` and not charged — an undercount
+of up to one byte per such boundary. Unlike the original defect, this one
+doesn't scale with the number of lines: it's bounded by the number of chunks,
+not by repetition within a chunk.
 
-### П2. Отложено, не блокирует v0.1
+### R2. Deferred, doesn't block v0.1
 
-- `SseDecoder::ready` не ограничен: враждебный сервер может прислать в одном
-  `push` много мелких валидных событий. На практике ограничен размером чанка,
-  который задаёт транспорт, и `SseStream` (Task 14) вычитывает после каждого
-  `push`. Пересмотреть, если появится путь, где `push` вызывают без `next`.
-- После `EventTooLarge` состояние декодера не запечатывается кодом — только
-  докой. `SseStream` (Task 14) переводит поток в `Terminated`; там это и
-  проверяется тестом.
+- `SseDecoder::ready` is unbounded: a hostile server could send many small
+  valid events in a single `push`. In practice it's bounded by the chunk size
+  the transport hands over, and `SseStream` (Task 14) drains it after every
+  `push`. Revisit if a path shows up where `push` is called without `next`.
+- After `EventTooLarge`, the decoder's state isn't sealed by code — only by
+  the docs. `SseStream` (Task 14) moves the stream to `Terminated`; that's
+  where a test verifies it.
 
-### П3. Два фазз-таргета вместо одного
+### R3. Two fuzz targets instead of one
 
-**Что не так.** Я потребовал добавить дорогой инвариант учёта байт в тот же
-таргет, что и дешёвую проверку на отсутствие паник. Замерено ревью на одной
-машине с одним и тем же seed-корпусом: **с** проверкой — 227 итераций за 90 с
-(~2 exec/s), **без** неё — 1 059 154 итерации за 26 с (~40 700 exec/s). Падение
-примерно в 20 000 раз; за окно smoke-теста фаззер находил два новых элемента
-корпуса вместо 3777. Причина не алгоритмическая: побайтовая подача сама по себе
-лишь вдвое дороже, но она умножает число инструментированных вызовов, а
-libFuzzer растит входы к потолку `max_len`.
+**What was wrong.** I asked for the expensive byte-accounting invariant to be
+added to the same target as the cheap no-panic check. Measured in review on
+one machine with the same seed corpus: **with** the check — 227 iterations in
+90s (~2 exec/s); **without** it — 1,059,154 iterations in 26s
+(~40,700 exec/s). A roughly 20,000x drop; over the smoke-test window the
+fuzzer found two new corpus entries instead of 3,777. The cause isn't
+algorithmic: byte-at-a-time feeding is only about twice as expensive on its
+own, but it multiplies the number of instrumented calls, and libFuzzer grows
+inputs toward the `max_len` ceiling.
 
-**Как чиним.** Два таргета:
+**How it's fixed.** Two targets:
 
-- `sse` — ровно как в брифе (`chunks(7)`, только отсутствие паник). Полная
-  пропускная способность для широкого обхода BOM-автомата, разбиения строк и
-  разбора полей.
-- `sse_accounting` — только прокси-инвариант учёта, с малым `-max_len` (256).
-  Класс ошибок «недоучёт терминатора» проявляется на десятках байт, так что
-  потолок входа его не прячет.
+- `sse` — exactly as in the brief (`chunks(7)`, no-panic only). Full
+  throughput for wide coverage of the BOM state machine, line splitting, and
+  field parsing.
+- `sse_accounting` — only the accounting-proxy invariant, with a small
+  `-max_len` (256). The "undercounted terminator" class of bugs shows up
+  within tens of bytes, so the input ceiling doesn't hide it.
 
-Отвергнуто: ограничение размера **внутри** одного таргета (дешёвые и дорогие
-входы делят одну петлю обратной связи, и медленные всё равно тянут среднее вниз)
-и сэмплирование (делает вероятность поимки зависящей от прогона).
+Rejected: capping the size **inside** one target (cheap and expensive inputs
+share one feedback loop, and the slow ones drag the average down regardless)
+and sampling (makes the odds of catching it depend on the run).
 
-### П4. `buffered_len` учитывает отложенный терминатор
+### R4. `buffered_len` accounts for a deferred terminator
 
-Гэп в один байт: если `carried_terminator` ещё не зачтён (между двумя подряд
-разорванными CRLF), `buffered_len()` его не видел. Ограничен нулём-или-единицей
-и не масштабируется, но делал докстринг про точность учёта неверным. Закрыт
-добавлением слагаемого.
+A one-byte gap: if `carried_terminator` hadn't been charged yet (between two
+consecutive split CRLFs), `buffered_len()` didn't see it. Bounded by zero-or-one
+and doesn't scale, but it made the accounting-accuracy doc comment wrong.
+Closed by adding the term.
 
-### П5. Валидация `Location` — не `from_utf8`
+### R5. `Location` validation — not `from_utf8`
 
-**Что не так.** Эталонная реализация `decide` в Task 5 проверяла `Location`
-через `core::str::from_utf8`. Этого мало, и тест из того же брифа это
-доказывает: `b"ht!tp://\x00"` — валидный UTF-8 (NUL легален), а крейт `url`
-срезает хвостовые C0-управляющие байты перед разбором, поэтому вход спокойно
-резолвится в `https://a/ht!tp://` вместо `InvalidLocation`. То есть
-`garbage_location_is_reported` падал на коде, который его сопровождал.
+**What was wrong.** Task 5's reference implementation of `decide` validated
+`Location` via `core::str::from_utf8`. That's not enough, and the test from
+the same brief proves it: `b"ht!tp://\x00"` is valid UTF-8 (NUL is legal),
+and the `url` crate strips trailing C0 control bytes before parsing, so the
+input calmly resolves to `https://a/ht!tp://` instead of `InvalidLocation`.
+In other words, `garbage_location_is_reported` was failing on the very code
+that accompanied it.
 
-**Как чиним.** Валидировать сырые байты как значение HTTP-заголовка:
-`http::HeaderValue::from_bytes(..).to_str()`. Это отвергает C0-управляющие и
-DEL, а значит заодно закрывает CR/LF-инъекцию через `Location` — чего проверка
-на UTF-8 не делала вовсе.
+**How it's fixed.** Validate the raw bytes as an HTTP header value:
+`http::HeaderValue::from_bytes(..).to_str()`. This rejects C0 controls and
+DEL, and therefore also closes off CR/LF injection via `Location` — something
+the UTF-8 check didn't do at all.
 
-**Компромисс, который надо назвать вслух.** `HeaderValue::to_str` отвергает
-любой байт ≥ 0x80, поэтому `Location` с сырым не-ASCII (незакодированный путь,
-IDN-хост) будет отвергнут. По RFC 9110 такое значение невалидно, но в природе
-встречается. Выбран отказ (fail-closed): цель редиректа — не то место, где
-стоит угадывать намерение сервера.
+**A tradeoff worth saying out loud.** `HeaderValue::to_str` rejects any byte
+≥ 0x80, so a `Location` with raw non-ASCII (an unencoded path, an IDN host)
+gets rejected. Per RFC 9110 such a value is invalid, but it occurs in the
+wild. We chose fail-closed: the redirect target isn't the place to guess at
+the server's intent.
 
-### П6. Сравнение origin с подстановкой порта по умолчанию
+### R6. Origin comparison with default-port substitution
 
-**Что не так.** `cross_origin` сравнивал `port_u16()` напрямую. Но `current`
-приходит из `http::Uri`, который сохраняет явный `:443`, а цель редиректа
-проходит через `url::Url::join`, который его срезает при сериализации. Значит
-`https://a:443/` → `https://a/` считался сменой origin и снимал
-`Authorization`/`Cookie` на **каждом** хопе. Ошибка в безопасную сторону, но
-функционально это тихая потеря авторизации у всякого, чей базовый URL содержит
-явный порт по умолчанию.
+**What was wrong.** `cross_origin` compared `port_u16()` directly. But
+`current` comes from an `http::Uri`, which keeps an explicit `:443`, while
+the redirect target goes through `url::Url::join`, which strips it on
+serialization. So `https://a:443/` → `https://a/` was counted as an origin
+change and stripped `Authorization`/`Cookie` on **every** hop. An error on
+the safe side, but functionally a silent loss of authorization for anyone
+whose base URL includes an explicit default port.
 
-**Как чиним.** Сравнивать `port_or_known_default()` с обеих сторон: 443 для
-https, 80 для http, иначе `port_u16()`. Плюс тесты на обе стороны асимметрии —
-ни один из двенадцати исходных портов не трогал.
+**How it's fixed.** Compare `port_or_known_default()` on both sides: 443 for
+https, 80 for http, otherwise `port_u16()`. Plus tests for both directions of
+the asymmetry — none of the twelve original tests touched it.
 
-### П7. Валидация `Location` — разделить два разных вопроса
+### R7. `Location` validation — splitting two different questions
 
-Поправка к П5. `HeaderValue::from_bytes(..).to_str()` решает две задачи разом и
-вторую — неправильно. `from_bytes` отвергает C0-управляющие и DEL, то есть
-закрывает CR/LF-инъекцию: это нужно. А `to_str()` дополнительно отвергает любой
-байт ≥ 0x80, то есть сырой не-ASCII в `Location`.
+An amendment to R5. `HeaderValue::from_bytes(..).to_str()` solves two
+problems at once, and gets the second one wrong. `from_bytes` rejects C0
+controls and DEL, i.e. closes off CR/LF injection: that part is needed.
+`to_str()` additionally rejects any byte ≥ 0x80, i.e. raw non-ASCII in
+`Location`.
 
-Ревью проверило экосистему, а не предположило: reqwest сегодня делегирует
-редиректы в `tower_http::follow_redirect`, чей `resolve_uri` использует
-`str::from_utf8`, и в tower-http есть тест `test_resolve_uri_unicode`,
-утверждающий, что `/café` и `https://münchen.com/` следуются. Мы оказались
-строже reqwest побочным эффектом, а не по решению.
+The review checked the ecosystem instead of assuming: reqwest today
+delegates redirects to `tower_http::follow_redirect`, whose `resolve_uri`
+uses `str::from_utf8`, and tower-http has a test,
+`test_resolve_uri_unicode`, asserting that `/café` and
+`https://münchen.com/` are followed. We ended up stricter than reqwest as a
+side effect, not by decision.
 
-**Как чиним.** `HeaderValue::from_bytes` для отсева управляющих байт, затем
-`core::str::from_utf8` по его байтам — вместо `to_str()`. Инъекция живёт в
-управляющих символах, не в не-ASCII; вопросы разделены, оба решены.
+**How it's fixed.** `HeaderValue::from_bytes` to screen out control bytes,
+then `core::str::from_utf8` over its bytes — instead of `to_str()`. The
+injection lives in the control characters, not the non-ASCII; the two
+questions are separated, and both are solved.
 
-### П8. `Error` требует `Send + Sync` от источника
+### R8. `Error` requires `Send + Sync` from its source
 
-См. поправку C1 в спеке. Кратко: `Arc<dyn Error + 'static>` не пропускает
-auto-traits, поэтому `Error` был `!Send` всегда, и `tokio::spawn` не собрался бы
-ни при каком транспорте. Источник ограничивается `Send + Sync`.
+See amendment C1 in the spec. In short: `Arc<dyn Error + 'static>` doesn't
+let auto-traits through, so `Error` was `!Send` always, and `tokio::spawn`
+wouldn't compile for any transport. The source is bounded by `Send + Sync`.
 
-Следствие для CI: `no-declared-send` теперь обязан исключать
-`crates/http-ng-core/src/error.rs` — с комментарием, что это единственное
-задокументированное исключение, а не послабление проверки.
+Consequence for CI: `no-declared-send` now has to exclude
+`crates/http-ng-core/src/error.rs` — with a comment noting that this is the
+single documented exception, not a weakening of the check.
 
-### П9. `RequestBody`: границы `Send` на объектах-трейтах
+### R9. `RequestBody`: `Send` bounds on the trait objects
 
-См. поправку C2. `Arc<dyn Fn() -> RequestBody + Send + Sync>` и
-`Box<dyn Body<..> + Unpin + Send>`. Найдено компиляционной проверкой до
-реализации Task 7.
+See amendment C2. `Arc<dyn Fn() -> RequestBody + Send + Sync>` and
+`Box<dyn Body<..> + Unpin + Send>`. Found by a compile check, before Task 7
+was implemented.

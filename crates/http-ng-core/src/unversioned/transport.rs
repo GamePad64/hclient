@@ -2,157 +2,165 @@ use crate::{Capabilities, Error, ErrorKind, RequestBody};
 use bytes::Bytes;
 use std::future::Future;
 
-/// Единственный шов между http-ng и реальным HTTP.
+/// The one seam between http-ng and real HTTP.
 ///
-/// Форма взята от `wasi:http/client.send` — самого бедного из ambient-API.
-/// Всё, что богаче, деградирует к ней чисто; обратное неверно.
+/// The shape is taken from `wasi:http/client.send` — the poorest of the
+/// ambient APIs. Anything richer degrades to it cleanly; the reverse isn't
+/// true.
 ///
-/// Ни `poll_ready`, ни `&mut self`, ни `Send`: Send-ность выводится
-/// auto-traits через возвращаемый `impl Future`.
+/// No `poll_ready`, no `&mut self`, no `Send`: Send-ness is inferred by
+/// auto-traits through the returned `impl Future`.
 pub trait Transport {
     type Body: http_body::Body<Data = Bytes>;
     type Error: std::error::Error + 'static;
 
-    /// Отправить запрос.
+    /// Send the request.
     ///
-    /// **Про `Timeouts` в `req.extensions()`: наличие — не намерение.**
-    /// `http_ng::Client::execute` кладёт туда результат слияния своей
-    /// конфигурации с запросом (`effective_timeouts`, находка B1
-    /// финального ревью ветки) БЕЗУСЛОВНО — в том числе когда не задано ни
-    /// одного таймаута, и тогда там лежит `Timeouts` со всеми полями
-    /// `None`. Правильное чтение — `.get::<Timeouts>().copied().
-    /// unwrap_or_default()` и затем поле за полем: «нет расширения» и «есть
-    /// расширение, все поля `None`» обязаны быть для бэкенда одним и тем же
-    /// наблюдением. Ветвиться на `extensions.get::<Timeouts>().is_some()`
-    /// как на «вызывающая сторона просила таймауты» нельзя — это будет
-    /// правдой всегда, для каждого запроса, пришедшего через `Client`.
+    /// **On `Timeouts` in `req.extensions()`: presence isn't intent.**
+    /// `http_ng::Client::execute` puts the result of merging its own
+    /// configuration with the request there (`effective_timeouts`, branch
+    /// final review finding B1) UNCONDITIONALLY — including when no timeout
+    /// at all was set, in which case a `Timeouts` with every field `None`
+    /// sits there. The correct read is `.get::<Timeouts>().copied().
+    /// unwrap_or_default()` and then field by field: "no extension" and
+    /// "extension present, every field `None`" must be the same observation
+    /// to the backend. Branching on `extensions.get::<Timeouts>().is_some()`
+    /// as "the caller asked for timeouts" is not allowed — that will be
+    /// true always, for every request that comes through `Client`.
     fn execute(
         &self,
         req: http::Request<RequestBody>,
     ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
 
-    /// Способности транспорта, определённые один раз — при конструировании —
-    /// и с тех пор неизменные для этого объекта. Это не проверка "прямо
-    /// сейчас": сигнатура возвращает `&Capabilities`, а не вычисляет его
-    /// заново на каждый вызов (пересчёт на каждый вызов не компилируется —
-    /// `E0515`, а любая компилирующаяся альтернатива течёт память на
-    /// каждый вызов). Бэкенду, чьи способности могут измениться по ходу
-    /// процесса, нужно пересобрать транспорт заново.
+    /// The transport's capabilities, determined once — at construction —
+    /// and unchanged for this object ever since. This is not a "right now"
+    /// check: the signature returns `&Capabilities` rather than computing it
+    /// fresh on every call (recomputing on every call doesn't compile —
+    /// `E0515` — and any alternative that does compile leaks memory on every
+    /// call). A backend whose capabilities can change over the process's
+    /// lifetime needs to rebuild the transport from scratch.
     fn capabilities(&self) -> &Capabilities;
 
-    /// Как ошибка транспорта становится ошибкой библиотеки.
+    /// How a transport error becomes a library error.
     ///
-    /// По умолчанию — обёртывание с `ErrorKind::Other`: бэкенд, которому
-    /// нечего сказать о категории, ничего и не обязан.
+    /// The default is wrapping with `ErrorKind::Other`: a backend that has
+    /// nothing to say about the category owes nothing further.
     ///
-    /// # Ошибка, которая УЖЕ `Error`, проходит насквозь — дефолт это узнаёт
+    /// # An error that's ALREADY `Error` passes through — the default knows this
     ///
-    /// Дефолт сперва спрашивает, не является ли `Self::Error` в точности
-    /// нашей `Error`, и если да — отдаёт её как есть, не заворачивая. То
-    /// есть для бэкенда, чья ошибка уже классифицирована (оба существующих
-    /// и запланированный третий, `Native` вертикали 2), правильное
-    /// поведение — поведение по умолчанию, и забыть его нельзя.
+    /// The default first asks whether `Self::Error` is exactly our `Error`,
+    /// and if so, returns it as-is, unwrapped. That means for a backend
+    /// whose error is already classified (both existing ones, and the
+    /// planned third, `Native`, of vertical 2), the correct behavior is the
+    /// default behavior, and it can't be forgotten.
     ///
-    /// Так было не всегда: первая версия хука безусловно заворачивала, и
-    /// бэкенд, забывший переопределить, молча терял всю свою таксономию —
-    /// компилятор доволен, его собственные тесты классификации зелены,
-    /// неверно только у потребителя. Это ровно тот класс дефекта, ради
-    /// искоренения которого хук и появился (B2), воспроизведённый на
-    /// уровень ниже; защитой служила проза. Механизм лучше прозы.
+    /// It wasn't always this way: the hook's first version wrapped
+    /// unconditionally, and a backend that forgot to override it silently
+    /// lost its entire taxonomy — the compiler was happy, its own
+    /// classification tests were green, only the consumer got it wrong.
+    /// That is exactly the class of defect the hook was created to
+    /// eradicate (B2), reproduced one level down; prose was the only
+    /// guard. A mechanism beats prose.
     ///
-    /// # Что дефолт всё же не умеет
+    /// # What the default still can't do
     ///
-    /// Бэкенд, чья ошибка — СВОЙ тип, несущий категорию внутри
-    /// (`MyError::Timeout` и т.п.), обязан переопределить `to_error` сам:
-    /// угадать чужое перечисление не может никакой дефолт, и без
-    /// переопределения такая ошибка честно станет `ErrorKind::Other`.
-    /// Никакого молчаливого ухудшения тут нет — категории в типе
-    /// `http_ng_core::Error` не было и не появилось, — но и никакой
-    /// классификации тоже.
+    /// A backend whose error is ITS OWN type carrying the category inside
+    /// it (`MyError::Timeout` and the like) must override `to_error` itself:
+    /// no default can guess a foreign enum, and without an override such an
+    /// error honestly becomes `ErrorKind::Other`. There's no silent
+    /// degradation here — the category was never present in the
+    /// `http_ng_core::Error` type and still isn't — but there's no
+    /// classification either.
     ///
-    /// Оба существующих бэкенда переопределяют хук тождеством ЯВНО, хотя с
-    /// этим дефолтом это уже избыточно: явное тождество называет намерение
-    /// в точке, где его читают, и переживёт возможное изменение дефолта.
-    /// Тесты на них остаются (`to_error_is_the_identity_so_the_
-    /// classification_survives_the_client` в `http-ng-wasi/src/convert.rs`,
-    /// четыре теста в `http-ng/tests/transport_error.rs`); гарантию теперь
-    /// держит структура, а тесты — намерение.
+    /// Both existing backends override the hook with an EXPLICIT identity,
+    /// even though that's now redundant given this default: an explicit
+    /// identity states intent at the point where it's read, and survives a
+    /// possible future change to the default. The tests for them remain
+    /// (`to_error_is_the_identity_so_the_
+    /// classification_survives_the_client` in `http-ng-wasi/src/convert.rs`,
+    /// four tests in `http-ng/tests/transport_error.rs`); structure now
+    /// holds the guarantee, and the tests hold the intent.
     ///
-    /// Существует с B2 финального ревью ветки. До него `Client::execute`
-    /// делал `Error::new(ErrorKind::Other, e)` безусловно, и все сорок
-    /// строк `http-ng-wasi::convert::wasi_err`, раскладывающие 39
-    /// вариантов `ErrorCode` на восемь `ErrorKind`, выбрасывались одним
-    /// слоем выше: каждый предикат `is_*` фасада возвращал `false` для
-    /// любой ошибки транспорта, а `kind()` был `Other` одинаково для
-    /// DNS, TLS, connect-таймаута и отказа хоста. Таксономия §4.7 — главный
-    /// ответ этой библиотеки на reqwest#1053; отдавать её нерабочей и
-    /// чинить потом ломающим изменением шва — худший из вариантов, поэтому
-    /// хук добавлен, пока бэкенд ровно один.
+    /// Exists since branch final review B2. Before it, `Client::execute`
+    /// did `Error::new(ErrorKind::Other, e)` unconditionally, and all forty
+    /// lines of `http-ng-wasi::convert::wasi_err`, sorting 39 `ErrorCode`
+    /// variants into eight `ErrorKind`s, were discarded one layer up: every
+    /// `is_*` predicate on the facade returned `false` for any transport
+    /// error, and `kind()` was `Other` identically for DNS, TLS,
+    /// connect-timeout, and host-unreachable. The §4.7 taxonomy is this
+    /// library's main answer to reqwest#1053; shipping it broken and fixing
+    /// it later with a breaking change to the seam was the worst of the
+    /// options, so the hook was added while there was exactly one backend.
     ///
-    /// **Почему метод с дефолтом, а не `Transport::Error: Into<Error>` и не
-    /// `Error` как тип ошибки шва.**
+    /// **Why a defaulted method, and not `Transport::Error: Into<Error>` or
+    /// `Error` as the seam's error type.**
     ///
-    /// Прежняя версия этого абзаца утверждала, что обе альтернативы
-    /// «потребовали бы `Send + Sync` от ошибки КАЖДОГО бэкенда». Для
-    /// `Into<Error>` это неверно, и ревью опровергло это компиляцией:
-    /// `!Send`-ошибка вполне реализует `Into<Error>` — застрингив себя и
-    /// выбросив собственный тип. Точная причина другая и она никуда не
-    /// делась: `Into<Error>` стоил бы `!Send`-бэкенду ТИПИЗИРОВАННОГО
-    /// источника (единственный способ его удовлетворить — потерять свой тип
-    /// в строке, а `Error::source` требует `Send + Sync`) и заставил бы
-    /// писать конверсию каждый бэкенд, которому про категорию сказать
-    /// нечего. Дефолт не требует ни того, ни другого. Вариант «`Error` —
-    /// тип ошибки шва» действительно требует `Send + Sync` от всех, и это
-    /// исходное утверждение было верно для него одного.
+    /// A previous version of this paragraph claimed both alternatives
+    /// "would require `Send + Sync` from EVERY backend's error." For
+    /// `Into<Error>` that's false, and review disproved it by compiling:
+    /// a `!Send` error implements `Into<Error>` just fine — by stringifying
+    /// itself and discarding its own type. The actual reason is different,
+    /// and it still holds: `Into<Error>` would cost a `!Send` backend its
+    /// TYPED source (the only way to satisfy it is to lose its type into a
+    /// string, and `Error::source` requires `Send + Sync`), and it would
+    /// force every backend that has nothing to say about the category to
+    /// write a conversion anyway. The default requires neither. The
+    /// "`Error` is the seam's error type" option genuinely does require
+    /// `Send + Sync` from everyone, and the original claim was true for
+    /// that one alone.
     ///
-    /// Поправка C1 сознательно сохранила представимость транспорта с честно
-    /// `!Send` ошибкой: он не может пользоваться `Client`, но `Transport`
-    /// реализует (см. `non_send_transport_still_satisfies_the_trait` и
-    /// `a_transport_whose_error_is_not_send_still_implements_the_trait` в
-    /// `tests/shape.rs`). Дефолт это сохраняет — where-клауза стоит на
-    /// методе, так что такой транспорт просто не может ВЫЗВАТЬ `to_error`
-    /// (определить переопределение он при этом волен — проверено, тело
-    /// override'а не обязано звать `Error::new`); и не ломает ни одного
-    /// бэкенда, которому категоризация не нужна.
+    /// Amendment C1 deliberately kept a transport with a genuinely `!Send`
+    /// error representable: it can't use `Client`, but it does implement
+    /// `Transport` (see `non_send_transport_still_satisfies_the_trait` and
+    /// `a_transport_whose_error_is_not_send_still_implements_the_trait` in
+    /// `tests/shape.rs`). The default preserves this — the where-clause sits
+    /// on the method, so such a transport simply can't CALL `to_error`
+    /// (though it's free to define an override — verified: an override's
+    /// body isn't required to call `Error::new`); and it breaks no backend
+    /// that doesn't need categorization.
     ///
-    /// Where-клауза здесь неизбежна: тело дефолта зовёт `Error::new`, а та
-    /// требует `Send + Sync + 'static` от источника (поправка C1 — стирание
-    /// в `Arc<dyn Error>` не пропускает auto-traits). Дефолта «для любого
-    /// `Self::Error`» существовать не может.
+    /// The where-clause is unavoidable here: the default's body calls
+    /// `Error::new`, which requires `Send + Sync + 'static` from the source
+    /// (amendment-C1 — erasure into `Arc<dyn Error>` doesn't let
+    /// auto-traits through). A default "for any `Self::Error`" cannot
+    /// exist.
     ///
-    /// Имя — `to_error`, а не `into_error`: `into_*` по соглашению Rust
-    /// потребляет `self`, а здесь `&self` (бэкенд принимает решение, он не
-    /// конвертируемое значение — `execute` тоже берёт `&self`).
-    /// `clippy::wrong_self_convention` называл это верно; первая версия
-    /// глушила линт `#[allow]`-ом, что для ветки, вычищавшей вакуумные и
-    /// подавленные проверки, было ровно не тем ходом.
+    /// The name is `to_error`, not `into_error`: by Rust convention `into_*`
+    /// consumes `self`, and here it's `&self` (the backend is making a
+    /// decision, it isn't a value being converted — `execute` also takes
+    /// `&self`). `clippy::wrong_self_convention` was calling this
+    /// correctly; the first version silenced the lint with `#[allow]`,
+    /// which for a branch that was cleaning up vacuous and suppressed
+    /// checks was exactly the wrong move.
     fn to_error(&self, e: Self::Error) -> Error
     where
         Self::Error: Send + Sync, // send-bound-exception: amendment-C1
     {
-        // Бокс нужен потому, что `Any` умеет ОТДАТЬ значение только из
-        // `Box`: `downcast_ref`/`downcast_mut` дали бы ссылку, а нам нужно
-        // владение — иначе пришлось бы требовать `Clone` от чужой ошибки.
-        // `dyn Any` без `+ Send + Sync`: auto-traits стёртому объекту здесь
-        // не нужны вовсе (`downcast` есть и у голого `Box<dyn Any>`), а
-        // `Error::new` ниже берёт их у where-клаузы метода. Написать их тут
-        // означало бы объявить бонд, который ничего не даёт, и потратить на
-        // него маркер `send-bound-exception` — CI `no-declared-send` ловит
-        // такую строку, и правильно.
+        // The box is needed because `Any` can only GIVE BACK a value out of
+        // a `Box`: `downcast_ref`/`downcast_mut` would hand back a
+        // reference, and we need ownership — otherwise we'd have to require
+        // `Clone` from a foreign error. `dyn Any` without `+ Send + Sync`:
+        // the erased object doesn't need auto-traits here at all
+        // (`downcast` exists on a bare `Box<dyn Any>` too), and `Error::new`
+        // below draws them from the method's where-clause. Writing them
+        // here would mean declaring a bound that buys nothing, and
+        // spending a `send-bound-exception` marker on it — the
+        // `no-declared-send` CI check catches such a line, and rightly so.
         let boxed: Box<dyn core::any::Any> = Box::new(e);
         match boxed.downcast::<Error>() {
-            // `Self::Error` — это и есть наша `Error`: категория уже
-            // проставлена бэкендом, заворачивать нечего.
+            // `Self::Error` is exactly our `Error`: the category was
+            // already set by the backend, nothing to wrap.
             Ok(already_ours) => *already_ours,
-            // Чужой тип: заворачиваем, сохраняя источник целиком.
+            // A foreign type: wrap it, keeping the source whole.
             Err(foreign) => Error::new(
                 ErrorKind::Other,
                 *foreign.downcast::<Self::Error>().unwrap_or_else(|_| {
-                    // Недостижимо, и это не инвариант между двумя далеко
-                    // разнесёнными местами (тот класс крейт старается не
-                    // заводить), а факт, установленный тремя строками выше
-                    // в том же выражении: боксировали ровно `Self::Error`,
-                    // первый `downcast` промахнулся, значит второй попадёт.
+                    // Unreachable, and not an invariant between two
+                    // far-apart places (the crate tries not to have that
+                    // class of invariant), but a fact established three
+                    // lines above in the same expression: we boxed exactly
+                    // `Self::Error`, the first `downcast` missed, so the
+                    // second must hit.
                     unreachable!("boxed a Self::Error three lines above")
                 }),
             ),

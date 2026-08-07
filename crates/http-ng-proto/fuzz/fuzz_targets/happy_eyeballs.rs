@@ -4,7 +4,7 @@ use http_ng_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
 use libfuzzer_sys::fuzz_target;
 use std::net::{IpAddr, Ipv4Addr};
 
-// Инвариант: планировщик всегда сходится к Exhausted и не паникует.
+// Invariant: the scheduler always converges to Exhausted and never panics.
 fuzz_target!(|data: &[u8]| {
     let mut s = Scheduler::new(HeConfig::default());
     let addrs: Vec<IpAddr> = data

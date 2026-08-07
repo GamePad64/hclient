@@ -1,9 +1,9 @@
-//! Тесты `Response`/`Collected`/`RequestBuilder` на уровне `Client`.
+//! Tests for `Response`/`Collected`/`RequestBuilder` at the `Client` level.
 
-// `http_ng::mock` живёт за фичей `test-util` (см. `mock.rs`); без этой строки
-// `cargo test -p http-ng` без флагов падал с E0432 вместо того, чтобы
-// собраться в пустоту — как уже было сделано для `shape.rs` в Task 12. Task
-// 13 fix round 2, Residual 3.
+// `http_ng::mock` lives behind the `test-util` feature (see `mock.rs`);
+// without this line `cargo test -p http-ng` with no flags used to fail
+// with E0432 instead of compiling down to nothing — the same fix already
+// made for `shape.rs` in Task 12. Task 13 fix round 2, Residual 3.
 #![cfg(feature = "test-util")]
 
 use http_ng::mock::MockTransport;
@@ -25,8 +25,8 @@ fn collected_keeps_status_and_headers_after_reading_the_body() {
 
     let collected = futures_executor::block_on(resp.collect()).unwrap();
     assert_eq!(collected.text().unwrap(), "hello");
-    // Ключевое отличие от reqwest, где `.text()` берёт self по значению:
-    // status/headers/url обязаны остаться читаемыми ПОСЛЕ чтения тела.
+    // The key difference from reqwest, where `.text()` takes self by
+    // value: status/headers/url must stay readable AFTER the body is read.
     assert_eq!(collected.status(), 201);
     assert_eq!(collected.headers().get("x-trace").unwrap(), "abc");
     assert_eq!(
@@ -35,11 +35,12 @@ fn collected_keeps_status_and_headers_after_reading_the_body() {
     );
 }
 
-/// Кладёт в очередь двухкадровый ответ и проверяет, что `chunk()` отдаёт
-/// кадры по отдельности, в исходном порядке — а не один склеенный блок.
-/// Однокадровая версия этого теста прошла бы и с реализацией, которая читает
-/// всё тело целиком за первый вызов `poll_frame`, что не доказывало бы
-/// собственно стриминг: см. `MockTransport::push_response_frames` в mock.rs.
+/// Queues a two-frame response and checks that `chunk()` hands back the
+/// frames separately, in the original order — not one concatenated block.
+/// A single-frame version of this test would also pass with an
+/// implementation that reads the whole body in the first `poll_frame`
+/// call, which wouldn't actually prove streaming: see
+/// `MockTransport::push_response_frames` in mock.rs.
 #[test]
 fn chunk_streams_the_body_frame_by_frame_not_concatenated() {
     let m = MockTransport::new();
@@ -92,9 +93,10 @@ fn request_builder_sets_method_and_headers() {
     assert_eq!(seen[0].headers.get("x-k").unwrap(), "v");
 }
 
-/// `request_builder_sets_method_and_headers` только доказывает POST; каждый
-/// глагол клиента обязан ставить именно свой метод, а не переиспользовать
-/// один и тот же путь построения запроса случайно правильно только для POST.
+/// `request_builder_sets_method_and_headers` only proves POST; every verb
+/// on the client must set its own specific method, rather than reusing the
+/// same request-building path that just happens to be correct only for
+/// POST.
 #[test]
 fn get_sends_the_get_method() {
     let m = MockTransport::new();
@@ -117,13 +119,15 @@ fn delete_sends_the_delete_method() {
     assert_eq!(c.transport().requests()[0].method, http::Method::DELETE);
 }
 
-/// `Collected::json` не входил в код шага 3 брифа, но объявлен в разделе
-/// Interfaces этой задачи («`Collected::json<T>()`, и сохраняет status/
-/// headers/url»). Реализован по контракту Interfaces; см. отчёт о задаче.
+/// `Collected::json` wasn't part of step 3's code in the brief, but is
+/// declared in this task's Interfaces section ("`Collected::json<T>()`, and
+/// preserves status/headers/url"). Implemented per the Interfaces
+/// contract; see the task report.
 ///
-/// За фичей `json`: сам метод `#[cfg(feature = "json")]`-гейтед, так что этот
-/// тест обязан быть гейтед так же — иначе `cargo test -p http-ng --features
-/// test-util` (без `json`) не соберётся.
+/// Behind the `json` feature: the method itself is `#[cfg(feature =
+/// "json")]`-gated, so this test must be gated the same way — otherwise
+/// `cargo test -p http-ng --features test-util` (without `json`) won't
+/// compile.
 #[cfg(feature = "json")]
 #[test]
 fn collected_json_decodes_the_body_and_still_keeps_status() {
@@ -150,20 +154,21 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
     assert_eq!(collected.status(), 200, "json() must not consume status");
 }
 
-/// `RequestBuilder::timeouts` обязан класть `Timeouts` в `Extensions` запроса,
-/// откуда их читает транспорт (Task 10). Без записи в `extensions` этот
-/// сеттер был бы тихим no-op — ровно тот класс дефекта, которого дизайн
-/// крейта старается избежать.
+/// `RequestBuilder::timeouts` must put `Timeouts` into the request's
+/// `Extensions`, where the transport reads them from (Task 10). Without
+/// writing to `extensions`, this setter would be a silent no-op — exactly
+/// the class of defect the crate's design tries to avoid.
 ///
-/// Сам lookup «request-first, client-fallback» (§4.5 спеки) этот тест НЕ
-/// проверяет — прежняя версия комментария это утверждала, а проверить не
-/// могла: клиент здесь не задаёт таймаутов вовсе, так что перекрывать
-/// нечего. Композиция клиента и запроса живёт в `tests/timeouts.rs` (B1
-/// финального ревью ветки — до него её не существовало и в коде).
+/// This test does NOT check the "request-first, client-fallback" lookup
+/// itself (spec §4.5) — an earlier version of this comment claimed it did,
+/// but couldn't have: the client here sets no timeouts at all, so there's
+/// nothing to override. The composition of client and request lives in
+/// `tests/timeouts.rs` (B1 of the branch's final review — before it, this
+/// didn't exist in the code either).
 ///
-/// `with_capabilities` — не украшение: с M3 `Client::execute` проверяет
-/// слитые таймауты против `Capabilities`, и мок с `Capabilities::none()`
-/// теперь честно отвергает этот запрос.
+/// `with_capabilities` isn't decoration: since M3, `Client::execute`
+/// checks the merged timeouts against `Capabilities`, and a mock with
+/// `Capabilities::none()` now honestly rejects this request.
 #[test]
 fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     use http_ng_core::Timeouts;
@@ -197,11 +202,11 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     assert_eq!(t.connect, Some(Duration::from_secs(3)));
 }
 
-/// Брифовый `header()` отбрасывал невалидную пару молча (`if let (Ok(n),
-/// Ok(v)) = .. { .. }`, без `else`) — тот самый тихий no-op, против которого
-/// построен `ClientBuilder::build` (Task 13 fix round 1, Finding 4). Кладём
-/// валидный ответ в очередь: если баг вернётся, `send()` тихо дойдёт до
-/// транспорта и вернёт `Ok`, а не `Err`.
+/// The brief's `header()` dropped an invalid pair silently (`if let
+/// (Ok(n), Ok(v)) = .. { .. }`, no `else`) — the exact silent no-op
+/// `ClientBuilder::build` was built against (Task 13 fix round 1,
+/// Finding 4). A valid response is queued: if the bug comes back,
+/// `send()` will silently reach the transport and return `Ok`, not `Err`.
 #[test]
 fn invalid_header_name_fails_send_instead_of_silently_dropping_it() {
     let m = MockTransport::new();
@@ -362,13 +367,13 @@ fn version_and_into_parts_expose_the_full_response_head() {
     }
 }
 
-// ── резолюция финального ревью ветки: миноры m4/m5/m6 ────────────────────
+// ── resolution of the branch's final review: minors m4/m5/m6 ─────────────
 
-/// m4. `RequestBuilder::headers()` ПРИСВАИВАЛ (`self.headers = headers`),
-/// а не дополнял, — так что `.header("x-a","1").headers(map)` терял `x-a`
-/// без всякой диагностики. Тот же класс дефекта, что брифовый `header()`,
-/// который Task 13 чинил и обкладывал тестом: значение, переданное
-/// вызывающей стороной, исчезает молча.
+/// m4. `RequestBuilder::headers()` used to ASSIGN (`self.headers =
+/// headers`) instead of extending — so `.header("x-a","1").headers(map)`
+/// lost `x-a` with no diagnostic at all. The same class of defect as the
+/// brief's `header()`, which Task 13 fixed and covered with a test: a
+/// value the caller passed in disappears silently.
 #[test]
 fn headers_extends_what_header_already_set_instead_of_discarding_it() {
     let m = MockTransport::new();
@@ -390,7 +395,7 @@ fn headers_extends_what_header_already_set_instead_of_discarding_it() {
     assert_eq!(
         seen[0].headers.get("x-a").map(|v| v.to_str().unwrap()),
         Some("1"),
-        "headers() не должен выбрасывать то, что выставил header()"
+        "headers() must not discard what header() set"
     );
     assert_eq!(
         seen[0].headers.get("x-b").map(|v| v.to_str().unwrap()),
@@ -398,10 +403,11 @@ fn headers_extends_what_header_already_set_instead_of_discarding_it() {
     );
 }
 
-/// Обратная сторона m4: «дополнять» не значит «накапливать дубликаты».
-/// Одноимённый заголовок из `headers()` ПЕРЕКРЫВАЕТ выставленный раньше —
-/// иначе `.header("accept","a").headers({accept:b})` уехал бы на провод
-/// двумя `accept`, что для большинства заголовков означает другой запрос.
+/// The flip side of m4: "extending" doesn't mean "accumulating
+/// duplicates". A same-named header from `headers()` OVERRIDES one set
+/// earlier — otherwise `.header("accept","a").headers({accept:b})` would
+/// go out on the wire as two `accept`s, which for most headers means a
+/// different request.
 #[test]
 fn headers_overrides_a_same_named_header_rather_than_duplicating_it() {
     let m = MockTransport::new();
@@ -427,11 +433,11 @@ fn headers_overrides_a_same_named_header_rather_than_duplicating_it() {
     );
 }
 
-/// m5. `chunk_skips_trailer_frames` ставит трейлер ПОСЛЕДНИМ, где «пропустил
-/// и нашёл EOF» и «остановился на нём» — одно и то же наблюдение: мутация
-/// `Err(_) => continue` в `Err(_) => return None` оставляла весь набор
-/// `http-ng` зелёным. Здесь трейлер стоит МЕЖДУ данными, и две гипотезы
-/// расходятся.
+/// m5. `chunk_skips_trailer_frames` puts the trailer LAST, where "skipped
+/// it and hit EOF" and "stopped on it" are the same observation: mutating
+/// `Err(_) => continue` into `Err(_) => return None` left the whole
+/// `http-ng` suite green. Here the trailer sits BETWEEN data frames, and
+/// the two hypotheses diverge.
 #[test]
 fn chunk_continues_reading_data_that_follows_a_trailer_frame() {
     let mut trailers = http::HeaderMap::new();
@@ -453,25 +459,26 @@ fn chunk_continues_reading_data_that_follows_a_trailer_frame() {
     let first = futures_executor::block_on(resp.chunk()).unwrap().unwrap();
     assert_eq!(&first[..], b"before");
     let second = futures_executor::block_on(resp.chunk())
-        .expect("данные после трейлер-кадра не должны проглатываться")
+        .expect("data following a trailer frame must not be swallowed")
         .unwrap();
     assert_eq!(&second[..], b"after");
     assert!(futures_executor::block_on(resp.chunk()).is_none());
 }
 
-/// m6. После `Some(Err(_))` тело не запечатывалось: следующий `chunk()`
-/// заново опрашивал нижележащий `Body`. Вызывающая сторона, использующая
-/// `Response::chunk` напрямую (без `SseStream`, у которого свой флаг
-/// `done`), могла крутиться в цикле по телу, отдающему ошибку на каждый
-/// опрос. Ошибка терминальна: отдаётся ровно один раз, дальше — конец
-/// потока.
+/// m6. After `Some(Err(_))`, the body used not to be sealed: the next
+/// `chunk()` would poll the underlying `Body` again. A caller using
+/// `Response::chunk` directly (without `SseStream`, which has its own
+/// `done` flag) could spin in a loop over a body that returns an error on
+/// every poll. The error is terminal: handed back exactly once, then it's
+/// the end of the stream.
 #[test]
 fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
     let m = MockTransport::new();
-    // Ошибка ПОВТОРЯЮЩАЯСЯ: с одноразовой тест был бы вакуумным — кадры
-    // после неё кончаются, и второй `chunk()` вернул бы `None` по
-    // совпадению, а не потому, что тело запечатано (проверено: с
-    // `push_response_frames_then_error` тест зелёный и без фикса).
+    // The error is REPEATING: with a one-shot error the test would be
+    // vacuous — frames simply run out after it, and a second `chunk()`
+    // would return `None` by coincidence, not because the body is sealed
+    // (verified: with `push_response_frames_then_error` this test stays
+    // green even without the fix).
     m.push_response_frames_then_repeating_error(
         http::Response::builder()
             .status(200)
@@ -488,19 +495,19 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
         b"data"
     );
     let err = futures_executor::block_on(resp.chunk())
-        .expect("кадр ошибки")
+        .expect("error frame")
         .unwrap_err();
-    // Финальное ревью вертикали 2, находка F2: `chunk()` больше не
-    // переклеивает уже классифицированную ошибку в `ErrorKind::Body` —
-    // `MockBody::Error` уже `http_ng_core::Error`, и её `kind()` (`Other`,
-    // заданный строкой выше) обязан дожить как есть. `chunk_survives_a_
-    // non_body_error_kind_instead_of_relabeling_it_body` (ниже) проверяет то
-    // же свойство целенаправленно, этот тест — попутно, вместе с
-    // терминальностью.
+    // Vertical 2's final review, finding F2: `chunk()` no longer relabels
+    // an already-classified error as `ErrorKind::Body` — `MockBody::Error`
+    // is already `http_ng_core::Error`, and its `kind()` (`Other`, set one
+    // line above) must survive unchanged. `chunk_survives_a_
+    // non_body_error_kind_instead_of_relabeling_it_body` (below) checks the
+    // same property in a targeted way; this test does it in passing,
+    // together with terminality.
     assert_eq!(*err.kind(), http_ng::ErrorKind::Other);
     assert!(
         futures_executor::block_on(resp.chunk()).is_none(),
-        "после ошибки тело запечатано — второй раз её не отдаём и заново тело не опрашиваем"
+        "after an error the body is sealed — it's not handed back a second time and the body isn't polled again"
     );
 }
 

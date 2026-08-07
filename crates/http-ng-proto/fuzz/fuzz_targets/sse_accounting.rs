@@ -2,44 +2,50 @@
 use http_ng_proto::sse::SseDecoder;
 use libfuzzer_sys::fuzz_target;
 
-// Инвариант (Task 4 ре-ревью, round 1): декодер никогда не должен заряжать в
-// счёт лимита меньше байт, чем реально потребил. `SseDecoder` не экспонирует
-// счётчик заряженных байт, так что тезис "charged >= consumed" не проверить
-// напрямую через паблик API без выделенного аксессора — а заводить его ради
-// фаззера мы не стали. У недоучёта есть наблюдаемое снаружи следствие, и оно
-// проверяется здесь: учёт байт обязан быть инвариантен к дроблению входа на
-// чанки. Если бы побайтовая доставка занижала счёт (как было до фикса
-// `carried_terminator` в lines.rs — LF, проглоченный на границе чанка между
-// CR и LF, нигде не начислялся), она могла бы принять на тех же байтах
-// больше, чем одноразовая подача. Проверяем под самым враждебным дроблением
-// — побайтовым, — потому что именно оно даёт максимум точек разрыва CRLF.
+// Invariant (Task 4 re-review, round 1): the decoder must never charge
+// fewer bytes against the limit than it actually consumed. `SseDecoder`
+// doesn't expose a counter of charged bytes, so the claim "charged >=
+// consumed" can't be checked directly through the public API without a
+// dedicated accessor — and we chose not to add one just for the fuzzer.
+// Undercounting has an externally observable consequence, and that's what's
+// checked here: byte accounting must be invariant to how the input is
+// chunked. If byte-at-a-time delivery undercounted (as it did before the
+// `carried_terminator` fix in lines.rs — an LF swallowed at a chunk
+// boundary between CR and LF was never credited anywhere), it could accept
+// more on the same bytes than a single-shot delivery would. We check under
+// the most adversarial chunking — byte-at-a-time — because that's exactly
+// what produces the most CRLF split points.
 //
-// Вынесено в отдельный таргет (round 1 ре-ревью): будучи внутри `sse`, эта
-// проверка удваивала push-вызовы на итерацию (побайтовый проход плюс
-// одноразовый), и под ASan/SanitizerCoverage, растущими к max_len=4096, это
-// обрушивало throughput с десятков тысяч exec/s до единиц — фаззер почти не
-// продвигался по покрытию. Здесь `-max_len=256` держит побайтовый проход
-// коротким, а LIMIT занижен до 64, чтобы даже короткие входы могли пересечь
-// порог и упражнять код по обе стороны лимита.
+// Broken out into a separate target (round 1 re-review): living inside
+// `sse`, this check doubled the push calls per iteration (the
+// byte-at-a-time pass plus the single-shot one), and under
+// ASan/SanitizerCoverage, growing toward max_len=4096, this collapsed
+// throughput from tens of thousands of exec/s down to single digits — the
+// fuzzer barely made progress on coverage. Here `-max_len=256` keeps the
+// byte-at-a-time pass short, and LIMIT is set low, to 64, so that even
+// short inputs can cross the threshold and exercise the code on both sides
+// of the limit.
 //
-// В побайтовом проходе — `break`, а не `return`, сознательно: `return`
-// молча пропустил бы сравнение с одноразовой подачей для любого входа,
-// отвергнутого в процессе, сужая проверяемое множество без предупреждения.
+// In the byte-at-a-time pass, `break`, not `return`, deliberately:
+// `return` would silently skip the comparison with single-shot delivery
+// for any input rejected along the way, narrowing the set actually
+// checked without warning.
 //
-// ВАЖНО про саму форму сравнения (найдено и исправлено при верификации этого
-// раунда): сравнивать "отверг ли байт-за-байтом ХОТЬ КОГДА-НИБУДЬ на всём
-// `data`" против "отвергла ли одноразовая подача ХОТЬ КОГДА-НИБУДЬ на всём
-// `data`" — почти всегда пусто для достаточно длинного входа: недоучитывающий
-// байт-за-байтом декодер тоже в конце концов пересечёт свой (завышенный)
-// порог, просто позже. Из-за этого первая версия этой проверки молча не
-// ловила баг, который должна была ловить (обнаружено прогоном именно
-// конструкции ре-ревьюера ниже — 513 строк "data:X\r\n" — против
-// откаченного фикса: ассерт не сработал). Правильное сравнение — не "оба ли
-// когда-нибудь отвергли", а "согласны ли они на ОДНОМ И ТОМ ЖЕ префиксе":
-// сколько байт побайтовая доставка приняла без ошибки (k — либо позиция
-// первой ошибки, либо весь вход, если ошибки не было), и что скажет
-// одноразовая подача ТЕХ ЖЕ k байт. Если она их отвергает, а побайтовая
-// доставка приняла — это и есть недоучёт.
+// IMPORTANT, about the shape of the comparison itself (found and fixed
+// during this round's verification): comparing "did byte-at-a-time ever
+// reject ANYWHERE across the whole `data`" against "did single-shot
+// delivery ever reject ANYWHERE across the whole `data`" is almost always
+// vacuous for a sufficiently long input: an undercounting byte-at-a-time
+// decoder will also eventually cross its own (inflated) threshold, just
+// later. Because of this, this check's first version silently failed to
+// catch the bug it was meant to catch (found by running exactly the
+// re-reviewer's construction below — 513 lines of "data:X\r\n" — against
+// the reverted fix: the assert didn't fire). The correct comparison isn't
+// "did both ever reject," but "do they agree on the SAME prefix": how many
+// bytes byte-at-a-time delivery accepted without error (k — either the
+// position of the first error, or the whole input if there was no error),
+// and what single-shot delivery of THOSE SAME k bytes says. If it rejects
+// them while byte-at-a-time accepted them — that's the undercounting.
 fuzz_target!(|data: &[u8]| {
     const LIMIT: usize = 64;
 
@@ -48,7 +54,7 @@ fuzz_target!(|data: &[u8]| {
         let mut d = SseDecoder::new(LIMIT);
         for (i, &b) in data.iter().enumerate() {
             if d.push(&[b]).is_err() {
-                accepted_without_error = i; // байты [0..i) приняты без ошибок
+                accepted_without_error = i; // bytes [0..i) were accepted without errors
                 break;
             }
             while d.next().is_some() {}

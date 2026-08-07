@@ -1,16 +1,16 @@
-//! Доживает ли категория ошибки транспорта до потребителя.
+//! Does the category of a transport error survive to reach the consumer.
 //!
-//! B2 финального ревью ветки: `Client::execute` делал
-//! `Error::new(ErrorKind::Other, e)` для ЛЮБОЙ ошибки транспорта. Сорок
-//! строк `http-ng-wasi::convert::wasi_err`, раскладывающие 39 вариантов
-//! `ErrorCode` на восемь `ErrorKind`, выбрасывались одним слоем выше:
-//! каждый предикат `is_*` фасада возвращал `false` для любой ошибки,
-//! пришедшей от транспорта, а `kind()` был `Other` одинаково для DNS-сбоя,
-//! TLS-сбоя, connect-таймаута и отказа хоста. 165 тестов этого не видели,
-//! потому что мок умел провалить `execute` только исчерпанием очереди — а у
-//! той категория `Other` и так верная.
+//! B2 of the branch's final review: `Client::execute` did
+//! `Error::new(ErrorKind::Other, e)` for ANY transport error. Forty lines
+//! of `http-ng-wasi::convert::wasi_err`, sorting 39 `ErrorCode` variants
+//! into eight `ErrorKind`s, were thrown away one layer up: every `is_*`
+//! predicate on the facade returned `false` for any error coming from the
+//! transport, and `kind()` was `Other` identically for a DNS failure, a
+//! TLS failure, a connect timeout, and a host rejection. 165 tests never
+//! saw it, because the mock could only fail `execute` by exhausting its
+//! queue — and that one's category is `Other` anyway, correctly.
 
-// `http_ng::mock` живёт за фичей `test-util` (см. `mock.rs`).
+// `http_ng::mock` lives behind the `test-util` feature (see `mock.rs`).
 #![cfg(feature = "test-util")]
 
 use http_ng::mock::MockTransport;
@@ -31,10 +31,10 @@ fn client_failing_with(kind: ErrorKind, msg: &'static str) -> Client<MockTranspo
     Client::builder(m).build().unwrap()
 }
 
-/// Ядро находки: `err.kind()` обязан быть тем, чем его назвал бэкенд.
-/// `Timeout(Connect)` выбран потому, что это ровно то, что `wasi_err`
-/// производит для `ErrorCode::ConnectionTimeout`, и ровно то, ради чего
-/// существует `Phase`.
+/// The core of the finding: `err.kind()` must be whatever the backend
+/// named it. `Timeout(Connect)` is chosen because it's exactly what
+/// `wasi_err` produces for `ErrorCode::ConnectionTimeout`, and exactly why
+/// `Phase` exists.
 #[test]
 fn transport_error_kind_reaches_the_caller_instead_of_being_flattened() {
     let c = client_failing_with(ErrorKind::Timeout(Phase::Connect), "connect timed out");
@@ -43,19 +43,19 @@ fn transport_error_kind_reaches_the_caller_instead_of_being_flattened() {
     assert_eq!(
         *err.kind(),
         ErrorKind::Timeout(Phase::Connect),
-        "категория, которую назвал транспорт, обязана дожить до вызывающей стороны, а не \
-         расплющиться в Other: {err}"
+        "the category the transport named must survive to reach the caller, not \
+         flatten into Other: {err}"
     );
     assert!(
         err.is_timeout(),
-        "и предикаты фасада обязаны с ней согласиться"
+        "and the facade's predicates must agree with it"
     );
 }
 
-/// Тот же дефект с другой стороны таксономии: `Unsupported` — категория, про
-/// которую `http-ng-wasi::convert` прямо пишет, что вызывающая сторона
-/// должна отличать «бэкенд так не умеет» от прочих отказов «через
-/// `is_unsupported()`». Через фасад она этого не могла.
+/// The same defect from the other side of the taxonomy: `Unsupported` is a
+/// category `http-ng-wasi::convert` states outright the caller must be
+/// able to tell apart from other failures via `is_unsupported()` — "the
+/// backend just can't do this". Through the facade, it couldn't.
 #[test]
 fn unsupported_from_the_transport_is_still_unsupported_at_the_facade() {
     let c = client_failing_with(
@@ -69,10 +69,10 @@ fn unsupported_from_the_transport_is_still_unsupported_at_the_facade() {
     assert!(!err.is_connect());
 }
 
-/// Отложенный минор Task 6 («`Display` дублирует текст источника») умирает
-/// здесь же: он был симптомом того самого вложения. Раньше потребитель
-/// видел `Other: Unsupported: wasi:http host rejected …` — категория,
-/// которой у ошибки нет, впереди категории, которая у неё есть.
+/// Task 6's deferred minor ("`Display` duplicates the source's text") dies
+/// right here too: it was a symptom of this same nesting. A consumer used
+/// to see `Other: Unsupported: wasi:http host rejected …` — a category the
+/// error doesn't have, in front of the category it does have.
 #[test]
 fn display_does_not_nest_a_second_kind_in_front_of_the_real_one() {
     let c = client_failing_with(ErrorKind::Unsupported, "host rejected setting 'scheme'");
@@ -81,15 +81,15 @@ fn display_does_not_nest_a_second_kind_in_front_of_the_real_one() {
     let msg = err.to_string();
     assert_eq!(
         msg, "Unsupported: host rejected setting 'scheme'",
-        "категория печатается один раз, и это настоящая категория"
+        "the category is printed once, and it's the real one"
     );
     assert!(!msg.contains("Other"), "{msg}");
 }
 
-/// Обратная сторона: ошибка, у которой категория ДЕЙСТВИТЕЛЬНО `Other`,
-/// такой и остаётся — тождество в `MockTransport::to_error` не значит
-/// «всё стало не-`Other`». Исчерпание очереди — единственный собственный
-/// отказ мока, и он честно `Other`.
+/// The flip side: an error whose category REALLY IS `Other` stays that
+/// way — identity in `MockTransport::to_error` doesn't mean "everything
+/// became not-`Other`". Queue exhaustion is the mock's only failure of its
+/// own, and it's honestly `Other`.
 #[test]
 fn a_genuinely_other_transport_error_stays_other() {
     let m = MockTransport::new();
@@ -97,9 +97,9 @@ fn a_genuinely_other_transport_error_stays_other() {
     let err = futures_executor::block_on(c.get("https://a/x").send()).unwrap_err();
 
     assert_eq!(*err.kind(), ErrorKind::Other);
-    let src = std::error::Error::source(&err).expect("Error::new всегда кладёт source");
+    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
     assert!(
         src.downcast_ref::<http_ng::mock::QueueEmpty>().is_some(),
-        "и источник по-прежнему сам QueueEmpty, а не ещё одна обёртка над ним"
+        "and the source is still QueueEmpty itself, not another wrapper around it"
     );
 }

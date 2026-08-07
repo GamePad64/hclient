@@ -7,21 +7,21 @@ use http_ng_core::{Error, ErrorKind, RequestBody};
 pub struct RequestBuilder<'a, T> {
     client: &'a Client<T>,
     method: http::Method,
-    /// Уже разрешённый относительно `base_url` клиента (или просто
-    /// разобранный, если базы нет). Разрешение живёт в `new`, а не в `send`,
-    /// потому что делать его нужно на исходной СТРОКЕ: `http::Uri` не умеет
-    /// представлять path-relative ссылку, а это ровно та форма, ради которой
-    /// база существует (см. `config::effective_uri`).
+    /// Already resolved against the client's `base_url` (or just parsed,
+    /// if there's no base). Resolution lives in `new`, not in `send`,
+    /// because it has to be done on the original STRING: `http::Uri` can't
+    /// represent a path-relative reference, and that's exactly the form
+    /// the base exists for (see `config::effective_uri`).
     uri: Result<http::Uri, Error>,
     headers: http::HeaderMap,
     body: RequestBody,
     extensions: http::Extensions,
-    /// Первая ошибка построения. Всплывает в `send()`: молча проглоченный
-    /// невалидный заголовок — это ровно тот тихий no-op, против которого
-    /// построен `ClientBuilder::build` (см. `check_supported` в config.rs).
-    /// Брифовый код `header()` отбрасывал невалидную пару молча (`if let
-    /// (Ok(n), Ok(v)) = .. { .. }`, без `else`) — дефект самого брифа, а не
-    /// намеренное поведение: см. отчёт о задаче, Task 13 fix round 1.
+    /// The first build error. Surfaces in `send()`: a silently swallowed
+    /// invalid header is exactly the silent no-op `ClientBuilder::build` was
+    /// built against (see `check_supported` in config.rs). The brief's
+    /// `header()` code dropped an invalid pair silently (`if let (Ok(n),
+    /// Ok(v)) = .. { .. }`, no `else`) — a defect in the brief itself, not
+    /// intended behavior: see the task report, Task 13 fix round 1.
     error: Option<Error>,
 }
 
@@ -38,9 +38,9 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         }
     }
 
-    /// Первая ошибка построения побеждает и переживает дальнейшие вызовы —
-    /// не перезаписывается второй невалидной парой и не теряется, если после
-    /// неё вызвали ещё валидный `header()`.
+    /// The first build error wins and survives further calls — it isn't
+    /// overwritten by a second invalid pair, and isn't lost if a valid
+    /// `header()` call follows it.
     pub fn header(mut self, name: &str, value: &str) -> Self {
         if self.error.is_some() {
             return self;
@@ -58,36 +58,37 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         self
     }
 
-    /// Дополняет уже выставленные заголовки, а не заменяет их.
+    /// Adds to the headers already set, rather than replacing them.
     ///
-    /// `self.headers = headers` (как было до m4 финального ревью ветки)
-    /// выбрасывал всё, что успел выставить `header()`, без всякой
-    /// диагностики — тот же класс дефекта, что брифовый `header()`, который
-    /// Task 13 чинил и обкладывал тестом. `HeaderMap::extend` при этом
-    /// перекрывает одноимённое значение, а не накапливает дубликат
-    /// (проверено по контракту `http`: первое значение ключа из
-    /// расширяющей карты идёт через `insert`, последующие — через
-    /// `append`), так что «дополняет» не превращается в два `accept` на
-    /// проводе.
+    /// `self.headers = headers` (as it was before m4 of the branch's final
+    /// review) threw away everything `header()` had managed to set, with no
+    /// diagnostic at all — the same class of defect as the brief's
+    /// `header()`, which Task 13 fixed and covered with a test.
+    /// `HeaderMap::extend` overrides a same-named value rather than
+    /// accumulating a duplicate (verified against `http`'s contract: the
+    /// first value for a key from the extending map goes through `insert`,
+    /// later ones through `append`), so "adds to" doesn't turn into two
+    /// `accept`s on the wire.
     ///
-    /// **Слот ошибки здесь НЕ консультируется, в отличие от `header()`, и
-    /// это не забытая симметрия.** У `header()` гвард
-    /// `if self.error.is_some() { return self; }` несёт нагрузку: этот метод
-    /// сам умеет ставить ошибку, и без гварда вторая невалидная пара
-    /// перезаписала бы первую — проверено мутацией, роняет
-    /// `header_first_error_wins_name_over_later_value_error`. У `headers()`
-    /// ставить ошибку нечем: `HeaderMap` уже валиден по построению. Такой же
-    /// гвард здесь ничего не менял бы наблюдаемо — `send()` возвращает
-    /// сохранённую ошибку раньше, чем вообще смотрит на заголовки, — и он
-    /// действительно тут был один раунд, вместе с тестом, который не мог
-    /// упасть: снятие гварда оставляло ВЕСЬ набор `http-ng` зелёным
-    /// (перепроверено самостоятельно). Мёртвый код и тест, не способный
-    /// покраснеть, — хуже, чем ничего, поэтому оба удалены.
+    /// **The error slot is NOT consulted here, unlike in `header()`, and
+    /// that's not a forgotten symmetry.** In `header()` the guard
+    /// `if self.error.is_some() { return self; }` carries weight: that
+    /// method can set an error itself, and without the guard a second
+    /// invalid pair would overwrite the first — verified by mutation, it
+    /// kills `header_first_error_wins_name_over_later_value_error`. In
+    /// `headers()` there's nothing to set an error from: the `HeaderMap` is
+    /// already valid by construction. The same guard here wouldn't change
+    /// anything observable — `send()` returns the stored error before it
+    /// ever looks at headers — and it really was here for one round, along
+    /// with a test that could never fail: removing the guard left the
+    /// ENTIRE `http-ng` suite green (re-verified independently). Dead code
+    /// and a test that can't go red are worse than nothing, so both were
+    /// removed.
     ///
-    /// Триггер вернуть гвард: как только `headers()` научится отказывать —
-    /// например, фильтру `Capabilities::forbidden_request_headers`,
-    /// намеченному на v0.2, — он снова станет наблюдаемым, и возвращать его
-    /// нужно ВМЕСТЕ с тестом, который без него краснеет.
+    /// Trigger to bring the guard back: the moment `headers()` learns to
+    /// reject something — say, the `Capabilities::forbidden_request_headers`
+    /// filter planned for v0.2 — it becomes observable again, and it must
+    /// come back TOGETHER with a test that goes red without it.
     pub fn headers(mut self, headers: http::HeaderMap) -> Self {
         self.headers.extend(headers);
         self
@@ -98,17 +99,17 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         self
     }
 
-    /// Таймауты только для этого запроса. Кладутся в `Extensions`, откуда их
-    /// читает транспорт; незаданные поля падают обратно на конфигурацию
-    /// клиента — слияние делает `Client::execute` через
-    /// `config::effective_timeouts`, он же и проверяет **слитый** результат
-    /// против `Capabilities` транспорта, так что фаза, которой бэкенд не
-    /// умеет, становится `ErrorKind::Unsupported` из `send()`, а не тихо
-    /// отброшенным значением.
+    /// Timeouts for this request only. Stored in `Extensions`, where the
+    /// transport reads them from; unset fields fall back to the client's
+    /// configuration — the merge is done by `Client::execute` via
+    /// `config::effective_timeouts`, which also checks the **merged**
+    /// result against the transport's `Capabilities`, so a phase the
+    /// backend can't do becomes `ErrorKind::Unsupported` out of `send()`,
+    /// not a value silently dropped.
     ///
-    /// reqwest этого не умеет вовсе (issue #2641), из-за чего `act-cli`
-    /// вынужден строить отдельный `reqwest::Client` на каждый вызов
-    /// компонента — со своим пулом соединений.
+    /// reqwest can't do this at all (issue #2641), which forces `act-cli`
+    /// to build a separate `reqwest::Client` for every component call —
+    /// with its own connection pool.
     pub fn timeouts(mut self, t: http_ng_core::Timeouts) -> Self {
         self.extensions.insert(t);
         self
@@ -116,10 +117,10 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
 
     pub async fn send(self) -> Result<Response<T::Body>, Error>
     where
-        // Sestra бонда `Client::execute` в `client.rs` (spec amendment C1):
-        // `send` зовёт `Client::execute`, которое требует `T::Error: Send +
-        // Sync + 'static` — обобщённая функция обязана повторить бонд своего
-        // callee, трейт сам его не несёт.
+        // Sibling of the bound on `Client::execute` in `client.rs` (spec
+        // amendment-C1): `send` calls `Client::execute`, which requires
+        // `T::Error: Send + Sync + 'static` — a generic function must repeat
+        // its callee's bound, the trait itself doesn't carry it.
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
         if let Some(e) = self.error {

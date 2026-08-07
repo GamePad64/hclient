@@ -1,32 +1,34 @@
-//! Разрешение URI-ссылки относительно базы — RFC 3986 §5.
+//! Resolving a URI reference against a base — RFC 3986 §5.
 //!
-//! Одна реализация на весь клиент, потому что мест, где относительная ссылка
-//! разрешается относительно чего-то, ровно два, и правило у них обязано быть
-//! одно: `Location:` из ответа (`redirect::decide`) и URI запроса против
-//! `ClientBuilder::base_url` (`http_ng::Client`). Пока это были две разные
-//! функции, вторая из них была тихим no-op — а если бы её написали отдельно,
-//! ничто не мешало бы ей разрешать иначе, и один и тот же клиент понимал бы
-//! `/x` двумя способами в зависимости от того, кто его прислал.
+//! One implementation for the whole client, because there are exactly two
+//! places where a relative reference gets resolved against something, and
+//! they must share one rule: the `Location:` from a response
+//! (`redirect::decide`), and the request URI against
+//! `ClientBuilder::base_url` (`http_ng::Client`). While these were two
+//! separate functions, the second one was a silent no-op — and had it been
+//! written separately, nothing would have stopped it from resolving
+//! differently, leaving the same client understanding `/x` two different
+//! ways depending on who sent it.
 
 use http::Uri;
 
-/// Разрешает `reference` относительно `base` по RFC 3986 §5.
+/// Resolves `reference` against `base` per RFC 3986 §5.
 ///
-/// `None` — если база непригодна как база (не абсолютная: у `url::Url` нет
-/// понятия относительного URL), если ссылка не разбирается, или если
-/// результат не выражается как `http::Uri`. Вызывающая сторона превращает
-/// это в типизированную ошибку, свою для каждого из двух мест
+/// `None` if the base isn't usable as a base (not absolute: `url::Url` has
+/// no notion of a relative URL), if the reference doesn't parse, or if the
+/// result can't be expressed as an `http::Uri`. The caller turns this into
+/// a typed error, one of its own for each of the two call sites
 /// (`RedirectAction::InvalidLocation` / `http_ng::InvalidBaseUrl`).
 ///
-/// Три следствия правила, которые чаще всего удивляют — все три
-/// зафиксированы тестами ниже:
-/// - ссылка со своей схемой (`https://other/x`) возвращается как есть, база
-///   не участвует (§5.2.2);
-/// - ссылка, начинающаяся со `/`, ЗАМЕНЯЕТ весь путь базы, а не дописывается
-///   к нему;
-/// - база без завершающего слэша теряет последний сегмент пути при
-///   разрешении относительной ссылки (merge, §5.3): `https://a/api` + `v1` =
-///   `https://a/v1`, тогда как `https://a/api/` + `v1` = `https://a/api/v1`.
+/// Three consequences of the rule that most often surprise people — all
+/// three are pinned down by the tests below:
+/// - a reference with its own scheme (`https://other/x`) is returned as-is,
+///   the base doesn't participate (§5.2.2);
+/// - a reference starting with `/` REPLACES the base's entire path, rather
+///   than being appended to it;
+/// - a base without a trailing slash loses its last path segment when
+///   resolving a relative reference (merge, §5.3): `https://a/api` + `v1` =
+///   `https://a/v1`, whereas `https://a/api/` + `v1` = `https://a/api/v1`.
 pub fn resolve_reference(base: &Uri, reference: &str) -> Option<Uri> {
     let base = url::Url::parse(&base.to_string()).ok()?;
     let joined = base.join(reference).ok()?;
@@ -43,7 +45,7 @@ mod tests {
 
     fn resolved(base: &str, reference: &str) -> String {
         resolve_reference(&uri(base), reference)
-            .expect("должно разрешиться")
+            .expect("must resolve")
             .to_string()
     }
 
@@ -71,8 +73,9 @@ mod tests {
         );
     }
 
-    /// Merge из §5.3, единственное по-настоящему неочевидное место правила:
-    /// последний сегмент базы без слэша — не каталог, и отбрасывается.
+    /// The merge from §5.3, the one genuinely non-obvious part of the
+    /// rule: the base's last segment, without a slash, isn't a directory,
+    /// and gets dropped.
     #[test]
     fn a_base_without_a_trailing_slash_loses_its_last_segment() {
         assert_eq!(
@@ -89,10 +92,11 @@ mod tests {
         );
     }
 
-    /// `/a/b/c` — `c` не каталог, merge даёт `/a/b/`, затем `../` снимает
-    /// `b`: остаётся `/a/d`. Ожидание «/d» в первой версии этого теста было
-    /// ошибкой теста, а не кода — merge и remove_dot_segments применяются
-    /// последовательно, а не вместо друг друга.
+    /// `/a/b/c` — `c` isn't a directory, the merge gives `/a/b/`, then
+    /// `../` strips `b`: what's left is `/a/d`. The expectation of "/d" in
+    /// this test's first version was a bug in the test, not the code —
+    /// merge and remove_dot_segments apply in sequence, not in place of
+    /// each other.
     #[test]
     fn dot_segments_are_removed_after_the_merge_not_instead_of_it() {
         assert_eq!(
@@ -101,16 +105,17 @@ mod tests {
         );
     }
 
-    /// Относительная база — не база: разрешать не от чего, и молча вернуть
-    /// ссылку как есть было бы ровно тем тихим no-op, против которого весь
-    /// этот модуль.
+    /// A relative base isn't a base: there's nothing to resolve against,
+    /// and silently returning the reference as-is would be exactly the
+    /// silent no-op this whole module exists against.
     #[test]
     fn a_relative_base_yields_none_rather_than_pretending_to_resolve() {
         assert!(resolve_reference(&uri("/api/"), "v1").is_none());
     }
 
-    /// Ссылка, которую нельзя разобрать даже относительно валидной базы.
-    /// `url::Url::join` отвергает её, и мы не выдаём испорченный результат.
+    /// A reference that can't be parsed even against a valid base.
+    /// `url::Url::join` rejects it, and we don't hand back a broken
+    /// result.
     #[test]
     fn an_unparsable_reference_yields_none() {
         assert!(resolve_reference(&uri("https://example.test/"), "http://[:::1]/").is_none());

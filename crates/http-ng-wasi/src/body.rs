@@ -1,4 +1,4 @@
-//! Тело ответа `wasi:http`.
+//! `wasi:http` response body.
 
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame, SizeHint};
@@ -7,22 +7,23 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasip3::http_compat::IncomingResponseBody;
 
-/// Тело ответа `wasi:http`. Читает поток инлайн, без фоновой задачи — значит
-/// транспорту не нужна способность `spawn`.
+/// `wasi:http` response body. Reads the stream inline, with no background
+/// task — meaning the transport doesn't need the `spawn` capability.
 pub struct Body {
     inner: Inner,
 }
 
 enum Inner {
     Incoming(IncomingResponseBody),
-    /// Буферизованные исходящие байты одним кадром: адаптер `Bytes` ->
-    /// `http_body::Body`, нужный `Transport::execute` для передачи
-    /// `convert::Payload::Bytes` в `BodyWriter::send_http_body` — тому нужен
-    /// именно `http_body::Body`, а не голые байты. Не часть публичного API
-    /// тела ОТВЕТА (см. `from_bytes` — `pub(crate)`, не `pub`); занимает
-    /// вариант в этом же `enum`, а не отдельный тип, чтобы не заводить
-    /// второй `http_body::Body` только ради одного кадра. `None` внутри —
-    /// кадр уже отдан.
+    /// Buffered outgoing bytes as a single frame: a `Bytes` ->
+    /// `http_body::Body` adapter that `Transport::execute` needs to pass
+    /// `convert::Payload::Bytes` into `BodyWriter::send_http_body` — which
+    /// needs an actual `http_body::Body`, not raw bytes. Not part of the
+    /// RESPONSE body's public API (see `from_bytes` — `pub(crate)`, not
+    /// `pub`); it occupies a variant of this same `enum` rather than a
+    /// separate type, so as not to introduce a second `http_body::Body`
+    /// just for one frame. `None` inside means the frame has already been
+    /// handed out.
     Buffered(Option<Bytes>),
     Done,
 }
@@ -44,17 +45,17 @@ impl Body {
         }
     }
 
-    /// Адаптер `Bytes` -> `http_body::Body`, ровно один кадр данных. Только
-    /// для `Transport::execute` (см. `Inner::Buffered`) — не предназначен
-    /// вызывающей стороне, поэтому `pub(crate)`.
+    /// `Bytes` -> `http_body::Body` adapter, exactly one data frame. Only
+    /// for `Transport::execute` (see `Inner::Buffered`) — not meant for
+    /// callers, hence `pub(crate)`.
     pub(crate) fn from_bytes(b: Bytes) -> Self {
         Self {
             inner: Inner::Buffered(Some(b)),
         }
     }
 
-    /// Пустое тело: ни одного кадра, `is_end_stream()` истинно с самого
-    /// начала, `size_hint()` — точный ноль.
+    /// Empty body: no frames at all, `is_end_stream()` is true from the
+    /// start, `size_hint()` is an exact zero.
     pub fn empty() -> Self {
         Self { inner: Inner::Done }
     }
@@ -72,20 +73,20 @@ impl HttpBody for Body {
             Inner::Incoming(i) => match Pin::new(i).poll_frame(cx) {
                 Poll::Ready(Some(Ok(f))) => Poll::Ready(Some(Ok(f))),
                 Poll::Ready(Some(Err(e))) => {
-                    // `ErrorCode` идёт в `Error::new` как есть, без обёртки.
-                    // Обёртка была бы лишней машинерией без выигрыша:
-                    // `ErrorCode` уже реализует `Debug`/`Display`/
-                    // `core::error::Error` вручную (wasip3 `service.rs`) —
-                    // причём его собственный `Display` тоже устроен как
-                    // `write!(f, "{:?}", self)`, так что обёртка не сделала
-                    // бы вывод содержательнее. А поскольку `Error::new`
-                    // стирает источник в `Arc<dyn Error + Send + Sync>`,
-                    // конкретный тип `ErrorCode` и так не появляется в
-                    // публичном API этого крейта что через обёртку, что без
-                    // неё; разница только в том, что без обёртки вызывающая
-                    // сторона может честно даункаститься до настоящего типа
-                    // через `Error::source()`, а обёртка эту возможность
-                    // закрывала бы.
+                    // `ErrorCode` goes into `Error::new` as-is, unwrapped.
+                    // A wrapper would be pure machinery with no payoff:
+                    // `ErrorCode` already implements `Debug`/`Display`/
+                    // `core::error::Error` by hand (wasip3 `service.rs`) —
+                    // and its own `Display` is itself just
+                    // `write!(f, "{:?}", self)`, so a wrapper wouldn't have
+                    // made the output any more informative. And since
+                    // `Error::new` erases the source into `Arc<dyn Error +
+                    // Send + Sync>` anyway, the concrete `ErrorCode` type
+                    // doesn't show up in this crate's public API either
+                    // with or without the wrapper; the only difference is
+                    // that without the wrapper the caller can honestly
+                    // downcast to the real type via `Error::source()`,
+                    // while a wrapper would close off that option.
                     self.inner = Inner::Done;
                     Poll::Ready(Some(Err(Error::new(ErrorKind::Body, e))))
                 }
@@ -95,43 +96,45 @@ impl HttpBody for Body {
                 }
                 Poll::Pending => Poll::Pending,
             },
-            // Ровно один кадр, затем `None` навсегда — `Option::take` уже
-            // даёт это поведение без отдельного перехода в `Inner::Done`.
+            // Exactly one frame, then `None` forever — `Option::take`
+            // already gives us that behavior without a separate transition
+            // to `Inner::Done`.
             Inner::Buffered(slot) => Poll::Ready(slot.take().map(|b| Ok(Frame::data(b)))),
             Inner::Done => Poll::Ready(None),
         }
     }
 
-    /// Делегирует внутреннему телу вместо того, чтобы переспрашивать
-    /// собственное состояние. `IncomingResponseBody` знает о конце потока
-    /// из своего состояния раньше, чем мы — только после того, как САМИ
-    /// один раз опросим `poll_frame` и увидим `Ready(None)`. Слабая версия
-    /// (`matches!(self.inner, Inner::Done)`) — ровно тот дефект хостовой
-    /// стороны `act` (`http_body_util::StreamBody` всегда возвращает
-    /// `false`), из-за которого гости трапались посреди чтения
-    /// HTTP/2-ответов; воспроизводить его здесь было бы бессмысленно —
-    /// это и есть весь мотив задачи.
+    /// Delegates to the inner body instead of re-deriving its own state.
+    /// `IncomingResponseBody` knows the stream has ended from its own state
+    /// earlier than we do — only after WE ourselves have polled
+    /// `poll_frame` once and seen `Ready(None)`. The weaker version
+    /// (`matches!(self.inner, Inner::Done)`) is exactly the defect on the
+    /// host side, `act` (`http_body_util::StreamBody` always returns
+    /// `false`), that made guests trap mid-read on HTTP/2 responses;
+    /// reproducing it here would be pointless — it's the entire motivation
+    /// for this task.
     ///
-    /// **Непокрытая юнит-тестами ветка, защищённая интеграционным тестом.**
-    /// `Inner::Incoming(i) => i.is_end_stream()` — центральная строка всей
-    /// задачи — не покрыта юнит-тестом ниже: у `IncomingResponseBody` нет
-    /// конструктора без настоящего хоста `wasi:http`
-    /// (`wasip3::http::types::Response` — непрозрачный WIT-ресурс).
-    /// Мутационный прогон ревью подтвердил дыру: замена этой ветки на
-    /// жёсткий `false` (тот самый баг `act`) не роняет ни один тест из
-    /// `#[cfg(test)] mod tests` ниже.
+    /// **Branch not covered by unit tests, guarded by an integration
+    /// test.** `Inner::Incoming(i) => i.is_end_stream()` — the central
+    /// line of the whole task — is not covered by the unit tests below:
+    /// `IncomingResponseBody` has no constructor without a real
+    /// `wasi:http` host (`wasip3::http::types::Response` is an opaque WIT
+    /// resource). The review's mutation run confirmed the gap: replacing
+    /// this branch with a hard `false` (the very `act` bug) doesn't fail a
+    /// single test in the `#[cfg(test)] mod tests` below.
     ///
-    /// Task 16 закрывает это `crates/http-ng-wasi/tests/live_roundtrip.rs` +
-    /// `examples/live_roundtrip_guest.rs`: реальный запрос через
-    /// `WasiHttp::execute` под `wasmtime` (`.cargo/config.toml`,
-    /// `runner = "wasmtime run -S http --"`) против мок-сервера, отвечающего
-    /// `chunked` с трейлером — именно трейлер даёт то самое окно, где
-    /// `i.is_end_stream()` уже `true`, а `self.inner` этого объекта ещё
-    /// `Inner::Incoming` (см. doc-комментарий модуля
-    /// `live_roundtrip_guest.rs` про то, почему без трейлера такого окна
-    /// вообще не существует — с одним лишь `Content-Length` эта ветка и
-    /// хардкод-`false` неотличимы даже вживую). Тот же мутационный прогон,
-    /// применённый к этому тесту, красный.
+    /// Task 16 closes this with `crates/http-ng-wasi/tests/live_roundtrip.rs` +
+    /// `examples/live_roundtrip_guest.rs`: a real request through
+    /// `WasiHttp::execute` under `wasmtime` (`.cargo/config.toml`, `runner
+    /// = "wasmtime run -S http --"`) against a mock server that responds
+    /// `chunked` with a trailer — the trailer is exactly what opens the
+    /// window where `i.is_end_stream()` is already `true` while
+    /// `self.inner` on this object is still `Inner::Incoming` (see the
+    /// module doc comment on `live_roundtrip_guest.rs` for why that
+    /// window doesn't exist at all without a trailer — with a plain
+    /// `Content-Length` this branch and a hardcoded `false` are
+    /// indistinguishable even live). The same mutation run, applied to
+    /// this test, is red.
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Inner::Done => true,
@@ -140,21 +143,23 @@ impl HttpBody for Body {
         }
     }
 
-    /// Форвардит хостовую оценку (`content-length`), а не отбрасывает её:
-    /// `IncomingResponseBody` уже вычислила `size_hint()` из заголовков
-    /// ответа, пересчитывать нечего — кроме одного случая: `i.size_hint()`
-    /// сама никогда не уменьшается (она разово посчитана из
-    /// `content-length` и с тех пор не меняется), а `poll_frame` держит
-    /// `self.inner` в `Incoming` ещё один вызов ПОСЛЕ того, как
-    /// `i.is_end_stream()` уже стало истинным — кадр трейлеров (или
-    /// последний `Ready(None)`) увиден внутренним телом, но переход в
-    /// `Inner::Done` у нас происходит только на следующем `poll_frame`.
-    /// В этом окне некорректированная `i.size_hint()` обещала бы верхнюю
-    /// границу байтов, которых больше не будет — переоценка, а не
-    /// недооценка, и именно переоценка вредна вызывающей стороне (аллокация
-    /// под обещанный остаток, ожидание байтов, которые не придут). См.
-    /// `size_hint_honoring_end` — логика вынесена в чистую функцию, чтобы
-    /// её можно было проверить без живого `IncomingResponseBody`.
+    /// Forwards the host's estimate (`content-length`) instead of
+    /// discarding it: `IncomingResponseBody` has already computed
+    /// `size_hint()` from the response headers, nothing to recompute —
+    /// except for one case: `i.size_hint()` itself never shrinks (it's
+    /// computed once from `content-length` and doesn't change after
+    /// that), while `poll_frame` keeps `self.inner` in `Incoming` for one
+    /// more call AFTER `i.is_end_stream()` has already become true — a
+    /// trailers frame (or the final `Ready(None)`) has been seen by the
+    /// inner body, but our own transition to `Inner::Done` only happens
+    /// on the next `poll_frame`. In that window, an uncorrected
+    /// `i.size_hint()` would promise an upper bound of bytes that will
+    /// never come — an over-estimate, not an under-estimate, and it's the
+    /// over-estimate that hurts the caller (allocating for a promised
+    /// remainder, waiting for bytes that won't arrive). See
+    /// `size_hint_honoring_end` — the logic is pulled out into a pure
+    /// function so it can be checked without a live
+    /// `IncomingResponseBody`.
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             Inner::Done => SizeHint::with_exact(0),
@@ -165,11 +170,11 @@ impl HttpBody for Body {
     }
 }
 
-/// Не даёт устаревшей оценке хоста пережить собственный конец потока — см.
-/// комментарий у `Body::size_hint`. Чистая функция специально: сам сценарий
-/// (`Inner::Incoming` с `is_end_stream() == true`) недостижим без живого
-/// `IncomingResponseBody`, а эта логика — достижима и обязана быть
-/// проверена саму по себе.
+/// Doesn't let a stale host estimate outlive the stream's own end — see
+/// the comment on `Body::size_hint`. Deliberately a pure function: the
+/// actual scenario (`Inner::Incoming` with `is_end_stream() == true`) is
+/// unreachable without a live `IncomingResponseBody`, while this logic is
+/// reachable and needs to be checked on its own.
 fn size_hint_honoring_end(is_end_stream: bool, upstream: SizeHint) -> SizeHint {
     if is_end_stream {
         SizeHint::with_exact(0)
@@ -182,19 +187,21 @@ fn size_hint_honoring_end(is_end_stream: bool, upstream: SizeHint) -> SizeHint {
 mod tests {
     use super::*;
 
-    // Всё, что ниже, конструируется без хоста `wasi:http` — `Body::empty()`
-    // и `Body::from_bytes()` не трогают `IncomingResponseBody`. Ветки
-    // `Inner::Incoming` (реальный `poll_frame`, делегирование
-    // `is_end_stream`/`size_hint` живому телу) здесь не проверить:
-    // `IncomingResponseBody` создаётся только из
-    // `wasip3::http::types::Response` — непрозрачного WIT-ресурса, которому
-    // неоткуда взяться без настоящего хоста `wasi:http`. `is_end_stream`, где
-    // это особенно чувствительно, отмечено отдельным doc-комментарием на
-    // самом методе — там же итог того, закрыл ли Task 16 эту дыру
-    // интеграционным тестом под wasmtime или нет. Исключение —
-    // `size_hint_honoring_end`: её решение, устаревшую оценку или нет
-    // возвращать, вынесено в чистую функцию именно затем, чтобы не делить
-    // её судьбу с остальными `Inner::Incoming`-ветками — она проверена ниже.
+    // Everything below is constructed without a `wasi:http` host —
+    // `Body::empty()` and `Body::from_bytes()` never touch
+    // `IncomingResponseBody`. The `Inner::Incoming` branches (the real
+    // `poll_frame`, delegating `is_end_stream`/`size_hint` to a live body)
+    // can't be checked here: `IncomingResponseBody` is only ever built
+    // from `wasip3::http::types::Response`, an opaque WIT resource that
+    // has nowhere to come from without a real `wasi:http` host.
+    // `is_end_stream`, where this is especially sensitive, is flagged with
+    // its own doc comment on the method — that's also where the verdict
+    // lives on whether Task 16 closed this gap with an integration test
+    // under wasmtime or not. The exception is `size_hint_honoring_end`:
+    // its decision, whether to return a stale estimate or not, is pulled
+    // out into a pure function precisely so it doesn't have to share the
+    // fate of the rest of the `Inner::Incoming` branches — it's checked
+    // below.
 
     #[test]
     fn empty_body_yields_no_frames() {
@@ -222,14 +229,14 @@ mod tests {
         assert_eq!(hint.upper(), Some(0));
     }
 
-    /// Ревью round 1, Finding 1: `IncomingBody::size_hint()` считается один
-    /// раз из `content-length` и сама никогда не уменьшается, а
-    /// `Body::poll_frame` держит `self.inner` в `Incoming` ещё один вызов
-    /// после того, как внутреннее тело уже сообщило `is_end_stream() ==
-    /// true`. Без коррекции в этом окне наружу ушла бы устаревшая верхняя
-    /// граница — обещание байтов, которых больше не будет. Ставим заведомо
-    /// "богатую" оценку (`4096`), чтобы тест не мог случайно совпасть с
-    /// правильным ответом (`0`) при сломанной логике.
+    /// Review round 1, Finding 1: `IncomingBody::size_hint()` is computed
+    /// once from `content-length` and never shrinks on its own, while
+    /// `Body::poll_frame` keeps `self.inner` in `Incoming` for one more
+    /// call after the inner body has already reported `is_end_stream() ==
+    /// true`. Without a correction, a stale upper bound would leak out in
+    /// that window — a promise of bytes that will never come. We set a
+    /// deliberately "rich" estimate (`4096`) so the test can't
+    /// accidentally match the correct answer (`0`) under broken logic.
     #[test]
     fn size_hint_does_not_over_promise_once_the_stream_has_ended() {
         let mut stale = SizeHint::new();
@@ -241,8 +248,8 @@ mod tests {
         assert_eq!(hint.upper(), Some(0));
     }
 
-    /// Симметрия к тесту выше: пока поток не закончился, оценку хоста
-    /// нужно передать как есть, а не тоже занулить.
+    /// Symmetric to the test above: while the stream hasn't ended, the
+    /// host's estimate needs to pass through as-is, not get zeroed too.
     #[test]
     fn size_hint_passes_through_the_upstream_estimate_mid_stream() {
         let mut mid = SizeHint::new();
@@ -254,10 +261,11 @@ mod tests {
         assert_eq!(hint.upper(), mid.upper());
     }
 
-    // `Inner::Buffered` — добавлен Task 16 как адаптер `Bytes` ->
-    // `http_body::Body` для `Transport::execute` (`convert::Payload::Bytes`
-    // идёт в `BodyWriter::send_http_body`, которому нужен `http_body::Body`,
-    // а не голые байты). Не требует хоста — тестируется наравне с `empty()`.
+    // `Inner::Buffered` — added by Task 16 as a `Bytes` -> `http_body::Body`
+    // adapter for `Transport::execute` (`convert::Payload::Bytes` goes
+    // into `BodyWriter::send_http_body`, which needs an `http_body::Body`,
+    // not raw bytes). Doesn't need a host — tested right alongside
+    // `empty()`.
 
     #[test]
     fn buffered_body_yields_exactly_one_data_frame_then_ends() {
@@ -280,13 +288,16 @@ mod tests {
     #[test]
     fn buffered_body_reports_end_of_stream_only_after_the_frame_is_taken() {
         let mut b = Body::from_bytes(Bytes::from_static(b"abc"));
-        assert!(!b.is_end_stream(), "кадр ещё не отдан");
+        assert!(!b.is_end_stream(), "frame not yet handed out");
 
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let _ = std::pin::Pin::new(&mut b).poll_frame(&mut cx);
 
-        assert!(b.is_end_stream(), "единственный кадр уже отдан");
+        assert!(
+            b.is_end_stream(),
+            "the one frame has already been handed out"
+        );
     }
 
     #[test]

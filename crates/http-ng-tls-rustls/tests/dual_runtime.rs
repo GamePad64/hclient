@@ -1,19 +1,19 @@
-//! Доказательство центрального тезиса Task 8 на реальном TLS-хендшейке, а не
-//! только на трейт-контракте: `TlsConnect` типизирован на
-//! `hyper::rt::{Read, Write}`, а не на futures-io/tokio-io, поэтому ОДИН
-//! адаптер (`Rustls::connect`) обслуживает и tokio, и smol без единой
-//! рантайм-специфичной ветки в общем теле. Модель — pair-property-тест
-//! `crates/http-ng-rt-pair-check` (Task 4, fix round 1): там то же самое
-//! доказывается для голых способностей рантайма, здесь — для TLS-адаптера,
-//! построенного поверх них.
+//! Proof of Task 8's central thesis on a real TLS handshake, not just at
+//! the trait-contract level: `TlsConnect` is typed on `hyper::rt::{Read,
+//! Write}`, not on futures-io/tokio-io, so ONE adapter (`Rustls::connect`)
+//! serves both tokio and smol with no runtime-specific branch anywhere in
+//! the shared body. The model is the pair-property test in
+//! `crates/http-ng-rt-pair-check` (Task 4, fix round 1): the same thing is
+//! proved there for the bare runtime capabilities, here for the TLS
+//! adapter built on top of them.
 //!
-//! `handshake_and_echo` ниже — единственное тело: TCP-коннект через
-//! переданный рантайм, TLS-хендшейк ТЕМ ЖЕ `Rustls`, обмен байтами через
-//! `hyper::rt::{Read, Write}`. Ни `#[cfg]`, ни рантайм-специфичного бонда
-//! внутри нет — оба инстанцирования ниже различаются только конкретным
-//! типом рантайма и тем, чем каждый тест крутит свой executor
-//! (`#[tokio::test]` vs. `futures_executor::block_on`), что неизбежно и
-//! остаётся снаружи общего тела по построению.
+//! `handshake_and_echo` below is the one shared body: TCP connect through
+//! the passed-in runtime, TLS handshake through that SAME `Rustls`, byte
+//! exchange through `hyper::rt::{Read, Write}`. There is no `#[cfg]`, no
+//! runtime-specific bound inside it — the two instantiations below differ
+//! only in the concrete runtime type and in how each test drives its own
+//! executor (`#[tokio::test]` vs. `futures_executor::block_on`), which is
+//! unavoidable and stays outside the shared body by construction.
 use http_ng_rt::{TcpConnect, TcpOpts};
 use http_ng_tls::{TlsConnect, TlsRequest};
 use http_ng_tls_rustls::Rustls;

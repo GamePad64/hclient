@@ -8,8 +8,8 @@ pub enum Phase {
     Total,
 }
 
-/// Категория ошибки. Существует, чтобы потребителю не приходилось
-/// классифицировать ошибки подстрочным матчингом по `Display`.
+/// The error's category. Exists so the consumer doesn't have to classify
+/// errors by substring-matching on `Display`.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -22,42 +22,42 @@ pub enum ErrorKind {
     Decode,
     Status,
     Unsupported,
-    /// Способность, стоящая за отказавшей операцией, ушла из-под неё раньше,
-    /// чем та успела выполниться — как правило, рантайм завершает работу,
-    /// пока задача ещё стояла в очереди (см. `http_ng_rt::Cancelled`,
-    /// возвращаемая `Blocking::run`, вертикаль 2, Task 1, `amendment-C5`).
+    /// The capability behind the failed operation was pulled out from under
+    /// it before it could finish — typically, the runtime is shutting down
+    /// while the task was still queued (see `http_ng_rt::Cancelled`,
+    /// returned by `Blocking::run`, vertical 2, Task 1, `amendment-C5`).
     ///
-    /// Отдельный вариант, а не `Other`: `Other` — честный ответ для
-    /// СОБСТВЕННО непрозрачной ошибки бэкенда (дефолт
-    /// `Transport::to_error`, когда бэкенду нечего сказать о категории).
-    /// Отмена — противоположность непрозрачности: это заранее известное,
-    /// уже типизированное условие (`Cancelled` — не строка и не код ошибки
-    /// ОС, а конкретный тип), которое встретится у КАЖДОГО будущего
-    /// потребителя способности `Blocking`, а не один раз у одного бэкенда.
-    /// Смешивать её ни с `Other`, ни тем более с категорией самой отказавшей
-    /// операции (например, `Resolve` для DNS-резолвера поверх `Blocking`,
-    /// см. `http-ng-dns-system`) нельзя по той же причине, по которой
-    /// `Resolve` и `Other` не смешивают друг с другом: вызывающая сторона
-    /// обязана уметь отличить «эта попытка отказала по существу» от «эта
-    /// попытка не завершилась, потому что рантайм завершает работу» без
-    /// downcast — просто сравнив `kind()`.
+    /// A separate variant, not `Other`: `Other` is the honest answer for a
+    /// GENUINELY opaque backend error (the default `Transport::to_error`,
+    /// when the backend has nothing to say about the category). Cancellation
+    /// is the opposite of opacity: it's a condition known in advance and
+    /// already typed (`Cancelled` is not a string or an OS error code, but a
+    /// concrete type), one that EVERY future consumer of the `Blocking`
+    /// capability will hit, not a one-off for a single backend. It must not
+    /// be mixed with `Other`, and even less with the category of the failed
+    /// operation itself (e.g. `Resolve` for a DNS resolver built on
+    /// `Blocking`, see `http-ng-dns-system`) — for the same reason `Resolve`
+    /// and `Other` aren't mixed with each other: the caller must be able to
+    /// tell "this attempt failed on its merits" from "this attempt didn't
+    /// finish because the runtime is shutting down" without a downcast —
+    /// just by comparing `kind()`.
     Cancelled,
     Other,
 }
 
-/// `Clone` намеренно: непрозрачная и неклонируемая ошибка reqwest — источник
-/// постоянных жалоб (reqwest#1053).
+/// `Clone` is deliberate: reqwest's opaque, unclonable error is a source of
+/// constant complaints (reqwest#1053).
 ///
-/// `source` обязан быть `Send + Sync` — это единственное документированное
-/// исключение из инварианта крейта "ни одного объявленного бонда
-/// `Send`/`Sync`". Без этого бонда `Arc<dyn Error>` стирает auto-traits
-/// источника, и `Error` (а вместе с ней future, который возвращает
-/// `Client::execute`) была бы `!Send` для любого транспорта —
-/// `tokio::spawn(client.get(u).send())` не компилировался бы никогда. Все
-/// три бэкенда v0.1 (hyper, wasi:http, browser fetch без
-/// `target_feature = "atomics"`) уже производят `Send + Sync`-ошибки, так
-/// что это фиксация факта, а не новое ограничение; транспорт с
-/// принципиально `!Send`-ошибкой не сможет использовать эту обёртку.
+/// `source` must be `Send + Sync` — the one documented exception to the
+/// crate invariant "no declared `Send`/`Sync` bound anywhere." Without this
+/// bound, `Arc<dyn Error>` erases the source's auto-traits, and `Error`
+/// (and with it the future `Client::execute` returns) would be `!Send` for
+/// every transport — `tokio::spawn(client.get(u).send())` would never
+/// compile. All three v0.1 backends (hyper, wasi:http, browser fetch
+/// without `target_feature = "atomics"`) already produce `Send + Sync`
+/// errors, so this pins down a fact rather than adding a new restriction;
+/// a transport with a fundamentally `!Send` error won't be able to use
+/// this wrapper.
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
@@ -123,7 +123,7 @@ mod tests {
     fn preserves_kind_and_source_without_stringifying() {
         let e = Error::new(ErrorKind::Resolve, Src);
         assert_eq!(e.kind(), &ErrorKind::Resolve);
-        // Источник доступен целиком — не подстрокой сообщения.
+        // The source is available whole — not as a substring of the message.
         let src = std::error::Error::source(&e).unwrap();
         assert!(src.downcast_ref::<Src>().is_some());
     }
@@ -133,8 +133,8 @@ mod tests {
         let e = Error::new(ErrorKind::Connect, Src);
         let c = e.clone();
         assert_eq!(c.kind(), &ErrorKind::Connect);
-        // Клон должен шарить один и тот же source, а не копировать и не
-        // терять его: указатели на источник у оригинала и клона совпадают.
+        // The clone must share the same source, not copy or lose it: the
+        // source pointers of the original and the clone must match.
         let a = std::error::Error::source(&e).unwrap() as *const dyn std::error::Error;
         let b = std::error::Error::source(&c).unwrap() as *const dyn std::error::Error;
         assert!(std::ptr::eq(a, b));
@@ -149,15 +149,16 @@ mod tests {
         assert!(Error::new(ErrorKind::Unsupported, Src).is_unsupported());
         assert!(!Error::new(ErrorKind::Body, Src).is_unsupported());
         assert!(Error::new(ErrorKind::Cancelled, Src).is_cancelled());
-        // Отмена — не отказ DNS и не непрозрачная "прочая" ошибка: обе
-        // проверки нужны, одной было бы недостаточно, чтобы поймать
-        // регресс, спутавший `Cancelled` с любым из этих двух соседей.
+        // Cancellation is neither a DNS failure nor an opaque "other"
+        // error: both checks are needed — either alone would be
+        // insufficient to catch a regression that confused `Cancelled`
+        // with either of these two neighbors.
         assert!(!Error::new(ErrorKind::Resolve, Src).is_cancelled());
         assert!(!Error::new(ErrorKind::Other, Src).is_cancelled());
     }
 
-    // `Error: Send + Sync` (spec amendment C1) — moved to
-    // `crates/http-ng-core/tests/shape.rs` per amendment C3: a bare
+    // `Error: Send + Sync` (spec amendment-C1) — moved to
+    // `crates/http-ng-core/tests/shape.rs` per amendment-C3: a bare
     // `fn _assert<T: Send + Sync>() {}` inside `src` matches the
     // `no-declared-send` guard's own pattern. Fix round 1 for Task 12
     // dropped this file's blanket exclusion from that guard in favour of

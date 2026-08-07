@@ -1,62 +1,64 @@
-//! Подключаемое разрешение имён.
+//! Pluggable name resolution.
 //!
-//! Раздельные стримы по семействам, а не `Vec<SocketAddr>`: RFC 8305
-//! требует начинать соединяться по AAAA, не дожидаясь A —
-//! `http-ng-proto::happy_eyeballs::Scheduler` (Task 5) кормится результатами
-//! по мере поступления, а не одним блоком после того, как резолвер закончил
-//! оба семейства. Это единственная причина, по которой `Resolve` возвращает
-//! `Stream`, а не `Future<Output = Vec<_>>`: ничто в трейте не заставляет
-//! вызывающую сторону дожидаться конца стрима или собирать его в `Vec`
-//! перед тем, как начать коннектиться к первому адресу.
+//! Separate streams per address family, not a `Vec<SocketAddr>`: RFC 8305
+//! requires starting to connect over AAAA without waiting for A —
+//! `http-ng-proto::happy_eyeballs::Scheduler` (Task 5) is fed results as
+//! they arrive, not as one block once the resolver has finished both
+//! families. This is the sole reason `Resolve` returns a `Stream` rather
+//! than a `Future<Output = Vec<_>>`: nothing in the trait forces the
+//! caller to wait for the stream to end or collect it into a `Vec` before
+//! starting to connect to the first address.
 //!
-//! **Гарантия порядка внутри стрима: её нет.** `Resolve` не обещает, что
-//! адреса одного семейства идут в порядке RFC 6724 §6 (Destination Address
-//! Selection) — резолвер вправе отдавать их в порядке DNS-ответа, порядке
-//! кэша или любом другом.
+//! **Ordering guarantee within a stream: there isn't one.** `Resolve`
+//! makes no promise that addresses of one family come in RFC 6724 §6
+//! (Destination Address Selection) order — the resolver is free to hand
+//! them out in DNS-response order, cache order, or any other order.
 //!
-//! **Сортировка по RFC 6724 §6 сегодня — ничья работа, не "работа
-//! вызывающей стороны".** Первая версия этого абзаца называла её обязанностью
-//! коннектора (`http-ng-native::connect`, Task 11) — то есть места, где
-//! результаты реально попадают в `Scheduler::offer_v4`/`offer_v6`
-//! (`Scheduler` со своей стороны шва говорит то же самое: «сортировка —
-//! забота вызывающей стороны, до `offer_*`; здесь её нет намеренно»). Проверка
-//! перед реализацией Task 11 показала, что это обещание неисполнимо в
-//! заявленном виде: полное правило требует Source Address Selection (RFC 6724
-//! Rule 1 и далее) — знания о том, каким локальным адресом ОС реально стала бы
-//! соединяться с конкретным адресатом, то есть доступа к таблице
-//! маршрутизации, которого не даёт НИ ОДИН трейт этой вертикали (`Resolve`,
-//! `TcpConnect`, `Timer`). Частичная реализация (только правила, не требующие
-//! Source Address Selection) была бы хуже отсутствующей: она выглядела бы
-//! соответствием RFC 6724, не будучи им — тот же принцип, что развёл
-//! `RedirectSupport::None`/`Transparent` в `http-ng-core` и
-//! `supports_svcb()`/пустой стрим ниже: способность, которая лжёт о своём
-//! состоянии, хуже способности, которой просто нет.
+//! **RFC 6724 §6 sorting is nobody's job today, not "the caller's job."**
+//! The first version of this paragraph called it the connector's
+//! responsibility (`http-ng-native::connect`, Task 11) — i.e. the place
+//! where results actually reach `Scheduler::offer_v4`/`offer_v6`
+//! (`Scheduler`, on its own side of the seam, says the same thing:
+//! "sorting is the caller's concern, before `offer_*`; it isn't done
+//! here"). Checking before Task 11 was implemented showed that this
+//! promise can't be kept in the form stated: the full rule requires
+//! Source Address Selection (RFC 6724 Rule 1 onward) — knowledge of which
+//! local address the OS would actually use to connect to a given
+//! destination, i.e. access to the routing table, which NONE of this
+//! vertical's traits (`Resolve`, `TcpConnect`, `Timer`) provide. A partial
+//! implementation (only the rules that don't need Source Address
+//! Selection) would be worse than none at all: it would look like RFC
+//! 6724 compliance without being one — the same principle that split
+//! `RedirectSupport::None`/`Transparent` in `http-ng-core` and
+//! `supports_svcb()`/the empty stream below: a capability that lies about
+//! its own state is worse than a capability that's simply absent.
 //!
-//! Поэтому сегодня: адреса каждого семейства идут в
-//! `Scheduler::offer_v4`/`offer_v6` в ТОМ ЖЕ порядке, в котором их отдал
-//! резолвер — ни `Resolve`, ни `Scheduler`, ни `http_ng_native::connect` (см.
-//! его doc-комментарий, раздел "RFC 6724 ... НЕ реализован здесь") не
-//! сортируют. Это зафиксированный, названный вслух пробел, а не недосмотр —
-//! см. таблицу §9 "Что явно не делаем" в
-//! `docs/superpowers/specs/2026-08-05-http-ng-design.md`. Закрыть его значило
-//! бы сперва завести отдельную способность Source Address Selection, которой
-//! сегодня нет ни у одного трейта.
+//! So, as things stand today: each family's addresses go into
+//! `Scheduler::offer_v4`/`offer_v6` in the SAME order the resolver handed
+//! them out — neither `Resolve`, nor `Scheduler`, nor
+//! `http_ng_native::connect` (see its doc comment, the "RFC 6724 ... NOT
+//! implemented here" section) sort them. This is a recorded, explicitly
+//! named gap, not an oversight — see the §9 "What we explicitly don't do"
+//! table in `docs/superpowers/specs/2026-08-05-http-ng-design.md`. Closing
+//! it would first require introducing a separate Source Address Selection
+//! capability, which no trait has today.
 //!
-//! **SVCB — способность, а не факт.** `lookup_svcb` несёт тело по умолчанию,
-//! возвращающее пустой стрим, — иначе `getaddrinfo`, `wasi:http` и
-//! embedded-резолверы не смогли бы реализовать трейт вовсе, притом что
-//! реального SVCB/HTTPS-запроса ни один из них не выполняет. Но пустой
-//! стрим сам по себе неоднозначен: он мог бы значить и «этот резолвер не
-//! умеет SVCB», и «резолвер спросил и получил ноль записей» — две разные
-//! вещи, которые вызывающая сторона не обязана путать (тот же принцип, что
-//! развёл `RedirectSupport::None` и `Transparent` в `http-ng-core`:
-//! способность, которая врёт о своём отсутствии или о своём наличии, хуже
-//! способности, которой просто нет). `supports_svcb()` — отдельная точка
-//! входа для этого различия: резолвер, не умеющий SVCB, оставляет её
-//! дефолтной `false` и наследует дефолтный `lookup_svcb`; резолвер, который
-//! умеет, обязан переопределить ОБА метода вместе — переопределить только
-//! `lookup_svcb` значит снова смешать «не умею» с «умею и не нашёл» для
-//! всех, кто читает только `supports_svcb()`.
+//! **SVCB is a capability, not a fact.** `lookup_svcb` carries a default
+//! body that returns an empty stream — otherwise `getaddrinfo`,
+//! `wasi:http`, and embedded resolvers couldn't implement the trait at
+//! all, even though none of them perform a real SVCB/HTTPS query. But an
+//! empty stream is ambiguous on its own: it could mean either "this
+//! resolver can't do SVCB" or "the resolver asked and got zero records" —
+//! two different things the caller isn't obligated to conflate (the same
+//! principle that split `RedirectSupport::None` and `Transparent` in
+//! `http-ng-core`: a capability that lies about its own absence or its own
+//! presence is worse than a capability that's simply absent).
+//! `supports_svcb()` is a separate entry point for that distinction: a
+//! resolver that can't do SVCB leaves it at the default `false` and
+//! inherits the default `lookup_svcb`; a resolver that can must override
+//! BOTH methods together — overriding only `lookup_svcb` would conflate
+//! "can't" with "can, and found nothing" all over again for anyone who
+//! reads only `supports_svcb()`.
 #![forbid(unsafe_code)]
 
 use bytes::Bytes;
@@ -74,11 +76,11 @@ pub struct ResolvedAddr {
     pub ttl: Option<Duration>,
 }
 
-/// RFC 9460 HTTPS/SVCB. `alpn` даёт обнаружение h3 без Alt-Svc,
-/// `ech_config_list` кормит `rustls::EchConfig` напрямую.
+/// RFC 9460 HTTPS/SVCB. `alpn` provides h3 discovery without Alt-Svc,
+/// `ech_config_list` feeds `rustls::EchConfig` directly.
 ///
-/// Заложено с первого дня: если зафиксировать резолвер на `SocketAddr`, ECH и
-/// h3-discovery закрыты навсегда без ломающего изменения.
+/// Built in from day one: pinning the resolver to `SocketAddr` would close
+/// off ECH and h3 discovery permanently, short of a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SvcbEndpoint {
     pub priority: u16,
@@ -90,16 +92,17 @@ pub struct SvcbEndpoint {
     pub ech_config_list: Option<Bytes>,
 }
 
-/// Поток, который сразу говорит «ничего нет».
+/// A stream that immediately says "nothing here."
 ///
-/// Существует, чтобы `Resolve::lookup_svcb` имело тело по умолчанию, не
-/// притаскивая `futures-util` в зависимости библиотеки: единственное, что
-/// оттуда требовалось, — `stream::empty()`. `futures-core` даёт один крейт
-/// (сам трейт `Stream`); `futures-util` тянет за собой ещё четыре
-/// (`futures-task`, `pin-project-lite`, `slab` и себя саму) ради одной
-/// функции, чьё тело — восемь строк ниже. `futures-util` по-прежнему нужен
-/// тестам этого крейта (`stream::iter`, `StreamExt`) и живёт в
-/// `[dev-dependencies]`, где не попадает в граф зависимостей потребителя.
+/// Exists so `Resolve::lookup_svcb` can have a default body without
+/// dragging `futures-util` into the library's dependencies: the only
+/// thing needed from there was `stream::empty()`. `futures-core` supplies
+/// one crate (the `Stream` trait itself); `futures-util` pulls in four
+/// more (`futures-task`, `pin-project-lite`, `slab`, and itself) for the
+/// sake of one function whose body is eight lines below. `futures-util`
+/// is still needed by this crate's tests (`stream::iter`, `StreamExt`)
+/// and lives in `[dev-dependencies]`, where it doesn't reach a
+/// consumer's dependency graph.
 struct EmptyStream<T>(PhantomData<T>);
 
 impl<T> EmptyStream<T> {
@@ -121,35 +124,36 @@ impl<T> Stream for EmptyStream<T> {
 }
 
 pub trait Resolve {
-    /// A-записи. Каждый элемент стрима независим: ошибка на одном не
-    /// обязана останавливать остальные (например, резолвер с несколькими
-    /// апстримами может сообщить о частичном отказе и продолжить).
+    /// A records. Each stream item is independent: an error on one is not
+    /// required to stop the rest (for example, a resolver with multiple
+    /// upstreams may report a partial failure and keep going).
     fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>;
-    /// AAAA-записи. Отдельный стрим от `lookup_ipv4`, не вариант одного
-    /// перечисления и не общий `Vec` — RFC 8305 §3/§4 требует начинать
-    /// попытки по IPv6, не дожидаясь ответа по IPv4, а раздельные стримы —
-    /// единственная форма, которая это позволяет без дополнительного
-    /// разбора на стороне вызывающего.
+    /// AAAA records. A separate stream from `lookup_ipv4`, not a variant
+    /// of one enum and not a shared `Vec` — RFC 8305 §3/§4 requires
+    /// starting IPv6 attempts without waiting for the IPv4 answer, and
+    /// separate streams are the only shape that allows this without extra
+    /// parsing on the caller's side.
     fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>;
 
-    /// Умеет ли резолвер SVCB/HTTPS-запросы вообще.
+    /// Whether the resolver can do SVCB/HTTPS queries at all.
     ///
-    /// Дефолт `false` образует пару с дефолтным `lookup_svcb` ниже: вместе
-    /// они говорят «эта способность отсутствует», а не «есть, но нашлось
-    /// ноль записей». Резолвер, дающий настоящий ответ на SVCB, обязан
-    /// переопределить оба метода разом.
+    /// The `false` default pairs with the default `lookup_svcb` below:
+    /// together they say "this capability is absent," not "present, but
+    /// found zero records." A resolver that gives a real answer for SVCB
+    /// must override both methods together.
     fn supports_svcb(&self) -> bool {
         false
     }
 
-    /// SVCB/HTTPS-записи (RFC 9460). Дефолт — пустой стрим: без него
-    /// `getaddrinfo`-обёртка, `wasi:http` и embedded-резолверы, у которых
-    /// нет доступа к сырым DNS-записям, не смогли бы реализовать трейт
-    /// вовсе. Пустой стрим из дефолта и пустой стрим от резолвера,
-    /// который реально спросил SVCB и ничего не нашёл, неразличимы на этом
-    /// уровне намеренно — различие вынесено в `supports_svcb()` выше;
-    /// вызывающая сторона, которой важна эта разница, обязана спросить его,
-    /// а не выводить ответ из пустоты стрима.
+    /// SVCB/HTTPS records (RFC 9460). The default is an empty stream:
+    /// without it, a `getaddrinfo` wrapper, `wasi:http`, and embedded
+    /// resolvers that have no access to raw DNS records couldn't
+    /// implement the trait at all. The empty stream from the default and
+    /// an empty stream from a resolver that genuinely asked for SVCB and
+    /// found nothing are indistinguishable at this level on purpose — the
+    /// distinction is carried by `supports_svcb()` above; a caller that
+    /// cares about the difference must ask it, rather than inferring an
+    /// answer from the stream's emptiness.
     fn lookup_svcb(&self, _name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
         EmptyStream::new()
     }
@@ -171,8 +175,8 @@ mod tests {
         fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
             futures_util::stream::empty()
         }
-        // lookup_svcb / supports_svcb намеренно не реализованы — дефолты
-        // обязаны работать без них.
+        // lookup_svcb / supports_svcb deliberately not implemented — the
+        // defaults must work without them.
     }
 
     #[test]
@@ -180,18 +184,18 @@ mod tests {
         let got: Vec<_> = futures_executor::block_on(Static.lookup_svcb("x").collect());
         assert!(
             got.is_empty(),
-            "иначе getaddrinfo, wasi и embedded не смогли бы реализовать трейт"
+            "otherwise getaddrinfo, wasi, and embedded couldn't implement the trait"
         );
     }
 
     #[test]
     fn svcb_default_capability_is_false() {
-        // Дефолт `lookup_svcb` (пусто) и дефолт `supports_svcb` (false)
-        // обязаны совпадать по смыслу: пустой стрим без этого метода —
-        // ложь по умолчанию, а не отсутствие ответа.
+        // The `lookup_svcb` default (empty) and the `supports_svcb`
+        // default (false) must agree in meaning: an empty stream without
+        // this method would be a lie by default, not an absent answer.
         assert!(
             !Static.supports_svcb(),
-            "дефолт обязан явно сказать «не умею», а не молчать об этом"
+            "the default must explicitly say \"can't do this\", not stay silent about it"
         );
     }
 
@@ -200,7 +204,11 @@ mod tests {
         let v4: Vec<_> = futures_executor::block_on(Static.lookup_ipv4("x").collect());
         let v6: Vec<_> = futures_executor::block_on(Static.lookup_ipv6("x").collect());
         assert_eq!(v4.len(), 1);
-        assert_eq!(v6.len(), 0, "по AAAA надо коннектиться, не дожидаясь A");
+        assert_eq!(
+            v6.len(),
+            0,
+            "must be able to connect over AAAA without waiting for A"
+        );
     }
 
     struct Two;
@@ -224,14 +232,15 @@ mod tests {
 
     #[test]
     fn items_are_consumable_one_at_a_time_without_collecting() {
-        // Стрим — не Vec: вызывающая сторона может забрать первый адрес и
-        // (в реальном коннекторе) начать коннектиться, не дожидаясь второго
-        // и не вызывая `.collect()` на всём стриме.
+        // A stream, not a Vec: the caller can take the first address and
+        // (in a real connector) start connecting without waiting for the
+        // second one and without calling `.collect()` on the whole stream.
         let mut s = std::pin::pin!(Two.lookup_ipv4("x"));
         let first = futures_executor::block_on(s.next()).unwrap().unwrap();
         assert_eq!(first.addr, "10.0.0.1".parse::<IpAddr>().unwrap());
-        // Второй элемент всё ещё лежит в стриме и не был затронут первым
-        // `.next()` — доказывает, что забор первого не потребовал остального.
+        // The second item is still sitting in the stream, untouched by the
+        // first `.next()` — proof that taking the first didn't consume the
+        // rest.
         let second = futures_executor::block_on(s.next()).unwrap().unwrap();
         assert_eq!(second.addr, "10.0.0.2".parse::<IpAddr>().unwrap());
     }
@@ -262,9 +271,9 @@ mod tests {
 
     #[test]
     fn a_resolver_implementing_svcb_reports_the_capability_and_the_data_together() {
-        // Различие из doc-комментария `supports_svcb` работает в обе
-        // стороны: резолвер, умеющий SVCB, обязан заявить об этом через
-        // `supports_svcb()` И вернуть настоящие записи через `lookup_svcb`.
+        // The distinction from `supports_svcb`'s doc comment works both
+        // ways: a resolver that can do SVCB must declare it via
+        // `supports_svcb()` AND return real records via `lookup_svcb`.
         assert!(WithSvcb.supports_svcb());
         let got: Vec<_> = futures_executor::block_on(WithSvcb.lookup_svcb("x").collect());
         assert_eq!(got.len(), 1);

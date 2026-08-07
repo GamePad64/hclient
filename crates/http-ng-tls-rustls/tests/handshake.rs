@@ -1,5 +1,5 @@
-//! Тест поднимает настоящий TLS-сервер на rustls и проверяет, что наш адаптер
-//! доводит хендшейк до конца и прокачивает байты в обе стороны.
+//! This test brings up a real TLS server on rustls and checks that our
+//! adapter drives the handshake to completion and pushes bytes both ways.
 
 use http_ng_rt::TcpConnect;
 use http_ng_rt_tokio::Tokio;
@@ -7,15 +7,15 @@ use http_ng_tls::{TlsConnect, TlsRequest};
 use http_ng_tls_rustls::Rustls;
 use std::time::Duration;
 
-mod server; // см. Step 3: минимальный TLS-эхо-сервер на самоподписанном серте
+mod server; // see Step 3: a minimal TLS echo server on a self-signed cert
 
-/// Fix round 1 (review, Verdict B #4): ни один вызов в этом файле раньше не
-/// был ограничен по времени — регресс, зависающий на хендшейке или на
-/// прокачке байт, останавливал бы CI без единого диагностического
-/// сообщения, а не падал явным `FAILED`. `Rustls::connect` сознательно не
-/// несёт собственного таймаута (`TlsRequest` не несёт дедлайна — см.
-/// `close_notify_and_handshake_bounds.rs`), так что ограничение — здесь, на
-/// уровне теста, а не внутри реализации.
+/// Fix round 1 (review, Verdict B #4): no call in this file used to be
+/// time-bounded — a regression that hangs during the handshake or while
+/// pumping bytes would stall CI with no diagnostic message at all, rather
+/// than failing with an explicit `FAILED`. `Rustls::connect` deliberately
+/// carries no timeout of its own (`TlsRequest` carries no deadline — see
+/// `close_notify_and_handshake_bounds.rs`), so the bound belongs here, at
+/// the test level, not inside the implementation.
 const OP_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn bounded<F: std::future::Future>(fut: F) -> F::Output {
@@ -56,10 +56,10 @@ async fn completes_handshake_and_echoes() {
     assert_eq!(
         info.alpn.as_deref(),
         Some(b"http/1.1".as_slice()),
-        "согласованный ALPN должен быть виден"
+        "the negotiated ALPN must be visible"
     );
 
-    // Прокачка байтов через hyper::rt-интерфейс.
+    // Push bytes through the hyper::rt interface.
     let sent = b"ping";
     let n = bounded(std::future::poll_fn(|cx| {
         hyper::rt::Write::poll_write(std::pin::Pin::new(&mut stream), cx, sent)
@@ -81,7 +81,7 @@ async fn completes_handshake_and_echoes() {
 #[tokio::test]
 async fn rejects_an_untrusted_certificate() {
     let (addr, _ca) = server::spawn_tls_echo();
-    let tls = Rustls::with_webpki_roots(); // публичные корни — наш серт им неизвестен
+    let tls = Rustls::with_webpki_roots(); // public roots — our cert is unknown to them
     let tcp = Tokio
         .connect(addr, &http_ng_rt::TcpOpts::default())
         .await

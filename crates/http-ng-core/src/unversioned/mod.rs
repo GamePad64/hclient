@@ -1,12 +1,13 @@
-//! # Карантин semver
+//! # Semver quarantine
 //!
-//! Трейты этого модуля — контракт для авторов бэкендов и рантаймов. Он ещё не
-//! провалидирован против всех бэкендов, поэтому:
+//! The traits in this module are the contract for backend and runtime
+//! authors. It has not yet been validated against every backend, so:
 //!
-//! **Ломающие изменения в `unversioned` едут в minor-версию, а не в major.**
+//! **Breaking changes in `unversioned` ship in a minor version, not a major.**
 //!
-//! Приём заимствован у `ureq`. Без него 1.0 неотгружаем: нельзя заморозить
-//! трейт, не проверив его на native, wasi:http и fetch.
+//! This trick is borrowed from `ureq`. Without it, 1.0 is unshippable: you
+//! can't freeze a trait without having checked it against native, wasi:http,
+//! and fetch.
 
 mod timer;
 mod transport;

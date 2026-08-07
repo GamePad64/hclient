@@ -1,7 +1,7 @@
 [package]
 name = "http-ng-tls"
 version = "0.1.0"
-description = "Трейт подключаемого TLS для http-ng"
+description = "Pluggable TLS trait for http-ng"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

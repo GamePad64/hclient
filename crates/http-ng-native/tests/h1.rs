@@ -1,29 +1,31 @@
-//! Сервер — голый `std::net::TcpListener`, говорящий HTTP/1.1 руками.
-//! Никаких серверных фреймворков: тест проверяет наш клиент, а не чужой
-//! сервер.
+//! The server is a bare `std::net::TcpListener` speaking HTTP/1.1 by hand.
+//! No server frameworks: the test is checking our client, not someone
+//! else's server.
 //!
-//! IO — `http_ng_native::testing::blocking_io`, неблокирующий `TcpStream`
-//! с busy-spin вместо реактора (см. его doc-комментарий за подробным
-//! разбором того, почему буквально блокирующий `poll_read` вешает обмен
-//! ещё до отправки запроса — `hyper::proto::h1::dispatch::Dispatcher::
-//! poll_loop` пробует читать раньше, чем писать, на каждой итерации).
+//! IO is `http_ng_native::testing::blocking_io`, a non-blocking
+//! `TcpStream` with a busy-spin instead of a reactor (see its doc comment
+//! for a detailed breakdown of why a literally blocking `poll_read` hangs
+//! the exchange before the request is even sent — `hyper::proto::h1::
+//! dispatch::Dispatcher::poll_loop` tries reading before writing, on
+//! every iteration).
 //!
-//! # Почему `block_on` здесь обёрнут в `bounded_block_on`, а не голый
+//! # Why `block_on` here is wrapped in `bounded_block_on` rather than bare
 //!
-//! Это ровно то место, где мутация "инлайн-драйв `Connection` убран"
-//! обязана дать красный тест, а не зависший процесс — `body_keeps_driving_
-//! the_connection_after_headers` устроен так, что второй чанк ответа придёт
-//! только если кто-то продолжает поллить `Connection` ПОСЛЕ заголовков; без
-//! этого `NativeBody::poll_frame` вернул бы `Pending` навсегда (канал
-//! `Incoming` пуст, а наполнять его больше некому, включая busy-spin
-//! `blocking_io`'s собственного `wake_by_ref` — он будит только на
-//! готовность СОКЕТА, а сокет тут ни при чём: никто больше не читает из
-//! него). Task 3 уже находила ровно такой тест (см. Global Constraints
-//! вертикали): тот, что виснет под мутацией вместо падения, глушит CI без
-//! имени теста и без диагноза. Тот же приём, что `http-ng-native::connect::
-//! tests::bounded_block_on` и `tests/dual_runtime.rs`'s watchdog для
-//! `smol`: отдельный поток-сторож + `process::exit(101)`, никакого
-//! `Send`-бонда на сам `fut`.
+//! This is exactly the spot where the mutation "the inline drive of
+//! `Connection` was removed" must produce a red test, not a hung process
+//! — `body_keeps_driving_the_connection_after_headers` is built so that
+//! the response's second chunk only arrives if someone keeps polling
+//! `Connection` AFTER the headers; without that, `NativeBody::poll_frame`
+//! would return `Pending` forever (the `Incoming` channel is empty, and
+//! nothing is left to fill it, including `blocking_io`'s own busy-spin
+//! `wake_by_ref` — it only wakes on SOCKET readiness, and the socket has
+//! nothing to do with it here: nobody else is reading from it). Task 3
+//! already found exactly this shape of test (see the vertical's Global
+//! Constraints): one that hangs under mutation instead of failing wedges
+//! CI with no test name and no diagnosis. The same technique as
+//! `http-ng-native::connect::tests::bounded_block_on` and
+//! `tests/dual_runtime.rs`'s watchdog for `smol`: a separate watchdog
+//! thread + `process::exit(101)`, no `Send` bound on `fut` itself.
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -44,10 +46,10 @@ fn spawn_h1_server(response: &'static str) -> std::net::SocketAddr {
     addr
 }
 
-/// `futures_executor::block_on`, но с потолком в `BOUND`. Не `F: Send` —
-/// только `Arc<AtomicBool>` пересекает границу потока, сам `fut` гоняется
-/// на текущем потоке как обычно, так что это не покушается на "рантайм-шов
-/// без `Send`", который и доказывают тесты этого файла.
+/// `futures_executor::block_on`, but with a `BOUND` ceiling. Not `F: Send`
+/// — only an `Arc<AtomicBool>` crosses the thread boundary, `fut` itself
+/// runs on the current thread as usual, so this doesn't undermine the
+/// "runtime seam with no `Send`" that this file's tests are proving.
 fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watchdog_done = done.clone();
@@ -55,9 +57,9 @@ fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
         std::thread::sleep(BOUND);
         if !watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
             eprintln!(
-                "bounded_block_on: не завершилось за {BOUND:?} - похоже, соединение \
-                 перестало поллиться (регресс инлайн-драйва); падаем вместо того, чтобы \
-                 повесить CI без имени теста и диагноза"
+                "bounded_block_on: did not finish within {BOUND:?} - looks like the \
+                 connection stopped being polled (a regression of the inline drive); \
+                 failing instead of wedging CI with no test name and no diagnosis"
             );
             std::process::exit(101);
         }
@@ -69,14 +71,14 @@ fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
 
 #[test]
 fn works_on_a_bare_futures_executor_with_no_spawn() {
-    // Ключевой тест вертикали: ни tokio, ни smol — только futures::block_on.
+    // The vertical's key test: no tokio, no smol — just futures::block_on.
     let addr = spawn_h1_server("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
 
     bounded_block_on(async move {
         let std_tcp = std::net::TcpStream::connect(addr).unwrap();
-        // `blocking_io` реконфигурирует сокет сама (см. её doc-комментарий);
-        // здесь проверяется, что hyper не требует ни spawn, ни таймера — не
-        // то, в каком режиме сокет.
+        // `blocking_io` reconfigures the socket itself (see its doc
+        // comment); what's being checked here is that hyper needs neither
+        // spawn nor a timer — not what mode the socket is in.
         let io = http_ng_native::testing::blocking_io(std_tcp);
         let req = http::Request::builder()
             .uri("/")
@@ -95,8 +97,8 @@ fn works_on_a_bare_futures_executor_with_no_spawn() {
 
 #[test]
 fn body_keeps_driving_the_connection_after_headers() {
-    // Тело приходит отдельным чанком после заголовков: если бы соединение
-    // перестали поллить, чтение зависло бы.
+    // The body arrives as a separate chunk after the headers: if the
+    // connection stopped being polled, the read would hang.
     let addr = spawn_h1_server(
         "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
     );
