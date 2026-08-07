@@ -26,12 +26,15 @@ impl Default for Backoff {
 /// cannot simply run `attempt` times — that would make a caller passing
 /// `attempt: u32::MAX` with a tiny `base` block for however long ~4
 /// billion `Duration::checked_mul` calls take. It doesn't need to: doubling
-/// the smallest nonzero `Duration` (1ns) exceeds `Duration::MAX` after 93
-/// doublings (measured against this toolchain, not assumed — see the
-/// `extreme_config_saturates_at_duration_max_without_panicking` test), so
-/// any cap comfortably above that reaches `max`, or overflows and snaps to
-/// it, long before `attempt` iterations would ever be needed. 128 is that
-/// cap, with headroom to spare.
+/// the smallest nonzero `Duration` (1ns) still fits inside `Duration::MAX`
+/// after 93 doublings (2^93 ns ≈ 9.90e27 < `Duration::MAX`'s ≈1.8447e28 ns)
+/// — it's the 94th doubling (2^94 ns ≈ 1.981e28 ns) that overflows
+/// (measured against this toolchain, not assumed — see
+/// `extreme_config_saturates_at_duration_max_without_panicking`, which
+/// checks both 93 and 94 directly, not just a nearby round number), so any
+/// cap comfortably above that reaches `max`, or overflows and snaps to it,
+/// long before `attempt` iterations would ever be needed. 128 is that cap,
+/// with headroom to spare.
 const MAX_DOUBLINGS: u32 = 128;
 
 impl Backoff {
@@ -40,18 +43,26 @@ impl Backoff {
     /// jitter" model — AWS's *Exponential Backoff and Jitter*); `None`
     /// means "stop trying" (attempt budget exhausted).
     ///
-    /// This signature can't return `Result`, and `None` is already spoken
-    /// for — so an out-of-domain `jitter` (NaN, negative, or >= 1.0, all
-    /// reachable from a caller bug, e.g. feeding in the wrong float) is
-    /// clamped into `[0.0, 1.0]` rather than propagated or, worse, mapped
-    /// onto `None`: that would look identical to exhausting
-    /// `max_attempts` to the caller, silently stopping retries instead of
-    /// merely miscalculating one delay. `f64::clamp` alone does not
-    /// sanitize NaN — a NaN receiver returns NaN unchanged, verified
-    /// against this toolchain — so NaN is special-cased to `0.0`: no
-    /// jitter reduction, the conservative (slower) resolution, not the
-    /// aggressive (immediate-retry) one that clamping NaN to `1.0` would
-    /// give.
+    /// Clamping an invalid `jitter` instead of reporting it sits in real
+    /// tension with this project's "no silent no-ops" rule — unsupported
+    /// or invalid input is supposed to become a typed error, never a
+    /// discarded value. It's the deliberate exception here, not an
+    /// oversight of that rule: this signature can't return `Result` (fixed
+    /// by the brief), and `None` is already spoken for as "stop trying" —
+    /// so an out-of-domain `jitter` (NaN, negative, or >= 1.0, all
+    /// reachable from a caller bug, e.g. feeding in the wrong float) has
+    /// nowhere to be *reported* to. Mapping it onto `None` would look
+    /// identical to exhausting `max_attempts` to the caller, silently
+    /// stopping retries instead of merely miscalculating one delay, and
+    /// panicking would turn a retry primitive — meant to run inside a
+    /// long-lived reconnect loop — into a crash vector over a caller's
+    /// float bug. Clamping is the least-bad of the three options actually
+    /// available under this signature, not the first one reached for.
+    /// `f64::clamp` alone does not sanitize NaN — a NaN receiver returns
+    /// NaN unchanged, verified against this toolchain — so NaN is
+    /// special-cased to `0.0`: no jitter reduction, the conservative
+    /// (slower) resolution, not the aggressive (immediate-retry) one that
+    /// clamping NaN to `1.0` would give.
     ///
     /// `base * 2^attempt` is computed by repeated doubling, capped at
     /// `MAX_DOUBLINGS` and short-circuited the moment `max` is reached —
@@ -251,7 +262,7 @@ mod tests {
     }
 
     // --- Overflow boundary: `attempt` has no upper bound of its own, and
-    // `base * 2^attempt` leaves `Duration`'s range within about 93
+    // `base * 2^attempt` leaves `Duration`'s range within about 93-94
     // doublings starting from the smallest nonzero `Duration` (1ns) —
     // verified empirically against this toolchain, not assumed. The brief
     // only exercises the *default* `Backoff` (base 1s / max 30s), which
@@ -268,12 +279,60 @@ mod tests {
             max_attempts: None,
         };
         assert_eq!(extreme.delay(u32::MAX, 0.0), Some(Duration::MAX));
-        // One below the empirically-measured overflow point (93
-        // doublings): still growing, not yet saturated — distinguishes
-        // "saturates correctly" from "saturates too early".
+        // Well below the boundary: confirms growth is genuine doubling
+        // (not, say, the loop bailing out early via `MAX_DOUBLINGS` or
+        // some other unrelated cap).
         assert_eq!(
             extreme.delay(50, 0.0),
             Some(Duration::from_nanos(1u64 << 50))
+        );
+        // The actual boundary, not a nearby round number: 2^93 ns
+        // (~9.90e27) is still less than `Duration::MAX` (~1.8447e28 ns),
+        // so 93 doublings from 1ns is the last attempt that doesn't
+        // overflow; 2^94 ns (~1.981e28) exceeds it, so the 94th doubling
+        // is where `checked_mul` returns `None` and the loop snaps
+        // straight to `max` (measured directly against this toolchain —
+        // see `doubling_from_1ns_overflows_at_exactly_94` below for the
+        // raw measurement this relies on). `expected_93` is built by
+        // doubling independently of `delay`'s own loop, so this isn't
+        // just checking the implementation against a restatement of
+        // itself.
+        let mut expected_93 = Duration::from_nanos(1);
+        for _ in 0..93 {
+            expected_93 = expected_93
+                .checked_mul(2)
+                .expect("93 doublings from 1ns must still fit Duration::MAX");
+        }
+        assert_eq!(
+            extreme.delay(93, 0.0),
+            Some(expected_93),
+            "one doubling short of the boundary: must still be growing, not prematurely saturated"
+        );
+        assert_eq!(
+            extreme.delay(94, 0.0),
+            Some(Duration::MAX),
+            "the 94th doubling overflows Duration's range and must clamp to max, not panic or wrap"
+        );
+    }
+
+    // Independent confirmation of the 93/94 boundary the doc comments and
+    // the test above rely on, isolated from `Backoff` entirely — this is
+    // the raw `Duration::checked_mul` behavior the whole overflow argument
+    // rests on, checked directly rather than only inferred through
+    // `delay`'s behavior.
+    #[test]
+    fn doubling_from_1ns_overflows_at_exactly_94() {
+        let mut raw = Duration::from_nanos(1);
+        // 93 successful doublings.
+        for n in 1..=93 {
+            raw = raw
+                .checked_mul(2)
+                .unwrap_or_else(|| panic!("doubling #{n} unexpectedly overflowed"));
+        }
+        // The 94th is the one that overflows.
+        assert!(
+            raw.checked_mul(2).is_none(),
+            "the 94th doubling must be the one that overflows"
         );
     }
 
@@ -336,6 +395,35 @@ mod tests {
             let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
             let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
             prop_assert!(jittered <= full);
+        }
+
+        // The proptest above only asserts `jittered <= full`, which holds
+        // at `jitter = 0.0` where equality is the *correct* answer (that's
+        // in its domain) — so it's a legitimate invariant on its own, not
+        // a mistake. But across its whole domain it's also exactly as
+        // vacuous as the brief's own `jitter_only_ever_reduces_the_delay`:
+        // an implementation that drops `jitter` entirely produces
+        // `jittered == full` for every input, which still satisfies `<=`
+        // everywhere, including here. `jitter_scales_the_delay_to_an_exact_fraction`
+        // fixed this for the *unit* test, but the fix was never carried
+        // over to this proptest sibling — identifying a vacuity pattern in
+        // one test doesn't inoculate against the identical pattern a few
+        // lines away in another. This closes that gap with a strict `<`,
+        // on a `jitter` range clear of both clamp boundaries (`0.0` and
+        // `1.0`, where equality is legitimately possible) so reduction is
+        // unambiguously required to hold.
+        #[test]
+        fn jitter_strictly_reduces_the_delay_away_from_the_clamp_boundaries(
+            attempt in 1u32..20, // small enough that `full` is reliably > 0
+            jitter in 0.01f64..0.99, // clear of both clamp boundaries
+        ) {
+            let backoff = b();
+            let full = backoff.delay(attempt, 0.0).expect("max_attempts is None");
+            let jittered = backoff.delay(attempt, jitter).expect("max_attempts is None");
+            prop_assert!(
+                jittered < full,
+                "jitter={jitter} on full={full:?} produced jittered={jittered:?}, expected strictly less"
+            );
         }
 
         #[test]
