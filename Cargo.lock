@@ -635,6 +635,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
