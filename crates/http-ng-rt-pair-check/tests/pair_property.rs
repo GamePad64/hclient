@@ -26,10 +26,43 @@
 //! supplies. This is the strongest evidence available that the runtime
 //! seam this vertical exists to prove is real, not decorative.
 //!
-//! To re-run: this whole directory (`http-ng-rt-pair-check/`) is a
-//! standalone crate meant to be added under `crates/` in a scratch clone
-//! (workspace members are `crates/*`, so it is picked up automatically),
-//! then `cargo test -p http-ng-rt-pair-check --all-features`.
+//! **The two `Stream` implementations are not merely each satisfiable, they
+//! are interchangeable on every property a caller can observe.** Landing
+//! this crate (Task 4, fix round 1), the divergence check below was tried
+//! first as an auto-trait probe on `TcpConnect::Stream` itself: `Sync`,
+//! `Send`, `std::panic::UnwindSafe`, and `std::panic::RefUnwindSafe` were
+//! each added in turn to `type Stream: hyper::rt::Read + hyper::rt::Write +
+//! Unpin` in `http-ng-rt/src/caps.rs` (one at a time, `cargo check
+//! --workspace --all-features`, restored via `cp` between attempts) - all
+//! four held for BOTH `TokioIo` and `FuturesIo<async_net::TcpStream>`, with
+//! no divergence. `Clone` was tried too and broke both uniformly (neither
+//! wrapper implements it), which is a different kind of finding - "the
+//! trait can't have this bound at all" - not the asymmetric one this
+//! probe was after. Only `Timer::Instant` (see below) produced the one-sided
+//! break this file demonstrates. Anyone re-deriving "does this abstraction
+//! leak" for the `Stream` associated type specifically can stop at this
+//! comment: it does not, on any of Sync/Send/UnwindSafe/RefUnwindSafe.
+//!
+//! The one-sided divergence that *does* exist, and that the mutation-check
+//! below exercises, is in `Timer::Instant`, not `TcpConnect::Stream`: add
+//! `PartialEq<std::time::Instant>` to that associated type's bound
+//! (`http-ng-core/src/unversioned/timer.rs`) and `Smol` (`Instant =
+//! std::time::Instant`) satisfies it trivially via its own derived
+//! `PartialEq<Self>`, while `Tokio` (`Instant = tokio::time::Instant`, a
+//! distinct newtype that only derives `PartialEq<Self>` too, but `Self` is
+//! a different type) does not - `http-ng-rt-tokio` fails with `E0277: can't
+//! compare tokio::time::Instant with std::time::Instant` and this crate
+//! fails to build as a result, since it depends on both runtime crates.
+//! Restoring `caps.rs`/`timer.rs` and re-running confirms green again. This
+//! is a real structural asymmetry (tokio wraps time in its own type to
+//! support paused/mocked clocks in its own test harness; smol's associated
+//! type is not a wrapper at all), not a contrived one, and it is exactly
+//! the shape of accident this crate exists to catch: a bound that happens
+//! to hold for whichever runtime its author had in mind.
+//!
+//! Landed in-tree at `crates/http-ng-rt-pair-check/` (Task 4, fix round 1) -
+//! `cargo test -p http-ng-rt-pair-check --all-features` from the workspace
+//! root runs it directly, no scratch clone needed.
 use http_ng_rt::{Blocking, Spawn, TcpConnect, TcpOpts, Timer};
 use hyper::rt::{Read as HyperRead, ReadBuf, Write as HyperWrite};
 use std::future::Future;
