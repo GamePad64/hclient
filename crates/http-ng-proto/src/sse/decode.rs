@@ -57,6 +57,27 @@ impl SseDecoder {
         }
     }
 
+    /// Like [`Self::new`], but seeds the last event ID buffer instead of
+    /// starting it at `None`.
+    ///
+    /// Exists for reconnect (`http-ng`'s `ReconnectingSseStream`): WHATWG's
+    /// last event ID buffer is a property of the EventSource as a whole,
+    /// not of one connection — a message dispatched on a fresh connection
+    /// that hasn't sent its own `id:` field yet must still carry forward
+    /// whatever id the PREVIOUS connection last established, not `None`.
+    /// Without this, every `SseDecoder` created for a reconnect would start
+    /// id-less regardless of what the caller already knew, and every
+    /// `SseEvent::Message` dispatched before the new connection's own first
+    /// `id:` line would silently under-report its `id` — observable
+    /// directly by a consumer matching WHATWG's `MessageEvent.lastEventId`
+    /// against ours.
+    pub fn new_with_last_event_id(max_event_size: usize, last_event_id: Option<String>) -> Self {
+        Self {
+            last_event_id,
+            ..Self::new(max_event_size)
+        }
+    }
+
     pub fn last_event_id(&self) -> Option<&str> {
         self.last_event_id.as_deref()
     }
@@ -243,6 +264,57 @@ mod tests {
         assert_eq!(
             events(b"retry: 5000\n\n"),
             vec![SseEvent::Retry(Duration::from_millis(5000))]
+        );
+    }
+
+    /// `new_with_last_event_id` — reconnect's reason for existing: a
+    /// message dispatched before the seeded decoder sees its OWN `id:`
+    /// line must still carry the seed forward, not `None`.
+    #[test]
+    fn seeded_last_event_id_carries_into_a_message_with_no_id_field_of_its_own() {
+        let mut d = SseDecoder::new_with_last_event_id(1024, Some("seed".into()));
+        d.push(b"data: a\n\n").unwrap();
+        assert_eq!(
+            d.next().unwrap(),
+            SseEvent::Message {
+                event: None,
+                data: "a".into(),
+                id: Some("seed".into())
+            }
+        );
+        assert_eq!(d.last_event_id(), Some("seed"));
+    }
+
+    /// The seed is only a STARTING value, not sticky: the decoder's own
+    /// `id:` line still overrides it exactly like it would override any
+    /// other previously-set id.
+    #[test]
+    fn seeded_last_event_id_is_overridden_by_the_decoders_own_id_field() {
+        let mut d = SseDecoder::new_with_last_event_id(1024, Some("seed".into()));
+        d.push(b"id: fresh\ndata: a\n\n").unwrap();
+        assert_eq!(
+            d.next().unwrap(),
+            SseEvent::Message {
+                event: None,
+                data: "a".into(),
+                id: Some("fresh".into())
+            }
+        );
+    }
+
+    /// A seed of `None` behaves exactly like plain `new` — the constructor
+    /// used for the very first connection, which has nothing to seed.
+    #[test]
+    fn no_seed_behaves_like_plain_new() {
+        let mut d = SseDecoder::new_with_last_event_id(1024, None);
+        d.push(b"data: a\n\n").unwrap();
+        assert_eq!(
+            d.next().unwrap(),
+            SseEvent::Message {
+                event: None,
+                data: "a".into(),
+                id: None
+            }
         );
     }
 

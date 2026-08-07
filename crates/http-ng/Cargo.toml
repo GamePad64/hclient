@@ -46,6 +46,17 @@ http-ng-proto = { workspace = true }
 # dependency).
 serde         = { version = "1", default-features = false, features = ["std"], optional = true }
 serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
+# SSE reconnect's jitter source (`src/clock.rs`) — see that file's doc
+# comment for why `http-ng` sources this itself rather than asking the SSE
+# caller for an RNG. Plain "0.3", unconditional: on native and on
+# `wasm32-wasip2` its default backend already covers the target (WASI is a
+# first-class `getrandom` backend); the browser needs the extra `wasm_js`
+# feature, added only under that target below — Cargo unions the feature
+# set for a dependency across `[dependencies]` and any matching
+# `[target.'cfg(...)'.dependencies]` entry for the target actually being
+# built, so this one line still applies everywhere, and the browser-only
+# line below is additive, not a duplicate declaration of the crate.
+getrandom     = "0.3"
 
 # Target-dependent optional dependencies for `DefaultTransport` (see
 # `default-transport` in `[features]` above and the `DefaultTransport` doc
@@ -71,6 +82,23 @@ http-ng-native     = { path = "../http-ng-native",     version = "0.1.0", option
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio",   version = "0.1.0", optional = true }
 http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", optional = true, features = ["platform-verifier"] }
 http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", optional = true }
+
+# The browser half of SSE reconnect's ambient clock (`src/clock.rs`):
+# `setTimeout` via `js-sys`/`wasm-bindgen`/`wasm-bindgen-futures`, the same
+# trio `http-ng-fetch` already depends on for the identical reason (a
+# `Send`-compatible bridge over a JS promise). Gated to
+# `all(target_family = "wasm", not(target_os = "wasi"))`, NOT bare
+# `target_family = "wasm"`: WASI is also `wasm32-*`, and pulling
+# `wasm-bindgen` in for it would be a dependency with no JS host to call —
+# `wasm32-wasip2` gets the thread-based `sleep` from `[dependencies]`'s
+# implicit "everything else" branch in `src/clock.rs` instead (see that
+# file's module-level doc comment for the full reasoning, including why
+# that branch is safe to merely COMPILE, not necessarily WORK, there).
+[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
+wasm-bindgen         = "0.2.126"
+js-sys               = "0.3"
+wasm-bindgen-futures  = "0.4"
+getrandom            = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }

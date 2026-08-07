@@ -173,6 +173,14 @@ impl<T: Transport> Client<T> {
         self.request(http::Method::HEAD, url)
     }
 
+    /// Starts building a reconnecting SSE stream — see
+    /// [`crate::SseBuilder`]/[`crate::ReconnectingSseStream`]. For a single,
+    /// non-reconnecting stream over a response already in hand, use
+    /// [`crate::SseStream::new`] directly instead.
+    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T> {
+        crate::sse::SseBuilder::new(self, url)
+    }
+
     /// The stage order is fixed and correct by construction.
     /// In v0.1 there's one stage — redirect.
     ///
