@@ -263,6 +263,84 @@ async fn mid_stream_error_is_a_typed_body_error_not_a_quiet_end() {
 }
 
 // ---------------------------------------------------------------------
+// Fix round 1, review finding 2: "what happens when the underlying
+// response is aborted" was never tested — `Body::from_response` only ever
+// sees a `web_sys::Response`, never an `AbortController`, so the abort
+// path can't be reached from inside this crate's own construction API.
+// The reviewer's probe (`.superpowers/sdd/2026-08-05-v01-fetch-and-
+// acceptance/review-task-4-abort-probe.rs`) drove this with a REAL
+// `fetch()` + `AbortController` against `httpbin.org/drip` and confirmed
+// by execution (PASS, 2/2 runs) that aborting mid-stream rejects the
+// response body's `ReadableStream` and lands as `ErrorKind::Body` — never
+// a quiet `None`. That test is not committed here: this project does not
+// ship tests that depend on a public host being reachable (the same
+// reason the TEST-NET-address tests were removed earlier in this project,
+// after turning out to be routable through this container's tunnel) — an
+// offline build, a slow or gone host, or a flaky network would all fail
+// this test for reasons that have nothing to do with a defect in our code.
+//
+// Per the WHATWG Fetch Standard's "abort a fetch request" algorithm
+// (`https://fetch.spec.whatwg.org/#abort-fetch` — a fetch is aborted by
+// erroring the response's `ReadableStream` with a `DOMException` named
+// `"AbortError"`), the OBSERVABLE effect on `Body::poll_frame` is a
+// rejected `read()` — exactly the same shape `stream_with_pull`'s
+// `controller.error_with_e` already produces for
+// `mid_stream_error_is_a_typed_body_error_not_a_quiet_end`, above.
+// `src/body.rs` confirms this architecturally, not just by claim: its
+// `Err(e) => Err(Error::new(ErrorKind::Body, StreamRead(js_message(&e))))`
+// arm has no branch on WHY the read was rejected — an `AbortError` and a
+// generic network failure take the identical path. This test reproduces
+// the exact `DOMException` shape a real abort produces (name
+// `"AbortError"`, the message Chrome actually uses) rather than the
+// generic `js_sys::Error` the sibling test uses, so it specifically pins
+// "an abort looks like this to us" rather than merely restating the
+// sibling test under a new name.
+// ---------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+async fn aborting_is_a_typed_body_error_not_a_quiet_end() {
+    let calls = Rc::new(Cell::new(0u32));
+    let calls_in_pull = calls.clone();
+    let stream = stream_with_pull(move |controller| {
+        let n = calls_in_pull.get();
+        calls_in_pull.set(n + 1);
+        if n == 0 {
+            let _ = controller.enqueue_with_chunk(&Uint8Array::from(&b"partial"[..]));
+        } else {
+            let abort_err = web_sys::DomException::new_with_message_and_name(
+                "The user aborted a request.",
+                "AbortError",
+            )
+            .expect("DomException::new_with_message_and_name never throws");
+            let abort_err: JsValue = abort_err.into();
+            controller.error_with_e(&abort_err);
+        }
+    });
+    let resp = response_from_stream(&stream, &[]);
+    let mut body = http_ng_fetch::testing::body_from_response(&resp).unwrap();
+
+    let first = next_data(&mut body).await.unwrap().unwrap();
+    assert_eq!(
+        &first[..],
+        b"partial",
+        "the stream must be genuinely live before the abort, not already ended"
+    );
+
+    let err = next_data(&mut body)
+        .await
+        .expect("an abort mid-stream must produce a frame — Err, not a silent None")
+        .unwrap_err();
+    assert_eq!(
+        err.kind(),
+        &http_ng_core::ErrorKind::Body,
+        "an aborted request is a transport failure like any other stream rejection — \
+         ErrorKind::Body, not a quiet end and not a separate, uncategorized case: {err}"
+    );
+    assert!(http_body::Body::is_end_stream(&body));
+    assert_eq!(http_body::Body::size_hint(&body).exact(), Some(0));
+}
+
+// ---------------------------------------------------------------------
 // A chunk that isn't bytes is a DIFFERENT failure from a stream read
 // failing — `ErrorKind::Decode`, not `ErrorKind::Body`. Mutation check
 // (see the task report): collapsing both cases through one generic
@@ -305,8 +383,39 @@ async fn a_non_byte_chunk_is_a_typed_decode_error_distinct_from_a_stream_error()
 // the stream).
 // ---------------------------------------------------------------------
 
+/// Fix round 1, review finding 1: the ORIGINAL version of this test set
+/// only `content-length`, never `content-encoding` — so the `"identity"`
+/// match arm inside `content_length_hint` (`v.eq_ignore_ascii_case
+/// ("identity")`) was covered by nothing, even though the test's own name
+/// claimed it was. The reviewer proved this by making that arm never match
+/// (e.g. comparing against a string other than `"identity"`) and finding
+/// all ten tests still green. A server that explicitly sends
+/// `Content-Encoding: identity` is legal and does happen (RFC 9110 §8.4.1
+/// lists it as one of the registered content codings); this test now
+/// actually sends it. `size_hint_reflects_content_length_when_encoding_
+/// header_is_absent`, below, keeps the header genuinely omitted — a
+/// distinct branch (`Ok(None)` vs `Ok(Some("identity"))` in
+/// `content_length_hint`) worth its own name and its own coverage, not a
+/// stand-in for this one.
 #[wasm_bindgen_test]
 fn size_hint_reflects_content_length_when_encoding_is_identity() {
+    let stream = stream_with_pull(|controller| {
+        let _ = controller.close();
+    });
+    let resp = response_from_stream(
+        &stream,
+        &[("content-length", "1234"), ("content-encoding", "identity")],
+    );
+    let body = http_ng_fetch::testing::body_from_response(&resp).unwrap();
+    assert_eq!(http_body::Body::size_hint(&body).exact(), Some(1234));
+}
+
+/// The other trustworthy branch: no `Content-Encoding` header at all (the
+/// common case for ordinary, uncompressed responses) — `content_length_
+/// hint`'s `Ok(None) => true` arm, distinct from the `Ok(Some("identity"))`
+/// arm the test above now actually exercises.
+#[wasm_bindgen_test]
+fn size_hint_reflects_content_length_when_encoding_header_is_absent() {
     let stream = stream_with_pull(|controller| {
         let _ = controller.close();
     });

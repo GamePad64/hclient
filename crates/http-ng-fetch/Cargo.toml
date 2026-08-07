@@ -144,9 +144,17 @@ wasm-bindgen-test = "0.3"
 # `web-sys` entry above: a `[dev-dependencies]` feature list for the same
 # crate is unified with `[dependencies]`'s only when building test targets,
 # never for the plain library build the published crate ships.
+#
+# `DomException` — fix round 1, review finding 2: `tests/body.rs`'s abort
+# coverage constructs the exact `DOMException` shape (name `"AbortError"`)
+# a real `AbortController::abort()` errors a fetch response's stream with,
+# via `DomException::new_with_message_and_name`, rather than a generic
+# `js_sys::Error` — proving the abort-specific shape, not just "some error",
+# takes the same code path in `Body::poll_frame`.
 web-sys = { version = "0.3.103", features = [
     "ReadableStreamDefaultController",
     "ResponseInit",
+    "DomException",
 ] }
 
 # NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =
