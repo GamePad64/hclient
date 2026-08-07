@@ -22,6 +22,26 @@ pub enum ErrorKind {
     Decode,
     Status,
     Unsupported,
+    /// Способность, стоящая за отказавшей операцией, ушла из-под неё раньше,
+    /// чем та успела выполниться — как правило, рантайм завершает работу,
+    /// пока задача ещё стояла в очереди (см. `http_ng_rt::Cancelled`,
+    /// возвращаемая `Blocking::run`, вертикаль 2, Task 1, `amendment-C5`).
+    ///
+    /// Отдельный вариант, а не `Other`: `Other` — честный ответ для
+    /// СОБСТВЕННО непрозрачной ошибки бэкенда (дефолт
+    /// `Transport::to_error`, когда бэкенду нечего сказать о категории).
+    /// Отмена — противоположность непрозрачности: это заранее известное,
+    /// уже типизированное условие (`Cancelled` — не строка и не код ошибки
+    /// ОС, а конкретный тип), которое встретится у КАЖДОГО будущего
+    /// потребителя способности `Blocking`, а не один раз у одного бэкенда.
+    /// Смешивать её ни с `Other`, ни тем более с категорией самой отказавшей
+    /// операции (например, `Resolve` для DNS-резолвера поверх `Blocking`,
+    /// см. `http-ng-dns-system`) нельзя по той же причине, по которой
+    /// `Resolve` и `Other` не смешивают друг с другом: вызывающая сторона
+    /// обязана уметь отличить «эта попытка отказала по существу» от «эта
+    /// попытка не завершилась, потому что рантайм завершает работу» без
+    /// downcast — просто сравнив `kind()`.
+    Cancelled,
     Other,
 }
 
@@ -68,6 +88,9 @@ impl Error {
     }
     pub fn is_unsupported(&self) -> bool {
         matches!(self.kind, ErrorKind::Unsupported)
+    }
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self.kind, ErrorKind::Cancelled)
     }
 }
 
@@ -125,6 +148,12 @@ mod tests {
         assert!(!Error::new(ErrorKind::Body, Src).is_connect());
         assert!(Error::new(ErrorKind::Unsupported, Src).is_unsupported());
         assert!(!Error::new(ErrorKind::Body, Src).is_unsupported());
+        assert!(Error::new(ErrorKind::Cancelled, Src).is_cancelled());
+        // Отмена — не отказ DNS и не непрозрачная "прочая" ошибка: обе
+        // проверки нужны, одной было бы недостаточно, чтобы поймать
+        // регресс, спутавший `Cancelled` с любым из этих двух соседей.
+        assert!(!Error::new(ErrorKind::Resolve, Src).is_cancelled());
+        assert!(!Error::new(ErrorKind::Other, Src).is_cancelled());
     }
 
     // `Error: Send + Sync` (spec amendment C1) — moved to

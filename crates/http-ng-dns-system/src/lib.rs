@@ -11,12 +11,29 @@
 //! которой нет (см. doc-комментарий `Resolve::supports_svcb` в
 //! `http-ng-dns`).
 //!
-//! **Известное ограничение: один вызов `getaddrinfo` на оба семейства.**
-//! curl 8.20 делает **два**, в разных потоках, чтобы частичные результаты
-//! запускали Happy Eyeballs раньше. Разделение на два слота — задача v0.2;
-//! сейчас важнее, чтобы форма трейта `Resolve` это допускала, а она
-//! допускает (раздельные `lookup_ipv4`/`lookup_ipv6`, не один метод,
-//! возвращающий оба семейства разом).
+//! **Известное ограничение — и оно хуже, чем звучит: СЕГОДНЯ два вызова
+//! `getaddrinfo` на одно имя, ни один не даёт раннего результата.**
+//! `lookup_ipv4` и `lookup_ipv6` не делят одну попытку резолюции — каждый
+//! вызывает `self.lookup` независимо, и `std::net::ToSocketAddrs` для пары
+//! `(host, port)` резолвит ОБА семейства разом за один системный
+//! `getaddrinfo`. Значит любой потребитель Happy Eyeballs, вызывающий оба
+//! метода для одного имени (что `Scheduler` из Task 5 обязан делать), на
+//! деле порождает ДВА полных дуал-family вызова `getaddrinfo` — измерено
+//! счётчиком поверх `Blocking::run` (см. отчёт задачи, fix round 1): `2`
+//! вызова на одно имя через `lookup_ipv4` + `lookup_ipv6`. Каждый вызов
+//! получает оба семейства и отбрасывает половину фильтром `is_ipv6() ==
+//! want_v6` — то есть результат A-записей из v6-вызова и результат
+//! AAAA-записей из v4-вызова оба выбрасываются впустую. Ни один из двух
+//! вызовов не возвращает раннего частичного результата — curl 8.20 делает
+//! **два** вызова НАРОЧНО, в разных потоках, каждый за ОДНИМ семейством, что
+//! и даёт его выигрыш (v6 может ответить раньше v4, Happy Eyeballs стартует
+//! раньше); здесь оба вызова ждут полный дуал-family ответ одинаково, так
+//! что выигрыша во времени нет вовсе — только двойная стоимость системного
+//! вызова. Одна резолюция, кормящая оба стрима (или, как у curl, два
+//! однонаправленных вызова) — задача v0.2, не текущее поведение; форма
+//! трейта `Resolve` это допускает уже сегодня (раздельные `lookup_ipv4`/
+//! `lookup_ipv6`, не один метод, возвращающий оба семейства разом), но
+//! `SystemDns` эту возможность пока не использует.
 #![forbid(unsafe_code)]
 
 use futures_core::Stream;
@@ -70,13 +87,16 @@ impl<B: Blocking> SystemDns<B> {
     ///   принцип, что развёл `supports_svcb()` и пустой `lookup_svcb` в
     ///   `http-ng-dns`, применённый здесь не к отсутствующей способности, а
     ///   к отказавшей попытке. Поэтому `Cancelled` заворачивается в
-    ///   `ErrorKind::Other`, отдельно от `ErrorKind::Resolve` — категория,
-    ///   которая для этой ошибки не подходит по значению `kind()`, но не
-    ///   молчит и не выдаёт себя за DNS-отказ. `ErrorKind` не несёт
-    ///   отдельного варианта для отмены рантайма (см.
-    ///   `http-ng-core::error::ErrorKind`) — `Other` тот же выбор, что и
-    ///   дефолт `Transport::to_error` в `http-ng-core` для ошибки без
-    ///   собственной категории.
+    ///   `ErrorKind::Cancelled` (fix round 1: изначально был
+    ///   `ErrorKind::Other`, тот же класс промаха, что и `Other` против
+    ///   `Resolve` — стандарт «вызывающая сторона обязана различить
+    ///   `kind()` без downcast», применённый к самому себе задним числом.
+    ///   `Other` — честный ответ для СОБСТВЕННО непрозрачной ошибки
+    ///   бэкенда; отмена — заранее известное, уже типизированное условие
+    ///   (`http_ng_rt::Cancelled`), которое встретится у каждого будущего
+    ///   потребителя `Blocking`, а не у одного этого крейта — обоснование
+    ///   варианта целиком в doc-комментарии `ErrorKind::Cancelled` в
+    ///   `http-ng-core`).
     fn lookup(&self, name: &str, want_v6: bool) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
         let owned = name.to_owned();
         let fut = self.blocking.run(move || {
@@ -95,7 +115,7 @@ impl<B: Blocking> SystemDns<B> {
             ),
             Ok(Err(e)) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
             Err(Cancelled) => {
-                futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Other, Cancelled))])
+                futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Cancelled, Cancelled))])
             }
         })
     }
@@ -170,6 +190,39 @@ mod tests {
         );
     }
 
+    /// Locks the module doc's "два вызова, ни один не ранний" claim to the
+    /// actual code, so a change that shares one resolution across both
+    /// families (the stated v0.2 direction) forces this test — and the doc
+    /// comment it mirrors — to be updated together rather than drifting
+    /// apart silently (fix round 1: the doc previously described a single
+    /// shared call that the code never made).
+    #[test]
+    fn both_families_of_one_name_cost_two_separate_blocking_calls_today() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting(Arc<AtomicUsize>);
+        impl Blocking for Counting {
+            async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+                &self,
+                f: F,
+            ) -> Result<T, Cancelled> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(f())
+            }
+        }
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let r = SystemDns::new(Counting(count.clone()));
+        let _v4: Vec<_> = futures_executor::block_on(r.lookup_ipv4("localhost").collect());
+        let _v6: Vec<_> = futures_executor::block_on(r.lookup_ipv6("localhost").collect());
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "lookup_ipv4/lookup_ipv6 не делят одну резолюцию — каждый бьёт свой getaddrinfo"
+        );
+    }
+
     #[test]
     fn svcb_is_empty_because_getaddrinfo_cannot_return_it() {
         let r = SystemDns::new(Inline);
@@ -207,6 +260,19 @@ mod tests {
             .next()
             .unwrap()
             .expect_err("обязана быть ошибка");
+        // Fix round 1: раньше здесь была только отрицательная проверка
+        // (`assert_ne!` против `Resolve`) — она прошла бы и для
+        // `ErrorKind::Other`, который отмена и заворачивала до этого
+        // раунда. Точная проверка кода не слабее отрицательной, а строже:
+        // `Cancelled` — конкретный вариант, заведённый именно под это
+        // условие (см. doc-комментарий `ErrorKind::Cancelled` в
+        // `http-ng-core`), и тест обязан называть его напрямую.
+        assert_eq!(
+            err.kind(),
+            &ErrorKind::Cancelled,
+            "уход пула — не отказ DNS (Resolve) и не непрозрачная ошибка (Other), а Cancelled"
+        );
+        assert!(err.is_cancelled());
         assert_ne!(
             err.kind(),
             &ErrorKind::Resolve,
