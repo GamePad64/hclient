@@ -550,8 +550,11 @@ dependencies = [
  "http-ng-dns",
  "http-ng-proto",
  "http-ng-rt",
+ "http-ng-rt-smol",
+ "http-ng-rt-tokio",
  "http-ng-tls",
  "hyper",
+ "tokio",
 ]
 
 [[package]]

@@ -585,8 +585,10 @@ Connection Attempt Delay 250 мс (clamp 10 мс…2 с), на `FuturesUnordered
 публичный конфиг. Планировщик — чистый автомат в `http-ng-proto`, принимающий
 `now` параметром: константы тестируются без единого `sleep`.
 
-Вероятно понадобится и своя RFC 6724 Destination Address Selection —
-поддерживаемого крейта нет.
+Своя RFC 6724 Destination Address Selection здесь предполагалась вероятно
+нужной ("поддерживаемого крейта нет") — Task 11 (вертикаль 2,
+`http-ng-native::connect`) проверила перед реализацией и закрыла вопрос:
+не делаем, см. §9.
 
 ### 5.5 Пул
 
@@ -929,6 +931,7 @@ ohttp_channel, user_agent}`; iOS у них при этом на hyper), `frakt` 
 | **async-std** | Прекращён 2025-03-01; quinn 0.12 убирает `runtime-async-std` |
 | **Сжатие тела запроса** | Поддержка серверов непоследовательна; дать чистый ручной путь |
 | **`hyper::upgrade::Upgraded` в публичном API** | Течёт hyper во все downstream-крейты |
+| **RFC 6724 Destination Address Selection (v0.2)** | §5.4 называла её вероятно нужной, без крейта. Task 11 (вертикаль 2, `http-ng-native::connect`) проверила перед реализацией: полное правило требует Source Address Selection (Rule 1 и далее) — знания, каким локальным адресом ОС реально соединилась бы с конкретным адресатом, то есть таблицы маршрутизации, которой не даёт ни один трейт этой вертикали (`Resolve`, `TcpConnect`, `Timer`). Частичная реализация (только правила без Source Address Selection) выглядела бы соответствием RFC 6724, не будучи им — тот же принцип, что развёл `RedirectSupport::None`/`Transparent`. Адреса каждого семейства сегодня идут в `Scheduler::offer_v4`/`offer_v6` в порядке, отданном резолвером (`http-ng-dns::Resolve`, `http-ng-native::connect` — оба задокументированы). Пересмотр возможен, если появится отдельная способность Source Address Selection |
 | **Connection-level middleware на ambient-бэкендах** | Физически невозможно |
 | **Blocking API** | Вне области по условию задачи |
 | **HTTP/3 как блокер 1.0** | reqwest два года держит его за `--cfg reqwest_unstable` |
