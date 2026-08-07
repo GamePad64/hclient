@@ -73,22 +73,19 @@
 //! mutation-проверены: возврат к частичному матчу гасит именно их, не
 //! только новый тест на `Streaming`.
 //!
-//! # `Inner`/`OutgoingBody` вне тестов пока не используются
+//! # `Inner`/`OutgoingBody` больше не мёртвый код вне тестов
 //!
-//! То, что реально их сконструирует (коннектор, HTTP/1-драйвер), приезжает
-//! в Task 11–13. `cfg(not(test))`, а не голый `expect`: в тестовой сборке
-//! `#[cfg(test)] mod tests` ниже использует их по-настоящему, `dead_code`
-//! там не сработает, и непарный `expect` сам обернулся бы предупреждением
-//! (`unfulfilled_lint_expectations`) — атрибут ниже ограничен ровно той
-//! сборкой, где утверждение "этот код ещё не вызывается" верно.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "используются коннектором/драйвером Task 11–13; до тех пор — только тестами этого файла"
-    )
-)]
-
+//! До Task 12 ничего в крейте не строило `OutgoingBody` вне `#[cfg(test)]
+//! mod tests` этого файла, так что здесь стоял `#![cfg_attr(not(test),
+//! expect(dead_code, ..))]`. С Task 12 `h1::exchange` принимает `http::
+//! Request<OutgoingBody>` по-настоящему (не только в тестах), и
+//! `testing::empty_body`/`testing::exchange_for_test` в `lib.rs` тоже
+//! строят и передают его в обычной, не тестовой сборке — `dead_code`
+//! больше не срабатывает вне тестов, и `expect` без соответствующего
+//! срабатывания сам стал бы предупреждением
+//! (`unfulfilled_lint_expectations`, обнаружено при подключении Task 12).
+//! Атрибут снят, а не заужен: заужать было бы нечего — не осталось ни
+//! одного пути этого файла, который был бы дожив вне теста мёртвым кодом.
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use http_ng_core::{Error, RequestBody};
@@ -127,8 +124,18 @@ impl Inner {
 ///
 /// `type Error = http_ng_core::Error` — см. doc-комментарий модуля про то,
 /// почему это не `Box<dyn StdError + Send + Sync>`.
+///
+/// `pub`, а не `pub(crate)`, как было до Task 12: сам модуль `body` по-
+/// прежнему приватен (`mod body;` в `lib.rs`, без `pub`), но с Task 12
+/// `h1::exchange` — не единственный, кто строит `OutgoingBody` внутри
+/// крейта; `testing::empty_body`/`testing::exchange_for_test` обязаны
+/// пронести его через границу крейта в `tests/h1.rs` точно так же, как
+/// `testing` уже проносит `h1::NativeBody` через `pub use`. Приватный
+/// `mod body` всё ещё не даёт внешним крейтам увидеть путь `crate::body::
+/// OutgoingBody` напрямую — только через реэкспорт в `testing` (см.
+/// `lib.rs`), так что реальная площадь публичного API крейта не растёт.
 #[derive(Debug)]
-pub(crate) struct OutgoingBody {
+pub struct OutgoingBody {
     inner: Inner,
 }
 
