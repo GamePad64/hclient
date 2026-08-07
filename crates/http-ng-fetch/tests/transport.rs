@@ -157,14 +157,22 @@ fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
 
 // ---------------------------------------------------------------------
 // Capability fidelity: the one property this task is explicitly obligated
-// to re-verify, not just inherit. `caps.streaming_request_body` in THIS
-// environment (headless Chrome) probes `true` — `tests/convert.rs` already
-// proves `convert::to_web_request` rejects `Streaming` unconditionally
-// against a CALLER-SUPPLIED `Capabilities` claiming `true`
+// to re-verify, not just inherit. `tests/convert.rs` already proves
+// `convert::to_web_request` rejects `Streaming` unconditionally against a
+// CALLER-SUPPLIED `Capabilities` claiming `true`
 // (`streaming_body_is_rejected_even_when_duplex_is_claimed_supported`).
 // That's the conversion layer in isolation. This closes the loop through
 // the ACTUAL `Transport` impl, the REAL probed `Capabilities`, and a REAL
 // `Client`: probe -> declaration -> behavior, nothing stood in.
+//
+// (`caps.streaming_request_body` no longer varies by browser at all — see
+// `caps::probe`'s doc comment, and the task report's "reopened" section for
+// why: this comment used to say it "probes `true`" in headless Chrome
+// specifically, which was true when Task 5 wrote it and stopped being true
+// once the field became a hardcoded `false` everywhere. The test below
+// still earns its place regardless of that value: it proves the rejection
+// through the real `Transport`/`Client` path, not just that a particular
+// probe result happens to agree with `convert.rs`'s own unit test.)
 // ---------------------------------------------------------------------
 
 struct NeverPolled;
@@ -184,9 +192,13 @@ async fn streaming_request_body_is_rejected_through_the_real_client_and_real_pro
     let f = Fetch::new();
     // Not gated on the probe's value (unlike `tests/convert.rs`'s
     // `streaming_body_is_rejected_where_duplex_is_absent`, which mirrors
-    // the brief and skips in Chrome): the rejection must hold regardless of
-    // what the real probe says, and in THIS environment it says `true` —
-    // exactly the case a probe-gated test would never exercise.
+    // the brief's guard): the rejection must hold regardless of what the
+    // real probe says — and today it says `false` unconditionally (see
+    // `caps::probe`'s doc comment), so a probe-gated test wouldn't even
+    // have anything left to skip in this environment or any other. Kept
+    // unconditional anyway: the property under test — the real `Transport`/
+    // `Client` path rejects a streaming body — shouldn't depend on which
+    // way a capability probe happens to read today.
     let c = Client::builder(f).build().unwrap();
     let err = c
         .post("https://example.com/")

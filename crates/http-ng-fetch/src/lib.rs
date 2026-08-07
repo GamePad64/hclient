@@ -227,6 +227,23 @@ impl Transport for Fetch {
 pub mod testing {
     pub use crate::promise::SendJsFuture as SendJsFutureAlias;
 
+    /// The raw browser probe, independent of `Capabilities`.
+    ///
+    /// `caps::supports_duplex` is `pub(crate)` and, since this task's
+    /// reopening, no longer drives any field of `Capabilities` (see
+    /// `caps::probe`'s doc comment) — so without this accessor, the probe
+    /// would have no caller anywhere in the crate outside its own module
+    /// and `rustc` would flag it `dead_code`. It isn't dead: it's the exact
+    /// browser fact `probe()` is documented to switch back to reading once
+    /// request-body streaming is wired up, and `tests/caps.rs`'s
+    /// `duplex_probe_reflects_the_prototype_not_a_hardcoded_constant`
+    /// mutation-tests it directly through this function, rather than
+    /// indirectly through a `Capabilities` field that no longer carries the
+    /// signal.
+    pub fn supports_duplex_for_test() -> bool {
+        crate::caps::supports_duplex()
+    }
+
     pub fn send_js_future(
         p: js_sys::Promise,
     ) -> impl std::future::Future<Output = Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>>
@@ -249,10 +266,12 @@ pub mod testing {
 
     /// Converts through this `Fetch`'s own probed `Capabilities` — what
     /// every real call site actually gets. Covers the ordinary path; a test
-    /// that needs a `Capabilities` this browser doesn't naturally have
-    /// (e.g. `streaming_request_body = true` on a browser lacking `duplex`,
-    /// or the reverse) uses [`to_web_request_with_caps`] instead, since a
-    /// real `Fetch::new()` can't be made to lie about what it probed.
+    /// that needs a `Capabilities` a real `Fetch::new()` can never actually
+    /// produce (e.g. `streaming_request_body = true` — see `caps::probe`'s
+    /// doc comment for why that field is a hardcoded `false` today,
+    /// regardless of browser) uses [`to_web_request_with_caps`] instead,
+    /// since a real `Fetch::new()` can't be made to lie about what it
+    /// probed.
     pub fn to_web_request(
         f: &crate::Fetch,
         req: http::Request<http_ng_core::RequestBody>,
@@ -262,10 +281,13 @@ pub mod testing {
 
     /// Same conversion, against a caller-supplied `Capabilities` rather than
     /// a real `Fetch`'s probed one — what `tests/convert.rs` needs to
-    /// exercise `streaming_request_body = true` deterministically even in a
-    /// browser (this one, Chrome) where that's the only value the real
-    /// probe could ever produce here, and `= false` even where it's the
-    /// only value a real probe couldn't produce here.
+    /// exercise `streaming_request_body = true` deterministically. Today
+    /// that's the ONLY way to exercise it: `Fetch::new()`'s real
+    /// `Capabilities` reports `streaming_request_body = false`
+    /// unconditionally, in every browser (see `caps::probe`'s doc comment)
+    /// — this is no longer a "which browser are we in" question the way it
+    /// was when this comment was first written; `= true` isn't a value any
+    /// real probe here can produce at all right now, on any browser.
     pub fn to_web_request_with_caps(
         req: http::Request<http_ng_core::RequestBody>,
         caps: &http_ng_core::Capabilities,

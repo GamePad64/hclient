@@ -39,11 +39,21 @@
 //!    honoring it. This file sidesteps the question entirely rather than
 //!    answering it wrong: `RequestBody::Streaming` is rejected
 //!    UNCONDITIONALLY, regardless of what `caps.streaming_request_body`
-//!    says, because building the `ReadableStream` a streaming fetch needs
-//!    requires `wasm-streams`, which this crate does not yet depend on (see
-//!    `Cargo.toml`). A wrong-in-the-optimistic-direction probe therefore
-//!    can't turn into a silently truncated body: there is no code path here
-//!    that ever attempts to send a streaming body at all.
+//!    says, because nothing in THIS file builds the `ReadableStream` +
+//!    `duplex: "half"` a streamed send needs — `wasm-streams` became a real
+//!    dependency in Task 4 (`body.rs`, the RESPONSE direction), but no code
+//!    here consumes it for a REQUEST body (an earlier version of this
+//!    paragraph said this crate didn't depend on `wasm-streams` at all —
+//!    true when Task 3 wrote it, stale since Task 4; fixed when this task
+//!    was reopened over an unrelated finding in the same neighborhood, see
+//!    `caps.rs`'s own doc comments). A wrong-in-the-optimistic-direction
+//!    probe therefore can't turn into a silently truncated body: there is
+//!    no code path here that ever attempts to send a streaming body at
+//!    all — true regardless of what `caps.streaming_request_body` says, and
+//!    doubly true now that `caps::probe()` (Task 2, reopened) reports it as
+//!    a hardcoded `false` rather than deriving it from the browser, for
+//!    exactly the reason this paragraph gives: this file couldn't act on
+//!    `true` even if the probe still produced it.
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
 use wasm_bindgen::JsValue;
 

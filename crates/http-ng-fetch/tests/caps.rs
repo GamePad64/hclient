@@ -23,6 +23,24 @@ fn declares_what_fetch_genuinely_cannot_do() {
     assert_eq!(c.upgrade, http_ng_core::UpgradeSupport::None);
 }
 
+/// Not from the brief: added when this task was reopened over a finding in
+/// `streaming_request_body`'s neighborhood (see the task report's "reopened"
+/// section) — auditing all sixteen fields surfaced a second, independent
+/// case of the same defect class. `convert::to_web_request` never calls
+/// `RequestInit::set_redirect`; fetch's default (`redirect: "follow"`)
+/// governs every request unconditionally, resolved entirely inside the
+/// browser before `Client`'s own redirect stage — or this crate — ever sees
+/// an intermediate 3xx. `RedirectSupport::Configurable` ("we set the
+/// policy") was never true here; `Internal` is `RedirectSupport`'s own name,
+/// in `http-ng-core`, for exactly this shape — its doc comment names a
+/// browser's `fetch()` with the default `redirect: "follow"` as the
+/// motivating example, written before this crate existed to be that example.
+#[wasm_bindgen_test]
+fn redirects_are_internal_not_configurable() {
+    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    assert_eq!(c.redirects, http_ng_core::RedirectSupport::Internal);
+}
+
 #[wasm_bindgen_test]
 fn only_the_connect_deadline_exists_and_it_is_one_for_everything() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
@@ -55,14 +73,27 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
     }
 }
 
+/// Replaces the original `duplex_support_is_probed_not_assumed`, which
+/// asserted `streaming_request_body == full_duplex` — true, but no longer
+/// meaningful: `probe()` now sets both fields to the SAME hardcoded literal
+/// (see `caps::probe`'s doc comment), so that equality would hold even if
+/// the literal were flipped to `true`, or if `probe()` forgot to set
+/// `full_duplex` at all and it fell back to `Capabilities::none()`'s
+/// default `false` by coincidence. This test pins the actual, current
+/// value instead, which is the claim that can actually go wrong: this
+/// crate does not send a streaming request body yet — `convert::
+/// resolve_body` rejects `RequestBody::Streaming` unconditionally — so
+/// reporting `true` here, on any browser, would be exactly the capability
+/// that lies this whole registry exists to prevent.
+/// `supports_duplex_reflects_the_prototype_not_a_hardcoded_constant` below
+/// is what still exercises the genuine, browser-varying fact
+/// (`supports_duplex()` itself); this test and that one are deliberately
+/// no longer the same test.
 #[wasm_bindgen_test]
-fn duplex_support_is_probed_not_assumed() {
-    // In Chrome 131+ — true, in Firefox and Safari — false. One binary.
+fn streaming_request_body_and_full_duplex_are_false_until_the_send_path_exists() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
-    assert_eq!(
-        c.streaming_request_body, c.full_duplex,
-        "in fetch, duplex and streaming request bodies are the same thing"
-    );
+    assert!(!c.streaming_request_body);
+    assert!(!c.full_duplex);
 }
 
 /// Not from the brief: `Capabilities` is `#[non_exhaustive]`, so this crate
@@ -97,19 +128,28 @@ fn undeclared_capability_fields_match_their_conservative_defaults_today() {
     assert!(!informational_1xx);
 }
 
-/// Not from the brief: `duplex_support_is_probed_not_assumed` above only
-/// checks internal consistency (`streaming_request_body == full_duplex`)
-/// — `probe()` sets both fields from the same local `bool`, so that
-/// assertion passes even if `supports_duplex()` were hardcoded to a
-/// constant `true` or `false` (verified by actually making that edit
-/// locally — see the task report). This test mutation-checks
-/// `supports_duplex()` itself: it flips whichever way `Request.prototype`
-/// actually reads in this browser, confirms the probe follows the flip in
-/// both directions, and puts the prototype back before returning, since
-/// `wasm-bindgen-test` runs every `#[wasm_bindgen_test]` in this file
-/// against the same page and global object.
+/// **Reopened-task rewrite.** This test used to monkey-patch
+/// `Request.prototype.duplex` and check that `Capabilities::
+/// streaming_request_body` followed the flip. It can't do that any more —
+/// `streaming_request_body` is now a hardcoded `false` (see `caps::probe`'s
+/// doc comment and `streaming_request_body_and_full_duplex_are_false_until_
+/// the_send_path_exists` above), decoupled from the browser fact on
+/// purpose. What's still real and still browser-varying is
+/// `supports_duplex()` ITSELF (exported for this test via
+/// `testing::supports_duplex_for_test`, since the underlying function stays
+/// `pub(crate)`) — so this test now targets that function directly, not the
+/// `Capabilities` it no longer feeds. Same mechanism as before: flip
+/// whichever way `Request.prototype` actually reads in this browser,
+/// confirm the raw probe follows the flip in both directions (checking the
+/// PRE-mutation baseline too, not only the flipped state — a probe
+/// hardcoded to a constant can agree with an arbitrary single flipped
+/// state by coincidence, but not with both the natural state and its
+/// opposite; this exact gap was found by mutation-testing this test's own
+/// first draft, see the task report), and restore the prototype before
+/// returning, since `wasm-bindgen-test` runs every `#[wasm_bindgen_test]`
+/// in this file against the same page and global object.
 #[wasm_bindgen_test]
-fn duplex_reflects_the_prototype_not_a_hardcoded_constant() {
+fn supports_duplex_reflects_the_prototype_not_a_hardcoded_constant() {
     use wasm_bindgen::{JsCast, JsValue};
 
     let global = js_sys::global();
@@ -121,23 +161,14 @@ fn duplex_reflects_the_prototype_not_a_hardcoded_constant() {
     let had_duplex_before =
         js_sys::Reflect::has(&proto, &key).expect("`in` on an object never throws");
 
-    // Baseline, taken before any mutation: a probe hardcoded to a constant
-    // agrees with the flip check below whenever that constant happens to
-    // equal `!had_duplex_before` — which, on a browser whose *natural*
-    // state is already the opposite of the hardcoded constant, is exactly
-    // never (the flip always lands on `!had_duplex_before`). What a
-    // hardcoded constant CANNOT do is agree with both the natural state
-    // *and* the flipped state, so this assertion is what actually forces
-    // both directions to be checked (found by mutation-testing this test
-    // itself: a `supports_duplex()` hardcoded to `false` passed every
-    // other assertion here undetected, in a Chrome where the natural state
-    // is already `true` — see the task report).
+    // Baseline, taken before any mutation — see this test's own doc comment
+    // for why the baseline check, not only the post-flip one, is what
+    // actually rules out a hardcoded constant.
     assert_eq!(
-        http_ng_fetch::Fetch::new()
-            .capabilities_for_test()
-            .streaming_request_body,
+        http_ng_fetch::testing::supports_duplex_for_test(),
         had_duplex_before,
-        "before any mutation, probe() must match the browser's actual, unmodified Request.prototype.duplex"
+        "before any mutation, supports_duplex() must match the browser's actual, unmodified \
+         Request.prototype.duplex"
     );
 
     if had_duplex_before {
@@ -153,7 +184,7 @@ fn duplex_reflects_the_prototype_not_a_hardcoded_constant() {
         "the mutation itself must take effect before it can be tested against"
     );
 
-    let observed = http_ng_fetch::Fetch::new().capabilities_for_test();
+    let observed = http_ng_fetch::testing::supports_duplex_for_test();
 
     // Restore before asserting: a failed assertion below must not leave
     // `Request.prototype` mutated for whichever test in this page runs next.
@@ -170,8 +201,8 @@ fn duplex_reflects_the_prototype_not_a_hardcoded_constant() {
     );
 
     assert_eq!(
-        observed.streaming_request_body, !had_duplex_before,
-        "probe() must follow the flipped Request.prototype.duplex, not a cached or hardcoded answer"
+        observed, !had_duplex_before,
+        "supports_duplex() must follow the flipped Request.prototype.duplex, not a cached or \
+         hardcoded answer"
     );
-    assert_eq!(observed.full_duplex, !had_duplex_before);
 }

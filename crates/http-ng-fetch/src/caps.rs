@@ -1,14 +1,23 @@
 //! Runtime capability probing for the browser `fetch` backend.
 //!
-//! This is the one place in the whole project where `Capabilities` actually
-//! differs between processes running the exact same binary: Chrome ships
+//! This is the one place in the project designed to let `Capabilities`
+//! differ between processes running the exact same binary: Chrome ships
 //! request-body streaming (`duplex: "half"`) and Firefox/Safari don't, and
 //! it's `cfg!`-invisible because it's the same `wasm32-unknown-unknown`
-//! build in every one of them. Everything else in this module is a fixed
-//! fact about the Fetch API itself (no TLS knobs, browser-owned cookies,
-//! …) and could in principle be a `const`, but lives next to the one
-//! genuine probe so `Capabilities` is assembled in one place, not split
-//! between "facts" and "probes" for no reason a caller can see.
+//! build in every one of them. [`supports_duplex`] genuinely does that
+//! probing, and its result genuinely varies by browser — but as of this
+//! task's reopening (see `probe()`'s own doc comment), that result does
+//! **not** currently drive `Capabilities::streaming_request_body`/
+//! `full_duplex`: this crate doesn't build the `ReadableStream` a streamed
+//! send needs yet, so `probe()` reports the conservative, constant answer
+//! that matches what THIS CRATE actually does, not what the browser
+//! could do for it. `supports_duplex()` stays exactly as accurate and as
+//! tested as before — it's just decoupled from `Capabilities` until a
+//! later task wires the send path up to match. Everything else in this
+//! module is a fixed fact about the Fetch API itself (no TLS knobs,
+//! browser-owned cookies, …) and could in principle be a `const`, but
+//! lives next to the probe so `Capabilities` is assembled in one place,
+//! not split between "facts" and "probes" for no reason a caller can see.
 
 use http_ng_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport, UpgradeSupport};
 
@@ -119,18 +128,63 @@ pub(crate) fn supports_duplex() -> bool {
 /// `promise.rs`'s `SingleThreaded` documents), so there is exactly one JS
 /// thread in the process — "what happens across threads" is "nothing
 /// happens across threads", by construction, not by locking.
+///
+/// **`Capabilities` describes this transport, not this browser — and those
+/// stopped being the same question the moment `Transport::capabilities()`
+/// became a public method (Task 5).** Two fields below are the reason this
+/// doc comment exists: see each one's own comment for the specific claim
+/// that changed and why.
 pub(crate) fn probe() -> Capabilities {
-    let duplex = supports_duplex();
     let mut c = Capabilities::none();
-    // Streaming request bodies in fetch only exist together with
-    // `duplex: "half"` — the same browser feature under two names.
-    c.streaming_request_body = duplex;
-    c.full_duplex = duplex;
-    // The browser owns redirects: a policy can be set
-    // (`redirect: "follow"/"error"/"manual"`), but `"manual"` gives back an
-    // opaque redirect (status 0, no headers) rather than letting us
-    // observe the hop, so this is `Configurable`, not `Inspectable`.
-    c.redirects = RedirectSupport::Configurable;
+    // `streaming_request_body` / `full_duplex`: hardcoded `false`,
+    // deliberately NOT derived from `supports_duplex()` — this is the fix
+    // for the exact defect class vertical 1's wasi `full_duplex`/
+    // `request_trailers` and vertical 2's native `timeouts.connect` were
+    // each caught for (see amendment history / task-2-report.md's
+    // "reopened" section): a capability that describes the environment
+    // instead of this crate's own behavior.
+    //
+    // `supports_duplex()` is honest about the BROWSER: Chrome really does
+    // let a `Request` stream its body via `duplex: "half"`. But nothing in
+    // this crate builds that `ReadableStream` yet — `convert::resolve_body`
+    // rejects every `RequestBody::Streaming` UNCONDITIONALLY, regardless of
+    // what this probe says (see `convert.rs`'s module doc comment, point
+    // 3). Reporting `true` here — true until this task was reopened —
+    // meant a caller who read `Transport::capabilities().streaming_request_body`
+    // and branched on it (the entire reason the registry exists) would see
+    // `true` in Chrome, expect a streamed send, and instead get
+    // `ErrorKind::Unsupported` at `execute()` — never silently truncated
+    // (`convert.rs` already made sure of that), but a capability a caller
+    // can't trust to predict what actually happens is still a capability
+    // that lies.
+    //
+    // **The line to change, and the only one, once request-body streaming
+    // is actually wired up** (a later task building a `ReadableStream`
+    // from `RequestBody::Streaming` in `convert::to_web_request`, the
+    // mirror image of `body.rs`'s response-side bridge): replace the two
+    // literals below with `supports_duplex()`, the same way this function
+    // used to read `let duplex = supports_duplex(); c.streaming_request_body
+    // = duplex; c.full_duplex = duplex;`. `supports_duplex()` itself is
+    // kept, exported for tests via `testing::supports_duplex_for_test`, and
+    // covered by `tests/caps.rs` for exactly this reason — it isn't dead
+    // code, it's wired up and waiting.
+    c.streaming_request_body = false;
+    c.full_duplex = false;
+    // `redirects`: `Internal`, not `Configurable`. `to_web_request`
+    // (`convert.rs`) never calls `RequestInit::set_redirect` — fetch's
+    // default, `redirect: "follow"`, governs every request this crate
+    // sends, unconditionally. That default is resolved INSIDE the browser:
+    // the JS code (and everything built on top of it, including `Client`'s
+    // own redirect stage) only ever sees the final response, never an
+    // intermediate 3xx. `RedirectSupport::Configurable` claims "we set the
+    // policy" — a specific, false claim: nothing here reads a
+    // `RedirectPolicy` or translates it into any fetch option. This is
+    // exactly the case `RedirectSupport::Internal`'s own doc comment in
+    // `http-ng-core` names by example — "a browser's `fetch()` with
+    // `redirect: "follow"` (the default) follows the redirect inside the
+    // browser, and the JS code sees only the final response" — written
+    // before this crate existed, describing this crate.
+    c.redirects = RedirectSupport::Internal;
     c.owns_cookie_jar = true;
     c.owns_cache = true;
     // `AbortSignal` is one deadline for the whole exchange; none of the

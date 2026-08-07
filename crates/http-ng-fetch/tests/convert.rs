@@ -41,8 +41,17 @@ fn ordinary_headers_pass_through() {
 #[wasm_bindgen_test]
 fn streaming_body_is_rejected_where_duplex_is_absent() {
     let f = http_ng_fetch::Fetch::new();
+    // Brief's own guard, kept verbatim even though it's currently dead:
+    // `capabilities_for_test().streaming_request_body` is a hardcoded
+    // `false` today, in every browser, regardless of `duplex` support (see
+    // `caps::probe`'s doc comment — this task was reopened specifically
+    // because that field used to follow the browser instead of this
+    // crate's own behavior). The guard is harmless to leave in place: it's
+    // still the right thing to do IF this field is ever wired back to the
+    // real probe, and removing it would just be one more place to
+    // remember to touch when that happens.
     if f.capabilities_for_test().streaming_request_body {
-        return; // supported in Chrome — nothing to check
+        return; // cannot happen today — see the comment above
     }
     let req = http::Request::builder()
         .uri("https://example.com/")
@@ -81,11 +90,15 @@ fn streaming_body() -> RequestBody {
 // this crate never trusts the `duplex` probe enough to try anyway (module
 // doc comment on `src/convert.rs`, point 3). Tested against a caller-
 // supplied `Capabilities` — `to_web_request_with_caps` — rather than
-// `Fetch::new()`'s real probe, because in THIS environment (headless
-// Chrome) the real probe only ever produces `true`: a test gated on the
-// real probe (like the brief's own `streaming_body_is_rejected_where_
-// duplex_is_absent` above) would silently skip the one browser this suite
-// actually runs in.
+// `Fetch::new()`'s real probe, because `Fetch::new()`'s real
+// `Capabilities::streaming_request_body` is now a hardcoded `false` in
+// EVERY browser (not just "not Chrome" — see `caps::probe`'s doc comment):
+// a test gated on the real probe, like the brief's own
+// `streaming_body_is_rejected_where_duplex_is_absent` above, can no longer
+// exercise the `true` case on any environment this suite could run in.
+// (An earlier version of this comment said the real probe "only ever
+// produces `true`" in this headless-Chrome environment — the opposite of
+// today's fact, from before this task was reopened; see the task report.)
 // ---------------------------------------------------------------------
 
 #[wasm_bindgen_test]
