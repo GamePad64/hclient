@@ -490,9 +490,80 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
     let err = futures_executor::block_on(resp.chunk())
         .expect("кадр ошибки")
         .unwrap_err();
-    assert_eq!(*err.kind(), http_ng::ErrorKind::Body);
+    // Финальное ревью вертикали 2, находка F2: `chunk()` больше не
+    // переклеивает уже классифицированную ошибку в `ErrorKind::Body` —
+    // `MockBody::Error` уже `http_ng_core::Error`, и её `kind()` (`Other`,
+    // заданный строкой выше) обязан дожить как есть. `chunk_survives_a_
+    // non_body_error_kind_instead_of_relabeling_it_body` (ниже) проверяет то
+    // же свойство целенаправленно, этот тест — попутно, вместе с
+    // терминальностью.
+    assert_eq!(*err.kind(), http_ng::ErrorKind::Other);
     assert!(
         futures_executor::block_on(resp.chunk()).is_none(),
         "после ошибки тело запечатано — второй раз её не отдаём и заново тело не опрашиваем"
     );
+}
+
+/// Final review, F2 (major): `Response::chunk()` used to wrap EVERY body
+/// error in `Error::new(ErrorKind::Body, e)` unconditionally — the exact
+/// pattern vertical 1's final review named finding B2 and fixed with
+/// `Transport::to_error`'s "already ours? pass it through" default, except
+/// this half of the request (the response body) never got the same fix.
+/// `MockBody::Error` is `http_ng_core::Error` already, so a body that fails
+/// with a real classification (`Cancelled`, chosen because it exists
+/// precisely so a caller can tell "the runtime is shutting down" apart from
+/// a genuine body failure without downcasting — see `ErrorKind::Cancelled`'s
+/// doc comment) must reach the caller as `Cancelled`, not get relabeled.
+///
+/// Checks every symptom the review measured, not just `kind()`: the
+/// predicate (`is_cancelled()`), the source chain depth (double-wrap would
+/// insert an extra `http_ng::Error` layer a caller would have to downcast
+/// through), and `Display` (double-wrap prints the category twice).
+///
+/// Mutation-checked (see this task's report): reverting `classify_body_error`
+/// to the old unconditional `Error::new(ErrorKind::Body, e)` turns this test
+/// red with `kind() == Body`, confirming it is the test that would have
+/// caught finding F2 — the same mutation the review's own probe (B8) found
+/// zero tests catching before this fix round.
+#[test]
+fn chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_body() {
+    let m = MockTransport::new();
+    let empty: Vec<&'static str> = Vec::new();
+    m.push_response_frames_then_error(
+        http::Response::builder().status(200).body(empty).unwrap(),
+        http_ng::Error::new(
+            http_ng::ErrorKind::Cancelled,
+            std::io::Error::other("pool gone"),
+        ),
+    );
+
+    let c = Client::builder(m).build().unwrap();
+    let mut resp = futures_executor::block_on(c.get("https://a/").send()).unwrap();
+    let err = futures_executor::block_on(resp.chunk())
+        .expect("error frame")
+        .unwrap_err();
+
+    assert_eq!(
+        *err.kind(),
+        http_ng::ErrorKind::Cancelled,
+        "the backend's own classification must survive chunk(), not become Body: {err}"
+    );
+    assert!(
+        err.is_cancelled(),
+        "the is_cancelled() predicate must agree with kind(): {err}"
+    );
+    assert!(
+        !err.to_string().starts_with("Body:"),
+        "the category must print once, not Body: Cancelled: ..: {err}"
+    );
+    // Exactly one level of source(), not two: a double-wrap would insert an
+    // extra `http_ng::Error` the caller has to downcast through before
+    // reaching the original `std::io::Error`.
+    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    assert!(
+        src.downcast_ref::<http_ng::Error>().is_none(),
+        "source() must be the original std::io::Error directly, not another http_ng::Error \
+         wrapping it: {src}"
+    );
+    assert!(src.downcast_ref::<std::io::Error>().is_some(), "{src}");
 }

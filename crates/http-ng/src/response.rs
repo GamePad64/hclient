@@ -82,7 +82,7 @@ where
                 },
                 Some(Err(e)) => {
                     self.sealed = true;
-                    return Some(Err(Error::new(ErrorKind::Body, e)));
+                    return Some(Err(classify_body_error(e)));
                 }
                 None => {
                     self.sealed = true;
@@ -102,6 +102,47 @@ where
             url: self.url,
             body: acc.freeze(),
         })
+    }
+}
+
+/// Classifies a response body's read error — the response-half twin of
+/// `Transport::to_error`'s default (`http-ng-core/src/unversioned/
+/// transport.rs`), and for the same reason: if `e` is already our own
+/// `Error`, its `kind()` was set at the point the backend actually
+/// classified the failure (`ErrorKind::Cancelled` from a shutting-down
+/// runtime, `ErrorKind::Tls` from a mid-stream handshake failure — whatever
+/// it genuinely was), and re-wrapping it here would be exactly finding B2 of
+/// vertical 1's final review, reproduced one seam later: `kind()` becomes
+/// `Body` for everything, every `is_*` predicate lies, and `Display` prints
+/// the category twice. Only a body whose error type carries no category of
+/// its own — the common case for backends whose bodies are plain
+/// `std::io::Error` or similar — falls back to `ErrorKind::Body`, which
+/// remains the right default for a genuinely opaque body failure.
+///
+/// Found by vertical 2's final review (finding F2): `chunk()` used to wrap
+/// unconditionally, and nothing in the test suite noticed, because
+/// `NativeBody::poll_frame`'s own fallback already defaults to
+/// `ErrorKind::Body` — the double-wrap was invisible by coincidence, not
+/// because it was harmless. `Body`'s own `chunk_is_terminal_after_an_error_
+/// and_does_not_poll_the_body_again` (in `tests/response.rs`) now pins the
+/// non-coincidental case directly.
+fn classify_body_error<E>(e: E) -> Error
+where
+    E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+{
+    let boxed: Box<dyn std::any::Any> = Box::new(e);
+    match boxed.downcast::<Error>() {
+        Ok(already_ours) => *already_ours,
+        Err(foreign) => Error::new(
+            ErrorKind::Body,
+            *foreign.downcast::<E>().unwrap_or_else(|_| {
+                // Unreachable, and not an invariant spanning two distant
+                // places: established three lines above in the same
+                // expression — boxed exactly `E`, the first downcast
+                // missed, so the second is guaranteed to hit.
+                unreachable!("boxed exactly E three lines above")
+            }),
+        ),
     }
 }
 

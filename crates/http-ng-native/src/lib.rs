@@ -39,20 +39,26 @@ mod h1;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
-    Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, TlsSupport, UpgradeSupport,
+    Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, TimeoutSupport, Timeouts,
+    TlsSupport, UpgradeSupport,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{TcpConnect, TcpOpts, Timer};
 use http_ng_tls::TlsConnect;
+use std::future::Future;
+use std::task::Poll;
+use std::time::Duration;
 
 /// Транспорт http-ng поверх реального TCP/TLS/HTTP1: подключает вместе
 /// рантайм `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
 /// ([`http_ng_tls::TlsConnect`]) и резолвер `D` ([`http_ng_dns::Resolve`]).
 ///
-/// v0.1: одно соединение на запрос (пула нет), тело запроса буферизуется
-/// целиком (`streaming_request_body: false`), HTTP/1.1 only, без upgrade —
+/// v0.1: одно соединение на запрос (пула нет), HTTP/1.1 only, без upgrade —
 /// см. [`Native::new`] и [`Capabilities`], которые эти ограничения
-/// объявляют честно, а не молчат о них.
+/// объявляют честно, а не молчат о них. Тело запроса **не** буферизуется
+/// целиком: `RequestBody::Streaming` проходит до провода как поток (см.
+/// [`Native::new`]'s doc-комментарий про `streaming_request_body` — прежняя
+/// версия этого абзаца утверждала обратное и была неверна).
 #[derive(Debug)]
 pub struct Native<R, T, D> {
     rt: R,
@@ -65,15 +71,31 @@ pub struct Native<R, T, D> {
 impl<R, T, D> Native<R, T, D> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let mut caps = Capabilities::none();
-        // Честно про v0.1: пула соединений нет, стриминга тела запроса нет,
-        // upgrade нет — остальные поля остаются на консервативной базе
-        // `Capabilities::none()` (см. `tests/transport.rs`'s
+        // Честно про v0.1: пула соединений нет, upgrade нет — остальные поля
+        // остаются на консервативной базе `Capabilities::none()` (см.
+        // `tests/transport.rs`'s
         // `undeclared_capability_fields_match_their_conservative_defaults_today`).
-        caps.streaming_request_body = false;
+        //
+        // `streaming_request_body: true` — НЕ то же самое, что было здесь до
+        // финального ревью ветки (`false`). `body.rs`'s `Inner::Streaming`
+        // отдаёт `RequestBody::Streaming` hyper'у как поток, а не собирает
+        // его в память первым делом (см. doc-комментарий `body.rs` — он это
+        // всегда и утверждал, в отличие от прежней версии ЭТОГО комментария);
+        // измерено на проводе: `tests/transport.rs`'s
+        // `streaming_request_body_is_actually_streamed_not_buffered` видит
+        // `transfer-encoding: chunked` и раздельные кадры двухкадрового тела.
+        // Заявлять `false`, пока код честно стримит, было бы той же самой
+        // ложью способности наоборот — заниженной, но потребитель, который ей
+        // поверит, соберёт большое тело в память сам, хотя мог этого не
+        // делать.
+        caps.streaming_request_body = true;
         caps.redirects = RedirectSupport::Configurable;
         caps.tls_config = TlsSupport::Full;
         caps.version_reported = true;
         caps.timeouts = TimeoutSupport {
+            // Применяется по-настоящему — см. `execute`'s гонку `connect::
+            // connect` против `rt.sleep(d)`, ниже, и `tests/transport.rs`'s
+            // `declared_connect_timeout_is_actually_applied`.
             connect: true,
             // Ни пула, ни таймера ответа в v0.1 нет — заявлять эти фазы
             // значило бы способность, которая лжёт о своём состоянии.
@@ -115,6 +137,22 @@ where
     ) -> Result<http::Response<Self::Body>, Error> {
         let (parts, body) = req.into_parts();
 
+        // Финальное ревью ветки, находка F1 (блокирующая): `Capabilities`
+        // заявляла `timeouts.connect = true`, но ничто в этом файле не
+        // читало `Timeouts` из `parts.extensions` — заявленный таймаут был
+        // тихим no-op, ровно тем классом дефекта (B1 финального ревью
+        // вертикали 1), ради искоренения которого этот канал вообще
+        // существует. `Transport::execute`'s doc-комментарий
+        // (`http-ng-core/src/unversioned/transport.rs`) описывает
+        // правильное чтение буквально: «наличие — не намерение»,
+        // `.get::<Timeouts>().copied().unwrap_or_default()`, затем поле за
+        // полем — не ветвиться на `is_some()` расширения целиком.
+        let timeouts = parts
+            .extensions
+            .get::<Timeouts>()
+            .copied()
+            .unwrap_or_default();
+
         // См. doc-комментарий модуля: `connect::connect` — не переиспользование
         // ради экономии кода, а единственный путь, на котором отличающийся
         // `ErrorKind` резолвера (в частности, `Cancelled`) структурно не может
@@ -122,15 +160,18 @@ where
         // типизированный `ErrorKind::Unsupported`) и опционально проводит
         // TLS-хендшейк с ALPN `http/1.1` — единственным протоколом, который
         // умеет `h1::exchange`.
-        let (conn, _tls_info) = connect::connect(
+        let connect_fut = connect::connect(
             &self.rt,
             &self.dns,
             &self.tls,
             &parts.uri,
             &self.opts,
             &[b"http/1.1"],
-        )
-        .await?;
+        );
+        let (conn, _tls_info) = match timeouts.connect {
+            Some(d) => with_connect_timeout(&self.rt, d, connect_fut).await?,
+            None => connect_fut.await?,
+        };
 
         let outgoing = body::OutgoingBody::from_request_body(body);
         let mut req = http::Request::from_parts(parts, outgoing);
@@ -156,6 +197,49 @@ where
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
+}
+
+/// Отказ, которым заканчивается [`with_connect_timeout`], когда таймер
+/// выигрывает гонку у `connect::connect`.
+#[derive(Debug)]
+struct ConnectTimedOut(Duration);
+impl std::fmt::Display for ConnectTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "connect timed out after {:?}", self.0)
+    }
+}
+impl std::error::Error for ConnectTimedOut {}
+
+/// Гоняет `fut` наперегонки с `rt.sleep(d)`: `fut`, если она успела первой,
+/// иначе `Err(ErrorKind::Timeout(Phase::Connect))` — закрывает финальное
+/// ревью ветки, находка F1.
+///
+/// `std::future::poll_fn`, опрашивающий оба плеча вручную, а не
+/// `futures_util::select!`/`select` — тот же приём и то же обоснование, что
+/// у `connect::drive` (см. его doc-комментарий, раздел про то, почему
+/// брифовский `select_biased!` не подошёл): здесь всего два плеча и оба
+/// нужны ровно один раз, макрос не даёт этой паре ничего, чего не даёт
+/// прямой `poll`.
+async fn with_connect_timeout<R, F, T>(rt: &R, d: Duration, fut: F) -> Result<T, Error>
+where
+    R: Timer,
+    F: Future<Output = Result<T, Error>>,
+{
+    let mut fut = std::pin::pin!(fut);
+    let mut sleep_fut = std::pin::pin!(rt.sleep(d));
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+            return Poll::Ready(r);
+        }
+        if sleep_fut.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(Error::new(
+                ErrorKind::Timeout(Phase::Connect),
+                ConnectTimedOut(d),
+            )));
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 /// Переписывает URI запроса в origin-form (`hyper`'s h1-клиент требует

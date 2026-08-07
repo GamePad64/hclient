@@ -203,8 +203,13 @@ fn oversized_event_is_fatal_but_does_not_lose_events_decoded_before_it() {
 /// "actually exercised", so this is tested independently rather than assumed
 /// to hold by resemblance (review round 2, Finding 2).
 /// `MockTransport::push_response_frames_then_error` (`mock.rs`) makes
-/// `MockBody::poll_frame` return `Err` after its data frames, which
-/// `Response::chunk()` wraps as `Error::new(ErrorKind::Body, ..)`.
+/// `MockBody::poll_frame` return `Err` after its data frames. Since
+/// vertical 2's final review (finding F2) `Response::chunk()` passes an
+/// already-classified `http_ng_core::Error` through unchanged rather than
+/// re-wrapping it as `ErrorKind::Body` — this test pushes `ErrorKind::Other`
+/// specifically and only checks `is_err()`, so it doesn't pin which kind
+/// survives; `chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_
+/// body` in `http-ng/tests/response.rs` is the test that pins that.
 #[test]
 fn body_error_is_fatal_but_does_not_lose_events_decoded_before_it() {
     let m = MockTransport::new();

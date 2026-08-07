@@ -219,9 +219,12 @@ impl MockTransport {
     /// (например, для `SseStream::next`, у которого путь `Some(Err(_))` из
     /// `Response::chunk()` иначе остался бы структурно похожим на
     /// протестированный путь превышения лимита декодера, но не проверенным
-    /// отдельно; Task 14, review round 2, Finding 2). `err` летит наружу как
-    /// есть — `Response::chunk()` оборачивает его в `Error::new(ErrorKind::Body,
-    /// ..)`, как и любую другую ошибку тела.
+    /// отдельно; Task 14, review round 2, Finding 2). `err` долетает до
+    /// `Response::chunk()` как есть: с финального ревью вертикали 2 (находка
+    /// F2) `chunk()` пропускает `err`, если он уже `http_ng_core::Error`
+    /// (`MockBody::Error` — ровно он), не переклеивая категорию в `Body` —
+    /// тот же приём, что `Transport::to_error`'s дефолт. Заворачивает в
+    /// `ErrorKind::Body` только чужой тип ошибки, которого здесь нет.
     pub fn push_response_frames_then_error(
         &self,
         resp: http::Response<Vec<&'static str>>,

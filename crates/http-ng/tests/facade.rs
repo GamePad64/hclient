@@ -171,9 +171,12 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 
     // `push_response_frames_then_error` — единственное место в публичном API
     // `http-ng`, где `Error` приходит ПАРАМЕТРОМ, а не результатом. Кадр
-    // ошибки долетает до `Response::chunk()`, который заново оборачивает его
-    // в `Error::new(ErrorKind::Body, ..)` — отсюда `ErrorKind::Body`, а не
-    // `ErrorKind::Other`, которым он был на входе.
+    // ошибки долетает до `Response::chunk()` как есть: с финального ревью
+    // вертикали 2 (находка F2) `chunk()` пропускает уже классифицированную
+    // `http_ng_core::Error` насквозь, не переклеивая её в `ErrorKind::Body`
+    // (см. `Response::classify_body_error`) — так что `kind()` здесь обязан
+    // остаться тем же `Other`, каким его завели строкой выше, а не стать
+    // `Body`.
     let m2 = http_ng::mock::MockTransport::new();
     let empty_frames: Vec<&'static str> = Vec::new();
     m2.push_response_frames_then_error(
@@ -192,7 +195,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     let mut resp2 =
         futures_executor::block_on(client2.get("https://a/").send()).expect("mock replies");
     match futures_executor::block_on(resp2.chunk()) {
-        Some(Err(e)) => assert_eq!(*e.kind(), http_ng::ErrorKind::Body),
+        Some(Err(e)) => assert_eq!(*e.kind(), http_ng::ErrorKind::Other),
         other => panic!("expected a terminal error frame, got {other:?}"),
     }
 }
