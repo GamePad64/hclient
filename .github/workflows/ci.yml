@@ -1266,12 +1266,33 @@ jobs:
           # reason = "...")]`, and the `unsafe impl<T> Send for
           # SingleThreaded<T> {}` line itself.
           #
-          # Verified in both directions, not assumed: (1) the two marked
-          # lines in `promise.rs` pass; (2) a synthetic unmarked `unsafe {
-          # }` planted in any crate's `src` still fails; (3) a marker
-          # citing a nonexistent amendment (`unsafe-code-exception:
+          # REVISED, fix round 1: the marker text alone is not enough.
+          # `send-bound-exception` legitimately appears across many files
+          # and genuinely cannot be scoped to one path — that job's own
+          # comment already says the marker is a claim enforced by review,
+          # not a forgery-proof mechanism. C7 is a different case: it has
+          # exactly ONE legitimate location in the entire project, and
+          # that location is knowable ahead of time, in the job itself.
+          # A reviewer probe confirmed the gap directly: planting the
+          # literal text `unsafe-code-exception: amendment-C7` next to an
+          # unrelated `unsafe` block in `http-ng-core/src/lib.rs` (a
+          # different crate) passed the job as written before this
+          # revision — the grep matched the marker text with no regard for
+          # which file it was in. Fixed by requiring the marker to appear
+          # on a line whose PATH is exactly
+          # `crates/http-ng-fetch/src/promise.rs`; anywhere else, the same
+          # marker text no longer excuses anything, and the line falls
+          # through to the failure branch like any unmarked `unsafe`.
+          #
+          # Verified in all four directions, not assumed: (1) the two
+          # marked lines in `promise.rs` pass; (2) a synthetic unmarked
+          # `unsafe { }` planted in any crate's `src` still fails; (3) a
+          # marker citing a nonexistent amendment (`unsafe-code-exception:
           # amendment-C9`) still fails, because the filter below matches
-          # `amendment-C7` exactly and nothing else.
+          # `amendment-C7` exactly and nothing else; (4) the exact marker
+          # text, correctly citing `amendment-C7`, planted next to an
+          # unrelated `unsafe` block in a DIFFERENT crate's `src` still
+          # fails, because the filter below also requires the file path.
           shopt -s nullglob
           dirs=(crates/*/src)
           if [ ${#dirs[@]} -eq 0 ]; then
@@ -1281,8 +1302,8 @@ jobs:
           if grep -rn "unsafe" "${dirs[@]}" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE '(deny|forbid)\(unsafe_code\)' \
-               | grep -vE 'unsafe-code-exception:[[:space:]]*amendment-C7\b'; then
-            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe unless explicitly marked and justified in spec amendment C7"
+               | grep -vE '^crates/http-ng-fetch/src/promise\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C7\b'; then
+            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker in crates/http-ng-fetch/src/promise.rs in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe unless explicitly marked and justified in spec amendment C7, in the one file that amendment names"
             exit 1
           fi
-          echo "unsafe: not found (outside the one marked, justified exception in http-ng-fetch) in any of ${#dirs[@]} directories (${dirs[*]})"
+          echo "unsafe: not found (outside the one marked, justified exception in crates/http-ng-fetch/src/promise.rs) in any of ${#dirs[@]} directories (${dirs[*]})"

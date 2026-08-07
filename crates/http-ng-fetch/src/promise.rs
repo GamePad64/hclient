@@ -4,28 +4,78 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::prelude::*;
 
-/// The same technique wasm-bindgen applies to `JsValue` itself.
+/// The underlying REASONING mirrors what wasm-bindgen does for `JsValue`
+/// itself — but not the same SCOPE, and that distinction is load-bearing
+/// for an `unsafe impl`, so it's spelled out precisely rather than
+/// gestured at.
 ///
-/// `JsValue` is an index into a table owned by the generated JS glue. As
-/// long as the module is built **without** `target_feature = "atomics"`,
-/// there's one instance, one table, no threads — and upstream itself
-/// declares `unsafe impl Send for JsValue` under the same `cfg`
-/// (`wasm-bindgen-0.2.126/src/lib.rs:173-176`). With `+atomics` each worker
-/// gets its own table, and the compiler correctly rejects us (verified:
-/// `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check
-/// -p http-ng-fetch --target wasm32-unknown-unknown
-/// -Zbuild-std=std,panic_abort --tests` fails (see spec amendment-C7 for
-/// the exact diagnostic and why `--tests` is required to see it at all —
-/// the lib target alone compiles under `+atomics` too, since nothing in it
-/// alone demands `Send`).
+/// **What's actually shipped, and verified against the real source.**
+/// `JsValue` is an index into a table owned by the generated JS glue.
+/// Without `target_feature = "atomics"` there's one instance, one table,
+/// no threads, and upstream itself declares this unconditionally, in
+/// every released version this crate depends on:
+///
+/// ```text
+/// // wasm-bindgen-0.2.126/src/lib.rs:173-176
+/// #[cfg(not(target_feature = "atomics"))]
+/// unsafe impl Send for JsValue {}
+/// #[cfg(not(target_feature = "atomics"))]
+/// unsafe impl Sync for JsValue {}
+/// ```
+///
+/// **What is NOT shipped, checked directly against upstream rather than
+/// inherited from a review comment.** No released `wasm-bindgen` gives
+/// `Closure<T>` or `JsFuture` a `Send`/`Sync` impl under any `cfg`. The
+/// only place upstream does this at all is an UNMERGED branch,
+/// `unsafe-send-sync` on `wasm-bindgen/wasm-bindgen`
+/// (commits `a7e0c944`, 2025-10-30, and `0c0a8a8e`, 2025-10-31 — fetched
+/// and read directly, not taken on faith), which adds exactly:
+///
+/// ```text
+/// #[cfg(unsafe_single_threaded_traits)]
+/// unsafe impl Send for JsValue {}      // + Sync
+/// #[cfg(unsafe_single_threaded_traits)]
+/// unsafe impl<T: ?Sized> Send for Closure<T> {}  // + Sync
+/// #[cfg(unsafe_single_threaded_traits)]
+/// unsafe impl Send for JsFuture {}     // + Sync
+/// ```
+///
+/// gated behind an explicit OPT-IN cfg, `unsafe_single_threaded_traits`
+/// (`RUSTFLAGS="--cfg unsafe_single_threaded_traits"`) — deliberately
+/// **not** automatic under `!atomics` the way the shipped `JsValue` impl
+/// is, and the branch adds its own `compile_error!` if that cfg is
+/// combined with `target_feature = "atomics"`, i.e. upstream converged on
+/// the same underlying argument this type makes (no atomics implies no
+/// threads implies one table) without ever shipping it unconditionally
+/// for `Closure`/`JsFuture` the way it does for `JsValue`.
+///
+/// **What this type actually is, stated plainly.** `SingleThreaded<T>`
+/// applies that same argument — `!atomics` implies one table, no threads —
+/// to our own pair of `Closure`s, unconditionally under
+/// `#[cfg(not(target_feature = "atomics"))]`, exactly like the shipped
+/// `JsValue` impl and unlike anything shipped for `Closure` specifically.
+/// This is a claim we are making ourselves, on the same evidence upstream
+/// already accepted for `JsValue` and an unmerged branch accepted for
+/// `Closure`/`JsFuture` too (under a stricter opt-in) — not something
+/// copied from a released, audited surface. The compiler is still the
+/// backstop: with `+atomics`, the `cfg` strips the impl and rejects
+/// `SendJsFuture: Send` on its own (verified:
+/// `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly
+/// check -p http-ng-fetch --target wasm32-unknown-unknown
+/// -Zbuild-std=std,panic_abort --tests` fails — `--tests` is required to
+/// see it at all, since the lib target alone never demands `Send`; see
+/// spec amendment-C7 for the exact diagnostic and the full argument).
 #[repr(transparent)]
 pub(crate) struct SingleThreaded<T>(pub(crate) T);
 
 /// The one exception to this project's `#![forbid(unsafe_code)]` default —
 /// see `docs/superpowers/specs/2026-08-05-http-ng-design.md` amendment C7
 /// for the full argument. Both lines the CI `no-unsafe-code` job would
-/// otherwise flag carry their own `unsafe-code-exception` marker, per-line,
-/// the same convention `no-declared-send` uses for `send-bound-exception`.
+/// otherwise flag carry their own `unsafe-code-exception` marker, per-line
+/// AND scoped to this one file — the same convention `no-declared-send`
+/// uses for `send-bound-exception`, narrowed further because, unlike that
+/// marker, this one has exactly one legitimate location in the whole
+/// project.
 #[allow(
     unsafe_code, // unsafe-code-exception: amendment-C7
     reason = "mirrors wasm_bindgen::JsValue: without wasm threads the process is single-threaded by construction"
@@ -33,10 +83,35 @@ pub(crate) struct SingleThreaded<T>(pub(crate) T);
 #[cfg(not(target_feature = "atomics"))]
 unsafe impl<T> Send for SingleThreaded<T> {} // unsafe-code-exception: amendment-C7
 
+type ClosurePair = (Closure<dyn FnMut(JsValue)>, Closure<dyn FnMut(JsValue)>);
+
 #[derive(Default)]
 pub(crate) struct State {
     result: Option<Result<JsValue, JsValue>>,
     waker: Option<Waker>,
+    /// Keeps both callbacks alive from `SendJsFuture::new` until the
+    /// promise actually settles — mirrors js-sys 0.3.103's `JsFuture`
+    /// (`futures/mod.rs:101-108` `Inner::callbacks`, `:159-211`
+    /// `finish`/`From<Promise<T>>`), and for the identical reason: a
+    /// `Closure` dropped BEFORE the promise it's registered on settles
+    /// throws when JS later invokes it (`ScopedClosure::drop` invalidates
+    /// the JS-side function first), and since `SendJsFuture::new` discards
+    /// the promise `.then2()` returns, nothing here would observe that as
+    /// anything but a silent, unhandled rejection in the browser console.
+    ///
+    /// Storing the callbacks here, alongside `result`/`waker`, behind the
+    /// same `Arc`, and having whichever callback fires explicitly drop
+    /// BOTH (`SendJsFuture::new`'s `finish`, below) makes "the callback
+    /// that's about to run is still alive when it runs, and is dropped
+    /// only after" true unconditionally — including when `SendJsFuture`
+    /// itself was already dropped, since each callback holds its own
+    /// clone of the `Arc` and therefore keeps this `State` (and hence
+    /// itself) alive independently of the future handle. Dropping the
+    /// SIBLING callback (the one that will now never fire) from the same
+    /// call is sound because a JS `Promise` invokes at most one of
+    /// resolve/reject, ever — the same guarantee upstream's own comment
+    /// on `From<Promise<T>>` relies on for the identical trick.
+    callbacks: Option<SingleThreaded<ClosurePair>>,
 }
 
 /// A `Send`-compatible replacement for `wasm_bindgen_futures::JsFuture`.
@@ -61,14 +136,18 @@ pub(crate) struct State {
 /// `#[doc(hidden)]`.
 pub struct SendJsFuture {
     state: Arc<Mutex<State>>,
-    _keepalive: SingleThreaded<ClosurePair>,
+    /// `Future::poll` must never be called again after it has returned
+    /// `Ready` (the trait's own contract). Before this flag existed,
+    /// polling again silently returned `Pending` forever — `result` had
+    /// already been `take()`n by the first `Ready` and nothing ever
+    /// refills it — exactly the "quiet hang, no test name, no message"
+    /// failure mode this project has spent two verticals removing (most
+    /// recently the F1 watchdog rewrite in vertical 2). This flag turns
+    /// that into an immediate, loud panic naming the type instead.
+    completed: bool,
 }
 
-/// Factored out per `clippy::type_complexity` (checks are fixed, not
-/// silenced — a named alias, not an `#[allow]`).
-type ClosurePair = (Closure<dyn FnMut(JsValue)>, Closure<dyn FnMut(JsValue)>);
-
-// The closures inside `_keepalive` don't implement `Debug` (verified:
+// The closures inside `State::callbacks` don't implement `Debug` (verified:
 // `wasm_bindgen::closure::Closure<T>` has no `Debug` impl), so this can't
 // be derived — same reason `NativeBody` (`http-ng-native/src/h1.rs`) writes
 // its `Debug` by hand rather than deriving it.
@@ -81,40 +160,68 @@ impl std::fmt::Debug for SendJsFuture {
             .unwrap_or(false);
         f.debug_struct("SendJsFuture")
             .field("ready", &ready)
+            .field("completed", &self.completed)
             .finish()
     }
 }
 
 impl SendJsFuture {
     pub(crate) fn new(promise: js_sys::Promise) -> Self {
-        let state = Arc::new(Mutex::new(State::default()));
+        let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
+
+        // Runs inside whichever of `on_ok`/`on_err` actually fires. Drops
+        // BOTH callbacks from within the one that's executing: by this
+        // point the JS-side glue has already extracted this Rust closure's
+        // body to run it, so freeing the `Closure`'s own bookkeeping here
+        // is the same trick js-sys 0.3.103's `JsFuture::from` uses in its
+        // own `finish` (`futures/mod.rs:165-188`), verified against that
+        // source directly.
+        fn finish(state: &Mutex<State>, result: Result<JsValue, JsValue>) {
+            let waker = {
+                let mut s = state.lock().expect("promise state poisoned");
+                s.callbacks = None;
+                s.result = Some(result);
+                s.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+
         let make = |ok: bool| {
             let state = state.clone();
-            Closure::wrap(Box::new(move |v: JsValue| {
-                let mut s = state.lock().expect("promise state poisoned");
-                s.result = Some(if ok { Ok(v) } else { Err(v) });
-                if let Some(w) = s.waker.take() {
-                    w.wake();
-                }
-            }) as Box<dyn FnMut(JsValue)>)
+            Closure::once(move |v: JsValue| {
+                finish(&state, if ok { Ok(v) } else { Err(v) });
+            })
         };
         let (on_ok, on_err) = (make(true), make(false));
         let _ = promise.then2(&on_ok, &on_err);
+        state.lock().expect("promise state poisoned").callbacks =
+            Some(SingleThreaded((on_ok, on_err)));
+
         Self {
             state,
-            _keepalive: SingleThreaded((on_ok, on_err)),
+            completed: false,
         }
     }
 
-    /// A weak handle to the shared state, for `tests/promise.rs` to prove
-    /// that dropping `SendJsFuture` while its promise is still pending does
-    /// NOT drop the callbacks registered against it: if `Weak::upgrade`
-    /// still succeeds after the future itself is gone, only the callbacks'
-    /// own clones of the `Arc` can be keeping it alive.
+    /// Exists solely for `tests/promise.rs` (fix round 1, finding 2), to
+    /// prove — deterministically, with no dependence on real `Promise` or
+    /// browser-event timing — that dropping `SendJsFuture` while its
+    /// promise is still pending does NOT drop the callbacks still
+    /// registered against it. A weak handle to the same shared state,
+    /// checked for survival strictly AFTER the `SendJsFuture` itself
+    /// (this handle's only other owner from the test's point of view) has
+    /// been dropped: if `Weak::upgrade` still succeeds at that point, only
+    /// the callbacks' own clones of the `Arc` can be keeping it alive,
+    /// which is exactly the property being fixed for.
     ///
-    /// Not `#[cfg(test)]`: `tests/promise.rs` is an integration test, a
-    /// separate crate linking the ordinary build of this library, so
-    /// `cfg(test)` would remove it for exactly the caller that needs it.
+    /// Not `#[cfg(test)]`: `tests/promise.rs` is a separate, external
+    /// crate (an integration test), which links against the ordinary,
+    /// non-`cfg(test)` build of this library — `cfg(test)` here would
+    /// vanish for exactly the target that needs to call it. Reachable
+    /// only through `testing::downgrade_state`, same as `SendJsFuture`
+    /// itself.
     pub(crate) fn downgrade_state(&self) -> std::sync::Weak<Mutex<State>> {
         Arc::downgrade(&self.state)
     }
@@ -124,9 +231,18 @@ impl Future for SendJsFuture {
     type Output = Result<JsValue, JsValue>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut s = self.state.lock().expect("promise state poisoned");
+        let this = self.get_mut();
+        assert!(
+            !this.completed,
+            "SendJsFuture polled again after already returning Poll::Ready — \
+             violates the Future contract"
+        );
+        let mut s = this.state.lock().expect("promise state poisoned");
         match s.result.take() {
-            Some(r) => Poll::Ready(r),
+            Some(r) => {
+                this.completed = true;
+                Poll::Ready(r)
+            }
             None => {
                 s.waker = Some(cx.waker().clone());
                 Poll::Pending

@@ -1442,9 +1442,15 @@ pub(crate) struct SingleThreaded<T>(pub(crate) T);
 unsafe impl<T> Send for SingleThreaded<T> {}
 ```
 
-**Why this mirrors wasm-bindgen's own reasoning, not a new risk.**
-`wasm-bindgen` itself declares, for the exact same reason and under the
-exact same `cfg`:
+**Why this mirrors wasm-bindgen's own REASONING — not its shipped SCOPE, and
+that distinction had to be corrected once (fix round 1, finding 1).** The
+first draft of this amendment said the technique "mirrors what wasm-bindgen
+applies to `JsValue` itself," true of the underlying argument but stated in
+a way that implied more precedent than actually exists. Checked precisely,
+not restated from memory:
+
+*What IS shipped, unconditionally, in every released version this crate
+depends on:*
 
 ```rust
 // wasm-bindgen-0.2.126/src/lib.rs:173-176
@@ -1453,6 +1459,32 @@ unsafe impl Send for JsValue {}
 #[cfg(not(target_feature = "atomics"))]
 unsafe impl Sync for JsValue {}
 ```
+
+*What is NOT shipped anywhere:* no released `wasm-bindgen` gives
+`Closure<T>` or `JsFuture` a `Send`/`Sync` impl under any `cfg`. The only
+place upstream does this at all is an UNMERGED branch,
+`unsafe-send-sync` on `wasm-bindgen/wasm-bindgen` (commits `a7e0c944`,
+2025-10-30, and `0c0a8a8e`, 2025-10-31 — fetched from the real repository
+and read directly for this correction, not taken on the review's word),
+which adds exactly:
+
+```rust
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl Send for JsValue {}                  // + Sync
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl<T: ?Sized> Send for Closure<T> {}     // + Sync
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl Send for JsFuture {}                  // + Sync
+```
+
+gated behind an explicit OPT-IN cfg, `unsafe_single_threaded_traits`
+(`RUSTFLAGS="--cfg unsafe_single_threaded_traits"`) — deliberately **not**
+automatic under `!atomics` the way the shipped `JsValue` impl is, and the
+branch adds its own `compile_error!` if that cfg is combined with
+`target_feature = "atomics"`. Upstream converged on the same underlying
+argument this amendment makes (no atomics implies no threads implies one
+table) without ever shipping it unconditionally for `Closure`/`JsFuture`
+the way it does for `JsValue`.
 
 Without `target_feature = "atomics"` (wasm threads), a wasm module has one
 linear memory, one instance, and no threads by construction — there is
@@ -1463,10 +1495,13 @@ patterns) is deliberately overridden on that basis. `SingleThreaded<T>`
 makes the identical argument about the two `Closure` values it wraps: they
 are `!Send` only because their internals route through the same kind of
 non-atomic JS-table index, and only a single-instance, single-thread module
-ever touches that index. `#[cfg(not(target_feature = "atomics"))]` on the
-`unsafe impl` is what makes the claim true rather than assumed — with
-`+atomics`, the `cfg` strips the impl and the compiler is left to enforce
-`!Send` on its own.
+ever touches that index — but this is a claim `http-ng-fetch` is making
+itself, on the same evidence upstream already accepted for `JsValue` and an
+unmerged branch accepted for `Closure`/`JsFuture` too (under a stricter,
+explicit opt-in), not something copied from a released, audited surface.
+`#[cfg(not(target_feature = "atomics"))]` on the `unsafe impl` is what
+makes the claim true rather than assumed — with `+atomics`, the `cfg`
+strips the impl and the compiler is left to enforce `!Send` on its own.
 
 **Verified, not asserted, in both directions.** `cargo check -p
 http-ng-fetch --target wasm32-unknown-unknown --tests` passes without
@@ -1559,3 +1594,78 @@ refactor from older releases (`wasm-bindgen-futures` 0.4.42 still defines
 brief's crate attribution. The one-line-off part was the line number: `118`
 is `pub struct JsFuture<T = JsValue> {`, and the `Rc<RefCell<Inner<T>>>`
 field itself is `119`.
+
+**Fix round 1, finding 2: the callbacks used to live in the wrong place,
+and the fix is the same one upstream already uses.** The first version of
+`SendJsFuture` held its two `Closure`s as a field sibling to `state`, both
+dropped together as soon as the future itself was. That's unsound in
+exactly the way `js_sys::futures::JsFuture::from`'s own comment warns
+about (`futures/mod.rs:149-158`): "we'd have no way of cancelling the
+callbacks getting invoked... one of the callbacks is likely always going to
+be invoked... they have to be self-contained." A `Closure` dropped BEFORE
+the promise it's registered on settles throws when JS later invokes it
+(`ScopedClosure::drop` invalidates the JS-side function first), and since
+`SendJsFuture::new` discards the promise `.then2()` returns, nothing
+observed that throw directly — it surfaced only as a browser-level
+unhandled promise rejection whenever an already-pending, already-abandoned
+promise finally settled.
+
+The fix mirrors js-sys's own `Inner::callbacks` / `finish` (`futures/mod.rs
+:101-108`, `:159-211`) exactly: the callbacks now live INSIDE `State`
+(behind the same `Arc<Mutex<..>>` `SendJsFuture.state` also holds), and
+each callback's own captured clone of that `Arc` keeps `State` — and hence
+itself — alive independently of the outer future handle. Whichever callback
+actually fires drops BOTH (`state.callbacks = None`) from within its own
+invocation, which is sound only because a JS `Promise` invokes at most one
+of resolve/reject, ever, so the sibling callback is guaranteed to never
+fire once its partner already has.
+
+A first regression test tried to observe this via a real global
+`unhandledrejection` listener. Abandoned after a demonstrated false
+negative AND false positive in the same run: `wasm-bindgen-test`'s browser
+runner executes every test in one shared page/JS realm back to back, and a
+deliberately-unhandled rejection created to sanity-check the listener
+wasn't observed within its OWN test's window, then bled into a LATER
+test's window and was misattributed there — real timing, but not
+deterministic enough to trust. The test that shipped instead
+(`tests/promise.rs::dropping_a_pending_future_does_not_drop_its_still_needed_callbacks`)
+checks the retention mechanism directly: a `Weak` handle to the same `Arc`
+(`SendJsFuture::downgrade_state`, exposed via `testing` for exactly this),
+checked with `Weak::upgrade` strictly AFTER the future itself is dropped —
+deterministic, synchronous, no promise scheduling or browser events
+involved. Mutation-checked by reverting to the sibling-field design: the
+test goes red.
+
+**Fix round 1, finding 3: the future wasn't fused, and that's a silent
+hang — the exact failure mode this project has spent two verticals
+removing.** Polling `SendJsFuture` again after it had already returned
+`Poll::Ready` used to silently return `Poll::Pending` forever: `result` had
+already been `take()`n by the first `Ready` and nothing ever refilled it.
+Out of `Future`'s own contract (a `Future` must not be polled again after
+completion), and exactly the "no test name, no message" class of defect
+most recently fixed by rewriting the F1 connect-timeout watchdog in
+vertical 2. Fixed with a `completed: bool` flag, checked at the top of
+`poll` and asserted false, turning the silent hang into an immediate, loud
+panic naming the type. Mutation-checked by removing the guard: the
+regression test
+(`tests/promise.rs::polling_after_ready_panics_loudly_instead_of_hanging_silently`,
+`#[should_panic]`) doesn't cleanly fail "didn't panic" — it HANGS and times
+out, which is itself the demonstration of why the guard matters.
+
+**Fix round 1, finding 4: the `unsafe-code-exception` marker had to be
+scoped to its one legitimate file.** As first shipped, the `no-unsafe-code`
+job's marker filter matched the text `unsafe-code-exception:
+amendment-C7` anywhere in `crates/*/src`, with no check on which file. A
+reviewer probe confirmed the gap directly: planting that exact marker text
+next to an unrelated `unsafe` block in `http-ng-core/src/lib.rs` passed the
+job. `send-bound-exception` can't be fixed the same way — it legitimately
+appears across many files, by design (see its own preamble at the top of
+this section) — but C7 has exactly one legitimate location in the whole
+project, and that location is knowable ahead of time. The job's filter now
+also requires the marker's line to have the path
+`crates/http-ng-fetch/src/promise.rs`; the same marker text anywhere else
+no longer excuses anything. Verified in all four directions: the two real
+marked lines pass; an unmarked `unsafe` anywhere still fails; a marker
+citing a nonexistent amendment still fails; the correct marker, planted in
+a different crate's `src`, now ALSO fails (the missing direction before
+this fix).
