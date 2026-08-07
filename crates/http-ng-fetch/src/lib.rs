@@ -14,6 +14,7 @@ mod body;
 mod caps;
 mod convert;
 mod promise;
+mod timer;
 
 // Task 4 adds `body` — the RESPONSE body bridge over `ReadableStream`
 // (`web_sys::Response::body()` in, a `http_body::Body` out). It is the
@@ -62,6 +63,7 @@ mod promise;
 
 pub use body::Body;
 pub use caps::FORBIDDEN_HEADERS;
+pub use timer::BrowserClock;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};
