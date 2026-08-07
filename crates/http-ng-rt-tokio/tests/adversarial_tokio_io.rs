@@ -33,8 +33,40 @@ use hyper::rt::Read as HyperRead;
 use std::io::Write as _;
 use std::pin::Pin;
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 
 const SCRATCH: usize = 8 * 1024; // must match the private const in io.rs
+
+/// Fix round 3 (координатор): every direct wait on `poll_read` in this file
+/// goes through this helper instead of a bare `.await` on `poll_fn(...)`, so
+/// a regression that makes `poll_read` never resolve (return `Pending`
+/// forever) reports `FAILED` with a named test and a clear message, instead
+/// of hanging the test binary - and, in CI, the whole job - with nothing to
+/// investigate. Found the hard way: mutating `poll_read` to drop the last
+/// byte of every read made `adopted_stream_reads_correctly_too` (via
+/// `read_exactly` below) wait forever instead of failing, because its
+/// read-until-length loop had no bound on wall-clock time, only on bytes
+/// read.
+///
+/// Deliberately generous - it must never fire against correct code. Every
+/// read in this file is over loopback and completes in well under a
+/// millisecond normally; ten seconds is orders of magnitude more slack than
+/// that, while still failing inside a single test run rather than eating a
+/// CI job's entire time budget.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn read_ready<F: std::future::Future<Output = std::io::Result<()>>>(
+    fut: F,
+) -> std::io::Result<()> {
+    tokio::time::timeout(READ_TIMEOUT, fut)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "poll_read did not resolve within {READ_TIMEOUT:?} - treating a stalled read as a \
+             regression (FAILED), not letting it hang the job with no diagnosis"
+            )
+        })
+}
 
 struct RecordingWaker(std::sync::Mutex<bool>);
 impl Wake for RecordingWaker {
@@ -99,9 +131,11 @@ async fn pending_before_data_is_not_confused_with_eof_or_data() {
     server.write_all(b"after pending").unwrap();
     let mut store2 = [0u8; 64];
     let mut rb2 = hyper::rt::ReadBuf::new(&mut store2);
-    std::future::poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb2.unfilled()))
-        .await
-        .unwrap();
+    read_ready(std::future::poll_fn(|cx| {
+        Pin::new(&mut client).poll_read(cx, rb2.unfilled())
+    }))
+    .await
+    .unwrap();
     if rb2.filled().is_empty() {
         // Ready(Ok(())) with nothing filled before data has arrived would
         // be a false EOF - fail loudly rather than looping forever.
@@ -132,9 +166,11 @@ async fn one_byte_at_a_time_preserves_order_no_drop_no_duplicate() {
     let mut store = [0u8; 32];
     while out.len() < 256 {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        std::future::poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb.unfilled()))
-            .await
-            .unwrap();
+        read_ready(std::future::poll_fn(|cx| {
+            Pin::new(&mut client).poll_read(cx, rb.unfilled())
+        }))
+        .await
+        .unwrap();
         assert!(
             !rb.filled().is_empty(),
             "unexpected EOF before all 256 bytes arrived"
@@ -173,8 +209,10 @@ async fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_e
     let mut store = [0u8; 4];
     loop {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        let res =
-            std::future::poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb.unfilled())).await;
+        let res = read_ready(std::future::poll_fn(|cx| {
+            Pin::new(&mut client).poll_read(cx, rb.unfilled())
+        }))
+        .await;
         match res {
             Ok(()) if !rb.filled().is_empty() => out.extend_from_slice(rb.filled()),
             Ok(()) => panic!(
@@ -213,9 +251,11 @@ async fn read_exactly(client: &mut TokioIo, dest_len: usize, expected_len: usize
     let mut store = vec![0u8; dest_len];
     while out.len() < expected_len {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        std::future::poll_fn(|cx| Pin::new(&mut *client).poll_read(cx, rb.unfilled()))
-            .await
-            .unwrap();
+        read_ready(std::future::poll_fn(|cx| {
+            Pin::new(&mut *client).poll_read(cx, rb.unfilled())
+        }))
+        .await
+        .unwrap();
         if rb.filled().is_empty() {
             break;
         }
