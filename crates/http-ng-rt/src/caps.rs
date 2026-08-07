@@ -68,10 +68,18 @@ mod tests {
 
     #[test]
     fn tcp_opts_default_is_conservative() {
+        // Все ШЕСТЬ полей, не четыре: ручной `Default`, выставляющий
+        // `send_buffer_size`/`recv_buffer_size` в `Some(1 << 20)`, проходил
+        // бы этот тест незамеченным, пока проверялись только остальные
+        // четыре (carried finding, review Task 1). Сегодня `#[derive(Default)]`
+        // даёт `None` по построению, но имя теста обещает весь struct — тест
+        // должен проверять весь struct.
         let o = TcpOpts::default();
         assert!(!o.nodelay, "nodelay включает пользователь, не мы");
         assert!(o.keepalive.is_none());
         assert!(o.local_address.is_none());
+        assert!(o.send_buffer_size.is_none());
+        assert!(o.recv_buffer_size.is_none());
         assert!(!o.reuse_address);
     }
 
