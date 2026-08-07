@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 /// безопасный `ReadBufCursor::put_slice` — именно этот приём рекомендует
 /// документация `hyper::rt::Read`. Цена — одно копирование на чтение;
 /// zero-copy потребовал бы `unsafe` (`ReadBufCursor::as_mut`/`advance`), а
-/// крейт объявляет `#![deny(unsafe_code)]` — отложено намеренно.
+/// крейт объявляет `#![forbid(unsafe_code)]` — отложено намеренно.
 pub struct FuturesIo<S> {
     inner: S,
     /// Буфер выделяется и обнуляется ОДИН раз, в [`FuturesIo::new`] — не на

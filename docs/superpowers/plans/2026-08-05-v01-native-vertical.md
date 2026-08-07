@@ -54,13 +54,22 @@ per-runtime TLS-склейки не существует вообще. HTTP/1-с
 - **`http-ng-core` и `http-ng` по-прежнему не содержат ни одного объявленного
   бонда `Send`/`Sync`.** Все требования `Send` заперты в `http-ng-native`,
   `http-ng-tls-*`, `http-ng-dns-hickory` и приходят от чужого кода.
-- **`http-ng-rt` не тянет ни один рантайм.** Только `hyper` (ради `rt`-трейтов)
-  и `futures-io`. Реализации — в `-rt-tokio` / `-rt-smol`.
+- **`http-ng-rt` сам не выбирает рантайм и не содержит рантайм-специфичного
+  кода.** Прямые зависимости — только `hyper` (ради `rt`-трейтов) и
+  `futures-io`; реализации живут в `-rt-tokio` / `-rt-smol`. Это про прямые
+  зависимости, НЕ про граф целиком: `hyper` 1.11.0 сам тянет `tokio`
+  (`features = ["sync"]`) безусловно, без `optional = true` — воспроизведено
+  сборкой: `cargo clean -p tokio && cargo build -p http-ng-rt` печатает
+  `Compiling tokio v1.53.1`. README вертикали 1 уже честно документирует
+  фичу `sync`; противоречия нет, только прежняя формулировка читалась как
+  утверждение о графе целиком (найдено ревью Task 2, round 1).
 - **Ни один тип hyper, rustls или socket2 не появляется в публичном API**
   `http-ng-native`. `hyper::upgrade::Upgraded` — под особым запретом.
-- **`unsafe` запрещён везде** (`#![deny(unsafe_code)]`). Шим futures-io →
-  hyper::rt пишется через безопасный `ReadBufCursor::put_slice`, как советует
-  документация самого hyper.
+- **`unsafe` запрещён везде** (`#![forbid(unsafe_code)]`, не `deny` — `deny`
+  переопределим локальным `#[allow(unsafe_code)]` изнутри крейта, `forbid`
+  нет; см. Task 2 fix round 1). Шим futures-io → hyper::rt пишется через
+  безопасный `ReadBufCursor::put_slice`, как советует документация самого
+  hyper.
 - **Бэкенд, чей `Transport::Error` — СВОЙ тип, несущий категорию внутри,
   обязан переопределить `Transport::to_error`.** Дефолт узнаёт только
   `http_ng_core::Error` (её он пропускает насквозь — то есть `Native` с
