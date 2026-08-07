@@ -1410,3 +1410,152 @@ reuse one token for both — a past mistake in Task 13's review (citing
 `amendment-C3` for this very rule) was found and fixed precisely because
 Task 13's implementer checked the citation against the spec text before
 writing it into the code, rather than inheriting it as-is.
+
+### C7. `http-ng-fetch` carries the project's one `unsafe impl`, and `deny` — not `forbid` — is correct there
+
+Not about the `Send`/`Sync` invariant either (that class is still closed by
+C1–C5, and this amendment's token is never cited as a `send-bound-exception`
+marker — see below). About the separate, narrower invariant "no crate writes
+`unsafe` code," which vertical 2 enforces at two layers: `#![forbid(unsafe_code)]`
+in every crate's `src/lib.rs`, and the `no-unsafe-code` CI job as a backstop
+for the case where that line itself goes missing (see the job's own comment
+in `.github/workflows/ci.yml`, "REVISED in Task 6, fix round 1").
+
+**Exactly one exception exists, and it is load-bearing, not incidental.**
+`wasm_bindgen_futures::JsFuture` (as resolved into this workspace: a
+re-export of `js_sys::futures::JsFuture`) holds an `Rc<RefCell<..>>`
+internally and is therefore `!Send` — an implementation choice, not a
+platform property, since `JsValue`, `js_sys::Promise` and the `web_sys`
+types used here are all `Send` on the default target. Without a `Send`
+replacement, `Client::execute`'s future would be `!Send` in the browser and
+C1's whole argument (`Client -> Transport` stays spawnable) would not hold
+there. `http-ng-fetch/src/promise.rs` supplies that replacement:
+`SendJsFuture`, built on a `js_sys::Promise` callback pair plus a hand-rolled
+waker, wrapping its two `wasm_bindgen::Closure` values in
+
+```rust
+#[repr(transparent)]
+pub(crate) struct SingleThreaded<T>(pub(crate) T);
+
+#[allow(unsafe_code, reason = "…")]
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl<T> Send for SingleThreaded<T> {}
+```
+
+**Why this mirrors wasm-bindgen's own reasoning, not a new risk.**
+`wasm-bindgen` itself declares, for the exact same reason and under the
+exact same `cfg`:
+
+```rust
+// wasm-bindgen-0.2.126/src/lib.rs:173-176
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Send for JsValue {}
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Sync for JsValue {}
+```
+
+Without `target_feature = "atomics"` (wasm threads), a wasm module has one
+linear memory, one instance, and no threads by construction — there is
+nothing for a `Send` bound to protect against, and `JsValue`'s own
+`PhantomData<*mut u8>` marker (there purely to opt the type out of the
+auto-trait, not because it holds a real pointer with thread-unsafe access
+patterns) is deliberately overridden on that basis. `SingleThreaded<T>`
+makes the identical argument about the two `Closure` values it wraps: they
+are `!Send` only because their internals route through the same kind of
+non-atomic JS-table index, and only a single-instance, single-thread module
+ever touches that index. `#[cfg(not(target_feature = "atomics"))]` on the
+`unsafe impl` is what makes the claim true rather than assumed — with
+`+atomics`, the `cfg` strips the impl and the compiler is left to enforce
+`!Send` on its own.
+
+**Verified, not asserted, in both directions.** `cargo check -p
+http-ng-fetch --target wasm32-unknown-unknown --tests` passes without
+`target_feature = "atomics"`. With it:
+
+```
+RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check \
+  -p http-ng-fetch --target wasm32-unknown-unknown --tests \
+  -Zbuild-std=std,panic_abort
+```
+
+fails with `` `(dyn FnMut(JsValue) + 'static)` cannot be sent between
+threads safely `` (this wasm-bindgen version routes a closure's `!Send`ness
+through `Box<dyn FnMut>` inside `ScopedClosure`, not through a bare `*mut
+u8`, so the exact type named in the diagnostic differs from older
+wasm-bindgen releases — the conclusion, "the compiler rejects it," is what
+carries the weight, not the literal wording of the error).
+
+**`--tests` is not optional in that command, and its absence is a
+false-negative trap.** `cargo check -p http-ng-fetch --target
+wasm32-unknown-unknown` (lib target only, no `--tests`) succeeds under
+`+atomics` too — nothing in the library itself demands `SendJsFuture:
+Send`; only `tests/promise.rs`'s `assert_send::<..SendJsFutureAlias>()`
+does. A verification command that drops `--tests` looks like it re-confirms
+the safety argument and actually confirms nothing at all. Anyone extending
+this check (a future MSRV bump, a CI job, a new spike) must run it with
+`--tests` or the check is theater.
+
+**Why `deny`, not `forbid`, is correct here — and only here.** Every other
+crate in the workspace inherits `[lints] workspace = true`, which sets
+`unsafe_code = "forbid"`; `forbid` cannot be relaxed by a local `#[allow]`
+from inside the crate (`E0453`), which is exactly the point of using it
+everywhere the crate has no legitimate `unsafe`. `http-ng-fetch` is the one
+crate that does, so it opts out of `[lints] workspace = true` entirely and
+declares its own `[lints.rust]` with `unsafe_code = "deny"` — restating
+`missing_debug_implementations = "warn"` and `unexpected_cfgs = { level =
+"warn", check-cfg = [] }` explicitly in the same table, since opting out of
+the workspace table drops those two along with `unsafe_code` and losing them
+silently would be exactly the kind of drift this project spends review
+effort on elsewhere (see the `no-unsafe-code` job's own "HISTORY" comment on
+list-based coverage rotting). Verified by probe: the same crate keeping
+`[lints] workspace = true` plus a local `#[allow(unsafe_code)]` next to the
+`unsafe impl` fails with two `E0453`s and does not build at all; dropping
+the inherited table and declaring `#![deny(unsafe_code)]` in `src/lib.rs`
+instead (the crate-level doc comment on `SendJsFuture`'s module explains
+this) lets the scoped `#[allow]` do its job. `forbid` remains correct in
+every other crate — this crate is the sole, deliberate exception, and the
+exception is why C1's "one table, no threads" premise needed restating
+rather than silently assumed.
+
+**A separate marker from `send-bound-exception`, on the same mechanical
+principle.** `no-declared-send` accepts `send-bound-exception:
+amendment-CN` for `C1`, `C2`, `C3`, `C5` or `C6` — that's the Send/Sync
+invariant. `no-unsafe-code` is a different job over a different invariant
+("no crate writes `unsafe`"), so it gets its own token,
+`unsafe-code-exception: amendment-C7`, rather than overloading
+`send-bound-exception` for an unrelated check. Per-line, not per-file, for
+the same reason C5 gives: the job's grep would otherwise treat the whole
+file as exempt, hiding any *unrelated* `unsafe` block added to
+`promise.rs` later. Both lines the job would flag —
+`#[allow(unsafe_code, ...)]`'s `unsafe_code,` and the `unsafe impl` line
+itself — carry the marker; `#[cfg(...)]` and the doc comments around them
+don't contain the literal text `unsafe` in a way the job's comment filter
+doesn't already drop. The job accepts `amendment-C7` and nothing else: a
+marker citing any other token (a typo, a made-up amendment, or a real but
+unrelated one like `C1`) is left unmatched and still fails the check —
+verified by both a positive probe (the real marked lines pass) and two
+negative ones (an unmarked `unsafe` anywhere in any crate still fails; a
+marker citing a nonexistent amendment, e.g. `amendment-C9`, still fails).
+
+**Two corrections to the task brief that this crate's implementer is
+recorded as having found, not inherited.** First, `pub(crate) struct
+SendJsFuture` (as literally specified) cannot be re-exported through
+`#[doc(hidden)] pub mod testing { pub use crate::promise::SendJsFuture as
+SendJsFutureAlias; }` — `tests/promise.rs` is compiled as a separate,
+external crate, and `E0365` (private type re-exported from a public module)
+follows immediately. The type is `pub` instead, with the `promise` module
+itself staying private (`mod promise;`, not `pub mod promise;`) — the type
+has no path to it from outside the crate except through the `testing`
+re-export, so it is still not part of the crate's advertised API despite
+the `pub` keyword. Second, the brief's citation for `JsFuture`'s
+`Rc<RefCell<..>>` — `js-sys-0.3.103/src/futures/mod.rs:118` — names the
+right crate: as of the versions this workspace actually resolves
+(`wasm-bindgen-futures` 0.4.76, `js-sys` 0.3.103, confirmed via `cargo
+tree -p http-ng-fetch -e normal` and by reading both crates' vendored
+sources), `wasm-bindgen-futures` is a thin re-export shim over
+`js_sys::futures`, and `JsFuture` is defined in `js-sys` itself — a
+refactor from older releases (`wasm-bindgen-futures` 0.4.42 still defines
+`JsFuture` directly, at its own `src/lib.rs:101-102`), not a mistake in the
+brief's crate attribution. The one-line-off part was the line number: `118`
+is `pub struct JsFuture<T = JsValue> {`, and the `Rc<RefCell<Inner<T>>>`
+field itself is `119`.

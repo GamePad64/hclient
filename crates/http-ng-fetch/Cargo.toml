@@ -1,0 +1,52 @@
+[package]
+name = "http-ng-fetch"
+version = "0.1.0"
+description = "http-ng transport over the browser fetch API"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# This task (Task 1) implements only the `Send`-compatible promise adapter
+# (`src/promise.rs`), which uses `js-sys` and `wasm-bindgen` and nothing
+# else. `bytes`, `futures-core`, `http`, `http-body`, `http-ng-core`,
+# `web-sys` and `wasm-streams` belong to later tasks in this vertical
+# (`body`, `caps`, `convert` — see `src/lib.rs`) and are deliberately left
+# out here rather than added unused ahead of need.
+#
+# Found while wiring the crate into the `msrv` CI job, not assumed:
+# `wasm-streams` 0.6.0 requires rustc 1.88 (`cargo +1.85.0 check --target
+# wasm32-unknown-unknown` on a Cargo.toml carrying it fails with "rustc
+# 1.85.0 is not supported by wasm-streams@0.6.0, requires 1.88" before a
+# single line of this crate's own code is even checked) — a real conflict
+# with the workspace's `rust-version = "1.85"` promise. Since this task's
+# code never uses it, the conflict doesn't block Task 1, but whichever
+# later task actually introduces `wasm-streams` (for `body`'s
+# `ReadableStream` bridge) must resolve it explicitly: pin an older,
+# 1.85-compatible `wasm-streams` release, or give this crate its own
+# higher `rust-version` the way `http-ng-wasi` already does for its
+# `wasip3` requirement (documented there, in its own `Cargo.toml`) — not
+# silently inherit a broken promise.
+[dependencies]
+js-sys       = "0.3"
+wasm-bindgen = "0.2.126"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =
+# "forbid"`, and `forbid` cannot be relaxed from inside a crate (`E0453`,
+# verified: `[lints] workspace = true` + a local `#[allow(unsafe_code)]`
+# fails to compile with two E0453s). This crate carries the project's one
+# `unsafe impl` (see `src/promise.rs`), which needs `deny` — overridable by
+# a scoped `#[allow]` right next to the block — not `forbid`. Every other
+# crate keeps `forbid`; see `docs/superpowers/specs/2026-08-05-http-ng-design.md`
+# amendment C7.
+#
+# Opting out of the workspace table also drops `missing_debug_implementations`
+# and `unexpected_cfgs`, which every other crate gets from it — restated
+# below rather than lost silently.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }

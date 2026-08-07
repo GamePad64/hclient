@@ -194,6 +194,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          # `http-ng-fetch` (Task 1 of vertical 3) is wasm-only — see below
+          # for why it needs its own `cargo check` call, on its own target,
+          # rather than joining `$pkgs`.
+          targets: wasm32-unknown-unknown
       - shell: bash
         run: |
           set -euo pipefail
@@ -263,6 +268,34 @@ jobs:
           # The `$pkgs` list is twelve crates, and `--all-targets` does not
           # expand it.
           cargo check $pkgs --all-features --all-targets
+
+          # `http-ng-fetch` (Task 1 of vertical 3) does NOT join `$pkgs`
+          # above: everything else in that list is a native crate, checked
+          # on the job's default host target
+          # (`x86_64-unknown-linux-gnu`), and `http-ng-fetch` has no
+          # meaningful native build at all — it's `web-sys`/`wasm-bindgen`
+          # over the browser `fetch` API. Folding it into `$pkgs` would
+          # either silently host-check it (which type-checks — `wasm-
+          # bindgen`'s externs stay inert off wasm32 rather than failing —
+          # but never touches any `#[cfg(target_arch = "wasm32")]` branch,
+          # so it isn't a faithful MSRV check of the code that actually
+          # ships) or, if `--target wasm32-unknown-unknown` were added to
+          # the shared `cargo check` line instead, break every native
+          # crate in `$pkgs` that depends on `tokio`/`std::net` and cannot
+          # build for wasm32 at all. So it gets its own call, on its own
+          # target, verified to actually need it: `cargo +1.85.0 check -p
+          # http-ng-fetch --all-features --all-targets --target
+          # wasm32-unknown-unknown` was run by hand against this crate
+          # before writing this job and passes — but only once `Cargo.toml`
+          # dropped `wasm-streams` (currently unused by this task's code;
+          # 0.6.0 requires rustc 1.88 and would have failed the workspace's
+          # 1.85 promise for a dependency nothing in Task 1 even calls —
+          # see the crate's own `Cargo.toml` comment). A later task that
+          # (re)introduces `wasm-streams` must re-verify this line still
+          # passes at 1.85 or resolve the conflict explicitly.
+          if [ -d "crates/http-ng-fetch" ]; then
+            cargo check -p http-ng-fetch --all-features --all-targets --target wasm32-unknown-unknown
+          fi
 
   # Task 14: end-to-end acceptance of the vertical — the same generic code
   # (`fetch_once` in `two_runtimes.rs`) really runs over the network on
@@ -1090,22 +1123,35 @@ jobs:
           # REVISED in Task 6, fix round 1 (see below, after the history).
           #
           # The FIRST and primary line of defense is not this job but the
-          # compiler itself: every crate carries `#![forbid(unsafe_code)]`
-          # (not `#![deny(...)]` — a decision from Task 2, fix round 1), and
-          # it is checked on every build of the `test` matrix
-          # (linux/macos/windows). The difference between `forbid` and
-          # `deny` is not cosmetic — verified by planting a probe right in
-          # this tree and reverting via `cp`: with `#![deny(unsafe_code)]` a
-          # local `#[allow(unsafe_code)]` next to an `unsafe` block compiled
-          # CLEANLY (the compiler stayed silent, `-D warnings` didn't help
-          # either — `allow` suppresses a lint rather than turning it into
-          # a warning); with `#![forbid(unsafe_code)]` the same file fails
-          # with `E0453 (allow incompatible with previous forbid)` —
-          # `forbid` cannot be overridden from inside a crate, PERIOD. The
-          # compiler catches the same thing this job would, but earlier (at
-          # compile time, rather than as a separate CI step) and without a
-          # single grep pattern that can be defeated by formatting, a
-          # string, or an attribute split across two lines.
+          # compiler itself: every crate but one carries
+          # `#![forbid(unsafe_code)]` (not `#![deny(...)]` — a decision
+          # from Task 2, fix round 1), and it is checked on every build of
+          # the `test` matrix (linux/macos/windows). The difference
+          # between `forbid` and `deny` is not cosmetic — verified by
+          # planting a probe right in this tree and reverting via `cp`:
+          # with `#![deny(unsafe_code)]` a local `#[allow(unsafe_code)]`
+          # next to an `unsafe` block compiled CLEANLY (the compiler
+          # stayed silent, `-D warnings` didn't help either — `allow`
+          # suppresses a lint rather than turning it into a warning); with
+          # `#![forbid(unsafe_code)]` the same file fails with `E0453
+          # (allow incompatible with previous forbid)` — `forbid` cannot
+          # be overridden from inside a crate, PERIOD. The compiler
+          # catches the same thing this job would, but earlier (at compile
+          # time, rather than as a separate CI step) and without a single
+          # grep pattern that can be defeated by formatting, a string, or
+          # an attribute split across two lines.
+          #
+          # THE ONE EXCEPTION (Task 1 of vertical 3, spec amendment C7):
+          # `http-ng-fetch` carries the project's sole legitimate `unsafe`
+          # (a `Send` adapter over a JS promise) and therefore
+          # `#![deny(unsafe_code)]` instead — `forbid` cannot be locally
+          # relaxed for its one justified `#[allow]`, by the same E0453
+          # verified above. That crate opts out of `[lints] workspace =
+          # true` for exactly this reason (see its `Cargo.toml`). This job
+          # still scans it like any other crate — see the marker mechanism
+          # below, which is precisely what continues to catch an
+          # UNJUSTIFIED `unsafe` there, now that the compiler alone no
+          # longer can.
           #
           # THIS job is a second, independent layer, not the first: it
           # catches the CASE WHERE `#![forbid(unsafe_code)]` ITSELF
@@ -1195,6 +1241,37 @@ jobs:
           # existed since Task 1; if `crates/*/src` matched nothing, that is
           # not "too early" but a broken workspace layout or a broken glob
           # itself, and the job must fail rather than pass quietly.
+          # REVISED again in Task 1 of vertical 3 (`http-ng-fetch`). This
+          # vertical's Global Constraints put the project's one legitimate
+          # `unsafe` right here — a `Send`-compatible promise adapter that
+          # mirrors what wasm-bindgen itself does for `JsValue` under
+          # `#[cfg(not(target_feature = "atomics"))]` (see spec amendment
+          # C7 for the full argument, and `http-ng-fetch/src/promise.rs`
+          # for the code). A bare directory exclusion was rejected for the
+          # same reason `no-declared-send`'s per-file exclusions were
+          # rejected and replaced by a per-line marker (see that job's own
+          # comment, Task 12 fix round 1): excluding
+          # `crates/http-ng-fetch/src` wholesale would hide any OTHER
+          # `unsafe` later added to that crate, not just the one already
+          # justified — a crate-shaped hole defeats the point of scanning
+          # `crates/*/src` unconditionally in the first place.
+          #
+          # So this job gets the same mechanism `no-declared-send` already
+          # has, under its own token: a line must read
+          # `unsafe-code-exception: amendment-C7` to be excused, and ONLY
+          # that exact citation — not `send-bound-exception` (a different
+          # invariant, a different job) and not some other amendment
+          # number. `promise.rs` marks both lines the raw scan would
+          # otherwise flag: the `unsafe_code,` inside `#[allow(unsafe_code,
+          # reason = "...")]`, and the `unsafe impl<T> Send for
+          # SingleThreaded<T> {}` line itself.
+          #
+          # Verified in both directions, not assumed: (1) the two marked
+          # lines in `promise.rs` pass; (2) a synthetic unmarked `unsafe {
+          # }` planted in any crate's `src` still fails; (3) a marker
+          # citing a nonexistent amendment (`unsafe-code-exception:
+          # amendment-C9`) still fails, because the filter below matches
+          # `amendment-C7` exactly and nothing else.
           shopt -s nullglob
           dirs=(crates/*/src)
           if [ ${#dirs[@]} -eq 0 ]; then
@@ -1203,8 +1280,9 @@ jobs:
           fi
           if grep -rn "unsafe" "${dirs[@]}" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
-               | grep -vE '(deny|forbid)\(unsafe_code\)'; then
-            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe"
+               | grep -vE '(deny|forbid)\(unsafe_code\)' \
+               | grep -vE 'unsafe-code-exception:[[:space:]]*amendment-C7\b'; then
+            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe unless explicitly marked and justified in spec amendment C7"
             exit 1
           fi
-          echo "unsafe: not found in any of ${#dirs[@]} directories (${dirs[*]})"
+          echo "unsafe: not found (outside the one marked, justified exception in http-ng-fetch) in any of ${#dirs[@]} directories (${dirs[*]})"
