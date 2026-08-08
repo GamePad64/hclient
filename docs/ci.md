@@ -43,6 +43,44 @@ plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`.
 
 ---
 
+## Supply chain and graph invariants (`dependency-graph`)
+
+`cargo deny`, not `cargo tree | grep`, wherever it can express the claim.
+The project's preference is proven community tooling over scripts written
+here, and this job is where that changed hands.
+
+`cargo deny --all-features check` runs against `deny.toml`: RUSTSEC
+advisories, the licence allow-list (measured with `cargo deny list`, not
+guessed) and the source policy. Neither question had *any* check here
+before — this is new coverage, not a rewrite.
+
+Two graph invariants moved to `cargo deny` configs in `.github/deny/`:
+
+- **`ambient.toml`** — the browser and `wasi:http` builds must contain no
+  `tokio`, `hyper` or `h2`. Run per backend with `--manifest-path` and `-t`;
+  `exclude-dev` because the claim is about what a consumer links, and the
+  test servers and the `url` oracle are not that.
+- **`smol-path.toml`** — `[[bans.features]] crate = "tokio", exact = true,
+  allow = ["default", "sync"]`. Absence of tokio is not achievable and never
+  was (hyper requires it unconditionally); what must hold is that the tokio
+  present is the inert `sync` leaf and not a reactor. This replaced forty
+  lines of bash that parsed `cargo tree -f '{p} [{f}]'` and had to fail
+  closed on three separate ways that format could shift.
+
+Both were mutation-tested in the direction that matters: deleting the
+`[[bans.features]]` block makes the tokio path pass, and emptying
+`ambient.toml`'s deny list makes `http-ng-native` pass. Restoring either
+turns it red again.
+
+**One check stays hand-rolled, on purpose.** `http-ng-proto pulls in no
+async runtime` bans a *family* by prefix — `^(tokio|futures-|async-|smol|
+compio)`. `cargo deny` bans crates by name, so enumerating today's names
+would pass for tomorrow's `futures-whatever`, which is precisely the
+regression the check exists for. `tree-guard.sh` also remains for the `idn`
+job's "must be PRESENT" assertion: `cargo deny` has no such thing, and
+`cargo tree -i` exits 0 whether the crate is there or not (measured), so
+the output has to be read either way.
+
 ## Build and test
 
 ### `test` (ubuntu, macOS, windows)

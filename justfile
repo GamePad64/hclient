@@ -85,9 +85,11 @@ fuzz TARGET="sse" SECONDS="60":
 
 # the browser and wasi graphs must contain no tokio, hyper or h2 at all
 tree-ambient:
-    .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
-        "http-ng-fetch's browser graph contains the native HTTP stack" \
-        -- -p http-ng-fetch --target wasm32-unknown-unknown
-    .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
-        "http-ng-wasi's wasip2 graph contains the native HTTP stack" \
-        -- -p http-ng-wasi --target wasm32-wasip2
+    cargo deny --manifest-path crates/http-ng-fetch/Cargo.toml \
+        --config .github/deny/ambient.toml -t wasm32-unknown-unknown check bans
+    cargo deny --manifest-path crates/http-ng-wasi/Cargo.toml \
+        --config .github/deny/ambient.toml -t wasm32-wasip2 check bans
+
+# advisories, licences and sources for the shipped graph
+supply-chain:
+    cargo deny --all-features check

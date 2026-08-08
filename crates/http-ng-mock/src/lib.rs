@@ -17,6 +17,7 @@
 //! "the client's future is Send when the transport is" is central to the
 //! crate's design, and a test double shouldn't be what stops it from being
 //! checked.
+#![forbid(unsafe_code)]
 
 use bytes::Bytes;
 use http_ng_core::unversioned::Transport;

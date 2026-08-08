@@ -1,37 +1,39 @@
 #!/usr/bin/env bash
 #
-# `unsafe` is not scanned for here. It cannot appear: the workspace sets
-# `unsafe_code = "forbid"` and a `forbid` cannot be lifted by a local
-# `#[allow]` — rustc refuses to compile the crate. CI's job is the one part
-# rustc cannot see: that no crate quietly steps OUT of that guarantee by
-# replacing `[lints] workspace = true` with a lint table of its own.
+# `unsafe` is not scanned for here. It cannot appear: every crate root
+# carries `#![forbid(unsafe_code)]`, and a `forbid` cannot be lifted by a
+# local `#[allow]` — rustc refuses to compile the crate.
 #
-# Two crates do step out, deliberately, and are named below. In those two,
-# every `unsafe`/`allow(unsafe_code)` site must name the spec amendment that
+# The attribute, not the manifest, is what this checks, and that is a
+# deliberate change of target. The workspace `[lints.rust]` table sets the
+# same lint, but a crate only inherits it by opting in with `[lints]
+# workspace = true`, and a crate that drops that line loses the guarantee
+# with nothing in the source to show it. The attribute in `lib.rs` is
+# enforced by the compiler on every build, on every machine, whether or not
+# CI runs — so CI's remaining job is only to notice if someone deletes it.
+# The manifest table stays as it is: harmless, and it also covers targets
+# without a crate root of their own.
+#
+# Two crates deliberately stand outside, named below. In those two, every
+# `unsafe`/`allow(unsafe_code)` site must name the spec amendment that
 # justifies it.
 set -uo pipefail
 
 EXEMPT="http-ng-fetch http-ng-dns-system"   # amendments C7 and C8
 fail=0
 
-# The guarantee the other sixteen crates rest on.
-if ! grep -qE '^\s*unsafe_code\s*=\s*"forbid"' Cargo.toml; then
-  echo "::error::the workspace [lints.rust] table no longer sets unsafe_code = \"forbid\" — every crate inheriting it silently lost the guarantee"
-  fail=1
-fi
-
 shopt -s nullglob
-manifests=(crates/*/Cargo.toml)
-if [ ${#manifests[@]} -eq 0 ]; then
-  echo "::error::crates/*/Cargo.toml matched nothing — the workspace layout changed, or this glob is broken; the check must run, not pass"
+roots=(crates/*/src/lib.rs)
+if [ ${#roots[@]} -eq 0 ]; then
+  echo "::error::crates/*/src/lib.rs matched nothing — the workspace layout changed, or this glob is broken; the check must run, not pass"
   exit 1
 fi
 
-for m in "${manifests[@]}"; do
-  crate="$(basename "$(dirname "$m")")"
+for r in "${roots[@]}"; do
+  crate="$(basename "$(dirname "$(dirname "$r")")")"
   case " $EXEMPT " in *" $crate "*) continue ;; esac
-  if ! grep -qE '^\s*workspace\s*=\s*true' "$m"; then
-    echo "::error::$crate does not inherit the workspace lint table, so it is no longer covered by unsafe_code = \"forbid\". If it needs local unsafe, it needs a spec amendment and a place in this script's EXEMPT list — not a quiet lint table of its own."
+  if ! grep -qF '#![forbid(unsafe_code)]' "$r"; then
+    echo "::error::$r has no \`#![forbid(unsafe_code)]\`, so rustc no longer refuses \`unsafe\` in $crate. If it genuinely needs unsafe, it needs a spec amendment and a place in this script's EXEMPT list — not a quiet deletion."
     fail=1
   fi
 done
@@ -67,5 +69,5 @@ for crate in $EXEMPT; do
   fi
 done
 
-[ "$fail" -eq 0 ] && echo "unsafe-code policy: ${#manifests[@]} crates, ${EXEMPT// /, } exempt and marked"
+[ "$fail" -eq 0 ] && echo "unsafe-code policy: ${#roots[@]} crate roots, ${EXEMPT// /, } exempt and marked"
 exit "$fail"

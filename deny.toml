@@ -1,0 +1,54 @@
+# Supply-chain policy, checked by `cargo deny` (see the `supply-chain` job).
+#
+# This file exists because two questions had no check at all here — known
+# vulnerabilities, and whether a dependency's licence is one we can ship
+# under — and both are answered by a tool the ecosystem already maintains
+# rather than by anything written in this repository.
+
+[graph]
+# The shipped graph. Dev-dependencies are a different question: `url`, the
+# oracle for the URI differential corpus, and the test servers are not part
+# of what a consumer links.
+exclude-dev = true
+
+[advisories]
+# RUSTSEC. `deny` on everything is the point; an exception belongs here as
+# an `ignore` entry WITH a reason, so that removing it is a decision rather
+# than a discovery.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Measured with `cargo deny --all-features list`, not guessed. The list is
+# deliberately short: every entry is a permissive licence compatible with
+# this workspace's own `MIT OR Apache-2.0`.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",       # the ICU crates behind the `idn` feature
+    "Unlicense",         # memchr, walkdir and friends: dual with MIT
+    "Zlib",              # tinyvec
+    "CDLA-Permissive-2.0", # webpki-roots' certificate data
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[[licenses.clarify]]
+crate = "ring"
+# ring has no single SPDX expression in its manifest; its LICENSE file is a
+# concatenation. This is the clarification cargo-deny's own docs give.
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Not the graph invariants — those are per-target and live in
+# `.github/deny/`. This half is about hygiene in the shipped graph.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

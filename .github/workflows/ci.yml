@@ -388,6 +388,34 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
+          bins: cargo-deny
+      # Supply chain: RUSTSEC advisories, licence policy and source policy.
+      # Neither question had any check here before; `deny.toml` carries the
+      # policy and its reasoning.
+      - run: cargo deny --all-features check
+      # The graph invariants this project actually promises. `cargo deny`
+      # rather than `cargo tree | grep` wherever it can express the claim:
+      # see docs/ci.md for the two it cannot.
+      - name: the ambient builds contain no tokio, hyper or h2
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo deny --manifest-path crates/http-ng-fetch/Cargo.toml \
+            --config .github/deny/ambient.toml -t wasm32-unknown-unknown check bans
+          cargo deny --manifest-path crates/http-ng-wasi/Cargo.toml \
+            --config .github/deny/ambient.toml -t wasm32-wasip2 check bans
+      - name: the smol path carries no reactor, only hyper's inert tokio leaf
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in x86_64-unknown-linux-gnu x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            cargo deny --manifest-path crates/http-ng-rt-smol/Cargo.toml \
+              --config .github/deny/smol-path.toml -t "$t" check bans
+          done
+      # Still `tree-guard`, and deliberately: `cargo deny` bans crates by
+      # name, and this one bans a FAMILY by prefix. Enumerating today's
+      # names would pass for tomorrow's `futures-whatever`, which is the
+      # regression the check exists for. docs/ci.md says so.
       - name: http-ng-proto pulls in no async runtime, on any target
         shell: bash
         run: |
@@ -396,55 +424,4 @@ jobs:
             .github/scripts/tree-guard.sh absent '^(tokio|futures-|async-|smol|compio)' \
               "http-ng-proto picked up an async dependency ${t:-on the host} — this crate must stay sans-io on every target, not just the host" \
               -- -p http-ng-proto $t
-          done
-      - name: the ambient builds contain no tokio, hyper or h2
-        shell: bash
-        run: |
-          set -euo pipefail
-          .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
-            "http-ng-fetch's wasm32-unknown-unknown graph contains tokio, hyper or h2 — the browser transport must stay free of the native HTTP stack" \
-            -- -p http-ng-fetch --target wasm32-unknown-unknown
-          .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
-            "http-ng-wasi's wasm32-wasip2 graph contains tokio, hyper or h2 — the wasi:http transport delegates the exchange to the host" \
-            -- -p http-ng-wasi --target wasm32-wasip2
-      - name: the smol path carries no reactor, only hyper's inert tokio leaf
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Absence of tokio is NOT achievable and never was: hyper depends
-          # on it unconditionally. What must hold is that the tokio present
-          # is the inert `sync` leaf (hyper::upgrade's oneshot) and not a
-          # reactor. Checked for three host triples from this one runner.
-          for t in x86_64-unknown-linux-gnu x86_64-apple-darwin x86_64-pc-windows-msvc; do
-            .github/scripts/tree-guard.sh absent '^async-compat' \
-              "the smol path pulled in async-compat on $t — a shim for a foreign runtime that should not be here" \
-              -- -p http-ng-rt-smol --target "$t"
-            feat_line="$(cargo tree -p http-ng-rt-smol -e normal -i tokio --prefix none \
-              --target "$t" -f '{p} [{f}]' | head -1)"
-            if [ -z "$feat_line" ]; then
-              echo "::error::tokio has disappeared from the smol path's graph on $t. Today that is FALSE — hyper requires tokio unconditionally. Either hyper genuinely stopped requiring it (update this block and AGENTS.md together) or 'cargo tree -f' changed format and the parsing below broke. Neither is a silent pass."
-              exit 1
-            fi
-            feats="$(printf '%s\n' "$feat_line" | grep -oE '\[[^]]*\]' | tr -d '[]')"
-            if [ -z "$feats" ]; then
-              echo "::error::could not parse the tokio feature list out of '$feat_line' — the output format of 'cargo tree -f' changed and this script needs updating"
-              exit 1
-            fi
-            saw_sync=0
-            IFS=',' read -ra feat_arr <<< "$feats"
-            for f in "${feat_arr[@]}"; do
-              case "$f" in
-                sync) saw_sync=1 ;;
-                default) ;;
-                *)
-                  echo "::error::tokio in the smol path carries feature '$f' on $t, outside the measured inert set {default, sync}. Either a real reactor arrived — the regression this check exists for — or hyper/tokio regrouped features upstream, which needs a deliberate update, not a widened blacklist."
-                  exit 1
-                  ;;
-              esac
-            done
-            [ "$saw_sync" -eq 1 ] || {
-              echo "::error::tokio in the smol path on $t no longer carries 'sync' — the only known reason it is there at all. The composition changed; check why and update this block and AGENTS.md together."
-              exit 1
-            }
-            echo "$t: tokio confined to {$feats}, async-compat absent"
           done
