@@ -251,9 +251,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Every #[cfg(not(feature = "idn"))] test runs only here: the
-          # workspace suite turns `idn` on.
+          # Every #[cfg(not(feature = ...))] path runs only here: the
+          # workspace suite is `--all-features`, so it turns each of these
+          # ON and never compiles the other side.
+          #
+          # `http-ng-native` joined the list when h2 landed behind a feature
+          # (v0.2 W3). Without it the h1-only build — the default one, what
+          # a consumer gets — was compiled by nothing in CI.
           for args in "-p http-ng-proto --no-default-features" \
+                      "-p http-ng-native --no-default-features" \
                       "-p http-ng --no-default-features --features test-util"; do
             rc=0
             out="$(cargo nextest run $args --color never 2>&1)" || rc=$?
@@ -265,6 +271,7 @@ jobs:
             fi
           done
           cargo clippy -p http-ng-proto --all-targets --no-default-features -- -D warnings
+          cargo clippy -p http-ng-native --all-targets --no-default-features -- -D warnings
           cargo clippy -p http-ng --all-targets --no-default-features --features test-util -- -D warnings
 
   # The whole claim of `http-ng-idn` is that the platform's ICU answers
