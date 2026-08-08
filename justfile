@@ -59,11 +59,24 @@ build-three-targets:
 
 # `--all-features` turns `idn` ON, so every `#[cfg(not(feature = "idn"))]`
 # test — the typed NonAsciiHost error, the divergence list — runs only here.
+# The same is now true of `http-ng-cookie`'s `public-suffix`: with the
+# feature on, the no-list branch of `BuiltinList` never executes, and
+# `tests/without_the_list.rs` is the only thing that checks a no-list build
+# is NARROWER than a list build rather than quietly wider.
 
 # the feature-off build, which --all-features can never exercise
 test-no-default:
     cargo nextest run -p http-ng-proto --no-default-features --no-fail-fast
     cargo nextest run -p http-ng --no-default-features --features test-util --no-fail-fast
+    cargo nextest run -p http-ng-cookie --no-default-features --no-fail-fast
+
+# Doctests: nextest cannot run them, so `just test` does not either. The
+# workspace had none until `http-ng-cookie`; this is the recipe that runs
+# the one it has, and CI has no equivalent step yet.
+
+# the doctests, which nextest cannot run
+test-doc:
+    cargo test --workspace --all-features --doc
 
 # nightly is not optional here (sanitizer flags), and `RUSTUP_TOOLCHAIN`
 # is how it survives rust-toolchain.toml. The explicit `--target` is not

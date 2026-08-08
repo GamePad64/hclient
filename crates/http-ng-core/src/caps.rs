@@ -329,6 +329,38 @@ pub struct Capabilities {
     pub tls_config: TlsSupport,
     pub client_certs: bool,
     pub proxy: bool,
+    /// Whether the transport keeps its own cookie jar: attaching `Cookie`
+    /// to outgoing requests and processing `Set-Cookie` on incoming ones,
+    /// without being asked.
+    ///
+    /// `true` for `http-ng-fetch` — the browser does both, and `Cookie` is
+    /// on that backend's `forbidden_request_headers`, so a client-side jar
+    /// there would not merely be redundant, it would send every cookie
+    /// twice and store every `Set-Cookie` twice. `false` for
+    /// `http-ng-native` and `http-ng-wasi`.
+    ///
+    /// # Why a `bool` and not an enum
+    ///
+    /// The same question [`CancelSupport`] and [`ReuseSupport`] were made
+    /// to answer: a variant exists only if a caller decision turns on it.
+    /// This field answers exactly one decision — "do I run a jar of my own
+    /// for this transport?" — and it is binary. The two axes an enum would
+    /// add do not carry decisions:
+    ///
+    /// - *Who* owns it (the browser, an ambient host) is the split
+    ///   [`CancelSupport`] already rejected once, for the same reason.
+    /// - Attaching versus storing could in principle come apart, and in
+    ///   practice never has: a backend that attaches cookies it did not
+    ///   store, or stores cookies it will not attach, is not a shape any
+    ///   of the three backends here or any ambient HTTP API takes.
+    ///
+    /// What it does *not* answer — deliberately, and this is where a third
+    /// state would arrive if it ever arrives — is whether a jar-owning
+    /// backend can be asked to stop, or its jar inspected. There is no
+    /// portable setting for either, so there is nothing to refuse. When a
+    /// client-level cookie setting exists, it earns its refusal here the
+    /// way [`RedirectSupport::Internal`] earned its variant: the setting,
+    /// the variant and the `check_supported` arm arrive together.
     pub owns_cookie_jar: bool,
     pub owns_cache: bool,
     pub version_select: bool,
