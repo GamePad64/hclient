@@ -39,8 +39,8 @@ mod h1;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
-    Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, TimeoutSupport, Timeouts,
-    UpgradeSupport,
+    CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
+    TimeoutSupport, Timeouts, UpgradeSupport,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{TcpConnect, TcpOpts, Timer};
@@ -96,6 +96,18 @@ impl<R, T: TlsConnect, D> Native<R, T, D> {
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         caps.redirects = RedirectSupport::Configurable;
+        // Structural, not a promise made in prose: `execute`'s future owns
+        // everything the exchange runs on. The connected stream goes into
+        // `h1::exchange`, which hands hyper's `Connection` future to
+        // `NativeBody` — and until `execute` returns, all of it lives
+        // inside this one future. Dropping it drops the `Connection`, which
+        // drops the socket, which closes the TCP connection; there is no
+        // spawn anywhere on this path (see `h1.rs`'s module doc comment)
+        // and therefore nothing left running behind the drop. Measured
+        // from the far end rather than argued: `tests/cancel.rs`'s
+        // `dropping_the_execute_future_closes_the_connection_the_server_sees`
+        // has the server observe its socket close.
+        caps.cancel_on_drop = CancelSupport::Supported;
         // Asked, not assumed. This line used to be a hardcoded
         // `TlsSupport::Full` regardless of which `TlsConnect` was plugged
         // in, so `Native<R, NoTls, D>` would have advertised full TLS while

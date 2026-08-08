@@ -187,6 +187,226 @@ fn wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header() {
     }
 }
 
+/// How long the mock server watches the connection before concluding the
+/// guest is still there — see [`observe_client_end`].
+///
+/// Between the guest's own two numbers (`IN_FLIGHT_NS` = 200ms, when it
+/// acts; `STAY_ALIVE_NS` = 1.5s, how long it then lives) with a wide
+/// margin on both sides, so one constant serves both directions: the drop
+/// happens well inside this window, and the hold outlasts it.
+const CANCEL_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// What the mock server saw at its end of the connection.
+#[derive(Debug, PartialEq, Eq)]
+enum ClientEnd {
+    /// The peer closed: `read` returned `Ok(0)`, or the connection was
+    /// reset.
+    WentAway,
+    /// [`CANCEL_OBSERVATION_WINDOW`] passed with the connection intact.
+    StillThere,
+}
+
+/// Reads the request head, then watches the connection for
+/// [`CANCEL_OBSERVATION_WINDOW`] and reports what became of the client end.
+///
+/// This is the whole of the v0.2 W1 measurement for this backend, and the
+/// reason it lives on the native side of the harness: it is an observer
+/// **outside** the guest. A guest that dropped a future and then reported
+/// "I dropped a future" would prove only that it stopped polling — the
+/// exact vacuous shape this project keeps catching. `Ok(0)` here is the
+/// kernel reporting a closed peer.
+///
+/// Reading the head first is not preamble: it establishes that there *was*
+/// an exchange in flight to cancel. If the guest's timing were ever wrong
+/// and it acted before the request went out, the run fails here rather
+/// than passing with nothing having happened.
+///
+/// After reporting, the connection is deliberately kept open until the
+/// peer goes away. Closing it at the end of the window would end the
+/// exchange from this side, and the `cancel-hold` guest — still polling
+/// its future — would get a transport error instead of the pending
+/// exchange the control needs.
+fn observe_client_end(
+    stream: &mut std::net::TcpStream,
+    verdict: &std::sync::mpsc::Sender<ClientEnd>,
+) {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .expect("set_read_timeout");
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = stream.read(&mut buf).expect("reading the request head");
+        assert_ne!(
+            n, 0,
+            "the guest closed the connection before sending a request at all — there was \
+             never an in-flight exchange for this test to cancel"
+        );
+        head.extend_from_slice(&buf[..n]);
+        if head.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    stream
+        .set_read_timeout(Some(CANCEL_OBSERVATION_WINDOW))
+        .expect("set_read_timeout");
+    let seen = match stream.read(&mut buf) {
+        Ok(0) => ClientEnd::WentAway,
+        Ok(_) => ClientEnd::StillThere,
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            ClientEnd::StillThere
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => ClientEnd::WentAway,
+        Err(e) => panic!("unexpected error observing the guest's end: {e}"),
+    };
+    verdict
+        .send(seen)
+        .expect("the test must still be listening");
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .expect("set_read_timeout");
+    while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
+}
+
+/// v0.2 W1, the claim: dropping the future `WasiHttp::execute` returns
+/// stops the exchange, even though the guest owns no socket and can only
+/// ask the host to stop.
+///
+/// The design document guessed the other way ("a WASI host may not expose
+/// it"), which is why this is measured rather than declared. The mechanism
+/// is the Component Model's `subtask.cancel`, reached through
+/// `wit-bindgen`'s `WaitableOperation::drop`; what is asserted here is not
+/// that mechanism but its effect on a real socket, under a real wasmtime.
+///
+/// Mutation that turns this red: replace `drop(exec)` with
+/// `std::mem::forget(exec)` in the guest. That is exactly the difference
+/// between "the future stopped being polled" and "the exchange stopped" —
+/// `forget` stops the polling and releases nothing — and the server then
+/// sits out the whole window with the connection open.
+#[test]
+fn dropping_the_execute_future_closes_the_connection_the_server_sees() {
+    let Some(wasmtime) =
+        require_wasmtime("dropping_the_execute_future_closes_the_connection_the_server_sees")
+    else {
+        return;
+    };
+    let (stdout, stderr, status, seen) = run_guest_against_silent_server(&wasmtime, "cancel-drop");
+    assert!(
+        status.success() && stdout.contains("CANCEL_DROPPED_OK"),
+        "the guest run itself failed (exit {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        status.code(),
+    );
+    assert_eq!(
+        seen,
+        ClientEnd::WentAway,
+        "dropping the execute future must end the exchange on the wire: the server still had \
+         the connection {CANCEL_OBSERVATION_WINDOW:?} after the guest dropped it, while the \
+         guest itself was still running"
+    );
+}
+
+/// The control for the test above, and the half that gives it meaning: the
+/// same guest, the same server, the same window — the future kept alive
+/// and polled instead of dropped.
+///
+/// Without this, "the connection closed" could be the host's own idle
+/// policy, the guest exiting, or anything else that happens to coincide
+/// with the window.
+#[test]
+fn holding_the_execute_future_leaves_the_connection_open() {
+    let Some(wasmtime) = require_wasmtime("holding_the_execute_future_leaves_the_connection_open")
+    else {
+        return;
+    };
+    let (stdout, stderr, status, seen) = run_guest_against_silent_server(&wasmtime, "cancel-hold");
+    assert!(
+        status.success() && stdout.contains("CANCEL_HELD_OK"),
+        "the guest run itself failed (exit {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        status.code(),
+    );
+    assert_eq!(
+        seen,
+        ClientEnd::StillThere,
+        "a live, polled execute future must keep its exchange: if this connection closes on \
+         its own, the drop test above is measuring the passage of time and not the drop"
+    );
+}
+
+/// The declaration and the measurement are kept in one file on purpose.
+///
+/// `CancelSupport::None` is a legitimate answer for a backend that cannot
+/// cancel — and it is therefore also the quiet way to make the two tests
+/// above stop applying here. Asserting the declared value closes that
+/// exit: `WasiHttp` giving up cancellation would take an explicit edit to
+/// this test rather than a capability flip that leaves a green suite.
+///
+/// Not behind `require_wasmtime`: no host is involved in reading a
+/// capability, so this one runs everywhere the rest of the file compiles.
+#[test]
+fn wasi_declares_the_cancellation_it_performs() {
+    use http_ng_core::unversioned::Transport;
+    assert_eq!(
+        http_ng_wasi::WasiHttp::new().capabilities().cancel_on_drop,
+        http_ng_core::CancelSupport::Supported,
+        "the live runs in this file measure a cancellation that `WasiHttp` must also \
+         declare — a backend is free to declare `None`, but not to declare `None` while \
+         behaving otherwise, nor to quietly stop being covered by the measurement"
+    );
+}
+
+/// Brings up a server that reads the request and then says nothing at all,
+/// runs the guest against it in `mode`, and returns the guest's output
+/// alongside the server's [`ClientEnd`] verdict.
+///
+/// Separate from [`run_guest_against_mock_server`] because a response is
+/// precisely what must not happen here: an answered request leaves nothing
+/// in flight, and a cancellation test with nothing to cancel passes for
+/// free.
+fn run_guest_against_silent_server(
+    wasmtime: &Path,
+    mode: &str,
+) -> (String, String, std::process::ExitStatus, ClientEnd) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
+    let (verdict_tx, verdict_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        observe_client_end(&mut stream, &verdict_tx);
+    });
+
+    let artifact = build_guest();
+    let output = Command::new(wasmtime)
+        .args([
+            "run",
+            "-S",
+            "http",
+            "--",
+            artifact.to_str().expect("utf8 path"),
+            &port.to_string(),
+            mode,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn wasmtime");
+
+    server.join().expect("mock server thread panicked");
+    let seen = verdict_rx
+        .recv()
+        .expect("the server thread must report a verdict");
+
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+        seen,
+    )
+}
+
 /// Reads only up through the end of the request headers — used by the
 /// `response-roundtrip` scenario, where the request has no body at all
 /// (`RequestBody::Empty`), so nothing more would arrive anyway.
@@ -343,8 +563,8 @@ fn require_wasmtime(test_name: &str) -> Option<PathBuf> {
 
 /// The `require_wasmtime` guard and `ci.yml` hold the same contract from
 /// two sides, and the variable name falling out of sync would make the
-/// `wasip2` job completely silent: five live tests would print `NOTICE`
-/// and report `ok`, having checked nothing. The same class of defect
+/// `wasip2` job completely silent: every live test in this file would
+/// print `NOTICE` and report `ok`, having checked nothing. The same class of defect
 /// that `sse-complexity-guard` guards against by counting "exactly one
 /// test ran", and the same technique — verify the symmetry, don't just
 /// trust it.
@@ -423,8 +643,9 @@ fn the_job_that_installs_wasmtime_exports_the_marker_this_guard_keys_on() {
     });
     assert!(
         assigned,
-        "job `wasip2` installs wasmtime but doesn't set `{REQUIRE_MARKER}` — five live tests \
-         will silently skip, and the job will come back green having checked nothing"
+        "job `wasip2` installs wasmtime but doesn't set `{REQUIRE_MARKER}` — every live test \
+         in this file will silently skip, and the job will come back green having checked \
+         nothing"
     );
 }
 

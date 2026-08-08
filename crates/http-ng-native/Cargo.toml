@@ -33,7 +33,13 @@ http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
 http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
 http-ng-rt-smol     = { path = "../http-ng-rt-smol",     version = "0.1.0" }
 http-ng-tls-rustls  = { path = "../http-ng-tls-rustls",  version = "0.1.0", features = ["webpki-roots"] }
-tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+# `sync` is for `tests/cancel.rs` alone: its mock server runs on an OS
+# thread and has to hand two verdicts back into an async test that is at
+# the same time polling the future under test, which a `std::sync::mpsc`
+# receiver cannot be awaited alongside. Listed explicitly rather than left
+# to feature unification with `hyper`'s own `tokio/sync` — that union is a
+# fact about today's graph, not a dependency this crate declared.
+tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
 
 [lints]
 workspace = true

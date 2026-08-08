@@ -58,6 +58,64 @@ pub enum RedirectSupport {
     Inspectable,
 }
 
+/// Whether dropping the future returned by
+/// [`Transport::execute`](crate::unversioned::Transport::execute) stops the
+/// exchange — see that method's doc comment for the contract itself, of
+/// which this enum is the one honest way out.
+///
+/// # Why two variants and not three
+///
+/// A first draft had a third variant splitting `Supported` by who performs
+/// the cancellation: the transport tearing down a socket it owns, versus
+/// the transport asking an ambient host to stop. The split was dropped
+/// because no caller decision turns on it. A capability answers a question
+/// the caller actually asks — here, "can I rely on a drop ending the
+/// exchange?" — and *who* ends it is an implementation detail. Both shapes
+/// give a guarantee of exactly the same strength, including its limit:
+/// bytes already sent are already sent, and the server may have acted on
+/// them either way.
+///
+/// The distinction is worth knowing even though it isn't worth a variant,
+/// and connection pooling (v0.2 W2) is where it will matter: `http-ng-native`
+/// owns the socket and closes it itself, while `http-ng-fetch` and
+/// `http-ng-wasi` ask the browser and the `wasi:http` host respectively —
+/// `AbortController::abort()` and the Component Model's `subtask.cancel`.
+/// A pool can only exist for the first kind, which is the same reason W2
+/// puts the pool in `http-ng-native` and nowhere else.
+///
+/// Not `#[non_exhaustive]`, deliberately: no other enum in this file is
+/// (`RedirectSupport`, `TlsSupport`, `UpgradeSupport` are all plain), and
+/// consistency across the capability set is worth more than reserving the
+/// right to add a variant to this one alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelSupport {
+    /// Dropping the future does not stop the exchange: it may run to
+    /// completion, unobserved, on a connection this transport no longer
+    /// reports on.
+    ///
+    /// The conservative base — [`Capabilities::none()`] returns this — and
+    /// here, unlike [`RedirectSupport::None`], that costs nothing. The
+    /// lesson recorded on `RedirectSupport::Transparent` was not "every
+    /// capability needs a variant for the unfilled case", it was "a default
+    /// must never be stronger than the truth". A backend that never touches
+    /// this field is read as "do not rely on a drop stopping anything",
+    /// which is the safe reading of silence and is also exactly what a
+    /// backend that genuinely cannot cancel means. The two coincide, so
+    /// there is nothing to tell apart — whereas for redirects they did not:
+    /// `None` there is a substantive "redirects are impossible", which is a
+    /// far stronger claim than "the field was not filled in", and a
+    /// transparent backend forced to say it was misread.
+    None,
+    /// Dropping the future stops the exchange, as far as this transport
+    /// controls it.
+    ///
+    /// What that does and does not promise is the contract on
+    /// [`Transport::execute`](crate::unversioned::Transport::execute); the
+    /// short version is that our side stops, and the server's side is not
+    /// ours to promise anything about.
+    Supported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsSupport {
     None,
@@ -108,6 +166,10 @@ pub struct Capabilities {
     pub request_trailers: bool,
     pub response_trailers: bool,
     pub redirects: RedirectSupport,
+    /// What dropping an in-flight `execute` future does — see
+    /// [`CancelSupport`] and the contract on
+    /// [`Transport::execute`](crate::unversioned::Transport::execute).
+    pub cancel_on_drop: CancelSupport,
     pub tls_config: TlsSupport,
     pub client_certs: bool,
     pub proxy: bool,
@@ -130,6 +192,7 @@ impl Capabilities {
             request_trailers: false,
             response_trailers: false,
             redirects: RedirectSupport::None,
+            cancel_on_drop: CancelSupport::None,
             tls_config: TlsSupport::None,
             client_certs: false,
             proxy: false,
@@ -166,7 +229,7 @@ mod tests {
 
     #[test]
     fn none_is_the_conservative_base() {
-        // Every one of the 16 fields, spelled out individually — not
+        // Every one of the 17 fields, spelled out individually — not
         // `assert_eq!` on the whole struct via a derived `PartialEq`, which
         // `Capabilities` deliberately does not implement (it's
         // `#[non_exhaustive]` so its shape stays ours to change, and a
@@ -190,6 +253,7 @@ mod tests {
             request_trailers,
             response_trailers,
             redirects,
+            cancel_on_drop,
             tls_config,
             client_certs,
             proxy,
@@ -207,6 +271,7 @@ mod tests {
         assert!(!request_trailers);
         assert!(!response_trailers);
         assert_eq!(redirects, RedirectSupport::None);
+        assert_eq!(cancel_on_drop, CancelSupport::None);
         assert_eq!(tls_config, TlsSupport::None);
         assert!(!client_certs);
         assert!(!proxy);

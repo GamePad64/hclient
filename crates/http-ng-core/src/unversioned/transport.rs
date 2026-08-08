@@ -27,6 +27,56 @@ pub trait Transport {
     /// to the backend. Branching on `extensions.get::<Timeouts>().is_some()`
     /// as "the caller asked for timeouts" is not allowed — that will be
     /// true always, for every request that comes through `Client`.
+    ///
+    /// # Dropping the returned future cancels the exchange
+    ///
+    /// **Dropping this future before it completes MUST stop the exchange,
+    /// as far as this transport controls it.** No further request bytes are
+    /// written, no response is waited for, and whatever carries the
+    /// exchange — a socket this transport owns, or an operation an ambient
+    /// host is running on its behalf — is torn down rather than left to run
+    /// to completion. A drop is a cancellation, never a way to detach a
+    /// request into the background.
+    ///
+    /// This is a claim about **this side**, and deliberately not about the
+    /// server's:
+    ///
+    /// - The request may already have arrived and already have been acted
+    ///   on. Cancellation is not a rollback, and a cancelled `POST` is not
+    ///   a `POST` that did not happen. A caller that needs to know reaches
+    ///   for idempotency keys, not for this.
+    /// - `Drop` must not block. There is no async destructor in Rust, and a
+    ///   backend that needs to wait for a peer to acknowledge anything must
+    ///   stop waiting rather than stall the dropping task. Every backend
+    ///   here satisfies this by construction: closing a socket, calling
+    ///   `AbortController::abort()`, and the Component Model's
+    ///   `subtask.cancel` are all non-blocking.
+    /// - The exchange does not end at `execute`. Once this future has
+    ///   returned `Ok`, the same duty passes to `Self::Body`: dropping the
+    ///   response body before it ends is also a cancellation, on the same
+    ///   terms, and must not leave a connection being drained in the
+    ///   background either.
+    ///
+    /// **A backend that cannot honour this says so, in `Capabilities`.**
+    /// [`CancelSupport::None`](crate::CancelSupport::None) is the one
+    /// honest way out, and it is what a backend that never fills the field
+    /// in already says, since it is the value
+    /// [`Capabilities::none()`](crate::Capabilities::none) returns. What is
+    /// not allowed is the third option this method's documentation used to
+    /// take: saying nothing at all, and leaving a caller to find out per
+    /// target that a dropped future means three different things.
+    ///
+    /// **Why a MUST rather than a plain capability with no default duty.**
+    /// The alternative — "each backend does what it does, read the field" —
+    /// pushes a branch into every caller that races a request against
+    /// anything, and there is no useful code to write in the `None` arm: a
+    /// caller who cannot cancel cannot un-send the request either. So the
+    /// duty belongs on the implementer, who can actually discharge it, and
+    /// the field exists for the case where they genuinely cannot. It is
+    /// also what makes connection reuse possible at all (v0.2 W2): a pool
+    /// may only take back a connection whose exchange finished, and
+    /// "finished" is not a property anyone can establish if a dropped
+    /// future leaves an exchange running.
     fn execute(
         &self,
         req: http::Request<RequestBody>,

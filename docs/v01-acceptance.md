@@ -91,3 +91,14 @@ Cross-backend cancellation is asymmetric. Only `http-ng-fetch` cancels the
 in-flight exchange when the future is dropped, and `Transport::execute`'s
 documentation says nothing about drop-cancellation for any backend. A caller
 who drops a future gets different behaviour per target, undocumented.
+
+> Closed in v0.2 W1, and the asymmetry turned out to be in the
+> documentation rather than in the behaviour: native and WASI cancel too —
+> native because the future owns the socket, WASI because dropping the
+> future cancels the Component Model subtask. What none of them had was a
+> stated duty or a measurement. `Transport::execute` now requires
+> cancellation, `Capabilities::cancel_on_drop` is how a backend that cannot
+> says so, and each backend has a pair of tests whose observer is outside
+> the client: `crates/http-ng-native/tests/cancel.rs`,
+> `crates/http-ng-wasi/tests/live_roundtrip.rs`,
+> `crates/http-ng-fetch/tests/transport.rs`.

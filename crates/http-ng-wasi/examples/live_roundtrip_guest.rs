@@ -90,6 +90,8 @@ impl wasip3::exports::cli::run::Guest for Guest {
             "request-trailers-declared" => request_trailers(port, TrailerCase::Declared).await,
             "request-trailers-wrong-name" => request_trailers(port, TrailerCase::WrongName).await,
             "request-trailers-empty-frame" => request_trailers(port, TrailerCase::EmptyFrame).await,
+            "cancel-drop" => cancel_on_drop(port, CancelCase::Drop).await,
+            "cancel-hold" => cancel_on_drop(port, CancelCase::Hold).await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
@@ -299,4 +301,100 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
             Err(())
         }
     }
+}
+
+/// How long the guest lets the exchange run before it acts on it.
+///
+/// The one thing this must be is *later than the request reaching the
+/// server*, and that is not left to this number to guarantee: the mock
+/// server on the other side reads the whole request head before it starts
+/// watching the connection, and fails the run if the head never arrives.
+/// So this is a delay, not an assumption.
+const IN_FLIGHT_NS: u64 = 200_000_000;
+
+/// How long the guest keeps going after acting, so that "the exchange was
+/// cancelled" stays distinguishable from "the guest exited".
+///
+/// Without this the whole comparison would be worthless: a component that
+/// returns from `run` has its sockets closed by the host regardless, so a
+/// server would see the connection drop either way and the test would pass
+/// against a backend that cancels nothing.
+const STAY_ALIVE_NS: u64 = 1_500_000_000;
+
+/// The two halves of the drop-cancellation contract for `wasi:http`, as
+/// seen from the guest. Which one ran is not what the test asserts on —
+/// the mock server's own view of the connection is (see
+/// `tests/live_roundtrip.rs`).
+enum CancelCase {
+    /// Drop the `execute` future while the exchange is in flight, then
+    /// stay alive. The server must see its connection close.
+    Drop,
+    /// Keep the same future alive AND polled for longer than the server
+    /// watches. The server must see its connection intact — otherwise the
+    /// `Drop` case would be measuring the passage of time.
+    Hold,
+}
+
+/// v0.2 W1: dropping the future `Transport::execute` returns must stop the
+/// exchange, and for this backend that is not something the guest does
+/// itself — it owns no socket. `wasip3::http::client::send` is an
+/// `[async-lower]` import whose generated future cancels its subtask on
+/// drop (`wit-bindgen`'s `WaitableOperation::drop` -> `[subtask-cancel]`),
+/// and this is where that stops being a claim about someone else's source
+/// code: what the mock server sees on its own socket is the whole result.
+async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
+    use futures::future::{Either, select};
+
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/probe")
+        .parse()
+        .expect("uri");
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(uri)
+        .body(RequestBody::Empty)
+        .expect("request");
+
+    let transport = http_ng_wasi::WasiHttp::new();
+    // `Box::pin` for `select`'s `Unpin` bound, and so that the drop below
+    // is a drop of the future itself rather than of a borrow of it.
+    let exec = Box::pin(transport.execute(req));
+    let hold_ns = match case {
+        CancelCase::Drop => IN_FLIGHT_NS,
+        CancelCase::Hold => IN_FLIGHT_NS + STAY_ALIVE_NS,
+    };
+    // `select` keeps polling `exec` throughout — in the `Hold` case that
+    // is the point, and in the `Drop` case it is what puts the request on
+    // the wire in the first place.
+    let exec = match select(
+        exec,
+        Box::pin(wasip3::clocks::monotonic_clock::wait_for(hold_ns)),
+    )
+    .await
+    {
+        Either::Left((result, _)) => {
+            eprintln!(
+                "execute finished on its own (ok={}) — the mock server is supposed to stay \
+                 silent, so there was never an in-flight exchange to cancel",
+                result.is_ok()
+            );
+            return Err(());
+        }
+        Either::Right((_, exec)) => exec,
+    };
+
+    match case {
+        CancelCase::Drop => {
+            drop(exec);
+            // Outlive the drop, so the server's verdict is about the
+            // cancellation and not about this component going away.
+            wasip3::clocks::monotonic_clock::wait_for(STAY_ALIVE_NS).await;
+            println!("CANCEL_DROPPED_OK");
+        }
+        CancelCase::Hold => {
+            // Held and polled for the whole window; only now let it go.
+            drop(exec);
+            println!("CANCEL_HELD_OK");
+        }
+    }
+    Ok(())
 }
