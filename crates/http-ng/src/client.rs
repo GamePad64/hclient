@@ -3,6 +3,7 @@ use crate::config::{
     effective_redirect, effective_timeouts, effective_uri,
 };
 use crate::deadline::{Deadline, within};
+use crate::decompress::{self, Decompressed};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
@@ -415,11 +416,27 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// used with `Client`.
     pub async fn execute(
         &self,
-        req: http::Request<RequestBody>,
-    ) -> Result<http::Response<Deadline<T::Body, Tm>>, Error>
+        mut req: http::Request<RequestBody>,
+    ) -> Result<http::Response<crate::ClientBody<T::Body, Tm>>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
+        // Content negotiation happens ONCE, here, before the first hop —
+        // and the `Accept-Encoding` it may set travels to every subsequent
+        // one, because `stages::redirect::next_hop` clones the previous
+        // hop's headers. The same arrangement `effective_timeouts` gets one
+        // level down, for the same reason: a request that stopped asking
+        // for a coding halfway through a redirect chain would decode the
+        // first response and not the last.
+        //
+        // The gate is `Capabilities::response_decompression` and nothing
+        // else — see `decompress::negotiate`, which is where the
+        // `forbidden_request_headers` trap is spelled out.
+        let decoders = decompress::negotiate(
+            req.headers_mut(),
+            self.inner.transport.capabilities(),
+            decompress::Decoders::compiled_in(),
+        );
         // The deadline starts HERE, once, and not inside the loop below:
         // a bound that restarted on every redirect hop would not be a
         // bound on the operation, and that is the whole reason this is not
@@ -436,12 +453,31 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             None => self.run(req).await?,
             Some(t) => within(self.run(req), &self.inner.timer, t).await?,
         };
+        let (mut parts, body) = resp.into_parts();
+        // Also strips `Content-Encoding` and `Content-Length` when it
+        // returns a decoder — both describe the wire, and neither is true
+        // of the body assembled below.
+        let decoder = decompress::decoder_for(&mut parts, decoders);
+        // **The order of these two wrappers is load-bearing, in this
+        // direction only.** The deadline goes on FIRST, directly around
+        // the transport's body, so it is polled once per COMPRESSED frame;
+        // the decoder goes outside it and may loop over many of those
+        // before it yields anything. The other way round, a single poll of
+        // the decoder could pull an unbounded number of frames off the
+        // wire without the clock ever being consulted, and a slow server
+        // sending highly compressible padding would walk straight around
+        // the bound. `decompress`'s module doc comment has the long form.
+        //
         // The bound outlives `execute`, because the operation does: the
-        // dribbling body this exists for arrives entirely after the head.
+        // dribbling body it exists for arrives entirely after the head.
         // `http-ng-wasi`'s `Body` carries an unfinished write future the
         // same way, and for the same reason — `Transport::execute`'s
-        // signature is untouched by either.
-        Ok(resp.map(|body| Deadline::new(body, self.inner.timer.clone(), started, total)))
+        // signature is untouched by any of it.
+        let body = Deadline::new(body, self.inner.timer.clone(), started, total);
+        Ok(http::Response::from_parts(
+            parts,
+            Decompressed::new(body, decoder),
+        ))
     }
 
     /// The stages themselves, unbounded — `execute` above puts the bound

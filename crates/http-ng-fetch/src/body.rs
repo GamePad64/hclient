@@ -97,7 +97,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use http_body::{Body as HttpBody, Frame, SizeHint};
-use http_ng_core::{Error, ErrorKind};
+use http_ng_core::{DecompressionSupport, Error, ErrorKind};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, JsValue};
@@ -170,15 +170,46 @@ impl std::fmt::Debug for Body {
     }
 }
 
+/// What this transport does with a response `Content-Encoding` — declared
+/// once, here, and read by the two places in this crate that depend on it.
+///
+/// The browser reverses a content coding before the `ReadableStream` this
+/// module wraps yields a single byte; the JS side never sees the encoded
+/// form and has no way to ask for it. That one fact drives two different
+/// behaviours, and they must not be able to drift apart:
+///
+/// - [`content_length_hint`] below refuses to trust `Content-Length` under
+///   a `Content-Encoding`, because that number describes the wire and this
+///   stream yields the decoded bytes. If the browser did NOT decode,
+///   `Content-Length` would be exactly right and distrusting it would be
+///   the lie.
+/// - `caps::probe` reports it as
+///   [`Capabilities::response_decompression`](http_ng_core::Capabilities::response_decompression),
+///   which is what stops `http-ng`'s `Client` decoding a second time and
+///   corrupting every compressed response.
+///
+/// Hence a constant read by both rather than a literal at each site — the
+/// same recipe `http-ng-native`'s `reuse_of` uses for
+/// [`ReuseSupport`](http_ng_core::ReuseSupport), so that "what this
+/// transport does" and "what it declares" are one fact read twice. Flipping
+/// this to `None` makes `tests/body.rs`'s
+/// `size_hint_does_not_trust_content_length_under_content_encoding` fail,
+/// which is what "read twice" is worth.
+pub(crate) const RESPONSE_DECOMPRESSION: DecompressionSupport = DecompressionSupport::Internal;
+
 /// The `size_hint` this body can honestly offer BEFORE any byte has been
 /// read — see the module doc comment's `size_hint` section for why
 /// `Content-Encoding` gates trusting `Content-Length` at all.
 fn content_length_hint(resp: &web_sys::Response) -> SizeHint {
     let headers = resp.headers();
+    // Not `true` unconditionally: `Content-Length` is only untrustworthy
+    // here BECAUSE the browser already reversed the coding — see
+    // [`RESPONSE_DECOMPRESSION`], the single declaration of that fact.
+    let already_decoded = matches!(RESPONSE_DECOMPRESSION, DecompressionSupport::Internal);
     let trustworthy = match headers.get("content-encoding") {
         Ok(Some(v)) => {
             let v = v.trim();
-            v.is_empty() || v.eq_ignore_ascii_case("identity")
+            v.is_empty() || v.eq_ignore_ascii_case("identity") || !already_decoded
         }
         Ok(None) => true,
         // `Headers.get` on a plain lowercase ASCII name has no realistic

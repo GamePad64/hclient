@@ -1,5 +1,5 @@
 use crate::client::Client;
-use crate::deadline::Deadline;
+
 use crate::response::Response;
 use bytes::Bytes;
 use http_body::Body as HttpBody;
@@ -381,7 +381,7 @@ impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
     /// A single connection attempt, exactly [`SseStream::new`]'s contract —
     /// no reconnect, because there is no timer to wait out a backoff delay
     /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
-    pub async fn connect(self) -> Result<SseStream<Deadline<T::Body, C>>, Error>
+    pub async fn connect(self) -> Result<SseStream<crate::ClientBody<T::Body, C>>, Error>
     where
         T::Body: HttpBody<Data = Bytes> + Unpin,
         <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -475,7 +475,7 @@ async fn open<T, C>(
     url: &str,
     last_event_id: Option<&str>,
     max_event_size: usize,
-) -> Result<SseStream<Deadline<T::Body, C>>, Error>
+) -> Result<SseStream<crate::ClientBody<T::Body, C>>, Error>
 where
     T: Transport,
     C: Timer + Clone,
@@ -703,7 +703,7 @@ pub struct ReconnectingSseStream<'a, T: Transport, C: Timer, Tm> {
     /// The most recently seen server `retry:` value, if any — see `next`'s
     /// doc comment for how it interacts with `options.backoff`.
     server_retry: Option<Duration>,
-    state: ReconnectState<Deadline<T::Body, C>>,
+    state: ReconnectState<crate::ClientBody<T::Body, C>>,
 }
 
 impl<'a, T, C, Tm> ReconnectingSseStream<'a, T, C, Tm>

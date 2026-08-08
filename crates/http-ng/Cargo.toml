@@ -52,6 +52,25 @@ default-transport = [
 # stays under test, just not in the default build. Same trick reqwest uses,
 # for the same reason.
 json = ["dep:serde", "dep:serde_json"]
+# Response decompression, per coding — v0.2 W5. OFF by default, on the
+# `json` precedent above and for the same kind of reason: the browser
+# transport decodes for us already (`Capabilities::response_decompression`
+# reports `Internal`, and `Client` then never constructs a decoder), so a
+# wasm build with these on would be paying for `miniz_oxide`'s tables or
+# brotli's static dictionary to reach code that cannot run there. A build
+# that needs decoding says so.
+#
+# One feature per coding rather than a single `decompression` switch: the
+# two have very different weights, and a caller who only ever talks to a
+# gzip server should not be linking brotli's dictionary. Which of them is on
+# decides BOTH what `Accept-Encoding` advertises and what a
+# `Content-Encoding` is matched against — one value, `decompress::Decoders`,
+# read by both, so the two cannot drift apart into a client that asks for
+# bytes it cannot read.
+#
+# CI's `test` job runs `--all-features`, so both codings stay under test.
+gzip = ["dep:flate2"]
+brotli = ["dep:brotli-decompressor"]
 
 [dependencies]
 bytes         = { workspace = true }
@@ -72,6 +91,24 @@ http-ng-proto = { workspace = true }
 # dependency).
 serde         = { version = "1", default-features = false, features = ["std"], optional = true }
 serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
+# The `gzip` feature. Default features (`rust_backend` = `miniz_oxide`), NOT
+# `zlib`/`zlib-ng`: those are C, which would put a build script and a linked
+# native library into the graph of a crate that also builds for
+# `wasm32-unknown-unknown` and `wasm32-wasip2`.
+# `flate2::write::GzDecoder` is push-shaped (`std::io::Write`), which is what
+# lets `Decompressed::poll_frame` drive it a frame at a time with no IO
+# traits and no executor anywhere near it. Licences, checked with
+# `cargo deny --all-features check` before committing: `MIT OR Apache-2.0`
+# (flate2, crc32fast), `MIT OR Zlib OR Apache-2.0` (miniz_oxide) — every one
+# already in `deny.toml`'s measured allow-list, nothing widened for this.
+flate2        = { version = "1.1", optional = true }
+# The `brotli` feature. `brotli-decompressor`, not `brotli`: W5 is response
+# decompression only, and the compressor is the larger half of that crate.
+# `DecompressorWriter` is push-shaped for the same reason flate2's decoder
+# is chosen above, and its `into_inner` is what turns a truncated stream
+# into an error rather than a short read. Licence `BSD-3-Clause OR MIT`, its
+# two `alloc-*-stdlib` dependencies `BSD-3-Clause` — again already allowed.
+brotli-decompressor = { version = "5.0", optional = true }
 # SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
 # isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely
@@ -199,6 +236,19 @@ http-ng-rt-smol    = { path = "../http-ng-rt-smol" }
 http-ng-tls-rustls = { path = "../http-ng-tls-rustls", features = ["webpki-roots"] }
 http-ng-dns-system = { path = "../http-ng-dns-system" }
 tokio              = { version = "1", features = ["rt-multi-thread"] }
+# `tests/compression.rs`'s loopback server needs to COMPRESS, and the crate
+# itself only ever decompresses (`brotli-decompressor`, not `brotli`, in
+# `[dependencies]` above — W5 is response decompression only). These two are
+# the encoders, on the server's side of the wire, where a test server
+# belongs. Dev-dependencies are outside `-e normal`, so no consumer links
+# them and `deny.toml`'s `exclude-dev` keeps them out of the shipped graph.
+#
+# Same target gate, and the same pairing with a `#![cfg]` on the test file,
+# as the `tokio` line above: on wasm neither the encoder nor `TcpListener`
+# is any use, and an ungated dev-dependency still has to BUILD for a target
+# whose test file is cfg'd out.
+flate2             = { version = "1.1" }
+brotli             = { version = "8.0", default-features = false, features = ["std"] }
 
 # `tests/wasm_default.rs` — the first browser tests in this crate (Task 8 of
 # vertical 3). `wasm-bindgen-test` is the harness `wasm-pack test` drives;

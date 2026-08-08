@@ -135,6 +135,28 @@ impl MockTransport {
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
+    /// Queues a response whose body is arbitrary BYTES, split into frames
+    /// by the caller — for anything that is not text.
+    ///
+    /// Every other `push_response*` takes `&'static str`, which is exactly
+    /// right for the SSE and redirect scenarios they were written for and
+    /// cannot express a compressed body at all: a gzip or brotli stream is
+    /// not valid UTF-8, so it can only be reached through `unsafe` or
+    /// through this method. Added for v0.2 W5, whose tests have to hand the
+    /// client a real coded stream and read plaintext back out.
+    ///
+    /// `Vec<Bytes>` rather than one `Bytes` for the same reason
+    /// `push_response_frames` exists: a decoder that only ever sees a whole
+    /// stream in one frame is not being tested as a decoder.
+    pub fn push_response_bytes(&self, resp: http::Response<Vec<Bytes>>) {
+        let (parts, body) = resp.into_parts();
+        let frames: VecDeque<MockFrame> = body.into_iter().map(MockFrame::Data).collect();
+        self.queue
+            .lock()
+            .expect("mock lock poisoned")
+            .push_back(Ok(http::Response::from_parts(parts, frames)));
+    }
+
     /// Queues a response made of several frames — for example, to
     /// reproduce an SSE stream split across a chunk boundary (Task 14).
     /// Frames are handed back by `poll_frame` one at a time, in the order

@@ -220,6 +220,16 @@ pub(crate) fn probe() -> Capabilities {
     // checks it. It rests on the Fetch Standard and on how every engine
     // implements it, which is good evidence and is not a measurement.
     c.connection_reuse = ReuseSupport::Supported;
+    // NOT derived from `FORBIDDEN_HEADERS` containing `Accept-Encoding`
+    // three fields down, even though both are true of this backend: "the
+    // header cannot be sent" and "the body reaching you is already decoded"
+    // are different claims that coincide here by accident (see
+    // `DecompressionSupport`'s own doc comment, which says so at the seam).
+    // It is read from `body::RESPONSE_DECOMPRESSION`, the same constant
+    // `body::content_length_hint` consults to decide it may not trust
+    // `Content-Length` — one fact about the browser, read twice, in the
+    // shape `http-ng-native`'s `reuse_of` established for `ReuseSupport`.
+    c.response_decompression = crate::body::RESPONSE_DECOMPRESSION;
     c.owns_cookie_jar = true;
     c.owns_cache = true;
     // `AbortSignal` is one deadline for the whole exchange; none of the
