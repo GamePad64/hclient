@@ -209,6 +209,14 @@ jobs:
           [ -n "$host" ] || { echo "::error::could not read the host triple out of rustc -vV"; exit 1; }
           cargo fuzz run --target "$host" sse -- -max_total_time=60
           cargo fuzz run --target "$host" sse_accounting -- -max_total_time=30 -max_len=256
+          # `http-ng-idn`'s own safe layer — the deny list, the error mask,
+          # the ASCII/A-label handling — which sits in front of every
+          # backend and so is worth fuzzing on a Linux runner even though
+          # Linux has no platform backend. Deliberately NOT a differential
+          # fuzzer against `idna`: with the bundled backend
+          # `domain_to_ascii` *is* `idna::domain_to_ascii_cow`, so that
+          # comparison could not fail. See the target's own docs.
+          (cd ../../http-ng-idn/fuzz && cargo fuzz run --target "$host" idn_policy -- -max_total_time=45 -max_len=512)
 
   idn-feature-is-real:
     runs-on: ubuntu-latest
