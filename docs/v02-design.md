@@ -257,6 +257,49 @@ wait until W3 lands.
    features unify across a graph, so a library on top of `http-ng` must
    assume h2 may be enabled by someone else in the build.
 
+## IDN, and why the Unicode tables are ours rather than the system's
+
+Support for internationalised domain names goes behind an `idn` feature on
+`http-ng-proto`, **in `default`**, with the conversion at the single
+boundary where a string becomes a `Uri`. In the sans-io crate rather than
+the facade, so "the same on every backend" is a structural fact and not a
+consequence of everyone happening to go through `Client`.
+
+**What it replaces is an inconsistency, not a feature.** Measured before
+deciding: `client.get("https://münchen.de/x")` errors with `invalid uri
+character` on a client with no `base_url`, and succeeds — punycoded — on one
+that has any `base_url` at all. `effective_uri` routes the first through
+`Uri::parse`, which rejects non-ASCII, and the second through
+`resolve_reference`, which goes via `url::Url`, which punycodes. The
+`Location` header of a redirect takes the second path too. So the same URL
+works or fails depending on an unrelated setting.
+
+**Why a feature and not the system's ICU**, since the machine has
+`libicuuc.so.78` sitting there:
+
+- We do not link ICU at all. `icu_properties_data` is pure Rust — no
+  `extern "C"`, no `links` key — with 1.8 MB of generated tables compiled
+  in. It is ICU4X, a Rust reimplementation, not a binding.
+- The system's is ICU4C: different implementation, different data format,
+  C++ ABI, and symbols suffixed with the major version (`libicuuc.so.78`
+  means `u_strlen_78`). Building against one and running against another
+  fails at load, and distributions carry different majors.
+- It does not exist on two of our three targets. There is no system ICU on
+  `wasm32-unknown-unknown` or `wasm32-wasip2`, nor in a static musl binary
+  or a scratch container. A system dependency for IDNA would serve one third
+  of what this client is for.
+- ICU4X's runtime `DataProvider` does not close the gap either: the blob is
+  ICU4X's own format, so it has to be shipped alongside. That moves the
+  megabytes out of the binary, it does not remove them.
+
+Turning the feature off removes the tables entirely, on every target, with
+no fallback to hunt for. That is the honest shape: this build does not deal
+in internationalised domains. With it off, a non-ASCII host must produce a
+typed error naming the reason — not `http`'s `invalid uri character`, from
+which nobody can tell what to do.
+
+---
+
 ## Not in v0.2, and why
 
 **HTTP/3** needs QUIC, which needs UDP, which is a runtime capability the
