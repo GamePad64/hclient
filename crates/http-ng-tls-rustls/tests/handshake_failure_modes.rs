@@ -207,17 +207,29 @@ async fn peer_resetting_mid_handshake_is_reported_as_tls_not_a_hang() {
     .await;
 
     assert!(matches!(err.kind(), http_ng_core::ErrorKind::Tls), "{err}");
-    // Both kinds mean "the peer tore the connection down": Linux and macOS
-    // report the received RST as `ConnectionReset`, Windows can surface the
-    // same exchange as `ConnectionAborted` (WSAECONNABORTED, 10053). What
-    // must NOT happen is `UnexpectedEof` — that would mean an abortive
+    // All three kinds mean "the peer tore the connection down", and which
+    // one you get depends on whether the RST lands while we are reading or
+    // while we are writing — not on anything this crate does. Linux reports
+    // the received RST as `ConnectionReset`; Windows can surface the same
+    // exchange as `ConnectionAborted` (WSAECONNABORTED, 10053); macOS was
+    // measured returning `BrokenPipe` (EPIPE, os error 32), which is what a
+    // write to an already-reset connection gives, and rustls does write
+    // during this handshake.
+    //
+    // What must NOT happen is `UnexpectedEof` — that would mean an abortive
     // close was reported as a graceful one, which is the confusion the
-    // sibling test above exists to keep separate.
+    // sibling test above exists to keep separate. That is the assertion
+    // doing the work here; the enumeration is deliberately not widened to
+    // "any error".
     let kind = io_kind(&err);
     assert!(
         matches!(
             kind,
-            Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)
+            Some(
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
         ),
         "expected a reset-shaped source error, got {kind:?} from: {err}"
     );
