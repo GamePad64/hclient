@@ -179,11 +179,23 @@ are not, and a feature flag that claimed otherwise would not build.
 
 For constrained targets that *do* have `std` — static musl binaries, small
 containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
-`crates/http-ng-native/examples/minimal.rs`. For microcontrollers, this is
-not the right library: every transport here needs a platform that has one
-(hyper wants std and tokio, `wasi:http` wants a WASI host, `fetch` wants a
-browser), so the work would be a new backend over something like
-`embedded-nal-async`, not a port of this one.
+`crates/http-ng-native/examples/minimal.rs`.
+
+Microcontrollers are not reachable today, but the obstacles are
+dependencies rather than design. The `Transport` seam already spans a
+socket plus hyper, a delegated `wasi:http` exchange, and the browser's
+`fetch`; an `embedded-nal-async` backend would be a fourth point on that
+line, nearer to the native one than `fetch` is. Two things stand in the way:
+
+- **`http` 1.x, external.** The `compile_error!` above.
+- **`url`, ours and removable.** `http-ng-proto` uses it at exactly one
+  functional site — `Url::parse().join()` for RFC 3986 reference
+  resolution — and that one call pulls `idna` -> `icu_normalizer` +
+  `icu_properties`: measured at 1.9 MB, 1004 KB, 820 KB and 452 KB of
+  vendored source, almost all Unicode tables for internationalised domain
+  names. On a part with 256-512 KB of flash that is the entire budget, for
+  a feature such a device rarely needs. Even on a desktop it is a large
+  dependency for one URI join.
 
 Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
 and WebSocket are v0.2 and later — see
