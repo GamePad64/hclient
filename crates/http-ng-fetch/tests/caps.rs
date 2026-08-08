@@ -160,6 +160,12 @@ fn supports_duplex_reflects_the_prototype_not_a_hardcoded_constant() {
     let key = JsValue::from_str("duplex");
     let had_duplex_before =
         js_sys::Reflect::has(&proto, &key).expect("`in` on an object never throws");
+    // The ORIGINAL descriptor, not merely "was it there". In Chrome
+    // `Request.prototype.duplex` is an accessor; deleting it and putting a
+    // plain string back would satisfy `Reflect::has` while leaving the realm
+    // subtly different for whichever test runs next in this shared page.
+    let original_descriptor =
+        js_sys::Object::get_own_property_descriptor(proto.unchecked_ref::<js_sys::Object>(), &key);
 
     // Baseline, taken before any mutation — see this test's own doc comment
     // for why the baseline check, not only the post-flip one, is what
@@ -188,8 +194,14 @@ fn supports_duplex_reflects_the_prototype_not_a_hardcoded_constant() {
 
     // Restore before asserting: a failed assertion below must not leave
     // `Request.prototype` mutated for whichever test in this page runs next.
+    // Restoring the captured descriptor puts back an accessor as an accessor,
+    // rather than substituting a data property that merely answers `in`.
     if had_duplex_before {
-        js_sys::Reflect::set(&proto, &key, &JsValue::from_str("half")).expect("restore failed");
+        js_sys::Object::define_property(
+            proto.unchecked_ref::<js_sys::Object>(),
+            &key,
+            original_descriptor.unchecked_ref::<js_sys::Object>(),
+        );
     } else {
         js_sys::Reflect::delete_property(proto.unchecked_ref::<js_sys::Object>(), &key)
             .expect("restore failed");
@@ -197,8 +209,25 @@ fn supports_duplex_reflects_the_prototype_not_a_hardcoded_constant() {
     let restored = js_sys::Reflect::has(&proto, &key).expect("`in` never throws");
     assert_eq!(
         restored, had_duplex_before,
-        "restore must put the prototype back exactly as found"
+        "restore must put the prototype back as found"
     );
+    if had_duplex_before {
+        let now = js_sys::Object::get_own_property_descriptor(
+            proto.unchecked_ref::<js_sys::Object>(),
+            &key,
+        );
+        let was_accessor = !js_sys::Reflect::get(&original_descriptor, &JsValue::from_str("get"))
+            .expect("descriptor lookup never throws")
+            .is_undefined();
+        let is_accessor = !js_sys::Reflect::get(&now, &JsValue::from_str("get"))
+            .expect("descriptor lookup never throws")
+            .is_undefined();
+        assert_eq!(
+            was_accessor, is_accessor,
+            "restore must put back the same KIND of property — an accessor replaced by a data \
+             property answers `in` identically and still leaves the realm changed"
+        );
+    }
 
     assert_eq!(
         observed, !had_duplex_before,

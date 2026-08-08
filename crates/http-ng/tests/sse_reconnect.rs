@@ -648,6 +648,36 @@ fn an_invalid_header_is_an_error_not_a_silently_dropped_pair() {
     );
 }
 
+/// The FIRST invalid pair wins and survives later calls — the contract
+/// `SseBuilder::header`'s doc comment states, held by its
+/// `if self.error.is_some() { return self; }` guard and pinned by nothing
+/// until now.
+///
+/// The two failures have to be distinguishable for this test to say
+/// anything, so it uses an invalid header *name* first and an invalid
+/// header *value* second: `http` reports those differently. Deleting the
+/// guard lets the second overwrite the first, and the assertion below
+/// fails.
+#[test]
+fn the_first_invalid_header_wins_and_later_ones_do_not_overwrite_it() {
+    let m = MockTransport::new();
+    let c = Client::builder(m).build().unwrap();
+
+    let err = futures_executor::block_on(
+        c.sse("https://a/stream")
+            .header("bad name", "fine")
+            .header("x-fine", "bad\nvalue")
+            .connect(),
+    )
+    .expect_err("two invalid headers must still fail connect()");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("header name"),
+        "the first failure (an invalid NAME) must be the one reported, not the later invalid value: {msg}"
+    );
+}
+
 /// The same mechanism, through the reconnecting builder — `SseBuilder::
 /// error` is shared state consulted by BOTH `SseBuilder::connect` and
 /// `ReconnectingSseBuilder::connect` (the latter via `self.builder.error`),
