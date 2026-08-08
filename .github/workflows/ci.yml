@@ -85,12 +85,52 @@ jobs:
 
   test:
     strategy:
+      # A platform-specific failure must not hide the other two. Measured:
+      # `test (macos-latest)` failed on a loopback-address assumption and
+      # fail-fast cancelled `test (windows-latest)` while it was still
+      # downloading crates — so Windows reported red twice in a row having
+      # run nothing at all, and its real result stayed unknown. Same class of
+      # blindness as `cargo test` abandoning the remaining test binaries
+      # after the first failure, which is why this workspace runs nextest.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: cargo-nextest
+      # `local_address_selects_the_connecting_source_ip` (both runtime
+      # crates) needs a loopback source IP DISTINCT from the default route
+      # to a 127.0.0.1 destination — otherwise it cannot tell "the option
+      # took effect" from "the OS default happened to match". Linux and
+      # Windows make the whole of 127.0.0.0/8 loopback, so 127.0.0.2 is
+      # there already. macOS configures only 127.0.0.1 on lo0, and the test
+      # failed on `macos-latest` with `Os { code: 49, AddrNotAvailable }`.
+      #
+      # The test degrades to a weaker assertion when the address is
+      # unassignable (it requires the connect to FAIL, which still proves
+      # the option was not silently dropped). That fallback is for laptops.
+      # CI should run the strong one, so add the alias here.
+      - name: give macOS a second loopback address
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          # Fail closed. Without this the tests stay green on the weak
+          # branch and nothing anywhere says the strong one stopped running
+          # — the exact shape of vacuous check this repo keeps finding.
+          python3 - <<'PY'
+          import socket, sys
+          s = socket.socket()
+          try:
+              s.bind(("127.0.0.2", 0))
+          except OSError as e:
+              sys.exit(f"::error::127.0.0.2 is still not bindable after `ifconfig lo0 alias`: {e}")
+          PY
       - shell: bash
         run: |
           set -euo pipefail
@@ -100,7 +140,7 @@ jobs:
           fi
           # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) is excluded
           # from here deliberately (Task 14, review round 1, Finding 4): this job
-          # runs `cargo test --workspace --all-features` as a whole, and exactly
+          # runs the whole workspace suite at once, and exactly
           # that neighborhood — several heavy test processes on one
           # runner at the same time — was the measured source of the complexity
           # test's flakiness. It has its own job, `sse-complexity-guard` below,
@@ -115,7 +155,22 @@ jobs:
           # not a single test run — is where the check actually belongs (Finding 1,
           # review round 2). It going red blocks the merge and forces both spots to
           # be fixed together, so duplicating the check here would be redundant.
-          cargo test --workspace --all-features -- --skip parsing_scales_linearly_not_quadratically
+          # `--color never`: nextest writes its progress and `Summary` to
+          # STDERR and colourises when it thinks a terminal is watching. The
+          # guard below greps that output, and ANSI escapes inside the count
+          # make the pattern unmatchable — a green job that checked nothing.
+          # This exact failure was measured on this project once already.
+          out="$(cargo nextest run --workspace --all-features --color never \
+            -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)"
+          printf '%s\n' "$out"
+          # nextest exits non-zero on a failing test, so this is not about
+          # failures — it is about the run never happening. A filterset typo,
+          # a workspace that resolves to nothing, a binary that fails to
+          # enumerate: all of those can leave a zero exit with no tests run.
+          if ! printf '%s\n' "$out" | grep -qE '[0-9]+ tests? run:'; then
+            echo "::error::nextest printed no Summary — the workspace test run did not happen"
+            exit 1
+          fi
 
   # m2 of the branch's final review. `no-discarded-wasi-setters` below justifies
   # its switch from a line-by-line grep to Python by saying the line wrap is done
@@ -132,8 +187,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt }
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          components: rustfmt
       - shell: bash
         run: |
           set -euo pipefail
@@ -154,8 +211,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          components: clippy
       - shell: bash
         run: |
           set -euo pipefail
@@ -177,7 +236,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: cargo-nextest
       - shell: bash
         run: |
           set -euo pipefail
@@ -185,17 +247,24 @@ jobs:
             echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
             exit 1
           fi
-          # `cargo test ... -- --exact NAME`, if NAME matched nothing,
-          # exits with code 0 and prints "0 passed" — the same class of defect
+          # `cargo test ... -- --exact NAME`, if NAME matched nothing, exited
+          # with code 0 and printed "0 passed" — the same class of defect
           # already fixed in Task 1 (`cargo tree | grep` and `grep -rn`,
           # silently green when the crate is missing). Renaming or moving the
           # test would produce a COMPLETELY silent green job here — zero
-          # runs, nothing checked — unless we explicitly verify that the test
-          # actually was found and executed (review round 2, Finding 1).
-          out="$(cargo test -p http-ng-proto --all-features \
-            sse::lines::tests::parsing_scales_linearly_not_quadratically -- --exact)"
+          # runs, nothing checked (review round 2, Finding 1).
+          #
+          # nextest is better behaved: an empty filterset is `error: no tests
+          # to run` and exit code 4 — measured, not assumed. The explicit
+          # count check below stays anyway, because that behaviour is a
+          # DEFAULT (`--no-tests` can change it) and because "exactly one
+          # test ran" is a stronger claim than "at least one did": this job's
+          # whole purpose is that the complexity test runs alone on the
+          # runner.
+          out="$(cargo nextest run -p http-ng-proto --all-features --color never \
+            -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)"
           printf '%s\n' "$out"
-          if ! printf '%s\n' "$out" | grep -qE '^test result: ok\. 1 passed;'; then
+          if ! printf '%s\n' "$out" | grep -qE '1 test run: 1 passed'; then
             echo "::error::sse-complexity-guard did not run exactly one test — parsing_scales_linearly_not_quadratically appears to have been renamed or moved. Fix the path here AND the --skip value in the test job."
             exit 1
           fi
@@ -204,13 +273,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: moonrepo/setup-rust@v1
         with:
+          channel: "1.97.0"
           # `http-ng-fetch` (Task 1 of vertical 3) is wasm-only — see below
           # for why it needs its own `cargo check` call, on its own target,
           # rather than joining the workspace check.
           targets: wasm32-unknown-unknown
-      - shell: bash
         run: |
           set -euo pipefail
           # No hand-maintained crate list any more. It named twelve
@@ -336,7 +405,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: cargo-nextest
       - shell: bash
         run: |
           set -euo pipefail
@@ -344,7 +416,7 @@ jobs:
             echo "::error::http-ng is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
             exit 1
           fi
-          cargo test -p http-ng --test two_runtimes
+          cargo nextest run -p http-ng --test two_runtimes
       # The task brief (task-14-brief.md, Step 5) proposed a literal
       # `grep -E '^(tokio|async-compat)'` over `cargo tree -p http-ng-rt-smol
       # -e normal` and expected an empty result — checked on this tree and
@@ -441,8 +513,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-wasip2 }
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          targets: wasm32-wasip2
+          bins: cargo-nextest,wasmtime-cli
       - shell: bash
         run: |
           set -euo pipefail
@@ -462,20 +537,19 @@ jobs:
       # the only automated protection of the property this whole vertical
       # exists for (`Body::is_end_stream()` against a real host) — previously
       # did not run in any CI job at all. When `wasmtime` was absent it
-      # printed `::notice::` and silently returned `ok` — a green
-      # `cargo test` in that case says nothing about whether this path was
-      # exercised at all; the same class of vacuous check that was fixed in
-      # every other job of the vertical. `cargo install`, rather than a
-      # prebuilt binary — the same pattern as `cargo-fuzz` in `fuzz-smoke`
-      # below.
-      - run: cargo install wasmtime-cli --locked
+      # printed `::notice::` and silently returned `ok` — a green test run in
+      # that case says nothing about whether this path was exercised at all;
+      # the same class of vacuous check that was fixed in every other job of
+      # the vertical. `wasmtime-cli` comes from the `bins:` list on the setup
+      # step above; the `env:` below is what turns a missing binary into a
+      # failure rather than a skip.
       - shell: bash
         env:
           # Resolution of the branch's final review, finding B3. Previously
           # `require_wasmtime` in `tests/live_roundtrip.rs` keyed off `CI` —
           # a variable GitHub Actions sets for EVERY job, whereas `wasmtime`
           # is installed by exactly this one. The matrix job `test` runs
-          # `cargo test --workspace --all-features`, picks up
+          # the whole-workspace suite, picks up
           # `live_roundtrip.rs` (it's native) and failed on all three
           # runners: `0 passed; 5 failed`. The guard was right in intent and
           # wrong in signal — `CI` means "some job somewhere", but what's
@@ -491,7 +565,7 @@ jobs:
           fi
           # Plain unit tests — actually execute under real `wasmtime` via
           # the runner from `.cargo/config.toml`, not just compiled.
-          cargo test -p http-ng-wasi --target wasm32-wasip2
+          cargo nextest run -p http-ng-wasi --target wasm32-wasip2
           # `live_roundtrip`/`shape` — native (see the doc comment in
           # `tests/live_roundtrip.rs` on why they cannot be a
           # `wasm32-wasip2` target): they spin up a mock server themselves
@@ -500,18 +574,21 @@ jobs:
           # `live_roundtrip.rs` panic if `wasmtime` still wasn't found,
           # instead of quietly skipping the check — here it is required to
           # be found, since it was just installed by the step above.
-          # `--nocapture` is not for readability, it's FOR the check below:
-          # libtest swallows the stdout/stderr of a passing test, so the
-          # `NOTICE` of a skipped live run doesn't reach `grep` at all
-          # without this flag — verified, `0` matches versus `5` with the
-          # flag. Without it, the next check would be vacuous, exactly the
-          # defect it is written against.
-          out="$(cargo test -p http-ng-wasi --test live_roundtrip -- --test-threads=1 --nocapture 2>&1)"
+          # `--no-capture` is not for readability, it's FOR the check below:
+          # nextest, like libtest before it, swallows the stdout/stderr of a
+          # PASSING test and replays it only for failures — so the `NOTICE`
+          # of a skipped live run doesn't reach `grep` at all without this
+          # flag. Re-measured against nextest when this job moved off
+          # `cargo test`, on a test that passes and writes to stderr: `1`
+          # match with the flag, `0` without. Without it, the next check
+          # would be vacuous, exactly the defect it is written against.
+          out="$(cargo nextest run -p http-ng-wasi --test live_roundtrip \
+            --color never --no-capture 2>&1)"
           printf '%s\n' "$out"
           # Second half of the same protection. The marker above turns a
           # skip into a FAILURE, but only as long as it actually reaches the
           # test: a typo in the name, `env:` moved to the wrong step,
-          # `cargo install` silently installing the binary outside `PATH` —
+          # the `bins:` install silently landing outside `PATH` —
           # and the five live tests print `NOTICE` again and report `ok`,
           # while the job stays green, having checked nothing. The name
           # symmetry between the guard and this file is held by a test
@@ -521,7 +598,7 @@ jobs:
             echo "::error::the live wasip2 run skipped the tests instead of executing them — HTTP_NG_REQUIRE_WASMTIME did not reach the test or wasmtime is not on PATH"
             exit 1
           fi
-          cargo test -p http-ng-wasi --test shape
+          cargo nextest run -p http-ng-wasi --test shape
 
   # Task 16: `wasi:http` 0.3 returns `result<_, ...>` from the setters of
   # request options (`set_connect_timeout`, `set_method`, `set_scheme`, ...)
@@ -914,8 +991,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo install cargo-fuzz --locked
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          bins: cargo-fuzz
       - run: cargo fuzz run sse -- -max_total_time=60
         working-directory: crates/http-ng-proto/fuzz
       - run: cargo fuzz run sse_accounting -- -max_total_time=30 -max_len=256
@@ -926,7 +1005,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
       - name: no async deps in http-ng-proto
         shell: bash
         run: |
@@ -969,7 +1050,7 @@ jobs:
   #      `default-features = false` for it, and it is invisible in any
   #      build that happens to want `idn` anyway.
   #   3. The feature switch survives but its OFF path is never compiled or
-  #      run: `cargo test --workspace --all-features` turns `idn` ON, so
+  #      run: the whole-workspace `--all-features` suite turns `idn` ON, so
   #      every `#[cfg(not(feature = "idn"))]` test in the workspace is
   #      dead code as far as the rest of CI is concerned.
   #
@@ -980,8 +1061,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@nextest
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: cargo-nextest
       - name: url is gone from http-ng-proto, with the feature either way
         shell: bash
         run: |
@@ -1047,17 +1130,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # `cargo test --workspace --all-features` (the `test` job) turns
+          # the whole-workspace `--all-features` suite (the `test` job) turns
           # `idn` ON. Every `#[cfg(not(feature = "idn"))]` test — the typed
           # `NonAsciiHost` error and the divergence list that names what a
           # build without Unicode tables gives up — runs only here.
-          out="$(cargo nextest run -p http-ng-proto --no-default-features 2>&1)"
+          out="$(cargo nextest run -p http-ng-proto --no-default-features --color never 2>&1)"
           printf '%s\n' "$out"
           if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
             echo "::error::nextest did not report a summary for http-ng-proto --no-default-features — the run did not happen"
             exit 1
           fi
-          out="$(cargo nextest run -p http-ng --no-default-features --features test-util 2>&1)"
+          out="$(cargo nextest run -p http-ng --no-default-features --features test-util \
+            --color never 2>&1)"
           printf '%s\n' "$out"
           if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
             echo "::error::nextest did not report a summary for http-ng --no-default-features — the run did not happen"
@@ -1074,7 +1158,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
       - name: no Send/Sync bounds declared in core surface
         shell: bash
         run: |
@@ -1669,14 +1755,20 @@ jobs:
   # left standing after the second one landed.
   browser:
     strategy:
+      # Same reason as the `test` matrix: a Chrome failure cancelling the
+      # Firefox job leaves the engine-specific question unanswered, and
+      # engine-specific is the whole point of running both.
+      fail-fast: false
       matrix:
         browser: [chrome, firefox]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-unknown-unknown }
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          targets: wasm32-unknown-unknown
+          bins: wasm-pack
       - name: browser tests
         shell: bash
         run: |
@@ -1760,8 +1852,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-unknown-unknown, wasm32-wasip2 }
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          targets: wasm32-unknown-unknown,wasm32-wasip2
       - name: fetch build (wasm32-unknown-unknown) must contain neither tokio, hyper, nor h2
         shell: bash
         run: |
@@ -1870,8 +1964,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with: { targets: wasm32-unknown-unknown, components: rust-src }
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: nightly
+          targets: wasm32-unknown-unknown
+          components: rust-src
       - name: the unsafe Send must be rejected when atomics are on
         shell: bash
         run: |
@@ -1938,9 +2035,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: moonrepo/setup-rust@v1
         with:
-          targets: wasm32-wasip2, wasm32-unknown-unknown
+          channel: stable
+          targets: wasm32-wasip2,wasm32-unknown-unknown
       - shell: bash
         run: |
           set -euo pipefail

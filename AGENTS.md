@@ -31,7 +31,7 @@ End-to-end proof that this SAME generic code (not two
 separate examples) actually runs over the network on two different runtimes
 without a single `#[cfg]` —
 [`crates/http-ng/tests/two_runtimes.rs`](crates/http-ng/tests/two_runtimes.rs):
-`cargo test -p http-ng --test two_runtimes` instantiates the same
+`cargo nextest run -p http-ng --test two_runtimes` instantiates the same
 `fetch_once<R>` under `http_ng_rt_tokio::Tokio` (a real `tokio::runtime::
 Runtime`) and under `http_ng_rt_smol::Smol` (a bare `futures_executor::block_on`,
 no spawn and no `tokio` in the smol path's graph — see the next section).
@@ -63,6 +63,23 @@ the example claims to have ported are pinned by
 [`crates/http-ng/tests/portable_example.rs`](crates/http-ng/tests/portable_example.rs),
 because three green builds on their own would also be green for an example
 that never streams and never sets a timeout.
+
+## Running the tests
+
+`cargo nextest run --workspace --all-features` — nextest, not `cargo test`,
+and CI runs the same. Two reasons, both of which have cost this project
+real time: `cargo test` abandons the remaining test binaries after the
+first one fails, so a red run hides every failure but the earliest
+alphabetically, and its per-binary `test result:` lines have to be summed
+by hand where nextest prints one `Summary`. Nextest also runs each test in
+its own process, which matters here because mutation testing is this
+project's primary review technique.
+
+Two things nextest does not cover. Doctests: it cannot run them
+(`cargo test --doc` does) — the workspace currently has none, so nothing is
+lost, and if that changes CI needs a `--doc` step. Browser tests: those go
+through `wasm-pack test --headless --chrome|--firefox` regardless, see the
+`browser` job.
 
 ## What's in the dependency graph
 
