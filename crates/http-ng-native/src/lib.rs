@@ -234,14 +234,9 @@ where
 
 /// The failure [`with_connect_timeout`] ends in when the timer wins the
 /// race against `connect::connect`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("connect timed out after {0:?}")]
 struct ConnectTimedOut(Duration);
-impl std::fmt::Display for ConnectTimedOut {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "connect timed out after {:?}", self.0)
-    }
-}
-impl std::error::Error for ConnectTimedOut {}
 
 /// Races `fut` against `rt.sleep(d)`: `fut` if it finished first,
 /// otherwise `Err(ErrorKind::Timeout(Phase::Connect))` — closes branch

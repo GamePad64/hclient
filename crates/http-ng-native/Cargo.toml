@@ -19,6 +19,7 @@ http-ng-proto  = { workspace = true }
 http-ng-rt     = { path = "../http-ng-rt",    version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",   version = "0.1.0" }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
+thiserror      = { workspace = true }
 
 [dev-dependencies]
 futures-executor    = { version = "0.3", default-features = false, features = ["std"] }
