@@ -64,8 +64,17 @@ impl<S: hyper::rt::Write + Unpin> futures_io::AsyncWrite for HyperIo<S> {
     }
 
     /// futures-io's `close` maps to hyper's `shutdown`: both mean "no more
-    /// writes", and for TLS that is what triggers `close_notify` rather
-    /// than a bare FIN.
+    /// writes".
+    ///
+    /// Note which layer does what, because an earlier version of this
+    /// comment got it wrong. `close_notify` is emitted by
+    /// `async_native_tls::TlsStream::poll_close`, one layer ABOVE this
+    /// adapter, which calls native-tls's `shutdown()`. `HyperIo` wraps the
+    /// raw transport BENEATH the TLS session, so by the time this runs the
+    /// alert has already gone out and what closes here is TCP. The mapping
+    /// is still the right one — a `close` that only flushed would leave the
+    /// socket open after the session ended — but it is not what produces
+    /// the alert.
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }

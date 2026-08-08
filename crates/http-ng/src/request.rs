@@ -118,7 +118,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
 
     /// The redirect policy for this request only, overriding
     /// [`ClientBuilder::redirect`] wholesale — not field by field like
-    /// `timeouts` above: `RedirectPolicy`'s single field is `limit: u8`,
+    /// `timeouts` above: `RedirectPolicy` is a plain value, not an `Option`,
     /// not an `Option`, so there is nothing to fall through (see
     /// `config::effective_redirect`, which does the merge).
     ///

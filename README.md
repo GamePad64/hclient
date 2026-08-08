@@ -144,7 +144,7 @@ browser's `fetch` (vertical 3).
 
 | target | transport | tokio in the graph |
 |---|---|---|
-| native | `http-ng-native` — TCP + rustls + HTTP/1 | yes, on the h1 path |
+| native | `http-ng-native` — TCP + HTTP/1, TLS pluggable | yes, on the h1 path |
 | WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
 | browser | `http-ng-fetch` — `fetch` | **no** |
 
@@ -166,6 +166,21 @@ In exchange nothing here carries version-shim code, and CI checks one floor
 instead of a per-crate matrix. CI's `msrv` job pins that exact toolchain and
 runs `cargo check --workspace --all-features --all-targets`, so the promise
 covers tests and examples, not only the libraries.
+
+**Two TLS backends, both behind the same `TlsConnect` seam.**
+`http-ng-tls-rustls` is the default: memory-safe, and it behaves the same on
+every platform. `http-ng-tls-native-tls` uses the platform's own stack —
+SChannel, Security.framework, OpenSSL — and exists for deployments whose
+trust decisions live in the OS store: enterprise roots pushed by policy,
+smartcard client certificates, a FIPS-validated provider. That is a fact
+about an environment, not a preference. It reports less back, and its own
+module doc says exactly what; in particular it cannot report the negotiated
+ALPN, so protocol selection driven by ALPN needs the rustls one.
+
+`NoTls` in `http-ng-tls` is the third choice: no TLS at all, for a build
+that has no room for a stack. `https://` then fails at connect with a typed
+error, and `Capabilities::tls_config` reads `TlsSupport::None` rather than
+claiming otherwise.
 
 **`std` is required, and that is not our decision to reverse.** `http` 1.x
 forbids `no_std` outright — `src/lib.rs` carries a commented-out

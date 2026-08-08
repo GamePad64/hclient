@@ -19,7 +19,7 @@ pub struct Config {
     ///
     /// An `Option` rather than a bare `RedirectPolicy` because
     /// `check_supported` has to tell those two apart:
-    /// `RedirectPolicy::default()` is `{ limit: 10 }`, so a check that
+    /// `RedirectPolicy::default()` is `Limited(10)`, so a check that
     /// fired on any policy at all would reject every client built against
     /// a backend that follows redirects internally, including one whose
     /// author never mentioned redirects. Same idiom as `Timeouts`, whose
@@ -131,7 +131,7 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
 /// avoid (reqwest #2641).
 ///
 /// **Whole-value, not field-by-field like `effective_timeouts`.**
-/// `RedirectPolicy`'s single field is `limit: u8`, not `Option<u8>`, so
+/// `RedirectPolicy` is a plain value, not an `Option`, so
 /// there is no "field the request left unset" to fall through to the
 /// client; a request that set a policy replaces the client's entirely. If
 /// `RedirectPolicy` ever grows a second field, this is the function that
@@ -209,7 +209,7 @@ pub fn check_supported(
 /// stage can carry out.
 ///
 /// **Only `Some` is rejected**, and that is why `Config::redirect` is an
-/// `Option`. `RedirectPolicy::default()` is `{ limit: 10 }`; a check
+/// `Option`. `RedirectPolicy::default()` is `Limited(10)`; a check
 /// reading a bare `RedirectPolicy` could not distinguish "follow up to ten
 /// hops, and I mean it" from "I never mentioned redirects", so it would
 /// reject every browser client ever built — including `Client::new()`'s
