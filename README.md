@@ -154,6 +154,16 @@ The two "no"s are machine-checked on every push, not asserted here:
 Measured at the time of writing: zero matches for `tokio`, `hyper` or `h2` in
 either wasm graph, four in the native one.
 
+**Minimum supported Rust: 1.85** for every crate except `http-ng-wasi`, which
+declares **1.90** in its own manifest because `wasip3` requires 1.87 and its
+`wasi:http` 0.3 bindings need more. Cargo resolves this per crate, so
+depending on `http-ng` does not drag the higher floor in.
+
+One consequence worth knowing before you try it: `cargo +1.85.0 check
+--workspace` **fails**, and always has — the workspace includes `http-ng-wasi`.
+That is not a regression, and CI does not run that form; its `msrv` job pins
+the toolchain and checks the crates that actually claim 1.85.
+
 Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
 and WebSocket are v0.2 and later — see
 [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
