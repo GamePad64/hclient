@@ -300,6 +300,56 @@ which nobody can tell what to do.
 
 ---
 
+## An idea recorded with its blocker: platform IDN APIs
+
+The proposal: use the platform's own IDN conversion instead of carrying
+`idna` and the ICU tables — `IdnToAscii`/`IdnToUnicode` on Windows,
+something equivalent elsewhere — as an optimised variant of the `idn`
+feature.
+
+**The blocker is not size or availability. It is that the implementations
+disagree about which host you connect to.**
+
+The Rust `idna` crate implements UTS-46. Windows' `IdnToAscii` implements
+IDNA2003 (RFC 3490). They differ on real inputs, and the difference is not
+cosmetic — measured here against `url`, which is the UTS-46 side:
+
+| input | UTS-46 (ours today) | IDNA2003 (Windows) |
+|---|---|---|
+| `straße.de` | `xn--strae-oqa.de` | `strasse.de` |
+| `faß.de` | `xn--fa-hia.de` | `fass.de` |
+
+Those are different domains. They can be registered to different people.
+Under IDNA2003 the sharp s maps to `ss`, so the name resolves to plain ASCII
+and no punycode is produced at all; under UTS-46 it is a character in its own
+right. The same divergence exists for final sigma and for ZWJ/ZWNJ.
+
+So a platform-backed variant is not a transparent optimisation. It changes,
+per operating system, **which origin a request goes to** — in a client whose
+stated mission is that the same code runs everywhere, and in the one step
+that decides who you are talking to. That makes it a security-relevant
+divergence rather than a size trade.
+
+The availability picture is also thinner than it looks:
+
+- **Windows** — `IdnToAscii` exists since Vista, and is the case above.
+- **macOS** — no public IDN API. IDN handling lives inside CFNetwork, and
+  `libicucore.dylib` is private with unversioned symbols that Apple
+  documents as not for linking.
+- **Linux** — `libidn2` is usually present and glibc's `AI_IDN` can use it,
+  but neither is guaranteed, and libidn2 is IDNA2008, a third answer.
+- **wasm** — nothing, though the browser's own URL parser is UTS-46 and
+  therefore already agrees with us.
+
+**If it is built anyway, it must be an explicit opt-in that says what it
+costs** — not a default, and not presented as an optimisation of the same
+behaviour. A build that takes it is choosing smaller binaries over
+cross-platform identity of the resolved host, and only the person making
+that build can weigh it. The feature name should say so; `idn-platform`
+rather than `idn-fast`.
+
+---
+
 ## Not in v0.2, and why
 
 **HTTP/3** needs QUIC, which needs UDP, which is a runtime capability the
