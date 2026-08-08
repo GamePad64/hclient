@@ -137,17 +137,36 @@ testing` and is used only in this same crate's `tests/h1.rs`.
 
 ## Status
 
-v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and two backends —
-`http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1) and `http-ng-native` on
-top of `hyper` + `rustls` + system DNS (vertical 2, this section). Browser
-(`fetch`) — vertical 3, not started yet.
+v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and three backends
+— `http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1), `http-ng-native` on
+top of `hyper` + `rustls` + system DNS (vertical 2), and `http-ng-fetch` on the
+browser's `fetch` (vertical 3).
+
+| target | transport | tokio in the graph |
+|---|---|---|
+| native | `http-ng-native` — TCP + rustls + HTTP/1 | yes, on the h1 path |
+| WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
+| browser | `http-ng-fetch` — `fetch` | **no** |
+
+The two "no"s are machine-checked on every push, not asserted here:
+`ambient-has-no-tokio` runs `cargo tree` for `http-ng-fetch` against
+`wasm32-unknown-unknown` and fails closed if the invocation itself breaks.
+Measured at the time of writing: zero matches for `tokio`, `hyper` or `h2` in
+either wasm graph, four in the native one.
+
+Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
+and WebSocket are v0.2 and later — see
+[`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
+does not do, and what proves the four claims it does make.
 
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
 (`fetch_once<R>` in `crates/http-ng/tests/two_runtimes.rs`, bounded by
-`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, not a single `#[cfg]` in
-the whole file) actually drives an HTTP/1.1 request over real TCP to a real
+`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, with no `#[cfg]` anywhere
+in the test code — the file's only conditional is the `#![cfg(not(target_family
+= "wasm"))]` gate excluding it from wasm targets, where its native
+dev-dependencies do not build) actually drives an HTTP/1.1 request over real TCP to a real
 server on loopback — once under `http_ng_rt_tokio::Tokio` inside a
 `tokio::runtime::Runtime`, once under `http_ng_rt_smol::Smol` on a bare
 `futures_executor::block_on`. The property is confirmed by more than a green
