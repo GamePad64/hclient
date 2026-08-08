@@ -102,7 +102,7 @@ fn enforces_the_hop_limit() {
     }
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy { limit: 2 })
+        .redirect(RedirectPolicy::Limited(2))
         .build()
         .unwrap();
     let req = http::Request::builder()
@@ -128,7 +128,7 @@ fn redirect_limit_of_zero_sends_only_the_original_request() {
     m.push_response(redirect_to("https://a/loop"));
 
     let c = Client::builder(m)
-        .redirect(RedirectPolicy { limit: 0 })
+        .redirect(RedirectPolicy::Limited(0))
         .build()
         .unwrap();
     let req = http::Request::builder()
@@ -328,4 +328,267 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
         1,
         "no second request with an empty body is sent"
     );
+}
+
+// =====================================================================
+// Task 8 of vertical 3: the per-request policy, the `Internal` rejection
+// through a real `Client`, and the default that `Option<RedirectPolicy>`
+// must not have changed.
+// =====================================================================
+
+/// The default limit is `RedirectPolicy::default()`'s ten, and it is ten
+/// exactly — not "some positive number".
+///
+/// Both halves are needed. Ten hops followed alone would still pass if
+/// `unwrap_or_default()` silently became a much larger limit; the eleventh
+/// being rejected alone would still pass if it were much smaller. Together
+/// they pin the boundary, which is what `Config.redirect` becoming an
+/// `Option` had to leave untouched.
+///
+/// Against a `Transparent` backend specifically: that is what a real
+/// non-browser backend reports (`wasi:http`), and it is the variant under
+/// which the new check must NOT fire.
+fn transparent_mock() -> MockTransport {
+    let mut caps = http_ng::Capabilities::none();
+    caps.redirects = http_ng::RedirectSupport::Transparent;
+    MockTransport::new().with_capabilities(caps)
+}
+
+fn get_from(
+    c: &Client<MockTransport>,
+) -> Result<http::Response<http_ng::mock::MockBody>, http_ng::Error> {
+    let req = http::Request::builder()
+        .uri("https://a/x")
+        .body(RequestBody::Empty)
+        .unwrap();
+    futures_executor::block_on(c.execute(req))
+}
+
+#[test]
+fn an_unconfigured_client_follows_exactly_ten_hops() {
+    let m = transparent_mock();
+    for _ in 0..10 {
+        m.push_response(redirect_to("https://a/loop"));
+    }
+    m.push_response(http::Response::builder().status(200).body("done").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = get_from(&c).expect("ten hops are within the default limit");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        c.transport().requests().len(),
+        11,
+        "the original request plus ten hops"
+    );
+}
+
+#[test]
+fn an_unconfigured_client_rejects_the_eleventh_hop() {
+    let m = transparent_mock();
+    for _ in 0..11 {
+        m.push_response(redirect_to("https://a/loop"));
+    }
+
+    let c = Client::builder(m).build().unwrap();
+    let err = get_from(&c).unwrap_err();
+
+    assert!(err.is_redirect(), "{err}");
+    assert!(
+        err.to_string().contains("10"),
+        "the message must name the limit that was hit: {err}"
+    );
+    assert_eq!(
+        c.transport().requests().len(),
+        11,
+        "the original request plus ten hops, and not a twelfth"
+    );
+}
+
+/// A per-request limit overrides the client's, through the real
+/// `RequestBuilder` — the shape `act`'s `http-client` component needs
+/// (`follow_redirects ? 10 : 0`, computed per call) and which used to
+/// require a whole new `Client`.
+#[test]
+fn a_per_request_redirect_policy_overrides_the_clients() {
+    let m = transparent_mock();
+    for _ in 0..5 {
+        m.push_response(redirect_to("https://a/loop"));
+    }
+
+    let c = Client::builder(m)
+        .redirect(RedirectPolicy::Limited(4))
+        .build()
+        .unwrap();
+    let err = futures_executor::block_on(
+        c.get("https://a/x")
+            .redirect(RedirectPolicy::Limited(1))
+            .send(),
+    )
+    .unwrap_err();
+
+    assert!(err.is_redirect(), "{err}");
+    assert!(
+        err.to_string().contains('1') && !err.to_string().contains('4'),
+        "the request's limit is the one enforced and the one reported: {err}"
+    );
+    assert_eq!(
+        c.transport().requests().len(),
+        2,
+        "the original request plus the one hop the REQUEST's limit allows, not the client's four"
+    );
+}
+
+/// `limit: 0` per request — "do not follow redirects" — is honoured by a
+/// `Transparent` backend even though the client asked to follow ten.
+#[test]
+fn a_per_request_limit_of_zero_stops_a_client_configured_to_follow() {
+    let m = transparent_mock();
+    m.push_response(redirect_to("https://a/loop"));
+
+    let c = Client::builder(m)
+        .redirect(RedirectPolicy::Limited(10))
+        .build()
+        .unwrap();
+    let err = futures_executor::block_on(
+        c.get("https://a/x")
+            .redirect(RedirectPolicy::Limited(0))
+            .send(),
+    )
+    .unwrap_err();
+
+    assert!(err.is_redirect(), "{err}");
+    assert_eq!(
+        c.transport().requests().len(),
+        1,
+        "only the original request, not a single hop"
+    );
+}
+
+/// Nothing on the request leaves the client's policy in force — the
+/// `.or(client)` half of the merge, which a function ignoring its client
+/// argument would fail.
+#[test]
+fn without_a_per_request_policy_the_clients_limit_still_applies() {
+    let m = transparent_mock();
+    for _ in 0..5 {
+        m.push_response(redirect_to("https://a/loop"));
+    }
+
+    let c = Client::builder(m)
+        .redirect(RedirectPolicy::Limited(2))
+        .build()
+        .unwrap();
+    let err = futures_executor::block_on(c.get("https://a/x").send()).unwrap_err();
+
+    assert!(err.is_redirect(), "{err}");
+    assert_eq!(
+        c.transport().requests().len(),
+        3,
+        "the original request plus the client's two hops"
+    );
+}
+
+// ── the `Internal` rejection, through a real `Client` ────────────────
+//
+// `config.rs`'s unit tests check `check_supported`/`check_redirect_supported`
+// directly. These two check that the rejection actually reaches a caller
+// of the public API, at both of the two points it has to: `build()` for a
+// client-level policy, and `send()` for a per-request one. A mock standing
+// in for the browser, so the property is checked on every `cargo test` run
+// and not only under `wasm-pack`.
+
+fn internal_mock() -> MockTransport {
+    let mut caps = http_ng::Capabilities::none();
+    caps.redirects = http_ng::RedirectSupport::Internal;
+    MockTransport::new().with_capabilities(caps)
+}
+
+#[test]
+fn a_client_level_policy_against_an_internal_backend_fails_at_build() {
+    let err = Client::builder(internal_mock())
+        .redirect(RedirectPolicy::Limited(0))
+        .build()
+        .unwrap_err();
+    assert_eq!(err.what, "redirect_policy");
+    assert!(err.backend.contains("MockTransport"), "{}", err.backend);
+}
+
+#[test]
+fn a_per_request_policy_against_an_internal_backend_fails_at_send() {
+    let m = internal_mock();
+    m.push_response(http::Response::builder().status(200).body("done").unwrap());
+
+    // The client itself configures nothing, so `build()` has nothing to
+    // object to — this is exactly the path that would be silently
+    // unchecked if the check read `Config` rather than the merged value.
+    let c = Client::builder(m).build().unwrap();
+    let err = futures_executor::block_on(
+        c.get("https://a/x")
+            .redirect(RedirectPolicy::Limited(0))
+            .send(),
+    )
+    .unwrap_err();
+
+    assert_eq!(*err.kind(), http_ng::ErrorKind::Unsupported, "{err}");
+    assert!(err.to_string().contains("redirect_policy"), "{err}");
+    assert!(
+        c.transport().requests().is_empty(),
+        "the request must be rejected before it is sent, not after"
+    );
+}
+
+/// The other side of the same coin, and the one most likely to be lost in a
+/// refactor: a browser-shaped backend must stay usable for every caller who
+/// never mentioned redirects. `Client::new()`'s `.expect(...)` on
+/// `wasm32-unknown-unknown` rests on exactly this.
+#[test]
+fn an_unconfigured_client_against_an_internal_backend_works_normally() {
+    let m = internal_mock();
+    m.push_response(http::Response::builder().status(200).body("done").unwrap());
+
+    let c = Client::builder(m).build().expect("nothing was configured");
+    let resp = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+/// `Client::query` end-to-end: the method reaches the transport, and it
+/// survives a 302 together with its body.
+///
+/// The body assertion uses `body_size_hint`, which is what `MockTransport`
+/// records — a hint of `Some(0)` on the second hop would mean the body was
+/// dropped even though the method was preserved, and that is the halfway
+/// failure a method-only assertion would miss.
+#[test]
+fn query_reaches_the_transport_and_survives_a_redirect_with_its_body() {
+    let m = MockTransport::new();
+    m.push_response(redirect_to("https://a/search2"));
+    m.push_response(http::Response::builder().status(200).body("hits").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = futures_executor::block_on(
+        c.query("https://a/search")
+            .body(RequestBody::Full(bytes::Bytes::from_static(
+                b"filter=colour:blue",
+            )))
+            .send(),
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let seen = c.transport().requests();
+    assert_eq!(seen.len(), 2, "the redirect must have been followed");
+    for (i, r) in seen.iter().enumerate() {
+        assert_eq!(
+            r.method,
+            http::Method::QUERY,
+            "hop {i} must still be a QUERY — a rewrite to GET would silently \
+             turn a filtered search into a fetch of the whole collection"
+        );
+        assert_eq!(
+            r.body_size_hint,
+            Some(18),
+            "hop {i} must carry the query body; the body IS the request"
+        );
+    }
 }

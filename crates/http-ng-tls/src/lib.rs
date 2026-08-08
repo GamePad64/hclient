@@ -9,7 +9,7 @@
 //! not one more layer stacked on top.
 #![forbid(unsafe_code)]
 
-use http_ng_core::Error;
+use http_ng_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 
 /// Parameters for a single TLS connection.
@@ -39,7 +39,11 @@ pub struct TlsRequest<'a> {
 /// **Every field is `Option`**: native-tls (the only backend available
 /// without picking a specific crypto library) hands back only the leaf
 /// certificate, ALPN, and tls-server-end-point — not the full chain, not
-/// the protocol version, not the cipher suite. The trait must allow for a
+/// the protocol version, not the cipher suite. Note that this describes
+/// `native-tls` itself; `http-ng-tls-native-tls`, the backend built on it,
+/// reports even less — its `alpn` is always `None`, because the async
+/// wrapper it uses does not expose the negotiated protocol. See that
+/// crate's module doc before relying on ALPN from it. The trait must allow for a
 /// backend with that reduced a set. Symmetrically: a backend that can't
 /// report a field must leave it `None`, not substitute a plausible-looking
 /// value — a capability that lies about its own state is worse than a
@@ -118,6 +122,101 @@ pub trait TlsConnect {
     ) -> impl Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    /// What a transport built on this implementation should advertise in
+    /// [`Capabilities::tls_config`].
+    ///
+    /// Defaulted to `Full` so that adding this method broke no existing
+    /// implementation — every one of them does perform TLS. It exists for
+    /// the one that does not: [`NoTls`] returns `None`, and a transport
+    /// that asks instead of assuming cannot end up advertising TLS it will
+    /// refuse to perform.
+    ///
+    /// The same shape as [`http_ng_dns::Resolve::supports_svcb`], and for
+    /// the same reason: a capability has to come from the component that
+    /// knows, not from whoever assembles it.
+    fn tls_support(&self) -> TlsSupport {
+        TlsSupport::Full
+    }
+}
+
+/// A [`TlsConnect`] that performs no TLS, for a client built without it.
+///
+/// For constrained targets that have `std` but no room for a TLS stack:
+/// plain HTTP works, and `https://` fails at connect with a typed error
+/// instead of failing to link. `Native<R, NoTls, D>` drops rustls,
+/// native-tls and their transitive trees from the build entirely.
+///
+/// It advertises [`TlsSupport::None`], so a caller who reads
+/// `Capabilities::tls_config` before making a request learns the truth
+/// rather than discovering it at connect time.
+///
+/// `Stream<S>` is an uninhabited type. That is not a trick: it is the type
+/// system carrying the same fact the error does — this implementation
+/// cannot produce a TLS stream, and no code path can pretend otherwise,
+/// because there is no value to pretend with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoTls;
+
+/// The stream [`NoTls`] never returns. Uninhabited, so every method is
+/// unreachable by construction rather than by a panic.
+#[derive(Debug)]
+pub enum NoStream {}
+
+impl hyper::rt::Read for NoStream {
+    fn poll_read(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+        _: hyper::rt::ReadBufCursor<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl hyper::rt::Write for NoStream {
+    fn poll_write(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+        _: &[u8],
+    ) -> core::task::Poll<std::io::Result<usize>> {
+        match *self {}
+    }
+    fn poll_flush(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+    fn poll_shutdown(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl TlsConnect for NoTls {
+    type Stream<S>
+        = NoStream
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    async fn connect<S>(&self, _io: S, req: TlsRequest<'_>) -> Result<(NoStream, TlsInfo), Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
+        Err(Error::new(
+            ErrorKind::Tls,
+            std::io::Error::other(format!(
+                "this client was built without TLS support (NoTls); cannot secure a connection to {}",
+                req.server_name
+            )),
+        ))
+    }
+
+    fn tls_support(&self) -> TlsSupport {
+        TlsSupport::None
+    }
 }
 
 #[cfg(test)]
@@ -132,7 +231,7 @@ mod tests {
     /// Polls a single `Future`/`poll_fn` synchronously and demands
     /// immediate readiness. Every future in this module's tests is built
     /// on `Loopback`, which never returns `Pending` — a real executor
-    /// would add nothing here; `Waker::noop()` (stable since 1.85, this
+    /// would add nothing here; `Waker::noop()` (stable since 1.85, well under this
     /// vertical's MSRV) settles the matter without an extra dependency
     /// like `futures-executor` for a single synchronous poll.
     fn poll_once<F: Future>(mut fut: Pin<&mut F>) -> F::Output {

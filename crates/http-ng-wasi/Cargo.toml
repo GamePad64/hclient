@@ -3,10 +3,7 @@ name = "http-ng-wasi"
 version = "0.1.0"
 description = "http-ng transport over wasi:http 0.3"
 edition.workspace = true
-# Above the workspace minimum (1.85): the `wasip3` requirement is 1.87. The
-# CI MSRV job only checks the three core crates, so the divergence is
-# intentional.
-rust-version = "1.90"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

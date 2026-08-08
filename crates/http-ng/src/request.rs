@@ -2,6 +2,7 @@ use crate::client::Client;
 use crate::response::Response;
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{Error, ErrorKind, RequestBody};
+use http_ng_proto::redirect::RedirectPolicy;
 
 #[derive(Debug)]
 pub struct RequestBuilder<'a, T> {
@@ -112,6 +113,52 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
     /// with its own connection pool.
     pub fn timeouts(mut self, t: http_ng_core::Timeouts) -> Self {
         self.extensions.insert(t);
+        self
+    }
+
+    /// The redirect policy for this request only, overriding
+    /// [`ClientBuilder::redirect`] wholesale — not field by field like
+    /// `timeouts` above: `RedirectPolicy` is a plain value, not an `Option`,
+    /// not an `Option`, so there is nothing to fall through (see
+    /// `config::effective_redirect`, which does the merge).
+    ///
+    /// The reason this exists is a real shape, not a symmetry: `act`'s
+    /// `http-client` component computes its limit per call, as
+    /// `if args.follow_redirects { 10 } else { 0 }`, from a per-request
+    /// argument. Before this method the only way to express that through
+    /// `http-ng` was a fresh `Client` per request — the very cost
+    /// `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
+    ///
+    /// **The consumer's other branch is [`RedirectPolicy::None`], not
+    /// `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
+    /// first 301/302/303/307/308 carrying a `Location` becomes
+    /// `ErrorKind::Redirect`. `None` returns that response to the caller
+    /// untouched — which is what `wasi-fetch`, the library that component
+    /// migrates from, did for `redirect_limit(0)`
+    /// (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
+    /// status.is_redirection()`), and the component forwards its status
+    /// and `Location` upward. `reqwest` keeps the two intents apart the same
+    /// way, as `Policy::none()` and `Policy::limited(0)` — and so does this
+    /// type, since the acceptance that ported that component found a
+    /// `limit: u8` field could express only the second.
+    ///
+    /// A policy of any kind is what a backend which follows redirects
+    /// internally can never honour: against `RedirectSupport::Internal`
+    /// (the browser
+    /// `fetch` transport, whose `redirect: "follow"` default isn't
+    /// overridable through this crate) it comes back as
+    /// `ErrorKind::Unsupported` from `send()` rather than being silently
+    /// dropped. `Client::execute` checks the MERGED policy, so a
+    /// per-request one is checked on the same footing as a client-level
+    /// one.
+    ///
+    /// Stored in `Extensions`, the same channel `timeouts` uses — but read
+    /// by `Client::execute` itself, not by the transport: no transport
+    /// reads a `RedirectPolicy`.
+    ///
+    /// [`ClientBuilder::redirect`]: crate::ClientBuilder::redirect
+    pub fn redirect(mut self, policy: RedirectPolicy) -> Self {
+        self.extensions.insert(policy);
         self
     }
 

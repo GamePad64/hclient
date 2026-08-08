@@ -159,8 +159,160 @@ pub trait Resolve {
     }
 }
 
+/// A [`Resolve`] that performs no name resolution: it accepts IP literals
+/// and refuses everything else.
+///
+/// For constrained targets that have `std` but no room for a resolver — or
+/// no permission to make DNS queries. `http://192.0.2.1:8080/` and
+/// `http://[2001:db8::1]/` work; `http://example.com/` fails with a typed
+/// error naming what is missing, rather than hanging or silently resolving
+/// to nothing.
+///
+/// It is honest in both directions, which is the point. A name that is not
+/// a literal produces an **error**, never an empty stream: an empty stream
+/// from a resolver means "asked, found nothing", and this resolver never
+/// asked. And a literal of the wrong family produces an empty stream rather
+/// than an error, because `4` and `6` are queried in parallel per RFC 8305
+/// and "there is no AAAA for this v4 literal" is a true, unremarkable
+/// answer — erroring there would make every literal connection report a
+/// failure it did not have.
+///
+/// `supports_svcb()` stays `false` by inheriting the trait default, so ECH
+/// and h3 discovery correctly read as unavailable.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IpLiteralOnly;
+
+impl IpLiteralOnly {
+    /// `http::Uri::host()` returns an IPv6 literal WITH its brackets
+    /// (`[::1]`), and that is the string this trait receives, so the
+    /// brackets are stripped here. Without this, every IPv6 literal would
+    /// be rejected as "not a literal" — the failure would look like a
+    /// resolver limitation rather than a parsing bug.
+    fn literal(name: &str) -> Option<IpAddr> {
+        let bare = name
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(name);
+        bare.parse::<IpAddr>().ok()
+    }
+
+    fn not_a_literal(name: &str) -> Error {
+        Error::new(
+            http_ng_core::ErrorKind::Resolve,
+            std::io::Error::other(format!(
+                "this client was built without a resolver (IpLiteralOnly); `{name}` is not an IP literal"
+            )),
+        )
+    }
+}
+
+/// Yields at most one item, then ends. Enough for a resolver that answers
+/// from the name itself.
+#[derive(Debug)]
+struct OnceStream<T>(Option<T>);
+
+impl<T: Unpin> Stream for OnceStream<T> {
+    type Item = T;
+    fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<T>> {
+        Poll::Ready(self.0.take())
+    }
+}
+
+impl Resolve for IpLiteralOnly {
+    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+        OnceStream(match Self::literal(name) {
+            Some(IpAddr::V4(a)) => Some(Ok(ResolvedAddr {
+                addr: IpAddr::V4(a),
+                ttl: None,
+            })),
+            // A v6 literal has no A record, and that is not an error.
+            Some(IpAddr::V6(_)) => None,
+            None => Some(Err(Self::not_a_literal(name))),
+        })
+    }
+
+    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+        OnceStream(match Self::literal(name) {
+            Some(IpAddr::V6(a)) => Some(Ok(ResolvedAddr {
+                addr: IpAddr::V6(a),
+                ttl: None,
+            })),
+            Some(IpAddr::V4(_)) => None,
+            None => Some(Err(Self::not_a_literal(name))),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    fn v4(r: &IpLiteralOnly, n: &str) -> Vec<Result<ResolvedAddr, Error>> {
+        futures_executor::block_on(r.lookup_ipv4(n).collect())
+    }
+    fn v6(r: &IpLiteralOnly, n: &str) -> Vec<Result<ResolvedAddr, Error>> {
+        futures_executor::block_on(r.lookup_ipv6(n).collect())
+    }
+
+    #[test]
+    fn a_v4_literal_resolves_to_itself_and_has_no_aaaa() {
+        let r = IpLiteralOnly;
+        let got = v4(&r, "192.0.2.1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].as_ref().unwrap().addr,
+            IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))
+        );
+        assert!(
+            v6(&r, "192.0.2.1").is_empty(),
+            "a v4 literal has no AAAA, and that is an answer, not a failure — \
+             erroring here would make every literal connection report a failure it did not have"
+        );
+    }
+
+    /// `http::Uri::host()` hands IPv6 literals over WITH brackets, so this
+    /// is the form the trait actually receives. Without the stripping in
+    /// `literal`, every IPv6 literal would be rejected as "not a literal".
+    #[test]
+    fn a_bracketed_v6_literal_is_accepted_because_that_is_what_uri_host_returns() {
+        let r = IpLiteralOnly;
+        let got = v6(&r, "[2001:db8::1]");
+        assert_eq!(got.len(), 1, "bracketed form must parse");
+        assert_eq!(
+            got[0].as_ref().unwrap().addr,
+            IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap())
+        );
+        assert!(v4(&r, "[2001:db8::1]").is_empty());
+    }
+
+    #[test]
+    fn a_bare_v6_literal_works_too() {
+        assert_eq!(v6(&IpLiteralOnly, "2001:db8::1").len(), 1);
+    }
+
+    /// The distinction the whole type rests on: a name it never asked about
+    /// is an ERROR, not an empty stream. An empty stream means "asked,
+    /// found nothing" — a claim this resolver is not entitled to make.
+    #[test]
+    fn a_real_hostname_is_an_error_not_an_empty_stream() {
+        let r = IpLiteralOnly;
+        for stream in [v4(&r, "example.com"), v6(&r, "example.com")] {
+            assert_eq!(stream.len(), 1, "must yield something, not nothing");
+            let err = stream[0].as_ref().unwrap_err();
+            assert_eq!(*err.kind(), http_ng_core::ErrorKind::Resolve, "{err}");
+            assert!(
+                err.to_string().contains("example.com"),
+                "the error must name what could not be resolved: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn svcb_stays_unsupported() {
+        assert!(
+            !IpLiteralOnly.supports_svcb(),
+            "a resolver that cannot query DNS at all must not claim SVCB"
+        );
+    }
+
     use super::*;
     use futures_util::StreamExt;
 

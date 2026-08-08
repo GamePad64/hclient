@@ -4,6 +4,7 @@
 //! that depends on time takes `now` as a parameter. Enforced in CI.
 #![forbid(unsafe_code)]
 
+pub mod backoff;
 pub mod happy_eyeballs;
 pub mod redirect;
 pub mod sse;

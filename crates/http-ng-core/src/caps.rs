@@ -30,16 +30,27 @@ pub enum RedirectSupport {
     Transparent,
     /// The backend follows redirects itself; we neither control nor see it.
     ///
-    /// Example — not in this workspace: a browser's `fetch()` with
-    /// `redirect: "follow"` (the default) follows the redirect inside the
-    /// browser, and the JS code sees only the final response, with no way
-    /// to intercept the intermediate hops.
+    /// **The example is in this workspace**: `http-ng-fetch` reports this
+    /// variant. A browser's `fetch()` with `redirect: "follow"` (the
+    /// default, and the only thing that crate ever sends — its
+    /// `convert.rs` never calls `RequestInit::set_redirect`) follows the
+    /// redirect inside the browser, and the JS code sees only the final
+    /// response, with no way to intercept the intermediate hops.
     ///
     /// For such a backend, `Client`'s redirect stage will never see a
-    /// single 3xx, and whatever `RedirectPolicy` was set becomes a silent
-    /// no-op. `check_supported` deliberately doesn't check this field today
-    /// (`config.rs`) — there's nothing to check until an `Internal` backend
-    /// exists; vertical 3 is the moment the check must appear alongside it.
+    /// single 3xx, and whatever `RedirectPolicy` was set would be a silent
+    /// no-op. So `check_supported` **does** check this field
+    /// (`http-ng/src/config.rs`, `check_redirect_supported`): a
+    /// `RedirectPolicy` the caller actually asked for — client-level at
+    /// `build()`, or per-request at `execute()`, whichever is in effect —
+    /// against an `Internal` backend is an `UnsupportedCapability { what:
+    /// "redirect_policy" }`, not a setting that quietly does nothing. A
+    /// caller who configured nothing is unaffected: that is why
+    /// `Config::redirect` is an `Option`.
+    ///
+    /// An earlier version of this doc said the example was "not in this
+    /// workspace" and that the field was deliberately unchecked. Both
+    /// halves stopped being true when `http-ng-fetch` landed.
     Internal,
     /// We set the policy.
     Configurable,

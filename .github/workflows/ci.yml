@@ -1,10 +1,21 @@
 name: ci
 on: [push, pull_request]
 
-# Crates appear over the course of the vertical. Each check activates as soon as
-# its crate exists, and until then EXPLICITLY prints that it was skipped. A silent
-# green check is more dangerous than a red one: after a typo in a crate name it
-# stays green forever.
+# Every check in this file FAILS CLOSED. If the crate or file a check names is
+# absent, the job goes red — it does not skip.
+#
+# This reverses the convention that stood while the workspace was being built,
+# under which a check printed `::notice::` and exited zero until its crate
+# appeared. That had a reason: the crates arrived one vertical at a time, and a
+# check for a crate nobody had written yet would have been red for weeks. All
+# fourteen crates now exist, so the only thing a skip can still express is a
+# typo in a path or a renamed crate — and it expresses it as a green run.
+#
+# The reasoning the old text gave was right and is why this changed: a silent
+# green check is more dangerous than a red one, because after a typo in a crate
+# name it stays green forever. The guards simply had not been brought into line
+# with it. Comments further down that still describe the skip-and-notice
+# behaviour are describing history, not current behaviour.
 
 jobs:
   # Review resolution (Task 16, fix round 2, finding 1): this file was
@@ -84,8 +95,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — tests skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) is excluded
           # from here deliberately (Task 14, review round 1, Finding 4): this job
@@ -127,8 +138,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — fmt skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo fmt --all --check
 
@@ -149,8 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — clippy skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -171,8 +182,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto not present yet — complexity check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # `cargo test ... -- --exact NAME`, if NAME matched nothing,
           # exits with code 0 and prints "0 passed" — the same class of defect
@@ -193,18 +204,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          # `http-ng-fetch` (Task 1 of vertical 3) is wasm-only — see below
+          # for why it needs its own `cargo check` call, on its own target,
+          # rather than joining the workspace check.
+          targets: wasm32-unknown-unknown
       - shell: bash
         run: |
           set -euo pipefail
-          pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls http-ng-tls-rustls http-ng-native; do
-            if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
-          done
-          if [ -z "$pkgs" ]; then
-            echo "::notice::core crates not present yet — MSRV not checked"
-            exit 0
-          fi
+          # No hand-maintained crate list any more. It named twelve
+          # crates and excluded `http-ng-wasi`, which used to declare its
+          # own higher `rust-version`; with the MSRV policy now "the
+          # latest stable", nothing in the workspace diverges, so
+          # `--workspace` covers everything and cannot silently omit a
+          # crate added later — which the list could, and which is the
+          # failure mode this file spends most of its length preventing.
           # `--all-targets` — resolution from the branch's final review (§4,
           # "only appears protected"). Without it, only lib targets were
           # checked, and `tests/` were NEVER checked at 1.85 during the
@@ -213,56 +228,100 @@ jobs:
           # exactly the consumer who trusted that promise and wanted to run
           # the test suite themselves.
           #
-          # `http-ng-wasi` is deliberately excluded from this job: it has its
-          # own `rust-version = "1.90"` (a `wasip3` requirement), the
-          # divergence is documented in its Cargo.toml. `http-ng-rt` (Task 1
-          # of vertical 2) was added to the list: the workspace
-          # `rust-version = "1.85"` is a shared promise, and the vertical's
-          # Global Constraints plan does not pin `http-ng-rt` to its own,
-          # higher minimum (unlike `http-ng-wasi`), so it is checked here
-          # along with the rest. `http-ng-rt-tokio` (Task 3) was added for
-          # the same reason: it declares no own `rust-version`, so it
-          # carries the workspace minimum and must build at 1.85.
-          # `http-ng-rt-smol` (Task 4) is the same case a third time: it
-          # also declares no own `rust-version`. `http-ng-rt-pair-check`
-          # (Task 4, fix round 1) is the fourth: `publish = false` (this is
-          # a property proof, not a publishable crate), but
-          # `rust-version.workspace = true` in its Cargo.toml is the same
-          # promise already checked for the other five, and
-          # `publish = false` does not cancel it. `http-ng-dns` (Task 6 of
-          # vertical 2) is the eighth: it also declares no own
-          # `rust-version` (`rust-version.workspace = true` in its
-          # Cargo.toml), so it carries the same workspace minimum as the
-          # other seven.
-          # `http-ng-dns-system` (Task 7 of vertical 2) is the ninth: the
-          # same case a fourth time (after `http-ng-rt`, `http-ng-rt-tokio`,
-          # `http-ng-rt-smol`) — it declares no own `rust-version`,
-          # `rust-version.workspace = true` in its Cargo.toml, so it carries
-          # the workspace minimum of 1.85 and must build at it alongside the
-          # other eight.
-          # `http-ng-tls` (Task 8 of vertical 2) is the tenth: the same case
-          # a fifth time — it also declares no own `rust-version`
-          # (`rust-version.workspace = true` in its Cargo.toml), carries the
-          # workspace minimum of 1.85 and must build at it alongside the
-          # other nine.
-          # `http-ng-tls-rustls` (Task 9 of vertical 2) is the eleventh: the
-          # same case a sixth time — it also declares no own `rust-version`
-          # (`rust-version.workspace = true` in its Cargo.toml). It pulls in
-          # `rustls` (0.23, requires `std`+`ring`+`tls12`) and, under
-          # `--all-features` here, also `rustls-platform-verifier` and
-          # `webpki-roots` — none of these dependencies declares an own
-          # `rust-version` above the workspace minimum, so the crate must
-          # build at 1.85 alongside the other ten.
-          # `http-ng-native` (Task 10 of vertical 2) is the twelfth: the
-          # same case a seventh time — it also declares no own
-          # `rust-version` (`rust-version.workspace = true` in its
-          # Cargo.toml). It pulls in `hyper` (already checked via
-          # `http-ng-rt`/`http-ng-tls`) and the core crates themselves,
-          # `http-ng-core`/`http-ng-proto` — none raises the minimum above
-          # 1.85, so the crate must build at it alongside the other eleven.
-          # The `$pkgs` list is twelve crates, and `--all-targets` does not
-          # expand it.
-          cargo check $pkgs --all-features --all-targets
+          # Nothing in the workspace declares a `rust-version` of its own
+          # any more. `http-ng-wasi` used to (1.90, a `wasip3` requirement)
+          # and was excluded here for it; under the "latest stable" policy
+          # that override sits below the floor and was removed, so the crate
+          # is checked with the rest.
+          cargo check --workspace --all-features --all-targets
+
+          # `http-ng-fetch` (Task 1 of vertical 3) is NOT covered by the
+          # above: everything else in that list is a native crate, checked
+          # on the job's default host target
+          # (`x86_64-unknown-linux-gnu`), and `http-ng-fetch` has no
+          # meaningful native build at all — it's `web-sys`/`wasm-bindgen`
+          # over the browser `fetch` API. Folding it into the host check would
+          # either silently host-check it (which type-checks — `wasm-
+          # bindgen`'s externs stay inert off wasm32 rather than failing —
+          # but never touches any `#[cfg(target_arch = "wasm32")]` branch,
+          # so it isn't a faithful MSRV check of the code that actually
+          # ships) or, if `--target wasm32-unknown-unknown` were added to
+          # the shared `cargo check` line instead, break every native
+          # crate in the workspace that depends on `tokio`/`std::net` and cannot
+          # build for wasm32 at all. So it gets its own call, on its own
+          # target. The command the job runs below was verified by hand
+          # against this crate before the job was written, and re-runs on
+          # every push.
+          #
+          # This passage used to carry three paragraphs of archaeology about
+          # `wasm-streams` 0.5 versus 0.6: 0.6.0 declares
+          # `rust-version = "1.88"`, which broke the workspace's then-floor
+          # of 1.85, so the crate was pinned to 0.5 and the reasoning was
+          # written out here and in that crate's manifest. The MSRV policy
+          # is now "the latest stable", the crate is on 0.6, and every
+          # version number in that argument was stale. Deleted rather than
+          # annotated — a comment arguing from a floor the repository no
+          # longer has does not become true by being labelled historical.
+          if [ ! -d "crates/http-ng-fetch" ]; then
+            echo "::error::crates/http-ng-fetch is missing — this is CI's only wasm32-unknown-unknown MSRV check; a renamed directory must fail the job, not quietly remove the check"
+            exit 1
+          fi
+          cargo check -p http-ng-fetch --all-features --all-targets --target wasm32-unknown-unknown
+
+          # Task 9 (task-9-addendum-measured.md, "Also add: the facade's
+          # browser target is unchecked at every level"). Before this line,
+          # nothing in this file ever checked `http-ng` itself on
+          # `wasm32-unknown-unknown` — Task 7 round 1's `AmbientClock::
+          # sleep` shipped a `!Send` future inside THIS crate, and no job
+          # could have caught it, not because the technique doesn't exist
+          # (`crates/http-ng-fetch/tests/transport.rs` already has
+          # `assert_send<T: Send>` applied to a real `execute` future, and
+          # the line right above this one, unchanged since Task 1 of this
+          # vertical, already catches a regression there via
+          # `--all-targets`) but because it was never pointed at the
+          # facade.
+          #
+          # NOT `--all-features --all-targets`, the exact form the
+          # addendum's own text asks for — verified NOT to work, for two
+          # independent reasons, neither fixable from this file alone
+          # (`crates/http-ng` was off-limits for this task: Task 8 is live
+          # there).
+          #   1. `--all-features` turns on `default-transport`, and
+          #      `Client<T = crate::DefaultTransport>`'s struct
+          #      declaration (`client.rs`) is gated only on
+          #      `feature = "default-transport"`, not on target, while
+          #      `DefaultTransport` ITSELF (`lib.rs`) is additionally
+          #      gated `not(target_family = "wasm")` — on this target,
+          #      with the feature on, the struct names a type that
+          #      doesn't exist here: `error[E0425]: cannot find type
+          #      `DefaultTransport``. Measured directly, not assumed.
+          #   2. `--all-targets` compiles every dev-dependency the crate
+          #      has, including `tokio`/`http-ng-native`/`http-ng-rt-
+          #      tokio` — needed only by the native-only `tests/
+          #      two_runtimes.rs`, and listed in `Cargo.toml` with no
+          #      target gate at all. Those pull in `mio`, which does not
+          #      build for `wasm32-unknown-unknown`: 48 compile errors,
+          #      none of them about this crate's own code. Also measured
+          #      directly.
+          # `--features test-util` sidesteps landmine 1 (no
+          # `default-transport` involved) without adding a dependency this
+          # crate doesn't already have optionally — but a bare `cargo
+          # check` with no test target selected does not compile `tests/
+          # shape.rs` at all, so today this line only proves the LIB
+          # compiles here; the `Send` assertion the addendum specifically
+          # asked for (`tests/shape.rs`'s
+          # `client_future_is_send_when_the_transport_is`, over a real
+          # `Client<MockTransport>::execute` future) needs `--tests` too,
+          # which reopens landmine 2 regardless of which features are on.
+          # Reported to the dispatcher as a real, measured blocker rather
+          # than silently narrowed or left unattempted — closing it means
+          # target-gating `crates/http-ng/Cargo.toml`'s native-only
+          # dev-dependencies, out of scope for this task.
+          if [ ! -d "crates/http-ng" ]; then
+            echo "::error::crates/http-ng is missing — a renamed directory must fail this job, not quietly skip the facade's browser-target check"
+            exit 1
+          fi
+          cargo check -p http-ng --features test-util --target wasm32-unknown-unknown
 
   # Task 14: end-to-end acceptance of the vertical — the same generic code
   # (`fetch_once` in `two_runtimes.rs`) really runs over the network on
@@ -282,8 +341,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng ]; then
-            echo "::notice::http-ng not present yet — end-to-end run on two runtimes skipped"
-            exit 0
+            echo "::error::http-ng is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo test -p http-ng --test two_runtimes
       # The task brief (task-14-brief.md, Step 5) proposed a literal
@@ -334,8 +393,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-rt-smol ]; then
-            echo "::notice::http-ng-rt-smol not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-rt-smol is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree="$(cargo tree -p http-ng-rt-smol -e normal --prefix none)"
           printf '%s\n' "$tree"
@@ -388,8 +447,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi not present yet — wasip2 build skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
           # Task 17: the end-to-end example `examples/fetch.rs` — the only
@@ -427,8 +486,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi not present yet — live wasip2 run skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # Plain unit tests — actually execute under real `wasmtime` via
           # the runner from `.cargo/config.toml`, not just compiled.
@@ -479,8 +538,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi/src ]; then
-            echo "::notice::http-ng-wasi not present yet — discarded-setters check skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # The review (Task 16, finding B-4) found the original grep-based
           # version of this check defective along two independent axes:
@@ -873,8 +932,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree="$(cargo tree -p http-ng-proto -e normal --prefix none)"
           if printf '%s\n' "$tree" | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
@@ -886,8 +945,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto/src ]; then
-            echo "::notice::http-ng-proto not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           if grep -rn "async fn" crates/http-ng-proto/src \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
@@ -932,17 +991,19 @@ jobs:
           # in the spec) — exactly the case this check must see and pass via
           # the marker, not miss by oversight.
           #
-          # `http-ng-native/src` — Task 13 of vertical 2. The list here is
-          # DELIBERATELY PARTIAL (unlike `no-unsafe-code`'s
-          # `crates/*/src`): runtime- and backend crates like `http-ng-rt`
-          # legitimately carry `Send` on CAPABILITIES (bounds on a trait,
-          # like `Blocking::run` above) and on impls of concrete types
-          # against a concrete foreign API (e.g. `Spawn<F: Send + 'static>
-          # for Tokio` in `http-ng-rt-tokio` — not in this list, and
-          # shouldn't be: scanning runtime backends wholesale would mean
+          # `http-ng-native/src` — Task 13 of vertical 2. The scan is
+          # DELIBERATELY NOT the whole workspace (unlike `no-unsafe-code`'s
+          # `crates/*/src`): runtime- and backend crates legitimately carry
+          # `Send` on CAPABILITIES (bounds on a trait, like `Blocking::run`
+          # above) and on impls of concrete types against a concrete foreign
+          # API (e.g. `Spawn<F: Send + 'static> for Tokio` in
+          # `http-ng-rt-tokio`) — scanning those wholesale would mean
           # requiring a marker on every such impl, of which there are many
           # and which aren't about the invariant "the core doesn't declare
-          # Send/Sync"). There used to be no point scanning
+          # Send/Sync". That exclusion is expressed below as a named set
+          # subtracted from a glob, NOT as an inclusion list: see the block
+          # at the `case` statement for why the inclusion list was wrong in
+          # one direction and a bare glob wrong in the other. There used to be no point scanning
           # `http-ng-native` — before Task 13 the crate exported nothing
           # publicly except `testing` (see `#[doc(hidden)] pub mod testing`
           # in `src/lib.rs`). With Task 13 it gained a genuine public type,
@@ -970,14 +1031,71 @@ jobs:
           # class "declared Send on a data structure / a test" for which
           # the marker and the C3 relocation already exist as the standard
           # answer everywhere in this file.
-          dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src \
-                   crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src; do
-            if [ -d "$d" ]; then dirs="$dirs $d"; fi
+          #
+          # `http-ng-fetch/src` — Task 5 of vertical 3. The same argument a
+          # third time: before this task the crate exported `Fetch`
+          # (construction/probing only) plus a `#[doc(hidden)] pub mod
+          # testing` — no genuine public seam yet. Task 5 gives it one,
+          # `impl Transport for Fetch`, so it can leak a `Send`/`Sync`
+          # bound in its public API exactly as `Native`/`WasiHttp` could.
+          # Checked before adding, not after: `grep -rnE '(:|\+)[[:space:]]*
+          # (Send|Sync)\b|MaybeSend' crates/http-ng-fetch/src` (this job's
+          # own pattern, run locally) finds four lines, all four inside
+          # `///` doc comments in `promise.rs` quoting upstream
+          # `wasm-bindgen` source (`unsafe impl Send for JsValue {}` and
+          # neighbors) — the existing comment filter below drops every one
+          # of them, so adding this directory requires zero new markers,
+          # the same clean result Task 13 recorded for `Native`.
+          # A GLOB MINUS A NAMED EXCLUSION SET — not a hand-maintained
+          # inclusion list, and not a bare `crates/*/src` either. Both of
+          # those were tried and both were wrong, in opposite directions.
+          #
+          # The inclusion list came first: seven directories, each dropped if
+          # absent, failing only when ALL seven were gone. Renaming one
+          # crate's directory therefore removed it from the scan silently,
+          # with the workspace still building, because `cargo` resolves a
+          # package by its manifest rather than its path. A reviewer
+          # reproduced it: a real `Send` violation planted in
+          # `http-ng-fetch` was caught, and the same violation with the
+          # directory renamed was not.
+          #
+          # Replacing it with a bare glob then broke the job on a clean tree
+          # — eight violations, all legitimate. The excluded crates were not
+          # drift, they were a considered decision recorded above: a runtime
+          # backend's `impl<F: Future + Send + 'static> Spawn<F> for Tokio`
+          # is a bound on a concrete type against a concrete foreign API, not
+          # the invariant this job polices (that the CORE does not declare
+          # `Send`/`Sync`). Scanning them wholesale would demand a marker on
+          # every such impl, of which there are many and none of which are
+          # about the invariant.
+          #
+          # The exclusion set keeps both properties. A crate added later is
+          # scanned by default rather than by remembering to add it. A crate
+          # excluded on purpose is one greppable line saying so. And a MOVE
+          # of an excluded crate re-enters the scan, because the `case` arm
+          # stops matching — so the shape fails closed in the direction the
+          # inclusion list failed open.
+          shopt -s nullglob
+          all=(crates/*/src)
+          if [ ${#all[@]} -eq 0 ]; then
+            echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
+            exit 1
+          fi
+          dirs=()
+          for d in "${all[@]}"; do
+            case "$d" in
+              # Runtime backends: `Spawn`/`Blocking` impls carry `Send` on a
+              # concrete type against tokio's and smol's own APIs.
+              crates/http-ng-rt-tokio/src|crates/http-ng-rt-smol/src) ;;
+              # `Blocking::run`'s signature is `T: Send + 'static, F: FnOnce()
+              # -> T + Send + 'static` — the bound the trait itself requires.
+              crates/http-ng-dns-system/src) ;;
+              *) dirs+=("$d") ;;
+            esac
           done
-          if [ -z "$dirs" ]; then
-            echo "::notice::core crates not present yet — check skipped"
-            exit 0
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "::error::every crate directory was excluded — the exclusion set has outgrown the workspace and this check now scans nothing"
+            exit 1
           fi
           # We look for DECLARED bounds, not mentions in docs: lines whose
           # content starts with a comment are dropped by the second grep.
@@ -1072,7 +1190,7 @@ jobs:
           # where `assert_send` tests live, C4 is about
           # `&'static [HeaderName]`) and never appear as a
           # `send-bound-exception` marker in the code.
-          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
+          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' "${dirs[@]}" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE 'send-bound-exception:[[:space:]]*amendment-C[125]\b'; then
             echo "::error::the core declares a Send or Sync bound without a send-bound-exception marker"
@@ -1090,22 +1208,35 @@ jobs:
           # REVISED in Task 6, fix round 1 (see below, after the history).
           #
           # The FIRST and primary line of defense is not this job but the
-          # compiler itself: every crate carries `#![forbid(unsafe_code)]`
-          # (not `#![deny(...)]` — a decision from Task 2, fix round 1), and
-          # it is checked on every build of the `test` matrix
-          # (linux/macos/windows). The difference between `forbid` and
-          # `deny` is not cosmetic — verified by planting a probe right in
-          # this tree and reverting via `cp`: with `#![deny(unsafe_code)]` a
-          # local `#[allow(unsafe_code)]` next to an `unsafe` block compiled
-          # CLEANLY (the compiler stayed silent, `-D warnings` didn't help
-          # either — `allow` suppresses a lint rather than turning it into
-          # a warning); with `#![forbid(unsafe_code)]` the same file fails
-          # with `E0453 (allow incompatible with previous forbid)` —
-          # `forbid` cannot be overridden from inside a crate, PERIOD. The
-          # compiler catches the same thing this job would, but earlier (at
-          # compile time, rather than as a separate CI step) and without a
-          # single grep pattern that can be defeated by formatting, a
-          # string, or an attribute split across two lines.
+          # compiler itself: every crate but one carries
+          # `#![forbid(unsafe_code)]` (not `#![deny(...)]` — a decision
+          # from Task 2, fix round 1), and it is checked on every build of
+          # the `test` matrix (linux/macos/windows). The difference
+          # between `forbid` and `deny` is not cosmetic — verified by
+          # planting a probe right in this tree and reverting via `cp`:
+          # with `#![deny(unsafe_code)]` a local `#[allow(unsafe_code)]`
+          # next to an `unsafe` block compiled CLEANLY (the compiler
+          # stayed silent, `-D warnings` didn't help either — `allow`
+          # suppresses a lint rather than turning it into a warning); with
+          # `#![forbid(unsafe_code)]` the same file fails with `E0453
+          # (allow incompatible with previous forbid)` — `forbid` cannot
+          # be overridden from inside a crate, PERIOD. The compiler
+          # catches the same thing this job would, but earlier (at compile
+          # time, rather than as a separate CI step) and without a single
+          # grep pattern that can be defeated by formatting, a string, or
+          # an attribute split across two lines.
+          #
+          # THE ONE EXCEPTION (Task 1 of vertical 3, spec amendment C7):
+          # `http-ng-fetch` carries the project's sole legitimate `unsafe`
+          # (a `Send` adapter over a JS promise) and therefore
+          # `#![deny(unsafe_code)]` instead — `forbid` cannot be locally
+          # relaxed for its one justified `#[allow]`, by the same E0453
+          # verified above. That crate opts out of `[lints] workspace =
+          # true` for exactly this reason (see its `Cargo.toml`). This job
+          # still scans it like any other crate — see the marker mechanism
+          # below, which is precisely what continues to catch an
+          # UNJUSTIFIED `unsafe` there, now that the compiler alone no
+          # longer can.
           #
           # THIS job is a second, independent layer, not the first: it
           # catches the CASE WHERE `#![forbid(unsafe_code)]` ITSELF
@@ -1195,16 +1326,545 @@ jobs:
           # existed since Task 1; if `crates/*/src` matched nothing, that is
           # not "too early" but a broken workspace layout or a broken glob
           # itself, and the job must fail rather than pass quietly.
+          # REVISED again in Task 1 of vertical 3 (`http-ng-fetch`). This
+          # vertical's Global Constraints put the project's one legitimate
+          # `unsafe` right here — a `Send`-compatible promise adapter that
+          # mirrors what wasm-bindgen itself does for `JsValue` under
+          # `#[cfg(not(target_feature = "atomics"))]` (see spec amendment
+          # C7 for the full argument, and `http-ng-fetch/src/promise.rs`
+          # for the code). A bare directory exclusion was rejected for the
+          # same reason `no-declared-send`'s per-file exclusions were
+          # rejected and replaced by a per-line marker (see that job's own
+          # comment, Task 12 fix round 1): excluding
+          # `crates/http-ng-fetch/src` wholesale would hide any OTHER
+          # `unsafe` later added to that crate, not just the one already
+          # justified — a crate-shaped hole defeats the point of scanning
+          # `crates/*/src` unconditionally in the first place.
+          #
+          # So this job gets the same mechanism `no-declared-send` already
+          # has, under its own token: a line must read
+          # `unsafe-code-exception: amendment-C7` to be excused, and ONLY
+          # that exact citation — not `send-bound-exception` (a different
+          # invariant, a different job) and not some other amendment
+          # number. `promise.rs` marks both lines the raw scan would
+          # otherwise flag: the `unsafe_code,` inside `#[allow(unsafe_code,
+          # reason = "...")]`, and the `unsafe impl<T> Send for
+          # SingleThreaded<T> {}` line itself.
+          #
+          # REVISED, fix round 1: the marker text alone is not enough.
+          # `send-bound-exception` legitimately appears across many files
+          # and genuinely cannot be scoped to one path — that job's own
+          # comment already says the marker is a claim enforced by review,
+          # not a forgery-proof mechanism. C7 is a different case: it has
+          # exactly ONE legitimate location in the entire project, and
+          # that location is knowable ahead of time, in the job itself.
+          # A reviewer probe confirmed the gap directly: planting the
+          # literal text `unsafe-code-exception: amendment-C7` next to an
+          # unrelated `unsafe` block in `http-ng-core/src/lib.rs` (a
+          # different crate) passed the job as written before this
+          # revision — the grep matched the marker text with no regard for
+          # which file it was in. Fixed by requiring the marker to appear
+          # on a line whose PATH is exactly
+          # `crates/http-ng-fetch/src/promise.rs`; anywhere else, the same
+          # marker text no longer excuses anything, and the line falls
+          # through to the failure branch like any unmarked `unsafe`.
+          #
+          # Verified in all four directions, not assumed: (1) the two
+          # marked lines in `promise.rs` pass; (2) a synthetic unmarked
+          # `unsafe { }` planted in any crate's `src` still fails; (3) a
+          # marker citing a nonexistent amendment (`unsafe-code-exception:
+          # amendment-C9`) still fails, because the filter below matches
+          # `amendment-C7` exactly and nothing else; (4) the exact marker
+          # text, correctly citing `amendment-C7`, planted next to an
+          # unrelated `unsafe` block in a DIFFERENT crate's `src` still
+          # fails, because the filter below also requires the file path.
+          #
+          # EXTENDED in vertical 3 (`http-ng-dns-system`, spec amendment
+          # C8) with a SECOND marked file, and deliberately not by
+          # loosening the first one. A system SVCB/HTTPS lookup needs
+          # `res_query(3)`: `getaddrinfo` cannot return RR type 65 in
+          # principle, and neither `libc` 0.2.189 nor `rustix` 1.1.4
+          # declares `res_query` (checked against the vendored sources of
+          # both), so the crate declares the foreign function itself. That
+          # is `unsafe` by construction, and no amount of care makes it
+          # otherwise.
+          #
+          # The scope is kept as narrow as C7's, by the same mechanism and
+          # for the same reason: a per-line marker, `unsafe-code-exception:
+          # amendment-C8`, that only excuses a line whose PATH is exactly
+          # `crates/http-ng-dns-system/src/sys/res_query.rs` or
+          # `.../sys/windows.rs` — the crate's two FFI boundaries, one per
+          # platform family, and nothing else in the crate. Both files exist
+          # to be small: `res_query.rs` declares one foreign function, calls
+          # it into a buffer it sized itself, and returns an owned
+          # `Vec<u8>`; `windows.rs` calls `DnsQuery_UTF8` and walks the
+          # `DNS_SVCB_DATA` the OS has already parsed, so it reads no DNS
+          # bytes at all. Neither interprets a wire format. The decoding
+          # (over data an attacker on the network chooses) is
+          # `dns-message-parser`'s, and the RFC 9460 client rules are in
+          # `svcb.rs`, which carries its own `#![forbid(unsafe_code)]`, as
+          # does `sys/unsupported.rs`; only the crate root and `sys/mod.rs`
+          # drop to `deny`, because `forbid` propagates into child modules
+          # and would make the FFI modules impossible. So an `unsafe` block
+          # added anywhere else in that crate — including `sys/mod.rs`, one
+          # directory level from the marked file — still fails this job.
+          #
+          # The two markers do not substitute for each other: each grep
+          # below pins one amendment token to one path, so C7's marker in
+          # the DNS crate fails and C8's marker in `promise.rs` fails.
+          # Verified in six directions on this tree, not assumed: (1) the
+          # three real marked lines in `res_query.rs` pass; (2) an unmarked
+          # `unsafe` planted in `sys/mod.rs` (same crate, one level up)
+          # fails; (3) an unmarked `unsafe` planted in another crate's
+          # `src` fails; (4) a C8 marker citing a nonexistent amendment
+          # (`amendment-C9`) fails; (5) the exact C8 marker planted next to
+          # an `unsafe` block in a DIFFERENT file fails; (6) swapping the
+          # two files' tokens — C7's marker in `res_query.rs`, C8's in
+          # `promise.rs` — fails both.
+          #
+          # THE MARKER MOVES UNDER `cargo fmt`, AND THIS JOB HAS TO KNOW
+          # THAT. Found while adding C8, and the reason for the `awk` below
+          # rather than a plain `grep -rn`. Measured on a probe crate, not
+          # reasoned about: rustfmt PRESERVES a trailing comment that
+          # follows a complete expression or a comma-terminated list
+          # element, and MOVES one that follows the opening brace of a
+          # block-bodied item down onto the next line.
+          #
+          #   #![allow(unsafe_code, // marker      -> preserved
+          #   unsafe { getpid() }   // marker      -> preserved
+          #   let n = unsafe { … }; // marker      -> preserved
+          #   unsafe extern "C" {   // marker      -> MOVED into the block
+          #   unsafe fn f() {       // marker      -> MOVED
+          #
+          # A leading `/* marker */ unsafe extern "C" {` and an inline
+          # `unsafe extern "C" { /* marker */` are moved as well, so no
+          # placement keeps a marker on such a line. C7 never hit this: its
+          # two lines are `#[allow(unsafe_code, …` and `unsafe impl … {}`,
+          # both forms rustfmt keeps. C8's FFI needs `unsafe extern "C" {`
+          # and `unsafe extern "system" fn f(`, which are exactly the forms
+          # it breaks. And `prek` runs `cargo fmt --all`, not `--check`, so
+          # a marker written on the right line does not stay there — this
+          # job would fail on a tree whose only sin was being formatted.
+          #
+          # The rule is therefore "on the line, or on the line IMMEDIATELY
+          # below it", which is precisely and deterministically where
+          # rustfmt puts it, implemented by folding a lone marker line onto
+          # its predecessor before the scan. This is NOT a relaxation to
+          # per-file: the marker must still be adjacent to the line it
+          # excuses, and still in a file its amendment names. A marker two
+          # lines away, or anywhere else in the file, excuses nothing.
+          #
+          # EXACTLY TWO POSITIONS ARE ACCEPTED, and the one people reach for
+          # first is not among them:
+          #
+          #   unsafe { b() } // unsafe-code-exception: amendment-CN   OK
+          #
+          #   unsafe extern "C" {                                    OK
+          #       // unsafe-code-exception: amendment-CN                (rustfmt puts it here)
+          #
+          #   // unsafe-code-exception: amendment-CN                  NOT OK
+          #   unsafe { b() }                                           (excuses the line ABOVE it)
+          #
+          # The fold attaches a lone marker line to its PREDECESSOR, so a
+          # marker written above a construct excuses whatever precedes it —
+          # usually a line with no `unsafe` in it — and the construct itself
+          # stays flagged. Worth spelling out because Rust attributes are
+          # written above the item they apply to, so writing the marker
+          # there is the natural first guess. The failure direction is safe
+          # (a false red, never a false green), so the fold is not changed
+          # to look both ways: looking up as well would let one marker
+          # excuse two different `unsafe` lines.
           shopt -s nullglob
           dirs=(crates/*/src)
           if [ ${#dirs[@]} -eq 0 ]; then
             echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
             exit 1
           fi
-          if grep -rn "unsafe" "${dirs[@]}" \
+          # Emits `path:lineno:line`, exactly as `grep -rn` would, except
+          # that a following line consisting only of an
+          # `unsafe-code-exception` comment is appended to the line before
+          # it. `find` rather than a glob so the scan reaches `src/sys/*.rs`
+          # and any other subdirectory; `-print0` / `read -d ''` so a path
+          # containing a space cannot split into two filenames.
+          scan() {
+            find "${dirs[@]}" -type f -name '*.rs' -print0 |
+              while IFS= read -r -d '' file; do
+                awk -v f="$file" '
+                  { line[NR] = $0 }
+                  END {
+                    for (i = 1; i <= NR; i++) {
+                      out = line[i]
+                      if (i < NR && line[i+1] ~ /^[[:space:]]*(\/\/|\/\*)[[:space:]]*unsafe-code-exception:/) {
+                        out = out " " line[i+1]
+                      }
+                      print f ":" i ":" out
+                    }
+                  }' "$file"
+              done
+          }
+          if scan | grep "unsafe" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
-               | grep -vE '(deny|forbid)\(unsafe_code\)'; then
-            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe"
+               | grep -vE '(deny|forbid)\(unsafe_code\)' \
+               | grep -vE '^crates/http-ng-fetch/src/promise\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C7\b' \
+               | grep -vE '^crates/http-ng-dns-system/src/sys/(res_query|windows)\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C8\b'; then
+            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker, across ${#dirs[@]} directories (${dirs[*]}). Every crate must remain safe unless explicitly marked and justified in a spec amendment, in a file that amendment names: crates/http-ng-fetch/src/promise.rs for amendment C7, crates/http-ng-dns-system/src/sys/res_query.rs and crates/http-ng-dns-system/src/sys/windows.rs for amendment C8. WHERE TO PUT THE MARKER: either trailing on the flagged line itself (\`unsafe { b() } // unsafe-code-exception: amendment-C8\`) or alone on the line IMMEDIATELY BELOW it, which is where cargo fmt moves it for block-opening forms such as \`unsafe extern \"C\" {\`. A marker written ABOVE the line does NOT work — it is folded onto the preceding line instead. If the unsafe is not justified by an amendment, it does not belong in this repository."
             exit 1
           fi
-          echo "unsafe: not found in any of ${#dirs[@]} directories (${dirs[*]})"
+          echo "unsafe: not found (outside the three marked, justified exceptions in crates/http-ng-fetch/src/promise.rs and crates/http-ng-dns-system/src/sys/{res_query,windows}.rs) in any of ${#dirs[@]} directories (${dirs[*]})"
+
+  # Task 9. Before this job, CI ran ZERO browser tests — no `wasm-pack
+  # test`, no `wasm-bindgen-test-runner`, no driver setup anywhere in this
+  # file. `msrv`'s `--target wasm32-unknown-unknown` line (`crates/http-ng-
+  # fetch`) and `no-declared-send`'s scan of that crate's `src` both
+  # type-check or grep — neither ever EXECUTES a single one of the 65
+  # `#[wasm_bindgen_test]`s already in the tree. They were known to pass
+  # (`task-9-addendum-measured.md`: 65/65 on both Chrome and Firefox,
+  # measured directly on `14091c2`) by someone running `wasm-pack test` by
+  # hand, not by the pipeline — this job is what makes that a standing
+  # guarantee instead of a one-off fact.
+  #
+  # NOT for the reason `task-9-brief.md` states. That brief's own bolded
+  # rationale — "in Chrome `streaming_request_body == true`, in Firefox
+  # `false`, and the same binary must behave correctly in both" — stopped
+  # being true at `aa728c0`: `caps.rs` now hardcodes BOTH
+  # `streaming_request_body` and `full_duplex` to `false` unconditionally,
+  # on every browser, because nothing in this crate builds a request-body
+  # `ReadableStream` yet — reporting `true` in Chrome would have been
+  # exactly the capability-that-lies this project's `Capabilities` registry
+  # exists to prevent. Do not restore the difference to make the brief's
+  # rationale true again; the hardcoding is correct, and its own reasoning
+  # is written out at length in `caps.rs` itself.
+  #
+  # The matrix is kept anyway, for what's actually still true: 65 tests run
+  # against two independent engine implementations of the Fetch/Promise/
+  # setTimeout surface this crate depends on, and one genuinely
+  # browser-varying runtime probe that survives —
+  # `crates/http-ng-fetch/tests/caps.rs`'s
+  # `supports_duplex_reflects_the_prototype_not_a_hardcoded_constant`,
+  # which compares against whatever `Request.prototype.duplex` the running
+  # browser ACTUALLY has, not against a constant, and must therefore pass
+  # identically on both rather than agreeing with either by coincidence.
+  #
+  # `crates/http-ng` IS in this job. Task 8 gave that crate a browser-target
+  # dependency and its own `wasm-bindgen-test` suite
+  # (`tests/wasm_default.rs`, 6 tests), and this job runs it. An earlier
+  # version of this comment said the crate was deliberately excluded because
+  # Task 8 had not landed — written while the two tasks ran concurrently, and
+  # left standing after the second one landed.
+  browser:
+    strategy:
+      matrix:
+        browser: [chrome, firefox]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: jetli/wasm-pack-action@v0.4
+      - name: browser tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fails closed on a missing crate, deliberately. An earlier draft
+          # of this step skipped with a `::notice::` when the directory was
+          # absent, which is the same fail-open shape `ambient-has-no-tokio`
+          # and `no-unsafe-code` both refuse: a renamed or moved crate would
+          # turn "we ran no browser tests at all" into a green run. Until
+          # Task 9 wired this job up, CI executed ZERO browser tests while
+          # 65 of them passed locally, so a silent skip here reproduces
+          # exactly the gap this job exists to close.
+          for crate in crates/http-ng-fetch crates/http-ng; do
+            if [ ! -d "$crate" ]; then
+              echo "::error::$crate is missing — this job must run browser tests, not skip them"
+              exit 1
+            fi
+          done
+          # `wasm-pack test` EXITS 0 ON AN EMPTY RUN. Measured: dropping the
+          # feature list from the `http-ng` invocation below prints
+          # "no tests to run!" twelve times and the job goes green having
+          # executed nothing. That is precisely the state this job exists to
+          # end — 65 browser tests present, none run, CI green — so counting
+          # them is the guard that matters, not the presence of the crates.
+          #
+          # The minimums below are the counts as of this commit. Adding tests
+          # keeps the job green; REMOVING one turns it red on purpose. If a
+          # test is deliberately deleted, lower the number in the same commit
+          # — the check is not obligated to silently accept a shrinking suite.
+          run_browser_suite() {
+            local crate="$1" min="$2" log passed
+            shift 2
+            log="$(mktemp)"
+            if ! wasm-pack test --headless --${{ matrix.browser }} "$crate" "$@" 2>&1 | tee "$log"; then
+              echo "::error::browser tests failed for $crate on ${{ matrix.browser }}"
+              exit 1
+            fi
+            passed="$(grep -oE '[0-9]+ passed' "$log" | awk '{s+=$1} END {print s+0}')"
+            if [ "$passed" -lt "$min" ]; then
+              echo "::error::$crate on ${{ matrix.browser }} ran $passed browser tests, expected at least $min — a renamed test file, a dropped #[wasm_bindgen_test], or a drift between this job's --features and the crate's own cfg gate all produce a green run that tests nothing"
+              exit 1
+            fi
+            echo "$crate on ${{ matrix.browser }}: $passed browser tests passed (minimum $min)"
+          }
+
+          run_browser_suite crates/http-ng-fetch 65
+          # `http-ng`'s own browser tests: `Client::new()` on the browser
+          # target, added in Task 8. The features are `wasm-pack`'s own
+          # arguments, not `cargo test --` passthrough — `-- --features ...`
+          # is rejected with "unexpected argument '--features'".
+          run_browser_suite crates/http-ng 6 --features default-transport,test-util
+
+  # Task 9 (task-9-addendum-measured.md, Defects 1 and 2). `ambient` names
+  # the browser build specifically — this job is the wasm32-unknown-unknown
+  # sibling of the existing host-only `proto-is-sans-io` job below, not a
+  # duplicate of it.
+  #
+  # Defect 2: both `cargo tree` calls now name `--target
+  # wasm32-unknown-unknown` explicitly. Without it, this job described the
+  # HOST dependency graph while claiming to police the ambient browser
+  # build — a dependency pulled in only under a `[target.'cfg(...)']` table
+  # is exactly what this job exists to catch, and exactly what a host-only
+  # tree cannot see. Checked directly: the graph is identical on host and
+  # on this target today, so this isn't currently hiding a live violation —
+  # it was still the wrong target to name.
+  #
+  # Defect 1: fails closed on a broken `cargo tree` invocation itself.
+  # Measured, not assumed: the brief's own `grep ... && exit 1 || true`
+  # pipeline reports SUCCESS when `cargo tree` itself fails — empty stdin
+  # reaches `grep`, `grep` finds no match, `|| true` fires, green —
+  # reproduced directly by substituting a nonexistent package name
+  # (`cargo tree -p this-package-does-not-exist ...` passes the brief's own
+  # logic). That is exactly the fail-open shape `no-unsafe-code` already
+  # refuses, lower in this file (`${#dirs[@]} -eq 0` FAILS the job, does
+  # not pass it) — matched here: `cargo tree`'s own exit code and an empty
+  # result are both explicit, named failures, never a silent pass. Both
+  # directions verified: the broken-package case now fails (`cargo tree`
+  # itself exits non-zero, caught), and the real `http-ng-fetch`/
+  # `http-ng-proto` checks still pass cleanly on `wasm32-unknown-unknown`.
+  ambient-has-no-tokio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown, wasm32-wasip2 }
+      - name: fetch build (wasm32-unknown-unknown) must contain neither tokio, hyper, nor h2
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ ! -d crates/http-ng-fetch ]; then
+            echo "::error::http-ng-fetch is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
+          fi
+          tree_out="$(cargo tree -p http-ng-fetch -e normal --prefix none --target wasm32-unknown-unknown)"
+          tree_rc=$?
+          if [ "$tree_rc" -ne 0 ]; then
+            echo "::error::cargo tree failed (exit $tree_rc) for http-ng-fetch on wasm32-unknown-unknown — a broken invocation is not a passing check"
+            exit 1
+          fi
+          if [ -z "$tree_out" ]; then
+            echo "::error::cargo tree produced no output for http-ng-fetch on wasm32-unknown-unknown — an empty dependency tree means the check did not run, not that it passed"
+            exit 1
+          fi
+          if printf '%s\n' "$tree_out" | grep -E '^(tokio|hyper|h2)'; then
+            echo "::error::http-ng-fetch's wasm32-unknown-unknown dependency graph contains tokio, hyper, or h2 — the browser transport must stay free of the native HTTP stack"
+            exit 1
+          fi
+          echo "OK: no tokio/hyper/h2 in http-ng-fetch's wasm32-unknown-unknown dependency graph"
+      - name: wasi build (wasm32-wasip2) must contain neither tokio, hyper, nor h2
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The README's v0.1 status table prints "no tokio" for BOTH wasm
+          # rows and says both are machine-checked. Only the browser one was;
+          # the WASI row was asserted. This step is what makes that sentence
+          # true — the fact itself was already true when measured by hand,
+          # but "we know because CI checks it" was not.
+          if [ ! -d crates/http-ng-wasi ]; then
+            echo "::error::http-ng-wasi is missing — a renamed or moved crate must fail this check, not remove it"
+            exit 1
+          fi
+          tree_rc=0
+          tree_out="$(cargo tree -p http-ng-wasi -e normal --prefix none --target wasm32-wasip2)" || tree_rc=$?
+          if [ "$tree_rc" -ne 0 ]; then
+            echo "::error::cargo tree failed (exit $tree_rc) for http-ng-wasi on wasm32-wasip2 — a broken invocation is not a passing check"
+            exit 1
+          fi
+          if [ -z "$tree_out" ]; then
+            echo "::error::cargo tree produced no output for http-ng-wasi on wasm32-wasip2 — an empty dependency tree means the check did not run, not that it passed"
+            exit 1
+          fi
+          if printf '%s\n' "$tree_out" | grep -qE '^(tokio|hyper|h2) '; then
+            echo "::error::http-ng-wasi's wasm32-wasip2 dependency graph contains tokio, hyper, or h2 — the wasi:http transport delegates the exchange to the host and must stay free of the native HTTP stack"
+            exit 1
+          fi
+          echo "http-ng-wasi on wasm32-wasip2: no tokio, hyper or h2"
+
+      - name: proto (wasm32-unknown-unknown) must stay sans-io
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ ! -d crates/http-ng-proto ]; then
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
+          fi
+          tree_out="$(cargo tree -p http-ng-proto -e normal --prefix none --target wasm32-unknown-unknown)"
+          tree_rc=$?
+          if [ "$tree_rc" -ne 0 ]; then
+            echo "::error::cargo tree failed (exit $tree_rc) for http-ng-proto on wasm32-unknown-unknown — a broken invocation is not a passing check"
+            exit 1
+          fi
+          if [ -z "$tree_out" ]; then
+            echo "::error::cargo tree produced no output for http-ng-proto on wasm32-unknown-unknown — an empty dependency tree means the check did not run, not that it passed"
+            exit 1
+          fi
+          if printf '%s\n' "$tree_out" | grep -Ei '^(tokio|futures-|async-)'; then
+            echo "::error::http-ng-proto's wasm32-unknown-unknown dependency graph contains an async dependency — this crate must stay sans-io on every target, not just the host"
+            exit 1
+          fi
+          echo "OK: http-ng-proto stays sans-io on wasm32-unknown-unknown"
+
+  # Task 9. Not one of task-9-addendum-measured.md's three named defects,
+  # but found the same way they were: measured, not assumed, while
+  # verifying this exact job before adding it.
+  #
+  # The brief's own job body checks only the LIB target — `cargo check -p
+  # http-ng-fetch --target wasm32-unknown-unknown -Zbuild-std=std,
+  # panic_abort`, no `--tests`. Verified directly: this compiles CLEANLY
+  # under `-Ctarget-feature=+atomics`, regardless of whether
+  # `SingleThreaded<T>`'s `unsafe impl Send` (gated `#[cfg(not(target_
+  # feature = "atomics"))]`, `promise.rs`) is present at all. Nothing in
+  # the crate's own lib code DECLARES a Send bound anywhere — by design,
+  # see `no-declared-send` above — so the auto-trait property this job
+  # exists to police is never actually demanded by a bare `cargo check` of
+  # the lib alone. As written, the brief's job would report "expected a
+  # compile error" and FAIL unconditionally, the moment it's added,
+  # regardless of whether the crate is actually correct — a vacuous check
+  # in the specific sense that it cannot distinguish a real regression from
+  # a healthy build.
+  #
+  # `--tests` fixes it: it's what actually compiles the `assert_send` calls
+  # that require the bound this job means to protect
+  # (`tests/promise.rs`'s `future_is_send_on_the_default_target`,
+  # `tests/transport.rs`'s two `execute_future_is_send_*`). Verified both
+  # directions on this exact form, not just one: under `+atomics`, the
+  # build now genuinely fails with a real `E0277` rooted at `tests/
+  # transport.rs`'s own `assert_send` call; without `+atomics`, it succeeds
+  # cleanly — so this can tell a real regression apart from the ordinary
+  # case, which the brief's own version could not.
+  fetch-must-fail-under-wasm-threads:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with: { targets: wasm32-unknown-unknown, components: rust-src }
+      - name: the unsafe Send must be rejected when atomics are on
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d crates/http-ng-fetch ]; then
+            echo "::error::crates/http-ng-fetch is missing — this check must run, not skip"
+            exit 1
+          fi
+          # This step's only signal used to be "the build failed", with
+          # nothing verifying WHY. Measured: one character changed in the
+          # package name yields "error: package ID specification did not
+          # match any packages" and then "OK: correctly rejected under
+          # +atomics", exit 0. A missing rust-src, an unrelated compile
+          # error, a nightly change to -Zbuild-std or an interrupted download
+          # all passed it the same way — the very fail-open shape the two
+          # `cargo tree` jobs above were rewritten to remove.
+          #
+          # The failure must now be the RIGHT failure: E0277 naming the Send
+          # bound. Anything else is a broken check, not a passing one.
+          log="$(mktemp)"
+          if RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
+              cargo +nightly check -p http-ng-fetch --tests \
+              --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
+              > "$log" 2>&1; then
+            echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"
+            exit 1
+          fi
+          if ! grep -q 'error\[E0277\]' "$log" || ! grep -q 'cannot be sent between threads safely' "$log"; then
+            echo "::error::the build under +atomics failed, but NOT with the expected Send rejection (E0277 / cannot be sent between threads safely) — this check proves nothing until the failure is the right one; full output follows"
+            cat "$log"
+            exit 1
+          fi
+          echo "OK: correctly rejected under +atomics with E0277 on the Send bound"
+
+  # Task 10 of vertical 3 — the acceptance, and the one job in this file
+  # that checks a property of the whole library rather than of one crate:
+  # `examples/portable.rs` (the port of `act`'s `http-client` component,
+  # written against `wasi-fetch` before this library existed) builds for
+  # native, WASI and the browser from ONE source with not a single
+  # `#[cfg]`. The spec calls that the stop criterion for the `Transport`
+  # shape.
+  #
+  # Both halves are needed, and neither is redundant:
+  #
+  #   1. Three builds. Without them, the example rots the first time a
+  #      signature changes on a path only one target takes.
+  #   2. The `#[cfg]` scan. Without it, the three builds stay green forever
+  #      by the simplest possible means — someone adds a `#[cfg]` to the
+  #      example, the builds pass, and the criterion silently becomes a
+  #      statement about nothing. That is precisely the failure mode the
+  #      task brief calls out ("a `#[cfg]` quietly inserted to make it
+  #      build destroys the result"), so it is checked mechanically rather
+  #      than trusted to review.
+  #
+  # The scan is Python, not `grep -n '#\[cfg'`: the example's own doc
+  # comment talks ABOUT `#[cfg]`, and its `main` prints a string containing
+  # it. A grep that cannot tell an attribute from prose would either fail
+  # on the honest file (and get "fixed" by deleting the explanation) or be
+  # weakened until it matched nothing. Comments and string literals are
+  # stripped first, then what is left is searched — verified against the
+  # real file in both directions: green as written, red once a `#[cfg]`
+  # attribute is planted.
+  portable-example-three-targets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2, wasm32-unknown-unknown
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f crates/http-ng/examples/portable.rs ]; then
+            echo "::error::examples/portable.rs is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
+          fi
+          python3 - <<'PYEOF'
+          import re
+          import sys
+          from pathlib import Path
+
+          src = Path("crates/http-ng/examples/portable.rs").read_text(encoding="utf-8")
+          # Comment lines first, then string literals over what is left --
+          # in that order, and the string pass over the WHOLE text rather
+          # than line by line. The example's `main` prints a string that
+          # mentions `#[cfg]` and wraps it across two lines with a trailing
+          # backslash, so a per-line pass sees neither of the two quotes
+          # paired and leaves the mention standing. `re.S` is what lets
+          # `\\.` step over that escaped newline. Measured: without either,
+          # this scan goes red on the honest file.
+          code = "\n".join(
+              line for line in src.splitlines() if not line.lstrip().startswith("//")
+          )
+          code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code, flags=re.S)
+
+          hits = [
+              m.group(0)
+              for m in re.finditer(r"#!?\[\s*cfg[_a-z]*|\bcfg!\s*\(", code)
+          ]
+          if hits:
+              print(
+                  "::error file=crates/http-ng/examples/portable.rs::"
+                  f"the acceptance example must contain no cfg switch, found: {hits}. "
+                  "If it needs one to build, the Transport shape is wrong and that is "
+                  "the finding — do not add the cfg."
+              )
+              sys.exit(1)
+          print("OK: no cfg switch in the acceptance example")
+          PYEOF
+          cargo build -p http-ng --example portable
+          cargo build -p http-ng --example portable --target wasm32-wasip2
+          cargo build -p http-ng --example portable --target wasm32-unknown-unknown

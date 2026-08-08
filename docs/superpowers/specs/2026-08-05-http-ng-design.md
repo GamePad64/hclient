@@ -564,6 +564,15 @@ connecting on AAAA without waiting for A.
   can't give you ECH or h3 discovery. The only escape hatches are
   platform-specific: Apple's `DNSServiceQueryRecord`, Android's
   `DnsResolver.rawQuery` (API 29+).
+  **Superseded in vertical 3 — the first clause still holds, the conclusion
+  does not.** `getaddrinfo` indeed cannot return an HTTPS record and never
+  will, but "the system path" is not the same thing as "`getaddrinfo`":
+  `res_query(3)` is in the same libc, answers RR type 65, and is neither
+  Apple-specific nor Android-specific. `http-ng-dns-system` uses it, parses
+  the raw response itself, and reports `supports_svcb() == true` on Linux
+  (glibc/musl) and Apple — see amendment C8, which also records why this
+  costs the project its second `unsafe` file and what the remaining gap
+  (Windows) is.
 - **hickory is honestly tokio-only.** `RuntimeProvider` moved to a new crate,
   `hickory-net` 0.26.1 (2026-05-01, MSRV 1.88); encrypted DNS is locked to
   `__tls = ["dep:rustls", "dep:tokio-rustls", "tokio"]`; issue #3304, "Support
@@ -657,6 +666,12 @@ request (Chrome's model).
 resolver the first request is always TCP, and h3 only kicks in from the second
 request on via `Alt-Svc`. h3-from-the-first-packet requires `-dns-hickory` or
 `-doh` — write that in the docs, and it bumps hickory's priority up to v0.2.
+**No longer true wherever `supports_svcb()` answers `true`** (vertical 3,
+amendment C8): the system resolver reaches SVCB through `res_query(3)` on Unix
+and `DnsQueryRaw` on Windows 11 / Server 2025, not through `getaddrinfo`, so
+h3-from-the-first-packet is available there without hickory or DoH. It remains
+true on older Windows and on every other target — and a caller must ask that
+method rather than assume, which is exactly what it is for.
 
 Management and observability ("may not know" ≠ "cannot know"):
 
@@ -1187,6 +1202,16 @@ must cite one of this section's amendments by an ASCII token —
 (`no-declared-send`) checks exceptions against exactly these tokens, so the
 citation and its justification turn up in the same search.
 
+A second, separate family of amendments covers a different invariant — "no
+crate writes `unsafe`" — under its own token, `unsafe-code-exception:
+amendment-CN`, checked by its own CI job (`no-unsafe-code`). Those are **C7**
+(`http-ng-fetch/src/promise.rs`) and **C8**
+(`http-ng-dns-system/src/sys/res_query.rs` and
+`http-ng-dns-system/src/sys/windows.rs`), and the two families are never
+interchangeable: each job matches only its own token, and each
+`unsafe-code-exception` marker is additionally pinned to the file paths its
+amendment names.
+
 ### C1. `Error` requires `Send + Sync` from its source
 
 **What turned out to be wrong.** §4.7 and decision D6 claimed that
@@ -1410,3 +1435,594 @@ reuse one token for both — a past mistake in Task 13's review (citing
 `amendment-C3` for this very rule) was found and fixed precisely because
 Task 13's implementer checked the citation against the spec text before
 writing it into the code, rather than inheriting it as-is.
+
+### C7. `http-ng-fetch` carries the project's one `unsafe impl`, and `deny` — not `forbid` — is correct there
+
+Not about the `Send`/`Sync` invariant either (that class is still closed by
+C1–C5, and this amendment's token is never cited as a `send-bound-exception`
+marker — see below). About the separate, narrower invariant "no crate writes
+`unsafe` code," which vertical 2 enforces at two layers: `#![forbid(unsafe_code)]`
+in every crate's `src/lib.rs`, and the `no-unsafe-code` CI job as a backstop
+for the case where that line itself goes missing (see the job's own comment
+in `.github/workflows/ci.yml`, "REVISED in Task 6, fix round 1").
+
+**Exactly one exception exists, and it is load-bearing, not incidental.**
+`wasm_bindgen_futures::JsFuture` (as resolved into this workspace: a
+re-export of `js_sys::futures::JsFuture`) holds an `Rc<RefCell<..>>`
+internally and is therefore `!Send` — an implementation choice, not a
+platform property, since `JsValue`, `js_sys::Promise` and the `web_sys`
+types used here are all `Send` on the default target. Without a `Send`
+replacement, `Client::execute`'s future would be `!Send` in the browser and
+C1's whole argument (`Client -> Transport` stays spawnable) would not hold
+there. `http-ng-fetch/src/promise.rs` supplies that replacement:
+`SendJsFuture`, built on a `js_sys::Promise` callback pair plus a hand-rolled
+waker, wrapping its two `wasm_bindgen::Closure` values in
+
+```rust
+#[repr(transparent)]
+pub(crate) struct SingleThreaded<T>(pub(crate) T);
+
+#[allow(unsafe_code, reason = "…")]
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl<T> Send for SingleThreaded<T> {}
+```
+
+**Why this mirrors wasm-bindgen's own REASONING — not its shipped SCOPE, and
+that distinction had to be corrected once (fix round 1, finding 1).** The
+first draft of this amendment said the technique "mirrors what wasm-bindgen
+applies to `JsValue` itself," true of the underlying argument but stated in
+a way that implied more precedent than actually exists. Checked precisely,
+not restated from memory:
+
+*What IS shipped, unconditionally, in every released version this crate
+depends on:*
+
+```rust
+// wasm-bindgen-0.2.126/src/lib.rs:173-176
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Send for JsValue {}
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Sync for JsValue {}
+```
+
+*What is NOT shipped anywhere:* no released `wasm-bindgen` gives
+`Closure<T>` or `JsFuture` a `Send`/`Sync` impl under any `cfg`. The only
+place upstream does this at all is an UNMERGED branch,
+`unsafe-send-sync` on `wasm-bindgen/wasm-bindgen` (commits `a7e0c944`,
+2025-10-30, and `0c0a8a8e`, 2025-10-31 — fetched from the real repository
+and read directly for this correction, not taken on the review's word),
+which adds exactly:
+
+```rust
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl Send for JsValue {}                  // + Sync
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl<T: ?Sized> Send for Closure<T> {}     // + Sync
+#[cfg(unsafe_single_threaded_traits)]
+unsafe impl Send for JsFuture {}                  // + Sync
+```
+
+gated behind an explicit OPT-IN cfg, `unsafe_single_threaded_traits`
+(`RUSTFLAGS="--cfg unsafe_single_threaded_traits"`) — deliberately **not**
+automatic under `!atomics` the way the shipped `JsValue` impl is, and the
+branch adds its own `compile_error!` if that cfg is combined with
+`target_feature = "atomics"`. Upstream converged on the same underlying
+argument this amendment makes (no atomics implies no threads implies one
+table) without ever shipping it unconditionally for `Closure`/`JsFuture`
+the way it does for `JsValue`.
+
+Without `target_feature = "atomics"` (wasm threads), a wasm module has one
+linear memory, one instance, and no threads by construction — there is
+nothing for a `Send` bound to protect against, and `JsValue`'s own
+`PhantomData<*mut u8>` marker (there purely to opt the type out of the
+auto-trait, not because it holds a real pointer with thread-unsafe access
+patterns) is deliberately overridden on that basis. `SingleThreaded<T>`
+makes the identical argument about the two `Closure` values it wraps: they
+are `!Send` only because their internals route through the same kind of
+non-atomic JS-table index, and only a single-instance, single-thread module
+ever touches that index — but this is a claim `http-ng-fetch` is making
+itself, on the same evidence upstream already accepted for `JsValue` and an
+unmerged branch accepted for `Closure`/`JsFuture` too (under a stricter,
+explicit opt-in), not something copied from a released, audited surface.
+`#[cfg(not(target_feature = "atomics"))]` on the `unsafe impl` is what
+makes the claim true rather than assumed — with `+atomics`, the `cfg`
+strips the impl and the compiler is left to enforce `!Send` on its own.
+
+**Verified, not asserted, in both directions.** `cargo check -p
+http-ng-fetch --target wasm32-unknown-unknown --tests` passes without
+`target_feature = "atomics"`. With it:
+
+```
+RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check \
+  -p http-ng-fetch --target wasm32-unknown-unknown --tests \
+  -Zbuild-std=std,panic_abort
+```
+
+fails with `` `(dyn FnMut(JsValue) + 'static)` cannot be sent between
+threads safely `` (this wasm-bindgen version routes a closure's `!Send`ness
+through `Box<dyn FnMut>` inside `ScopedClosure`, not through a bare `*mut
+u8`, so the exact type named in the diagnostic differs from older
+wasm-bindgen releases — the conclusion, "the compiler rejects it," is what
+carries the weight, not the literal wording of the error).
+
+**`--tests` is not optional in that command, and its absence is a
+false-negative trap.** `cargo check -p http-ng-fetch --target
+wasm32-unknown-unknown` (lib target only, no `--tests`) succeeds under
+`+atomics` too — nothing in the library itself demands `SendJsFuture:
+Send`; only `tests/promise.rs`'s `assert_send::<..SendJsFutureAlias>()`
+does. A verification command that drops `--tests` looks like it re-confirms
+the safety argument and actually confirms nothing at all. Anyone extending
+this check (a future MSRV bump, a CI job, a new spike) must run it with
+`--tests` or the check is theater.
+
+**Why `deny`, not `forbid`, is correct here — and only here.** Every other
+crate in the workspace inherits `[lints] workspace = true`, which sets
+`unsafe_code = "forbid"`; `forbid` cannot be relaxed by a local `#[allow]`
+from inside the crate (`E0453`), which is exactly the point of using it
+everywhere the crate has no legitimate `unsafe`. `http-ng-fetch` is the one
+crate that does, so it opts out of `[lints] workspace = true` entirely and
+declares its own `[lints.rust]` with `unsafe_code = "deny"` — restating
+`missing_debug_implementations = "warn"` and `unexpected_cfgs = { level =
+"warn", check-cfg = [] }` explicitly in the same table, since opting out of
+the workspace table drops those two along with `unsafe_code` and losing them
+silently would be exactly the kind of drift this project spends review
+effort on elsewhere (see the `no-unsafe-code` job's own "HISTORY" comment on
+list-based coverage rotting). Verified by probe: the same crate keeping
+`[lints] workspace = true` plus a local `#[allow(unsafe_code)]` next to the
+`unsafe impl` fails with two `E0453`s and does not build at all; dropping
+the inherited table and declaring `#![deny(unsafe_code)]` in `src/lib.rs`
+instead (the crate-level doc comment on `SendJsFuture`'s module explains
+this) lets the scoped `#[allow]` do its job. `forbid` remains correct in
+every other crate — this crate is the sole, deliberate exception, and the
+exception is why C1's "one table, no threads" premise needed restating
+rather than silently assumed.
+
+**A separate marker from `send-bound-exception`, on the same mechanical
+principle.** `no-declared-send` accepts `send-bound-exception:
+amendment-CN` for `C1`, `C2`, `C3`, `C5` or `C6` — that's the Send/Sync
+invariant. `no-unsafe-code` is a different job over a different invariant
+("no crate writes `unsafe`"), so it gets its own token,
+`unsafe-code-exception: amendment-C7`, rather than overloading
+`send-bound-exception` for an unrelated check. Per-line, not per-file, for
+the same reason C5 gives: the job's grep would otherwise treat the whole
+file as exempt, hiding any *unrelated* `unsafe` block added to
+`promise.rs` later. Both lines the job would flag —
+`#[allow(unsafe_code, ...)]`'s `unsafe_code,` and the `unsafe impl` line
+itself — carry the marker; `#[cfg(...)]` and the doc comments around them
+don't contain the literal text `unsafe` in a way the job's comment filter
+doesn't already drop. The job accepts `amendment-C7` and nothing else: a
+marker citing any other token (a typo, a made-up amendment, or a real but
+unrelated one like `C1`) is left unmatched and still fails the check —
+verified by both a positive probe (the real marked lines pass) and two
+negative ones (an unmarked `unsafe` anywhere in any crate still fails; a
+marker citing a nonexistent amendment, e.g. `amendment-C9`, still fails).
+
+**Two corrections to the task brief that this crate's implementer is
+recorded as having found, not inherited.** First, `pub(crate) struct
+SendJsFuture` (as literally specified) cannot be re-exported through
+`#[doc(hidden)] pub mod testing { pub use crate::promise::SendJsFuture as
+SendJsFutureAlias; }` — `tests/promise.rs` is compiled as a separate,
+external crate, and `E0365` (private type re-exported from a public module)
+follows immediately. The type is `pub` instead, with the `promise` module
+itself staying private (`mod promise;`, not `pub mod promise;`) — the type
+has no path to it from outside the crate except through the `testing`
+re-export, so it is still not part of the crate's advertised API despite
+the `pub` keyword. Second, the brief's citation for `JsFuture`'s
+`Rc<RefCell<..>>` — `js-sys-0.3.103/src/futures/mod.rs:118` — names the
+right crate: as of the versions this workspace actually resolves
+(`wasm-bindgen-futures` 0.4.76, `js-sys` 0.3.103, confirmed via `cargo
+tree -p http-ng-fetch -e normal` and by reading both crates' vendored
+sources), `wasm-bindgen-futures` is a thin re-export shim over
+`js_sys::futures`, and `JsFuture` is defined in `js-sys` itself — a
+refactor from older releases (`wasm-bindgen-futures` 0.4.42 still defines
+`JsFuture` directly, at its own `src/lib.rs:101-102`), not a mistake in the
+brief's crate attribution. The one-line-off part was the line number: `118`
+is `pub struct JsFuture<T = JsValue> {`, and the `Rc<RefCell<Inner<T>>>`
+field itself is `119`.
+
+**Fix round 1, finding 2: the callbacks used to live in the wrong place,
+and the fix is the same one upstream already uses.** The first version of
+`SendJsFuture` held its two `Closure`s as a field sibling to `state`, both
+dropped together as soon as the future itself was. That's unsound in
+exactly the way `js_sys::futures::JsFuture::from`'s own comment warns
+about (`futures/mod.rs:149-158`): "we'd have no way of cancelling the
+callbacks getting invoked... one of the callbacks is likely always going to
+be invoked... they have to be self-contained." A `Closure` dropped BEFORE
+the promise it's registered on settles throws when JS later invokes it
+(`ScopedClosure::drop` invalidates the JS-side function first), and since
+`SendJsFuture::new` discards the promise `.then2()` returns, nothing
+observed that throw directly — it surfaced only as a browser-level
+unhandled promise rejection whenever an already-pending, already-abandoned
+promise finally settled.
+
+The fix mirrors js-sys's own `Inner::callbacks` / `finish` (`futures/mod.rs
+:101-108`, `:159-211`) exactly: the callbacks now live INSIDE `State`
+(behind the same `Arc<Mutex<..>>` `SendJsFuture.state` also holds), and
+each callback's own captured clone of that `Arc` keeps `State` — and hence
+itself — alive independently of the outer future handle. Whichever callback
+actually fires drops BOTH (`state.callbacks = None`) from within its own
+invocation, which is sound only because a JS `Promise` invokes at most one
+of resolve/reject, ever, so the sibling callback is guaranteed to never
+fire once its partner already has.
+
+A first regression test tried to observe this via a real global
+`unhandledrejection` listener. Abandoned after a demonstrated false
+negative AND false positive in the same run: `wasm-bindgen-test`'s browser
+runner executes every test in one shared page/JS realm back to back, and a
+deliberately-unhandled rejection created to sanity-check the listener
+wasn't observed within its OWN test's window, then bled into a LATER
+test's window and was misattributed there — real timing, but not
+deterministic enough to trust. The test that shipped instead
+(`tests/promise.rs::dropping_a_pending_future_does_not_drop_its_still_needed_callbacks`)
+checks the retention mechanism directly: a `Weak` handle to the same `Arc`
+(`SendJsFuture::downgrade_state`, exposed via `testing` for exactly this),
+checked with `Weak::upgrade` strictly AFTER the future itself is dropped —
+deterministic, synchronous, no promise scheduling or browser events
+involved. Mutation-checked by reverting to the sibling-field design: the
+test goes red.
+
+**Fix round 1, finding 3: the future wasn't fused, and that's a silent
+hang — the exact failure mode this project has spent two verticals
+removing.** Polling `SendJsFuture` again after it had already returned
+`Poll::Ready` used to silently return `Poll::Pending` forever: `result` had
+already been `take()`n by the first `Ready` and nothing ever refilled it.
+Out of `Future`'s own contract (a `Future` must not be polled again after
+completion), and exactly the "no test name, no message" class of defect
+most recently fixed by rewriting the F1 connect-timeout watchdog in
+vertical 2. Fixed with a `completed: bool` flag, checked at the top of
+`poll` and asserted false, turning the silent hang into an immediate, loud
+panic naming the type. Mutation-checked by removing the guard: the
+regression test
+(`tests/promise.rs::polling_after_ready_panics_loudly_instead_of_hanging_silently`,
+`#[should_panic]`) doesn't cleanly fail "didn't panic" — it HANGS and times
+out, which is itself the demonstration of why the guard matters.
+
+**Fix round 1, finding 4: the `unsafe-code-exception` marker had to be
+scoped to its one legitimate file.** As first shipped, the `no-unsafe-code`
+job's marker filter matched the text `unsafe-code-exception:
+amendment-C7` anywhere in `crates/*/src`, with no check on which file. A
+reviewer probe confirmed the gap directly: planting that exact marker text
+next to an unrelated `unsafe` block in `http-ng-core/src/lib.rs` passed the
+job. `send-bound-exception` can't be fixed the same way — it legitimately
+appears across many files, by design (see its own preamble at the top of
+this section) — but C7 has exactly one legitimate location in the whole
+project, and that location is knowable ahead of time. The job's filter now
+also requires the marker's line to have the path
+`crates/http-ng-fetch/src/promise.rs`; the same marker text anywhere else
+no longer excuses anything. Verified in all four directions: the two real
+marked lines pass; an unmarked `unsafe` anywhere still fails; a marker
+citing a nonexistent amendment still fails; the correct marker, planted in
+a different crate's `src`, now ALSO fails (the missing direction before
+this fix).
+
+### C8. `unsafe` is permitted at a foreign-function boundary, in the files the amendment names
+
+The second exception to "no crate writes `unsafe`", and the first that is not
+about wasm. C7 established the mechanism — `#![deny(unsafe_code)]` in place of
+`forbid` for one crate, a per-line `unsafe-code-exception` marker, and a
+`no-unsafe-code` CI job that path-scopes that marker to the one file the
+amendment names. C8 reuses that mechanism — with one correction forced by `cargo fmt`, below —
+under its own token `unsafe-code-exception: amendment-C8`, for
+`http-ng-dns-system/src/sys/res_query.rs` and
+`http-ng-dns-system/src/sys/windows.rs`: one file per platform backend, and no
+`unsafe` anywhere else in that crate.
+
+**The rule, stated once so it does not have to be re-derived per task.**
+`unsafe` is permitted where Rust has no other way to reach a platform API this
+project needs, and only there. It is not permitted for performance, for
+convenience, or to avoid a bound. Each site gets its own amendment, its own
+token, and an explicit file path in the CI job — never a widened existing one,
+and never a directory, because a marker that excuses a directory excuses
+everything a future reviewer forgets to look at. C8 naming two files is not an
+exception to that: they are the two platform halves of one boundary, both
+enumerated by name, and `sys/mod.rs` sitting between them is deliberately not
+among them.
+
+**Why a system SVCB lookup cannot be written in safe Rust.** `getaddrinfo` —
+everything `http-ng-dns-system` used before this — cannot return an HTTPS/SVCB
+record in principle: its result type is a list of `sockaddr`s. §5.3 concluded
+from that that "the system path structurally can't give you ECH or h3
+discovery," which conflated `getaddrinfo` with the system resolver;
+`res_query(3)` is in the same libc and answers RR type 65. It is not wrapped
+by anything in this workspace's dependency graph: checked against the vendored
+sources, `res_query` is absent from `rustix` 1.1.4 and from every `libc`
+release from 0.2.182 through 0.2.189. So the alternative to declaring the
+foreign function ourselves is not "the same thing in safe Rust" — it is no ECH
+and no first-request h3 on any native target, which is what
+`supports_svcb() == false` used to mean here.
+
+**The scope, and why it is this small — and it got smaller than first
+written.** `res_query.rs` declares one foreign function, calls it into a
+buffer it sized itself, and returns an owned `Vec<u8>` or a copied `[u8; 12]`.
+`windows.rs` is the same shape on the other platform: it resolves two symbols,
+drives one asynchronous call to completion, copies the response out, and frees
+what `dnsapi` allocated. Neither parses anything, and neither hands a borrowed
+pointer upward. The result is the property that matters: **the code that reads
+untrusted input is safe Rust, and the code that is not safe Rust reads
+nothing.**
+
+Three decisions were made specifically to keep it that way, and all three moved
+logic *out* of the unsafe files:
+
+- the RCODE/`QR` classification of a failed call lives in
+  `svcb::endpoints_from_answer`, so `RawAnswer` has no "no response" variant
+  for a backend to choose between — it always returns the header, and safe code
+  decides what it means;
+- the buffer-length decision lives in `sys::classify_written`, so the one bound
+  governing whether a length reported by C reaches a slice index is ordinary
+  safe code with four tests around it;
+- **the RFC 9460 wire parsing is not ours at all.** The first version of this
+  work hand-wrote it — roughly 600 lines of bounds checks over
+  attacker-chosen bytes, with its own name-decompression termination proof.
+  That code was deleted in favour of `dns-message-parser` 0.9, chosen after
+  reading its source rather than its README: no `unsafe` anywhere in its
+  `src`, `DecodeResult` on every path rather than panics, and name
+  decompression that terminates by recording visited offsets in a `HashSet`
+  (`decode/domain_name.rs`, `EndlessRecursion` / `MaxRecursion`) instead of
+  relying on a hand-argued rule. Deleting the riskiest code in a change is
+  strictly better than writing it carefully; the adversarial byte vectors it
+  was tested with were kept and now test the seam instead — that a decoder
+  refusal becomes an `Err` here rather than a panic, a hang, or a silently
+  empty result.
+
+What remains hand-written is the twelve-byte header (`svcb::read_header`), and
+it has to be: `res_query`'s failure path returns no length, so only the
+fixed-size header can be trusted, and `Dns::decode` cannot read one on its own
+— measured, given exactly twelve bytes it fails with "not enough bytes ...
+offset 13" because it goes on to look for the question section.
+
+**Two things the decoder does that the RFC does not, both found by keeping the
+round-trip assertions.** Neither is a reason to drop the crate; both are
+recorded so the next reader does not rediscover them as bugs.
+
+1. *It strips the ECHConfigList's length prefix.* RFC 9460 §7.3 defines the
+   `ech` SvcParamValue as an ECHConfigList "including the redundant length
+   prefix", and that prefixed form is what rustls parses — an ECHConfigList is
+   a TLS vector, so its codec reads a `u16` length first. The decoder
+   validates the prefix and returns the payload without it. The mapping puts
+   it back, because `SvcbEndpoint::ech_config_list` exists to feed
+   `rustls::EchConfig` directly and would otherwise hold something rustls
+   cannot parse — a field that looks populated and fails far from here. Caught
+   by writing the ECH test as a round-trip rather than as "is it non-empty".
+2. *It rejects an AliasMode record that carries SvcParams.* It reads
+   SvcParams only when `priority != 0`, so such a record leaves bytes
+   unconsumed and fails the whole message with `TooManyBytes`. RFC 9460 §2.4.1
+   says recipients MUST *ignore* those params, i.e. the record stays usable.
+   Accepted as a documented divergence: it only triggers for a server already
+   violating the same section's "SHOULD be empty", and it fails in the safe
+   direction — the RRSet is rejected and the caller falls back to non-SVCB
+   rather than acting on a record nobody agrees about. Pinned by a test that
+   will fail if upstream ever starts honouring §2.4.1.
+
+**A trap in the dependency's public API, worth naming because it makes tests
+lie silently.** `ServiceParameter`'s `PartialEq` and `Hash` compare **only the
+SvcParamKey number** — `ALPN{["h2"]} == ALPN{["h3"]}` is `true`. It exists so a
+`BTreeSet` can hold one parameter per key, but the consequence for a caller is
+that `assert_eq!(param, ServiceParameter::ALPN { alpn_ids: vec!["h2"] })`
+passes **without comparing a single value**: it looks like it checks the ALPN
+list and actually checks the number `1`. Every assertion in this crate
+therefore reaches into the extracted `SvcbEndpoint` fields, which have ordinary
+equality, and a characterisation test asserts the upstream behaviour directly
+so that the day it changes, the reason for the style is revisited deliberately
+rather than found again by accident. Mutation-checked: a mutant that emits the
+right ALPN *key* with the wrong *values* is killed by the real-answer test.
+
+**Why `res_query` and not `res_nquery`.** `res_nquery` takes a caller-owned
+`res_state` and is normally the better answer where a process-global resolver
+state would be a hazard. It is rejected here because `struct __res_state` is a
+libc-private layout that neither `libc` nor `rustix` declares and that differs
+between glibc, musl and Darwin. A hand-written `#[repr(C)]` guess at it is not
+a safer version of this file; it is memory corruption waiting for a libc point
+release. What is relied on instead is that `res_query`'s state is per-thread on
+all three supported libcs — glibc and Darwin reach it through `__res_state()`,
+and musl's `res_query` holds no resolver state at all, re-reading
+`/etc/resolv.conf` per call — which is what makes calling it from an arbitrary
+`Blocking`-pool thread sound.
+
+**Four platform facts, each established by measurement rather than by
+convention.** They are recorded here because each one would otherwise be
+re-guessed by the next person to touch this file, and three of the four
+contradict the obvious guess.
+
+1. *Where the symbol lives.* glibc 2.34 and later export `res_query` from
+   `libc.so.6` (`res_query@@GLIBC_2.34`) and leave `libresolv.so.2` an empty
+   stub — read out of the installed libraries with `nm -D`, not assumed.
+   Linking `resolv` is still correct there (harmless) and required before
+   2.34. musl is the opposite: `res_query` is a strong symbol inside `libc.a`,
+   and Rust's self-contained musl sysroot ships **no `libresolv.a` at all**, so
+   a `#[link(name = "resolv")]` on musl would fail to link. The attribute is
+   therefore `target_env = "gnu"`-scoped, not `target_os = "linux"`-scoped.
+2. *Apple exports only the BIND9-prefixed name.* `libresolv.9.tbd` lists
+   `_res_9_query` and no plain `_res_query`; C code reaches it through
+   `#define res_query res_9_query` in `<resolv.h>`. Rust has no preprocessor,
+   so the mapping is spelled out with `#[link_name = "res_9_query"]`. Without
+   this the macOS leg of the CI matrix fails at link time, not at run time.
+3. *`h_errno` is not usable and is not used.* `res_query` reports the ordinary
+   case "this name exists but has no HTTPS record" as **failure**, with the
+   reason in `h_errno`. That value is a process-global on Darwin (`netdb.h`
+   declares a plain `extern int h_errno;`, not a per-thread accessor), and it
+   is sticky: measured on glibc 2.43, a *successful* call left `h_errno` at
+   `4` (`NO_DATA`) from the previous failing one. What is used instead was
+   measured directly: on the `-1` path the response has already been written
+   into the answer buffer, the buffer is zeroed before the call, and every DNS
+   response has `QR` set — so `QR` separates "a response arrived and the call
+   still failed" from "nothing arrived", and the RCODE on the wire classifies
+   the rest.
+
+   ```text
+   ftp.gnu.org     type=65 -> ret=-1  qr=1 rcode=0 ancount=0   (no HTTPS record)
+   zzz9.invalid    type=65 -> ret=-1  qr=1 rcode=3 ancount=0   (NXDOMAIN)
+   cloudflare.com  type=65 -> ret=116 qr=1 rcode=0 ancount=1   (an answer)
+   cloudflare.com  in an empty network namespace:
+                              ret=-1  qr=0                     (nothing arrived)
+   ```
+
+   This matters beyond tidiness: "no HTTPS record" is the *commonest* outcome
+   of an HTTPS query, and reporting it as an error would tell every caller its
+   DNS was broken for every host that simply does not publish one.
+4. *The return value is not a length.* Given a 20-byte buffer for a 116-byte
+   answer, glibc's `res_query` returns **20** — the buffer's size, with no
+   indication that anything was lost. A return that reaches the buffer's end is
+   therefore indistinguishable from a silent truncation and must be retried at
+   65535 (the width of the length field that frames a DNS message over TCP),
+   never truncated to. `sys::classify_written` is that rule, and it also
+   handles the opposite convention (a libc reporting the size it *needed*)
+   identically, because both must be kept away from `buf[..n]`.
+
+**Windows: the OS has already parsed the record, and the first two attempts
+at this both missed that.** The route finally taken is `DnsQuery_UTF8` with
+`DNS_TYPE_HTTPS`, reading the `DNS_SVCB_DATA` the DNS Client service fills in.
+No DNS bytes are parsed on Windows at all. The two abandoned routes are kept
+here because each is a day of work to rediscover, and because the *reason*
+the second was abandoned turned out to be wrong — which is the more useful
+half of the record.
+
+*Dead end 1: `DNS_QUERY_RETURN_MESSAGE`.* It hands back a
+`DNS_MESSAGE_BUFFER`, which is a `DNS_HEADER` plus `MessageBody: [i8; 1]` and
+**no length field**, while `DnsExtractRecordsFromMessage_W` demands the length
+from its caller. A parser without a buffer end cannot detect an overrun,
+because the read that would reveal it is the read that is already out of
+bounds. This one is a genuine dead end and stays one.
+
+*Dead end 2, and the mistake worth naming: "the union is untagged, so a
+structured Windows path is unsafe in principle."* `DNS_RECORDW.Data` is indeed
+an untagged union, and for a while that reading stopped this work twice — once
+into "Windows is out of scope, `supports_svcb()` is `false` there", and once
+into an elaborate `DnsQueryRaw` backend fetched through `GetProcAddress` so the
+raw wire bytes could go through the shared decoder. Both were solving a problem
+that does not exist. `wType == DNS_TYPE_HTTPS` **is** the tag for the outer
+union, and one level down `DNS_SVCB_PARAM` carries `wSvcParamKey`, which is the
+discriminator for its own union (`pAlpn`, `pIpv4Hints`, `pIpv6Hints`,
+`pMandatory`, `wPort`, `pszDohPath`, `pUnknown`). The error was looking at one
+union, finding no tag *for that union*, and generalising. The lesson that
+belongs in this spec is narrower than "check the metadata": **an untagged union
+in a foreign API is a question about which field selects the member, not a
+verdict that none does.**
+
+What that buys is not marginal. `DnsQueryRaw` exists only on Windows 11 /
+Server 2025; `DnsQuery_UTF8` has been there since Windows 2000, and the SVCB
+parsing behind it is present from Windows 10 — so coverage goes from a minority
+of machines to nearly all of them, the link is static, and the
+`GetProcAddress` machinery disappears along with the run-time capability it
+forced. **`SUPPORTS_SVCB` is a `const bool` again on every backend**: the
+run-time form was honest only while the answer genuinely depended on the
+machine, and a function that always returns a constant is machinery with no
+honesty to show for it. The capability and the lookup still come from the same
+`#[cfg]`-selected module, so they cannot drift.
+
+**Why `DnsQuery_UTF8` and not `DnsQueryEx`.** Both are applicable and both link
+statically; the choice is about charset, and it is the one place where the
+bindings could not settle the question. `DnsQueryEx` takes `PCWSTR` and
+therefore returns Unicode records — but `windows-sys` 0.61.2 declares exactly
+one `DNS_SVCB_DATA`, with no `DNS_SVCB_DATAW`, and its `pszTargetName` is
+`PSTR` in both the `DNS_RECORDA` and `DNS_RECORDW` unions. Either Microsoft's
+header genuinely has no A/W split for that struct, or the Win32 metadata models
+it imprecisely; the bindings cannot distinguish the two, and no machine was
+available to settle it by running the code. Reading a UTF-16 target name
+through a `PSTR` yields a one-character host name — a silently *wrong host to
+connect to*, which is worse than a crash because nothing announces it.
+`DnsQuery_UTF8` removes the question instead of answering it: its results are
+`DNS_RECORDA`, narrow throughout, so `PSTR` is unambiguously right.
+
+**What the Windows path's safety rests on, separated by how well it is
+known.** Stated this way deliberately, because the three have very different
+weight:
+
+1. *Read out of the bindings* (`windows-sys` 0.61.2): the declarations of
+   `DnsQuery_UTF8`, `DNS_RECORDA`, `DNS_SVCB_DATA`, `DNS_SVCB_PARAM` and its
+   union, and that `wSvcParamKey` discriminates that union. Checkable by
+   anyone, in the vendored source.
+2. *Taken on the project owner's word and not verified here:* that Windows
+   parses HTTPS records into `DNS_SVCB_DATA` from **Windows 10 onward**. This
+   is what makes a static link and a compile-time `true` correct, and the
+   presence of `DNS_SVCB_DATA` in the Win32 metadata does **not** establish it
+   — that metadata is not versioned by OS release. If the claim is wrong for
+   some older Windows, that OS would return the payload in `DNS_UNKNOWN_DATA`
+   and reading it as `DNS_SVCB_DATA` would dereference a `pszTargetName` built
+   from raw response bytes. There is no in-process check that distinguishes
+   them: the outer union's tag is `wType`, which is 65 either way, and
+   comparing `wDataLength` against `size_of::<DNS_SVCB_DATA>()` is a
+   coincidence of sizes, not a tag.
+3. *Never executed.* Every line type-checks under `cargo check` and `cargo
+   clippy --target x86_64-pc-windows-msvc`, and that the file is genuinely
+   compiled for that target — rather than silently `#[cfg]`-ed out — was
+   confirmed by planting a `compile_error!` in it and watching the Windows
+   build fail while the Linux build stayed green. Nothing in it has ever run:
+   there is no Windows machine in the environment that produced it.
+
+**What "tested" therefore means for Windows, precisely.** The FFI walk is
+verified by types only. What is genuinely tested is everything downstream of
+it, and that is not an accident of layout: the RFC 9460 client rules were
+deliberately factored onto a backend-neutral `RawBinding`/`RawParam` pair that
+holds no borrowed memory and no platform detail. `windows.rs` fills it from an
+OS-parsed struct, the Unix path fills it from a decoded message, and both then
+go through one `endpoint_from_binding` — so mode handling (§2.4), root-target
+substitution (§2.5) and `mandatory` semantics (§8) are written once and tested
+once. Five tests drive that seam through `RawBinding` directly, which is the
+door Windows uses; one of them covers a rule the Unix path structurally cannot
+reach (AliasMode carrying SvcParams, which the Unix decoder refuses outright
+but Windows will hand over), so it is not dead code there and that test is the
+only thing that can prove it holds.
+
+One asymmetry between the backends is worth stating because it looks like a
+bug from either side alone: the ECHConfigList arrives on Windows through
+`pUnknown` as the verbatim SvcParamValue, prefix included, which is already the
+form RFC 9460 §7.3 defines and rustls parses — so `windows.rs` adds nothing,
+while the Unix bridge has to put back a prefix its decoder stripped. Both
+converge on the same bytes, and a shared test asserts exactly that.
+
+**Exactly two marker positions are accepted, and the one people reach for
+first is not among them.** The fold attaches a lone marker line to its
+*predecessor*, so:
+
+```text
+unsafe { b() } // unsafe-code-exception: amendment-CN     OK
+
+unsafe extern "C" {                                       OK
+    // unsafe-code-exception: amendment-CN                  (rustfmt's placement)
+
+// unsafe-code-exception: amendment-CN                    NOT OK
+unsafe { b() }                                              (excuses the line above it)
+```
+
+A marker written *above* a construct excuses whatever precedes it — usually a
+line with no `unsafe` in it — and the construct stays flagged. This is worth
+stating because Rust attributes are written above the item they apply to, so
+writing the marker there is the natural first guess. The fold deliberately does
+not also look upward: the failure direction as it stands is a false red rather
+than a false green, and looking both ways would let one marker excuse two
+different `unsafe` lines. Both the job's comment and its `::error::` message
+spell the two positions out, so the person who hits this in CI does not have to
+go and read the job.
+
+**Verified in thirteen directions.** The `no-unsafe-code` job carries one
+per-line, path-scoped filter per amendment. Checked by planting probes in this
+tree and reverting each: a marker trailing on the line passes; a marker on the
+following line, as rustfmt writes it, passes; a marker *above* the line does
+not excuse it; a marker two lines away excuses nothing; the real marked lines
+in `res_query.rs` and `windows.rs` pass; an unmarked `unsafe` in `sys/mod.rs`
+(same crate, one directory up), in `svcb.rs`, in `windows.rs`, and in another
+crate entirely all fail; a marker citing a nonexistent `amendment-C9` fails;
+the correct C8 marker planted in a different file fails; and swapping the two
+amendments' tokens — C7's marker in `res_query.rs`, C8's in `promise.rs` —
+fails both. The whole set was re-run after `cargo fmt --all`, which is the
+scenario that started this. The compiler layer was checked the same way and independently: an
+`unsafe` block in `svcb.rs` is rejected by that module's `forbid`, an `unsafe`
+block in `sys/mod.rs` is rejected by the crate root's `deny`, and a local
+`#[allow(unsafe_code)]` in `svcb.rs` fails with `E0453` — the same
+`forbid`-cannot-be-relaxed property C7 measured, now holding *inside* a crate
+that has an exception rather than only across crates.
+
+**And the mapping was mutation-tested, because a check nobody breaks is a check
+nobody has tested.** Twenty-one mutants were applied one at a time and all
+twenty-one were killed by a named test: emitting the right ALPN *key* with the
+wrong *values* (the mutant that proves the `ServiceParameter::PartialEq` trap
+above is actually avoided), handing back the decoder's stripped ECHConfigList,
+dropping the port or either address hint, not substituting the owner name for a
+root TargetName, emitting an AliasMode record that points at the root,
+honouring a `mandatory` key this client does not understand, skipping the
+check that a mandatory key is present at all, reporting every unregistered key
+as ALPN, leaving the trailing root dot on a target, swallowing a decoder
+refusal into an empty result, reading the additional section instead of the
+answer section, each of the four header-classification bounds, and both
+`classify_written` bounds.

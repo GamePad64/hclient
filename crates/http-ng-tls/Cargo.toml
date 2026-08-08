@@ -13,3 +13,6 @@ hyper        = { version = "1.11", default-features = false }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }

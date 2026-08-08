@@ -9,14 +9,44 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
-#[derive(Debug, Clone, Copy)]
-pub struct RedirectPolicy {
-    pub limit: u8,
+/// Whether, and how far, to follow a redirect chain.
+///
+/// Two different intents, kept apart deliberately: [`Self::None`] returns
+/// the 3xx to the caller, [`Self::Limited`] follows and errors on
+/// exceeding. `reqwest` draws the same line as `Policy::none()` versus
+/// `Policy::limited(0)`.
+///
+/// This was a `struct { limit: u8 }` until the Task 10 acceptance ported a
+/// live consumer onto it and found the first intent inexpressible — the
+/// consumer's `follow_redirects: false` forwards the 302 upward, and
+/// `limit: 0` turned that answer into an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectPolicy {
+    /// Do not follow. A 3xx reaches the caller as an ordinary response, its
+    /// `Location` header intact, for the caller to inspect or forward.
+    ///
+    /// This is what `wasi-fetch`'s `redirect_limit(0)` did
+    /// (`request.rs:135`: `if redirect_limit > 0 && status.is_redirection()`
+    /// skips the whole redirect branch), and what the live consumer
+    /// `act/components/http-client` means by `follow_redirects: false`. It
+    /// was inexpressible here until this type became an enum.
+    None,
+    /// Follow up to this many hops; exceeding it is `TooManyRedirects`.
+    ///
+    /// `Limited(0)` therefore means "follow zero hops" — the first 3xx with
+    /// a `Location` is an error. That is deliberately NOT the same as
+    /// [`RedirectPolicy::None`], and the distinction is the entire reason
+    /// this is an enum: folding the two into a single `limit: 0` put a
+    /// discontinuity inside one field, where `0` returned the response and
+    /// `1` errored on exceeding. `reqwest` keeps them apart the same way,
+    /// as `Policy::none()` and `Policy::limited(0)`.
+    Limited(u8),
 }
 
 impl Default for RedirectPolicy {
+    /// Ten hops, matching what the struct form defaulted to.
     fn default() -> Self {
-        Self { limit: 10 }
+        Self::Limited(10)
     }
 }
 
@@ -76,7 +106,13 @@ pub fn decide(
     let Some(location) = location else {
         return RedirectAction::Stop;
     };
-    if hops >= policy.limit {
+    let limit = match policy {
+        // "Do not follow" is a `Stop`, not an error: the 3xx is the caller's
+        // answer, not a failure to reach one.
+        RedirectPolicy::None => return RedirectAction::Stop,
+        RedirectPolicy::Limited(n) => *n,
+    };
+    if hops >= limit {
         return RedirectAction::TooManyRedirects;
     }
 
@@ -132,7 +168,7 @@ mod tests {
     use http::{Method, StatusCode, Uri};
 
     fn p() -> RedirectPolicy {
-        RedirectPolicy { limit: 10 }
+        RedirectPolicy::Limited(10)
     }
     fn u(s: &str) -> Uri {
         s.parse().unwrap()
@@ -255,7 +291,7 @@ mod tests {
     #[test]
     fn limit_is_enforced() {
         let r = decide(
-            &RedirectPolicy { limit: 2 },
+            &RedirectPolicy::Limited(2),
             2,
             &u("https://a/"),
             &Method::GET,
@@ -263,6 +299,111 @@ mod tests {
             Some(b"https://a/x"),
         );
         assert!(matches!(r, RedirectAction::TooManyRedirects));
+    }
+
+    /// `None` is the whole reason this type is an enum, and until this test
+    /// the crate that OWNS it never constructed the variant: collapsing
+    /// `None` back into `Limited(0)` left all 92 of this crate's tests
+    /// green, and was caught only by a test in `http-ng` that reaches the
+    /// semantics through `examples/portable.rs` — an example, the artifact
+    /// most likely to be rewritten or trimmed.
+    ///
+    /// A 302 WITH a `Location` is the case that discriminates: without one,
+    /// `decide` returns `Stop` for every policy, so the assertion would hold
+    /// for the wrong reason.
+    #[test]
+    fn none_stops_without_following_and_does_not_report_too_many() {
+        let r = decide(
+            &RedirectPolicy::None,
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://a/x"),
+        );
+        assert!(
+            matches!(r, RedirectAction::Stop),
+            "`None` must hand the 3xx back, not follow it and not error: {r:?}"
+        );
+    }
+
+    /// The other side of the same distinction, in the owning crate:
+    /// `Limited(0)` follows zero hops, so the first redirect IS an error.
+    /// Together with the test above, neither variant's behaviour can be
+    /// satisfied by the other's code path.
+    #[test]
+    fn limited_zero_errors_where_none_would_stop() {
+        let r = decide(
+            &RedirectPolicy::Limited(0),
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://a/x"),
+        );
+        assert!(
+            matches!(r, RedirectAction::TooManyRedirects),
+            "`Limited(0)` must error where `None` stops: {r:?}"
+        );
+    }
+
+    /// QUERY is safe and idempotent, so 301 and 302 preserve it — method
+    /// AND body — exactly as they do for PUT or PATCH. The rewrite-to-GET
+    /// in `decide` applies to POST alone, which is what RFC 9110 §15.4.2
+    /// and §15.4.3 describe as the historical behaviour being codified.
+    ///
+    /// This holds today only because QUERY is not POST. It would be easy to
+    /// "fix" into corruption by anyone who groups QUERY with POST for
+    /// having a body — which is why it is pinned rather than left implied.
+    /// Dropping the body of a QUERY does not degrade the request, it
+    /// changes what was asked.
+    #[test]
+    fn query_survives_301_and_302_with_its_body() {
+        for status in [301u16, 302] {
+            let r = decide(
+                &p(),
+                0,
+                &u("https://a/search"),
+                &Method::QUERY,
+                StatusCode::from_u16(status).unwrap(),
+                Some(b"https://a/search2"),
+            );
+            let RedirectAction::Follow(f) = r else {
+                panic!("expected a Follow for status {status}, got {r:?}");
+            };
+            assert_eq!(
+                f.method,
+                Method::QUERY,
+                "QUERY is safe; only POST is rewritten to GET on {status}"
+            );
+            assert!(
+                !f.drop_body,
+                "the body IS the query on {status} — dropping it changes the question, \
+                 it does not merely weaken the request"
+            );
+        }
+    }
+
+    /// 303 is the exception, and QUERY claims none: "retrieve the result
+    /// with GET" is what the status means, so the method becomes GET and
+    /// the body goes. The pair with the test above is the point — one
+    /// without the other would let a blanket rule pass for half the wrong
+    /// reason.
+    #[test]
+    fn query_is_still_downgraded_by_303_like_every_other_method() {
+        let r = decide(
+            &p(),
+            0,
+            &u("https://a/search"),
+            &Method::QUERY,
+            StatusCode::SEE_OTHER,
+            Some(b"https://a/result"),
+        );
+        let RedirectAction::Follow(f) = r else {
+            panic!("expected a Follow, got {r:?}");
+        };
+        assert_eq!(f.method, Method::GET);
+        assert!(f.drop_body);
     }
 
     #[test]

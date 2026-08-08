@@ -19,6 +19,14 @@ let client = http_ng::Client::new()?; // requires an ambient tokio runtime
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
+The same two lines in a browser, on `wasm32-unknown-unknown`. `Client::new()`
+is infallible there, so there is no `?` on it — that is the only difference:
+
+```rust
+let client = http_ng::Client::new();
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
 End-to-end proof that this SAME generic code (not two
 separate examples) actually runs over the network on two different runtimes
 without a single `#[cfg]` —
@@ -36,6 +44,25 @@ A working end-to-end example that actually builds and runs under
 cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
 wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm
 ```
+
+The acceptance for the whole `Transport` shape — a live consumer, written
+against another library *before* this one existed, ported line for line and
+building for all three targets from one source with no `#[cfg]` at all —
+[`crates/http-ng/examples/portable.rs`](crates/http-ng/examples/portable.rs):
+
+```
+cargo build -p http-ng --example portable
+cargo build -p http-ng --example portable --target wasm32-wasip2
+cargo build -p http-ng --example portable --target wasm32-unknown-unknown
+```
+
+The original is `act`'s `http-client` component on `wasi-fetch`. What the
+port keeps, what it fixes and the four things it changes are written down in
+[`docs/porting-wasi-fetch.md`](docs/porting-wasi-fetch.md); the behaviours
+the example claims to have ported are pinned by
+[`crates/http-ng/tests/portable_example.rs`](crates/http-ng/tests/portable_example.rs),
+because three green builds on their own would also be green for an example
+that never streams and never sets a timeout.
 
 ## What's in the dependency graph
 
@@ -110,17 +137,94 @@ testing` and is used only in this same crate's `tests/h1.rs`.
 
 ## Status
 
-v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and two backends —
-`http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1) and `http-ng-native` on
-top of `hyper` + `rustls` + system DNS (vertical 2, this section). Browser
-(`fetch`) — vertical 3, not started yet.
+v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and three backends
+— `http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1), `http-ng-native` on
+top of `hyper` + `rustls` + system DNS (vertical 2), and `http-ng-fetch` on the
+browser's `fetch` (vertical 3).
+
+| target | transport | tokio in the graph |
+|---|---|---|
+| native | `http-ng-native` — TCP + HTTP/1, TLS pluggable | yes, on the h1 path |
+| WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
+| browser | `http-ng-fetch` — `fetch` | **no** |
+
+Both "no"s are machine-checked on every push rather than asserted here:
+`ambient-has-no-tokio` runs `cargo tree` for `http-ng-fetch` against
+`wasm32-unknown-unknown` and for `http-ng-wasi` against `wasm32-wasip2`, and
+fails closed if the invocation itself breaks or returns nothing. Measured
+while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
+graph, four in the native one.
+
+**Minimum supported Rust: the latest stable release** — currently **1.97**,
+declared once in the workspace manifest and shared by every crate. That is the
+support policy, not a snapshot: the floor moves with stable, and a release that
+needs a newer compiler than the one you have is expected rather than a bug.
+
+The trade is deliberate. There is no window in which this crate builds on an
+older toolchain, so if you pin an older Rust, pin an older `http-ng` with it.
+In exchange nothing here carries version-shim code, and CI checks one floor
+instead of a per-crate matrix. CI's `msrv` job pins that exact toolchain and
+runs `cargo check --workspace --all-features --all-targets`, so the promise
+covers tests and examples, not only the libraries.
+
+**Two TLS backends, both behind the same `TlsConnect` seam.**
+`http-ng-tls-rustls` is the default: memory-safe, and it behaves the same on
+every platform. `http-ng-tls-native-tls` uses the platform's own stack —
+SChannel, Security.framework, OpenSSL — and exists for deployments whose
+trust decisions live in the OS store: enterprise roots pushed by policy,
+smartcard client certificates, a FIPS-validated provider. That is a fact
+about an environment, not a preference. It reports less back, and its own
+module doc says exactly what; in particular it cannot report the negotiated
+ALPN, so protocol selection driven by ALPN needs the rustls one.
+
+`NoTls` in `http-ng-tls` is the third choice: no TLS at all, for a build
+that has no room for a stack. `https://` then fails at connect with a typed
+error, and `Capabilities::tls_config` reads `TlsSupport::None` rather than
+claiming otherwise.
+
+**`std` is required, and that is not our decision to reverse.** `http` 1.x
+forbids `no_std` outright — `src/lib.rs` carries a commented-out
+`#![cfg_attr(not(feature = "std"), no_std)]` next to
+`compile_error!("`std` feature currently required, support for `no_std` may
+be added later")` — and `http::{Request, Response, HeaderMap, Uri, Method}`
+appear in the public API of seven crates here, including the sans-io
+`http-ng-proto`. `bytes` and `url` are genuine `no_std` + `alloc` crates, so
+two of the four load-bearing dependencies are already there; the other two
+are not, and a feature flag that claimed otherwise would not build.
+
+For constrained targets that *do* have `std` — static musl binaries, small
+containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
+`crates/http-ng-native/examples/minimal.rs`.
+
+Microcontrollers are not reachable today, but the obstacles are
+dependencies rather than design. The `Transport` seam already spans a
+socket plus hyper, a delegated `wasi:http` exchange, and the browser's
+`fetch`; an `embedded-nal-async` backend would be a fourth point on that
+line, nearer to the native one than `fetch` is. Two things stand in the way:
+
+- **`http` 1.x, external.** The `compile_error!` above.
+- **`url`, ours and removable.** `http-ng-proto` uses it at exactly one
+  functional site — `Url::parse().join()` for RFC 3986 reference
+  resolution — and that one call pulls `idna` -> `icu_normalizer` +
+  `icu_properties`: measured at 1.9 MB, 1004 KB, 820 KB and 452 KB of
+  vendored source, almost all Unicode tables for internationalised domain
+  names. On a part with 256-512 KB of flash that is the entire budget, for
+  a feature such a device rarely needs. Even on a desktop it is a large
+  dependency for one URI join.
+
+Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
+and WebSocket are v0.2 and later — see
+[`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
+does not do, and what proves the four claims it does make.
 
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
 (`fetch_once<R>` in `crates/http-ng/tests/two_runtimes.rs`, bounded by
-`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, not a single `#[cfg]` in
-the whole file) actually drives an HTTP/1.1 request over real TCP to a real
+`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, with no `#[cfg]` anywhere
+in the test code — the file's only conditional is the `#![cfg(not(target_family
+= "wasm"))]` gate excluding it from wasm targets, where its native
+dev-dependencies do not build) actually drives an HTTP/1.1 request over real TCP to a real
 server on loopback — once under `http_ng_rt_tokio::Tokio` inside a
 `tokio::runtime::Runtime`, once under `http_ng_rt_smol::Smol` on a bare
 `futures_executor::block_on`. The property is confirmed by more than a green
@@ -144,10 +248,11 @@ test busy-spin.
 in the vertical — opt in explicitly). On any non-wasm target it resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
-not one with explicitly chosen roots). Without the feature, or on
-`wasm32-unknown-unknown`/`wasm32-wasip2` (`target_os = "wasi"`), the type
-doesn't exist at all — an ordinary compile error, not a silently weaker
-transport; on wasip2/wasip1 there's deliberately no branch that reuses the
+not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves
+to `http_ng_fetch::Fetch`, and `Client::new()` there returns `Self` rather than
+a `Result`, because fetch's constructor cannot fail. Without the feature, or on
+`wasm32-wasip2` (`target_os = "wasi"`), the type doesn't exist at all — an
+ordinary compile error, not a silently weaker transport; on wasip2/wasip1 there's deliberately no branch that reuses the
 already-built `http_ng_wasi::WasiHttp` through this mechanism — `http-ng`
 doesn't depend on `http-ng-wasi` (an invariant recorded in
 `http-ng-wasi/Cargo.toml`), and adding that dependency here would mean a path

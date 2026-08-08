@@ -6,8 +6,14 @@
 
 mod client;
 mod config;
+/// Mock transport and controllable timer, re-exported from `http-ng-mock`.
+///
+/// The doubles live in their own crate because a `Transport` implementation
+/// sits *below* this facade: reaching them through `http_ng::mock` meant a
+/// transport author depending upward on the whole client. This re-export
+/// exists so that callers who already had the facade see no change.
 #[cfg(feature = "test-util")]
-pub mod mock;
+pub use http_ng_mock as mock;
 mod request;
 mod response;
 mod sse;
@@ -51,11 +57,12 @@ pub use http_ng_core::{
     Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, RetryKind, RewindFactory,
     TimeoutSupport, TlsSupport, UnsupportedCapability, UpgradeSupport,
 };
+pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
-pub use sse::SseStream;
+pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 
 /// The default transport, chosen by **the target, not the user**.
 ///
@@ -88,13 +95,18 @@ pub use sse::SseStream;
 ///   README, "What's in the dependency graph": `hyper` depends on `tokio`
 ///   even on the HTTP/1 path, not just this branch).
 /// - With the `default-transport` feature on `wasm32-unknown-unknown`
-///   (browser) OR `wasm32-wasip2`/`wasm32-wasip1` (`target_os = "wasi"`):
-///   there's no branch below for either target — the type doesn't exist,
-///   the same honest compile error as without the feature at all. The
-///   browser transport is vertical 3, not yet started. The WASI transport
-///   (`http_ng_wasi::WasiHttp`) already exists (vertical 1) and can be used
-///   directly via `Client::builder(http_ng_wasi::WasiHttp::new())` — but
-///   NOT through this mechanism: `http-ng` deliberately doesn't depend on
+///   (browser): `http_ng_fetch::Fetch` — the second branch below, added in
+///   vertical 3 once that transport existed and was tested in a real
+///   browser. `Client::new()` on this target returns `Self`, not a
+///   `Result`: `Fetch::new()` has no fallible step (see `Client::new`'s own
+///   doc comment in `client.rs`).
+/// - With the `default-transport` feature on `wasm32-wasip2`/
+///   `wasm32-wasip1` (`target_os = "wasi"`): there's still no branch below
+///   — the type doesn't exist, the same honest compile error as without
+///   the feature at all. The WASI transport (`http_ng_wasi::WasiHttp`)
+///   already exists (vertical 1) and can be used directly via
+///   `Client::builder(http_ng_wasi::WasiHttp::new())` — but NOT through
+///   this mechanism: `http-ng` deliberately doesn't depend on
 ///   `http-ng-wasi` (`http-ng-wasi/Cargo.toml` itself records this as an
 ///   invariant — it has `http-ng` in `dev-dependencies` for its own
 ///   example, no reverse dependency exists), and adding one here would mean
@@ -107,10 +119,55 @@ pub use sse::SseStream;
 ///   following the brief: the vertical's black-box acceptance test
 ///   (`crates/http-ng/tests/two_runtimes.rs`) doesn't require this branch —
 ///   both of its tests build `Native` explicitly, the same way
-///   `Client::builder` does.
+///   `Client::builder` does. Note that the browser branch below does NOT
+///   set this precedent aside: it is checked by a build, on every push
+///   (`cargo check -p http-ng --features test-util --target
+///   wasm32-unknown-unknown`, in CI's `msrv` job) and executed by real
+///   browser tests on two engines (`crates/http-ng/tests/wasm_default.rs`,
+///   run by the `browser` job under `wasm-pack`).
+///
+///   That sentence was written one commit before it became true: when this
+///   type was added, the `msrv` job ran that command for `http-ng-fetch`
+///   only, and no CI job executed a browser test at all. Both arrived in the
+///   two commits that followed. It is stated here because the asymmetry
+///   above rests on it — "CI builds one branch and not the other" is only an
+///   argument while it is a fact, and it is worth knowing that it briefly
+///   was not one.
+///
+///   Note the command carries `--features test-util`, not `--all-features`:
+///   `--all-features` on this target pulls native-only dev-dependencies that
+///   do not build there. The narrower flag checks this branch, which is what
+///   the argument needs, and nothing wider.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultTransport = http_ng_native::Native<
     http_ng_rt_tokio::Tokio,
     http_ng_tls_rustls::Rustls,
     http_ng_dns_system::SystemDns<http_ng_rt_tokio::Tokio>,
 >;
+
+/// The default transport on `wasm32-unknown-unknown`: the browser `fetch`
+/// API, via `http-ng-fetch`.
+///
+/// The forked declaration (this item and the one above are the same name
+/// under mutually exclusive `#[cfg]`s) is what "chosen by the target, not
+/// the user" means in practice — see the other branch's doc comment for
+/// the full per-target table, including why `wasm32-wasip2` deliberately
+/// still has no branch at all despite `http_ng_wasi::WasiHttp` existing.
+///
+/// `all(target_family = "wasm", target_os = "unknown")`, not a bare
+/// `target_family = "wasm"`: WASI targets are `wasm` too, and the whole
+/// point of the paragraph above is that they must keep resolving to
+/// nothing.
+///
+/// What this transport can and cannot do is not hidden behind the
+/// convenience: `Fetch` reports `RedirectSupport::Internal` and no timeout
+/// support at all, so a client configured with a `RedirectPolicy` or any
+/// phase timeout is an `UnsupportedCapability` at `build()` rather than a
+/// setting that silently does nothing. `Client::new()` itself configures
+/// neither, which is exactly why it can be infallible.
+#[cfg(all(
+    feature = "default-transport",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
+pub type DefaultTransport = http_ng_fetch::Fetch;

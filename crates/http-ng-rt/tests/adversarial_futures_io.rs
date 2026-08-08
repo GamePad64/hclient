@@ -402,7 +402,7 @@ impl AsyncRead for NeverEof {
         // Alternates Pending/data forever — never signals EOF. Confirms the
         // shim never *manufactures* an EOF signal on its own when the source
         // is Pending or has data (which would make hyper drop a live conn).
-        if self.0 % 2 == 0 {
+        if self.0.is_multiple_of(2) {
             self.0 += 1;
             cx.waker().wake_by_ref();
             return Poll::Pending;
