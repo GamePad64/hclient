@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           # `http-ng-fetch` (Task 1 of vertical 3) is wasm-only — see below
           # for why it needs its own `cargo check` call, on its own target,
