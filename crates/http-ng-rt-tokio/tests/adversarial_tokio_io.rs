@@ -220,6 +220,27 @@ async fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_e
                  got {out:?} of expected b\"partial\" so far"
             ),
             Err(e) => {
+                // Two separate claims, because the platforms differ on
+                // exactly one of them.
+                //
+                // Everywhere: what did arrive must be a PREFIX of what
+                // was written — never reordered, never corrupted, never
+                // more than the 7 bytes sent. That is the part this
+                // wrapper could plausibly get wrong, and it is checked
+                // on every platform.
+                assert!(
+                    b"partial".starts_with(&out),
+                    "bytes delivered before the error were reordered or corrupted: {out:?}"
+                );
+                // POSIX only: data already sitting in the receive queue
+                // survives an incoming RST and is delivered ahead of the
+                // error. Winsock discards it — measured on
+                // `windows-latest`, where this same test read back `[]`
+                // where Linux and macOS read back b"partial". That is a
+                // property of the OS, not of the IO wrapper, so
+                // demanding it on Windows would be asserting something
+                // the platform does not offer.
+                #[cfg(not(windows))]
                 assert_eq!(
                     out, b"partial",
                     "error surfaced but partial data before it was lost or corrupted"

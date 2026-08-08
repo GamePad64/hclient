@@ -626,8 +626,16 @@ fn the_job_that_installs_wasmtime_exports_the_marker_this_guard_keys_on() {
         .map_or(rest.len(), |(off, _)| off);
     let job = &rest[..end];
 
+    // An assignment on a `bins:` line, not a bare mention: the installer
+    // is `moonrepo/setup-rust`'s `bins:` list, and the comments in this
+    // same job talk about `wasmtime` at length — `job.contains("wasmtime")`
+    // would pass with the installer deleted. Checked by mutation.
+    let installs_wasmtime = job.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("bins:") && t.contains("wasmtime-cli")
+    });
     assert!(
-        job.contains("cargo install wasmtime-cli"),
+        installs_wasmtime,
         "job `wasip2` no longer installs wasmtime — the `require_wasmtime` guard is strict \
          where nothing promises it anymore"
     );

@@ -14,14 +14,24 @@
 //! nothing, and it says so honestly rather than failing later.
 //!
 //! Run: `cargo run -p http-ng --example no_tls_no_resolver`
+//!
+//! Native-only, and gated as such. `cargo test --target
+//! wasm32-unknown-unknown` — what the `browser` job runs through
+//! `wasm-pack` — builds every `[[example]]` in this crate, and the parts
+//! assembled here (`http-ng-native`, `http-ng-rt-smol`) are
+//! `cfg(not(target_family = "wasm"))` dev-dependencies, so on wasm the
+//! file cannot resolve them. That is not a gap to paper over: this example
+//! is about a target that has `std` and nothing else, and a browser build
+//! of it would be meaningless rather than merely unsupported.
 
-use http_ng::{Client, RedirectPolicy};
-use http_ng_core::{ErrorKind, TlsSupport, unversioned::Transport};
-use http_ng_dns::IpLiteralOnly;
-use http_ng_native::Native;
-use http_ng_tls::NoTls;
-
+#[cfg(not(target_family = "wasm"))]
 fn main() {
+    use http_ng::{Client, RedirectPolicy};
+    use http_ng_core::{ErrorKind, TlsSupport, unversioned::Transport};
+    use http_ng_dns::IpLiteralOnly;
+    use http_ng_native::Native;
+    use http_ng_tls::NoTls;
+
     let transport = Native::new(http_ng_rt_smol::Smol, NoTls, IpLiteralOnly);
 
     // The capability is read BEFORE a request, which is the point of the
@@ -73,3 +83,10 @@ fn main() {
     );
     println!("redirect policy accepted: the stubs cost only what they replace");
 }
+
+// The browser has no socket to open and no TLS to decline — `fetch` is the
+// transport and the host owns both ends of that choice. There is nothing
+// for this example to show there, so this half exists only to keep the
+// file compiling where the suite builds it.
+#[cfg(target_family = "wasm")]
+fn main() {}

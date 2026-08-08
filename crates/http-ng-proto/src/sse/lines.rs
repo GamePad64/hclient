@@ -326,9 +326,9 @@ mod tests {
     /// still separating one class from the other.
     ///
     /// Runs in its own CI job (`sse-complexity-guard`, `ci.yml`), NOT
-    /// sharing a runner with `cargo test --workspace --all-features` — this
+    /// sharing a runner with the whole-workspace test job — this
     /// is the primary defense against flakiness (Task 14, review round 1,
-    /// Finding 4). Sustained runner overcommit (several heavy `cargo test`
+    /// Finding 4). Sustained runner overcommit (several heavy test
     /// processes at once) has been measured to break best-of-N as the main
     /// antidote: the long "large" measurement has no structural way to
     /// dodge preemption in any of its attempts, while the short "small" one

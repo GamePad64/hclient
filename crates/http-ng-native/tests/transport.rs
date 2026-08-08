@@ -738,14 +738,29 @@ impl Resolve for FiveUnroutableAddrs {
 /// `HeConfig::default()` internally (`Native` has no way to configure it),
 /// so its 250 ms `attempt_delay` is a fact about today's code, not a choice
 /// made here: with five never-connecting addresses, attempts start at
-/// roughly t=0, 250 ms, 500 ms, 750 ms, 1000 ms. Two different declared
-/// deadlines — 150 ms and 400 ms — each fall between two of those attempt
-/// times. If the deadline is a single budget for the whole race (see
-/// `Native::new`'s doc comment on `TimeoutSupport::connect`), each case
-/// must let through exactly the attempts that started before its own
-/// deadline and no more; a deadline applied per attempt, or one that
-/// ignored the requested duration in favor of a fixed value, would show a
-/// DIFFERENT attempt count than the one that duration predicts.
+/// roughly t=0, 250 ms, 500 ms, 750 ms, 1000 ms. Two declared deadlines,
+/// far apart, then discriminate the three candidate behaviours without
+/// pinning an exact attempt count:
+///
+/// - **A deadline applied per attempt** cuts off each `pending()` connect
+///   on its own and moves to the next address, so all five are tried.
+/// - **No bound on the race at all** likewise reaches all five.
+///   Both cases are caught by requiring FEWER than five for either
+///   deadline.
+/// - **A hardcoded duration, ignoring what the caller asked for** would
+///   produce the same count for both deadlines. Caught by requiring the
+///   long one to see STRICTLY MORE attempts than the short one.
+///
+/// The exact counts are deliberately not asserted. They were once — `== 1`
+/// for a 150 ms deadline and `== 2` for 400 ms — and it failed on
+/// `macos-latest` with 2 where it demanded 1. Nothing was wrong with
+/// `connect`: `sleep` in this file is a real `thread::sleep` on a helper
+/// thread (there is no reactor here), and a loaded shared runner can start
+/// the DEADLINE's thread late enough that the t≈250 ms attempt begins
+/// first. A 100 ms margin is not a margin on that hardware. The two
+/// deadlines here are 100 ms and 620 ms — one attempt against three — so
+/// scheduler slop would have to exceed half a second to collapse the
+/// strict inequality.
 #[test]
 fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
     let run = |d: Duration| -> (ErrorKind, usize) {
@@ -768,31 +783,41 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
         (err.kind().clone(), rt.attempts.lock().unwrap().len())
     };
 
-    // 150 ms: past the first attempt (t≈0), short of the second (t≈250 ms).
-    let (kind, attempts) = run(Duration::from_millis(150));
+    // 100 ms: expected to admit the t≈0 attempt and nothing else.
+    let short = Duration::from_millis(100);
+    let (kind, short_attempts) = run(short);
     assert_eq!(
         kind,
         ErrorKind::Timeout(http_ng_core::Phase::Connect),
         "{kind:?}"
     );
-    assert_eq!(
-        attempts, 1,
-        "a 150 ms deadline must cut the race off after exactly one attempt"
+    assert!(
+        (1..5).contains(&short_attempts),
+        "a {short:?} deadline must cut the race off before all five addresses are tried; a \
+         count of 5 would mean the deadline bounds a single attempt rather than connect() as \
+         a whole, or bounds nothing at all. Got {short_attempts}"
     );
 
-    // 400 ms: past the second attempt (t≈250 ms), short of the third (t≈500 ms).
-    let (kind, attempts) = run(Duration::from_millis(400));
+    // 620 ms: expected to admit t≈0, 250 ms and 500 ms.
+    let long = Duration::from_millis(620);
+    let (kind, long_attempts) = run(long);
     assert_eq!(
         kind,
         ErrorKind::Timeout(http_ng_core::Phase::Connect),
         "{kind:?}"
     );
-    assert_eq!(
-        attempts, 2,
-        "a 400 ms deadline must let a second attempt start but cut off before a third — a \
-         count of 1 here would mean the deadline ignored the requested duration (it would \
-         match the 150 ms case exactly); a count of 5 would mean it isn't bounding the race \
-         at all, or is being applied per-attempt instead of to connect() as a whole"
+    assert!(
+        (1..5).contains(&long_attempts),
+        "a {long:?} deadline must cut the race off before all five addresses are tried; a \
+         count of 5 would mean the deadline bounds a single attempt rather than connect() as \
+         a whole, or bounds nothing at all. Got {long_attempts}"
+    );
+    assert!(
+        long_attempts > short_attempts,
+        "a {long:?} deadline must let strictly more attempts start than a {short:?} one — \
+         equal counts mean the deadline ignored the requested duration in favour of a fixed \
+         value, which the two-deadline shape of this test exists to catch. Got \
+         {long_attempts} against {short_attempts}"
     );
 }
 

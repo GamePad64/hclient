@@ -23,6 +23,25 @@ use http_ng_rt::{TcpConnect, TcpOpts};
 use http_ng_rt_smol::Smol;
 use std::net::{IpAddr, Ipv4Addr};
 
+/// The whole of `127.0.0.0/8` is loopback on Linux and Windows, so
+/// `127.0.0.2` is assignable there — and it is a source IP *distinct* from
+/// the default route to a `127.0.0.1` destination, which is exactly what
+/// makes the positive assertion below discriminating (a naive test against
+/// `127.0.0.1` could not tell "the option took effect" from "the OS default
+/// happened to match").
+///
+/// macOS/BSD configure only `127.0.0.1` on `lo0`, so binding `127.0.0.2`
+/// there is `EADDRNOTAVAIL` unless an alias was added by hand — measured on
+/// a `macos-latest` runner, where this test failed with `Os { code: 49 }`.
+/// CI adds the alias (see the `test` job in `ci.yml`) so the strong
+/// assertion is what actually runs there; the fallback below is for a
+/// developer's laptop, not for CI.
+const SECOND_LOOPBACK: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+
+fn second_loopback_is_assignable() -> bool {
+    std::net::TcpListener::bind((SECOND_LOOPBACK, 0)).is_ok()
+}
+
 fn spawn_accepting_listener() -> std::net::SocketAddr {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -34,24 +53,38 @@ fn spawn_accepting_listener() -> std::net::SocketAddr {
 
 #[test]
 fn local_address_selects_the_connecting_source_ip() {
-    // 127.0.0.0/8 is entirely loopback on Linux, so 127.0.0.2 is a valid
-    // local address distinct from the default: it discriminates "the
-    // option took effect" from "the OS default happened to match" (a naive
-    // test against 127.0.0.1 couldn't do this, since that's already the
-    // default route to a 127.0.0.1 destination).
     let addr = spawn_accepting_listener();
+    let assignable = second_loopback_is_assignable();
     let opts = TcpOpts {
-        local_address: Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
+        local_address: Some(IpAddr::V4(SECOND_LOOPBACK)),
         ..Default::default()
     };
     futures_executor::block_on(async {
-        let s = Smol.connect(addr, &opts).await.expect("connect");
-        let local = s.get_ref().local_addr().expect("local_addr query");
-        assert_eq!(
-            local.ip(),
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-            "TcpOpts::local_address did not select the connecting source IP"
-        );
+        let connected = Smol.connect(addr, &opts).await;
+        if assignable {
+            let s = connected.expect("connect");
+            let local = s.get_ref().local_addr().expect("local_addr query");
+            assert_eq!(
+                local.ip(),
+                IpAddr::V4(SECOND_LOOPBACK),
+                "TcpOpts::local_address did not select the connecting source IP"
+            );
+        } else {
+            // Weaker than reading the source IP back, but not vacuous, and
+            // available on every host: an address that cannot be bound must
+            // make `connect` FAIL. A silently dropped `local_address` would
+            // connect happily from 127.0.0.1 instead — precisely the defect
+            // this file exists to catch.
+            let err = connected.expect_err(
+                "TcpOpts::local_address was silently ignored: connecting from an unassignable \
+                 local address succeeded",
+            );
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::AddrNotAvailable,
+                "binding an unassignable local address should fail with AddrNotAvailable, got: {err}"
+            );
+        }
     });
 }
 
@@ -68,7 +101,7 @@ fn default_local_address_is_not_127_0_0_2() {
             .await
             .expect("connect");
         let local = s.get_ref().local_addr().expect("local_addr query");
-        assert_ne!(local.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_ne!(local.ip(), IpAddr::V4(SECOND_LOOPBACK));
     });
 }
 

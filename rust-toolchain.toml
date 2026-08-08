@@ -1,0 +1,19 @@
+# The MSRV policy is "the latest stable release" (AGENTS.md, Status), so the
+# toolchain this repository builds with is not a pinned version — it is
+# whatever stable is today. Declaring it here means `cargo` picks it up via
+# rustup without anyone having to remember, and `just` recipes need no `+`
+# prefix.
+#
+# There is deliberately no version pinned here and no MSRV job anywhere: the
+# policy IS "the latest stable", so a pin would be a second, staler
+# statement of the same promise, and the one people would then trust.
+#
+# NOTE for CI and for anyone scripting around this: a `rust-toolchain.toml`
+# overrides the default toolchain for EVERY rustup-proxied cargo call in
+# this directory, including ones that meant to use a different one. A job
+# that installs nightly and then runs `cargo fuzz` will silently run stable
+# instead. Use `RUSTUP_TOOLCHAIN=nightly` (which outranks this file) or an
+# explicit `cargo +nightly`, never a bare install.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
