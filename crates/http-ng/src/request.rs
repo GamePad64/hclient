@@ -129,9 +129,24 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
     /// `http-ng` was a fresh `Client` per request — the very cost
     /// `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
     ///
-    /// `RedirectPolicy { limit: 0 }` means "do not follow redirects", and
-    /// that is exactly what a backend which follows them internally can
-    /// never honour: against `RedirectSupport::Internal` (the browser
+    /// **`RedirectPolicy { limit: 0 }` is not quite the consumer's other
+    /// branch, and this is a known gap** (`TODO(redirect-policy-shape)`).
+    /// It means "follow up to zero hops", so the first 301/302/303/307/308
+    /// carrying a `Location` becomes `ErrorKind::Redirect` — where
+    /// `wasi-fetch`, which that component migrates from, returned the 3xx
+    /// to the caller as an ordinary response
+    /// (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
+    /// status.is_redirection()`), and the component forwards its status
+    /// and `Location` upward. `limit: u8` cannot express "do not follow,
+    /// hand me the 3xx" at all; reqwest keeps the two apart as
+    /// `Policy::none()` and `Policy::limited(0)`. Found by the Task 10
+    /// acceptance and being fixed by turning `RedirectPolicy` into an
+    /// enum; until then, a caller who needs to inspect a 3xx has no way
+    /// to ask for one.
+    ///
+    /// A policy of any kind is what a backend which follows redirects
+    /// internally can never honour: against `RedirectSupport::Internal`
+    /// (the browser
     /// `fetch` transport, whose `redirect: "follow"` default isn't
     /// overridable through this crate) it comes back as
     /// `ErrorKind::Unsupported` from `send()` rather than being silently

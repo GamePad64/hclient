@@ -276,10 +276,14 @@ impl<T: Transport> Client<T> {
         // so only here are both operands known — and the CHECK has to see
         // the merged value, or a per-request policy against a backend that
         // follows redirects internally would be the one path left
-        // unchecked. `RedirectPolicy { limit: 0 }` — "do not follow
-        // redirects", the branch that consumer actually takes — is exactly
-        // what a browser can never honour: fetch's `redirect: "follow"`
-        // default isn't overridable through `http-ng-fetch`.
+        // unchecked. Any policy at all is what a browser can never
+        // honour: fetch's `redirect: "follow"` default isn't overridable
+        // through `http-ng-fetch`, so it can be told neither "stop" nor a
+        // limit. Note that the branch that consumer actually takes,
+        // `limit: 0`, is not "do not follow" but "error on the first
+        // redirect" — a known gap in the shape of `RedirectPolicy`, see
+        // `RequestBuilder::redirect`'s doc comment
+        // (`TODO(redirect-policy-shape)`).
         //
         // Unlike the timeouts, the merged value is NOT written back into
         // `extensions`: no transport reads a `RedirectPolicy`, and the only

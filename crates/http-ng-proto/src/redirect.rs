@@ -9,6 +9,15 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
+/// How far to follow a redirect chain.
+///
+/// **`limit: 0` is "follow up to zero hops", i.e. the first redirect is an
+/// error — it is NOT "do not follow, hand me the 3xx"**, which this type
+/// cannot express at all (`TODO(redirect-policy-shape)`). reqwest keeps
+/// the two apart as `Policy::none()` and `Policy::limited(0)`; the live
+/// consumer this library is built for needs the first of those, and the
+/// Task 10 acceptance is where that came out. Being fixed by turning this
+/// into an enum.
 #[derive(Debug, Clone, Copy)]
 pub struct RedirectPolicy {
     pub limit: u8,

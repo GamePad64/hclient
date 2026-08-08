@@ -8,8 +8,11 @@ use http_ng_proto::redirect::RedirectPolicy;
 pub struct Config {
     pub timeouts: Timeouts,
     /// `None` is "the caller never asked for a redirect policy", **not**
-    /// "don't follow redirects" — that second meaning is spelled
-    /// `Some(RedirectPolicy { limit: 0 })`.
+    /// "don't follow redirects" — and today there is no spelling for that
+    /// second meaning at all (`TODO(redirect-policy-shape)`, see
+    /// [`crate::RequestBuilder::redirect`]): the nearest thing,
+    /// `Some(RedirectPolicy { limit: 0 })`, turns the first 3xx into
+    /// `ErrorKind::Redirect` instead of handing the response back.
     ///
     /// An `Option` rather than a bare `RedirectPolicy` because
     /// `check_supported` has to tell those two apart:

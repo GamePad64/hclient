@@ -96,6 +96,14 @@ Four items, none of them papered over.
    distinction reqwest draws between `Policy::none()` and
    `Policy::limited(0)`, and it is an open finding against the shape of
    `RedirectPolicy`, not a decision.
+
+   `TODO(redirect-policy-shape)`: when `RedirectPolicy` becomes an enum,
+   `redirect_limit(0)` maps to `RedirectPolicy::None` and **not** to
+   `Limited(0)` — `Limited(0)` keeps today's "error on the first redirect"
+   meaning, so a mechanical `0` → `Limited(0)` migration would silently
+   preserve exactly the behaviour change this item is about. Update this
+   row, the sentence above, and `wasi-fetch` 0.3's facade plan below
+   together.
 2. **There is still no total-deadline timeout, in either library** —
    `Timeouts` is `connect`/`first_byte`/`between_bytes`, `wasi-fetch` had
    the same three and no whole-request deadline, so a response that starts
