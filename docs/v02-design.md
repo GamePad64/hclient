@@ -237,6 +237,66 @@ wait until W3 lands.
 
 ---
 
+## W7 — Embassy as a third runtime
+
+**Why it belongs here.** The runtime seam (`http-ng-rt`) exists precisely so
+that a third answer is possible, and it has been proved exactly twice — by
+`http-ng-rt-tokio` and `http-ng-rt-smol`, both of which run on a desktop
+OS. Two implementations that share a libc are weak evidence for a seam whose
+whole claim is portability. Embassy is the case that tests it: a different
+executor model, on hardware, but — and this is what makes it tractable —
+**with `std`**.
+
+**The target is esp32 with esp-idf, and that is a `std` target.** The owner
+has run this stack. `esp-idf-svc` gives `std`, real sockets, threads and a
+`getaddrinfo`; embassy supplies the executor, the timer and the async I/O
+around it. So W7 is not a `no_std` project — `no_std` is a separate,
+larger question about `http-ng-core` and `http-ng-proto` that this item
+deliberately does not open. Everything below assumes `std` is present and
+nothing in the workspace needs `#![no_std]` to make it work.
+
+**Deliverable.** `http-ng-rt-embassy` implementing the same four traits the
+other two do, and the `two_runtimes` acceptance grown to three:
+
+- `Timer` — `embassy_time::Timer::after`. The one piece embassy gives
+  directly.
+- `TcpConnect` — `embassy_net::tcp::TcpSocket`, adapted to `hyper::rt::Read`
+  and `Write`. Note `TcpOpts`: embassy-net is not a socket API with
+  `setsockopt`, so several options have no counterpart. That is a
+  capability, not a silent no-op — the same rule W1 applies to cancellation.
+- `TcpAdoptStd` — likely **not implemented**. It exists for "platforms with
+  file descriptors", and an embassy-net socket has none. A backend that
+  cannot adopt a `std::net::TcpStream` should say so by not implementing the
+  trait, which is already how the seam expresses it.
+- `Spawn` — embassy's executor takes `'static` non-allocating tasks bound at
+  compile time (`#[embassy_executor::task]`), which does not accept an
+  arbitrary future the way `tokio::spawn` does. This is the interesting one,
+  and the reason this item is worth doing: `Spawn` is the seam most likely
+  to be shaped around desktop assumptions, and the smol path already proves
+  the client works with no spawn at all.
+- `Blocking` — there is no blocking pool. Same treatment as `Spawn`.
+
+**Watch for.** Two traps, both of which this project has already met in
+another guise.
+
+1. **A capability that describes the environment rather than the
+   transport.** "Embassy has no blocking pool" is a fact about the executor;
+   what `Capabilities` must say is what a caller can rely on from *this*
+   transport. Caught four times in v0.1 — do not add a fifth.
+2. **A test that compiles.** The two-runtime acceptance is worth what it is
+   because it *runs over a network* on both. A third runtime that only
+   builds for `xtensa-esp32-espidf` proves the trait bounds line up and
+   nothing else. Either the acceptance runs on hardware or under an emulator
+   (QEMU has an esp32 target), or the deliverable says plainly that it is a
+   compile-only claim — the pattern `portable-example-three-targets` already
+   uses, and which is honest exactly because it says so.
+
+**Ordering.** Independent of W1..W6 — it touches no protocol code. Best
+after W1, so the cancellation contract is something the new backend is
+written against rather than retrofitted into.
+
+---
+
 ## Decisions needed before work starts
 
 1. ~~**How `Capabilities` expresses a per-connection fact**~~ **Decided:
