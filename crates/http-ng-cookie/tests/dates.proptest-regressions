@@ -1,0 +1,15 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# PROVENANCE, because "failure cases proptest has generated in the past"
+# would otherwise read as a bug this crate once had. The seed below was
+# produced by a MUTANT during mutation testing (`day > 31` in place of
+# `day > days_in_month(year, month)`, mutation M21), not by the shipped
+# parser. It is kept because it is a good case to re-run first: 29 February
+# in a common year is exactly where a date parser stops agreeing with a
+# calendar.
+cc 13e6eaf9cb066f5e681ebf2e7d26b3861ac2f22aedfa6cdcd4cb82d27895e76e # shrinks to year = 2289, month = 2, day = 29, hour = 0, minute = 0, second = 0
