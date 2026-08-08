@@ -58,6 +58,12 @@ enum Reply {
     /// `response_code`, which is exactly why the crate tests that field
     /// rather than the variant.
     NxDomain,
+    /// Answer SERVFAIL: the server accepted the question and failed to
+    /// answer it. Unlike the two above, this never becomes `NoRecordsFound`
+    /// at all — hickory turns it into `DnsError::ResponseCode` — which is
+    /// what makes it the check that a guard widened to the whole of
+    /// `DnsError` would fail.
+    ServFail,
     /// Never answer at all. Holds one query open while another runs.
     Silence,
 }
@@ -85,6 +91,11 @@ impl Upstream {
 
     fn nxdomain(mut self, record_type: RecordType) -> Self {
         self.replies.insert(record_type, Reply::NxDomain);
+        self
+    }
+
+    fn servfail(mut self, record_type: RecordType) -> Self {
+        self.replies.insert(record_type, Reply::ServFail);
         self
     }
 
@@ -188,8 +199,17 @@ struct CannedConn {
 
 impl CannedConn {
     fn noerror(request: &DnsRequest, query: Query, records: Vec<Record>) -> DnsResponse {
+        Self::coded(request, query, ResponseCode::NoError, records)
+    }
+
+    fn coded(
+        request: &DnsRequest,
+        query: Query,
+        code: ResponseCode,
+        records: Vec<Record>,
+    ) -> DnsResponse {
         let mut message = Message::response(request.id, request.op_code);
-        message.metadata.response_code = ResponseCode::NoError;
+        message.metadata.response_code = code;
         message.add_query(query);
         message.add_answers(records);
         DnsResponse::from_message(message).expect("a response message re-encodes")
@@ -215,14 +235,18 @@ impl DnsHandle for CannedConn {
             Some(Reply::Fail) => Box::pin(stream::once(std::future::ready(Err(
                 NetError::Message("the scripted upstream is down"),
             )))),
-            Some(Reply::NxDomain) => {
-                let mut message = Message::response(request.id, request.op_code);
-                message.metadata.response_code = ResponseCode::NXDomain;
-                message.add_query(query);
-                Box::pin(stream::once(std::future::ready(Ok(
-                    DnsResponse::from_message(message).expect("a response message re-encodes"),
-                ))))
-            }
+            Some(Reply::NxDomain) => Box::pin(stream::once(std::future::ready(Ok(Self::coded(
+                &request,
+                query,
+                ResponseCode::NXDomain,
+                Vec::new(),
+            ))))),
+            Some(Reply::ServFail) => Box::pin(stream::once(std::future::ready(Ok(Self::coded(
+                &request,
+                query,
+                ResponseCode::ServFail,
+                Vec::new(),
+            ))))),
             Some(Reply::Silence) => Box::pin(stream::pending()),
             // Nothing scripted for this type: NOERROR with an empty answer
             // section, which is what a server says for "asked, found none".
@@ -497,30 +521,144 @@ async fn a_family_with_no_records_yields_an_empty_stream_not_an_error() {
         "a v4-only host has no AAAA, and that is an answer, not a failure"
     );
     let v4: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
-    assert_eq!(v4.len(), 1, "the family that does have records is unaffected");
+    assert_eq!(
+        v4.len(),
+        1,
+        "the family that does have records is unaffected"
+    );
+}
+
+/// Which lookup a case drives.
+///
+/// The guard is written TWICE — once in `lookup_ips`, once in `lookup_svcb`
+/// — so it can be right in one and wrong in the other. Checking a response
+/// code against only one lookup cannot see that, so the two tests below run
+/// every code past all three entry points.
+#[derive(Debug, Clone, Copy)]
+enum Lookup {
+    V4,
+    V6,
+    Svcb,
+}
+
+impl Lookup {
+    const ALL: [(Self, RecordType); 3] = [
+        (Self::V4, RecordType::A),
+        (Self::V6, RecordType::AAAA),
+        (Self::Svcb, RecordType::HTTPS),
+    ];
+
+    /// Drive the lookup and flatten to a shape the three share. The items
+    /// differ in type — `ResolvedAddr` against `SvcbEndpoint` — and nothing
+    /// here cares about their contents, only about how many arrived and
+    /// whether they were errors.
+    async fn run(self, resolve: &Hickory<Canned>) -> Vec<Result<(), http_ng_core::Error>> {
+        match self {
+            Self::V4 => {
+                resolve
+                    .lookup_ipv4(HOST)
+                    .map(|r| r.map(drop))
+                    .collect()
+                    .await
+            }
+            Self::V6 => {
+                resolve
+                    .lookup_ipv6(HOST)
+                    .map(|r| r.map(drop))
+                    .collect()
+                    .await
+            }
+            Self::Svcb => {
+                resolve
+                    .lookup_svcb(HOST)
+                    .map(|r| r.map(drop))
+                    .collect()
+                    .await
+            }
+        }
+    }
+
+    /// The single error this lookup must have produced.
+    fn sole_error(got: Vec<Result<(), http_ng_core::Error>>, what: Self) -> http_ng_core::Error {
+        assert_eq!(
+            got.len(),
+            1,
+            "{what:?}: expected exactly one item, a failure"
+        );
+        got.into_iter()
+            .next()
+            .expect("length was just asserted")
+            .expect_err("this response code is a failure, not an answer")
+    }
 }
 
 /// The other side of the same guard, and the reason it tests
 /// `response_code` rather than the `NoRecordsFound` variant alone.
 ///
-/// NXDOMAIN arrives as `NoRecordsFound` too — verified by inspecting the
-/// error, not assumed — but the name does not exist, which is a real
-/// failure. A guard matching the variant alone swallows it, and that is the
-/// mirror defect: "asked and found nothing" reported for a domain that is
-/// not there at all, leaving a caller to retry a name that can never
-/// resolve.
+/// NXDOMAIN arrives as `NoRecordsFound` too — hickory-net 0.26's
+/// `DnsError::from_response` folds `NXDomain | NoError if !contains_answer()
+/// && !truncation` into the one variant — but the name does not exist, which
+/// is a real failure. A guard matching the variant alone swallows it, and
+/// that is the mirror defect: "asked and found nothing" reported for a
+/// domain that is not there at all, leaving a caller to retry a name that
+/// can never resolve.
 #[tokio::test]
 async fn nxdomain_stays_an_error_rather_than_an_empty_stream() {
-    let (resolve, _) = Upstream::default().nxdomain(RecordType::AAAA).wire();
+    for (lookup, queried) in Lookup::ALL {
+        let (resolve, _) = Upstream::default().nxdomain(queried).wire();
 
-    let got: Vec<_> = resolve.lookup_ipv6(HOST).collect().await;
-    assert_eq!(got.len(), 1, "a nonexistent name is a failure, not nothing");
-    let err = got
-        .into_iter()
-        .next()
-        .expect("length was just asserted")
-        .expect_err("NXDOMAIN must not be swallowed by the NODATA guard");
-    assert_matches!(err.kind(), ErrorKind::Resolve);
+        let err = Lookup::sole_error(lookup.run(&resolve).await, lookup);
+        assert_matches!(
+            err.kind(),
+            ErrorKind::Resolve,
+            "{lookup:?}: a nonexistent name is a failure, not nothing"
+        );
+    }
+}
+
+/// SERVFAIL never reaches the NODATA guard at all: hickory turns it into
+/// `DnsError::ResponseCode`, a different variant from `NoRecordsFound`.
+///
+/// That makes it work today by construction rather than by check — which is
+/// exactly why it needs one. Widening the guard to the whole of `DnsError`
+/// would compile, would read as a simplification, and would report a broken
+/// server as "this name has nothing of this type." Nothing else in this file
+/// would notice.
+#[tokio::test]
+async fn servfail_stays_an_error_because_a_failed_server_is_not_an_empty_name() {
+    for (lookup, queried) in Lookup::ALL {
+        let (resolve, _) = Upstream::default().servfail(queried).wire();
+
+        let err = Lookup::sole_error(lookup.run(&resolve).await, lookup);
+        assert_matches!(
+            err.kind(),
+            ErrorKind::Resolve,
+            "{lookup:?}: a server that failed is not a name that has nothing"
+        );
+    }
+}
+
+/// The NODATA side, run past all three lookups for the same reason: the
+/// guard that makes it an empty stream is written once per `flat_map`.
+#[tokio::test]
+async fn nodata_is_an_empty_stream_on_every_lookup() {
+    for (lookup, queried) in Lookup::ALL {
+        // Scripting nothing for the type yields NOERROR with an empty answer
+        // section, which is what a server says for "asked, found none".
+        let (resolve, asked) = Upstream::default().wire();
+
+        let got = lookup.run(&resolve).await;
+        assert!(
+            got.is_empty(),
+            "{lookup:?}: NODATA is an answer, not a failure"
+        );
+        assert_eq!(
+            asked.record_types(),
+            vec![queried],
+            "{lookup:?}: empty because it asked and got nothing, not because \
+             it never asked"
+        );
+    }
 }
 
 #[tokio::test]
