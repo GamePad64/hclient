@@ -54,8 +54,25 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Globalization",
 ] }
 
-# Everywhere else — Linux and other ELF unixes, macOS, wasm.
-[target.'cfg(not(windows))'.dependencies]
+# Apple: Foundation, which is part of the OS and linked, so it meets the
+# same "static, OS-versioned ABI" rule Windows does — by a different
+# route, since the entry point is `NSURL` rather than `uidna_*`.
+#
+# **This is the only platform backend that needs no `unsafe` at all**, and
+# therefore no spec amendment: every `objc2-foundation` call in
+# `src/foundation.rs` is a safe function, measured by a draft that wrapped
+# them and drew ten `unnecessary unsafe block` warnings. `objc2` encodes
+# message sends, retain/release and nullability in its types, so what is
+# left is ordinary Rust over `Option`.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "NSString",
+    "NSURL",
+] }
+
+# Everywhere else — Linux and other ELF unixes, wasm.
+[target.'cfg(not(any(windows, target_vendor = "apple")))'.dependencies]
 # The same call `http-ng-proto` makes today, so this backend is exactly
 # current behaviour. `default-features = false` plus the two features
 # named explicitly is copied from `http-ng-proto`'s manifest for the
@@ -84,12 +101,13 @@ idna = { version = "1.1", default-features = false, features = [
 
 [features]
 # Resolved by target in `build.rs`, not by the person building: the
-# platform's ICU where the target has a statically linkable one
-# (Windows), the bundled tables everywhere else. Same principle as
+# platform's own UTS 46 where the target has a statically linkable one
+# (Windows' `icuuc.dll`, Apple's Foundation), the bundled tables
+# everywhere else. Same principle as
 # `http-ng`'s `DefaultTransport` — the default is a fact about the target,
 # rather than a choice that can be got wrong.
 default = ["platform"]
-platform = ["dep:idna", "dep:windows-sys"]
+platform = ["dep:idna", "dep:windows-sys", "dep:objc2-foundation"]
 
 # Force one backend, for a build that wants it regardless of the default.
 # Each is only satisfiable on the targets whose table above declares the
@@ -98,6 +116,7 @@ platform = ["dep:idna", "dep:windows-sys"]
 # backend at all.
 bundled = ["dep:idna"]
 system-icu = ["dep:windows-sys"]
+foundation = ["dep:objc2-foundation"]
 
 # NOT `[lints] workspace = true`, for the same reason `http-ng-fetch`
 # (amendment C7) and `http-ng-dns-system` (amendment C8) are not: the

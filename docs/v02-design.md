@@ -500,22 +500,97 @@ What the Windows path actually costs:
   Windows yet. Irrelevant for IDNA, worth knowing before reaching for other
   ICU functions from the same handle.
 
-The other platforms are still thin: **macOS** has no public IDN API
-(CFNetwork does it internally; `libicucore.dylib` is private with symbols
-Apple documents as not for linking), **Linux**'s libidn2 is neither
+The other platforms were written up as thin: **macOS** has no public IDN
+API (CFNetwork does it internally; `libicucore.dylib` is private with
+symbols Apple documents as not for linking), **Linux**'s libidn2 is neither
 guaranteed nor the same standard (IDNA2008, a third answer), and **wasm**
 has none — though browsers are UTS-46 and therefore already agree.
 
+> **Superseded on two counts, by the owner, once `http-ng-idn` was built.**
+> The paragraph above stands as what the survey concluded; it is no longer
+> what the project does. Both changes are recorded here rather than
+> overwritten, because each was a *decision* on top of the research, not a
+> correction of it.
+>
+> **1. macOS has a public IDN API after all, and it is now the backend
+> there.** `libicucore.dylib` remains out of reach exactly as described —
+> that half was right. What was wrong was "no public API": Foundation's
+> `URL(string:)` converts a Unicode host to its A-label, and
+> `swift-foundation`'s `URLParser+ICU.swift` opens its ICU handle with
+> `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ | UIDNA_NONTRANSITIONAL_TO_UNICODE
+> | UIDNA_NONTRANSITIONAL_TO_ASCII` — bit for bit the option word
+> `http-ng-idn` uses, which is independent corroboration of that constant
+> rather than a reason against Foundation.
+>
+> The four defects that made it look unusable are each closed in
+> `crates/http-ng-idn/src/foundation.rs`, and none of them by hope:
+>
+> - *It is a URL parser, so a host can change where the URL ends*
+>   (`ex@ample.com` → host `ample.com`). Every input in that family carries
+>   a byte from the WHATWG forbidden-domain set, so the deny list runs over
+>   the **input**, before Foundation sees it. Note this is the opposite
+>   call from the Windows backend, where the same input scan was measured
+>   redundant and deleted — ICU is handed a host and a length and parses no
+>   URL.
+> - *The caller could smuggle a scheme.* The string handed to Foundation is
+>   always `https://{domain}/`, built by us; nothing of the caller's
+>   reaches the parser except an authority that has already passed the deny
+>   list.
+> - *No flag control, so the flavour is not selectable.* True, and it is
+>   why the acceptance gate applies here too: a backend that does not
+>   answer `straße.de` with `xn--strae-oqa.de` is not used at all, and
+>   `backend()` reports `None` rather than a wrong host.
+> - *No error channel — `nil` for the whole URL, no `UIDNAInfo.errors`.*
+>   Accepted and documented: this backend can only ever produce
+>   `IdnError::NotAnIdn`, never anything more specific.
+>
+> Which getter returns the A-label (`NSURL::host` vs
+> `NSURLComponents::host`/`encodedHost`) could not be settled by reading —
+> Apple's own naming is misleading here — so it is settled by
+> `macos_getter_that_returns_the_a_label` in
+> `crates/http-ng-idn/tests/differential.rs`, which runs on the
+> `macos-latest` leg of the `test` matrix on every push and names the right
+> getter in its failure message if the chosen one is wrong.
+>
+> **It is also the only platform backend that needs no `unsafe` at all**,
+> and therefore no spec amendment — measured, not assumed: a draft that
+> wrapped the `objc2-foundation` calls in `unsafe` blocks drew ten
+> `unnecessary unsafe block` warnings. `icu/windows.rs` needs amendment C9;
+> `foundation.rs` needs nothing.
+>
+> **2. Linux gets no platform backing, and that is a narrowing of the rule
+> above, not an omission.** An ELF backend was built, worked, and was
+> deleted. It reached `libicuuc.so.NN` through `dlopen` — both the soname
+> and every symbol carry the ICU major version, so there is nothing stable
+> to link — and the 32-row corpus was validated through it against a real
+> ICU 78.2, which is how the option word and the error mask were
+> established in the first place. It was removed anyway: what it returned
+> on any given machine was whatever ICU that machine happens to carry, on a
+> Unicode version nobody chose and nothing reports, and for IDN a Unicode
+> difference is a different host. That is a correctness risk accepted for a
+> size saving.
+>
+> So the rule is narrower than "the platform offers the same standard":
+> **static linkage against an ABI the OS versions for us.** Windows and
+> Apple qualify; Linux does not.
+>
+> The size argument moved with it. On Linux the crate now costs **+736
+> bytes and +3 crates** over calling `idna` directly, for the same answer;
+> the saving exists on Windows and macOS and is **unverified** on both,
+> since no linker for either produced it.
+
 So the shape is: a per-platform backing for `idn` where the platform offers
-the *same standard*, with the bundled Rust implementation as the fallback
-everywhere else and on older Windows. That is an implementation detail
-rather than a behaviour change, which is what makes it worth doing —
+the *same standard* **behind a statically linked, OS-versioned ABI**, with
+the bundled Rust implementation everywhere else. That is an implementation
+detail rather than a behaviour change, which is what makes it worth doing —
 and it is the opposite of what a naive `IdnToAscii` binding would be.
 
 **Whatever is built must have a differential test against the bundled
 implementation on a shared corpus.** The whole claim is that the two agree;
 an untested claim of agreement between two IDNA implementations is exactly
-the kind of thing that is false in the tail.
+the kind of thing that is false in the tail. Built:
+`crates/http-ng-idn/tests/differential.rs`, 32 rows, both answers pinned per
+row, zero divergences.
 
 ---
 

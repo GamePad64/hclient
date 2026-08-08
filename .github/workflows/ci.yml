@@ -270,24 +270,29 @@ jobs:
   # The whole claim of `http-ng-idn` is that the platform's ICU answers
   # what the bundled `idna` crate answers.
   #
-  # **That claim is now testable on Windows alone.** The ELF backend was
-  # removed — on Linux the ICU version is a property of the user's machine
-  # that nobody chose and nothing reports, and for IDN a Unicode
-  # difference is a different host — so Linux, macOS and wasm take the
-  # bundled tables. The platform column of `tests/differential.rs` does
-  # not even compile off Windows now (`#[cfg(icu_backend)]`), which is why
-  # `HTTP_NG_IDN_REQUIRE_PLATFORM` is set on the Windows leg only: setting
-  # it on Linux would demand a test that is not there.
+  # **Two targets have a platform backend, and Linux is not one of them.**
+  # The rule is "static linkage against an ABI the OS versions for us":
+  # Windows' `icuuc.dll` through `windows-sys`, and Apple's Foundation
+  # through `objc2-foundation`. The ELF `dlopen` backend was removed — on
+  # Linux the ICU version is a property of the user's machine that nobody
+  # chose and nothing reports, and for IDN a Unicode difference is a
+  # different host — so Linux and wasm take the bundled tables.
+  #
+  # The platform column of `tests/differential.rs` does not compile at all
+  # where there is no platform backend, which is why
+  # `HTTP_NG_IDN_REQUIRE_PLATFORM` is set on Windows and macOS only:
+  # asking for it on Linux would demand a test that is not there.
   #
   # The Linux leg is not decoration. It checks the opposite invariant —
-  # that the bundled path IS what a non-Windows target gets — which is the
-  # half that would break silently if the target predicate in `build.rs`
-  # and the one in `Cargo.toml` ever drifted apart.
+  # that a target with no platform backend really does get the bundled
+  # tables and links neither `windows-sys` nor `objc2-foundation` — which
+  # is the half that breaks silently if the target predicate in `build.rs`
+  # and the ones in `Cargo.toml` ever drift apart.
   idn-platform-agrees-with-idna:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -296,13 +301,13 @@ jobs:
           channel: stable
           components: clippy
           bins: cargo-nextest
-      - name: the differential corpus, platform column required on Windows
+      - name: the differential corpus, platform column required where there is one
         shell: bash
         env:
           # Empty on Linux, so the guard test — which does not exist there
           # — is not asked for. `env:` cannot be conditional, so the value
           # is, and the test reads presence, not truth.
-          HTTP_NG_IDN_REQUIRE_PLATFORM: ${{ runner.os == 'Windows' && '1' || '' }}
+          HTTP_NG_IDN_REQUIRE_PLATFORM: ${{ runner.os != 'Linux' && '1' || '' }}
         run: |
           set -euo pipefail
           # The default (`platform`, resolved by target) and
@@ -319,39 +324,40 @@ jobs:
               exit 1
             fi
           done
-      - name: Windows links the platform ICU and carries no Unicode tables
-        if: runner.os == 'Windows'
+      - name: a platform backend means no Unicode tables in the graph
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          # The saving the crate exists for, on the one target that still
-          # gets it. Its size in bytes is unverified — no Windows linker
-          # produced this crate — but its absence from the graph is not.
+          # The saving the crate exists for, on the two targets that get
+          # it. Its size in bytes is unverified on both — no Windows or
+          # Apple linker produced this crate — but its absence from the
+          # graph is not, and that is what this checks.
           .github/scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-            "the default http-ng-idn build on Windows pulls in idna/ICU — the whole point there is that the OS supplies the tables" \
+            "the default http-ng-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
             -- -p http-ng-idn
           .github/scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-            "--all-features drags idna back into http-ng-idn on Windows" \
+            "--all-features drags idna back into http-ng-idn on a target with a platform backend" \
             -- -p http-ng-idn --all-features
-          .github/scripts/tree-guard.sh present '^windows-sys ' \
-            "http-ng-idn on Windows has no windows-sys, so no platform backend is compiled in at all" \
+          .github/scripts/tree-guard.sh present '^(windows-sys|objc2-foundation) ' \
+            "http-ng-idn on this target links neither windows-sys nor objc2-foundation, so no platform backend is compiled in at all" \
             -- -p http-ng-idn
-      - name: everything else takes the bundled tables, and links nothing
-        if: runner.os != 'Windows'
+      - name: a target with no platform backend takes the bundled tables
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           # The other half of the same invariant. `idna` present is what
-          # makes the default build work at all here; `windows-sys` and
-          # `libloading` absent is what says no dynamic loading or
-          # platform linking crept back in — `libloading` in particular
-          # was a real dependency of this crate until the ELF backend was
-          # removed, so its name stays in this check as a tripwire.
+          # makes the default build work at all here; the absent list is
+          # what says no dynamic loading or platform linking crept back
+          # in. `libloading` in particular was a real dependency of this
+          # crate until the ELF backend was removed, so its name stays
+          # here as a tripwire even though nothing references it now.
           .github/scripts/tree-guard.sh present '^idna ' \
-            "http-ng-idn off Windows has no idna, so this target has no IDN implementation at all" \
+            "http-ng-idn on Linux has no idna, so this target has no IDN implementation at all" \
             -- -p http-ng-idn
-          .github/scripts/tree-guard.sh absent '^(libloading|windows-sys) ' \
-            "http-ng-idn off Windows pulls in a loader or the Windows bindings — the ELF dlopen backend was removed on purpose, see the crate docs" \
+          .github/scripts/tree-guard.sh absent '^(libloading|windows-sys|objc2-foundation) ' \
+            "http-ng-idn on Linux pulls in a loader or a platform binding — the ELF dlopen backend was removed on purpose, see the crate docs" \
             -- -p http-ng-idn --all-features
       - name: clippy on both feature settings
         shell: bash

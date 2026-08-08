@@ -45,7 +45,7 @@
 //! divergence cannot appear without a test failing and a fixed one cannot
 //! stay listed.
 
-#[cfg(icu_backend)]
+#[cfg(any(icu_backend, foundation_backend))]
 use http_ng_idn::testing;
 use rstest::rstest;
 
@@ -184,10 +184,10 @@ fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
 
 /// The claim. Every row's platform answer, measured against what was
 /// pinned when the row was written.
-#[cfg(icu_backend)]
+#[cfg(any(icu_backend, foundation_backend))]
 #[test]
 fn the_platform_answers_what_the_corpus_pins_on_every_row() {
-    let Some(lib) = testing::system_icu_library() else {
+    let Some(lib) = testing::platform_name() else {
         println!(
             "no system ICU on this machine — the platform column of all {} rows was NOT \
              measured here. See `the_platform_column_is_not_silently_empty`.",
@@ -197,7 +197,7 @@ fn the_platform_answers_what_the_corpus_pins_on_every_row() {
     };
     let mut wrong = Vec::new();
     for case in CORPUS {
-        let got = testing::system_icu(case.input)
+        let got = testing::platform(case.input)
             .expect("the library was found a line ago; it cannot be gone now")
             .ok();
         if got.as_deref() != case.icu_says {
@@ -249,11 +249,11 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
 /// CI sets `HTTP_NG_IDN_REQUIRE_PLATFORM=1` on the runners that are meant
 /// to have one. Locally it is unset and this test passes while saying so,
 /// which is the honest answer on a machine that genuinely has no ICU.
-#[cfg(icu_backend)]
+#[cfg(any(icu_backend, foundation_backend))]
 #[test]
 fn the_platform_column_is_not_silently_empty() {
     let required = std::env::var_os("HTTP_NG_IDN_REQUIRE_PLATFORM").is_some();
-    match testing::system_icu_library() {
+    match testing::platform_name() {
         Some(lib) => println!("platform column measured against {lib}"),
         None => assert!(
             !required,
@@ -270,12 +270,12 @@ fn the_platform_column_is_not_silently_empty() {
 /// hoped for. A `SystemIcu` over a library that is not there, or a
 /// `Bundled` while ICU is doing the work, is the "capability that lies"
 /// this project keeps catching.
-#[cfg(icu_backend)]
+#[cfg(any(icu_backend, foundation_backend))]
 #[test]
 fn the_reported_backend_is_the_one_that_answers() {
     use http_ng_idn::Backend;
     let reported = testing::selected();
-    let has_icu = testing::system_icu_library().is_some();
+    let has_icu = testing::platform_name().is_some();
     match reported {
         Backend::SystemIcu => assert!(has_icu, "reports SystemIcu with no library accepted"),
         Backend::None => assert!(
@@ -369,4 +369,93 @@ fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
         Ok("xn--strae-oqa.de"),
         "the corpus row that decides which host is contacted, answered by icuuc.dll"
     );
+}
+
+/// **macOS, and the one question this crate could not answer by reading.**
+///
+/// Foundation converts a Unicode host to an A-label as a side effect of
+/// parsing a URL, and it exposes more than one way to read the host back.
+/// They do not agree, and the naming actively misleads: Apple documents
+/// Swift's `URL.host(percentEncoded: true)` as the *less* decoded form,
+/// which for an IDN is the opposite of what "encoded" suggests.
+/// `src/foundation.rs` picks `NSURL::host` on that reading. Nobody here
+/// has an Apple machine, so this test is what settles it — it asserts on
+/// the real `macos-latest` leg of the `test` matrix, on every push,
+/// rather than once.
+///
+/// It reads both getters and pins each. If the choice in
+/// `foundation.rs` is wrong, this test says which one is right, in the
+/// failure message, instead of leaving someone to guess.
+///
+/// Note what does NOT depend on getting this right: the acceptance gate
+/// refuses a backend that cannot answer `straße.de`, so a wrong getter
+/// makes `backend()` report `None` — no conversion at all — rather than a
+/// plausible wrong host. This test exists to turn that safe failure into
+/// a named one.
+#[cfg(all(target_os = "macos", foundation_backend))]
+#[test]
+fn macos_getter_that_returns_the_a_label() {
+    use objc2_foundation::{NSString, NSURL, NSURLComponents};
+
+    let text = NSString::from_str("https://straße.de/");
+    let url = NSURL::URLWithString(&text).expect("Foundation must parse an https URL with an IDN");
+    let nsurl_host = url.host().map(|h| h.to_string());
+
+    let components = NSURLComponents::componentsWithString(&text);
+    let (c_host, c_encoded) = match &components {
+        Some(c) => (
+            c.host().map(|h| h.to_string()),
+            c.encodedHost().map(|h| h.to_string()),
+        ),
+        None => (None, None),
+    };
+
+    // Recorded whatever happens, so a failure carries the evidence rather
+    // than just a boolean.
+    println!(
+        "NSURL::host={nsurl_host:?} NSURLComponents::host={c_host:?} \
+         NSURLComponents::encodedHost={c_encoded:?}"
+    );
+
+    const A_LABEL: &str = "xn--strae-oqa.de";
+    assert_eq!(
+        nsurl_host.as_deref(),
+        Some(A_LABEL),
+        "`src/foundation.rs` reads `NSURL::host` and expects the A-label. It got \
+         {nsurl_host:?}. The other two readings on this machine were \
+         NSURLComponents::host={c_host:?} and \
+         NSURLComponents::encodedHost={c_encoded:?} — if one of THOSE is \
+         {A_LABEL:?}, that is the getter `foundation.rs` should use"
+    );
+}
+
+/// The other half of the same question: Foundation must agree with `idna`
+/// on the deviation pair, or the acceptance gate will reject it and macOS
+/// will have no IDN at all.
+///
+/// Separate from the corpus because it needs no backend to be *selected*
+/// — it interrogates Foundation directly — so it still reports something
+/// useful on a machine where the gate has refused.
+#[cfg(all(target_os = "macos", foundation_backend))]
+#[test]
+fn macos_foundation_is_non_transitional_like_idna() {
+    use objc2_foundation::{NSString, NSURL};
+
+    for (input, want) in [
+        ("straße.de", "xn--strae-oqa.de"),
+        ("faß.de", "xn--fa-hia.de"),
+        ("münchen.de", "xn--mnchen-3ya.de"),
+    ] {
+        let text = NSString::from_str(&format!("https://{input}/"));
+        let got = NSURL::URLWithString(&text)
+            .and_then(|u| u.host())
+            .map(|h| h.to_string());
+        assert_eq!(
+            got.as_deref(),
+            Some(want),
+            "Foundation is transitional or otherwise disagrees with `idna` on {input:?}. \
+             `strasse.de`/`fass.de` here would mean IDNA2003, i.e. a different origin, and \
+             this backend must not be used"
+        );
+    }
 }

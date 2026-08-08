@@ -24,9 +24,11 @@
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(icu_backend)");
+    println!("cargo::rustc-check-cfg=cfg(foundation_backend)");
     println!("cargo::rustc-check-cfg=cfg(idna_backend)");
 
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
 
     // **Windows and nothing else.** The rule is not "does this OS ship an
     // ICU somewhere" but "is there a stable, statically linkable ABI whose
@@ -45,16 +47,23 @@ fn main() {
     //   nothing reports. For IDN a Unicode version difference is a
     //   different host, so that is a correctness risk taken on for a size
     //   saving. Removed; see the crate docs.
-    // - macOS: `libicucore.dylib` is private, and Foundation's UTS 46 is a
-    //   side effect of parsing a whole URL.
     // - wasm: nothing to link.
     let platform_has_icu = os == "windows";
 
+    // Apple is the second platform that satisfies the same rule by a
+    // different route: Foundation is part of the OS, is linked, and its
+    // UTS 46 arrives with the OS rather than with whatever the user
+    // installed. It is reached through `NSURL` rather than a `uidna_*`
+    // entry point — `libicucore.dylib`, Apple's own ICU, stays out of
+    // reach — so it is a separate backend, not a second ICU one.
+    let platform_has_foundation = vendor == "apple";
+
     let feature = |name: &str| std::env::var_os(format!("CARGO_FEATURE_{name}")).is_some();
-    let (platform, bundled, system_icu) = (
+    let (platform, bundled, system_icu, foundation) = (
         feature("PLATFORM"),
         feature("BUNDLED"),
         feature("SYSTEM_ICU"),
+        feature("FOUNDATION"),
     );
 
     // `platform` takes whichever this target can use; an explicit
@@ -73,7 +82,10 @@ fn main() {
     if (system_icu || platform) && platform_has_icu {
         println!("cargo::rustc-cfg=icu_backend");
     }
-    if (bundled || platform) && !platform_has_icu {
+    if (foundation || platform) && platform_has_foundation {
+        println!("cargo::rustc-cfg=foundation_backend");
+    }
+    if (bundled || platform) && !platform_has_icu && !platform_has_foundation {
         println!("cargo::rustc-cfg=idna_backend");
     }
 }
