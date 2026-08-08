@@ -192,6 +192,10 @@ impl TlsConnect for NativeTls {
             // cannot tell you", which a caller must not read as "TLS 1.2".
             protocol_version: None,
             cipher_suite: None,
+            // Nothing offered, so nothing to report — and this backend
+            // could not report it in any case, for the same reason it
+            // cannot report `alpn` above.
+            early_data_accepted: None,
         };
 
         Ok((FuturesIo::new(stream), info))

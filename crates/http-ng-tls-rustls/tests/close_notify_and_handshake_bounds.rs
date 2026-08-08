@@ -102,6 +102,7 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         )
         .await
@@ -167,6 +168,7 @@ async fn handshake_against_a_silent_peer_has_no_internal_bound_by_design() {
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         ),
     )

@@ -35,7 +35,10 @@
 
 mod body;
 mod connect;
+mod established;
 mod h1;
+#[cfg(feature = "http2")]
+mod http2;
 mod pool;
 
 pub use connect::Conn;
@@ -49,7 +52,7 @@ use http_ng_core::{
 use http_ng_dns::Resolve;
 use http_ng_rt::{TcpConnect, TcpOpts, Timer};
 use http_ng_tls::TlsConnect;
-use pool::{Pool, PoolKey, Protocol, Security};
+use pool::{CheckIn, Pool, PoolKey, Protocol, Security};
 use std::future::Future;
 use std::task::Poll;
 use std::time::Duration;
@@ -95,7 +98,7 @@ where
     /// read behind its back would disagree with a caller testing under
     /// `tokio::time::pause()`. Storing an origin and comparing `Duration`s
     /// against it — rather than storing an `R::Instant` per pooled entry —
-    /// is what keeps the pool and [`h1::NativeBody`] free of a second type
+    /// is what keeps the pool and [`established::NativeBody`] free of a second type
     /// parameter for the runtime.
     epoch: R::Instant,
     pool: Pool<NativeIo<R, T>>,
@@ -268,16 +271,21 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
 {
-    /// Which pool bucket this request belongs to — and, as a side effect
-    /// the rest of `execute` relies on, the point at which an unsupported
-    /// scheme or a missing host becomes a typed error.
+    /// Everything about a pool key except the protocol — and, as a side
+    /// effect the rest of `execute` relies on, the point at which an
+    /// unsupported scheme or a missing host becomes a typed error.
     ///
     /// The same two checks `connect::connect` makes, in the same order, so
     /// a request that would have failed there fails here instead, with the
     /// identical error. That is not duplication for its own sake: the key
     /// needs the authority before `origin_form` removes it, and a request
     /// served from the pool never reaches `connect::connect` at all.
-    fn pool_key(&self, uri: &http::Uri) -> Result<PoolKey, Error> {
+    ///
+    /// The protocol is the one component that cannot be known here: on a
+    /// fresh connection it is whatever ALPN selects, several round trips
+    /// from now. So this returns the parts, and [`KeyParts::key`] finishes
+    /// the key once there is an answer.
+    fn key_parts(&self, uri: &http::Uri) -> Result<KeyParts, Error> {
         let host = connect::host(uri)?;
         let use_tls = connect::wants_tls(uri)?;
         let port = connect::port(uri, use_tls);
@@ -289,15 +297,62 @@ where
         } else {
             Security::Plaintext
         };
-        Ok(PoolKey::new(security, host, port, Protocol::Http11))
+        Ok(KeyParts {
+            security,
+            host: host.into(),
+            port,
+        })
+    }
+
+    /// Whether this transport may propose `h2` for `parts`, and therefore
+    /// whether it may speak it.
+    ///
+    /// Two conditions, and the second one is the whole reason
+    /// `TlsConnect::reports_alpn` exists. h2 is only reachable through TLS
+    /// here — there is no prior-knowledge or upgrade path to h2c — and it
+    /// is only *safe* to propose to a backend that will tell us what was
+    /// selected. A backend that sends the ALPN list and cannot read the
+    /// answer back (`http-ng-tls-native-tls` is exactly that) would leave
+    /// us speaking HTTP/1 into a connection the server switched to HTTP/2:
+    /// not a lost optimisation, a protocol error on every request, and one
+    /// arriving through a feature the user may not have enabled — Cargo
+    /// unifies features across the whole graph. So the offer is withheld
+    /// unless the answer can be read.
+    #[cfg(feature = "http2")]
+    fn may_speak_h2(&self, parts: &KeyParts) -> bool {
+        matches!(parts.security, Security::Tls(_)) && self.tls.reports_alpn()
+    }
+
+    /// Without the feature there is no h2 code to reach at all — the
+    /// module is not compiled — so this is a constant and the ALPN list
+    /// stays what it was before v0.2 W3.
+    #[cfg(not(feature = "http2"))]
+    fn may_speak_h2(&self, _parts: &KeyParts) -> bool {
+        false
+    }
+
+    /// Which pool buckets may hold a connection for this request, in
+    /// preference order.
+    ///
+    /// `&'static [Protocol]`, not a `Vec`: the answer is one of two
+    /// compile-time constants, and a request should not allocate to
+    /// discover which.
+    fn pooled_candidates(&self, parts: &KeyParts) -> &'static [Protocol] {
+        #[cfg(feature = "http2")]
+        if self.may_speak_h2(parts) {
+            return &[Protocol::H2, Protocol::Http11];
+        }
+        let _ = parts;
+        &[Protocol::Http11]
     }
 
     /// The instruction to hand this request's connection back when its
     /// response body ends cleanly — or `None` when reuse is off, which is
-    /// how `h1::exchange` is told to drop the sender and let hyper close.
-    fn checkin_for(&self, key: &PoolKey, now: Duration) -> Option<h1::CheckIn<NativeIo<R, T>>> {
+    /// how an exchange is told to drop the sender and let the connection
+    /// close.
+    fn checkin_for(&self, key: &PoolKey, now: Duration) -> Option<CheckIn<NativeIo<R, T>>> {
         let cfg = self.pool.config()?;
-        Some(h1::CheckIn::new(
+        Some(CheckIn::new(
             self.pool.clone(),
             key.clone(),
             // Saturating: an idle timeout of `Duration::MAX` is a legal
@@ -319,13 +374,168 @@ where
         &self,
         key: &PoolKey,
         now: Duration,
-    ) -> Option<h1::Established<NativeIo<R, T>>> {
+    ) -> Option<established::Established<NativeIo<R, T>>> {
         loop {
             let mut est = self.pool.take(key, now)?;
-            if h1::is_reusable(&mut est).await {
+            if established::is_reusable(&mut est).await {
                 return Some(est);
             }
         }
+    }
+}
+
+/// A pool key with its protocol not yet decided — see
+/// [`Native::key_parts`].
+struct KeyParts {
+    security: Security,
+    host: Box<str>,
+    port: u16,
+}
+
+impl KeyParts {
+    fn key(&self, protocol: Protocol) -> PoolKey {
+        PoolKey::new(self.security, &self.host, self.port, protocol)
+    }
+}
+
+/// Which protocol a connection speaks, given what the TLS backend reported
+/// as negotiated.
+///
+/// `None` means **neither of the two this transport speaks**, and the
+/// caller's answer to that has not changed since v0.2 W2: fall back to
+/// HTTP/1.1 on this one connection and keep it out of the pool, so that a
+/// socket running some protocol nobody here understands can never be
+/// handed to a later request.
+///
+/// A missing ALPN is `Http11`, not `None`, and that is not a guess: it is
+/// either a plaintext connection (no ALPN exists) or a backend that does
+/// not report one — and in the latter case [`Native::may_speak_h2`] made
+/// sure `h2` was never offered, so HTTP/1.1 is the only thing the server
+/// could have selected.
+///
+/// **`offered_h2` is the reason this takes a second argument, and it is
+/// not belt-and-braces.** A peer cannot select a protocol that was never
+/// proposed, so on a correct TLS stack the check is redundant — but the
+/// value comes from a `TlsConnect` implementation, which is a trait
+/// anyone may implement, and "what was negotiated" arriving as `h2` when
+/// `h2` was not on the wire would otherwise make this transport speak a
+/// protocol the server is not listening for. Answering only with
+/// protocols we proposed costs one `bool` and removes the whole class.
+fn negotiated_protocol(alpn: Option<&[u8]>, offered_h2: bool) -> Option<Protocol> {
+    let Some(alpn) = alpn else {
+        return Some(Protocol::Http11);
+    };
+    if alpn == b"http/1.1".as_slice() {
+        return Some(Protocol::Http11);
+    }
+    #[cfg(feature = "http2")]
+    if offered_h2 && alpn == b"h2".as_slice() {
+        return Some(Protocol::H2);
+    }
+    let _ = offered_h2;
+    None
+}
+
+/// The handshake for the protocol ALPN selected.
+#[cfg(feature = "http2")]
+async fn handshake_for<I>(
+    conn: I,
+    protocol: Option<Protocol>,
+) -> Result<established::Established<I>, Error>
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+{
+    if is_h2(protocol) {
+        Ok(established::Established::H2(Box::new(
+            http2::handshake(conn).await?,
+        )))
+    } else {
+        Ok(established::Established::H1(h1::handshake(conn).await?))
+    }
+}
+
+/// Without the feature, [`is_h2`] is a constant `false` and the HTTP/2
+/// branch is not merely unreached — the module it would call into is not
+/// compiled at all. Two definitions rather than one with a dead branch,
+/// so that a build without the feature contains no h2 code path to
+/// audit.
+#[cfg(not(feature = "http2"))]
+async fn handshake_for<I>(
+    conn: I,
+    protocol: Option<Protocol>,
+) -> Result<established::Established<I>, Error>
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+{
+    debug_assert!(!is_h2(protocol));
+    Ok(established::Established::H1(h1::handshake(conn).await?))
+}
+
+/// What [`origin_form`] changed about a request, and how to change it
+/// back.
+///
+/// **Why anything has to be undone at all.** The two protocols want
+/// opposite shapes: HTTP/1 needs an origin-form URI and a `Host:` header,
+/// HTTP/2 needs the absolute URI (it builds `:scheme`, `:authority` and
+/// `:path` out of it) and no `Host:` of ours. `Native::execute` may make
+/// more than one attempt with the same request object — that is what
+/// `Failed::NotSent` is for — and the attempts need not agree on the
+/// protocol. Rewriting in place and never undoing it would mean an
+/// HTTP/1 attempt that failed before sending a byte leaves an h2 attempt
+/// with a URI that has no authority in it.
+struct Rewritten {
+    /// Nothing was rewritten: the attempt speaks HTTP/2, which wants the
+    /// request exactly as it came in.
+    applied: bool,
+    /// [`origin_form`] inserted `Host:` because the caller had not set
+    /// one. Undoing removes exactly the header we added and no other:
+    /// removing a caller's own `Host:` would lose a deliberate override,
+    /// and keeping ours would hand h2 a `Host:` that can disagree with
+    /// `:authority` (they differ whenever the URI names the scheme's
+    /// default port explicitly).
+    host_inserted: bool,
+}
+
+impl Rewritten {
+    fn for_protocol(
+        req: &mut http::Request<body::OutgoingBody>,
+        protocol: Option<Protocol>,
+    ) -> Self {
+        if is_h2(protocol) {
+            return Self {
+                applied: false,
+                host_inserted: false,
+            };
+        }
+        Self {
+            applied: true,
+            host_inserted: origin_form(req),
+        }
+    }
+
+    fn undo(self, req: &mut http::Request<body::OutgoingBody>, uri: &http::Uri) {
+        if !self.applied {
+            return;
+        }
+        *req.uri_mut() = uri.clone();
+        if self.host_inserted {
+            req.headers_mut().remove(http::header::HOST);
+        }
+    }
+}
+
+/// Reads as `protocol == Some(Protocol::H2)`, written as a function
+/// because `Protocol::H2` does not exist without the feature and a
+/// `matches!` at each of the three call sites would need its own `#[cfg]`.
+fn is_h2(protocol: Option<Protocol>) -> bool {
+    #[cfg(feature = "http2")]
+    {
+        matches!(protocol, Some(Protocol::H2))
+    }
+    #[cfg(not(feature = "http2"))]
+    {
+        let _ = protocol;
+        false
     }
 }
 
@@ -337,7 +547,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type Body = h1::NativeBody<NativeIo<R, T>>;
+    type Body = established::NativeBody<NativeIo<R, T>>;
     type Error = Error;
 
     async fn execute(
@@ -365,19 +575,23 @@ where
         // Which connections may serve this request. Computed BEFORE
         // `origin_form` below rewrites the URI into origin-form and the
         // authority stops being there to read — and, in doing so, this is
-        // now where the scheme and host are validated: `pool_key` runs the
+        // now where the scheme and host are validated: `key_parts` runs the
         // same `connect::wants_tls`/`connect::host` checks
         // `connect::connect` runs, and fails with the same typed errors, so
         // everything downstream may still assume they passed.
-        let key = self.pool_key(&parts.uri)?;
+        let parts_of_key = self.key_parts(&parts.uri)?;
         let uri = parts.uri.clone();
 
         let outgoing = body::OutgoingBody::from_request_body(body);
+        // Kept in the shape HTTP/2 needs — absolute URI, no `Host:` of our
+        // own — because that is the shape it arrived in and the only one
+        // both protocols can be derived from. `origin_form` turns it into
+        // HTTP/1's shape at the last moment before each HTTP/1 attempt,
+        // and `Rewritten::undo` puts it back if that attempt hands the
+        // request straight back: the next attempt may speak the other
+        // protocol, and an origin-form URI has neither scheme nor
+        // authority for h2 to build `:scheme`/`:authority` out of.
         let mut req = http::Request::from_parts(parts, outgoing);
-        // hyper h1 requires origin-form and a `Host:` header — `pool_key`
-        // above has already checked both host and scheme, so we don't
-        // recheck them here.
-        origin_form(&mut req);
 
         // Elapsed on the runtime's own clock, from this transport's epoch —
         // see the `epoch` field. Read once and used for both ends of the
@@ -386,84 +600,98 @@ where
         // the two cannot disagree.
         let now = self.rt.elapsed_since(self.epoch);
 
-        // 1. A connection somebody else already opened, if one is still
+        // 1. Connections somebody else already opened, if any are still
         //    alive. `checkout` polls each candidate before offering it, and
         //    that poll is the only thing standing between us and handing
         //    out a socket the server closed while it was idle — see
         //    `pool.rs`'s module doc.
-        let req = match self.checkout(&key, now).await {
-            None => req,
-            Some(est) => {
-                let checkin = self.checkin_for(&key, now);
-                match h1::exchange(est, req, checkin).await {
-                    Ok(resp) => return Ok(resp),
-                    // The one retry, and the reason it exists: a pool turns
-                    // "the server closed this connection while it was idle"
-                    // from something that could not happen into something
-                    // that happens to a request that did nothing wrong. The
-                    // condition is hyper's, not a guess of ours — it hands
-                    // the request back only when not a byte of it reached
-                    // the wire (`h1::Failed`), so what is resent below is
-                    // the original request object, its body untouched at
-                    // its first byte. No clone, no rewind, and nothing to
-                    // decide about idempotency: this is not a second
-                    // request, it is the first one, which never left.
-                    Err(h1::Failed::NotSent { request, .. }) => *request,
-                    Err(other) => return Err(other.into_error()),
+        //
+        //    Two buckets rather than one, and at most one of them is ever
+        //    populated: an origin either negotiated h2 with this
+        //    transport's TLS configuration or it did not, and that does
+        //    not oscillate. Looking in both is two hash lookups and no
+        //    assumption; assuming would be free and wrong on the day a
+        //    server changes its mind.
+        for &protocol in self.pooled_candidates(&parts_of_key) {
+            let key = parts_of_key.key(protocol);
+            let Some(est) = self.checkout(&key, now).await else {
+                continue;
+            };
+            let checkin = self.checkin_for(&key, now);
+            let rewritten = Rewritten::for_protocol(&mut req, Some(protocol));
+            match established::exchange(est, req, checkin).await {
+                Ok(resp) => return Ok(resp),
+                // The one retry, and the reason it exists: a pool turns
+                // "the server closed this connection while it was idle"
+                // from something that could not happen into something
+                // that happens to a request that did nothing wrong. The
+                // condition is hyper's, not a guess of ours — it hands
+                // the request back only when not a byte of it reached
+                // the wire (`established::Failed`), so what is resent
+                // below is the original request object, its body
+                // untouched at its first byte. No clone, no rewind, and
+                // nothing to decide about idempotency: this is not a
+                // second request, it is the first one, which never left.
+                Err(established::Failed::NotSent { request, .. }) => {
+                    req = *request;
+                    rewritten.undo(&mut req, &uri);
                 }
+                Err(other) => return Err(other.into_error()),
             }
-        };
+        }
 
         // 2. A fresh connection. Reached either because the pool had
-        //    nothing live or because the pooled attempt handed the request
-        //    straight back; a fresh connection is never retried, so there
-        //    are at most two attempts and the second one cannot loop.
+        //    nothing live or because a pooled attempt handed the request
+        //    straight back; a fresh connection is never retried, so the
+        //    number of attempts is bounded by the number of protocols
+        //    plus one and nothing here can loop.
         //
         // See the module doc comment: `connect::connect` isn't reuse for
         // code-size's sake, it's the only path on which a resolver
         // `ErrorKind` that differs from the synthetic one (in particular,
         // `Cancelled`) structurally cannot be discarded. It also resolves
         // the scheme (`http`/`https`, anything else is a typed
-        // `ErrorKind::Unsupported`) and optionally runs the TLS handshake
-        // with ALPN `http/1.1` — the only protocol `h1::exchange` speaks.
-        let connect_fut = connect::connect(
-            &self.rt,
-            &self.dns,
-            &self.tls,
-            &uri,
-            &self.opts,
-            &[b"http/1.1"],
-        );
+        // `ErrorKind::Unsupported`) and runs the TLS handshake, proposing
+        // the protocols below.
+        let offered_h2 = self.may_speak_h2(&parts_of_key);
+        let alpn: &[&[u8]] = if offered_h2 {
+            // Order is the preference: RFC 7301 leaves the choice to the
+            // server, but every implementation reads the client's list as
+            // ranked, and h2 is what we want when it is on offer.
+            &[b"h2", b"http/1.1"]
+        } else {
+            &[b"http/1.1"]
+        };
+        let connect_fut = connect::connect(&self.rt, &self.dns, &self.tls, &uri, &self.opts, alpn);
         let (conn, tls_info) = match timeouts.connect {
             Some(d) => with_connect_timeout(&self.rt, d, connect_fut).await?,
             None => connect_fut.await?,
         };
 
         // The guard that keeps `PoolKey`'s protocol component honest: a
-        // connection is only allowed into the pool under `Protocol::Http11`
-        // if the protocol actually negotiated is one this transport speaks.
-        // `None` is not a failure of the check — plaintext has no ALPN, and
-        // `http-ng-tls-native-tls` cannot report one (its own module doc
-        // says so) — and it cannot be a lie today either, because
-        // `connect::connect` above offered exactly `http/1.1` and a server
-        // that answered with anything else would have failed the handshake.
-        // W3, which will offer `h2` as well, is where this stops being
-        // vacuous and starts being the thing that prevents an h2 socket
-        // from being handed to an h1 request.
-        let speaks_h1 = tls_info
-            .as_ref()
-            .and_then(|i| i.alpn.as_deref())
-            .is_none_or(|alpn| alpn == b"http/1.1");
-        let checkin = if speaks_h1 {
-            self.checkin_for(&key, now)
-        } else {
-            None
+        // connection only enters the pool if what was actually negotiated
+        // is a protocol this transport speaks, and then only under that
+        // protocol's own key. Before v0.2 W3 this could not fire, because
+        // `http/1.1` was the only thing ever proposed; now that `h2` is
+        // proposed too it is what stops an h2 socket from being handed to
+        // a request that would speak HTTP/1 on it.
+        let protocol = negotiated_protocol(
+            tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+            offered_h2,
+        );
+        let checkin = match protocol {
+            Some(p) => self.checkin_for(&parts_of_key.key(p), now),
+            None => None,
         };
 
-        let est = h1::handshake(conn).await?;
-        h1::exchange(est, req, checkin)
+        let est = handshake_for(conn, protocol).await?;
+        // The result is dropped rather than kept: a fresh connection is
+        // never handed back for another attempt, so there is nothing left
+        // to undo the rewrite for.
+        let _ = Rewritten::for_protocol(&mut req, protocol);
+        established::exchange(est, req, checkin)
             .await
-            .map_err(h1::Failed::into_error)
+            .map_err(established::Failed::into_error)
     }
 
     /// Identity: `Self::Error` is already `http_ng_core::Error`, and its
@@ -532,19 +760,22 @@ where
 
 /// Rewrites the request URI into origin-form (`hyper`'s h1 client requires
 /// exactly that, not absolute-form) and sets `Host:` if the caller didn't
-/// set it themselves.
+/// set it themselves. Returns whether it inserted that header — see
+/// [`Rewritten`], which is the only caller and the only thing that needs
+/// the answer.
 ///
-/// By the time this is called, `connect::connect` has already succeeded —
-/// meaning its own checks (`host()`, `wants_tls()`) already passed, so
+/// By the time this is called, `key_parts` has already succeeded — meaning
+/// its checks (`connect::host`, `connect::wants_tls`) passed, so
 /// `req.uri()` is guaranteed to carry a host and a supported (`http`/
 /// `https`) scheme; this function doesn't recheck them.
-fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
+fn origin_form(req: &mut http::Request<body::OutgoingBody>) -> bool {
     let uri = req.uri().clone();
     let https = uri.scheme_str() == Some("https");
     let default_port = if https { 443 } else { 80 };
     let port = uri.port_u16().unwrap_or(default_port);
     let host = uri.host().unwrap_or_default();
 
+    let mut host_inserted = false;
     if !req.headers().contains_key(http::header::HOST) {
         let authority = if port == default_port {
             host.to_owned()
@@ -560,6 +791,7 @@ fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
         // immediate, explicit protocol failure, not a silent no-op.
         if let Ok(v) = http::HeaderValue::from_str(&authority) {
             req.headers_mut().insert(http::header::HOST, v);
+            host_inserted = true;
         }
     }
     let pq = uri
@@ -570,6 +802,7 @@ fn origin_form(req: &mut http::Request<body::OutgoingBody>) {
     if let Ok(u) = pq.parse::<http::Uri>() {
         *req.uri_mut() = u;
     }
+    host_inserted
 }
 
 /// For this crate's integration tests only: `pub`, not `pub(crate)`,
@@ -606,7 +839,7 @@ pub mod testing {
     }
 
     pub use crate::body::OutgoingBody;
-    pub use crate::h1::NativeBody;
+    pub use crate::established::NativeBody;
 
     /// An empty request body — what any `h1::exchange` test with nothing
     /// to send needs (a bodyless GET).
@@ -749,18 +982,19 @@ pub mod testing {
     pub async fn exchange_for_test<I>(
         io: I,
         req: http::Request<crate::body::OutgoingBody>,
-    ) -> Result<http::Response<crate::h1::NativeBody<I>>, http_ng_core::Error>
+    ) -> Result<http::Response<crate::established::NativeBody<I>>, http_ng_core::Error>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
         let est = crate::h1::handshake(io).await?;
         crate::h1::exchange(est, req, None)
             .await
-            .map_err(crate::h1::Failed::into_error)
+            .map(|r| r.map(crate::established::NativeBody::h1))
+            .map_err(crate::established::Failed::into_error)
     }
 
     pub async fn collect<I>(
-        b: crate::h1::NativeBody<I>,
+        b: crate::established::NativeBody<I>,
     ) -> Result<bytes::Bytes, http_ng_core::Error>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin,

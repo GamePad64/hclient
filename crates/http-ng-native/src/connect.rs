@@ -593,6 +593,10 @@ where
             server_name: host,
             alpn,
             ech: None,
+            // Reserved, not used — see `http_ng_tls::TlsRequest::
+            // early_data`, which explains what a transport has to settle
+            // before it may ask for 0-RTT, and why none of that is v0.2's.
+            early_data: None,
         };
         let (stream, info) = tls.connect(tcp, req).await?;
         Ok((Conn::Tls(stream), Some(info)))

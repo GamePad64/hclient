@@ -39,6 +39,7 @@ async fn handshake_and_echo<R: TcpConnect>(rt: R, addr: SocketAddr, ca_der: Vec<
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         )
         .await

@@ -157,6 +157,7 @@ async fn scripted_client(
             server_name: "localhost",
             alpn: &[],
             ech: None,
+            early_data: None,
         },
     ))
     .await
@@ -383,6 +384,7 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
             server_name: "localhost",
             alpn: &[],
             ech: None,
+            early_data: None,
         },
     ))
     .await

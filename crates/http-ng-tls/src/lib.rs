@@ -32,6 +32,48 @@ pub struct TlsRequest<'a> {
     /// struct later would be a breaking change for every already-written
     /// `TlsConnect` implementation.
     pub ech: Option<&'a [u8]>,
+    /// TLS 1.3 early data (0-RTT): `Some(n)` asks the backend to offer it
+    /// and to accept up to `n` bytes of application data in the first
+    /// flight, `None` asks for none. **Reserved, not implemented** — no
+    /// backend in this workspace reads it today.
+    ///
+    /// Reserved for exactly the reason [`TlsRequest::ech`] above was: a
+    /// new field on this struct later is a breaking change for every
+    /// `TlsConnect` written against it, and a slot that costs nothing now
+    /// costs a major version then.
+    ///
+    /// Three things whoever implements this needs, written down here so
+    /// they are not rediscovered:
+    ///
+    /// 1. **0-RTT is replayable, and that makes it a client policy
+    ///    question before it is a crypto one.** An attacker can replay
+    ///    early data; which requests may go into it is therefore a
+    ///    decision about the request, not about the connection. The
+    ///    vocabulary for that decision already exists —
+    ///    `http_ng_core::RequestBody::retry_kind()`, and the reasoning
+    ///    around it that v0.2 W2's retry is built on. Start there.
+    /// 2. **The floor rule applies here with unusual force.** Over-claiming
+    ///    a capability normally costs a buffered copy or a lost
+    ///    optimisation; over-claiming this one costs exposure to replay.
+    ///    So whatever `Capabilities` end up saying about it must be the
+    ///    value that holds on the worst case, exactly as
+    ///    `full_duplex` is (see `http-ng-native`'s `Native::new`).
+    /// 3. **`native-tls` will not be able to do it**, for the same reason
+    ///    it cannot report ALPN — so the answer must come from the backend
+    ///    ([`TlsConnect::reports_alpn`] is the shape), with the
+    ///    conservative value as the default.
+    ///
+    /// One thing that is already in place, and is not obvious: rustls
+    /// keeps session resumption in `ClientConfig`
+    /// (`ClientSessionStore`), and `http_ng_tls_rustls::Rustls::
+    /// from_config` stores exactly one `Arc<ClientConfig>` — so the
+    /// session cache is already scoped to one `Rustls` value, which is
+    /// the same thing [`TlsConfigId`] identifies and which v0.2 W2
+    /// already put in the connection pool's key. The half of 0-RTT that
+    /// is about *which* sessions may be resumed for *which* client has
+    /// assembled itself as a side effect of two other tasks; it does not
+    /// need designing again.
+    pub early_data: Option<usize>,
 }
 
 /// The outcome of a TLS handshake, as visible to the caller.
@@ -92,6 +134,19 @@ pub struct TlsInfo {
     /// backends will report the same cipher as two different strings, and
     /// a caller comparing them will get it wrong.
     pub cipher_suite: Option<String>,
+    /// Whether the server accepted the TLS 1.3 early data offered through
+    /// [`TlsRequest::early_data`]. **Reserved, not implemented** — every
+    /// backend here leaves it `None` today.
+    ///
+    /// `Option<bool>`, and all three states are distinct and all needed:
+    /// `Some(true)` the early data counted, `Some(false)` it was rejected
+    /// and whatever was in it has to be sent again, `None` this backend
+    /// cannot tell — the same third state [`TlsInfo::alpn`] has, for the
+    /// same backend, for the same reason. A caller that read `None` as
+    /// `false` would resend needlessly; one that read it as `true` would
+    /// drop a request on the floor. See [`TlsRequest::early_data`] for
+    /// what an implementer needs to know before touching any of this.
+    pub early_data_accepted: Option<bool>,
 }
 
 /// Which trust configuration a [`TlsConnect`] applies, as a value that can
@@ -204,6 +259,37 @@ pub trait TlsConnect {
     /// knows, not from whoever assembles it.
     fn tls_support(&self) -> TlsSupport {
         TlsSupport::Full
+    }
+
+    /// Whether [`TlsInfo::alpn`] is filled in when a protocol was actually
+    /// negotiated — that is, whether `None` from this backend means "the
+    /// peer selected nothing" rather than "I cannot tell you".
+    ///
+    /// **Defaulted to `false`, which is the opposite of
+    /// [`tls_support`](Self::tls_support)'s default, and deliberately so.**
+    /// A default must never be stronger than the truth, and the two
+    /// methods differ in what being wrong costs. An implementation that
+    /// forgets `tls_support` claims it performs TLS, which it does. An
+    /// implementation that forgot *this* one, under a `true` default,
+    /// would claim it can report ALPN — and a caller acting on that claim
+    /// offers `h2`, is told `None`, concludes HTTP/1.1, and speaks HTTP/1
+    /// down a connection on which the server selected HTTP/2. That is not
+    /// a lost optimisation, it is a protocol error on every request. Under
+    /// `false` the same forgetful backend merely understates itself: no
+    /// `h2` is offered, everything works, slower.
+    ///
+    /// This is not hypothetical. `http-ng-tls-native-tls` **sends** the
+    /// ALPN list it is given (`native_tls`'s `request_alpns`) and cannot
+    /// read the selection back, because `async-native-tls` does not expose
+    /// it — see that crate's module doc. It is exactly the backend the
+    /// `false` default describes, and it does not override this method.
+    ///
+    /// The same shape as [`tls_support`](Self::tls_support) and
+    /// [`http_ng_dns::Resolve::supports_svcb`], for the same reason: a
+    /// capability has to come from the component that knows, not from
+    /// whoever assembles it.
+    fn reports_alpn(&self) -> bool {
+        false
     }
 
     /// Which trust configuration this connector applies — see
@@ -445,6 +531,7 @@ mod tests {
                         peer_certificates: None,
                         protocol_version: Some("TLSv1.3".to_string()),
                         cipher_suite: None,
+                        early_data_accepted: None,
                     },
                 ))
             }
@@ -467,6 +554,7 @@ mod tests {
             server_name: "example.com",
             alpn: &alpn,
             ech: None,
+            early_data: None,
         };
 
         // `io` already contains data BEFORE the handshake — proves below

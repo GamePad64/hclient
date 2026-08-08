@@ -48,6 +48,7 @@ async fn completes_handshake_and_echoes() {
             server_name: "localhost",
             alpn: &[b"http/1.1"],
             ech: None,
+            early_data: None,
         },
     ))
     .await
@@ -92,6 +93,7 @@ async fn rejects_an_untrusted_certificate() {
             server_name: "localhost",
             alpn: &[],
             ech: None,
+            early_data: None,
         },
     ))
     .await

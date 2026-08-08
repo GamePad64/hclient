@@ -148,6 +148,7 @@ async fn fetch_body(addr: SocketAddr, ca_der: Vec<u8>) -> Result<Vec<u8>, String
             server_name: "localhost",
             alpn: &[],
             ech: None,
+            early_data: None,
         },
     ))
     .await
@@ -294,6 +295,7 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         ))
         .await

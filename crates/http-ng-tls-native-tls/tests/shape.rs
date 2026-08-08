@@ -58,6 +58,7 @@ fn ech_is_refused_before_the_transport_is_touched() {
         server_name: "example.com",
         alpn: &[b"h2"],
         ech: Some(&[1, 2, 3]),
+        early_data: None,
     };
     let err = futures_executor::block_on(tls.connect(NeverTouched, req))
         .expect_err("ECH must be refused, not ignored");
@@ -80,6 +81,7 @@ fn without_ech_the_handshake_actually_starts() {
         server_name: "example.com",
         alpn: &[b"h2"],
         ech: None,
+        early_data: None,
     };
     let _ = futures_executor::block_on(tls.connect(NeverTouched, req));
 }
