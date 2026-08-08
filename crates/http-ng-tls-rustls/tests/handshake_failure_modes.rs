@@ -63,6 +63,21 @@ async fn peer_closing_mid_handshake_is_reported_as_tls_not_a_hang() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
+    // The server runs on its OWN thread and its own runtime, deliberately:
+    // this test's runtime is single-threaded, so a `tokio::spawn`ed accept
+    // would only run when the client task yields, and the client would then
+    // see a reset rather than the clean mid-handshake close being tested.
+    // Measured, not assumed — switching to `tokio::spawn` makes the EOF
+    // assertion below fail every time.
+    //
+    // The `ready` channel closes the one race that shape has: building a
+    // runtime takes time, and the client below waits only 5 seconds. Under
+    // load — several test binaries and a build sharing the machine — that
+    // race was lost rarely, and the test then failed on its own timeout and
+    // reported a hang, which is exactly the failure it is named for and
+    // exactly what had not happened. Seen twice, never reproducible on
+    // demand.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -70,10 +85,16 @@ async fn peer_closing_mid_handshake_is_reported_as_tls_not_a_hang() {
             .unwrap();
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            // Ready means "the reactor is up and this listener is
+            // registered with it", not "the thread started".
+            ready_tx.send(()).expect("the test is still waiting");
             let (tcp, _) = listener.accept().await.unwrap();
             drop(tcp);
         });
     });
+    ready_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the server thread must reach its accept loop");
 
     let roots = rustls::RootCertStore::empty();
     let cfg = rustls::ClientConfig::builder()
