@@ -300,53 +300,64 @@ which nobody can tell what to do.
 
 ---
 
-## An idea recorded with its blocker: platform IDN APIs
+## Platform IDN: the right Windows API is ICU, not `IdnToAscii`
 
 The proposal: use the platform's own IDN conversion instead of carrying
-`idna` and the ICU tables — `IdnToAscii`/`IdnToUnicode` on Windows,
-something equivalent elsewhere — as an optimised variant of the `idn`
-feature.
+`idna` and the ICU tables, as an alternative backing for the `idn` feature.
 
-**The blocker is not size or availability. It is that the implementations
-disagree about which host you connect to.**
+**An earlier version of this section said the idea could not work because
+implementations disagree. That was right about the wrong API.**
 
-The Rust `idna` crate implements UTS-46. Windows' `IdnToAscii` implements
-IDNA2003 (RFC 3490). They differ on real inputs, and the difference is not
-cosmetic — measured here against `url`, which is the UTS-46 side:
+`IdnToAscii`/`IdnToUnicode` implement IDNA2003 (RFC 3490), and they do
+diverge from what this project produces. Measured here against `url`, which
+is UTS-46:
 
-| input | UTS-46 (ours today) | IDNA2003 (Windows) |
+| input | UTS-46 (ours) | IDNA2003 (`IdnToAscii`) |
 |---|---|---|
 | `straße.de` | `xn--strae-oqa.de` | `strasse.de` |
 | `faß.de` | `xn--fa-hia.de` | `fass.de` |
 
-Those are different domains. They can be registered to different people.
-Under IDNA2003 the sharp s maps to `ss`, so the name resolves to plain ASCII
-and no punycode is produced at all; under UTS-46 it is a character in its own
-right. The same divergence exists for final sigma and for ZWJ/ZWNJ.
+Different domains, registrable by different people. Under IDNA2003 the sharp
+s maps to `ss` and no punycode is produced at all. Final sigma and ZWJ/ZWNJ
+diverge the same way.
 
-So a platform-backed variant is not a transparent optimisation. It changes,
-per operating system, **which origin a request goes to** — in a client whose
-stated mission is that the same code runs everywhere, and in the one step
-that decides who you are talking to. That makes it a security-relevant
-divergence rather than a size trade.
+**But Windows ships ICU, and its ICU exposes UTS-46 directly.** ICU was
+integrated into Windows 10 in 1703 and its C APIs are public. The exported
+surface includes `uidna_openUTS46`, `uidna_nameToASCII` and
+`uidna_nameToASCII_UTF8` — the same UTS-46 the Rust `idna` crate implements,
+so this path does **not** change which host is contacted. The UTF-8 entry
+point also means no UTF-16 round trip.
 
-The availability picture is also thinner than it looks:
+What the Windows path actually costs:
 
-- **Windows** — `IdnToAscii` exists since Vista, and is the case above.
-- **macOS** — no public IDN API. IDN handling lives inside CFNetwork, and
-  `libicucore.dylib` is private with unversioned symbols that Apple
-  documents as not for linking.
-- **Linux** — `libidn2` is usually present and glibc's `AI_IDN` can use it,
-  but neither is guaranteed, and libidn2 is IDNA2008, a third answer.
-- **wasm** — nothing, though the browser's own URL parser is UTS-46 and
-  therefore already agrees with us.
+- **A version floor.** `icuuc.dll` + `icuin.dll` from 1703; the combined
+  `icu.dll` only from 1903. Resolving the symbol at runtime rather than
+  linking gives a clean answer on older systems: fall back to the bundled
+  Rust implementation instead of failing to start.
+- **`CoInitializeEx` first**, for Win32 apps — except on 1903+ with the
+  combined library, where it may be omitted.
+- **C only.** No C++ APIs are exposed and never will be, which suits an FFI
+  boundary.
+- Microsoft notes that not all ICU-returned data aligns with the rest of
+  Windows yet. Irrelevant for IDNA, worth knowing before reaching for other
+  ICU functions from the same handle.
 
-**If it is built anyway, it must be an explicit opt-in that says what it
-costs** — not a default, and not presented as an optimisation of the same
-behaviour. A build that takes it is choosing smaller binaries over
-cross-platform identity of the resolved host, and only the person making
-that build can weigh it. The feature name should say so; `idn-platform`
-rather than `idn-fast`.
+The other platforms are still thin: **macOS** has no public IDN API
+(CFNetwork does it internally; `libicucore.dylib` is private with symbols
+Apple documents as not for linking), **Linux**'s libidn2 is neither
+guaranteed nor the same standard (IDNA2008, a third answer), and **wasm**
+has none — though browsers are UTS-46 and therefore already agree.
+
+So the shape is: a per-platform backing for `idn` where the platform offers
+the *same standard*, with the bundled Rust implementation as the fallback
+everywhere else and on older Windows. That is an implementation detail
+rather than a behaviour change, which is what makes it worth doing —
+and it is the opposite of what a naive `IdnToAscii` binding would be.
+
+**Whatever is built must have a differential test against the bundled
+implementation on a shared corpus.** The whole claim is that the two agree;
+an untested claim of agreement between two IDNA implementations is exactly
+the kind of thing that is false in the tail.
 
 ---
 
