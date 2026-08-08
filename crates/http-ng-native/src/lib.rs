@@ -471,59 +471,6 @@ where
     Ok(established::Established::H1(h1::handshake(conn).await?))
 }
 
-/// What [`origin_form`] changed about a request, and how to change it
-/// back.
-///
-/// **Why anything has to be undone at all.** The two protocols want
-/// opposite shapes: HTTP/1 needs an origin-form URI and a `Host:` header,
-/// HTTP/2 needs the absolute URI (it builds `:scheme`, `:authority` and
-/// `:path` out of it) and no `Host:` of ours. `Native::execute` may make
-/// more than one attempt with the same request object — that is what
-/// `Failed::NotSent` is for — and the attempts need not agree on the
-/// protocol. Rewriting in place and never undoing it would mean an
-/// HTTP/1 attempt that failed before sending a byte leaves an h2 attempt
-/// with a URI that has no authority in it.
-struct Rewritten {
-    /// Nothing was rewritten: the attempt speaks HTTP/2, which wants the
-    /// request exactly as it came in.
-    applied: bool,
-    /// [`origin_form`] inserted `Host:` because the caller had not set
-    /// one. Undoing removes exactly the header we added and no other:
-    /// removing a caller's own `Host:` would lose a deliberate override,
-    /// and keeping ours would hand h2 a `Host:` that can disagree with
-    /// `:authority` (they differ whenever the URI names the scheme's
-    /// default port explicitly).
-    host_inserted: bool,
-}
-
-impl Rewritten {
-    fn for_protocol(
-        req: &mut http::Request<body::OutgoingBody>,
-        protocol: Option<Protocol>,
-    ) -> Self {
-        if is_h2(protocol) {
-            return Self {
-                applied: false,
-                host_inserted: false,
-            };
-        }
-        Self {
-            applied: true,
-            host_inserted: origin_form(req),
-        }
-    }
-
-    fn undo(self, req: &mut http::Request<body::OutgoingBody>, uri: &http::Uri) {
-        if !self.applied {
-            return;
-        }
-        *req.uri_mut() = uri.clone();
-        if self.host_inserted {
-            req.headers_mut().remove(http::header::HOST);
-        }
-    }
-}
-
 /// Reads as `protocol == Some(Protocol::H2)`, written as a function
 /// because `Protocol::H2` does not exist without the feature and a
 /// `matches!` at each of the three call sites would need its own `#[cfg]`.
@@ -583,14 +530,12 @@ where
         let uri = parts.uri.clone();
 
         let outgoing = body::OutgoingBody::from_request_body(body);
-        // Kept in the shape HTTP/2 needs — absolute URI, no `Host:` of our
-        // own — because that is the shape it arrived in and the only one
-        // both protocols can be derived from. `origin_form` turns it into
-        // HTTP/1's shape at the last moment before each HTTP/1 attempt,
-        // and `Rewritten::undo` puts it back if that attempt hands the
-        // request straight back: the next attempt may speak the other
-        // protocol, and an origin-form URI has neither scheme nor
-        // authority for h2 to build `:scheme`/`:authority` out of.
+        // Left exactly as it arrived — absolute URI, and no `Host:` of
+        // ours. That is the one shape both protocols can be derived from,
+        // and deriving is `established::exchange`'s job, from the
+        // connection it is about to speak on rather than from anything
+        // decided here. `uri` above is the copy that puts it back when an
+        // attempt hands the request straight back.
         let mut req = http::Request::from_parts(parts, outgoing);
 
         // Elapsed on the runtime's own clock, from this transport's epoch —
@@ -618,8 +563,7 @@ where
                 continue;
             };
             let checkin = self.checkin_for(&key, now);
-            let rewritten = Rewritten::for_protocol(&mut req, Some(protocol));
-            match established::exchange(est, req, checkin).await {
+            match established::exchange(est, req, checkin, &uri).await {
                 Ok(resp) => return Ok(resp),
                 // The one retry, and the reason it exists: a pool turns
                 // "the server closed this connection while it was idle"
@@ -632,10 +576,7 @@ where
                 // untouched at its first byte. No clone, no rewind, and
                 // nothing to decide about idempotency: this is not a
                 // second request, it is the first one, which never left.
-                Err(established::Failed::NotSent { request, .. }) => {
-                    req = *request;
-                    rewritten.undo(&mut req, &uri);
-                }
+                Err(established::Failed::NotSent { request, .. }) => req = *request,
                 Err(other) => return Err(other.into_error()),
             }
         }
@@ -685,11 +626,7 @@ where
         };
 
         let est = handshake_for(conn, protocol).await?;
-        // The result is dropped rather than kept: a fresh connection is
-        // never handed back for another attempt, so there is nothing left
-        // to undo the rewrite for.
-        let _ = Rewritten::for_protocol(&mut req, protocol);
-        established::exchange(est, req, checkin)
+        established::exchange(est, req, checkin, &uri)
             .await
             .map_err(established::Failed::into_error)
     }
@@ -756,53 +693,6 @@ where
         Poll::Pending
     })
     .await
-}
-
-/// Rewrites the request URI into origin-form (`hyper`'s h1 client requires
-/// exactly that, not absolute-form) and sets `Host:` if the caller didn't
-/// set it themselves. Returns whether it inserted that header — see
-/// [`Rewritten`], which is the only caller and the only thing that needs
-/// the answer.
-///
-/// By the time this is called, `key_parts` has already succeeded — meaning
-/// its checks (`connect::host`, `connect::wants_tls`) passed, so
-/// `req.uri()` is guaranteed to carry a host and a supported (`http`/
-/// `https`) scheme; this function doesn't recheck them.
-fn origin_form(req: &mut http::Request<body::OutgoingBody>) -> bool {
-    let uri = req.uri().clone();
-    let https = uri.scheme_str() == Some("https");
-    let default_port = if https { 443 } else { 80 };
-    let port = uri.port_u16().unwrap_or(default_port);
-    let host = uri.host().unwrap_or_default();
-
-    let mut host_inserted = false;
-    if !req.headers().contains_key(http::header::HOST) {
-        let authority = if port == default_port {
-            host.to_owned()
-        } else {
-            format!("{host}:{port}")
-        };
-        // A host that made it to `connect::connect` (having passed DNS
-        // resolution, and for `https` also having built a TLS SNI value)
-        // is, in practice, always valid as a header value. If it somehow
-        // isn't, the request goes out without `Host:`, and that's not a
-        // silent loss: no server this crate talks to will accept an
-        // HTTP/1.1 request without `Host:`, so the failure will be an
-        // immediate, explicit protocol failure, not a silent no-op.
-        if let Ok(v) = http::HeaderValue::from_str(&authority) {
-            req.headers_mut().insert(http::header::HOST, v);
-            host_inserted = true;
-        }
-    }
-    let pq = uri
-        .path_and_query()
-        .map(|p| p.as_str())
-        .unwrap_or("/")
-        .to_owned();
-    if let Ok(u) = pq.parse::<http::Uri>() {
-        *req.uri_mut() = u;
-    }
-    host_inserted
 }
 
 /// For this crate's integration tests only: `pub`, not `pub(crate)`,

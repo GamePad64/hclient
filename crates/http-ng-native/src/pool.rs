@@ -75,15 +75,25 @@
 //! now, with `TlsConnect::config_id` already answered by every
 //! implementation, than to add it after the sharing.
 //!
-//! **[`Protocol`] is what keeps an HTTP/2 socket out of an HTTP/1
-//! request's hands.** `Native` speaks HTTP/1.1 always and HTTP/2 when ALPN
-//! selected it (the `http2` feature, v0.2 W3), and the two are not
-//! interchangeable on the wire for one instant. The component was added in
-//! W2, when it had one variant and the lookup was constant, precisely so
-//! that W3 could add the second one without anything else in this file
-//! changing — and the guard that makes it honest is in `Native::execute`,
-//! which refuses to pool a connection at all when the *negotiated* ALPN is
-//! neither of the two protocols this transport speaks.
+//! **[`Protocol`] keeps the two kinds of connection in separate buckets**
+//! — `Native` speaks HTTP/1.1 always and HTTP/2 when ALPN selected it (the
+//! `http2` feature, v0.2 W3). The component was added in W2, when it had
+//! one variant and the lookup was constant, precisely so that W3 could add
+//! the second one without anything else in this file changing; the guard
+//! that keeps it honest is in `Native::execute`, which refuses to pool a
+//! connection at all when the *negotiated* ALPN is neither of the two
+//! protocols this transport speaks.
+//!
+//! Worth being exact about what it buys, because it is tempting to
+//! overstate: it is **not** what stops an HTTP/2 socket being spoken to as
+//! HTTP/1. That is impossible for a structural reason instead — a pooled
+//! connection is an [`Established`] enum that carries its own protocol,
+//! and `established::exchange` both dispatches and shapes the request off
+//! that one value, so a connection cannot be addressed as something it is
+//! not. This component is a *preference*: it lets checkout ask for the
+//! bucket a request would rather have, instead of taking whatever is on
+//! top. That is worth two hash lookups, and it is the honest size of the
+//! claim.
 //!
 //! # What an h2 connection is checked out for
 //!
@@ -440,6 +450,22 @@ mod tests {
             PoolKey::new(Security::Plaintext, "h", 80, Protocol::Http11),
             PoolKey::new(Security::Plaintext, "h", 8080, Protocol::Http11),
         );
+    }
+
+    /// The protocol component, checked here because it cannot be reached
+    /// from outside the client — the same situation, and the same answer,
+    /// as the TLS identity below.
+    ///
+    /// One `Native` negotiates the same protocol with a given origin every
+    /// time, so no live test can put an `Http11` and an `H2` connection in
+    /// one pool and watch them stay apart. What can be checked directly is
+    /// the mechanism: that the key tells the two apart at all.
+    #[cfg(feature = "http2")]
+    #[test]
+    fn the_protocol_separates_keys() {
+        let of = |p| PoolKey::new(Security::Plaintext, "h", 80, p);
+        assert_ne!(of(Protocol::Http11), of(Protocol::H2));
+        assert_eq!(of(Protocol::H2), of(Protocol::H2));
     }
 
     /// The component this project would most like to get wrong, since

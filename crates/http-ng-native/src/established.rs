@@ -138,31 +138,126 @@ where
 
 /// One request over one connection.
 ///
-/// The request must arrive in the shape the protocol needs — origin-form
-/// for HTTP/1, absolute-form for HTTP/2 — which is why the rewrite is
-/// `Native::execute`'s job and not this function's: the caller is the only
-/// one that still holds the original URI to put back if the exchange hands
-/// the request straight back.
+/// **The request is put into the shape its protocol needs here, and
+/// nowhere else** — origin-form with a `Host:` for HTTP/1, the absolute
+/// URI and no `Host:` of ours for HTTP/2, which builds `:scheme`,
+/// `:authority` and `:path` out of it.
+///
+/// That this happens inside the same `match` that picks the exchange is
+/// the point, and it was not free. An earlier version had
+/// `Native::execute` rewrite the request from the *pool key*'s protocol
+/// while this function dispatched on the *connection*'s: two sources for
+/// one fact. Mutation testing found them disagreeing — check a connection
+/// in under the wrong protocol and the next request goes out as HTTP/2
+/// carrying an origin-form URI, which has neither a scheme nor an
+/// authority for h2 to build pseudo-headers from. Reading the protocol off
+/// the connection about to be spoken on cannot disagree with itself.
+///
+/// `canonical` is the URI the request arrived with. It is needed because
+/// the HTTP/1 rewrite has to be undone when hyper hands the request back
+/// unsent: `Native::execute` may try again on a connection that speaks the
+/// other protocol, and an origin-form URI would be unusable there.
 pub(crate) async fn exchange<I>(
     est: Established<I>,
-    req: http::Request<OutgoingBody>,
+    mut req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
+    canonical: &http::Uri,
 ) -> Result<http::Response<NativeBody<I>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
 {
     match est {
-        Established::H1(e) => crate::h1::exchange(e, req, checkin).await.map(|r| {
-            r.map(|b| NativeBody {
-                inner: Inner::H1(b),
-            })
-        }),
+        Established::H1(e) => {
+            let rewritten = Rewritten::to_origin_form(&mut req);
+            match crate::h1::exchange(e, req, checkin).await {
+                Ok(r) => Ok(r.map(|b| NativeBody {
+                    inner: Inner::H1(b),
+                })),
+                Err(Failed::NotSent { error, mut request }) => {
+                    rewritten.undo(&mut request, canonical);
+                    Err(Failed::NotSent { error, request })
+                }
+                Err(other) => Err(other),
+            }
+        }
         #[cfg(feature = "http2")]
         Established::H2(e) => crate::http2::exchange(*e, req, checkin).await.map(|r| {
             r.map(|b| NativeBody {
                 inner: Inner::H2(Box::new(b)),
             })
         }),
+    }
+}
+
+/// What [`Rewritten::to_origin_form`] changed about a request, and how to
+/// change it back.
+///
+/// **Why anything has to be undone at all.** `Native::execute` may make
+/// more than one attempt with the same request object — that is what
+/// [`Failed::NotSent`] is for — and the attempts need not agree on the
+/// protocol. Rewriting in place and never undoing it would leave an
+/// HTTP/2 attempt holding a URI with no authority in it.
+struct Rewritten {
+    /// [`Rewritten::to_origin_form`] inserted `Host:` because the caller
+    /// had not set one. Undoing removes exactly the header we added and no
+    /// other: removing a caller's own `Host:` would lose a deliberate
+    /// override, and keeping ours would hand h2 a `Host:` that can
+    /// disagree with `:authority` (they differ whenever the URI names the
+    /// scheme's default port explicitly).
+    host_inserted: bool,
+}
+
+impl Rewritten {
+    /// Rewrites the request URI into origin-form (hyper's HTTP/1 client
+    /// requires exactly that, not absolute-form) and sets `Host:` if the
+    /// caller didn't set it themselves.
+    ///
+    /// By the time this is called, `Native::key_parts` has succeeded —
+    /// meaning its checks (`connect::host`, `connect::wants_tls`) passed,
+    /// so `req.uri()` is guaranteed to carry a host and a supported
+    /// (`http`/`https`) scheme; this function doesn't recheck them.
+    fn to_origin_form(req: &mut http::Request<OutgoingBody>) -> Self {
+        let uri = req.uri().clone();
+        let https = uri.scheme_str() == Some("https");
+        let default_port = if https { 443 } else { 80 };
+        let port = uri.port_u16().unwrap_or(default_port);
+        let host = uri.host().unwrap_or_default();
+
+        let mut host_inserted = false;
+        if !req.headers().contains_key(http::header::HOST) {
+            let authority = if port == default_port {
+                host.to_owned()
+            } else {
+                format!("{host}:{port}")
+            };
+            // A host that got this far (having passed DNS resolution, and
+            // for `https` also having built a TLS SNI value) is, in
+            // practice, always valid as a header value. If it somehow
+            // isn't, the request goes out without `Host:`, and that's not
+            // a silent loss: no server this crate talks to will accept an
+            // HTTP/1.1 request without `Host:`, so the failure will be an
+            // immediate, explicit protocol failure, not a silent no-op.
+            if let Ok(v) = http::HeaderValue::from_str(&authority) {
+                req.headers_mut().insert(http::header::HOST, v);
+                host_inserted = true;
+            }
+        }
+        let pq = uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/")
+            .to_owned();
+        if let Ok(u) = pq.parse::<http::Uri>() {
+            *req.uri_mut() = u;
+        }
+        Self { host_inserted }
+    }
+
+    fn undo(self, req: &mut http::Request<OutgoingBody>, canonical: &http::Uri) {
+        *req.uri_mut() = canonical.clone();
+        if self.host_inserted {
+            req.headers_mut().remove(http::header::HOST);
+        }
     }
 }
 
