@@ -137,12 +137,10 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
     /// migrates from, did for `redirect_limit(0)`
     /// (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
     /// status.is_redirection()`), and the component forwards its status
-    /// and `Location` upward. `limit: u8` cannot express "do not follow,
-    /// hand me the 3xx" at all; reqwest keeps the two apart as
-    /// `Policy::none()` and `Policy::limited(0)`. Found by the Task 10
-    /// acceptance and being fixed by turning `RedirectPolicy` into an
-    /// enum; until then, a caller who needs to inspect a 3xx has no way
-    /// to ask for one.
+    /// and `Location` upward. `reqwest` keeps the two intents apart the same
+    /// way, as `Policy::none()` and `Policy::limited(0)` — and so does this
+    /// type, since the acceptance that ported that component found a
+    /// `limit: u8` field could express only the second.
     ///
     /// A policy of any kind is what a backend which follows redirects
     /// internally can never honour: against `RedirectSupport::Internal`

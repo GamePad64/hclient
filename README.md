@@ -148,11 +148,12 @@ browser's `fetch` (vertical 3).
 | WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
 | browser | `http-ng-fetch` — `fetch` | **no** |
 
-The two "no"s are machine-checked on every push, not asserted here:
+Both "no"s are machine-checked on every push rather than asserted here:
 `ambient-has-no-tokio` runs `cargo tree` for `http-ng-fetch` against
-`wasm32-unknown-unknown` and fails closed if the invocation itself breaks.
-Measured at the time of writing: zero matches for `tokio`, `hyper` or `h2` in
-either wasm graph, four in the native one.
+`wasm32-unknown-unknown` and for `http-ng-wasi` against `wasm32-wasip2`, and
+fails closed if the invocation itself breaks or returns nothing. Measured
+while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
+graph, four in the native one.
 
 **Minimum supported Rust: the latest stable release** — currently **1.97**,
 declared once in the workspace manifest and shared by every crate. That is the

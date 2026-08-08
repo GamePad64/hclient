@@ -301,6 +301,52 @@ mod tests {
         assert!(matches!(r, RedirectAction::TooManyRedirects));
     }
 
+    /// `None` is the whole reason this type is an enum, and until this test
+    /// the crate that OWNS it never constructed the variant: collapsing
+    /// `None` back into `Limited(0)` left all 92 of this crate's tests
+    /// green, and was caught only by a test in `http-ng` that reaches the
+    /// semantics through `examples/portable.rs` — an example, the artifact
+    /// most likely to be rewritten or trimmed.
+    ///
+    /// A 302 WITH a `Location` is the case that discriminates: without one,
+    /// `decide` returns `Stop` for every policy, so the assertion would hold
+    /// for the wrong reason.
+    #[test]
+    fn none_stops_without_following_and_does_not_report_too_many() {
+        let r = decide(
+            &RedirectPolicy::None,
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://a/x"),
+        );
+        assert!(
+            matches!(r, RedirectAction::Stop),
+            "`None` must hand the 3xx back, not follow it and not error: {r:?}"
+        );
+    }
+
+    /// The other side of the same distinction, in the owning crate:
+    /// `Limited(0)` follows zero hops, so the first redirect IS an error.
+    /// Together with the test above, neither variant's behaviour can be
+    /// satisfied by the other's code path.
+    #[test]
+    fn limited_zero_errors_where_none_would_stop() {
+        let r = decide(
+            &RedirectPolicy::Limited(0),
+            0,
+            &u("https://a/"),
+            &Method::GET,
+            StatusCode::FOUND,
+            Some(b"https://a/x"),
+        );
+        assert!(
+            matches!(r, RedirectAction::TooManyRedirects),
+            "`Limited(0)` must error where `None` stops: {r:?}"
+        );
+    }
+
     #[test]
     fn garbage_location_is_reported() {
         let r = decide(

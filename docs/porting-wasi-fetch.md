@@ -26,7 +26,8 @@ compiled and tested.
 | `RequestBuilder::json(&T)` | **no equivalent** — serialize yourself, set `content-type` yourself |
 | `timeout(d)` — sets the wasip3 `connect` **and** `first_byte` options from one `Duration` | `Timeouts { connect: Some(d), first_byte: Some(d), .. }` — **both** fields, or the connect timeout is silently lost |
 | `between_bytes_timeout(d)` | `Timeouts { between_bytes: Some(d), .. }`, the third field of the same struct |
-| `redirect_limit(n)` + the 66-line loop in `send` | `RedirectPolicy { limit: n }`, on `ClientBuilder::redirect` or per request on `RequestBuilder::redirect`, carried out by the `Redirect` stage in `Client::execute` |
+| `redirect_limit(n)`, `n > 0`, + the 66-line loop in `send` | `RedirectPolicy::Limited(n)`, on `ClientBuilder::redirect` or per request on `RequestBuilder::redirect`, carried out by the `Redirect` stage in `Client::execute` |
+| `redirect_limit(0)` | `RedirectPolicy::None` — **not** `Limited(0)`, see item 1 below |
 | `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `http-ng-wasi` — you no longer write any of it |
 | `Body::chunk` | `Response::chunk` (and it now reports errors, see below) |
 | `Body::{bytes, text, json}` | `Response::collect` → `Collected::{bytes, text, json}` (`json` behind the `json` feature) |
@@ -121,7 +122,7 @@ Four items, none of them papered over.
    policy.** The browser `fetch` transport reports
    `RedirectSupport::Internal`: it follows redirects inside the browser and
    nothing above it can see or override that. Stating *any*
-   `RedirectPolicy` against it — including `limit: 10`, which is also the
+   `RedirectPolicy` against it — including `Limited(10)`, which is also the
    default — is `ErrorKind::Unsupported` rather than a setting that quietly
    does nothing. This cannot happen on wasip3, and it is not a regression;
    it is new ground that opens up the moment the same code is also built
@@ -136,10 +137,14 @@ The plan is for `wasi-fetch` to stay findable: a thin facade over
 `http_ng::Client<http_ng_wasi::WasiHttp>` keeping the old names, so users
 migrate by changing a dependency rather than their code.
 
-It will not be a pure renaming, and the two reasons are items 1 and 3
-above. `redirect_limit(0)` has to keep meaning "return the 3xx", which the
-facade cannot express through `RedirectPolicy` today, and `json()` has to
-keep existing. Everything else on the list — `header`, `headers`, `body`,
+It will not be a pure renaming, and the reason is item 3 above: `json()`
+has to keep existing on the request builder, and `http-ng` has it only on
+the response.
+
+`redirect_limit(0)` is no longer a reason. It was, while `RedirectPolicy`
+was a struct and "return the 3xx" was inexpressible; the type became an enum
+before v0.1 shipped, so the facade maps `0` to `RedirectPolicy::None` and
+every other `n` to `Limited(n)`. Everything else on the list — `header`, `headers`, `body`,
 `timeout`, `between_bytes_timeout`, `chunk`, `bytes`, `text`, `json` on the
 response, and the whole of `send_raw` — maps straight through.
 

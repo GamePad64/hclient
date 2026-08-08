@@ -277,9 +277,11 @@ jobs:
           # itself — the next task to touch this crate's dependencies
           # should update THAT comment and re-verify this line, the same
           # way Task 4 did for Task 1's.
-          if [ -d "crates/http-ng-fetch" ]; then
-            cargo check -p http-ng-fetch --all-features --all-targets --target wasm32-unknown-unknown
+          if [ ! -d "crates/http-ng-fetch" ]; then
+            echo "::error::crates/http-ng-fetch is missing — this is CI's only wasm32-unknown-unknown MSRV check; a renamed directory must fail the job, not quietly remove the check"
+            exit 1
           fi
+          cargo check -p http-ng-fetch --all-features --all-targets --target wasm32-unknown-unknown
 
           # Task 9 (task-9-addendum-measured.md, "Also add: the facade's
           # browser target is unchecked at every level"). Before this line,
@@ -330,9 +332,11 @@ jobs:
           # than silently narrowed or left unattempted — closing it means
           # target-gating `crates/http-ng/Cargo.toml`'s native-only
           # dev-dependencies, out of scope for this task.
-          if [ -d "crates/http-ng" ]; then
-            cargo check -p http-ng --features test-util --target wasm32-unknown-unknown
+          if [ ! -d "crates/http-ng" ]; then
+            echo "::error::crates/http-ng is missing — a renamed directory must fail this job, not quietly skip the facade's browser-target check"
+            exit 1
           fi
+          cargo check -p http-ng --features test-util --target wasm32-unknown-unknown
 
   # Task 14: end-to-end acceptance of the vertical — the same generic code
   # (`fetch_once` in `two_runtimes.rs`) really runs over the network on
@@ -1055,14 +1059,21 @@ jobs:
           # neighbors) — the existing comment filter below drops every one
           # of them, so adding this directory requires zero new markers,
           # the same clean result Task 13 recorded for `Native`.
-          dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src crates/http-ng-wasi/src \
-                   crates/http-ng-proto/src crates/http-ng-rt/src crates/http-ng-native/src \
-                   crates/http-ng-fetch/src; do
-            if [ -d "$d" ]; then dirs="$dirs $d"; fi
-          done
-          if [ -z "$dirs" ]; then
-            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+          # A GLOB, not a hand-maintained list — the same shape
+          # `no-unsafe-code` uses further down, and for the same reason. The
+          # list this replaces named seven directories and dropped any that
+          # did not exist, failing only when ALL seven were gone. Renaming
+          # one crate's directory therefore removed it from the scan
+          # silently, with the workspace still building, because `cargo`
+          # resolves a package by its manifest rather than its path. A
+          # reviewer reproduced exactly that: a real `Send` violation planted
+          # in `http-ng-fetch` was caught, and the same violation with the
+          # directory renamed was not. A glob follows the move; a list does
+          # not, and cannot say so.
+          shopt -s nullglob
+          dirs=(crates/*/src)
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
             exit 1
           fi
           # We look for DECLARED bounds, not mentions in docs: lines whose
@@ -1158,7 +1169,7 @@ jobs:
           # where `assert_send` tests live, C4 is about
           # `&'static [HeaderName]`) and never appear as a
           # `send-bound-exception` marker in the code.
-          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' $dirs \
+          if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' "${dirs[@]}" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE 'send-bound-exception:[[:space:]]*amendment-C[125]\b'; then
             echo "::error::the core declares a Send or Sync bound without a send-bound-exception marker"
@@ -1494,7 +1505,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: wasm32-unknown-unknown }
+        with: { targets: wasm32-unknown-unknown, wasm32-wasip2 }
       - name: fetch build (wasm32-unknown-unknown) must contain neither tokio, hyper, nor h2
         shell: bash
         run: |
@@ -1518,6 +1529,35 @@ jobs:
             exit 1
           fi
           echo "OK: no tokio/hyper/h2 in http-ng-fetch's wasm32-unknown-unknown dependency graph"
+      - name: wasi build (wasm32-wasip2) must contain neither tokio, hyper, nor h2
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The README's v0.1 status table prints "no tokio" for BOTH wasm
+          # rows and says both are machine-checked. Only the browser one was;
+          # the WASI row was asserted. This step is what makes that sentence
+          # true — the fact itself was already true when measured by hand,
+          # but "we know because CI checks it" was not.
+          if [ ! -d crates/http-ng-wasi ]; then
+            echo "::error::http-ng-wasi is missing — a renamed or moved crate must fail this check, not remove it"
+            exit 1
+          fi
+          tree_rc=0
+          tree_out="$(cargo tree -p http-ng-wasi -e normal --prefix none --target wasm32-wasip2)" || tree_rc=$?
+          if [ "$tree_rc" -ne 0 ]; then
+            echo "::error::cargo tree failed (exit $tree_rc) for http-ng-wasi on wasm32-wasip2 — a broken invocation is not a passing check"
+            exit 1
+          fi
+          if [ -z "$tree_out" ]; then
+            echo "::error::cargo tree produced no output for http-ng-wasi on wasm32-wasip2 — an empty dependency tree means the check did not run, not that it passed"
+            exit 1
+          fi
+          if printf '%s\n' "$tree_out" | grep -qE '^(tokio|hyper|h2) '; then
+            echo "::error::http-ng-wasi's wasm32-wasip2 dependency graph contains tokio, hyper, or h2 — the wasi:http transport delegates the exchange to the host and must stay free of the native HTTP stack"
+            exit 1
+          fi
+          echo "http-ng-wasi on wasm32-wasip2: no tokio, hyper or h2"
+
       - name: proto (wasm32-unknown-unknown) must stay sans-io
         shell: bash
         run: |
