@@ -188,9 +188,14 @@ jobs:
           # guard below greps that output, and ANSI escapes inside the count
           # make the pattern unmatchable — a green job that checked nothing.
           # This exact failure was measured on this project once already.
+          # `|| rc=$?` rather than a bare capture: under `set -e` a failing
+          # test would abort the step before the line below prints anything,
+          # so the run would go red with no indication of WHICH test failed.
+          rc=0
           out="$(cargo nextest run --workspace --all-features --color never \
-            -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)"
+            -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
           printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
           # nextest exits non-zero on a failing test, so this is not about
           # failures — it is about the run never happening. A filterset typo,
           # a workspace that resolves to nothing, a binary that fails to
@@ -289,9 +294,11 @@ jobs:
           # test ran" is a stronger claim than "at least one did": this job's
           # whole purpose is that the complexity test runs alone on the
           # runner.
+          rc=0
           out="$(cargo nextest run -p http-ng-proto --all-features --color never \
-            -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)"
+            -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
           printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
           if ! printf '%s\n' "$out" | grep -qE '1 test run: 1 passed'; then
             echo "::error::sse-complexity-guard did not run exactly one test — parsing_scales_linearly_not_quadratically appears to have been renamed or moved. Fix the path here AND the --skip value in the test job."
             exit 1
@@ -611,9 +618,11 @@ jobs:
           # `cargo test`, on a test that passes and writes to stderr: `1`
           # match with the flag, `0` without. Without it, the next check
           # would be vacuous, exactly the defect it is written against.
+          rc=0
           out="$(cargo nextest run -p http-ng-wasi --test live_roundtrip \
-            --color never --no-capture 2>&1)"
+            --color never --no-capture 2>&1)" || rc=$?
           printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
           # Second half of the same protection. The marker above turns a
           # skip into a FAILURE, but only as long as it actually reaches the
           # test: a typo in the name, `env:` moved to the wrong step,
@@ -1024,10 +1033,23 @@ jobs:
         with:
           channel: nightly
           bins: cargo-fuzz
-      - run: cargo fuzz run sse -- -max_total_time=60
+      # `--target` is explicit, and has to be. `cargo fuzz` defaults to the
+      # triple it was ITSELF compiled for, and `bins:` fetches a prebuilt
+      # binary rather than compiling one here — on this runner that is the
+      # `x86_64-unknown-linux-musl` build, so the default silently became
+      # musl and every fuzz target failed to build with `sanitizer is
+      # incompatible with statically linked libc` plus `can't find crate for
+      # core`. Reading the host out of `rustc` keeps this correct on any
+      # runner instead of pinning a triple here.
+      - shell: bash
         working-directory: crates/http-ng-proto/fuzz
-      - run: cargo fuzz run sse_accounting -- -max_total_time=30 -max_len=256
-        working-directory: crates/http-ng-proto/fuzz
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || { echo "::error::could not read the host triple out of rustc -vV"; exit 1; }
+          echo "fuzzing for $host"
+          cargo fuzz run --target "$host" sse -- -max_total_time=60
+          cargo fuzz run --target "$host" sse_accounting -- -max_total_time=30 -max_len=256
 
   # ── invariants from the spec ────────────────────────────────────────────
   proto-is-sans-io:
@@ -1163,15 +1185,19 @@ jobs:
           # `idn` ON. Every `#[cfg(not(feature = "idn"))]` test — the typed
           # `NonAsciiHost` error and the divergence list that names what a
           # build without Unicode tables gives up — runs only here.
-          out="$(cargo nextest run -p http-ng-proto --no-default-features --color never 2>&1)"
+          rc=0
+          out="$(cargo nextest run -p http-ng-proto --no-default-features --color never 2>&1)" || rc=$?
           printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
           if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
             echo "::error::nextest did not report a summary for http-ng-proto --no-default-features — the run did not happen"
             exit 1
           fi
+          rc=0
           out="$(cargo nextest run -p http-ng --no-default-features --features test-util \
-            --color never 2>&1)"
+            --color never 2>&1)" || rc=$?
           printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
           if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
             echo "::error::nextest did not report a summary for http-ng --no-default-features — the run did not happen"
             exit 1
