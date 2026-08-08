@@ -385,6 +385,17 @@ written against rather than retrofitted into.
 
 ## IDN, and why the Unicode tables are ours rather than the system's
 
+**Not by switching backends.** `idna_adapter` is a supported seam and
+pinning it to 1.1.0 moves `idna` onto the unicode-rs backend, taking
+`http-ng-proto`'s graph from 35 crates to 20 for +126 KiB of binary
+(measured; see `docs/icu-ecosystem-survey.md`). **Rejected, 2026-08-08:**
+that backend is the stale one — it is what `idna` used before ICU4X — so
+the fifteen crates are bought with Unicode tables that lag. IDN decides
+*which host we connect to*, and a mapping table a Unicode version behind is
+a difference in destination rather than in polish. It is the same failure
+mode as `IdnToAscii`, further down: an older standard that answers almost
+the same question.
+
 Support for internationalised domain names goes behind an `idn` feature on
 `http-ng-proto`, **in `default`**, with the conversion at the single
 boundary where a string becomes a `Uri`. In the sans-io crate rather than

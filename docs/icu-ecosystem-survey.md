@@ -17,6 +17,21 @@
 > Everything else below is the survey's own measurement and is recorded as
 > received.
 
+> **DECIDED — the `idna_adapter` pin is rejected. Do not re-propose it.**
+>
+> Owner's call, 2026-08-08: the unicode-rs backend is the stale one.
+> `idna_adapter` 1.1.0 is the older line, and the backend behind it is what
+> `idna` used *before* ICU4X — so the fifteen crates it removes are bought
+> with Unicode tables that lag. That is not a neutral trade in this path:
+> IDN decides **which host we connect to**, and a mapping table that is a
+> Unicode version behind is a difference in destination, not in polish. The
+> same reasoning is why this project rejected `IdnToAscii` (see the table
+> below) — an older standard that answers *almost* the same is the failure
+> mode, not the fallback.
+>
+> The +126 KiB / -15 crates measurement below stands as a measurement. It
+> simply is not a trade this project takes.
+
 # ICU ecosystem survey: what exists, what it costs, what it cannot do
 
 Input for the `idn-platform-crate` task. It answers three questions asked of
