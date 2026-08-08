@@ -4,13 +4,52 @@
 //! `Blocking` capability — and is therefore unavailable wherever that
 //! capability isn't (wasm).
 //!
-//! **A limitation worth knowing:** `getaddrinfo` will never return
-//! HTTPS/SVCB records. That means neither ECH nor first-request HTTP/3
-//! discovery is reachable through the system resolver. `lookup_svcb` is
-//! honestly empty — and `supports_svcb()` is honestly `false`, the
-//! `Resolve` default left unoverridden: overriding only `lookup_svcb`
-//! would assert a capability that isn't there (see the
-//! `Resolve::supports_svcb` doc comment in `http-ng-dns`).
+//! **`getaddrinfo` still cannot return an HTTPS/SVCB record, and never
+//! will** — its result type is a list of `sockaddr`s. So SVCB does not
+//! come from `getaddrinfo` here; it comes from a second system call
+//! alongside it — `res_query(3)` on Unix, `DnsQuery_UTF8` on Windows. Both
+//! live behind the crate's foreign-function boundary in `sys`, the
+//! project's only `unsafe` outside `http-ng-fetch` (spec amendment C8),
+//! and the two are not symmetric: `res_query` hands back a raw DNS
+//! response that still has to be decoded, while Windows hands back a
+//! record its DNS Client service has **already** parsed
+//! (`DNS_SVCB_DATA`), so no DNS bytes are read on that platform at all.
+//!
+//! **Those bytes are decoded by `dns-message-parser`, not by hand.** That
+//! crate has no `unsafe` in its `src`, returns `DecodeResult` on every
+//! path rather than panicking, and terminates name decompression by
+//! recording visited offsets rather than by a hand-argued rule about
+//! pointer directions. `svcb` — this crate's own `#![forbid(unsafe_code)]`
+//! module — is left with the part a DNS decoder correctly declines to do:
+//! deciding, per RFC 9460, which decoded records a *client* may act on
+//! (§2.4/§2.5 modes and root targets, §8 `mandatory` semantics), and
+//! classifying what "no records" means.
+//!
+//! **`supports_svcb()` says what this build can do, and nothing more.** It
+//! comes from the same `#[cfg]`-selected module that supplies the lookup,
+//! so the capability and the code behind it cannot drift apart; see `sys`
+//! for why that is structural rather than a convention. `true` on Linux
+//! (glibc or musl), Apple, and Windows; `false` everywhere else.
+//!
+//! A `true` over a lookup that cannot produce a record would be the exact
+//! defect class — a capability that lies — that the
+//! `Resolve::supports_svcb` doc comment in `http-ng-dns` exists to
+//! prevent. Note the Windows answer is a compile-time constant *again*: an
+//! earlier backend there reached `DnsQueryRaw` through `GetProcAddress`,
+//! which made the honest answer depend on the machine, and this method was
+//! a function for exactly as long as that was true. It is a constant now
+//! because `DnsQuery_UTF8` is statically linked and its SVCB support goes
+//! back to Windows 10 — see `sys::windows`, including which part of that
+//! sentence is verified and which is taken on the project owner's word.
+//!
+//! **Both SVCB backends block too**, so `lookup_svcb` goes through the
+//! same `Blocking` capability as `lookup_ipv4`/`lookup_ipv6` and has the
+//! same three outcomes (see `lookup` below) — with one addition specific
+//! to it: a name with no HTTPS records yields an EMPTY stream, not an
+//! error. That case is the common one, and `res_query` reports it as a
+//! failure; turning that report into an `Error` would tell every caller
+//! its DNS was broken for every host that simply has no HTTPS record. See
+//! `svcb::endpoints_from_answer` for where that line is drawn.
 //!
 //! **A known limitation — and it's worse than it sounds: TODAY, two
 //! `getaddrinfo` calls for one name, and neither gives an early result.**
@@ -36,12 +75,23 @@
 //! the `Resolve` trait already allows for it today (separate
 //! `lookup_ipv4`/`lookup_ipv6`, not one method returning both families at
 //! once), but `SystemDns` doesn't use that possibility yet.
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`, and only since spec amendment C8: `forbid` cannot
+// be relaxed by a scoped `#[allow]` from inside the crate (`E0453`), and
+// `sys/res_query.rs` and `sys/windows.rs` each need exactly one such
+// `#[allow]` for their foreign declarations and calls. Every other module
+// keeps `#![forbid(unsafe_code)]` of its own — `svcb`, which parses the
+// untrusted bytes, and `sys::unsupported` — so the relaxation reaches one
+// file and no further. CI's `no-unsafe-code` job enforces that boundary
+// independently, path-scoped to that one file; see amendment C8.
+#![deny(unsafe_code)]
+
+mod svcb;
+mod sys;
 
 use futures_core::Stream;
 use futures_util::StreamExt;
 use http_ng_core::{Error, ErrorKind};
-use http_ng_dns::{Resolve, ResolvedAddr};
+use http_ng_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use http_ng_rt::{Blocking, Cancelled};
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -130,10 +180,36 @@ impl<B: Blocking> Resolve for SystemDns<B> {
     fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
         self.lookup(name, true)
     }
-    // `supports_svcb`/`lookup_svcb` deliberately not overridden: the
-    // `Resolve` defaults (`false` / empty stream) are the precise, honest
-    // answer for `getaddrinfo`, which can't return SVCB/HTTPS records in
-    // principle.
+
+    /// Both SVCB methods are overridden together, which is the only way
+    /// `Resolve` permits either to be: the constant below and the query
+    /// inside `lookup_svcb` are the same `#[cfg]`-selected module's two
+    /// items, so a target where the lookup cannot work reports `false`
+    /// here without anyone having to remember to change it.
+    fn supports_svcb(&self) -> bool {
+        sys::SUPPORTS_SVCB
+    }
+
+    fn lookup_svcb(&self, name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
+        let owned = name.to_owned();
+        let fut = self.blocking.run(move || sys::lookup(&owned));
+        futures_util::stream::once(fut).flat_map(move |res| match res {
+            // An empty `Vec` here is a real answer — "asked, found none" —
+            // and becomes an empty stream, exactly like the `Resolve`
+            // default. It is `supports_svcb()` above that keeps the two
+            // distinguishable, which is the whole reason that method
+            // exists.
+            Ok(Ok(endpoints)) => {
+                futures_util::stream::iter(endpoints.into_iter().map(Ok).collect::<Vec<_>>())
+            }
+            Ok(Err(e)) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
+            // Same reasoning as `lookup`: the pool going away is not a DNS
+            // failure and not an absence of records.
+            Err(Cancelled) => {
+                futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Cancelled, Cancelled))])
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -233,20 +309,117 @@ mod tests {
         );
     }
 
+    /// The capability must say what this build can actually do, and the
+    /// target list here is a deliberate SECOND copy of the one in `sys`.
+    /// The first copy decides which backend compiles; this one states, in
+    /// a place a reviewer reads, what that is expected to mean. Adding a
+    /// target to `sys` without touching this test fails on that target;
+    /// the two are meant to be edited together, and CI's three-OS matrix
+    /// exercises both answers.
+    ///
+    /// **Windows is asserted like every other target again, and the
+    /// history is worth a line.** An earlier Windows backend reached
+    /// `DnsQueryRaw` through `GetProcAddress`, which made the honest answer
+    /// depend on the machine rather than the build, and this test had to
+    /// exempt it. That backend was replaced by a static link to
+    /// `DnsQuery_UTF8` (see `sys::windows` for why), so the answer is
+    /// decided at compile time on every supported target and the exemption
+    /// is gone. If a future backend brings run-time detection back, this is
+    /// the test that has to change with it — deliberately, not by being
+    /// weakened until it passes.
     #[test]
-    fn svcb_is_empty_because_getaddrinfo_cannot_return_it() {
-        let r = SystemDns::new(Inline);
-        let got: Vec<_> = futures_executor::block_on(r.lookup_svcb("example.com").collect());
-        assert!(got.is_empty());
-        // An empty stream is ambiguous on its own (see the
-        // `Resolve::supports_svcb` doc comment in `http-ng-dns`): without
-        // the paired capability check, this test would also pass for a
-        // resolver that claims it can do SVCB but found nothing.
-        // `getaddrinfo` honestly can't do SVCB at all — both halves of
-        // the pair must confirm that together.
+    fn supports_svcb_is_cfg_accurate_rather_than_optimistic() {
+        let expected = cfg!(any(
+            all(
+                target_os = "linux",
+                any(target_env = "gnu", target_env = "musl")
+            ),
+            target_vendor = "apple",
+            windows
+        ));
+        assert_eq!(
+            SystemDns::new(Inline).supports_svcb(),
+            expected,
+            "supports_svcb() must be true exactly where a backend compiles — a `true` over \
+             a lookup that cannot produce a record is the defect class \
+             `Resolve::supports_svcb` exists to prevent, and a `false` where the backend \
+             does exist hides a working capability"
+        );
+    }
+
+    /// The half of the pair the capability check cannot cover: on a build
+    /// WITH a backend the lookup has to be able to produce records, and on
+    /// one without it has to produce an empty stream and no error. Neither
+    /// half needs the network — the first is proved by
+    /// `svcb::tests::parses_a_real_https_answer_captured_from_the_system_resolver`
+    /// over a captured answer, the second is what this asserts.
+    #[test]
+    fn without_a_backend_the_lookup_is_empty_and_not_an_error() {
+        if SystemDns::new(Inline).supports_svcb() {
+            return;
+        }
+        let got: Vec<_> =
+            futures_executor::block_on(SystemDns::new(Inline).lookup_svcb("example.com").collect());
         assert!(
-            !r.supports_svcb(),
-            "an empty lookup_svcb without supports_svcb() == false is a lie by default"
+            got.is_empty(),
+            "an absent capability is an empty stream, never an error: telling a caller its \
+             DNS is broken because this build has no backend would be a different lie"
+        );
+    }
+
+    #[test]
+    fn svcb_cancellation_is_not_mistaken_for_an_empty_or_dns_error_stream() {
+        struct AlwaysCancelled;
+        impl Blocking for AlwaysCancelled {
+            async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+                &self,
+                _f: F,
+            ) -> Result<T, Cancelled> {
+                Err(Cancelled)
+            }
+        }
+
+        let r = SystemDns::new(AlwaysCancelled);
+        let got: Vec<_> = futures_executor::block_on(r.lookup_svcb("example.com").collect());
+        assert_eq!(got.len(), 1, "the pool going away is not silence");
+        let err = got
+            .into_iter()
+            .next()
+            .unwrap()
+            .expect_err("must be an error");
+        assert_eq!(
+            err.kind(),
+            &ErrorKind::Cancelled,
+            "same reasoning as lookup_ipv4: cancellation is neither a DNS failure nor an \
+             absence of records"
+        );
+    }
+
+    /// Network-dependent, and therefore off by default: CI has no
+    /// guaranteed outbound DNS, and a test that needs one is a test that
+    /// goes red for reasons unrelated to this code. Run it deliberately
+    /// with `cargo test -p http-ng-dns-system -- --ignored`.
+    #[test]
+    #[ignore = "requires outbound DNS to a resolver that answers HTTPS (RR type 65) queries"]
+    fn live_lookup_of_a_name_that_publishes_https_records() {
+        let r = SystemDns::new(Inline);
+        assert!(
+            r.supports_svcb(),
+            "this test is only meaningful on a build that has a backend"
+        );
+        let got: Vec<_> = futures_executor::block_on(r.lookup_svcb("cloudflare.com").collect());
+        let endpoints: Vec<_> = got
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("a live answer");
+        assert!(
+            !endpoints.is_empty(),
+            "cloudflare.com publishes HTTPS records; an empty stream here means the local \
+             resolver strips RR type 65 rather than that the parser is wrong"
+        );
+        assert!(
+            endpoints.iter().any(|e| e.alpn.iter().any(|a| a == b"h3")),
+            "the point of the whole path is h3 discovery without Alt-Svc"
         );
     }
 

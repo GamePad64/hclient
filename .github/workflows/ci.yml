@@ -1393,20 +1393,139 @@ jobs:
           # text, correctly citing `amendment-C7`, planted next to an
           # unrelated `unsafe` block in a DIFFERENT crate's `src` still
           # fails, because the filter below also requires the file path.
+          #
+          # EXTENDED in vertical 3 (`http-ng-dns-system`, spec amendment
+          # C8) with a SECOND marked file, and deliberately not by
+          # loosening the first one. A system SVCB/HTTPS lookup needs
+          # `res_query(3)`: `getaddrinfo` cannot return RR type 65 in
+          # principle, and neither `libc` 0.2.189 nor `rustix` 1.1.4
+          # declares `res_query` (checked against the vendored sources of
+          # both), so the crate declares the foreign function itself. That
+          # is `unsafe` by construction, and no amount of care makes it
+          # otherwise.
+          #
+          # The scope is kept as narrow as C7's, by the same mechanism and
+          # for the same reason: a per-line marker, `unsafe-code-exception:
+          # amendment-C8`, that only excuses a line whose PATH is exactly
+          # `crates/http-ng-dns-system/src/sys/res_query.rs` or
+          # `.../sys/windows.rs` — the crate's two FFI boundaries, one per
+          # platform family, and nothing else in the crate. Both files exist
+          # to be small: `res_query.rs` declares one foreign function, calls
+          # it into a buffer it sized itself, and returns an owned
+          # `Vec<u8>`; `windows.rs` calls `DnsQuery_UTF8` and walks the
+          # `DNS_SVCB_DATA` the OS has already parsed, so it reads no DNS
+          # bytes at all. Neither interprets a wire format. The decoding
+          # (over data an attacker on the network chooses) is
+          # `dns-message-parser`'s, and the RFC 9460 client rules are in
+          # `svcb.rs`, which carries its own `#![forbid(unsafe_code)]`, as
+          # does `sys/unsupported.rs`; only the crate root and `sys/mod.rs`
+          # drop to `deny`, because `forbid` propagates into child modules
+          # and would make the FFI modules impossible. So an `unsafe` block
+          # added anywhere else in that crate — including `sys/mod.rs`, one
+          # directory level from the marked file — still fails this job.
+          #
+          # The two markers do not substitute for each other: each grep
+          # below pins one amendment token to one path, so C7's marker in
+          # the DNS crate fails and C8's marker in `promise.rs` fails.
+          # Verified in six directions on this tree, not assumed: (1) the
+          # three real marked lines in `res_query.rs` pass; (2) an unmarked
+          # `unsafe` planted in `sys/mod.rs` (same crate, one level up)
+          # fails; (3) an unmarked `unsafe` planted in another crate's
+          # `src` fails; (4) a C8 marker citing a nonexistent amendment
+          # (`amendment-C9`) fails; (5) the exact C8 marker planted next to
+          # an `unsafe` block in a DIFFERENT file fails; (6) swapping the
+          # two files' tokens — C7's marker in `res_query.rs`, C8's in
+          # `promise.rs` — fails both.
+          #
+          # THE MARKER MOVES UNDER `cargo fmt`, AND THIS JOB HAS TO KNOW
+          # THAT. Found while adding C8, and the reason for the `awk` below
+          # rather than a plain `grep -rn`. Measured on a probe crate, not
+          # reasoned about: rustfmt PRESERVES a trailing comment that
+          # follows a complete expression or a comma-terminated list
+          # element, and MOVES one that follows the opening brace of a
+          # block-bodied item down onto the next line.
+          #
+          #   #![allow(unsafe_code, // marker      -> preserved
+          #   unsafe { getpid() }   // marker      -> preserved
+          #   let n = unsafe { … }; // marker      -> preserved
+          #   unsafe extern "C" {   // marker      -> MOVED into the block
+          #   unsafe fn f() {       // marker      -> MOVED
+          #
+          # A leading `/* marker */ unsafe extern "C" {` and an inline
+          # `unsafe extern "C" { /* marker */` are moved as well, so no
+          # placement keeps a marker on such a line. C7 never hit this: its
+          # two lines are `#[allow(unsafe_code, …` and `unsafe impl … {}`,
+          # both forms rustfmt keeps. C8's FFI needs `unsafe extern "C" {`
+          # and `unsafe extern "system" fn f(`, which are exactly the forms
+          # it breaks. And `prek` runs `cargo fmt --all`, not `--check`, so
+          # a marker written on the right line does not stay there — this
+          # job would fail on a tree whose only sin was being formatted.
+          #
+          # The rule is therefore "on the line, or on the line IMMEDIATELY
+          # below it", which is precisely and deterministically where
+          # rustfmt puts it, implemented by folding a lone marker line onto
+          # its predecessor before the scan. This is NOT a relaxation to
+          # per-file: the marker must still be adjacent to the line it
+          # excuses, and still in a file its amendment names. A marker two
+          # lines away, or anywhere else in the file, excuses nothing.
+          #
+          # EXACTLY TWO POSITIONS ARE ACCEPTED, and the one people reach for
+          # first is not among them:
+          #
+          #   unsafe { b() } // unsafe-code-exception: amendment-CN   OK
+          #
+          #   unsafe extern "C" {                                    OK
+          #       // unsafe-code-exception: amendment-CN                (rustfmt puts it here)
+          #
+          #   // unsafe-code-exception: amendment-CN                  NOT OK
+          #   unsafe { b() }                                           (excuses the line ABOVE it)
+          #
+          # The fold attaches a lone marker line to its PREDECESSOR, so a
+          # marker written above a construct excuses whatever precedes it —
+          # usually a line with no `unsafe` in it — and the construct itself
+          # stays flagged. Worth spelling out because Rust attributes are
+          # written above the item they apply to, so writing the marker
+          # there is the natural first guess. The failure direction is safe
+          # (a false red, never a false green), so the fold is not changed
+          # to look both ways: looking up as well would let one marker
+          # excuse two different `unsafe` lines.
           shopt -s nullglob
           dirs=(crates/*/src)
           if [ ${#dirs[@]} -eq 0 ]; then
             echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
             exit 1
           fi
-          if grep -rn "unsafe" "${dirs[@]}" \
+          # Emits `path:lineno:line`, exactly as `grep -rn` would, except
+          # that a following line consisting only of an
+          # `unsafe-code-exception` comment is appended to the line before
+          # it. `find` rather than a glob so the scan reaches `src/sys/*.rs`
+          # and any other subdirectory; `-print0` / `read -d ''` so a path
+          # containing a space cannot split into two filenames.
+          scan() {
+            find "${dirs[@]}" -type f -name '*.rs' -print0 |
+              while IFS= read -r -d '' file; do
+                awk -v f="$file" '
+                  { line[NR] = $0 }
+                  END {
+                    for (i = 1; i <= NR; i++) {
+                      out = line[i]
+                      if (i < NR && line[i+1] ~ /^[[:space:]]*(\/\/|\/\*)[[:space:]]*unsafe-code-exception:/) {
+                        out = out " " line[i+1]
+                      }
+                      print f ":" i ":" out
+                    }
+                  }' "$file"
+              done
+          }
+          if scan | grep "unsafe" \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
                | grep -vE '(deny|forbid)\(unsafe_code\)' \
-               | grep -vE '^crates/http-ng-fetch/src/promise\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C7\b'; then
-            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker in crates/http-ng-fetch/src/promise.rs in one of ${#dirs[@]} directories (${dirs[*]}) — every crate must remain safe unless explicitly marked and justified in spec amendment C7, in the one file that amendment names"
+               | grep -vE '^crates/http-ng-fetch/src/promise\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C7\b' \
+               | grep -vE '^crates/http-ng-dns-system/src/sys/(res_query|windows)\.rs:[0-9]+:.*unsafe-code-exception:[[:space:]]*amendment-C8\b'; then
+            echo "::error::found unsafe (including a possible #[allow(unsafe_code)]) without a matching unsafe-code-exception marker, across ${#dirs[@]} directories (${dirs[*]}). Every crate must remain safe unless explicitly marked and justified in a spec amendment, in a file that amendment names: crates/http-ng-fetch/src/promise.rs for amendment C7, crates/http-ng-dns-system/src/sys/res_query.rs and crates/http-ng-dns-system/src/sys/windows.rs for amendment C8. WHERE TO PUT THE MARKER: either trailing on the flagged line itself (\`unsafe { b() } // unsafe-code-exception: amendment-C8\`) or alone on the line IMMEDIATELY BELOW it, which is where cargo fmt moves it for block-opening forms such as \`unsafe extern \"C\" {\`. A marker written ABOVE the line does NOT work — it is folded onto the preceding line instead. If the unsafe is not justified by an amendment, it does not belong in this repository."
             exit 1
           fi
-          echo "unsafe: not found (outside the one marked, justified exception in crates/http-ng-fetch/src/promise.rs) in any of ${#dirs[@]} directories (${dirs[*]})"
+          echo "unsafe: not found (outside the three marked, justified exceptions in crates/http-ng-fetch/src/promise.rs and crates/http-ng-dns-system/src/sys/{res_query,windows}.rs) in any of ${#dirs[@]} directories (${dirs[*]})"
 
   # Task 9. Before this job, CI ran ZERO browser tests — no `wasm-pack
   # test`, no `wasm-bindgen-test-runner`, no driver setup anywhere in this
