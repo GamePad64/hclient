@@ -21,10 +21,17 @@
 //! caught four times, and it is half-set already, which is why it is
 //! pinned here rather than argued about.
 //!
-//! No cfg gate on the target: everything here is `http-ng-mock` and a byte
-//! literal, so it builds and runs wherever the crate does, browser
-//! included. It IS gated on `gzip`, because without a decoder compiled in
-//! every assertion below would hold for the wrong reason.
+//! No cfg gate on the target, unlike `compression.rs`: everything here is
+//! `http-ng-mock` and a byte literal, with no `TcpListener` and no
+//! native-only dev-dependency, so this file BUILDS for every target the
+//! crate does — including `wasm32-unknown-unknown`, where `wasm-pack test`
+//! compiles every test target of the crate and a native-only helper would
+//! break the browser job. The tests themselves are plain `#[test]`s and so
+//! run on the host, as they should: the gate is a decision made from
+//! `Capabilities`, and the same decision on every target.
+//!
+//! It IS gated on `gzip`, because without a decoder compiled in every
+//! assertion below would hold for the wrong reason.
 #![cfg(all(feature = "test-util", feature = "gzip"))]
 
 use bytes::Bytes;
