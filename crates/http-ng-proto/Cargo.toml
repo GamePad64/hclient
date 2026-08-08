@@ -11,6 +11,7 @@ repository.workspace = true
 bytes = { workspace = true }
 http  = { workspace = true }
 url   = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

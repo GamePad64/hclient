@@ -16,20 +16,12 @@ pub enum SseEvent {
     Retry(Duration),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SseError {
     /// The raw event size limit was exceeded. Fatal and **not retried**.
+    #[error("SSE event exceeds {limit} bytes")]
     EventTooLarge { limit: usize },
 }
-
-impl core::fmt::Display for SseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            SseError::EventTooLarge { limit } => write!(f, "SSE event exceeds {limit} bytes"),
-        }
-    }
-}
-impl std::error::Error for SseError {}
 
 #[derive(Debug)]
 pub struct SseDecoder {

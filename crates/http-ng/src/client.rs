@@ -576,20 +576,10 @@ impl Default for Client<crate::DefaultTransport> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("exceeded redirect limit of {0}")]
 struct TooMany(u8);
-impl std::fmt::Display for TooMany {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "exceeded redirect limit of {}", self.0)
-    }
-}
-impl std::error::Error for TooMany {}
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("Location header is not a resolvable URI")]
 struct BadLocation;
-impl std::fmt::Display for BadLocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Location header is not a resolvable URI")
-    }
-}
-impl std::error::Error for BadLocation {}

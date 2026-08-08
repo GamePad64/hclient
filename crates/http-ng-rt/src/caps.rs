@@ -91,16 +91,9 @@ pub trait Blocking {
 /// A panic in `f`, by contrast, does NOT become `Cancelled` — it is
 /// re-raised as a panic by the `Blocking` implementation, see the trait's
 /// doc comment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("blocking task pool went away before the work started")]
 pub struct Cancelled;
-
-impl std::fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("blocking task pool went away before the work started")
-    }
-}
-
-impl std::error::Error for Cancelled {}
 
 #[cfg(test)]
 mod tests {

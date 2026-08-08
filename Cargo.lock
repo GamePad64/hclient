@@ -727,6 +727,7 @@ dependencies = [
  "http",
  "http-body",
  "http-ng-core",
+ "http-ng-dns",
  "http-ng-dns-system",
  "http-ng-fetch",
  "http-ng-mock",
@@ -735,9 +736,11 @@ dependencies = [
  "http-ng-rt",
  "http-ng-rt-smol",
  "http-ng-rt-tokio",
+ "http-ng-tls",
  "http-ng-tls-rustls",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "wasm-bindgen-test",
  "web-sys",
@@ -751,6 +754,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "thiserror",
 ]
 
 [[package]]
@@ -828,6 +832,7 @@ dependencies = [
  "http",
  "http-body",
  "http-ng-core",
+ "thiserror",
 ]
 
 [[package]]
@@ -862,6 +867,7 @@ dependencies = [
  "bytes",
  "http",
  "proptest",
+ "thiserror",
  "url",
 ]
 
@@ -873,6 +879,7 @@ dependencies = [
  "futures-io",
  "http-ng-core",
  "hyper",
+ "thiserror",
 ]
 
 [[package]]

@@ -43,22 +43,12 @@ pub struct Config {
 /// `requested` is a `String`, not an `http::Uri`: resolution works on the
 /// STRING before parsing (see `effective_uri`), and exactly the references
 /// the base exists for aren't expressible as `http::Uri` at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("cannot resolve `{requested}` against base URL `{base}` (a base URL must be absolute)")]
 pub struct InvalidBaseUrl {
     pub base: http::Uri,
     pub requested: String,
 }
-
-impl std::fmt::Display for InvalidBaseUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "cannot resolve `{}` against base URL `{}` (a base URL must be absolute)",
-            self.requested, self.base
-        )
-    }
-}
-impl std::error::Error for InvalidBaseUrl {}
 
 /// The URI the request will actually go out on: `url`, resolved against
 /// `base` if a base is set.
