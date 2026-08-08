@@ -1,0 +1,23 @@
+[package]
+name = "http-ng-dns-hickory"
+version = "0.1.0"
+description = "http-ng's Resolve over hickory-resolver — the backend that can actually answer SVCB"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes            = { workspace = true }
+futures-core     = "0.3"
+futures-util     = { version = "0.3", default-features = false, features = ["std"] }
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+http-ng-core     = { workspace = true }
+http-ng-dns      = { path = "../http-ng-dns", version = "0.1.0" }
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
