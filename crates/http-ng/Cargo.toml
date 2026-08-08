@@ -86,7 +86,7 @@ serde_json    = { version = "1", default-features = false, features = ["std"], o
 # entry for the target actually being built, so this one line still
 # applies everywhere, and the browser-only line below is additive, not a
 # duplicate declaration of the crate.
-getrandom     = "0.3"
+getrandom     = "0.4"
 
 # Target-dependent optional dependencies for `DefaultTransport` (see
 # `default-transport` in `[features]` above and the `DefaultTransport` doc
