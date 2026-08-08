@@ -94,6 +94,73 @@ pub struct TlsInfo {
     pub cipher_suite: Option<String>,
 }
 
+/// Which trust configuration a [`TlsConnect`] applies, as a value that can
+/// be compared.
+///
+/// **A connection may be reused for a later request only if that request
+/// would have been made with an equal identity.** Equal must therefore mean
+/// *the same trust decisions*: the same roots, the same client certificate,
+/// the same verifier, the same anything a peer's acceptance depends on. Two
+/// clients with different roots sharing a socket is a security defect, not
+/// a performance one, which is why this type exists at all — see
+/// `http_ng_native`'s pool key.
+///
+/// # Why a token, and not a `TypeId` or a hash of the configuration
+///
+/// `TypeId` cannot work: two `Rustls` values built from different root
+/// stores are the same type, so a `TypeId` would call them
+/// interchangeable, which is exactly the defect.
+///
+/// A hash of the configuration's contents would work, and is not used
+/// either. A collision would mean sharing a socket between two different
+/// trust configurations — the same defect again, arriving quietly and at a
+/// rate nobody measures — and hashing the contents correctly is work every
+/// implementation would have to redo, with rustls's `ClientConfig` (a
+/// verifier trait object among its fields) not offering a way to do it
+/// completely.
+///
+/// So: a token, drawn from a process-wide counter by
+/// [`TlsConfigId::new_unique`] **once, when the connector is constructed**,
+/// and stored in it. Collisions cannot happen by construction. The cost is
+/// in the other direction — two connectors built from the same
+/// configuration by two separate calls get different identities and will
+/// not share a socket — and that is the direction to be wrong in: less
+/// reuse, never reuse across a trust boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TlsConfigId(u64);
+
+impl TlsConfigId {
+    /// A token distinct from every other one this process has produced.
+    ///
+    /// Call it **once per configuration**, in the constructor, and keep the
+    /// result — an implementation that calls this from `config_id` itself
+    /// would report a different identity on every call and pool nothing at
+    /// all.
+    pub fn new_unique() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // Starts at 1: 0 belongs to `no_tls()` below.
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        // `Relaxed` is enough: nothing is published alongside this counter,
+        // and the only property required of it is that two calls never
+        // return the same value, which `fetch_add` gives on its own
+        // regardless of ordering.
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The identity of a connector that performs no TLS at all ([`NoTls`]).
+    ///
+    /// A constant rather than a fresh token, and truthfully so: every
+    /// `NoTls` makes the same trust decisions, namely none, so they are
+    /// interchangeable in the only sense this type is about. It never
+    /// reaches a pool key in practice — `NoTls::connect` returns an error
+    /// instead of a stream, so there is no connection to key — but the
+    /// method must return something, and returning something arbitrary
+    /// would be a small lie in a type whose whole job is not to lie.
+    pub const fn no_tls() -> Self {
+        Self(0)
+    }
+}
+
 /// A pluggable TLS handshake over an arbitrary transport.
 ///
 /// One method, `connect`, not separate "handshake" and "wrap" steps:
@@ -138,6 +205,24 @@ pub trait TlsConnect {
     fn tls_support(&self) -> TlsSupport {
         TlsSupport::Full
     }
+
+    /// Which trust configuration this connector applies — see
+    /// [`TlsConfigId`].
+    ///
+    /// The answer must be **fixed for this connector's lifetime** and equal
+    /// only to itself: return a [`TlsConfigId::new_unique`] drawn once in
+    /// the constructor and stored, not one drawn here.
+    ///
+    /// # Why this has no default, when [`tls_support`](Self::tls_support) does
+    ///
+    /// `tls_support` is defaulted because getting it wrong understates what
+    /// the transport can do: a capability weaker than the truth, which
+    /// costs a caller an opportunity. Getting *this* wrong hands one
+    /// client's socket to another client's trust configuration. A default
+    /// would let an implementation be wrong by saying nothing, and this is
+    /// not a field to be wrong about by silence — so every implementation
+    /// answers, and adding one is a compile error until it does.
+    fn config_id(&self) -> TlsConfigId;
 }
 
 /// A [`TlsConnect`] that performs no TLS, for a client built without it.
@@ -216,6 +301,12 @@ impl TlsConnect for NoTls {
 
     fn tls_support(&self) -> TlsSupport {
         TlsSupport::None
+    }
+
+    /// See [`TlsConfigId::no_tls`]: every `NoTls` is interchangeable with
+    /// every other, because none of them makes any trust decision at all.
+    fn config_id(&self) -> TlsConfigId {
+        TlsConfigId::no_tls()
     }
 }
 
@@ -319,13 +410,23 @@ mod tests {
     /// something to check in `TlsInfo`, nothing more
     /// (`peer_certificates`/`cipher_suite` stay `None` — honestly, the
     /// stub has no way to produce them).
-    struct NoOpTls;
+    struct NoOpTls(TlsConfigId);
+
+    impl Default for NoOpTls {
+        fn default() -> Self {
+            Self(TlsConfigId::new_unique())
+        }
+    }
 
     impl TlsConnect for NoOpTls {
         type Stream<S>
             = PassThrough<S>
         where
             S: Read + Write + Unpin;
+
+        fn config_id(&self) -> TlsConfigId {
+            self.0
+        }
 
         fn connect<S>(
             &self,
@@ -375,7 +476,8 @@ mod tests {
         let mut io = Loopback::default();
         io.buf.extend(*b"preexisting");
 
-        let fut = NoOpTls.connect(io, req);
+        let tls = NoOpTls::default();
+        let fut = tls.connect(io, req);
         let mut fut = pin!(fut);
         let (mut stream, info) = poll_once(fut.as_mut()).unwrap();
 

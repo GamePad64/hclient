@@ -116,6 +116,66 @@ pub enum CancelSupport {
     Supported,
 }
 
+/// Whether a request may travel over a connection an earlier request
+/// already used, or whether every request opens a socket of its own.
+///
+/// # Why two variants and not three
+///
+/// The v0.2 design document asked for three, on
+/// [`RedirectSupport`]'s precedent: reuse that is ours and configurable,
+/// reuse that belongs to an ambient host and is not ours to control
+/// (`http-ng-fetch`, `http-ng-wasi`), and none. The middle one is not here,
+/// and the reason is a sharper reading of [`RedirectSupport`] than "the
+/// owner differs".
+///
+/// [`RedirectSupport::Internal`] earns its variant because
+/// `check_supported` **refuses** on it: `ClientBuilder::redirect` exists,
+/// it is a portable, client-level setting, and a backend that follows
+/// redirects internally would silently ignore it — so the variant is what
+/// turns a silent no-op into an `UnsupportedCapability`. That is a caller
+/// decision, made by code that can be pointed at.
+///
+/// No such setting exists for reuse. The pool is configured on the
+/// concrete transport that owns it (`http_ng_native::Native::pool`),
+/// because a pool's idle timeout is a property of a connection between
+/// requests and not of any one request — so there is nothing for
+/// `check_supported` to refuse, and a caller holding a generic `T:
+/// Transport` learns nothing actionable from *who* keeps the connection
+/// alive. The question the design document itself named — "are my requests
+/// going over reused connections, because it changes how I batch work" —
+/// is answered by the two variants below, and adding "who owns it" would
+/// re-add exactly the axis [`CancelSupport`] rejected one capability
+/// earlier.
+///
+/// **The condition under which the third variant arrives**, written down
+/// so the next reader does not have to re-derive it: as soon as there is a
+/// portable, client-level pool setting that a host-managed backend would
+/// have to reject, the variant arrives *together with that setting and
+/// with its arm in `check_supported`* — the same order in which
+/// [`RedirectSupport::Transparent`] arrived, once a backend existed that
+/// was being misread without it. Not before: a variant no caller can
+/// branch on is a distinction the capability set has to carry forever for
+/// nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReuseSupport {
+    /// Every request opens a new connection, and closes it when it is done.
+    ///
+    /// The conservative base — [`Capabilities::none()`] returns this — and,
+    /// as with [`CancelSupport::None`], silence and the substantive claim
+    /// coincide: a caller who reads this plans for a handshake per request,
+    /// which is exactly what a backend that never filled the field in will
+    /// give them.
+    None,
+    /// Requests to the same origin may travel over a connection an earlier
+    /// request already used.
+    ///
+    /// Says nothing about *when* one is reused — that depends on what is
+    /// idle at the moment, and no caller can predict it per request. What
+    /// it does promise is the thing a caller batches on: a second request
+    /// to an origin need not pay for a TCP and TLS handshake again.
+    Supported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsSupport {
     None,
@@ -170,6 +230,9 @@ pub struct Capabilities {
     /// [`CancelSupport`] and the contract on
     /// [`Transport::execute`](crate::unversioned::Transport::execute).
     pub cancel_on_drop: CancelSupport,
+    /// Whether a connection is reused across requests — see
+    /// [`ReuseSupport`].
+    pub connection_reuse: ReuseSupport,
     pub tls_config: TlsSupport,
     pub client_certs: bool,
     pub proxy: bool,
@@ -193,6 +256,7 @@ impl Capabilities {
             response_trailers: false,
             redirects: RedirectSupport::None,
             cancel_on_drop: CancelSupport::None,
+            connection_reuse: ReuseSupport::None,
             tls_config: TlsSupport::None,
             client_certs: false,
             proxy: false,
@@ -254,6 +318,7 @@ mod tests {
             response_trailers,
             redirects,
             cancel_on_drop,
+            connection_reuse,
             tls_config,
             client_certs,
             proxy,
@@ -272,6 +337,7 @@ mod tests {
         assert!(!response_trailers);
         assert_eq!(redirects, RedirectSupport::None);
         assert_eq!(cancel_on_drop, CancelSupport::None);
+        assert_eq!(connection_reuse, ReuseSupport::None);
         assert_eq!(tls_config, TlsSupport::None);
         assert!(!client_certs);
         assert!(!proxy);

@@ -20,7 +20,8 @@
 //! not split between "facts" and "probes" for no reason a caller can see.
 
 use http_ng_core::{
-    CancelSupport, Capabilities, RedirectSupport, TimeoutSupport, TlsSupport, UpgradeSupport,
+    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, TlsSupport,
+    UpgradeSupport,
 };
 
 /// Headers that fetch forbids scripts from setting. We **declare** them
@@ -201,6 +202,24 @@ pub(crate) fn probe() -> Capabilities {
     // browser's own verdict on the promise it kept — a `DOMException` named
     // `AbortError`, which is a value nothing on this side can produce.
     c.cancel_on_drop = CancelSupport::Supported;
+    // The browser keeps its own connections alive across `fetch()` calls,
+    // per origin, and has done since HTTP/1.1 — a caller batching work
+    // against one origin is not paying for a handshake per request here.
+    // `ReuseSupport::None` would be a lie in the other direction, and the
+    // rule this project applies is that a default must never be stronger
+    // than the truth, not that it must always be weaker.
+    //
+    // **The one declaration in this whole set with no external observer,
+    // and it is named as such rather than left to look like the others.**
+    // Every other capability here is either measured from outside (see
+    // `tests/transport.rs`) or is a fact about code in this crate. This one
+    // is neither: from inside the sandbox there is no way to see whether
+    // two `fetch()` calls shared a socket — no API exposes it, a server
+    // counting accepted connections cannot be reached from a headless
+    // browser test the way it can from a native one, and nothing in CI
+    // checks it. It rests on the Fetch Standard and on how every engine
+    // implements it, which is good evidence and is not a measurement.
+    c.connection_reuse = ReuseSupport::Supported;
     c.owns_cookie_jar = true;
     c.owns_cache = true;
     // `AbortSignal` is one deadline for the whole exchange; none of the

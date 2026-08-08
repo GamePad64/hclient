@@ -30,7 +30,7 @@ mod hyper_io;
 
 use http_ng_core::{Error, ErrorKind};
 use http_ng_rt::FuturesIo;
-use http_ng_tls::{TlsConnect, TlsInfo, TlsRequest};
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsInfo, TlsRequest};
 use hyper_io::HyperIo;
 
 /// The platform TLS backend.
@@ -42,10 +42,32 @@ use hyper_io::HyperIo;
 /// per-connection by design (version pinning and h2-prior-knowledge need
 /// different lists against the same origin), so a connector has to be built
 /// per `connect` regardless.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct NativeTls {
     identity: Option<native_tls::Identity>,
     roots: Vec<native_tls::Certificate>,
+    /// See [`TlsConfigId`]. Redrawn by every builder method below that
+    /// changes a trust decision, which is what keeps it honest under
+    /// `Clone`: cloning copies a configuration, so the copy is genuinely
+    /// interchangeable with the original and shares its identity — but the
+    /// moment the copy is given a different client certificate or an extra
+    /// root, it stops being interchangeable and stops sharing.
+    config_id: TlsConfigId,
+}
+
+/// Hand-written, not derived: `TlsConfigId` has no `Default` and must not
+/// get one. A default identity would be a constant, and a constant would
+/// make every separately built `NativeTls` in the process claim to be the
+/// same trust configuration — exactly the confusion the type exists to
+/// prevent.
+impl Default for NativeTls {
+    fn default() -> Self {
+        Self {
+            identity: None,
+            roots: Vec::new(),
+            config_id: TlsConfigId::new_unique(),
+        }
+    }
 }
 
 /// Hand-written because neither `native_tls::Identity` nor
@@ -70,6 +92,7 @@ impl NativeTls {
     /// A client certificate, for mutual TLS.
     pub fn identity(mut self, identity: native_tls::Identity) -> Self {
         self.identity = Some(identity);
+        self.config_id = TlsConfigId::new_unique();
         self
     }
 
@@ -78,6 +101,7 @@ impl NativeTls {
     /// this method does not pretend otherwise.
     pub fn add_root_certificate(mut self, cert: native_tls::Certificate) -> Self {
         self.roots.push(cert);
+        self.config_id = TlsConfigId::new_unique();
         self
     }
 }
@@ -87,6 +111,10 @@ impl TlsConnect for NativeTls {
         = FuturesIo<async_native_tls::TlsStream<HyperIo<S>>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    fn config_id(&self) -> TlsConfigId {
+        self.config_id
+    }
 
     async fn connect<S>(
         &self,

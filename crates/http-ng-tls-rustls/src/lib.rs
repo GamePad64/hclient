@@ -18,7 +18,7 @@ mod stream;
 pub use stream::TlsStream;
 
 use http_ng_core::{Error, ErrorKind};
-use http_ng_tls::{TlsConnect, TlsInfo, TlsRequest};
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsInfo, TlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -30,6 +30,16 @@ pub struct Rustls {
     /// request would rebuild the config from scratch, and that's the
     /// most expensive operation in rustls.
     by_alpn: Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>,
+    /// See [`TlsConfigId`]. Drawn once here, in the constructor, and never
+    /// recomputed: everything that decides whether a server is acceptable
+    /// lives in `base`, and `base` is immutable for this value's lifetime.
+    ///
+    /// The per-ALPN clones in `by_alpn` deliberately do NOT get identities
+    /// of their own. They differ from `base` in `alpn_protocols` alone,
+    /// which is not a trust decision — and the protocol spoken on a
+    /// connection is a separate component of the pool key anyway, so the
+    /// distinction is already carried, once, where it belongs.
+    config_id: TlsConfigId,
 }
 
 impl Rustls {
@@ -37,6 +47,7 @@ impl Rustls {
         Self {
             base: cfg,
             by_alpn: Mutex::new(HashMap::new()),
+            config_id: TlsConfigId::new_unique(),
         }
     }
 
@@ -150,6 +161,10 @@ impl TlsConnect for Rustls {
         = TlsStream<S>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    fn config_id(&self) -> TlsConfigId {
+        self.config_id
+    }
 
     async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(TlsStream<S>, TlsInfo), Error>
     where

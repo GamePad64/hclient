@@ -150,7 +150,7 @@ async fn capabilities_are_honest_about_v01_limits() {
     assert!(caps.timeouts.connect);
     assert!(
         !caps.timeouts.first_byte,
-        "there's no pool and no response timer — can't be claimed"
+        "there is no response timer — can't be claimed"
     );
     assert!(
         !caps.timeouts.between_bytes,
@@ -595,6 +595,12 @@ impl http_ng_tls::TlsConnect for NoOpTls {
         = S
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+    /// One stub, one configuration, one identity — drawn once rather than
+    /// per call, which is what `TlsConnect::config_id` requires.
+    fn config_id(&self) -> http_ng_tls::TlsConfigId {
+        static ID: std::sync::OnceLock<http_ng_tls::TlsConfigId> = std::sync::OnceLock::new();
+        *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
+    }
     async fn connect<S>(
         &self,
         io: S,
