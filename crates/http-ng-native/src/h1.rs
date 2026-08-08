@@ -361,12 +361,18 @@ where
         let (Some(conn), Some(reuse)) = (self.conn.take(), self.reuse.take()) else {
             return;
         };
-        // Asked, not assumed: a response carrying `Connection: close`, or
-        // any other reason hyper has decided this connection is finished,
-        // shows up here and keeps it out of the pool.
-        if reuse.sender.is_closed() {
-            return;
-        }
+        // There is deliberately no second check here — no
+        // `sender.is_closed()`, which an earlier draft had. A response that
+        // ends the connection (`Connection: close`, or anything else hyper
+        // reads as final) makes the `Connection` future complete, and
+        // `poll_frame` above clears `reuse` the moment it does, so such a
+        // connection never reaches this function at all
+        // (`tests/pool.rs`'s
+        // `a_connection_the_server_asked_to_close_is_not_reused`). Mutation
+        // testing found the extra check unkillable, which is the honest
+        // signal that it was answering a question already answered: two
+        // places deciding whether a connection is usable is how they come
+        // to disagree.
         reuse.checkin.pool.put(
             reuse.checkin.key,
             Established {

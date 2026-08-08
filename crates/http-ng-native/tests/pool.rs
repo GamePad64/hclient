@@ -49,6 +49,12 @@ struct Behaviour {
     /// Wait before writing the response, so a test has a window in which to
     /// drop something.
     delay: Duration,
+    /// Send `Connection: close` with every response — the polite form of
+    /// the bare close above, and a different code path: the client learns
+    /// from the response itself that this connection is over, so hyper's
+    /// `Connection` future completes rather than the socket simply going
+    /// quiet.
+    connection_close_header: bool,
 }
 
 /// The observer: a server that counts the connections it accepts and can
@@ -96,10 +102,12 @@ fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
         if !behaviour.delay.is_zero() {
             std::thread::sleep(behaviour.delay);
         }
-        if sock
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-            .is_err()
-        {
+        let response: &[u8] = if behaviour.connection_close_header {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+        } else {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+        };
+        if sock.write_all(response).is_err() {
             return;
         }
         served += 1;
@@ -260,6 +268,7 @@ async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
     let (addr, accepted) = counting_server(Behaviour {
         responses_before_close: Some(2),
         delay: Duration::from_millis(200),
+        ..Behaviour::default()
     });
     let client = Client::builder(native()).build().unwrap();
 
@@ -282,6 +291,34 @@ async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
         2,
         "the live connection behind the dead one must have been used, rather \
          than a third connection opened"
+    );
+}
+
+/// A server that says `Connection: close` is believed, and the connection
+/// it said it about is not offered to the next request.
+///
+/// Not the same path as the bare close two tests up, and that is the point
+/// of having both: here the client learns from the response itself, so
+/// hyper's `Connection` future completes during the body rather than the
+/// socket going quiet with nobody watching. `NativeBody::poll_frame` gives
+/// up its check-in the moment that happens, which is the only reason this
+/// connection is not parked — there is deliberately no second check asking
+/// the same question afterwards.
+#[tokio::test]
+async fn a_connection_the_server_asked_to_close_is_not_reused() {
+    let (addr, accepted) = counting_server(Behaviour {
+        connection_close_header: true,
+        ..Behaviour::default()
+    });
+    let client = Client::builder(native()).build().unwrap();
+
+    get_ok(&client, addr).await;
+    get_ok(&client, addr).await;
+
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        2,
+        "a connection the server declared finished must not be handed out again"
     );
 }
 
