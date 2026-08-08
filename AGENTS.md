@@ -188,9 +188,9 @@ forbids `no_std` outright — `src/lib.rs` carries a commented-out
 `compile_error!("`std` feature currently required, support for `no_std` may
 be added later")` — and `http::{Request, Response, HeaderMap, Uri, Method}`
 appear in the public API of seven crates here, including the sans-io
-`http-ng-proto`. `bytes` and `url` are genuine `no_std` + `alloc` crates, so
-two of the four load-bearing dependencies are already there; the other two
-are not, and a feature flag that claimed otherwise would not build.
+`http-ng-proto`. `bytes` is a genuine `no_std` + `alloc` crate, and `url` is
+gone from the graph entirely (see below), so the remaining obstacle is
+`http` itself; a feature flag that claimed otherwise would not build.
 
 For constrained targets that *do* have `std` — static musl binaries, small
 containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
@@ -203,14 +203,28 @@ socket plus hyper, a delegated `wasi:http` exchange, and the browser's
 line, nearer to the native one than `fetch` is. Two things stand in the way:
 
 - **`http` 1.x, external.** The `compile_error!` above.
-- **`url`, ours and removable.** `http-ng-proto` uses it at exactly one
+- **`url`, ours — and now removed.** `http-ng-proto` used it at exactly one
   functional site — `Url::parse().join()` for RFC 3986 reference
-  resolution — and that one call pulls `idna` -> `icu_normalizer` +
+  resolution — and that one call pulled `idna` -> `icu_normalizer` +
   `icu_properties`: measured at 1.9 MB, 1004 KB, 820 KB and 452 KB of
   vendored source, almost all Unicode tables for internationalised domain
   names. On a part with 256-512 KB of flash that is the entire budget, for
-  a feature such a device rarely needs. Even on a desktop it is a large
-  dependency for one URI join.
+  a feature such a device rarely needs.
+
+  `crates/http-ng-proto/src/uri.rs` now implements RFC 3986 §5.2 directly,
+  and `url` has moved to `[dev-dependencies]`, where it is the oracle for
+  `tests/uri_resolution.rs` — a 96-pair differential corpus (all 42 RFC
+  3986 §5.4 reference examples, plus the forms a client actually meets)
+  that pins both implementations' answers and enumerates every place they
+  deliberately differ. IDN survives as the `idn` feature of
+  `http-ng-proto`, forwarded by `http-ng` and **on by default**, so a plain
+  build behaves as before; `--no-default-features` removes `idna` and the
+  ICU crates altogether and turns a non-ASCII host into a typed
+  `UriError::NonAsciiHost` naming the A-label to send instead. Measured
+  `cargo tree -e normal` for `http-ng-proto`: **36 crates with `idn`, 10
+  without**, and no `url` either way. The `idn-feature-is-real` CI job
+  checks all of that, in both directions, and runs the feature-off test
+  suite that `--all-features` cannot reach.
 
 Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
 and WebSocket are v0.2 and later — see
@@ -244,8 +258,9 @@ the transport (`Native`), now under real runtime backends, not just under the
 test busy-spin.
 
 **`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** — the
-`default-transport` feature (`default = []` for `http-ng`, as for every crate
-in the vertical — opt in explicitly). On any non-wasm target it resolves to
+`default-transport` feature (not in `http-ng`'s `default`, as for every
+crate in the vertical — opt in explicitly; `default` carries `idn` alone,
+see the `url` bullet above). On any non-wasm target it resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
 not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves

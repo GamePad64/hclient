@@ -523,9 +523,17 @@ fn a_non_json_body_gets_no_content_type_and_the_callers_headers_go_out() {
 
 /// `wasi-fetch` had `Error::Url(String)`, and the component mapped exactly
 /// that variant to `ActError::invalid_args`. `http-ng` reports an
-/// unparseable URL as `ErrorKind::Other` carrying `http::uri::InvalidUri`,
-/// so the split survives — through `source().is::<..>()` rather than
-/// through `kind()`.
+/// unparseable URL as `ErrorKind::Other` carrying `http_ng::UriError`, so
+/// the split survives — through `source().is::<..>()` rather than through
+/// `kind()`.
+///
+/// Both inputs are here on purpose. `"not a url"` is the original's case
+/// and reaches `UriError::NotAUri`; a non-ASCII host reaches either
+/// `NotAUri` (with the `idn` feature, once IDNA has produced an A-label
+/// the rest of the string still has to parse) or `NonAsciiHost` (without
+/// it). Whichever it is, it is still the caller's argument being wrong,
+/// and a `classify` that matched only the innermost `http::uri::InvalidUri`
+/// would report the second as an `internal` server-side failure.
 #[test]
 fn an_unparseable_url_is_invalid_args() {
     let m = transparent_mock();
@@ -540,6 +548,14 @@ fn an_unparseable_url_is_invalid_args() {
     assert!(
         c.transport().requests().is_empty(),
         "rejected before anything was sent"
+    );
+
+    // `://` with an empty host: unusable whichever way `idn` is set, and
+    // unusable for reasons that have nothing to do with the ASCII range.
+    let err = run(&c, args("https:///no-host"), &mut rec).unwrap_err();
+    assert!(
+        matches!(err, ComponentError::InvalidArgs(_)),
+        "a URL with no host is the caller's fault too: {err:?}"
     );
 }
 

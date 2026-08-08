@@ -15,6 +15,11 @@ http-body      = { workspace = true }
 http-body-util = { workspace = true }
 http-ng-core   = { workspace = true }
 http-ng-dns    = { path = "../http-ng-dns",   version = "0.1.0" }
+# No default features, from `[workspace.dependencies]`: this crate uses
+# `happy_eyeballs` only, and a default-on `idn` here would union back into
+# every build that also contains `http-ng`, turning the facade's `idn`
+# switch into a no-op for exactly the native builds that have
+# `default-transport`.
 http-ng-proto  = { workspace = true }
 http-ng-rt     = { path = "../http-ng-rt",    version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",   version = "0.1.0" }

@@ -59,7 +59,15 @@ pub use http_ng_core::{
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;
+// Every URL this client is handed becomes an `http::Uri` through
+// `http_ng_proto::uri`, and every way that can fail — a base that is
+// not a base, a host `http::Uri` will not hold, a non-ASCII host in a
+// build without the `idn` feature — arrives at the caller as this type,
+// as the `source()` of an `ErrorKind::Other`. It is re-exported for the
+// same reason `InvalidBaseUrl` is: a caller has to be able to name it to
+// tell "the URL you gave me is wrong" apart from every other `Other`.
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
+pub use http_ng_proto::uri::UriError;
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
 pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};

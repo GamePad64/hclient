@@ -17,7 +17,13 @@ futures-core   = { version = "0.3", default-features = false }
 url            = "2.5"
 proptest       = "1"
 
-http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0" }
+# `default-features = false`: `http-ng-proto`'s own default is `idn`, and
+# cargo forbids a member from overriding a workspace dependency's
+# `default-features` back to false. Consumers opt in by name instead —
+# `http-ng` forwards it as its own `idn` feature, which is where a consumer
+# of the facade can switch it off. Building `http-ng-proto` on its own
+# still gets `idn`, since that is its own default.
+http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0", default-features = false }
 http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
 http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
 thiserror     = "2"

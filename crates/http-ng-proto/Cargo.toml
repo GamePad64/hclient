@@ -7,14 +7,52 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["idn"]
+# Internationalised domain names: `uri::parse` converts a non-ASCII host to
+# its A-label form (punycode) instead of refusing it. ON by default,
+# because this is what the client did before `url` was removed — but a
+# feature, because it is the entire weight of the dependency graph this
+# crate used to carry unconditionally.
+#
+# Turning it off removes `idna`, `icu_normalizer`, `icu_properties` and
+# their data crates from the build ENTIRELY (`cargo tree -p http-ng-proto
+# -e normal --no-default-features` has none of them), and a non-ASCII host
+# becomes `uri::UriError::NonAsciiHost`, which names the cause and tells
+# the caller to supply the A-label itself.
+#
+# There is no middle setting. `idna`'s own `compiled_data` feature cannot
+# be turned off in isolation: `idna_adapter` (the back end `idna` reaches
+# Unicode through) has exactly one feature, `compiled_data`, and without it
+# the adapter does not compile at all — its whole body calls the
+# `compiled_data`-gated `*Borrowed::new()` constructors. The alternative
+# back ends `idna_adapter` documents are chosen by PINNING A VERSION in the
+# top-level `Cargo.lock` (1.1.x = unicode-rs, "binary size larger"; 1.0.x =
+# a stub with no Unicode data at all), which is an application's decision
+# to make in its own lock file, not something a library can express.
+idn = ["dep:idna"]
+
 [dependencies]
 bytes = { workspace = true }
 http  = { workspace = true }
-url   = { workspace = true }
 thiserror = { workspace = true }
+# Only under the `idn` feature, and deliberately `default-features = false`
+# plus an explicit `std`/`compiled_data`: the default set is the same two,
+# but naming them keeps a future change to `idna`'s defaults from silently
+# changing what this crate pulls in.
+idna  = { version = "1.1", optional = true, default-features = false, features = ["std", "compiled_data"] }
 
+# `url` is a DEV-dependency only, and deliberately so: it is the incumbent
+# implementation of `uri::resolve_reference` and the only oracle the
+# hand-written replacement has. `tests/uri_resolution.rs` runs both over the
+# same corpus. It is not in `[dependencies]`, so it reaches no downstream
+# build — `cargo tree -p http-ng-proto -e normal` contains no `url` at all,
+# with or without `idn`.
 [dev-dependencies]
 proptest = { workspace = true }
+url      = { workspace = true }
+rstest   = { workspace = true }
+assert_matches = { workspace = true }
 
 [lints]
 workspace = true

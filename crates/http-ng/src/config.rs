@@ -79,18 +79,31 @@ pub struct InvalidBaseUrl {
 /// `timeouts` (B1).
 pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http::Uri, Error> {
     let Some(base) = base else {
-        return url
-            .parse::<http::Uri>()
-            .map_err(|e| Error::new(ErrorKind::Other, e));
+        // `http_ng_proto::uri::parse`, NOT `url.parse::<http::Uri>()`.
+        // That difference is the whole of the IDN inconsistency this
+        // client used to have: `http::Uri` rejects a non-ASCII authority,
+        // so `client.get("https://münchen.de/x")` failed here and
+        // succeeded through the branch below, where `url::Url` punycoded
+        // it. The conversion now lives at one boundary, in the sans-io
+        // crate every backend shares.
+        return http_ng_proto::uri::parse(url).map_err(|e| Error::new(ErrorKind::Other, e));
     };
-    http_ng_proto::uri::resolve_reference(base, url).ok_or_else(|| {
-        Error::new(
+    http_ng_proto::uri::resolve_reference(base, url).map_err(|e| match e {
+        // "This base cannot be a base" is the setting's own problem, and
+        // the only failure that can name both sides usefully.
+        http_ng_proto::uri::UriError::UnusableBase { .. } => Error::new(
             ErrorKind::Other,
             InvalidBaseUrl {
                 base: base.clone(),
                 requested: url.to_owned(),
             },
-        )
+        ),
+        // Everything else is about the reference, and `InvalidBaseUrl`'s
+        // "a base URL must be absolute" would be a lie about it — a
+        // non-ASCII host in a build without the `idn` feature most of all,
+        // where the error is the only place the caller learns to send an
+        // A-label.
+        other => Error::new(ErrorKind::Other, other),
     })
 }
 

@@ -8,7 +8,17 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["idn"]
+# Internationalised domain names, forwarded to `http-ng-proto`, where the
+# conversion lives (`uri::parse`) so that every backend gets the same
+# behaviour without going through this facade. ON by default: it is what
+# the client did before the `url` dependency was removed, and turning it
+# off is what removes `idna` + the ICU data crates from the build
+# entirely. With it off, `client.get("https://münchen.de/x")` is a typed
+# `UriError::NonAsciiHost` telling the caller to pass
+# `https://xn--mnchen-3ya.de/x` instead — not `http`'s bare "invalid uri
+# character".
+idn = ["http-ng-proto/idn"]
 # Mock transport for consumer tests. Re-exports `http-ng-mock`, which
 # depends on `http-ng-core` alone — a transport author should take that
 # crate directly rather than pulling this facade in to reach it.
@@ -50,6 +60,11 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
 http-ng-mock  = { workspace = true, optional = true }
+# No default features (that is set in `[workspace.dependencies]`): the
+# `idn` feature above is what turns IDN back on, and it is in this crate's
+# `default`, so a plain `http-ng` dependency behaves as it always did while
+# a consumer with `default-features = false` gets neither `idna` nor the
+# ICU data crates.
 http-ng-proto = { workspace = true }
 # Only for `Collected::json`, behind the `json` feature (see `[features]`
 # above). Not in `[workspace.dependencies]`: nothing else in the vertical
