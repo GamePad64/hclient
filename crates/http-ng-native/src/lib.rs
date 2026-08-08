@@ -466,7 +466,23 @@ pub mod testing {
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(self.get_mut().0.shutdown(std::net::Shutdown::Both))
+            // `NotConnected` is success, not failure. On macOS and the BSDs
+            // `shutdown(2)` on a socket whose peer has already closed
+            // returns `ENOTCONN` (errno 57); Windows answers `WSAENOTCONN`.
+            // Linux does not, which is why this only ever appeared on real
+            // CI: the first run on `macos-latest` failed both of the tests
+            // that prove the seam works without spawn, with
+            // `hyper::Error(Shutdown, Os { code: 57, kind: NotConnected })`,
+            // while every local Linux run had been green.
+            //
+            // Swallowing it is correct rather than lenient: the call asked
+            // for the socket to be shut down, and it is. Any other error
+            // still propagates.
+            let r = self.get_mut().0.shutdown(std::net::Shutdown::Both);
+            std::task::Poll::Ready(match r {
+                Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+                other => other,
+            })
         }
     }
 
