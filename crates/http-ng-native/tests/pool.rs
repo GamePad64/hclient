@@ -41,11 +41,11 @@ const BOUND: Duration = Duration::from_secs(30);
 /// What the fixture server does, beyond answering.
 #[derive(Clone, Copy, Default)]
 struct Behaviour {
-    /// Close the connection after each response, the way a server whose
-    /// keep-alive budget has run out does. Note this is a bare close —
-    /// there is no `Connection: close` header — so the client cannot learn
-    /// about it from the response it already has.
-    close_after_response: bool,
+    /// Close the connection once it has served this many responses, the
+    /// way a server whose keep-alive budget has run out does. Note this is
+    /// a bare close — there is no `Connection: close` header — so the
+    /// client cannot learn about it from the response it already has.
+    responses_before_close: Option<usize>,
     /// Wait before writing the response, so a test has a window in which to
     /// drop something.
     delay: Duration,
@@ -78,6 +78,7 @@ fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
         .expect("set_read_timeout");
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
+    let mut served = 0usize;
     loop {
         // A request head ends at the first blank line. Every request this
         // file sends is a bodyless GET, so that is the whole request.
@@ -101,7 +102,8 @@ fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
         {
             return;
         }
-        if behaviour.close_after_response {
+        served += 1;
+        if Some(served) == behaviour.responses_before_close {
             return;
         }
     }
@@ -215,7 +217,7 @@ async fn a_connection_past_its_idle_timeout_is_not_reused() {
 #[tokio::test]
 async fn a_connection_the_server_closed_while_idle_is_not_handed_out() {
     let (addr, accepted) = counting_server(Behaviour {
-        close_after_response: true,
+        responses_before_close: Some(1),
         ..Behaviour::default()
     });
     let client = Client::builder(native()).build().unwrap();
@@ -231,6 +233,55 @@ async fn a_connection_the_server_closed_while_idle_is_not_handed_out() {
         accepted.load(Ordering::SeqCst),
         2,
         "the second request must be on a new connection, and must succeed"
+    );
+}
+
+/// What the poll at checkout is for, as distinct from the look
+/// `h1::exchange` takes one instant later.
+///
+/// Both notice a connection the server closed while nobody was watching,
+/// and for a pool holding a single connection they are interchangeable —
+/// the request would be handed over, come straight back, and go out on a
+/// fresh connection. What only the checkout poll can do is **move on to the
+/// next candidate**: it runs before the request is committed to any one
+/// connection, so a dead entry costs a look rather than the whole pool.
+///
+/// The fixture arranges exactly that: two connections parked, the one that
+/// would be tried first (most recently used) already closed by the server,
+/// and a live one behind it. Reusing that live one means the server never
+/// accepts a third connection. Without the checkout poll the dead one is
+/// handed the request, hands it back, and a third connection is opened
+/// while the live one stays parked, unused.
+#[tokio::test]
+async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
+    // Each connection is closed by the server after its SECOND response,
+    // which is what lets the test decide which of the two parked
+    // connections is the dead one.
+    let (addr, accepted) = counting_server(Behaviour {
+        responses_before_close: Some(2),
+        delay: Duration::from_millis(200),
+    });
+    let client = Client::builder(native()).build().unwrap();
+
+    // Two connections, both parked, both having served one request. The
+    // delay is what keeps them concurrent, so neither can serve both.
+    let (a, b) = tokio::join!(get_ok(&client, addr), get_ok(&client, addr));
+    let _ = (a, b);
+    assert_eq!(accepted.load(Ordering::SeqCst), 2, "two, not one");
+
+    // One more request takes the most recently parked connection and gives
+    // it its second response — after which the server closes it. It is
+    // parked again, on top, still looking fine from here.
+    get_ok(&client, addr).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    get_ok(&client, addr).await;
+
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        2,
+        "the live connection behind the dead one must have been used, rather \
+         than a third connection opened"
     );
 }
 
@@ -478,7 +529,7 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
 #[tokio::test]
 async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
     let (addr, accepted) = counting_server(Behaviour {
-        close_after_response: true,
+        responses_before_close: Some(1),
         ..Behaviour::default()
     });
     let transport = Native::new(
