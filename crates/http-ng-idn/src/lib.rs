@@ -22,28 +22,31 @@
 //!
 //! | build | binary | `.rodata` | crates |
 //! |---|---|---|---|
-//! | `bundled` — `idna` on ICU4X, the default | 448,936 B | 129,144 B | 34 |
-//! | `bundled` with `idna_adapter` pinned to 1.1.0 (unicode-rs) | 578,008 B | 258,296 B | **18** |
-//! | `system-icu` | **306,504 B** | **23,824 B** | **10** |
+//! | `idna` called directly — the incumbent, what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
+//! | the same, with `idna_adapter` pinned to 1.1.0 (unicode-rs) | 577,112 B | 257,936 B | **11** |
+//! | this crate, default, on a target with a system ICU | **306,568 B** | **23,864 B** | **10** |
 //!
 //! **The middle row is why this crate justifies itself on data rather
 //! than on crate count.** Pinning `idna_adapter` to the unicode-rs
 //! backend is one `cargo update`, needs no code, no `unsafe` and no new
-//! crate, and it halves the graph — 34 crates to 18. It is a real answer
-//! to "36 crates with `idn`, 10 without", which is how this project has
-//! usually stated the problem. What it does not do is remove any Unicode
-//! data: it **doubles** it, 129 KiB of `.rodata` to 258 KiB.
+//! crate, and it collapses the graph. It is a real answer to "36 crates
+//! with `idn`, 10 without", which is how this project has usually stated
+//! the problem. What it does not do is remove any Unicode data: it
+//! **doubles** it, 129 KiB of `.rodata` to 258 KiB — and it buys those
+//! crates with a Unicode version *behind* ICU4X's, which for IDN means a
+//! different host, not a cosmetic difference. It was rejected here for
+//! exactly that reason.
 //!
-//! So the two are not competing solutions to one problem. The pin trades
-//! bytes for crates. This crate removes the bytes: **105.3 KiB of
-//! `.rodata` and 139.7 KiB of binary**, because the tables it uses are
-//! already on the machine. On a 256 KB part that is the difference
-//! between half the flash and none of it — which is the claim worth
-//! making, and "1.9 MB" was not it.
+//! So the two were never competing solutions to one problem. The pin
+//! trades bytes, and correctness, for crates. This crate removes the
+//! bytes: **102.5 KiB of `.rodata` and 138.3 KiB of binary**, because the
+//! tables it uses are already on the machine — and it gets the crate
+//! count as well, 31 down to 10. On a 256 KB part that is the difference
+//! between half the flash and none of it, which is the claim worth
+//! making. "1.9 MB" was not it.
 //!
-//! Enabling both features costs about 8 KiB over `bundled` alone and
-//! still uses ICU where there is one: the safe setting, and not the one
-//! that saves anything.
+//! Those are the two backends, and a build has exactly one of them —
+//! chosen by target, not by a flag (see *Features* below).
 //!
 //! # The contract: this is `idna::domain_to_ascii_cow(_, AsciiDenyList::URL)`
 //!
@@ -66,7 +69,7 @@
 //! Every one of those seven has to be reproduced on the platform side, and
 //! only two of them are ICU *options*. The rest are [`IGNORED_ERRORS`] and
 //! [`is_forbidden_domain_byte`] below — safe Rust with tests around it,
-//! deliberately kept out of the file that carries the `unsafe`.
+//! deliberately kept out of the files that carry the `unsafe`.
 //!
 //! # The trap, measured rather than reasoned about
 //!
@@ -95,21 +98,32 @@
 //!
 //! # Which platform, and what it costs
 //!
-//! Behind the `system-icu` feature, and resolved at run time:
+//! Two backends, and they are not the same shape — because the two
+//! platforms differ in the one thing that matters, whether there is a
+//! stable symbol to link against:
 //!
-//! - **Windows** — `icu.dll` (the combined library, Windows 10 1903+),
-//!   then `icuuc.dll` (1703+). Windows' ICU is built with
-//!   `U_DISABLE_RENAMING`, so its exports are *unsuffixed* — a
-//!   correction to this project's own design note, which said otherwise.
-//!   They are still resolved at run time rather than linked, so that a
-//!   Windows without ICU falls back instead of failing to start; see
-//!   `icu.rs` for why that rules out `windows-sys`, which declares the
-//!   whole surface but as a load-time import.
-//! - **Linux and other ELF unixes** — `libicuuc.so.NN`, if one happens to
-//!   be installed. No distribution guarantees it, which is why the feature
-//!   is opt-in and why a miss falls back rather than failing. It is also
-//!   what makes this crate's central claim *testable on a Linux CI runner*
-//!   instead of only on Windows.
+//! - **Windows** — `icuuc.dll`, **linked** through `windows-sys`, whose
+//!   `Win32_Globalization` already declares `uidna_openUTS46`,
+//!   `uidna_nameToASCII_UTF8`, `uidna_close`, `UIDNAInfo` and every
+//!   `UIDNA_*` constant, generated from Microsoft's Win32 metadata. So
+//!   nothing is transcribed by hand here and `src/icu/windows.rs` has no
+//!   `extern` block at all. This works because Windows' ICU is built with
+//!   `U_DISABLE_RENAMING` and its exports are *unsuffixed* — a correction
+//!   to this project's own design note, which said the opposite; that is
+//!   a fact about Linux.
+//!
+//!   The cost is real and is not hedged: `windows-link` emits a
+//!   `raw-dylib` **load-time** import, so a Windows without `icuuc.dll` —
+//!   10 before 1703, and Server 2016 — does not fall back, the process
+//!   fails to start. The floor is therefore **Windows 10 1703 / Server
+//!   2019**, stated rather than degraded to.
+//! - **Linux and other ELF unixes** — `libicuuc.so.NN`, **resolved at run
+//!   time**, because here the symbols *and* the soname carry the version
+//!   (`uidna_openUTS46_78`) and there is nothing stable to link. Having to
+//!   do that buys the graceful behaviour the Windows side gives up: a
+//!   machine with no ICU gets an ordinary miss. It is also what makes this
+//!   crate's central claim *testable on a Linux CI runner* rather than
+//!   only on Windows.
 //! - **macOS — not attempted, and neither of the two obvious reasons is
 //!   the real one.** It is *not* that macOS has no public API: this
 //!   crate's first draft said so, following `docs/v02-design.md`, and it
@@ -167,10 +181,25 @@
 //!
 //! | features | behaviour |
 //! |---|---|
-//! | `bundled` (default) | the `idna` crate, i.e. today's behaviour byte for byte |
-//! | `bundled` + `system-icu` | both run on **every call** and must agree; a disagreement is [`IdnError::Disagreement`]. Tables still in the build, so this saves nothing — it buys certainty |
-//! | `system-icu` alone | **no `idna` in the graph at all** — the build this crate exists for; a platform with no ICU answers [`IdnError::NoImplementation`] |
+//! | `platform` (default) | **resolved by target**: the platform's ICU on Windows and ELF unixes, the `idna` crate on macOS, wasm and anything else |
+//! | `bundled` | the `idna` crate explicitly, on a target that has no system ICU; a compile error naming the target on one that does |
+//! | `system-icu` | the platform's ICU explicitly, on a target that has one; a compile error naming the target on one that does not |
 //! | neither | a `compile_error!`, not a silently useless crate |
+//!
+//! The two backends are **never both compiled in**, and that is a
+//! consequence rather than a preference: cargo features are
+//! target-independent while dependencies are not, so the target tables in
+//! `Cargo.toml` are the only place the choice can vary — and a table
+//! either supplies `idna` for this target or does not. Asking for the
+//! backend this target has no dependency for is a `cargo::error` from
+//! `build.rs` naming the target, not a feature that silently does
+//! nothing.
+//!
+//! **Comparing the two therefore happens in the tests, not at run time.**
+//! `idna` is a dev-dependency, so `tests/differential.rs` can call it
+//! directly as the oracle on exactly the targets where it is *not* a
+//! normal dependency — which is the only place the comparison is worth
+//! making.
 //!
 //! # The risk that is left, named rather than buried
 //!
@@ -182,25 +211,36 @@
 //! by upgrading the OS rather than by choosing the wrong API, which makes
 //! it harder to see, not easier.
 //!
-//! What each build does about it, plainly:
+//! **There is no run-time cross-check, and it is worth saying why not**,
+//! because comparing the two on every call was the first answer and it is
+//! the obvious one. It cannot be built: the two backends are never both
+//! compiled in (above), so on a target with a system ICU there is nothing
+//! to compare against without putting the tables back — which is the
+//! entire cost the crate exists to avoid. Paying it to detect a
+//! disagreement would mean never getting the saving that makes the
+//! disagreement worth detecting.
 //!
-//! - **`bundled` + `system-icu`** — both answers are computed and
-//!   compared on every call, and a difference is an error naming both.
-//!   The second implementation is already linked in, so the check costs
-//!   one extra conversion and nothing in size. This is the configuration
-//!   to use when being wrong is worse than being slow.
-//! - **`system-icu` alone** — there is no second opinion, by construction:
-//!   removing it is the point. The load-time acceptance probe in `icu.rs`
-//!   rejects a library that gets the transitional pair wrong, so a
-//!   *badly configured* ICU is caught — but that is a behaviour floor,
-//!   **not a Unicode-version floor**, and this crate does not claim one.
+//! What guards the gap instead, in order of strength:
+//!
+//! - **The corpus, per platform, in CI.** `tests/differential.rs` runs
+//!   the platform backend against `idna` — a dev-dependency, so it is
+//!   there on exactly the targets where the tables are not — and pins
+//!   both answers on all 32 rows. A divergence is a red build on the
+//!   platform that has it, which is where the answer differs.
+//! - **The load-time acceptance probe** in `icu.rs`: a library that does
+//!   not answer the transitional pair correctly is not used at all, and
+//!   the crate reports `Backend::None` rather than a wrong host. That
+//!   catches a badly configured or badly resolved ICU. It is a behaviour
+//!   floor, **not a Unicode-version floor**, and this crate does not
+//!   claim one.
 //!
 //! A real version floor is **unverified**: establishing which inputs
 //! discriminate ICU 74 from ICU 78 needs several ICU majors to test
 //! against, and only 78.2 was available here. What would settle it: run
 //! `tests/differential.rs` against a matrix of container images pinned to
 //! different `libicu` versions, and promote whatever rows move into the
-//! acceptance probe.
+//! acceptance probe — at which point the probe becomes a version floor
+//! and this paragraph can be deleted.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // `deny`, not `forbid`, and only since spec amendment C9: `forbid` cannot
@@ -215,10 +255,10 @@
 
 use std::borrow::Cow;
 
-#[cfg(feature = "system-icu")]
+#[cfg(icu_backend)]
 mod icu;
 
-#[cfg(not(any(feature = "bundled", feature = "system-icu")))]
+#[cfg(not(any(idna_backend, icu_backend)))]
 compile_error!(
     "http-ng-idn needs at least one backend: `bundled` (the `idna` crate, the default) or \
      `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` could only \
@@ -258,33 +298,6 @@ pub enum IdnError {
         /// The domain, as given.
         domain: String,
     },
-    /// **The two implementations in this build do not agree where this
-    /// name points.** Only reachable with `bundled` and `system-icu` both
-    /// on, which is the only configuration that has a second opinion to
-    /// consult.
-    ///
-    /// This is not a defensive nicety. IDN decides *which host is
-    /// contacted*, and the platform's ICU tracks the operating system's
-    /// Unicode version while the bundled tables track this crate's. A
-    /// machine a Unicode release behind resolves some names to a
-    /// different destination — the same defect class as `IdnToAscii`'s
-    /// IDNA2003, but arriving dynamically and invisibly, because the ICU
-    /// version changes when the OS does. Picking a side quietly would be
-    /// the worst available answer, so neither is picked.
-    #[error(
-        "`{domain}` is converted differently by the two IDN implementations in this build: \
-         the platform's ICU says {platform}, the bundled `idna` says {bundled}. They disagree \
-         about which host this name points at, so neither answer is used. This usually means \
-         the system ICU is on a different Unicode version than the bundled tables"
-    )]
-    Disagreement {
-        /// The domain, as given.
-        domain: String,
-        /// What the platform's ICU answered, rendered for a human.
-        platform: String,
-        /// What the bundled `idna` answered, rendered for a human.
-        bundled: String,
-    },
 }
 
 /// Which implementation [`domain_to_ascii`] actually calls in this
@@ -306,12 +319,6 @@ pub enum Backend {
     /// guard, and it is a behaviour floor rather than a Unicode-version
     /// floor.
     SystemIcu,
-    /// The platform's ICU **and** the bundled `idna`, both run on every
-    /// call, with a disagreement reported as [`IdnError::Disagreement`]
-    /// rather than resolved. This is what `bundled` + `system-icu` means.
-    /// The second conversion is close to free there, because both
-    /// implementations are linked in either way.
-    SystemIcuCheckedAgainstBundled,
     /// The bundled `idna` crate and its Unicode tables.
     Bundled,
     /// Neither: `system-icu` without `bundled`, on a machine with no ICU.
@@ -481,15 +488,9 @@ pub const fn is_forbidden_domain_byte(b: u8) -> bool {
 /// can run here — see [`Backend`].
 pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     match backend() {
-        #[cfg(all(feature = "system-icu", not(feature = "bundled")))]
+        #[cfg(icu_backend)]
         Backend::SystemIcu => system_icu_to_ascii(domain),
-        #[cfg(all(feature = "system-icu", feature = "bundled"))]
-        Backend::SystemIcuCheckedAgainstBundled => reconcile(
-            domain,
-            system_icu_to_ascii(domain),
-            bundled_to_ascii(domain),
-        ),
-        #[cfg(feature = "bundled")]
+        #[cfg(idna_backend)]
         Backend::Bundled => bundled_to_ascii(domain),
         Backend::None => Err(IdnError::NoImplementation {
             domain: domain.to_owned(),
@@ -503,64 +504,25 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     }
 }
 
-/// What to do when both implementations have answered.
-///
-/// **A pure function of the two answers**, deliberately: it is the whole
-/// policy for the one situation nobody can test on demand — a system ICU
-/// that disagrees with the bundled tables — and a policy that can only be
-/// exercised by owning the wrong machine is a policy nobody has checked.
-/// Written this way it has four cases and a test for each, the same
-/// reason `http-ng-dns-system` keeps `sys::classify_written` outside its
-/// FFI module.
-///
-/// Both rejecting counts as agreement: they agree the name is unusable,
-/// and which of them said so first is not information anyone can act on.
-#[cfg(all(feature = "system-icu", feature = "bundled"))]
-fn reconcile<'a>(
-    domain: &str,
-    platform: Result<Cow<'a, str>, IdnError>,
-    bundled: Result<Cow<'a, str>, IdnError>,
-) -> Result<Cow<'a, str>, IdnError> {
-    fn render(r: &Result<Cow<'_, str>, IdnError>) -> String {
-        match r {
-            Ok(a) => format!("`{a}`"),
-            Err(_) => "that it is not a usable name".to_owned(),
-        }
-    }
-    match (&platform, &bundled) {
-        (Ok(p), Ok(b)) if p == b => platform,
-        (Err(_), Err(_)) => platform,
-        _ => Err(IdnError::Disagreement {
-            domain: domain.to_owned(),
-            platform: render(&platform),
-            bundled: render(&bundled),
-        }),
-    }
-}
-
 /// Which implementation answers in this process — see [`Backend`].
 ///
 /// Cheap after the first call: the library search behind `system-icu`
 /// happens once, in a `OnceLock`.
 #[must_use]
 pub fn backend() -> Backend {
-    #[cfg(all(feature = "system-icu", feature = "bundled"))]
-    if icu::library().is_some() {
-        return Backend::SystemIcuCheckedAgainstBundled;
-    }
-    #[cfg(all(feature = "system-icu", not(feature = "bundled")))]
+    #[cfg(icu_backend)]
     if icu::library().is_some() {
         return Backend::SystemIcu;
     }
-    #[cfg(feature = "bundled")]
+    #[cfg(idna_backend)]
     return Backend::Bundled;
-    #[cfg(not(feature = "bundled"))]
+    #[cfg(not(idna_backend))]
     Backend::None
 }
 
 /// The bundled path: the exact call `http-ng-proto` makes today, so
 /// enabling `bundled` alone changes nothing at all.
-#[cfg(feature = "bundled")]
+#[cfg(idna_backend)]
 fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL).map_err(|_| {
         IdnError::NotAnIdn {
@@ -590,7 +552,7 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// *produces* a denied character from one that is not — U+FF0F FULLWIDTH
 /// SOLIDUS maps to `/`, U+FF03 to `#`, and neither is an ASCII byte on
 /// the way in. Removing it kills two corpus rows.
-#[cfg(feature = "system-icu")]
+#[cfg(icu_backend)]
 fn system_icu_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     let reject = || IdnError::NotAnIdn {
         domain: domain.to_owned(),
@@ -618,7 +580,7 @@ pub mod testing {
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].
-    #[cfg(feature = "bundled")]
+    #[cfg(idna_backend)]
     pub fn bundled(domain: &str) -> Result<Cow<'_, str>, IdnError> {
         super::bundled_to_ascii(domain)
     }
@@ -629,7 +591,7 @@ pub mod testing {
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].
-    #[cfg(feature = "system-icu")]
+    #[cfg(icu_backend)]
     pub fn system_icu(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
         super::icu::library()?;
         Some(super::system_icu_to_ascii(domain))
@@ -637,10 +599,10 @@ pub mod testing {
 
     /// The file name of the library the platform path is using, for a
     /// report that says *which* ICU answered rather than "an ICU".
-    #[cfg(feature = "system-icu")]
+    #[cfg(icu_backend)]
     #[must_use]
     pub fn system_icu_library() -> Option<&'static str> {
-        super::icu::library().map(super::icu::Library::name)
+        super::icu::library_name()
     }
 
     /// Re-exported so a test can assert the selected backend without
@@ -747,71 +709,7 @@ mod tests {
         }
     }
 
-    /// The four cases of a two-implementation build, including the one
-    /// that needs a machine nobody here has: a system ICU on a different
-    /// Unicode version. `reconcile` is a pure function precisely so that
-    /// case is reachable from a test rather than only from a bug report.
-    #[cfg(all(feature = "system-icu", feature = "bundled"))]
-    #[rstest::rstest]
-    // Both convert, and to the same name: the ordinary case.
-    #[case(
-        Ok("xn--mnchen-3ya.de"),
-        Ok("xn--mnchen-3ya.de"),
-        Some("xn--mnchen-3ya.de")
-    )]
-    // Both refuse: agreement, and the name is unusable.
-    #[case(Err(()), Err(()), None)]
-    // The case this exists for — one Unicode version apart, so the two
-    // point at DIFFERENT HOSTS. Neither answer may be used.
-    #[case(Ok("xn--strae-oqa.de"), Ok("strasse.de"), None)]
-    // One converts, the other refuses: still a disagreement, and still
-    // not something to resolve by preferring whichever said yes.
-    #[case(Ok("xn--mnchen-3ya.de"), Err(()), None)]
-    #[case(Err(()), Ok("xn--mnchen-3ya.de"), None)]
-    fn a_disagreement_between_the_two_implementations_is_an_error_not_a_choice(
-        #[case] platform: Result<&str, ()>,
-        #[case] bundled: Result<&str, ()>,
-        #[case] want: Option<&str>,
-    ) {
-        let lift = |r: Result<&str, ()>| {
-            r.map(|s| Cow::Owned(s.to_owned()))
-                .map_err(|()| IdnError::NotAnIdn {
-                    domain: "d".to_owned(),
-                })
-        };
-        let got = reconcile("d", lift(platform), lift(bundled));
-        match (got, want) {
-            (Ok(a), Some(w)) => assert_eq!(a, w),
-            (Err(IdnError::Disagreement { .. }), None) if platform != bundled => {}
-            (Err(IdnError::NotAnIdn { .. }), None) => {
-                assert!(
-                    platform.is_err() && bundled.is_err(),
-                    "both must have refused"
-                );
-            }
-            (got, want) => panic!("reconcile gave {got:?}, wanted {want:?}"),
-        }
-    }
-
-    /// The error names both answers. A disagreement that said only "they
-    /// disagree" would leave the reader unable to tell which host was
-    /// about to be contacted, which is the only thing worth knowing.
-    #[cfg(all(feature = "system-icu", feature = "bundled"))]
-    #[test]
-    fn the_disagreement_error_names_both_answers() {
-        let err = reconcile(
-            "straße.de",
-            Ok(Cow::Borrowed("xn--strae-oqa.de")),
-            Ok(Cow::Borrowed("strasse.de")),
-        )
-        .unwrap_err();
-        let text = err.to_string();
-        for needle in ["straße.de", "xn--strae-oqa.de", "strasse.de"] {
-            assert!(text.contains(needle), "{needle:?} missing from: {text}");
-        }
-    }
-
-    #[cfg(feature = "bundled")]
+    #[cfg(idna_backend)]
     #[test]
     fn the_bundled_path_is_the_call_http_ng_proto_makes_today() {
         assert_eq!(bundled_to_ascii("münchen.de").unwrap(), "xn--mnchen-3ya.de");

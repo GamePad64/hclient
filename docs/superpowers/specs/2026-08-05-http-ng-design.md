@@ -1208,7 +1208,8 @@ amendment-CN`, checked by its own CI job (`no-unsafe-code`). Those are **C7**
 (`http-ng-fetch/src/promise.rs`), **C8**
 (`http-ng-dns-system/src/sys/res_query.rs` and
 `http-ng-dns-system/src/sys/windows.rs`) and **C9**
-(`http-ng-idn/src/icu.rs`), and the two families are never
+(`http-ng-idn/src/icu/elf.rs` and `http-ng-idn/src/icu/windows.rs`), and
+the two families are never
 interchangeable: each job matches only its own token, and each
 `unsafe-code-exception` marker is additionally pinned to the file paths its
 amendment names.
@@ -2030,16 +2031,18 @@ refusal into an empty result, reading the additional section instead of the
 answer section, each of the four header-classification bounds, and both
 `classify_written` bounds.
 
-### C9. `unsafe` for the platform's UTS 46, in `http-ng-idn/src/icu.rs` alone
+### C9. `unsafe` for the platform's UTS 46, in the two files this amendment names
 
 The third exception to "no crate writes `unsafe`", and the second at a
 foreign-function boundary. It reuses C8's mechanism verbatim —
 `#![deny(unsafe_code)]` in place of `forbid` for one crate, a per-line
 `unsafe-code-exception` marker, and a CI check that path-scopes that marker to
 the one file this amendment names — under its own token
-`unsafe-code-exception: amendment-C9`, for **`crates/http-ng-idn/src/icu.rs`
-and nothing else**. `lib.rs` in the same crate is deliberately not among them,
-and neither is a directory.
+`unsafe-code-exception: amendment-C9`, for **`crates/http-ng-idn/src/icu/elf.rs`
+and `crates/http-ng-idn/src/icu/windows.rs`, and nothing else** — one file
+per platform backend, exactly as C8 names one per platform. `icu/mod.rs`
+sitting between them is deliberately not among them, and neither is
+`lib.rs`, and neither is a directory.
 
 **Why the platform's UTS 46 cannot be reached in safe Rust.** Not because
 nobody has wrapped ICU — because nobody has wrapped *this part* of it.
@@ -2071,14 +2074,29 @@ So the alternative to declaring three foreign functions is not "the same thing
 in safe Rust" — it is carrying 1.9 MB of Unicode tables on every target that
 already ships them.
 
-**Why it must be resolved at run time, which is what forces `unsafe` rather
-than a `#[link]`.** ICU's exported symbols are version-suffixed:
-`uidna_openUTS46_78` on this development machine (`nm -D --defined-only
-/usr/lib/x86_64-linux-gnu/libicuuc.so.78`), `_74` on the next machine, and
-unsuffixed on a build configured with `-DU_DISABLE_RENAMING=1`. There is no
-stable symbol to link against. Run-time resolution is also what makes an
-older Windows a *fallback* rather than a failure to start, since a static
-import of a missing DLL stops the process at load time.
+**Why the two backends are not the same shape, and why only one of them
+needs a loader.** On ELF unixes ICU's exported symbols are version-suffixed
+— `uidna_openUTS46_78` on this development machine (`nm -D --defined-only
+/usr/lib/x86_64-linux-gnu/libicuuc.so.78`), `_74` on the next — and so is
+the soname, so there is nothing stable to link against and `elf.rs` resolves
+at run time through `libloading`. On Windows there is: its ICU is built with
+`U_DISABLE_RENAMING` (the SDK's `icu.h` opens with `#define
+U_DISABLE_RENAMING 1`) and the exports are unsuffixed, which is why
+`windows-sys` can and does bind the plain names. `windows.rs` therefore
+declares nothing at all — the signatures, the `UIDNAInfo` layout and every
+`UIDNA_*` constant come from Microsoft's own Win32 metadata, and the only
+`unsafe` left is the three calls.
+
+That asymmetry has a price, and it is recorded rather than hedged:
+`windows-link` emits a `raw-dylib` **load-time** import, so a Windows with no
+`icuuc.dll` (10 before 1703, and Server 2016) does not fall back — the
+process fails to start. The Windows backend states a floor of 10 1703 /
+Server 2019 instead of degrading; the ELF backend, which has to resolve at
+run time anyway, degrades for free. Both are covered by the same load-time
+acceptance probe in `icu/mod.rs`, which refuses an ICU that does not answer
+`straße.de` correctly — so a wrong `OPTIONS`, an ABI drift, or (on the split
+Windows libraries) an `open` that turns out to need `CoInitializeEx` becomes
+`Backend::None` rather than a wrong host, one name at a time.
 
 **The scope, and the two things kept out of it.** `icu.rs` declares three
 signatures, resolves them through `libloading`, calls them into a buffer it

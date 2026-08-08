@@ -34,13 +34,24 @@
 
 # ICU ecosystem survey: what exists, what it costs, what it cannot do
 
-Input for the `idn-platform-crate` task. It answers three questions asked of
-it — the `rust_icu` family's real build cost, whether macOS has a public IDN
-API, and whether ICU4X can be reduced to UTS-46 alone — and reports one
-finding that **contradicts a platform note in
-`.superpowers/sdd/v02/idn-platform-brief.md`**, with the evidence for the
-contradiction, because acting on the note as written would add machinery the
-platform does not require.
+Input for the `idn-platform-crate` task. It answers the three questions
+asked of it — the `rust_icu` family's real build cost, whether macOS has a
+public IDN API, and whether ICU4X can be reduced to UTS-46 alone — plus a
+fourth added later by the owner: whether the browser's `URL.hostname` can
+serve as the wasm backend.
+
+Two of its findings **contradict notes in
+`.superpowers/sdd/v02/idn-platform-brief.md`**, and one contradicts an
+earlier revision of this document. All three are recorded with their
+evidence rather than quietly corrected, because each was believed on
+reasonable grounds and would otherwise be re-derived:
+
+- Windows' ICU exports are **not** version-suffixed (Q1, the Correction
+  section) — the brief said they are, and that note drives real machinery.
+- The "1.9 MB" motivating this whole task is **vendored source, not
+  binary** (Q3); the binary cost is ~147 KiB.
+- macOS **does** have a public API and it is **UTS-46 non-transitional**
+  (Q2) — this document previously said there was none.
 
 Every "works" below is a command and its output. Every "cannot" is a quoted
 error. Anything not executed is marked **unverified** and says what would
@@ -282,53 +293,122 @@ Two things I did **not** verify, both needing a Windows runner:
 
 ---
 
-## Q2 — macOS: no public API. Use the bundled path.
+## Q2 — macOS: the API exists, and it is UTS-46 non-transitional
 
-**Answer: there is no public macOS API that converts a Unicode domain to an
-A-label.** The brief may drop the "unverified" mark on the conclusion, but
-should keep it on one residual behaviour, below.
+> **This section replaces an earlier one that said "no public API". That
+> was wrong.** The correction matters more than the original claim, so it
+> is recorded rather than quietly overwritten: the question "is there an
+> API?" and the question "what does it do?" are separate, and here they
+> have different answers. Apple's implementation is open source, so the
+> second one is settled from the call site rather than from behaviour
+> reports.
 
-**`libicucore.dylib` is out.** Apple ships it but publishes no headers for
-it; it is private API, and linking it has produced App Store rejections
-(documented across the j2objc discussion and tilemill#561). Since Big Sur
-the system dylibs are not on disk at all — they live in the dyld shared
-cache — so there is no path to `dlopen` either.
+### The call site, and the option word
 
-**CFNetwork/CFURL expose no conversion entry point.** The Swift Forums
-thread on exactly this question ("Is there any standard method available to
-transform these IDN to Punycode to be used with `URL()`?") is answered
-"Not in the standard library", with the surrounding discussion noting that
-`URL` and `URLComponents` did not support IDN and that third-party libraries
-were required.
+`swift-foundation`,
+[`Sources/FoundationInternationalization/URLParser+ICU.swift`](https://github.com/swiftlang/swift-foundation/blob/main/Sources/FoundationInternationalization/URLParser%2BICU.swift)
+(© 2024 Apple Inc.) — `struct UIDNAHookICU`:
 
-**The one real nuance — and why it still is not usable.** For apps linked
-against iOS 17 / macOS 14 and later, `URL` moved to RFC 3986 parsing, and
-Apple's documentation states that URL *"automatically percent- and
-IDNA-encodes invalid characters to help create a valid URL"*. So IDNA
-processing does exist inside Foundation. It is nonetheless not a primitive
-this crate can use:
+```swift
+private static let idnaTranscoder: UIDNAPointer? = {
+    var status = U_ZERO_ERROR
+    let options = UInt32(
+        UIDNA_CHECK_BIDI                    |
+        UIDNA_CHECK_CONTEXTJ                |
+        UIDNA_NONTRANSITIONAL_TO_UNICODE    |
+        UIDNA_NONTRANSITIONAL_TO_ASCII
+    )
+    let encoder = uidna_openUTS46(options, &status)
+    ...
+```
 
-- it is a **side effect of URL construction**, not a named conversion
-  function — there is no documented `toASCII`;
-- there is **no control over UTS-46 flags**, so the transitional /
-  non-transitional distinction that this entire task turns on is not
-  selectable, and not documented either way;
-- it **has no error channel** — it "helps create a valid URL", silently,
-  where this crate must return a typed error;
-- **it moved between OS versions** (iOS 16 → 17 changed URL parsing
-  outright), so it is a behavioural moving target across the support range;
-- from Rust it is reachable only by round-tripping a whole URL through
-  Foundation via `objc2`, a far heavier dependency than the single C call
-  the Windows path needs.
+`0x04 | 0x08 | 0x20 | 0x10` = **0x3C** — exactly the flag word this project
+requires, plus the two optional conformance checks. Encoding goes through
+`uidna_nameToASCII_UTF8`, the same UTF-8 entry point the Windows path uses.
 
-**unverified:** what Foundation actually returns for `straße.de` — i.e.
-whether it agrees with `idna` at all. Settled by a probe on a
-`macos-latest` runner setting `URLComponents.host = "straße.de"` and reading
-back `encodedHost` / `url?.absoluteString`. Worth running once for the
-record, but it does not change the verdict: even if it agreed, the absence
-of flag control and of an error channel disqualifies it.
+**So Foundation agrees with the `idna` crate: `straße.de` →
+`xn--strae-oqa.de`, `faß.de` → `xn--fa-hia.de`.** macOS is *not* a second
+`IdnToAscii`. On the to-ASCII path the error policy is strict —
+`allowedErrors = 0`, so any `UIDNAInfo.errors` bit rejects.
 
-**Verdict: macOS uses the bundled `idna`. Say so plainly and move on.**
+**unverified** only in that this was read, not run: a `macos-latest` probe
+printing `URL(string: "https://straße.de/")?.host` closes it, and it is
+cheap enough to be worth doing for the record.
+
+### Versions
+
+- `URLComponents.encodedHost` — the accessor that returns the A-label — is
+  declared `@available(macOS 13.0, iOS 16.0, tvOS 16.0, watchOS 9.0, *)`.
+- `URL(string:)` IDNA-encoding arrives with the RFC 3986 parser, which Apple
+  gates on *"apps linked on or after iOS 17 and aligned OS versions"* — a
+  **linked-SDK** gate, not merely an OS-version one.
+
+### Why it is still rejected — four reasons, none of them "it does not exist"
+
+1. **It is a URL parser, not a domain-to-ASCII entry point.** The conversion
+   happens while assembling the URL string, and failure takes the whole URL
+   with it (`URLParser.swift`):
+
+   ```swift
+   } else if let idnaEncoded = IDNAEncodeHost(String(host)),
+             validate(host: idnaEncoded, knownIPLiteral: false) {
+       finalURLString += idnaEncoded
+   } else {
+       return nil
+   }
+   ```
+
+   A host holding `/` or `?` therefore changes where the URL *ends* rather
+   than being reported as a bad host.
+
+2. **No error detail.** `UIDNAInfo.errors` is consumed by `shouldAllow` and
+   discarded; every path returns `String?`. There is no equivalent of the
+   `UIDNA_ERROR_*` reporting the Windows path gets for free.
+
+3. **Behaviour is scheme-dependent.** `shouldPercentEncodeHost` consults a
+   list — `tel`, `telprompt`, `callto`, `facetime*`, `imap`, `pop`,
+   `addressbook`, `contact`, … — whose hosts are **percent-encoded instead
+   of IDNA-encoded**. `http`/`https` do get IDNA, so this does not bite us,
+   but it confirms the primitive is "parse a URL", not "convert a domain".
+
+4. **The accessors are treacherous.** For `https://münchen.de/`:
+
+   | accessor | returns |
+   |---|---|
+   | `URL.host` / `host(percentEncoded: false)` | `xn--mnchen-3ya.de` (A-label) |
+   | `URL.host(percentEncoded: true)` | `m%C3%BCnchen.de` — IDNA-**decoded**, then percent-encoded |
+   | `URLComponents.host` | `münchen.de` — Unicode |
+   | `URLComponents.encodedHost` | `xn--mnchen-3ya.de` (A-label) |
+
+   `percentEncoded: true` returning the *less* encoded host is the kind of
+   inversion that produces a wrong-origin bug rather than a compile error.
+
+Also recorded: with no ICU hook available Foundation does not fail — it
+silently **percent-encodes** the host instead
+(`guard _uidnaHook() != nil else { return true }`) — and
+`maxHostBufferLength = 2048` caps input, returning `nil` beyond it.
+
+### Reachability from Rust
+
+`UIDNAHook` is a `package protocol` and `UIDNAHookICU`'s members are
+`private`. **There is no public C or ObjC entry point to the conversion
+itself.**
+
+- **`core-foundation` 0.10.1** — the cheap pure-C route, and probably a dead
+  end: Foundation's own CF path calls `_CFURLCopyHostName`, an
+  **underscore-prefixed private SPI**, on the legacy `_BridgedURL` class, not
+  through `UIDNAHookICU`. **unverified** — settled by `CFURLCreateWithBytes`
+  + `CFURLCopyHostName` on `https://münchen.de/`, checking for `xn--`.
+- **`objc2-foundation` 0.3.2** — the route that certainly works, via
+  `NSURL URLWithString:` then `-host`. Costs `objc2` + `objc2-foundation`,
+  Objective-C message sends, and a whole-URL round trip per domain.
+
+**Verdict: macOS takes the bundled `idna`** — on cost and ergonomics, with a
+documented fallback, not because nothing exists. `libicucore.dylib` remains
+separately out of reach: no headers ship for it, Apple documents its symbols
+as not for third-party linking, and since Big Sur the system dylibs are not
+on disk at all. If platform IDN on macOS is ever wanted, the
+`objc2-foundation` route is viable and its semantics are now known to match.
 
 ---
 
@@ -428,36 +508,133 @@ the remainder in-house means hand-writing exactly the IDNA validation rules
 whose subtlety this brief already documents — for ~63 KiB. That is a bad
 trade for an HTTP client, where those checks are origin-determining.
 
-### The genuinely cheap lever: `idna_adapter` backend pinning
+### `idna_adapter` backend pinning — measured, and **rejected**; see the note at the top
+
+Recorded as a measurement only. The decision is at the head of this
+document: **the pin is rejected, do not re-propose it.** What follows is
+what it would have bought, so that the rejection rests on numbers.
 
 `idna_adapter` is a supported backend seam, selected by **pinning its
 version**, not by a feature — from its README: 1.2.x = ICU4X 2.2,
 1.2.0 = ICU4X 1.x, 1.1.0 = unicode-rs, 1.0.0 = stub. One command, no code
-change, semantics preserved (verified identical output above):
+change, and byte-identical output on the corpus above:
 
 ```
 $ cargo update -p idna_adapter --precise 1.1.0
 ```
 
-Measured trade, ICU4X → unicode-rs: **deps 30 → 10**, and all four
-proc-macro crates plus both `syn` versions leave the graph — against
-**+126 KiB of binary**. Source size does not improve
-(`idna_mapping` 1.5M + `unicode-normalization` 772K + `unicode-bidi` 328K +
-`unicode-joining-type` 128K ≈ 2.73 MB, slightly worse than ICU4X's 2.35 MB).
+Measured trade, ICU4X → unicode-rs: **+126 KiB of binary** against a smaller
+graph. Two corrections to the first draft of this section, both from the
+re-measurement at the top of this document:
 
-This matters because CLAUDE.md states the pain as **"36 crates with `idn`,
-10 without"** — a *crate-count* and compile-time complaint. Backend pinning
-addresses that directly, with zero `unsafe`, zero FFI and zero new crate.
-It is worth putting in front of the owner as an alternative to the whole
-task, not because the platform crate is wrong, but because the two are
-solving different halves of the stated problem and only one of them is free.
+- the crate delta against **`http-ng-proto`** is **35 → 20**, not the
+  30 → 10 this survey's standalone probe crate showed;
+- **`syn`, `quote` and `proc-macro2` stay either way** — `thiserror-impl`
+  needs them. Five ICU4X derive macros do leave (`yoke-derive`,
+  `zerofrom-derive`, `zerovec-derive`, `displaydoc`, `synstructure`), but
+  "zero proc-macros" was wrong and is withdrawn.
 
-**unverified:** whether `idna_adapter` 1.1.0 satisfies this workspace's MSRV
-(latest stable, 1.97) and whether pinning survives `cargo update` in CI —
-settled by applying the pin in the real workspace and running
-`cargo nextest run --workspace --all-features`.
+Source size does not improve either (`idna_mapping` 1.5M +
+`unicode-normalization` 772K + `unicode-bidi` 328K + `unicode-joining-type`
+128K ≈ 2.73 MB, slightly worse than ICU4X's 2.35 MB).
+
+There is also a structural limit worth keeping even now the trade is
+refused: **the pin lives in the top-level `Cargo.lock`, so a library cannot
+express it.** `http-ng` could document it, but only the final binary's
+author could choose it — which is why `idna_adapter` is a version-pin seam
+rather than a feature (Cargo has no `global-features`). So it was never a
+substitute for the platform crate, independently of the tables being stale.
 
 ---
+
+## Q4 — the browser: `URL.hostname` works, and it is the right flavour
+
+Not one of the three questions originally asked; added after the owner
+proposed it. Measured in **Chrome 151 on Linux via Playwright**, against the
+Rust side running this project's exact contract
+(`Uts46::new().to_ascii(_, AsciiDenyList::URL, Hyphens::Allow,
+DnsLength::Ignore)`).
+
+### On IDN proper, they agree — twelve rows, no exceptions
+
+| input | Chrome 151 `.hostname` | Rust `idna` | |
+|---|---|---|---|
+| `straße.de` | `xn--strae-oqa.de` | `xn--strae-oqa.de` | agree |
+| `faß.de` | `xn--fa-hia.de` | `xn--fa-hia.de` | agree |
+| `münchen.de` | `xn--mnchen-3ya.de` | `xn--mnchen-3ya.de` | agree |
+| `MÜNCHEN.de` | `xn--mnchen-3ya.de` | `xn--mnchen-3ya.de` | agree |
+| `xn--mnchen-3ya.de` | passthrough | passthrough | agree |
+| `日本.jp` | `xn--wgv71a.jp` | `xn--wgv71a.jp` | agree |
+| `☃.net` | `xn--n3h.net` | `xn--n3h.net` | agree |
+| `example.com` | `example.com` | `example.com` | agree |
+| `a..b` | `a..b` | `a..b` | agree |
+| `-lead.de` | `-lead.de` | `-lead.de` | agree |
+| `٠.com` | `TypeError` | error | agree |
+| `١٢٣.com` | `TypeError` | error | agree |
+
+The first two rows settle the flavour: **non-transitional**. The rest pin
+individual UTS 46 parameters — `-lead.de` surviving means
+`CheckHyphens = false`, `a..b` surviving means `VerifyDnsLength = false`,
+the Arabic-digit rows throwing means `CheckBidi = true`. That is the WHATWG
+*domain to ASCII*, which is what `AsciiDenyList::URL` reproduces.
+
+### But it is a URL parser, and two of its failures are silent
+
+| input | Chrome `.hostname` | Rust `idna` | |
+|---|---|---|---|
+| `ex/ample.com` | **`ex`** | error | **silent truncation** |
+| `ex@ample.com` | **`ample.com`** | error | **silent origin change** |
+| `ex?ample.com` | `ex` | error | silent truncation |
+| `ex#ample.com` | `ex` | error | silent truncation |
+| `ex ample.com` | `ex%20ample.com` | error | percent-encoded, not rejected |
+| `ex%61mple.com` | `example.com` | error | percent-**decoded** before IDNA |
+| `xn--a.de` | `xn--a.de` | error | invalid punycode accepted |
+| `xn--.de` | `xn--.de` | error | invalid punycode accepted |
+| `""` | `TypeError` | `""` (ok) | diverges the *other* way |
+
+`ex@ample.com` is the one that matters: the actual host is `ample.com` and
+`ex` became userinfo. Handing an unvalidated string to `new URL()` and
+trusting `.hostname` is a wrong-origin bug generator.
+
+**It is fixable with code this crate already has.** Every dangerous row
+turns on a byte in the WHATWG forbidden-domain set — `/ ? # @ : % \ space`
+and the C0 controls — which is exactly what `is_forbidden_domain_byte` /
+`AsciiDenyList::URL` rejects. Run that check **before** `new URL()` and the
+family disappears; reject empty input and the `""` row goes too.
+
+That leaves one genuine, **non-fixable** divergence: invalid punycode
+labels — Chrome accepts, `idna` rejects. That is UTS 46's
+`IgnoreInvalidPunycode`, which `idna` fixes at `false` and the browser
+evidently treats as true. It needs a corpus row and a decision, not a
+workaround.
+
+### Cost, and what is unknown
+
+`web-sys` **0.3.103 is already a dependency of `http-ng-fetch`**, and `Url`
+is one more feature on that existing entry — no new crate. On
+`wasm32-unknown-unknown` this needs **no `unsafe` at all**, which is a
+materially better position than the Windows path.
+
+**unverified: Firefox and Safari.** Only Chrome 151 was measured. The WHATWG
+spec is prescriptive so agreement is likely, but this project already
+records a Chrome/Safari split in the fetch `Capabilities` model, so it must
+not be assumed. Settled by the same probe under the existing `browser` CI
+job (`wasm-pack test --headless --chrome|--firefox`).
+
+### The reverse direction
+
+`punycode` 0.4.1 has **zero dependencies** (`cargo tree` shows the crate
+alone), so it brings no Unicode tables — punycode is a pure RFC 3492
+algorithm with nothing to tabulate. Two caveats: last release
+**2019-05-25**, effectively unmaintained (though the RFC is frozen and it
+has 4.6M downloads); and **decoding punycode is not IDNA `toUnicode`** — it
+skips the mapping and validation steps, so it is a display convenience, not
+the inverse of `domain_to_ascii`.
+
+More to the point: **this crate's stated surface is one-directional** — a
+Unicode domain in, an A-label out — and `http-ng-proto`'s
+`UriError::NonAsciiHost` path does not need the reverse. Confirm a caller
+exists before adding the dependency.
 
 ## Verdicts
 
@@ -469,22 +646,43 @@ settled by applying the pin in the real workspace and running
 | `windows-sys` `Win32_Globalization` | **fits — use it** | full `uidna_*` surface + all `UIDNA_*` constants; raw-dylib, unsuffixed, no SDK needed |
 | `icu_capi` / ICU4X FFI | **rejected** | ICU4X is a Rust reimplementation with bundled data; `icu_capi` exposes it *to* C — wrong direction |
 | `icu_normalizer::uts46` alone | **partial** | separable and avoids the 1.9 MB crate (84 KiB), but mapping only — no punycode, no validation |
-| `idna_adapter` pinning | **fits, and is free** | deps 30 → 10 by one `cargo update`; +126 KiB binary; no `unsafe` |
-| macOS Foundation / CFURL | **rejected** | no named conversion API, no UTS-46 flag control, no error channel |
+| `idna_adapter` pinning | **rejected** (owner, 2026-08-08) | 35 → 20 crates for +126 KiB — but the unicode-rs tables lag, and a library cannot express a top-level pin anyway |
+| browser `URL.hostname` via `web_sys` | **fits — use it on wasm** | measured non-transitional, agrees with `idna` on all 12 IDN rows; `web-sys` already in `http-ng-fetch`; **no `unsafe`** — pre-filter with `AsciiDenyList::URL` first |
+| macOS Foundation `URL`/`URLComponents` | **rejected on ergonomics** | genuinely UTS-46 non-transitional (`0x3C`, read from Apple's source) — but URL-parser-only, discards `UIDNAInfo.errors`, linked-SDK gated |
 | `libicucore.dylib` | **rejected** | private, no headers, App Store rejections, not on disk since Big Sur |
 | libidn2 | **rejected** | no Rust binding on crates.io; IDNA2008-by-default (UTS-46 only via `IDN2_NONTRANSITIONAL`); no presence guarantee |
 | `unic-idna` | **rejected** | last release 2019-03-03; vendored tables, same class as `idna` |
+| `punycode` 0.4.1 | **fits if a caller exists** | zero dependencies, no Unicode tables — but unmaintained since 2019, and not the inverse of `domain_to_ascii` |
 
 ## Open items
 
-1. **`CoInitializeEx` before `uidna_openUTS46`** — unverified; needs a
-   `windows-latest` probe.
+Ordered by value. Items 1-2 need a Windows runner and are the ones that
+gate `http-ng-idn`'s Windows path; they should land as a probe the crate's
+own CI job can carry, not as a one-off run.
+
+1. **`CoInitializeEx` before `uidna_openUTS46`** — unverified. Microsoft
+   documents the requirement for Win32 apps using `icuuc.dll`/`icuin.dll`
+   and waives it on 1903+ with combined `icu.dll`, which is exactly the
+   1703..1902 window the crate's resolver falls back into.
 2. **`raw-dylib` load against `icuuc.dll` on a 1703-era image** — unverified;
    same runner, or accept as a documented floor.
-3. **Foundation's actual output for `straße.de`** — unverified; a
-   `macos-latest` probe. Does not change the verdict.
-4. **`idna_adapter` 1.1.0 against this workspace's MSRV and CI** — unverified;
-   apply the pin and run the suite.
-5. **`rust_icu_sys` via `icu_version_in_env`** — unverified; would only
+3. **Firefox and Safari agreement with the Chrome rows in Q4** — unverified;
+   the existing `browser` CI job settles it.
+4. **Foundation's actual output for `straße.de`** — unverified by execution
+   only; the flag word is read from Apple's source and is unambiguous. A
+   `macos-latest` probe closes it cheaply.
+5. **Whether a *Rust* binary on macOS gets the RFC 3986 parser at all** —
+   unverified. Apple gates the behaviour on "apps linked on or after
+   iOS 17"; a Rust binary reporting an older linked SDK would silently get
+   the old parser. Only matters if the `objc2-foundation` route is ever
+   taken.
+6. **Whether public `CFURLCopyHostName` performs the conversion** —
+   unverified; decides whether the cheap `core-foundation` route exists at
+   all, or only the `objc2-foundation` one.
+7. **`rust_icu_sys` via `icu_version_in_env`** — unverified; would only
    matter if the family were reconsidered, which the missing `uidna` already
    rules out.
+
+Removed: *"`idna_adapter` 1.1.0 against this workspace's MSRV"*. Moot on
+both counts — the pin is rejected, and the MSRV policy is now "latest
+stable" with no pinned version and no `msrv` CI job.

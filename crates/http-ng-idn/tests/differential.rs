@@ -16,11 +16,11 @@
 //!
 //! Two columns, and they do not run in the same places:
 //!
-//! - **`idna_says`** runs everywhere the `bundled` feature is on, which
-//!   is every platform this workspace builds for.
+//! - **`idna_says`** runs everywhere, on every target, because `idna` is
+//!   a dev-dependency of this crate rather than a feature of it.
 //! - **`icu_says`** runs only where a system ICU was found:
-//!   `libicuuc.so.NN` on Linux, `icu.dll`/`icuuc.dll` on Windows, nowhere
-//!   on macOS or wasm (see the crate docs).
+//!   `libicuuc.so.NN` on Linux, `icuuc.dll` on Windows, nowhere on macOS
+//!   or wasm (see the crate docs).
 //!
 //! So a green run of this file on a machine with no ICU proves nothing at
 //! all about the platform column, and saying "the corpus passes" without
@@ -47,6 +47,18 @@
 
 use http_ng_idn::testing;
 use rstest::rstest;
+
+/// The oracle, called exactly as `http-ng-proto::uri::host_to_ascii`
+/// calls it — through the DEV-dependency, so this runs on the targets
+/// where `idna` is deliberately absent from the crate's own graph, which
+/// is every target that has a system ICU. That is the whole reason it is
+/// a dev-dependency: the comparison has to be possible precisely where
+/// the shipped build does not contain the thing being compared against.
+fn idna_says(domain: &str) -> Option<String> {
+    idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
+        .ok()
+        .map(std::borrow::Cow::into_owned)
+}
 
 /// One input with both implementations' answers pinned.
 #[derive(Debug)]
@@ -146,12 +158,11 @@ fn label(case: &Case) -> String {
 /// upgrade that changed the incumbent's behaviour would silently redefine
 /// what "the platform agrees" means, and the divergence list would be
 /// measuring the wrong baseline.
-#[cfg(feature = "bundled")]
 #[test]
 fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
     let mut wrong = Vec::new();
     for case in CORPUS {
-        let got = testing::bundled(case.input).ok();
+        let got = idna_says(case.input);
         if got.as_deref() != case.idna_says {
             wrong.push(format!(
                 "  {}: `idna` used to say {:?}, now says {:?}",
@@ -172,7 +183,7 @@ fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
 
 /// The claim. Every row's platform answer, measured against what was
 /// pinned when the row was written.
-#[cfg(feature = "system-icu")]
+#[cfg(icu_backend)]
 #[test]
 fn the_platform_answers_what_the_corpus_pins_on_every_row() {
     let Some(lib) = testing::system_icu_library() else {
@@ -237,7 +248,7 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
 /// CI sets `HTTP_NG_IDN_REQUIRE_PLATFORM=1` on the runners that are meant
 /// to have one. Locally it is unset and this test passes while saying so,
 /// which is the honest answer on a machine that genuinely has no ICU.
-#[cfg(feature = "system-icu")]
+#[cfg(icu_backend)]
 #[test]
 fn the_platform_column_is_not_silently_empty() {
     let required = std::env::var_os("HTTP_NG_IDN_REQUIRE_PLATFORM").is_some();
@@ -258,39 +269,34 @@ fn the_platform_column_is_not_silently_empty() {
 /// hoped for. A `SystemIcu` over a library that is not there, or a
 /// `Bundled` while ICU is doing the work, is the "capability that lies"
 /// this project keeps catching.
-#[cfg(all(feature = "bundled", feature = "system-icu"))]
+#[cfg(icu_backend)]
 #[test]
 fn the_reported_backend_is_the_one_that_answers() {
     use http_ng_idn::Backend;
     let reported = testing::selected();
     let has_icu = testing::system_icu_library().is_some();
     match reported {
-        // Both features are on here, so a loaded library must report the
-        // cross-checked variant — plain `SystemIcu` would mean the
-        // bundled second opinion had been dropped.
-        Backend::SystemIcuCheckedAgainstBundled => {
-            assert!(has_icu, "reports a loaded ICU with no library loaded");
-        }
-        Backend::SystemIcu => panic!(
-            "reports SystemIcu with `bundled` also on: that variant means there is no second \
-             implementation to check against, and here there is"
-        ),
-        Backend::Bundled => assert!(
+        Backend::SystemIcu => assert!(has_icu, "reports SystemIcu with no library accepted"),
+        Backend::None => assert!(
             !has_icu,
-            "reports Bundled while a system ICU is loaded — with both features on, ICU is used \
-             and checked, not ignored"
+            "reports None while an ICU was accepted — this build has no bundled fallback, so \
+             `None` and a live library at once is a straight contradiction"
         ),
-        Backend::None => panic!("Backend::None with the `bundled` feature on is impossible"),
+        Backend::Bundled => panic!(
+            "reports Bundled in a build compiled with `icu_backend` and no `idna` at all: the \
+             tables are not here to fall back to"
+        ),
         other => {
             panic!("a new Backend variant, {other:?}, with nothing here deciding what it means")
         }
     }
-    // And the public entry point agrees with both of them: the answer for
-    // a row whose two columns are identical must come out right whichever
-    // backend is selected.
+    // And the public entry point agrees: `backend()` claiming an ICU
+    // while `domain_to_ascii` cannot convert would be the same lie told
+    // one level down.
     assert_eq!(
-        http_ng_idn::domain_to_ascii("münchen.de").unwrap(),
-        "xn--mnchen-3ya.de"
+        has_icu,
+        http_ng_idn::domain_to_ascii("münchen.de").as_deref() == Ok("xn--mnchen-3ya.de"),
+        "`backend()` and `domain_to_ascii` disagree about whether this build can convert"
     );
 }
 
@@ -309,4 +315,57 @@ fn converting_an_already_converted_name_changes_nothing(
     let once = http_ng_idn::domain_to_ascii(input).expect("corpus name must convert");
     let twice = http_ng_idn::domain_to_ascii(&once).expect("an A-label must convert");
     assert_eq!(once, twice, "{input:?} is not a fixed point");
+}
+
+/// **Windows, on a thread where COM was never initialised.**
+///
+/// Two live-machine assumptions this crate makes about Windows, neither of
+/// which anyone here could check — no Windows machine produced it — and
+/// both of which the `test (windows-latest)` matrix job answers on every
+/// push, because it runs `--workspace --all-features` on a real runner.
+/// Written as a test rather than as a one-off CI probe deliberately: a
+/// probe answers once and dies with the job, a test answers again when the
+/// runner image changes.
+///
+/// 1. **`icuuc.dll` loads at all.** `windows-sys` binds it through
+///    `windows-link`, which emits a `raw-dylib` *load-time* import: if the
+///    DLL were absent this test binary would not start, and every test in
+///    it would fail together. So the assertion for that is simply that
+///    this test runs — worth naming anyway, because it is exactly the
+///    failure mode a Windows older than 1703 produces, and someone reading
+///    a wall of unrelated failures should be able to find this comment.
+/// 2. **No `CoInitializeEx` is needed.** Microsoft documents COM
+///    initialisation as a prerequisite for Win32 apps using the split
+///    `icuuc.dll`/`icuin.dll`, waived on 1903+ with the combined
+///    `icu.dll`. This crate never calls `CoInitializeEx` — grep it — and
+///    the conversion below runs on a freshly spawned thread, which
+///    therefore has no COM apartment, apartment state being per-thread. If
+///    the assumption is wrong, `uidna_openUTS46` fails, the acceptance
+///    probe rejects the library, `backend()` reports `None`, and this test
+///    goes red on the runner. That is the only honest way to learn it.
+#[cfg(all(windows, icu_backend))]
+#[test]
+fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
+    let answer = std::thread::spawn(|| {
+        (
+            http_ng_idn::backend(),
+            http_ng_idn::domain_to_ascii("straße.de").map(std::borrow::Cow::into_owned),
+        )
+    })
+    .join()
+    .expect("the conversion thread must not panic");
+
+    assert_eq!(
+        answer.0,
+        http_ng_idn::Backend::SystemIcu,
+        "on Windows the platform backend is a load-time import, so `None` here means \
+         `uidna_openUTS46` failed on a thread with no COM apartment — i.e. `CoInitializeEx` IS \
+         required after all, and `icu/windows.rs` has to call it or this crate has to stop \
+         claiming otherwise"
+    );
+    assert_eq!(
+        answer.1.as_deref(),
+        Ok("xn--strae-oqa.de"),
+        "the corpus row that decides which host is contacted, answered by icuuc.dll"
+    );
 }

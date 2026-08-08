@@ -311,14 +311,15 @@ jobs:
           HTTP_NG_IDN_REQUIRE_PLATFORM: "1"
         run: |
           set -euo pipefail
-          # Both single-feature builds and the combined one. The
-          # `system-icu`-only run is the only place the crate is compiled
-          # with no `idna` at all, so it is the only place a dependence on
-          # it would show up as a build error rather than as a silent
-          # union of features.
-          for args in "--all-features" \
+          # The default (`platform`, resolved by target) and the
+          # explicit opt-in, which must agree on a target that has an ICU.
+          # `--all-features` is what the `test` matrix job runs, so it is
+          # checked here too — features have to stay additive, and
+          # `bundled` is a no-op on these two targets rather than an
+          # error.
+          for args in "" \
                       "--no-default-features --features system-icu" \
-                      "--no-default-features --features bundled"; do
+                      "--all-features"; do
             rc=0
             out="$(cargo nextest run -p http-ng-idn $args --color never --no-fail-fast 2>&1)" || rc=$?
             printf '%s\n' "$out"
@@ -337,25 +338,34 @@ jobs:
           # x86-64 Linux while this was written — 34 crates and 448,936
           # bytes with `bundled`, 10 crates and 305,880 bytes with
           # `system-icu`, same answer for `straße.de` from both.
+          # The entire point of the crate, on the two targets that have a
+          # system ICU: no `idna` and no ICU4X data crate in the graph, in
+          # the DEFAULT build — not only in a build someone remembered to
+          # ask for. Measured on x86-64 Linux while this was written: 34
+          # crates and 448,936 bytes with the tables, 10 crates and
+          # 306,504 bytes without, same answer for `straße.de` from both.
           .github/scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-            "http-ng-idn with system-icu alone still pulls in idna/ICU — the whole reason the crate exists is that it does not" \
-            -- -p http-ng-idn --no-default-features --features system-icu
-          # Without this the check above would also pass if `bundled` had
-          # simply stopped working.
-          .github/scripts/tree-guard.sh present '^idna ' \
-            "http-ng-idn with the bundled feature has no idna — the fallback everything else rests on is gone" \
-            -- -p http-ng-idn --no-default-features --features bundled
-          # And the loader belongs to exactly one of the two.
-          .github/scripts/tree-guard.sh absent '^libloading ' \
-            "the bundled-only build pulls in libloading, which it has nothing to load" \
-            -- -p http-ng-idn --no-default-features --features bundled
+            "the DEFAULT http-ng-idn build on this target pulls in idna/ICU — on a target with a system ICU the whole reason the crate exists is that it does not" \
+            -- -p http-ng-idn
+          # `--all-features` turns on `bundled` too, which on these
+          # targets has no `idna` to enable. If that ever stops being a
+          # no-op, the tables come back on every developer's `--all-features`
+          # build and nothing else would say so.
+          .github/scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+            "--all-features drags idna back into http-ng-idn on a target that has a system ICU" \
+            -- -p http-ng-idn --all-features
+          # Without this the checks above would also pass if the platform
+          # backend had simply stopped being reachable.
+          .github/scripts/tree-guard.sh present '^(libloading|windows-sys) ' \
+            "the default http-ng-idn build has neither libloading nor windows-sys, so no platform backend is compiled in at all" \
+            -- -p http-ng-idn
       - name: clippy on all three feature settings
         shell: bash
         run: |
           set -euo pipefail
           cargo clippy -p http-ng-idn --all-targets --all-features -- -D warnings
           cargo clippy -p http-ng-idn --all-targets --no-default-features --features system-icu -- -D warnings
-          cargo clippy -p http-ng-idn --all-targets --no-default-features --features bundled -- -D warnings
+          cargo clippy -p http-ng-idn --all-targets -- -D warnings
 
   portable-example-three-targets:
     runs-on: ubuntu-latest
