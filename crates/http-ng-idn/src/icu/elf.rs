@@ -111,6 +111,14 @@ const MIN_SUFFIX: u32 = 46;
 /// this runs on in five years, not for this build.
 const MAX_SUFFIX: u32 = 99;
 
+/// Both bounds, asserted where they cost nothing at run time. 46 is where
+/// `uidna_openUTS46` arrived (ICU 4.6) and below it there is nothing to
+/// find; 78 is the ICU this crate was actually measured against, so a
+/// range that excluded it would mean the corpus had stopped testing the
+/// platform on the machine that ships one.
+const _: () = assert!(MIN_SUFFIX == 46);
+const _: () = assert!(MAX_SUFFIX >= 78);
+
 /// The three entry points, and the library they came from.
 ///
 /// The `libloading::Library` is kept in the same struct as the pointers
@@ -188,13 +196,8 @@ pub(crate) fn find() -> Option<Icu> {
 /// `uidna_nameToASCII_UTF8_78` is not one this crate can use, and
 /// half-resolving it would leave an `Icu` that cannot convert.
 fn resolve(lib: libloading::Library, name: String, hint: Option<u32>) -> Option<Icu> {
-    let suffixes = hint
-        .into_iter()
-        .map(Some)
-        .chain(core::iter::once(None))
-        .chain((MIN_SUFFIX..=MAX_SUFFIX).rev().map(Some));
-    for suffix in suffixes {
-        let sfx = suffix.map_or_else(String::new, |n| format!("_{n}"));
+    for suffix in suffix_order(hint) {
+        let sfx = suffix_text(suffix);
         // SAFETY: `Library::get` is unsafe because the caller asserts the
         // symbol's type. The three signatures are transcribed from
         // `unicode/uidna.h`, restated above each type alias, and agree
@@ -235,6 +238,37 @@ fn resolve(lib: libloading::Library, name: String, hint: Option<u32>) -> Option<
         }
     }
     None
+}
+
+/// The order in which symbol suffixes are tried, given what the file name
+/// implied.
+///
+/// Extracted from [`resolve`] so it can be tested at all. The branch that
+/// matters most here — **the unsuffixed name** — is the one that can never
+/// succeed on this platform: ICU's ELF builds rename every symbol, so a
+/// bare `uidna_openUTS46` exists only on a `U_DISABLE_RENAMING` build,
+/// which in practice means Windows, which does not use this file. Left as
+/// a live `resolve` branch it is therefore untestable *and* unkillable —
+/// deleting it reddens nothing on Linux, which is exactly what a mutation
+/// run showed. As a sequence it is ordinary data, and the test below pins
+/// its presence and its position.
+///
+/// Order, and why: the hint first, because the soname already named the
+/// version and that is one `dlsym` instead of fifty-five; then unsuffixed,
+/// because a `U_DISABLE_RENAMING` build has no version to guess; then
+/// every version descending, newest first.
+fn suffix_order(hint: Option<u32>) -> Vec<Option<u32>> {
+    hint.into_iter()
+        .map(Some)
+        .chain(core::iter::once(None))
+        .chain((MIN_SUFFIX..=MAX_SUFFIX).rev().map(Some))
+        .collect()
+}
+
+/// `Some(78)` becomes `_78`; `None` becomes the empty string, i.e. the
+/// bare symbol name.
+fn suffix_text(suffix: Option<u32>) -> String {
+    suffix.map_or_else(String::new, |n| format!("_{n}"))
 }
 
 /// Closes the `UIDNA` handle on every exit path, including the early
@@ -311,4 +345,71 @@ pub(crate) fn convert(icu: &Icu, domain: &str) -> Option<String> {
         return accept(&buf, written, info.errors, status);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SUFFIX, MIN_SUFFIX, candidates, suffix_order, suffix_text};
+
+    #[test]
+    fn a_suffix_becomes_an_underscore_and_a_number_and_none_becomes_nothing() {
+        assert_eq!(suffix_text(Some(78)), "_78");
+        assert_eq!(suffix_text(Some(46)), "_46");
+        assert_eq!(suffix_text(None), "");
+    }
+
+    /// **The unsuffixed attempt exists, and comes second.** It cannot be
+    /// covered by loading a library on this platform — nothing here
+    /// exports a bare `uidna_openUTS46` — so it is covered as an ordering
+    /// property instead. Without this, deleting that branch is invisible
+    /// on every machine CI runs on, and the first person to notice would
+    /// be someone on a `U_DISABLE_RENAMING` build with no ICU.
+    #[test]
+    fn the_unsuffixed_name_is_tried_right_after_the_hint() {
+        let order = suffix_order(Some(78));
+        assert_eq!(order[0], Some(78), "the soname already named the version");
+        assert_eq!(order[1], None, "the U_DISABLE_RENAMING case");
+
+        // With no hint it goes first, for the same reason.
+        assert_eq!(suffix_order(None)[0], None);
+    }
+
+    /// Every ICU that ever exported `uidna_openUTS46` is reachable, and
+    /// the newest is tried first. Narrowing this range so the installed
+    /// ICU falls outside it must redden — which is what the range test
+    /// below is for, and it is why the bounds are asserted rather than
+    /// the length.
+    #[test]
+    fn every_icu_version_with_this_entry_point_is_reachable_newest_first() {
+        let order = suffix_order(None);
+        let versions: Vec<u32> = order.iter().filter_map(|s| *s).collect();
+        assert_eq!(versions.first(), Some(&MAX_SUFFIX));
+        assert_eq!(versions.last(), Some(&MIN_SUFFIX));
+        assert!(
+            versions.windows(2).all(|w| w[0] > w[1]),
+            "descending, so a newer ICU wins over an older one on the same box"
+        );
+    }
+
+    /// The development symlink first, then versioned sonames — because
+    /// when the symlink exists it is one `dlopen` instead of fifty-five.
+    #[test]
+    fn the_candidate_file_names_cover_the_symlink_and_every_soname() {
+        let names = candidates();
+        assert_eq!(names[0], ("libicuuc.so".to_owned(), None));
+        assert!(
+            names
+                .iter()
+                .any(|(n, h)| n == "libicuuc.so.78" && *h == Some(78))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|(n, h)| n == "libicuuc.so.46" && *h == Some(46))
+        );
+        assert!(
+            names.iter().all(|(n, _)| n.starts_with("libicuuc.so")),
+            "nothing but ICU's common library is ever opened"
+        );
+    }
 }

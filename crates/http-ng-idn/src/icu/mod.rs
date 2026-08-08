@@ -163,18 +163,120 @@ pub(crate) fn name_to_ascii(domain: &str) -> Option<String> {
 ///   whole crate turns on.
 ///
 /// The cost is two conversions, once per process.
+///
+/// # No test kills the deletion of this gate, and that is not an oversight
+///
+/// Measured rather than assumed: replacing `imp::find().filter(
+/// answers_the_trap_correctly)` with `imp::find` leaves all 13 tests
+/// passing. It has to. Every machine this suite runs on has a *working*
+/// ICU, so the gate never rejects anything, and a guard that never fires
+/// cannot be observed by removing it.
+///
+/// What is killed, and what that pins down:
+///
+/// - changing a [`PROBES`] expectation to the transitional answer reddens
+///   `the_platform_column_is_not_silently_empty`, so the gate is
+///   demonstrably *consulted* and its contents are load-bearing;
+/// - [`accepts`] has unit tests over a fake conversion, so its policy
+///   (all probes not any; a refusal is a failure) is pinned independently
+///   of any real ICU.
+///
+/// So the call site is proven live and the policy is proven correct; only
+/// "someone deletes the whole thing" is invisible. Making that visible
+/// needs an injection point handing the loader a deliberately wrong ICU,
+/// which would exist for no other purpose and would be the only caller of
+/// its own seam. Written down here instead — in a project where tests
+/// that cannot fail are the dominant defect, an untested guard that
+/// *looks* tested is worse than one that says so.
 fn answers_the_trap_correctly(icu: &Icu) -> bool {
-    const PROBES: [(&str, &str); 2] = [
-        ("straße.de", "xn--strae-oqa.de"),
-        ("faß.de", "xn--fa-hia.de"),
-    ];
+    accepts(|input| imp::convert(icu, input))
+}
+
+/// The two inputs an ICU has to get right, and what "right" is.
+///
+/// They are the pair the entire crate turns on: a transitional ICU
+/// answers `strasse.de` and `fass.de` here, which are different origins,
+/// registrable by different people.
+const PROBES: [(&str, &str); 2] = [
+    ("straße.de", "xn--strae-oqa.de"),
+    ("faß.de", "xn--fa-hia.de"),
+];
+
+/// The gate's *policy*, over any conversion function.
+///
+/// Split out from [`answers_the_trap_correctly`] for one reason: a
+/// function that only takes a real `Icu` can only be tested by owning a
+/// broken ICU, and nobody here does. Over a closure it is four
+/// exhaustively testable cases — the same move `http-ng-dns-system` makes
+/// with `sys::classify_written`.
+///
+/// **Every probe must pass, not any**: an ICU that gets `straße.de` right
+/// and `faß.de` wrong is not one to trust with the rest.
+fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
     PROBES
         .iter()
-        .all(|(input, want)| imp::convert(icu, input).as_deref() == Some(*want))
+        .all(|(input, want)| convert(input).as_deref() == Some(*want))
 }
 
 /// The option word, re-exported for the backends so neither reaches past
 /// this module for it.
 pub(crate) const fn options() -> u32 {
     OPTIONS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PROBES, accepts};
+
+    /// A conversion that answers correctly is accepted.
+    #[test]
+    fn a_correct_icu_is_accepted() {
+        assert!(accepts(|input| PROBES
+            .iter()
+            .find(|(i, _)| *i == input)
+            .map(|(_, want)| (*want).to_owned())));
+    }
+
+    /// **The case the gate exists for.** A transitional ICU converts both
+    /// probes successfully, to the wrong origin — no error, no null, just
+    /// a different host. It must be refused.
+    #[test]
+    fn a_transitional_icu_is_refused() {
+        assert!(!accepts(|input| match input {
+            "straße.de" => Some("strasse.de".to_owned()),
+            "faß.de" => Some("fass.de".to_owned()),
+            _ => None,
+        }));
+    }
+
+    /// Right on one probe, wrong on the other. `all`, not `any` — if this
+    /// passed, one correct answer would vouch for an ICU wrong everywhere
+    /// else.
+    #[test]
+    fn getting_only_one_probe_right_is_not_enough() {
+        assert!(!accepts(|input| match input {
+            "straße.de" => Some("xn--strae-oqa.de".to_owned()),
+            _ => Some("fass.de".to_owned()),
+        }));
+    }
+
+    /// A conversion that fails outright — `uidna_openUTS46` refusing for
+    /// want of `CoInitializeEx` looks exactly like this — is refused too,
+    /// rather than read as "nothing to object to".
+    #[test]
+    fn an_icu_that_cannot_convert_at_all_is_refused() {
+        assert!(!accepts(|_| None));
+    }
+
+    /// The probes are the transitional pair and nothing else has crept
+    /// in. If one were softened to a name both flavours agree on, the
+    /// gate would still be consulted, would still pass, and would no
+    /// longer check the one thing it is for.
+    #[test]
+    fn the_probes_are_the_inputs_the_two_flavours_disagree_on() {
+        assert_eq!(PROBES.len(), 2);
+        assert!(PROBES.iter().all(|(_, want)| want.starts_with("xn--")));
+        assert!(PROBES.iter().any(|(i, _)| *i == "straße.de"));
+        assert!(PROBES.iter().any(|(i, _)| *i == "faß.de"));
+    }
 }
