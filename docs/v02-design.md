@@ -338,11 +338,21 @@ Gated on a capability: the browser decompresses already and forbids
 
 ## W6 — Streaming request bodies
 
-`RequestBody::Streaming` passes through no transport today: native buffers
-it, fetch rejects it, WASI takes only `Full`. h2 makes it natural, h1 needs
-chunked, and fetch needs the `ReadableStream` half that `convert.rs`
-currently refuses. Each is separately honest today, which is why this can
-wait until W3 lands.
+**Two thirds of this section were already stale when W3 landed, and the
+correction shrinks the task rather than growing it.** It said native buffers
+a streaming body and WASI takes only `Full`. Neither is true: `Native`
+declares `streaming_request_body = true` and pins it with
+`streaming_request_body_is_actually_streamed_not_buffered`, and
+`http-ng-wasi` declares it `true` because `RequestBody::Streaming` goes
+straight through to the host. h2 changes nothing here — h1 already streams
+via `transfer-encoding: chunked`.
+
+What is left is **fetch alone**: `streaming_request_body` is hardcoded
+`false` in `crates/http-ng-fetch/src/caps.rs`, and `convert.rs` refuses the
+`ReadableStream` half. So W6 is a one-backend task in a crate nothing else
+touches — and the capability there must stop being a constant and start
+being derived, the way `ReuseSupport` and `DecompressionSupport` already
+are.
 
 ---
 
