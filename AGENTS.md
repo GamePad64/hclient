@@ -179,10 +179,17 @@ needs a newer compiler than the one you have is expected rather than a bug.
 
 The trade is deliberate. There is no window in which this crate builds on an
 older toolchain, so if you pin an older Rust, pin an older `http-ng` with it.
-In exchange nothing here carries version-shim code, and CI checks one floor
-instead of a per-crate matrix. CI's `msrv` job pins that exact toolchain and
-runs `cargo check --workspace --all-features --all-targets`, so the promise
-covers tests and examples, not only the libraries.
+In exchange nothing here carries version-shim code, and there is no MSRV
+matrix to maintain.
+
+There is also **no MSRV job in CI, deliberately**, and `rust-toolchain.toml`
+pins no version — it says `channel = "stable"`. A job checking a fixed
+version would be a second statement of the same promise, staler than the
+first, and it is the one people would trust: the moment stable moves past
+the pin, that job goes on passing while checking a toolchain nobody
+supports. The whole test suite already runs on stable on three platforms,
+which is the promise, so the pin would add a way to be wrong and no way to
+be right.
 
 **Two TLS backends, both behind the same `TlsConnect` seam.**
 `http-ng-tls-rustls` is the default: memory-safe, and it behaves the same on
