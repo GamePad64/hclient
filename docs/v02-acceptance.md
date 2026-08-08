@@ -135,7 +135,13 @@ someone to "fix" an item whose absence is the decision.
   selected one.** Harmless while `http/1.1` is the only proposal; the moment
   h2 is proposed it becomes a `PROTOCOL_ERROR` per request. `reports_alpn()`
   is the fix and it is in W3's scope, not yet landed.
-- **The platform IDN question is open on two measurements**: whether
-  `CoInitializeEx` is needed before `uidna_openUTS46`, and what Foundation
-  answers for `straße.de` on a live macOS. Both need a runner, both are
-  listed in `docs/icu-ecosystem-survey.md`.
+- **The platform IDN question is open on one measurement, not two.**
+  macOS is settled from Apple's own source: `swift-foundation`'s
+  `UIDNAHookICU` calls `uidna_openUTS46` with `0x3C`, i.e. non-transitional,
+  which agrees with `idna` — so the *flavour* question is answered and only
+  the live confirmation is missing. Chrome was measured directly and agrees
+  too. What still needs a runner is whether `CoInitializeEx` must precede
+  `uidna_openUTS46` on Windows. All of it is in
+  `docs/icu-ecosystem-survey.md`, including the one divergence no
+  pre-filter fixes: browsers accept invalid punycode (`xn--a.de`) where
+  `idna` refuses.
