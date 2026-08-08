@@ -1,10 +1,21 @@
 name: ci
 on: [push, pull_request]
 
-# Crates appear over the course of the vertical. Each check activates as soon as
-# its crate exists, and until then EXPLICITLY prints that it was skipped. A silent
-# green check is more dangerous than a red one: after a typo in a crate name it
-# stays green forever.
+# Every check in this file FAILS CLOSED. If the crate or file a check names is
+# absent, the job goes red — it does not skip.
+#
+# This reverses the convention that stood while the workspace was being built,
+# under which a check printed `::notice::` and exited zero until its crate
+# appeared. That had a reason: the crates arrived one vertical at a time, and a
+# check for a crate nobody had written yet would have been red for weeks. All
+# fourteen crates now exist, so the only thing a skip can still express is a
+# typo in a path or a renamed crate — and it expresses it as a green run.
+#
+# The reasoning the old text gave was right and is why this changed: a silent
+# green check is more dangerous than a red one, because after a typo in a crate
+# name it stays green forever. The guards simply had not been brought into line
+# with it. Comments further down that still describe the skip-and-notice
+# behaviour are describing history, not current behaviour.
 
 jobs:
   # Review resolution (Task 16, fix round 2, finding 1): this file was
@@ -84,8 +95,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — tests skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # `parsing_scales_linearly_not_quadratically` (sse/lines.rs) is excluded
           # from here deliberately (Task 14, review round 1, Finding 4): this job
@@ -127,8 +138,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — fmt skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo fmt --all --check
 
@@ -149,8 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$(ls -A crates 2>/dev/null | grep -v '^.gitkeep$' || true)" ]; then
-            echo "::notice::no crates in workspace yet — clippy skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -171,8 +182,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto not present yet — complexity check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # `cargo test ... -- --exact NAME`, if NAME matched nothing,
           # exits with code 0 and prints "0 passed" — the same class of defect
@@ -207,8 +218,8 @@ jobs:
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
-            echo "::notice::core crates not present yet — MSRV not checked"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # `--all-targets` — resolution from the branch's final review (§4,
           # "only appears protected"). Without it, only lib targets were
@@ -386,8 +397,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng ]; then
-            echo "::notice::http-ng not present yet — end-to-end run on two runtimes skipped"
-            exit 0
+            echo "::error::http-ng is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo test -p http-ng --test two_runtimes
       # The task brief (task-14-brief.md, Step 5) proposed a literal
@@ -438,8 +449,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-rt-smol ]; then
-            echo "::notice::http-ng-rt-smol not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-rt-smol is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree="$(cargo tree -p http-ng-rt-smol -e normal --prefix none)"
           printf '%s\n' "$tree"
@@ -492,8 +503,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi not present yet — wasip2 build skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           cargo check -p http-ng-wasi --target wasm32-wasip2
           # Task 17: the end-to-end example `examples/fetch.rs` — the only
@@ -531,8 +542,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi not present yet — live wasip2 run skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # Plain unit tests — actually execute under real `wasmtime` via
           # the runner from `.cargo/config.toml`, not just compiled.
@@ -583,8 +594,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-wasi/src ]; then
-            echo "::notice::http-ng-wasi not present yet — discarded-setters check skipped"
-            exit 0
+            echo "::error::http-ng-wasi is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # The review (Task 16, finding B-4) found the original grep-based
           # version of this check defective along two independent axes:
@@ -977,8 +988,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree="$(cargo tree -p http-ng-proto -e normal --prefix none)"
           if printf '%s\n' "$tree" | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
@@ -990,8 +1001,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-proto/src ]; then
-            echo "::notice::http-ng-proto not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           if grep -rn "async fn" crates/http-ng-proto/src \
                | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)'; then
@@ -1096,8 +1107,8 @@ jobs:
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
-            echo "::notice::core crates not present yet — check skipped"
-            exit 0
+            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           # We look for DECLARED bounds, not mentions in docs: lines whose
           # content starts with a comment are dropped by the second grep.
@@ -1428,11 +1439,12 @@ jobs:
   # browser ACTUALLY has, not against a constant, and must therefore pass
   # identically on both rather than agreeing with either by coincidence.
   #
-  # `crates/http-ng` is deliberately NOT in this job yet. Task 8
-  # (concurrent with this one) is what gives `http-ng` a browser-target
+  # `crates/http-ng` IS in this job. Task 8 gave that crate a browser-target
   # dependency and its own `wasm-bindgen-test` suite
-  # (`tests/wasm_default.rs`) — there is nothing here for `wasm-pack` to
-  # run against that crate until it lands.
+  # (`tests/wasm_default.rs`, 6 tests), and this job runs it. An earlier
+  # version of this comment said the crate was deliberately excluded because
+  # Task 8 had not landed — written while the two tasks ran concurrently, and
+  # left standing after the second one landed.
   browser:
     strategy:
       matrix:
@@ -1461,13 +1473,39 @@ jobs:
               exit 1
             fi
           done
-          wasm-pack test --headless --${{ matrix.browser }} crates/http-ng-fetch
+          # `wasm-pack test` EXITS 0 ON AN EMPTY RUN. Measured: dropping the
+          # feature list from the `http-ng` invocation below prints
+          # "no tests to run!" twelve times and the job goes green having
+          # executed nothing. That is precisely the state this job exists to
+          # end — 65 browser tests present, none run, CI green — so counting
+          # them is the guard that matters, not the presence of the crates.
+          #
+          # The minimums below are the counts as of this commit. Adding tests
+          # keeps the job green; REMOVING one turns it red on purpose. If a
+          # test is deliberately deleted, lower the number in the same commit
+          # — the check is not obligated to silently accept a shrinking suite.
+          run_browser_suite() {
+            local crate="$1" min="$2" log passed
+            shift 2
+            log="$(mktemp)"
+            if ! wasm-pack test --headless --${{ matrix.browser }} "$crate" "$@" 2>&1 | tee "$log"; then
+              echo "::error::browser tests failed for $crate on ${{ matrix.browser }}"
+              exit 1
+            fi
+            passed="$(grep -oE '[0-9]+ passed' "$log" | awk '{s+=$1} END {print s+0}')"
+            if [ "$passed" -lt "$min" ]; then
+              echo "::error::$crate on ${{ matrix.browser }} ran $passed browser tests, expected at least $min — a renamed test file, a dropped #[wasm_bindgen_test], or a drift between this job's --features and the crate's own cfg gate all produce a green run that tests nothing"
+              exit 1
+            fi
+            echo "$crate on ${{ matrix.browser }}: $passed browser tests passed (minimum $min)"
+          }
+
+          run_browser_suite crates/http-ng-fetch 65
           # `http-ng`'s own browser tests: `Client::new()` on the browser
           # target, added in Task 8. The features are `wasm-pack`'s own
           # arguments, not `cargo test --` passthrough — `-- --features ...`
           # is rejected with "unexpected argument '--features'".
-          wasm-pack test --headless --${{ matrix.browser }} crates/http-ng \
-            --features default-transport,test-util
+          run_browser_suite crates/http-ng 6 --features default-transport,test-util
 
   # Task 9 (task-9-addendum-measured.md, Defects 1 and 2). `ambient` names
   # the browser build specifically — this job is the wasm32-unknown-unknown
@@ -1507,8 +1545,8 @@ jobs:
         run: |
           set -uo pipefail
           if [ ! -d crates/http-ng-fetch ]; then
-            echo "::notice::http-ng-fetch not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-fetch is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree_out="$(cargo tree -p http-ng-fetch -e normal --prefix none --target wasm32-unknown-unknown)"
           tree_rc=$?
@@ -1530,8 +1568,8 @@ jobs:
         run: |
           set -uo pipefail
           if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto not present yet — check skipped"
-            exit 0
+            echo "::error::http-ng-proto is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           tree_out="$(cargo tree -p http-ng-proto -e normal --prefix none --target wasm32-unknown-unknown)"
           tree_rc=$?
@@ -1588,14 +1626,34 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d crates/http-ng-fetch ]; then
-            echo "::notice::http-ng-fetch not present yet — check skipped"
-            exit 0
+            echo "::error::crates/http-ng-fetch is missing — this check must run, not skip"
+            exit 1
           fi
-          RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
-            cargo +nightly check -p http-ng-fetch --tests \
-            --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
-            && { echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"; exit 1; } \
-            || echo "OK: correctly rejected under +atomics"
+          # This step's only signal used to be "the build failed", with
+          # nothing verifying WHY. Measured: one character changed in the
+          # package name yields "error: package ID specification did not
+          # match any packages" and then "OK: correctly rejected under
+          # +atomics", exit 0. A missing rust-src, an unrelated compile
+          # error, a nightly change to -Zbuild-std or an interrupted download
+          # all passed it the same way — the very fail-open shape the two
+          # `cargo tree` jobs above were rewritten to remove.
+          #
+          # The failure must now be the RIGHT failure: E0277 naming the Send
+          # bound. Anything else is a broken check, not a passing one.
+          log="$(mktemp)"
+          if RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
+              cargo +nightly check -p http-ng-fetch --tests \
+              --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
+              > "$log" 2>&1; then
+            echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"
+            exit 1
+          fi
+          if ! grep -q 'error\[E0277\]' "$log" || ! grep -q 'cannot be sent between threads safely' "$log"; then
+            echo "::error::the build under +atomics failed, but NOT with the expected Send rejection (E0277 / cannot be sent between threads safely) — this check proves nothing until the failure is the right one; full output follows"
+            cat "$log"
+            exit 1
+          fi
+          echo "OK: correctly rejected under +atomics with E0277 on the Send bound"
 
   # Task 10 of vertical 3 — the acceptance, and the one job in this file
   # that checks a property of the whole library rather than of one crate:
@@ -1636,8 +1694,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f crates/http-ng/examples/portable.rs ]; then
-            echo "::notice::examples/portable.rs not present yet — acceptance skipped"
-            exit 0
+            echo "::error::examples/portable.rs is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
+            exit 1
           fi
           python3 - <<'PYEOF'
           import re
