@@ -75,16 +75,59 @@
 //! now, with `TlsConnect::config_id` already answered by every
 //! implementation, than to add it after the sharing.
 //!
-//! **[`Protocol`] has one variant today, and the guard is what makes it
-//! real.** `Native` proposes exactly `http/1.1` and speaks exactly
-//! HTTP/1.1, so every connection in this pool is `Http11` and the lookup is
-//! constant. What is not constant is the check that puts it there:
-//! `Native::execute` refuses to pool a connection whose *negotiated* ALPN
-//! is something else, so a server that answers with a protocol we did not
-//! ask for cannot leave an h2 socket sitting in a pool that h1 requests
-//! will draw from. W3 adds the second variant; the guard is what makes
-//! adding it safe.
-use crate::h1::Established;
+//! **[`Protocol`] keeps the two kinds of connection in separate buckets**
+//! — `Native` speaks HTTP/1.1 always and HTTP/2 when ALPN selected it (the
+//! `http2` feature, v0.2 W3). The component was added in W2, when it had
+//! one variant and the lookup was constant, precisely so that W3 could add
+//! the second one without anything else in this file changing; the guard
+//! that keeps it honest is in `Native::execute`, which refuses to pool a
+//! connection at all when the *negotiated* ALPN is neither of the two
+//! protocols this transport speaks.
+//!
+//! Worth being exact about what it buys, because it is tempting to
+//! overstate: it is **not** what stops an HTTP/2 socket being spoken to as
+//! HTTP/1. That is impossible for a structural reason instead — a pooled
+//! connection is an [`Established`] enum that carries its own protocol,
+//! and `established::exchange` both dispatches and shapes the request off
+//! that one value, so a connection cannot be addressed as something it is
+//! not. This component is a *preference*: it lets checkout ask for the
+//! bucket a request would rather have, instead of taking whatever is on
+//! top. That is worth two hash lookups, and it is the honest size of the
+//! claim.
+//!
+//! # What an h2 connection is checked out for
+//!
+//! **One stream at a time — an h2 connection is handed out exclusively,
+//! exactly as an h1 one is.** HTTP/2 multiplexes and this pool does not
+//! use that, which is a decision rather than an omission, and this is
+//! where it is written down.
+//!
+//! The reason is the same `Spawn` that shapes everything else here.
+//! Multiplexing means several requests share one `h2::client::Connection`,
+//! and that connection is a future somebody has to poll. With no
+//! background task, the only candidates are the in-flight request futures
+//! themselves — so the connection would have to be shared behind a lock,
+//! with wakers fanned out to every stream on it, and a request whose
+//! caller stopped polling would stop driving the connection its
+//! *neighbours* are waiting on. That trades HTTP/1's honest cost (one
+//! connection per concurrent request) for a failure mode in which one
+//! slow consumer wedges unrelated requests. Not worth it here; a client
+//! that wants concurrency to the same origin gets a second connection,
+//! same as on h1.
+//!
+//! Two things follow, and the second one has to be said out loud because
+//! it is a consequence of *this policy* rather than of the h2 code:
+//!
+//! - Concurrency to one origin costs connections, not streams, and
+//!   [`PoolConfig::max_idle_per_key`] bounds the idle ones exactly as
+//!   before.
+//! - W1's rule — cancelling one stream must not tear down the others
+//!   sharing its connection — holds trivially, because there are no
+//!   others. **That is this policy's guarantee, not `http2.rs`'s.**
+//!   Whoever makes check-out non-exclusive takes the rule with them; see
+//!   `crate::http2`'s module doc, which says the same thing from the other
+//!   end.
+use crate::established::Established;
 use http_ng_tls::TlsConfigId;
 use hyper::rt::{Read, Write};
 use std::collections::HashMap;
@@ -171,13 +214,18 @@ pub(crate) enum Security {
 
 /// The application protocol spoken on a connection.
 ///
-/// One variant, and the module doc explains why that is not the same as no
-/// information: the guard that decides whether a connection is allowed into
-/// the pool at all is what carries the weight today, and W3's `H2` slots in
-/// beside `Http11` without changing anything else here.
+/// Without the `http2` feature there is exactly one variant and the lookup
+/// is constant — the guard in `Native::execute` is then what carries the
+/// weight, by keeping a connection that negotiated anything else out of
+/// the pool entirely. See the module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Protocol {
     Http11,
+    /// Negotiated by ALPN, never assumed: `Native` only speaks HTTP/2 on a
+    /// connection whose TLS backend reported `h2`, which is also the only
+    /// case in which it offered it (`TlsConnect::reports_alpn`).
+    #[cfg(feature = "http2")]
+    H2,
 }
 
 /// Which connections may serve which requests — see the module doc for the
@@ -204,6 +252,42 @@ impl PoolKey {
             port,
             protocol,
         }
+    }
+}
+
+/// Everything an exchange needs in order to hand a connection back once
+/// the response body has ended cleanly — or `None` at the call site, which
+/// is how "do not reuse this connection" is said.
+///
+/// Lives here rather than in either protocol module because both hand
+/// connections back through it, and because [`CheckIn::put`] is the only
+/// way in: the pool's fields are not reachable from `h1.rs` or
+/// `http2.rs`, so neither can invent a key or a deadline of its own.
+pub(crate) struct CheckIn<I>
+where
+    I: Read + Write + Unpin,
+{
+    pool: Pool<I>,
+    key: PoolKey,
+    expires_at: Duration,
+}
+
+impl<I> CheckIn<I>
+where
+    I: Read + Write + Unpin,
+{
+    pub(crate) fn new(pool: Pool<I>, key: PoolKey, expires_at: Duration) -> Self {
+        Self {
+            pool,
+            key,
+            expires_at,
+        }
+    }
+
+    /// Hands `est` back under the key and deadline this token was made
+    /// with. Consuming, because a connection may only be checked in once.
+    pub(crate) fn put(self, est: Established<I>) {
+        self.pool.put(self.key, est, self.expires_at);
     }
 }
 
@@ -366,6 +450,22 @@ mod tests {
             PoolKey::new(Security::Plaintext, "h", 80, Protocol::Http11),
             PoolKey::new(Security::Plaintext, "h", 8080, Protocol::Http11),
         );
+    }
+
+    /// The protocol component, checked here because it cannot be reached
+    /// from outside the client — the same situation, and the same answer,
+    /// as the TLS identity below.
+    ///
+    /// One `Native` negotiates the same protocol with a given origin every
+    /// time, so no live test can put an `Http11` and an `H2` connection in
+    /// one pool and watch them stay apart. What can be checked directly is
+    /// the mechanism: that the key tells the two apart at all.
+    #[cfg(feature = "http2")]
+    #[test]
+    fn the_protocol_separates_keys() {
+        let of = |p| PoolKey::new(Security::Plaintext, "h", 80, p);
+        assert_ne!(of(Protocol::Http11), of(Protocol::H2));
+        assert_eq!(of(Protocol::H2), of(Protocol::H2));
     }
 
     /// The component this project would most like to get wrong, since

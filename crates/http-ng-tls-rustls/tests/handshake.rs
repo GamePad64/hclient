@@ -48,6 +48,7 @@ async fn completes_handshake_and_echoes() {
             server_name: "localhost",
             alpn: &[b"http/1.1"],
             ech: None,
+            early_data: None,
         },
     ))
     .await
@@ -92,9 +93,25 @@ async fn rejects_an_untrusted_certificate() {
             server_name: "localhost",
             alpn: &[],
             ech: None,
+            early_data: None,
         },
     ))
     .await
     .expect_err("must fail");
     assert!(matches!(err.kind(), http_ng_core::ErrorKind::Tls), "{err}");
+}
+
+/// The one-line answer that decides whether a transport may offer `h2` at
+/// all — see `TlsConnect::reports_alpn`, whose default is `false` because
+/// a backend that over-claims it leaves a client speaking HTTP/1 into a
+/// connection the server switched to HTTP/2.
+///
+/// This backend may say `true`, and `completes_handshake_and_echoes`
+/// above is why: it offers `http/1.1` to a real server and reads the
+/// selection back out of `TlsInfo::alpn`. The assertion here is what ties
+/// that demonstrated ability to the value `http-ng-native` acts on;
+/// without it the override is a claim with nothing behind it.
+#[test]
+fn this_backend_declares_that_it_reports_alpn() {
+    assert!(Rustls::with_webpki_roots().reports_alpn());
 }

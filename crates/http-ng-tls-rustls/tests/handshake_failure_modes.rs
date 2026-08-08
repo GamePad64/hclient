@@ -36,6 +36,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
                 server_name: "not-localhost.invalid", // trusted CA, wrong hostname
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         ),
     )
@@ -139,6 +140,7 @@ where
                 server_name: "localhost",
                 alpn: &[],
                 ech: None,
+                early_data: None,
             },
         ),
     )

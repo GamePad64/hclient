@@ -12,7 +12,7 @@
 //! deliberately don't spawn (see the crate's doc comment and
 //! `http-ng-rt-pair-check`), so this file polls `Connection` **by hand,
 //! alongside** reading the response — first inside [`exchange`] (until
-//! headers arrive), then inside [`NativeBody::poll_frame`] (until the
+//! headers arrive), then inside [`H1Body::poll_frame`] (until the
 //! body is fully read). `tests/h1.rs` checks this not as an assertion but
 //! as a fact: `works_on_a_bare_futures_executor_with_no_spawn` runs the
 //! whole path on bare `futures_executor::block_on` — a runtime with no
@@ -26,10 +26,10 @@
 //! keep an enum small, and a concrete type in a box still lets auto traits
 //! through. The kind that matters is `Box<dyn _>`, which does not.)
 //!
-//! [`NativeBody`] used to store its `Connection` as a `Pin<Box<dyn
+//! [`H1Body`] used to store its `Connection` as a `Pin<Box<dyn
 //! Future>>` — "the only place in the vertical where we box", as this
 //! comment then said, "and not to erase `Send`". It erased `Send` all the
-//! same: `Box<dyn Future>` is never `Send`, so `NativeBody` never was
+//! same: `Box<dyn Future>` is never `Send`, so `H1Body` never was
 //! either, and a caller could not put a response into `tokio::spawn`.
 //! Connection reuse (v0.2 W2) turned that from a wart into a blocker —
 //! a pool holding boxed connections would have made [`crate::Native`]
@@ -44,7 +44,7 @@
 //! concrete type, transparent to auto traits. `Send` is then inferred
 //! rather than declared, exactly as `Transport`'s own doc requires ("No
 //! `poll_ready`, no `&mut self`, no `Send`: Send-ness is inferred by
-//! auto-traits"), and it is inferred *conditionally*: `NativeBody<I>` is
+//! auto-traits"), and it is inferred *conditionally*: `H1Body<I>` is
 //! `Send` when `I` is, and not when `I` holds an `Rc` — which is what
 //! keeps `connect.rs`'s `FakeStream` probes compiling.
 //!
@@ -56,12 +56,12 @@
 //! a bare executor (`futures_executor::block_on`, no reactor) CPU time
 //! genuinely does equal wall time — the spin there is real, because
 //! there's simply nothing that can wait for socket readiness other than
-//! polling again. But that exact same [`exchange`]/[`NativeBody`] code,
+//! polling again. But that exact same [`exchange`]/[`H1Body`] code,
 //! run through a real reactor (tokio, smol), costs ~0 CPU for the same
 //! wall time: neither `TokioIo` nor `FuturesIo` calls `wake_by_ref`
 //! itself — they return `Pending` and rely on the reactor to wake the
 //! task once the socket is actually ready, and `poll_fn` in [`exchange`]
-//! and `poll_frame` in [`NativeBody`] simply AREN'T CALLED until they're
+//! and `poll_frame` in [`H1Body`] simply AREN'T CALLED until they're
 //! woken. The whole spin lives in the test helper `testing::BlockingIo`
 //! (its `poll_would_block` honestly calls `cx.waker().wake_by_ref()`
 //! because there's no reactor on bare `futures_executor::block_on` — see
@@ -101,7 +101,7 @@
 //!   `a_connection_that_ends_with_the_request_queued_fails_instead_of_hanging`,
 //!   which reproduces exactly this ordering, poll by poll, on a scripted
 //!   connection with no clock in it.
-//! - **Inside [`NativeBody::poll_frame`]**, after headers have already
+//! - **Inside [`H1Body::poll_frame`]**, after headers have already
 //!   been handed to the caller: `Connection` behaves the same as before,
 //!   except its job now is to finish writing the remaining body bytes
 //!   into the `hyper::body::Incoming` channel. hyper's dispatcher only
@@ -123,10 +123,10 @@
 //!   wrapped in a watchdog with a ceiling (see `tests/h1.rs`), rather than
 //!   left as a bare `block_on`.
 //!
-//! `exchange` returns a `Response<NativeBody>`: `Connection` is not
+//! `exchange` returns a `Response<H1Body>`: `Connection` is not
 //! dropped when the function returns — it moves INTO THE BODY
-//! (`NativeBody::conn`) and lives exactly as long as the body lives, or
-//! until the body is fully read. If the caller drops `NativeBody` before
+//! (`H1Body::conn`) and lives exactly as long as the body lives, or
+//! until the body is fully read. If the caller drops `H1Body` before
 //! fully reading it, the `Connection` inside is dropped along with it —
 //! that's the caller's deliberate choice to cut the read short, not a
 //! silent loss of bytes: hyper documents exactly that behavior for a
@@ -176,7 +176,8 @@
 //! below proves this with a real (if synthetic-IO) handshake — not just
 //! by reading the code.
 use crate::body::OutgoingBody;
-use crate::pool::{Pool, PoolKey};
+use crate::established::Failed;
+use crate::pool::CheckIn;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use http_ng_core::{Error, ErrorKind};
@@ -184,7 +185,6 @@ use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 /// The single conversion point from `hyper::Error` to `http_ng_core::Error`
 /// for this file — see the module doc comment for why flattening
@@ -222,68 +222,6 @@ where
     }
 }
 
-/// Everything [`exchange`] needs in order to hand a connection back once
-/// the response body has ended cleanly — or `None` at the call site, which
-/// is how "do not reuse this connection" is said.
-pub(crate) struct CheckIn<I>
-where
-    I: Read + Write + Unpin,
-{
-    pool: Pool<I>,
-    key: PoolKey,
-    expires_at: Duration,
-}
-
-impl<I> CheckIn<I>
-where
-    I: Read + Write + Unpin,
-{
-    pub(crate) fn new(pool: Pool<I>, key: PoolKey, expires_at: Duration) -> Self {
-        Self {
-            pool,
-            key,
-            expires_at,
-        }
-    }
-}
-
-/// A failed exchange, split by the one distinction a retry may act on.
-///
-/// The split is not our judgement about what looks safe to resend: it is
-/// hyper's. `SendRequest::try_send_request` hands the request object back
-/// when — and only when — the error happened before a single byte of it
-/// was serialized onto the connection ("it is safe to tell the user that
-/// the request was completely canceled", `hyper::client::dispatch`). So
-/// [`Failed::NotSent`] carries the original request rather than a flag
-/// saying it would be fine to rebuild one, and the retry in
-/// `Native::execute` needs neither a clone of the request nor a rewindable
-/// body: the body it resends is the untouched original, still at its first
-/// byte, because nothing ever polled it.
-pub(crate) enum Failed {
-    /// The request never reached the wire, and here it is back.
-    ///
-    /// `Box`ed only because `http::Request<OutgoingBody>` is an order of
-    /// magnitude larger than an `Error`, and this enum is returned from
-    /// every exchange, successful or not (clippy's `large_enum_variant`).
-    /// Nothing is erased by it: the type inside is concrete, so auto traits
-    /// still pass through — see the module doc on why that matters here.
-    NotSent {
-        error: Error,
-        request: Box<http::Request<OutgoingBody>>,
-    },
-    /// Anything else: some or all of the request is on the wire, and
-    /// resending it would not be a retry but a second request.
-    Sent(Error),
-}
-
-impl Failed {
-    pub(crate) fn into_error(self) -> Error {
-        match self {
-            Failed::NotSent { error, .. } | Failed::Sent(error) => error,
-        }
-    }
-}
-
 /// A pooled connection that turned out to be finished at the last moment
 /// before its request was handed to hyper — the server closed it while
 /// nothing was polling it, and the checkout poll one instant earlier had
@@ -310,7 +248,7 @@ struct ConnectionEndedWithTheRequestQueued;
 ///
 /// Generic over the IO type rather than boxing it — see the module doc
 /// comment's section on why nothing here is boxed.
-pub struct NativeBody<I>
+pub struct H1Body<I>
 where
     I: Read + Write + Unpin,
 {
@@ -339,19 +277,19 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
-impl<I> std::fmt::Debug for NativeBody<I>
+impl<I> std::fmt::Debug for H1Body<I>
 where
     I: Read + Write + Unpin,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeBody")
+        f.debug_struct("H1Body")
             .field("still_driving_connection", &self.conn.is_some())
             .field("may_be_reused", &self.reuse.is_some())
             .finish()
     }
 }
 
-impl<I> NativeBody<I>
+impl<I> H1Body<I>
 where
     I: Read + Write + Unpin,
 {
@@ -373,18 +311,16 @@ where
         // signal that it was answering a question already answered: two
         // places deciding whether a connection is usable is how they come
         // to disagree.
-        reuse.checkin.pool.put(
-            reuse.checkin.key,
-            Established {
+        reuse
+            .checkin
+            .put(crate::established::Established::H1(Established {
                 sender: reuse.sender,
                 conn,
-            },
-            reuse.checkin.expires_at,
-        );
+            }));
     }
 }
 
-impl<I> Body for NativeBody<I>
+impl<I> Body for H1Body<I>
 where
     I: Read + Write + Unpin,
 {
@@ -490,7 +426,7 @@ pub(crate) async fn exchange<I>(
     est: Established<I>,
     req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
-) -> Result<http::Response<NativeBody<I>>, Failed>
+) -> Result<http::Response<H1Body<I>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
 {
@@ -608,7 +544,7 @@ where
 
     Ok(http::Response::from_parts(
         parts,
-        NativeBody {
+        H1Body {
             incoming,
             conn,
             reuse,
@@ -622,6 +558,7 @@ mod tests {
     use http_ng_core::RequestBody;
     use std::future::Future;
     use std::io;
+    use std::time::Duration;
 
     /// Polls a future EXACTLY once and panics on `Pending` — the same
     /// choice and the same reasoning as `http-ng-native::body::tests::
@@ -902,9 +839,30 @@ mod tests {
             }
         }
 
-        let est = pool
+        // The key names `Protocol::Http11`, so this bucket cannot contain
+        // anything else — the assertion is the pool key's, not this
+        // test's. Without the `http2` feature the enum has one variant and
+        // the `match` is infallible, which is what clippy is pointing out;
+        // the alternative (`let ... else`) would not compile *with* the
+        // feature, so the suppression follows the same `cfg` the second
+        // variant does.
+        #[cfg_attr(
+            not(feature = "http2"),
+            allow(
+                clippy::infallible_destructuring_match,
+                reason = "the second variant exists only behind `http2`"
+            )
+        )]
+        let est = match pool
             .take(&key, Duration::ZERO)
-            .expect("the connection must have been handed back");
+            .expect("the connection must have been handed back")
+        {
+            crate::established::Established::H1(e) => e,
+            #[cfg(feature = "http2")]
+            crate::established::Established::H2(_) => {
+                panic!("an HTTP/1.1 key must not hand back an HTTP/2 connection")
+            }
+        };
 
         // From here the server is gone. One `Pending` covers the look
         // before the request is handed over; the poll after that is hyper's,

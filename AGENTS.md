@@ -101,7 +101,8 @@ was written under in vertical 1.
 | ambient (`http-ng` + `-wasi` / `-fetch`) — measured | **none at all** |
 | `http-ng` with the `default-transport` feature (native, HTTP/1.1 only) — measured, Task 14 | real: `[default, libc, mio, net, rt, socket2, sync, time]` — the `http-ng-rt-tokio` reactor is needed for real `TcpConnect`/`Timer`, this is not "just a type dragged along", see below |
 | `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
-| native + HTTP/2 — not in the v0.1 plan, a hypothetical estimate not recomputed in vertical 2 | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
+| `http-ng-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
+| native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
 
 **Both middle rows are the same `hyper` fact, measured in two different places
 in the graph, not two independent observations.** `hyper` depends on `tokio`
@@ -161,7 +162,7 @@ browser's `fetch` (vertical 3).
 
 | target | transport | tokio in the graph |
 |---|---|---|
-| native | `http-ng-native` — TCP + HTTP/1, TLS pluggable | yes, on the h1 path |
+| native | `http-ng-native` — TCP + HTTP/1, HTTP/2 behind the `http2` feature, TLS pluggable | yes, on the h1 path |
 | WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
 | browser | `http-ng-fetch` — `fetch` | **no** |
 
@@ -250,9 +251,10 @@ line, nearer to the native one than `fetch` is. Two things stand in the way:
   checks all of that, in both directions, and runs the feature-off test
   suite that `--all-features` cannot reach.
 
-Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3 and WebSocket are
-v0.2 and later; connection reuse landed in v0.2 (W2) and `Native::new` now
-pools by default — see
+Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
+(W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
+behind `http-ng-native`'s `http2` feature, off by default. HTTP/3 and
+WebSocket are still later — see
 [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
 does not do, and what proves the four claims it does make.
 
@@ -316,6 +318,40 @@ that no CI job in this repository builds (the `wasip2` job runs `http-ng-wasi`
 directly). The direct path on WASI remains `Client::builder(http_ng_wasi::
 WasiHttp::new())`, same as before this task. Resolution details are in the
 `DefaultTransport` doc comment in `crates/http-ng/src/lib.rs`.
+
+**HTTP/2 is negotiated and spoken, not merely compiled in (v0.2 W3).** The
+`http2` feature is off by default and, when on, changes nothing a caller can
+observe except speed and `Response::version()`: `capabilities()` still report
+the **floor** — the value that holds on the worst protocol the transport
+might negotiate — because over-claiming `full_duplex` costs a caller a
+deadlock rather than a degradation, and because Cargo unifies features across
+a graph, so a library can never know whether some other crate turned h2 on.
+`crates/http-ng-native/tests/http2.rs` pins both halves: an `h2::server` on a
+real socket answers the client (an HTTP/1.1 request would get nothing at all
+from it) and `Response::version()` reads `HTTP_2`, while
+`capabilities_report_the_floor_with_the_feature_on` asserts `full_duplex ==
+false` with the feature compiled in.
+
+Two things behind that are worth knowing before reading the code.
+**`hyper/http2` is unusable here** — its executor bound
+`Http2ClientConnExec` is a sealed trait and the executor is handed the h2
+connection itself, so a crate with no `Spawn` cannot supply one; the `h2`
+crate underneath it is used directly instead, its `Connection` polled by hand
+exactly as hyper's HTTP/1 one already is (`src/http2.rs`'s module doc, and
+the correction in `docs/v02-design.md` §W3). And **h2 is offered only over a
+TLS backend that can report the negotiated ALPN** — `TlsConnect::reports_alpn`,
+defaulting to `false`, overridden to `true` by `http-ng-tls-rustls`: a backend
+that sends the ALPN list and cannot read the answer back (which is exactly
+`http-ng-tls-native-tls`) would otherwise leave the client speaking HTTP/1
+into a connection the server had switched to HTTP/2.
+
+An h2 connection is **checked out of the pool exclusively, one stream at a
+time**: without `Spawn` there is nobody to drive a shared connection but the
+in-flight request futures, so a caller that stopped polling would stall its
+neighbours. W1's "cancelling one stream must not tear down the others" then
+holds because there are no others — a property of that pool policy, not of
+the h2 code, and written down in both places so that lifting the exclusivity
+does not lose it silently.
 
 **What's still unverified live and carries over into vertical 3** (a boundary
 from the vertical's brief, not narrowed by this task): the `Capabilities`

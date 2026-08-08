@@ -166,6 +166,15 @@ impl TlsConnect for Rustls {
         self.config_id
     }
 
+    /// rustls reports the selection: `connect` below fills `TlsInfo::alpn`
+    /// from `ClientConnection::alpn_protocol()`, so `None` from this
+    /// backend really does mean "nothing was negotiated". Overriding the
+    /// `false` default is what lets a transport offer `h2` at all — see
+    /// `TlsConnect::reports_alpn` for why the default is the weak answer.
+    fn reports_alpn(&self) -> bool {
+        true
+    }
+
     async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(TlsStream<S>, TlsInfo), Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin,
@@ -208,6 +217,11 @@ impl TlsConnect for Rustls {
             cipher_suite: c
                 .negotiated_cipher_suite()
                 .and_then(|s| normalize_cipher_suite(s.suite())),
+            // Reserved, not implemented — this backend never offers early
+            // data, so there is nothing to report as accepted or refused.
+            // `None`, not `Some(false)`: see `TlsInfo::early_data_accepted`
+            // on why the two are different answers.
+            early_data_accepted: None,
         };
         Ok((stream, info))
     }
