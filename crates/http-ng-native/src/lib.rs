@@ -36,47 +36,84 @@
 mod body;
 mod connect;
 mod h1;
+mod pool;
+
+pub use connect::Conn;
+pub use pool::PoolConfig;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
     CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
-    TimeoutSupport, Timeouts, UpgradeSupport,
+    ReuseSupport, TimeoutSupport, Timeouts, UpgradeSupport,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{TcpConnect, TcpOpts, Timer};
 use http_ng_tls::TlsConnect;
+use pool::{Pool, PoolKey, Protocol, Security};
 use std::future::Future;
 use std::task::Poll;
 use std::time::Duration;
+
+/// The IO a [`Native`] speaks HTTP/1 over: a plain socket from the runtime,
+/// or that same socket wrapped by the TLS backend.
+///
+/// A public alias rather than an anonymous type in a signature, because it
+/// is what `Native`'s `Transport::Body` is generic over, and a caller who
+/// has to name that body should not have to spell this out themselves.
+pub type NativeIo<R, T> =
+    Conn<<R as TcpConnect>::Stream, <T as TlsConnect>::Stream<<R as TcpConnect>::Stream>>;
 
 /// The http-ng transport over real TCP/TLS/HTTP1: wires together the
 /// runtime `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
 /// ([`http_ng_tls::TlsConnect`]) and resolver `D` ([`http_ng_dns::Resolve`]).
 ///
-/// v0.1: one connection per request (no pool), HTTP/1.1 only, no upgrade —
-/// see [`Native::new`] and [`Capabilities`], which state these limits
-/// honestly rather than staying silent about them. The request body is
-/// **not** buffered whole: `RequestBody::Streaming` goes to the wire as a
-/// stream (see [`Native::new`]'s doc comment on `streaming_request_body` —
-/// an earlier version of this paragraph claimed the opposite and was
-/// wrong).
+/// Connections are reused (v0.2 W2): see [`PoolConfig`], [`Native::pool`]
+/// and [`Native::without_pool`], and read [`crate::pool`]'s module doc for
+/// what "reused" costs when there is no `Spawn` to drive an idle
+/// connection. HTTP/1.1 only, no upgrade — see [`Native::new`] and
+/// [`Capabilities`], which state these limits honestly rather than staying
+/// silent about them. The request body is **not** buffered whole:
+/// `RequestBody::Streaming` goes to the wire as a stream (see
+/// [`Native::new`]'s doc comment on `streaming_request_body` — an earlier
+/// version of this paragraph claimed the opposite and was wrong).
 #[derive(Debug)]
-pub struct Native<R, T, D> {
+pub struct Native<R, T, D>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
     rt: R,
     tls: T,
     dns: D,
     opts: TcpOpts,
     caps: Capabilities,
+    /// The instant this transport was built, and the origin every pool
+    /// deadline is measured from.
+    ///
+    /// A `Timer` instant rather than `std::time::Instant`: `Timer` is the
+    /// one seam through which time reaches this crate, and a wall clock
+    /// read behind its back would disagree with a caller testing under
+    /// `tokio::time::pause()`. Storing an origin and comparing `Duration`s
+    /// against it — rather than storing an `R::Instant` per pooled entry —
+    /// is what keeps the pool and [`h1::NativeBody`] free of a second type
+    /// parameter for the runtime.
+    epoch: R::Instant,
+    pool: Pool<NativeIo<R, T>>,
 }
 
-/// `T: TlsConnect` on the constructor only — not on the struct — so the
-/// bound is paid where the answer is needed. `new` has to ask the TLS
-/// implementation what to advertise; nothing else about `Native` requires
-/// knowing.
-impl<R, T: TlsConnect, D> Native<R, T, D> {
+/// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
+/// v0.2 W2, where before only the constructor carried `T: TlsConnect`.
+/// The rule has not changed — the bound is still paid where the answer is
+/// needed — what changed is where the answer is needed: `Native` now
+/// *stores connections*, and the type of a connection is
+/// `NativeIo<R, T>`, which cannot be named without them. Before the pool,
+/// the only question needing `T: TlsConnect` was `new`'s "what should I
+/// advertise", and the bound sat on `new` alone for exactly that reason.
+impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
+        let pool = Pool::new(Some(PoolConfig::default()));
         let mut caps = Capabilities::none();
-        // Honest about v0.1: no connection pool, no upgrade — the
+        // Honest: no upgrade — the
         // remaining fields stay at the conservative baseline of
         // `Capabilities::none()` (see `tests/transport.rs`'s
         // `undeclared_capability_fields_match_their_conservative_defaults_today`).
@@ -96,6 +133,15 @@ impl<R, T: TlsConnect, D> Native<R, T, D> {
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         caps.redirects = RedirectSupport::Configurable;
+        // Asked of the pool, never written down twice. `reuse_of` reads the
+        // same `Option<PoolConfig>` the pool actually behaves on, so the
+        // capability cannot drift from the behaviour — which is the failure
+        // this project has caught four times, most recently as a field
+        // hardcoded to its strongest value instead of being asked for. Both
+        // values are reachable (`Native::without_pool`) and both are
+        // checked from outside the client, by a server counting the
+        // connections it accepted: `tests/pool.rs`.
+        caps.connection_reuse = reuse_of(&pool);
         // Structural, not a promise made in prose: `execute`'s future owns
         // everything the exchange runs on. The connected stream goes into
         // `h1::exchange`, which hands hyper's `Connection` future to
@@ -139,20 +185,49 @@ impl<R, T: TlsConnect, D> Native<R, T, D> {
             // Happy Eyeballs attempts two different deadlines let through,
             // not merely that a timeout fires.
             connect: true,
-            // v0.1 has neither a pool nor a response timer — claiming
-            // these phases would be a capability that lies about its own
-            // state.
+            // There is no response timer here — claiming these phases
+            // would be a capability that lies about its own state. (The
+            // pool arrived in v0.2 W2; these two did not arrive with it,
+            // and `first_byte` in particular is not the pool's idle
+            // timeout wearing a different name.)
             first_byte: false,
             between_bytes: false,
         };
         caps.upgrade = UpgradeSupport::None;
         Self {
+            epoch: rt.now(),
             rt,
             tls,
             dns,
             opts: TcpOpts::default(),
             caps,
+            pool,
         }
+    }
+
+    /// How this transport reuses connections — see [`PoolConfig`], and
+    /// [`crate::pool`]'s module doc for what reuse can and cannot promise
+    /// without a `Spawn` to drive an idle connection.
+    ///
+    /// Reuse is **on by default**, with [`PoolConfig::default`]; this
+    /// method is for changing the numbers, and [`Native::without_pool`] is
+    /// for turning it off.
+    pub fn pool(mut self, config: PoolConfig) -> Self {
+        self.pool = Pool::new(Some(config));
+        self.caps.connection_reuse = reuse_of(&self.pool);
+        self
+    }
+
+    /// One connection per request, closed when the response body ends —
+    /// what this transport did before v0.2 W2.
+    ///
+    /// `Capabilities::connection_reuse` becomes `ReuseSupport::None` to
+    /// match, because it is derived from the same value rather than set
+    /// alongside it.
+    pub fn without_pool(mut self) -> Self {
+        self.pool = Pool::new(None);
+        self.caps.connection_reuse = reuse_of(&self.pool);
+        self
     }
 
     /// Socket parameters for EVERY TCP attempt this transport makes (see
@@ -160,6 +235,97 @@ impl<R, T: TlsConnect, D> Native<R, T, D> {
     pub fn tcp_opts(mut self, opts: TcpOpts) -> Self {
         self.opts = opts;
         self
+    }
+}
+
+/// What a transport with this pool should advertise in
+/// [`Capabilities::connection_reuse`].
+///
+/// A function rather than a literal at each of the three sites that set the
+/// field, so that "the pool is configured" and "the capability says
+/// connections are reused" are the same fact read twice, not two facts kept
+/// in step by hand. The class of defect this is guarding against —
+/// a capability describing an intention rather than the code — has been
+/// caught four times in this workspace.
+fn reuse_of<I>(pool: &Pool<I>) -> ReuseSupport
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    match pool.config() {
+        Some(_) => ReuseSupport::Supported,
+        None => ReuseSupport::None,
+    }
+}
+
+/// The pool-facing half of the transport. Its bounds are the ones
+/// `Transport` needs anyway (`'static` on the two stream types is what
+/// hyper's handshake requires), kept in a separate block so `new` and the
+/// builder methods above don't inherit them.
+impl<R, T, D> Native<R, T, D>
+where
+    R: TcpConnect + Timer,
+    R::Stream: 'static,
+    T: TlsConnect,
+    T::Stream<R::Stream>: 'static,
+{
+    /// Which pool bucket this request belongs to — and, as a side effect
+    /// the rest of `execute` relies on, the point at which an unsupported
+    /// scheme or a missing host becomes a typed error.
+    ///
+    /// The same two checks `connect::connect` makes, in the same order, so
+    /// a request that would have failed there fails here instead, with the
+    /// identical error. That is not duplication for its own sake: the key
+    /// needs the authority before `origin_form` removes it, and a request
+    /// served from the pool never reaches `connect::connect` at all.
+    fn pool_key(&self, uri: &http::Uri) -> Result<PoolKey, Error> {
+        let host = connect::host(uri)?;
+        let use_tls = connect::wants_tls(uri)?;
+        let port = connect::port(uri, use_tls);
+        let security = if use_tls {
+            // The identity of the trust configuration, asked of the TLS
+            // backend rather than inferred from its type — see
+            // `http_ng_tls::TlsConfigId`.
+            Security::Tls(self.tls.config_id())
+        } else {
+            Security::Plaintext
+        };
+        Ok(PoolKey::new(security, host, port, Protocol::Http11))
+    }
+
+    /// The instruction to hand this request's connection back when its
+    /// response body ends cleanly — or `None` when reuse is off, which is
+    /// how `h1::exchange` is told to drop the sender and let hyper close.
+    fn checkin_for(&self, key: &PoolKey, now: Duration) -> Option<h1::CheckIn<NativeIo<R, T>>> {
+        let cfg = self.pool.config()?;
+        Some(h1::CheckIn::new(
+            self.pool.clone(),
+            key.clone(),
+            // Saturating: an idle timeout of `Duration::MAX` is a legal
+            // thing for a caller to ask for and means "never too old", and
+            // a panic on overflow would be a strange way to answer it.
+            now.saturating_add(cfg.idle_timeout),
+        ))
+    }
+
+    /// A pooled connection that is still worth a request, or `None`.
+    ///
+    /// Dead candidates are dropped as they are found — dropping closes the
+    /// socket — and the loop moves on to the next one, so a burst that left
+    /// several dead connections behind costs a walk through them rather
+    /// than a failed request. It terminates because every iteration removes
+    /// one entry from the pool and `take` returns `None` on an empty
+    /// bucket.
+    async fn checkout(
+        &self,
+        key: &PoolKey,
+        now: Duration,
+    ) -> Option<h1::Established<NativeIo<R, T>>> {
+        loop {
+            let mut est = self.pool.take(key, now)?;
+            if h1::is_reusable(&mut est).await {
+                return Some(est);
+            }
+        }
     }
 }
 
@@ -171,7 +337,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type Body = h1::NativeBody;
+    type Body = h1::NativeBody<NativeIo<R, T>>;
     type Error = Error;
 
     async fn execute(
@@ -196,6 +362,63 @@ where
             .copied()
             .unwrap_or_default();
 
+        // Which connections may serve this request. Computed BEFORE
+        // `origin_form` below rewrites the URI into origin-form and the
+        // authority stops being there to read — and, in doing so, this is
+        // now where the scheme and host are validated: `pool_key` runs the
+        // same `connect::wants_tls`/`connect::host` checks
+        // `connect::connect` runs, and fails with the same typed errors, so
+        // everything downstream may still assume they passed.
+        let key = self.pool_key(&parts.uri)?;
+        let uri = parts.uri.clone();
+
+        let outgoing = body::OutgoingBody::from_request_body(body);
+        let mut req = http::Request::from_parts(parts, outgoing);
+        // hyper h1 requires origin-form and a `Host:` header — `pool_key`
+        // above has already checked both host and scheme, so we don't
+        // recheck them here.
+        origin_form(&mut req);
+
+        // Elapsed on the runtime's own clock, from this transport's epoch —
+        // see the `epoch` field. Read once and used for both ends of the
+        // pool's bookkeeping (which entries are too old to hand out, and
+        // when the connection this request uses would become too old), so
+        // the two cannot disagree.
+        let now = self.rt.elapsed_since(self.epoch);
+
+        // 1. A connection somebody else already opened, if one is still
+        //    alive. `checkout` polls each candidate before offering it, and
+        //    that poll is the only thing standing between us and handing
+        //    out a socket the server closed while it was idle — see
+        //    `pool.rs`'s module doc.
+        let req = match self.checkout(&key, now).await {
+            None => req,
+            Some(est) => {
+                let checkin = self.checkin_for(&key, now);
+                match h1::exchange(est, req, checkin).await {
+                    Ok(resp) => return Ok(resp),
+                    // The one retry, and the reason it exists: a pool turns
+                    // "the server closed this connection while it was idle"
+                    // from something that could not happen into something
+                    // that happens to a request that did nothing wrong. The
+                    // condition is hyper's, not a guess of ours — it hands
+                    // the request back only when not a byte of it reached
+                    // the wire (`h1::Failed`), so what is resent below is
+                    // the original request object, its body untouched at
+                    // its first byte. No clone, no rewind, and nothing to
+                    // decide about idempotency: this is not a second
+                    // request, it is the first one, which never left.
+                    Err(h1::Failed::NotSent { request, .. }) => *request,
+                    Err(other) => return Err(other.into_error()),
+                }
+            }
+        };
+
+        // 2. A fresh connection. Reached either because the pool had
+        //    nothing live or because the pooled attempt handed the request
+        //    straight back; a fresh connection is never retried, so there
+        //    are at most two attempts and the second one cannot loop.
+        //
         // See the module doc comment: `connect::connect` isn't reuse for
         // code-size's sake, it's the only path on which a resolver
         // `ErrorKind` that differs from the synthetic one (in particular,
@@ -207,23 +430,40 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
-            &parts.uri,
+            &uri,
             &self.opts,
             &[b"http/1.1"],
         );
-        let (conn, _tls_info) = match timeouts.connect {
+        let (conn, tls_info) = match timeouts.connect {
             Some(d) => with_connect_timeout(&self.rt, d, connect_fut).await?,
             None => connect_fut.await?,
         };
 
-        let outgoing = body::OutgoingBody::from_request_body(body);
-        let mut req = http::Request::from_parts(parts, outgoing);
-        // hyper h1 requires origin-form and a `Host:` header — `connect::
-        // connect` has already checked both host and scheme, so we don't
-        // recheck them here.
-        origin_form(&mut req);
+        // The guard that keeps `PoolKey`'s protocol component honest: a
+        // connection is only allowed into the pool under `Protocol::Http11`
+        // if the protocol actually negotiated is one this transport speaks.
+        // `None` is not a failure of the check — plaintext has no ALPN, and
+        // `http-ng-tls-native-tls` cannot report one (its own module doc
+        // says so) — and it cannot be a lie today either, because
+        // `connect::connect` above offered exactly `http/1.1` and a server
+        // that answered with anything else would have failed the handshake.
+        // W3, which will offer `h2` as well, is where this stops being
+        // vacuous and starts being the thing that prevents an h2 socket
+        // from being handed to an h1 request.
+        let speaks_h1 = tls_info
+            .as_ref()
+            .and_then(|i| i.alpn.as_deref())
+            .is_none_or(|alpn| alpn == b"http/1.1");
+        let checkin = if speaks_h1 {
+            self.checkin_for(&key, now)
+        } else {
+            None
+        };
 
-        h1::exchange(conn, req).await
+        let est = h1::handshake(conn).await?;
+        h1::exchange(est, req, checkin)
+            .await
+            .map_err(h1::Failed::into_error)
     }
 
     /// Identity: `Self::Error` is already `http_ng_core::Error`, and its
@@ -498,17 +738,33 @@ pub mod testing {
         }
     }
 
+    /// One exchange over `io`, with no pool: the handshake and
+    /// `h1::exchange` in one call, exactly as `Native::execute` does them
+    /// for a fresh connection that is not to be reused.
+    ///
+    /// `None` for the check-in is not a simplification for tests' sake —
+    /// it is the same value `Native::execute` passes when reuse is off,
+    /// so what `tests/h1.rs` exercises is a real path rather than one that
+    /// exists only for it.
     pub async fn exchange_for_test<I>(
         io: I,
         req: http::Request<crate::body::OutgoingBody>,
-    ) -> Result<http::Response<crate::h1::NativeBody>, http_ng_core::Error>
+    ) -> Result<http::Response<crate::h1::NativeBody<I>>, http_ng_core::Error>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        crate::h1::exchange(io, req).await
+        let est = crate::h1::handshake(io).await?;
+        crate::h1::exchange(est, req, None)
+            .await
+            .map_err(crate::h1::Failed::into_error)
     }
 
-    pub async fn collect(b: crate::h1::NativeBody) -> Result<bytes::Bytes, http_ng_core::Error> {
+    pub async fn collect<I>(
+        b: crate::h1::NativeBody<I>,
+    ) -> Result<bytes::Bytes, http_ng_core::Error>
+    where
+        I: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
         use http_body_util::BodyExt;
         Ok(b.collect().await?.to_bytes())
     }

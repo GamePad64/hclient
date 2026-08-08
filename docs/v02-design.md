@@ -77,10 +77,27 @@ to the pool), idle timeouts (a new `Timeouts` field or a pool-level setting,
 not both), and `Capabilities`.
 
 **Capability.** A caller has to be able to tell "connections are reused" from
-"every request is a new socket", because it changes how they batch work. The
-honest shape has three answers, matching `RedirectSupport`'s precedent:
-reuse is ours and configurable, reuse is the host's and not ours to control
-(WASI, browser), or there is none.
+"every request is a new socket", because it changes how they batch work.
+
+**AMENDED WHILE BUILDING IT: two answers, not the three guessed here.**
+`http_ng_core::ReuseSupport` has `None` and `Supported`; its doc comment
+carries the argument, and the condition under which the third variant
+arrives. The short version: `RedirectSupport::Internal` earns its variant
+because `check_supported` *refuses* on it — there is a portable client-level
+setting (`ClientBuilder::redirect`) that an internal-redirect backend would
+silently ignore. Reuse has no such setting (the pool is configured on
+`Native`, since an idle timeout is not a property of a request), so nothing
+refuses, and "who owns the pool" turns no caller decision — the same axis
+`CancelSupport` rejected one work item earlier.
+
+**A finding from W2 that belongs to W7, recorded here because W7 needs it:**
+a pool driven by a spawned task is not merely undesirable on this seam, it
+does not compile. `http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and
+the native IO is deliberately not `Send` (`connect.rs`'s `FakeStream` holds
+an `Rc<()>` to prove no path requires it). So `Spawn` is not the thing that
+would have made the pool easy, and its absence on a future embassy runtime
+is a smaller obstacle than it looks — what the pool actually needed was a
+poll at checkout, which needs no executor at all.
 
 ---
 

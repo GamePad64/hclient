@@ -13,8 +13,8 @@ pub use body::Body;
 use convert::{Payload, TrailerWatch};
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
-    CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, Timeouts,
-    TlsSupport, UpgradeSupport,
+    CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport,
+    Timeouts, TlsSupport, UpgradeSupport,
 };
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
@@ -172,6 +172,24 @@ impl WasiHttp {
         // The control run, holding the same future instead of dropping it,
         // leaves the connection open through the whole observation window.
         caps.cancel_on_drop = CancelSupport::Supported;
+        // The guest has no socket of its own; the host makes the request
+        // and the host decides whether to keep the connection. Every
+        // `wasi:http` host worth using keeps HTTP/1.1 connections alive
+        // between outbound requests, so a caller batching work against one
+        // origin is not paying for a handshake per request — and saying
+        // `None` here would be a lie in the understating direction, which
+        // is still a lie.
+        //
+        // **Declared without an external observer, and named as such.** The
+        // same caveat `http-ng-fetch` records for the same field: nothing
+        // in this crate, and nothing in CI, can see whether two outbound
+        // requests shared a socket. `tests/live_roundtrip.rs`'s server does
+        // count connections it accepts, but what it would be measuring is
+        // wasmtime's outbound connection policy — a fact about one host on
+        // one day, not about `wasi:http` — so no test here asserts it.
+        // Contrast `cancel_on_drop` directly above, which is a fact about
+        // the Component Model and is measured.
+        caps.connection_reuse = ReuseSupport::Supported;
         caps.tls_config = TlsSupport::None;
         caps.upgrade = UpgradeSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();

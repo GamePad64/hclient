@@ -595,6 +595,12 @@ impl http_ng_tls::TlsConnect for NoOpTls {
         = S
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+    /// One stub, one configuration, one identity — drawn once rather than
+    /// per call, which is what `TlsConnect::config_id` requires.
+    fn config_id(&self) -> http_ng_tls::TlsConfigId {
+        static ID: std::sync::OnceLock<http_ng_tls::TlsConfigId> = std::sync::OnceLock::new();
+        *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
+    }
     async fn connect<S>(
         &self,
         io: S,

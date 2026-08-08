@@ -120,8 +120,17 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// A connection: with or without TLS. Both variants are `hyper::rt` IO.
+///
+/// `pub`, not `pub(crate)`, since v0.2 W2: it appears in the public
+/// signature of [`crate::Native`]'s `Transport::Body`
+/// (`NativeBody<NativeIo<R, T>>`), because the response body now holds its
+/// connection as a concrete type rather than a `Box<dyn Future>` — see
+/// `h1.rs`'s module doc comment for why that box had to go. Nothing here
+/// is meant to be constructed by a caller; it is nameable because Rust
+/// requires the type in a public signature to be nameable, not because it
+/// is an API.
 #[derive(Debug)]
-pub(crate) enum Conn<P, T> {
+pub enum Conn<P, T> {
     Plain(P),
     Tls(T),
 }
@@ -316,7 +325,7 @@ struct UriError;
 /// (e.g., origin-form `/path`) is rejected right here, before the
 /// question "which scheme" even comes up — there's no point asking a URI
 /// with nowhere to connect to about TLS.
-fn host(uri: &Uri) -> Result<&str, Error> {
+pub(crate) fn host(uri: &Uri) -> Result<&str, Error> {
     uri.host()
         .ok_or_else(|| Error::new(ErrorKind::Connect, UriError))
 }
@@ -332,7 +341,7 @@ fn host(uri: &Uri) -> Result<&str, Error> {
 /// different ports. Since the scheme is already constrained to
 /// `http`/`https` on the way in, a default port always exists — there's
 /// no separate "no port" error here anymore.
-fn port(uri: &Uri, use_tls: bool) -> u16 {
+pub(crate) fn port(uri: &Uri, use_tls: bool) -> u16 {
     uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 })
 }
 
@@ -343,7 +352,7 @@ struct UnsupportedScheme(String);
 /// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). Any
 /// other (or missing) scheme is a typed `ErrorKind::Unsupported`, not a
 /// silent treatment as `http`.
-fn wants_tls(uri: &Uri) -> Result<bool, Error> {
+pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
     match uri.scheme_str() {
         Some("http") => Ok(false),
         Some("https") => Ok(true),
@@ -1330,6 +1339,15 @@ mod tests {
             = S
         where
             S: Read + Write + Unpin;
+        /// One stub, one configuration, therefore one identity — drawn
+        /// once into a `OnceLock` rather than freshly on every call, which
+        /// is the contract `TlsConnect::config_id` states and which a
+        /// `NoOpTls::new_unique()` here would quietly break for anyone who
+        /// copied this stub.
+        fn config_id(&self) -> http_ng_tls::TlsConfigId {
+            static ID: std::sync::OnceLock<http_ng_tls::TlsConfigId> = std::sync::OnceLock::new();
+            *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
+        }
         async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(S, TlsInfo), Error>
         where
             S: Read + Write + Unpin,
