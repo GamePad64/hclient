@@ -45,6 +45,7 @@
 //! divergence cannot appear without a test failing and a fixed one cannot
 //! stay listed.
 
+#[cfg(icu_backend)]
 use http_ng_idn::testing;
 use rstest::rstest;
 

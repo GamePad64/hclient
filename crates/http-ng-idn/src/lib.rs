@@ -6,47 +6,65 @@
 //! which implementation answered, and is resolved by the same cell the
 //! conversion uses, so the two cannot drift apart.
 //!
-//! # Why this crate exists, and why the usual number for it is wrong
+//! # Why this crate exists — and on Linux it is no longer the size
 //!
-//! `http-ng-proto`'s `idn` feature pulls `idna` → `idna_adapter` →
-//! `icu_normalizer` + `icu_properties`. The figure this project has
-//! repeated for that — "roughly 1.9 MB" — is **vendored source on disk,
-//! not bytes in a binary**, and quoting it against a flash budget
-//! compares two different things. ICU4X stores its tables as compressed
-//! tries and the linker keeps only what is referenced.
+//! Two corrections to the usual justification, in order of how much they
+//! change it.
 //!
-//! Measured instead, on a binary that reads a domain from stdin so the
-//! call cannot be folded away — `opt-level = "z"`, LTO, `panic = abort`,
-//! `strip`, x86-64 Linux. Every row answers `straße.de` with
-//! `xn--strae-oqa.de`:
+//! **First, the number.** `http-ng-proto`'s `idn` feature pulls `idna` →
+//! `idna_adapter` → `icu_normalizer` + `icu_properties`, and the figure
+//! this project has repeated for that — "roughly 1.9 MB" — is **vendored
+//! source on disk, not bytes in a binary**. ICU4X stores its tables as
+//! compressed tries and the linker keeps only what is referenced.
+//! Measured on a binary that reads a domain from stdin so the call cannot
+//! be folded away (`opt-level = "z"`, LTO, `panic = abort`, `strip`,
+//! x86-64 Linux), the tables cost **128,784 B of `.rodata`** in a
+//! 448,184 B binary of 31 crates — not 1.9 MB.
 //!
-//! | build | binary | `.rodata` | crates |
+//! **Second, and this is the one that changed the crate's purpose: on
+//! Linux there is now no saving at all.** An ELF backend existed, reached
+//! `libicuuc.so.NN` through `dlopen`, and did save it — 306,568 B and 10
+//! crates, `.rodata` down to 23,864 B. It was removed deliberately, and
+//! the reason is written out under *Which platform* below: on Linux the
+//! ICU version is a property of the user's machine that nobody chose and
+//! nothing reports, and for IDN a Unicode version difference is a
+//! different host. Measured after the removal, same harness:
+//!
+//! | build, x86-64 Linux | binary | `.rodata` | crates |
 //! |---|---|---|---|
-//! | `idna` called directly — the incumbent, what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
-//! | the same, with `idna_adapter` pinned to 1.1.0 (unicode-rs) | 577,112 B | 257,936 B | **11** |
-//! | this crate, default, on a target with a system ICU | **306,568 B** | **23,864 B** | **10** |
+//! | `idna` called directly — what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
+//! | this crate, default | 448,920 B | 129,144 B | 34 |
 //!
-//! **The middle row is why this crate justifies itself on data rather
-//! than on crate count.** Pinning `idna_adapter` to the unicode-rs
-//! backend is one `cargo update`, needs no code, no `unsafe` and no new
-//! crate, and it collapses the graph. It is a real answer to "36 crates
-//! with `idn`, 10 without", which is how this project has usually stated
-//! the problem. What it does not do is remove any Unicode data: it
-//! **doubles** it, 129 KiB of `.rodata` to 258 KiB — and it buys those
-//! crates with a Unicode version *behind* ICU4X's, which for IDN means a
-//! different host, not a cosmetic difference. It was rejected here for
-//! exactly that reason.
+//! **+736 bytes and +3 crates, for the same answer.** That is the honest
+//! accounting on Linux, and it is stated first rather than buried,
+//! because the earlier version of this section claimed a 138 KiB saving
+//! that a Linux build no longer gets.
 //!
-//! So the two were never competing solutions to one problem. The pin
-//! trades bytes, and correctness, for crates. This crate removes the
-//! bytes: **102.5 KiB of `.rodata` and 138.3 KiB of binary**, because the
-//! tables it uses are already on the machine — and it gets the crate
-//! count as well, 31 down to 10. On a 256 KB part that is the difference
-//! between half the flash and none of it, which is the claim worth
-//! making. "1.9 MB" was not it.
+//! The saving survives only where a platform ICU is linked statically
+//! against an OS-versioned ABI, which today means Windows alone. Its
+//! magnitude there is **unverified**: measuring it needs a Windows
+//! linker, and none produced this crate. What would settle it is the
+//! same stdin harness built on a `windows-latest` runner.
 //!
-//! Those are the two backends, and a build has exactly one of them —
-//! chosen by target, not by a flag (see *Features* below).
+//! So what is the crate for, on the two targets where it saves nothing?
+//! Three things it does that a direct `idna` call does not:
+//!
+//! - **one seam and one policy point.** The option word, the error mask
+//!   and the deny list are decided once, here, instead of at each call
+//!   site — and they are the three things the *Contract* section below
+//!   shows are easy to get individually wrong.
+//! - **the corpus.** `tests/differential.rs` pins both implementations'
+//!   answers on 32 rows; that is what makes "the platform agrees" a
+//!   measurement rather than a hope, and it is shared by every target.
+//! - **a typed error and an honest [`Backend`]**, instead of a `bool`
+//!   from a conversion that silently did something else.
+//!
+//! One alternative was measured and rejected rather than argued about:
+//! pinning `idna_adapter` to 1.1.0 (the unicode-rs backend) is one
+//! `cargo update`, needs no code and collapses the graph to 11 crates —
+//! but it **doubles** the Unicode data, 128,784 B of `.rodata` to
+//! 257,936 B, and runs a Unicode version behind ICU4X, which for IDN is a
+//! different host rather than a cosmetic difference.
 //!
 //! # The contract: this is `idna::domain_to_ascii_cow(_, AsciiDenyList::URL)`
 //!

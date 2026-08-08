@@ -27,16 +27,28 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(idna_backend)");
 
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
-    let vendor = std::env::var("CARGO_CFG_TARGET_VENDOR").unwrap_or_default();
 
-    // The targets with a system UTS 46 this crate can reach: Windows
-    // (`icu.dll`/`icuuc.dll`) and ELF unixes (`libicuuc.so.NN`). Apple is
-    // excluded because `libicucore.dylib` is private and Foundation's
-    // conversion is only reachable through a whole URL parse; wasm has no
-    // dynamic loader at all. See the crate docs for both in full.
-    let platform_has_icu =
-        os == "windows" || (family.split(',').any(|f| f == "unix") && vendor != "apple");
+    // **Windows and nothing else.** The rule is not "does this OS ship an
+    // ICU somewhere" but "is there a stable, statically linkable ABI whose
+    // version comes with the OS":
+    //
+    // - Windows: yes. `icuuc.dll` is part of the OS from 10 1703, its
+    //   exports are unsuffixed (`U_DISABLE_RENAMING`), `windows-sys`
+    //   declares them from Microsoft's own metadata, and the import is
+    //   resolved at link time.
+    // - Linux and other ELF unixes: no, and this is the case that was
+    //   built and then deliberately removed. Both the soname and every
+    //   symbol carry the ICU major version (`libicuuc.so.78`,
+    //   `uidna_openUTS46_78`), so reaching them at all meant `dlopen` plus
+    //   a version search — and what came back was whatever ICU that
+    //   machine happens to carry, on a Unicode version nobody chose and
+    //   nothing reports. For IDN a Unicode version difference is a
+    //   different host, so that is a correctness risk taken on for a size
+    //   saving. Removed; see the crate docs.
+    // - macOS: `libicucore.dylib` is private, and Foundation's UTS 46 is a
+    //   side effect of parsing a whole URL.
+    // - wasm: nothing to link.
+    let platform_has_icu = os == "windows";
 
     let feature = |name: &str| std::env::var_os(format!("CARGO_FEATURE_{name}")).is_some();
     let (platform, bundled, system_icu) = (
