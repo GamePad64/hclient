@@ -16,8 +16,10 @@ http-ng-core     = { workspace = true }
 http-ng-dns      = { path = "../http-ng-dns", version = "0.1.0" }
 
 [dev-dependencies]
+assert_matches   = { workspace = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
-tokio            = { version = "1", features = ["macros", "rt-multi-thread"] }
+rstest           = { workspace = true }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

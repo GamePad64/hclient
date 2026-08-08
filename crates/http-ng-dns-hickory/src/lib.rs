@@ -209,13 +209,182 @@ mod tests {
     use hickory_resolver::proto::rr::rdata::a::A;
     use hickory_resolver::proto::rr::rdata::aaaa::AAAA;
     use hickory_resolver::proto::rr::rdata::svcb::{
-        Alpn, EchConfigList, IpHint, Mandatory, SvcParamKey, SvcParamValue,
+        Alpn, EchConfigList, IpHint, Mandatory, SvcParamKey, SvcParamValue, Unknown,
     };
+    use rstest::rstest;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::str::FromStr;
 
     fn svcb(params: Vec<(SvcParamKey, SvcParamValue)>) -> SVCB {
         SVCB::new(1, Name::from_str("example.com.").unwrap(), params)
+    }
+
+    /// The key a parameter is filed under on the wire.
+    ///
+    /// `to_endpoint` matches on the parameter's VALUE and ignores the key it
+    /// was paired with, so a fixture that paired them wrongly would still
+    /// pass while describing a record no server could send. Deriving the key
+    /// from the value keeps every fixture honest. There is no public
+    /// `SvcParamValue::key()` in hickory 0.26 to borrow.
+    fn key_of(value: &SvcParamValue) -> SvcParamKey {
+        match value {
+            SvcParamValue::Mandatory(_) => SvcParamKey::Mandatory,
+            SvcParamValue::Alpn(_) => SvcParamKey::Alpn,
+            SvcParamValue::NoDefaultAlpn => SvcParamKey::NoDefaultAlpn,
+            SvcParamValue::Port(_) => SvcParamKey::Port,
+            SvcParamValue::Ipv4Hint(_) => SvcParamKey::Ipv4Hint,
+            SvcParamValue::Ipv6Hint(_) => SvcParamKey::Ipv6Hint,
+            SvcParamValue::EchConfigList(_) => SvcParamKey::EchConfigList,
+            other => unreachable!("no wire key for {other:?}"),
+        }
+    }
+
+    /// A record carrying exactly one parameter, filed under its own key.
+    fn one(value: SvcParamValue) -> SVCB {
+        svcb(vec![(key_of(&value), value)])
+    }
+
+    /// What every field of a parameterless record must look like. The cases
+    /// below compare against this with `..bare()`, so each one asserts not
+    /// only that its own field was filled but that no OTHER field was — which
+    /// is what catches a mapping that puts the right value in the wrong home.
+    fn bare() -> SvcbEndpoint {
+        SvcbEndpoint {
+            priority: 1,
+            target: "example.com.".to_owned(),
+            alpn: Vec::new(),
+            port: None,
+            ipv4hint: Vec::new(),
+            ipv6hint: Vec::new(),
+            ech_config_list: None,
+        }
+    }
+
+    /// One parameter in, exactly one field out — and every other field left
+    /// as a bare record leaves it.
+    ///
+    /// Comparing whole `SvcbEndpoint` values is safe here, and that was
+    /// checked rather than assumed: every hickory type these fixtures build
+    /// (`SVCB`, `SvcParamKey`, `SvcParamValue`, `Alpn`, `IpHint`,
+    /// `EchConfigList`, `Mandatory`) uses a plain `#[derive(PartialEq)]` in
+    /// hickory-proto 0.26, and `SvcbEndpoint` itself is derived over std
+    /// types. The sibling crate `http-ng-dns-system` cannot do this:
+    /// `dns-message-parser`'s `ServiceParameter` compares only the key
+    /// number, so `ALPN{["h2"]} == ALPN{["h3"]}` there.
+    #[rstest]
+    #[case::alpn_keeps_the_order_the_server_sent(
+        // Neither sorted nor reverse-sorted, so a mapping that ordered the
+        // list rather than preserving it cannot match by luck. The order is
+        // the server's preference, and h3-before-h2 is the whole point.
+        SvcParamValue::Alpn(Alpn(vec!["h3".to_owned(), "http/1.1".to_owned(), "h2".to_owned()])),
+        SvcbEndpoint {
+            alpn: vec![b"h3".to_vec(), b"http/1.1".to_vec(), b"h2".to_vec()],
+            ..bare()
+        },
+    )]
+    #[case::port(SvcParamValue::Port(8443), SvcbEndpoint { port: Some(8443), ..bare() })]
+    #[case::port_zero_is_a_port_that_was_sent_not_an_absence(
+        SvcParamValue::Port(0),
+        SvcbEndpoint { port: Some(0), ..bare() },
+    )]
+    #[case::ipv4hint_keeps_every_address_in_order(
+        SvcParamValue::Ipv4Hint(IpHint(vec![
+            A(Ipv4Addr::new(192, 0, 2, 1)),
+            A(Ipv4Addr::new(198, 51, 100, 2)),
+        ])),
+        SvcbEndpoint {
+            ipv4hint: vec![Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(198, 51, 100, 2)],
+            ..bare()
+        },
+    )]
+    #[case::ipv6hint_keeps_every_address_in_order(
+        SvcParamValue::Ipv6Hint(IpHint(vec![
+            AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+            AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2)),
+        ])),
+        SvcbEndpoint {
+            ipv6hint: vec![
+                Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
+                Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2),
+            ],
+            ..bare()
+        },
+    )]
+    #[case::ech_passes_through_byte_for_byte(
+        // Leading and trailing zero bytes: this is an opaque blob handed
+        // straight to rustls, and anything that trimmed or truncated it
+        // would produce a config that fails only at handshake time.
+        SvcParamValue::EchConfigList(EchConfigList(vec![0x00, 0x45, 0xFE, 0x00, 0x00])),
+        SvcbEndpoint {
+            ech_config_list: Some(bytes::Bytes::from_static(&[0x00, 0x45, 0xFE, 0x00, 0x00])),
+            ..bare()
+        },
+    )]
+    #[case::no_default_alpn_has_no_field_and_disturbs_none(SvcParamValue::NoDefaultAlpn, bare())]
+    #[case::mandatory_has_no_field_and_disturbs_none(
+        SvcParamValue::Mandatory(Mandatory(vec![SvcParamKey::Alpn])),
+        bare(),
+    )]
+    fn one_parameter_fills_exactly_the_field_it_belongs_in(
+        #[case] value: SvcParamValue,
+        #[case] expected: SvcbEndpoint,
+    ) {
+        assert_eq!(to_endpoint(&one(value)), expected);
+    }
+
+    /// AliasMode is SvcPriority 0 (RFC 9460 §2.4.2). It has to arrive as 0:
+    /// a mapping that treated 0 as "unset" would present every alias record
+    /// as a ServiceMode one, and the caller would try to connect to a target
+    /// that is only meant to be followed.
+    #[test]
+    fn priority_zero_arrives_as_zero_rather_than_as_a_default() {
+        let alias = SVCB::new(
+            0,
+            Name::from_str("example.net.").unwrap(),
+            vec![(SvcParamKey::Port, SvcParamValue::Port(8443))],
+        );
+        let e = to_endpoint(&alias);
+        assert_eq!(e.priority, 0, "0 is AliasMode, not a missing priority");
+        assert_eq!(e.target, "example.net.");
+    }
+
+    /// RFC 9460 §2.5.2: a ServiceMode target of `.` means "use the owner
+    /// name". Resolving that is the caller's business — this crate hands
+    /// over what the server sent, and `.` must survive as `.` rather than
+    /// collapsing to an empty string that no comparison would match.
+    #[test]
+    fn a_root_target_survives_as_the_root() {
+        assert_eq!(
+            to_endpoint(&SVCB::new(1, Name::root(), Vec::new())).target,
+            "."
+        );
+    }
+
+    /// A key from the private-use range carries an `Unknown` value this crate
+    /// has no branch for. It must be stepped over — and, more than that, the
+    /// parameters AFTER it must still be read. A `_ => return out` would pass
+    /// any test that put the unknown key last.
+    #[test]
+    fn an_unknown_parameter_is_stepped_over_and_the_rest_of_the_record_still_maps() {
+        let e = to_endpoint(&svcb(vec![
+            (
+                SvcParamKey::Alpn,
+                SvcParamValue::Alpn(Alpn(vec!["h2".to_owned()])),
+            ),
+            (
+                SvcParamKey::Key(65280),
+                SvcParamValue::Unknown(Unknown(vec![0x09, 0x09])),
+            ),
+            (SvcParamKey::Port, SvcParamValue::Port(8443)),
+        ]));
+
+        assert_eq!(e.alpn, vec![b"h2".to_vec()]);
+        assert_eq!(
+            e.port,
+            Some(8443),
+            "the parameter after the unknown one is still read — an unknown key \
+             narrows the record, it does not truncate it"
+        );
     }
 
     /// Every parameter this project has a field for is carried across, and
