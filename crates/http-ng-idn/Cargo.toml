@@ -1,0 +1,116 @@
+[package]
+name = "http-ng-idn"
+version = "0.1.0"
+description = "IDN (UTS 46) domain-to-ASCII for http-ng, through the platform's own ICU where there is one"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Turns the `platform` feature into `icu_backend`/`idna_backend` by
+# target, and refuses a feature combination the target cannot satisfy. The
+# target predicate lives there and in the two `[target.…]` tables below,
+# and nowhere else.
+build = "build.rs"
+
+# A leaf on purpose: no `http-ng-core`, no `http-ng-proto`, nothing else
+# from this workspace. The whole point is that a build may take this crate
+# INSTEAD of the Unicode tables, and a crate that dragged the rest of the
+# client in with it could not be used that way.
+[dependencies]
+thiserror = { workspace = true }
+
+# Both backends are optional AND target-scoped, and that is what makes one
+# default mean different things on different targets. Cargo features
+# cannot vary by target; dependencies can, so the target tables are where
+# the variation has to live.
+
+# Targets with a reachable system UTS 46 — the same predicate as
+# `build.rs`, which is the only other place it appears.
+# ELF unixes: nothing stable to link against, because ICU's symbols and
+# soname are both version-suffixed here — so the entry points are resolved
+# at run time. `libloading` does that half: 467M downloads, one transitive
+# dependency (`cfg-if`), MSRV 1.88, well under this workspace's floor. The
+# `unsafe` left over is the three signatures and their calls, in
+# `src/icu/elf.rs` alone (spec amendment C9).
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+libloading = { version = "0.9", optional = true }
+
+# Windows: `icuuc.dll` is linked, not resolved, because its ICU is built
+# with `U_DISABLE_RENAMING` and the exports are unsuffixed. `windows-sys`
+# already declares `uidna_openUTS46`, `uidna_nameToASCII_UTF8`,
+# `uidna_close`, `UIDNAInfo` and every `UIDNA_*` constant, GENERATED from
+# Microsoft's Win32 metadata — so nothing is transcribed by hand on this
+# platform and `src/icu/windows.rs` has no `extern` block at all.
+#
+# The cost, recorded because it is a real one: `windows-link` emits a
+# `raw-dylib` LOAD-TIME import, so a Windows without `icuuc.dll` (10
+# before 1703, and Server 2016) does not fall back — the process fails to
+# start. That is why this backend states a hard floor rather than
+# degrading, and why the ELF side, which has to resolve at run time
+# anyway, is the one that falls back gracefully.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Globalization",
+] }
+
+# Everywhere else — macOS, wasm, anything unrecognised.
+[target.'cfg(not(any(windows, all(unix, not(target_vendor = "apple")))))'.dependencies]
+# The same call `http-ng-proto` makes today, so this backend is exactly
+# current behaviour. `default-features = false` plus the two features
+# named explicitly is copied from `http-ng-proto`'s manifest for the
+# reason it gives there: a future change to `idna`'s defaults must not
+# silently change what is in this graph.
+idna = { version = "1.1", optional = true, default-features = false, features = [
+    "std",
+    "compiled_data",
+] }
+
+[dev-dependencies]
+rstest = { workspace = true }
+assert_matches = { workspace = true }
+# **The oracle, and deliberately a dev-dependency** — the same role `url`
+# plays for `http-ng-proto`'s `tests/uri_resolution.rs`. The whole claim
+# of this crate is that the platform agrees with `idna`, and that
+# comparison has to be possible on the very targets where `idna` is NOT a
+# normal dependency, which is all the ones that have a system ICU. As a
+# dev-dependency it reaches no downstream build: `cargo tree -e normal`
+# for this crate has no `idna` on Linux or Windows, with or without any
+# feature, and the CI job checks exactly that.
+idna = { version = "1.1", default-features = false, features = [
+    "std",
+    "compiled_data",
+] }
+
+[features]
+# Resolved by target in `build.rs`, not by the person building: the
+# platform's ICU where the target has one (Windows, ELF unixes), the
+# bundled tables where it does not (macOS, wasm). Same principle as
+# `http-ng`'s `DefaultTransport` — the default is a fact about the target,
+# rather than a choice that can be got wrong.
+default = ["platform"]
+platform = ["dep:idna", "dep:libloading", "dep:windows-sys"]
+
+# Force one backend, for a build that wants it regardless of the default.
+# Each is only satisfiable on the targets whose table above declares the
+# dependency — `bundled` on Linux has no `idna` to enable — so `build.rs`
+# turns an unsatisfiable request into a compile error naming the target,
+# rather than a feature that quietly does nothing.
+bundled = ["dep:idna"]
+system-icu = ["dep:libloading", "dep:windows-sys"]
+
+# NOT `[lints] workspace = true`, for the same reason `http-ng-fetch`
+# (amendment C7) and `http-ng-dns-system` (amendment C8) are not: the
+# workspace table sets `unsafe_code = "forbid"`, and `forbid` cannot be
+# relaxed from inside a crate (`E0453`). This crate carries the project's
+# fourth and fifth `unsafe` files — the ICU calls in
+# `src/icu/elf.rs` and `src/icu/windows.rs` — which need `deny`, overridable by a scoped `#[allow]`,
+# not `forbid`. See
+# `docs/superpowers/specs/2026-08-05-http-ng-design.md` amendment C9.
+#
+# `missing_debug_implementations` and `unexpected_cfgs` are restated here
+# because opting out of the workspace table drops them along with
+# `unsafe_code`.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }
