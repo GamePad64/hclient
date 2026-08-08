@@ -60,8 +60,7 @@ fn ech_is_refused_before_the_transport_is_touched() {
         ech: Some(&[1, 2, 3]),
     };
     let err = futures_executor::block_on(tls.connect(NeverTouched, req))
-        .err()
-        .expect("ECH must be refused, not ignored");
+        .expect_err("ECH must be refused, not ignored");
     assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
     assert!(
         err.to_string().to_lowercase().contains("ech"),

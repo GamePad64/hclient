@@ -50,8 +50,7 @@ fn no_tls_refuses_and_names_the_host_without_touching_the_transport() {
         ech: None,
     };
     let err = futures_executor::block_on(NoTls.connect(NeverTouched, req))
-        .err()
-        .expect("NoTls must refuse every connection");
+        .expect_err("NoTls must refuse every connection");
     assert_eq!(*err.kind(), ErrorKind::Tls, "{err}");
     assert!(
         err.to_string().contains("example.com"),
