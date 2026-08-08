@@ -96,8 +96,58 @@ Three ways out, and the choice must be made before any h2 code is written:
    returns a reference precisely because recomputing per call does not
    compile without leaking.
 
-Recommendation: (1), with the floor rule kept for `capabilities()` so no
-existing caller is silently reinterpreted.
+**DECIDED: the floor, and it is not blanket conservatism — it is chosen per
+field by what over-claiming costs.**
+
+The three options above treat `Capabilities` as one question. It is not. Two
+of its fields fail in completely different ways when wrong, and that
+difference decides the answer:
+
+- Over-claiming `streaming_request_body` costs a **buffered copy**. The
+  caller hands over a streaming body, the transport cannot stream it, and it
+  is buffered or rejected. Recoverable, and visible.
+- Over-claiming `full_duplex` costs a **deadlock**. A caller structured for
+  bidirectional streaming writes its request body while reading the
+  response; on h1 the response does not arrive until the request completes,
+  and the request does not complete until the caller reads. That is a hang,
+  not a degradation — and this project already documents the shape of it
+  (`AGENTS.md`: "a caller that never reads the response body never finishes
+  writing the request body either"). A capability whose over-claim hangs the
+  program cannot be optimistic.
+
+So: **`capabilities()` reports the value that holds on the WORST protocol
+the transport might negotiate**, with the h2 feature on or off. It never
+lies, it cannot hang a caller, and — the reason it must be this and not
+best-case — it is the only answer a *library* can act on, since feature
+unification means a library never knows whether some other crate in the
+build enabled h2.
+
+Note how narrow this actually is. Comparing what `Native` sets today
+(`lib.rs`: six fields) against what h2 would change:
+
+| field | h1 | h2 | changes? |
+|---|---|---|---|
+| `streaming_request_body` | `true` — h1 streams via `transfer-encoding: chunked`, and a test pins it | `true` | **no** |
+| `full_duplex` | `false` | `true` | yes |
+| `request_trailers` / `response_trailers` | `false` today | `true` | yes |
+
+One field of consequence, not a category. The "capabilities cannot express a
+per-connection fact" framing overstated the problem: for the field that
+matters, the per-connection answer arrives *after* the caller has already
+had to commit to a structure, so a per-connection answer would not help even
+if the trait could carry one.
+
+**The negotiated protocol is already observable, and no new API is needed
+for it.** `Response::version()` returns `http::Version` and `Native` already
+sets `version_reported: true`. A caller that wants to know what it got, gets
+it — after the fact, which is the only honest time.
+
+**What h2's extras need instead: an explicit opt-in that refuses.** A caller
+who genuinely needs duplex asks for it, and gets a typed error if h1 was
+negotiated. That converts the dangerous case from a silent hang into a
+refusal — the same move `check_supported` already makes for a
+`RedirectPolicy` against a backend that follows redirects internally. Design
+the opt-in in W3; do not widen `capabilities()` to carry it.
 
 **Both h2 and h3 sit behind a cargo feature on `http-ng-native`** — owner's
 decision. There is no `[features]` section in that crate today and `hyper`
@@ -189,9 +239,14 @@ wait until W3 lands.
 
 ## Decisions needed before work starts
 
-1. **How `Capabilities` expresses a per-connection fact** (W3). Everything
-   in h2 depends on it, and getting it wrong reproduces the defect this
-   project has caught four times.
+1. ~~**How `Capabilities` expresses a per-connection fact**~~ **Decided:
+   it does not — `capabilities()` reports the floor** (W3). The framing
+   overstated the problem: only `full_duplex` and trailers differ between h1
+   and h2, `streaming_request_body` is already `true` and honest on both,
+   and for `full_duplex` a per-connection answer would arrive after the
+   caller had to commit anyway. h2's extras get an explicit opt-in that
+   errors when h1 was negotiated, rather than a capability that can hang a
+   caller by being optimistic.
 2. **Whether the pool is configurable through `Client` or only through
    `Native`.** The first is friendlier; the second keeps the facade free of
    a concept two backends do not have.
