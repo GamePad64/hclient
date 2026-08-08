@@ -127,7 +127,7 @@ where
 /// because it was harmless. `Body`'s own `chunk_is_terminal_after_an_error_
 /// and_does_not_poll_the_body_again` (in `tests/response.rs`) now pins the
 /// non-coincidental case directly.
-fn classify_body_error<E>(e: E) -> Error
+pub(crate) fn classify_body_error<E>(e: E) -> Error
 where
     E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {

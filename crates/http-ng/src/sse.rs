@@ -1,4 +1,5 @@
 use crate::client::Client;
+use crate::deadline::Deadline;
 use crate::response::Response;
 use bytes::Bytes;
 use http_body::Body as HttpBody;
@@ -264,9 +265,15 @@ impl Default for SseOptions {
 
 /// Builds either a plain [`SseStream`] (`connect`) or a reconnecting one
 /// (`with_timer(..).connect()`). Returned by [`Client::sse`].
+/// `C` is the CLIENT's clock — the one a total timeout is measured with
+/// — carried here only so the response body can hold that deadline. It is
+/// NOT the reconnect backoff clock, which arrives separately through
+/// [`Self::with_timer`] and is `Tm` throughout this file. The two are
+/// independent on purpose: a caller can want reconnect without a total
+/// bound, or a bound without reconnect.
 #[derive(Debug)]
-pub struct SseBuilder<'a, T> {
-    client: &'a Client<T>,
+pub struct SseBuilder<'a, T, C = crate::DefaultClock> {
+    client: &'a Client<T, C>,
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
@@ -279,8 +286,8 @@ pub struct SseBuilder<'a, T> {
     error: Option<Error>,
 }
 
-impl<'a, T: Transport> SseBuilder<'a, T> {
-    pub(crate) fn new(client: &'a Client<T>, url: &str) -> Self {
+impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
+    pub(crate) fn new(client: &'a Client<T, C>, url: &str) -> Self {
         Self {
             client,
             url: url.to_owned(),
@@ -364,7 +371,7 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
     /// `Duration` and resolves immediately, so a test can assert the
     /// backoff actually computed the interval it should have, which a
     /// thread-backed clock could only do by really waiting.
-    pub fn with_timer<Tm: Timer>(self, timer: Tm) -> ReconnectingSseBuilder<'a, T, Tm> {
+    pub fn with_timer<Tm: Timer>(self, timer: Tm) -> ReconnectingSseBuilder<'a, T, C, Tm> {
         ReconnectingSseBuilder {
             builder: self,
             timer,
@@ -374,7 +381,7 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
     /// A single connection attempt, exactly [`SseStream::new`]'s contract —
     /// no reconnect, because there is no timer to wait out a backoff delay
     /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
-    pub async fn connect(self) -> Result<SseStream<T::Body>, Error>
+    pub async fn connect(self) -> Result<SseStream<Deadline<T::Body, C>>, Error>
     where
         T::Body: HttpBody<Data = Bytes> + Unpin,
         <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -396,12 +403,12 @@ impl<'a, T: Transport> SseBuilder<'a, T> {
 
 /// Builds a [`ReconnectingSseStream`]. Returned by [`SseBuilder::with_timer`].
 #[derive(Debug)]
-pub struct ReconnectingSseBuilder<'a, T, Tm> {
-    builder: SseBuilder<'a, T>,
+pub struct ReconnectingSseBuilder<'a, T, C, Tm> {
+    builder: SseBuilder<'a, T, C>,
     timer: Tm,
 }
 
-impl<'a, T: Transport, Tm: Timer> ReconnectingSseBuilder<'a, T, Tm> {
+impl<'a, T: Transport, C: Timer + Clone, Tm: Timer> ReconnectingSseBuilder<'a, T, C, Tm> {
     /// Forwards to [`SseBuilder::header`] — see its doc comment.
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.builder = self.builder.header(name, value);
@@ -423,7 +430,7 @@ impl<'a, T: Transport, Tm: Timer> ReconnectingSseBuilder<'a, T, Tm> {
     /// started yet. Reconnect (with backoff) only applies to a stream that
     /// was successfully opened at least once and later dropped — see
     /// `ReconnectingSseStream::next`.
-    pub async fn connect(self) -> Result<ReconnectingSseStream<'a, T, Tm>, Error>
+    pub async fn connect(self) -> Result<ReconnectingSseStream<'a, T, C, Tm>, Error>
     where
         T::Body: HttpBody<Data = Bytes> + Unpin,
         <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -462,15 +469,16 @@ impl<'a, T: Transport, Tm: Timer> ReconnectingSseBuilder<'a, T, Tm> {
 /// timeouts, and the rest of `Client`'s stages apply exactly as they do to
 /// an ordinary request), and validates the response with the SAME
 /// `validate_sse_response` the plain `SseStream::new` uses.
-async fn open<T>(
-    client: &Client<T>,
+async fn open<T, C>(
+    client: &Client<T, C>,
     caller_headers: &http::HeaderMap,
     url: &str,
     last_event_id: Option<&str>,
     max_event_size: usize,
-) -> Result<SseStream<T::Body>, Error>
+) -> Result<SseStream<Deadline<T::Body, C>>, Error>
 where
     T: Transport,
+    C: Timer + Clone,
     T::Body: HttpBody<Data = Bytes> + Unpin,
     <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
     T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -666,8 +674,8 @@ enum ReconnectState<B> {
 /// `Tm`. Built by [`ReconnectingSseBuilder::connect`], reachable from
 /// [`Client::sse`]`.with_timer(..)`.
 #[derive(Debug)]
-pub struct ReconnectingSseStream<'a, T: Transport, Tm> {
-    client: &'a Client<T>,
+pub struct ReconnectingSseStream<'a, T: Transport, C: Timer, Tm> {
+    client: &'a Client<T, C>,
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
@@ -695,15 +703,16 @@ pub struct ReconnectingSseStream<'a, T: Transport, Tm> {
     /// The most recently seen server `retry:` value, if any — see `next`'s
     /// doc comment for how it interacts with `options.backoff`.
     server_retry: Option<Duration>,
-    state: ReconnectState<T::Body>,
+    state: ReconnectState<Deadline<T::Body, C>>,
 }
 
-impl<'a, T, Tm> ReconnectingSseStream<'a, T, Tm>
+impl<'a, T, C, Tm> ReconnectingSseStream<'a, T, C, Tm>
 where
     T: Transport,
     T::Body: HttpBody<Data = Bytes> + Unpin,
     <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
     T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    C: Timer + Clone,
     Tm: Timer,
 {
     /// The last event ID seen, across any number of reconnects — the value

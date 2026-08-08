@@ -6,6 +6,7 @@
 
 mod client;
 mod config;
+mod deadline;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -21,6 +22,7 @@ mod stages;
 
 pub use client::{Client, ClientBuilder};
 pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
+pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
 // Task 17 fix round 1: this list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `http-ng-core` type
 // reachable from the signature, a field, or a variant of something already
@@ -179,3 +181,55 @@ pub type DefaultTransport = http_ng_native::Native<
     target_os = "unknown"
 ))]
 pub type DefaultTransport = http_ng_fetch::Fetch;
+
+/// The clock `Client` measures a total timeout with when the caller does
+/// not supply one — chosen by **the target**, exactly like
+/// [`DefaultTransport`], and for the same reason: a clock that only exists
+/// on one target would put a `#[cfg]` in the facade crate, which is what
+/// `crates/http-ng-rt-pair-check` exists to prevent and what
+/// `SseBuilder::with_timer`'s doc comment already argues against at
+/// length.
+///
+/// This alias is the second type parameter's default, so
+/// `Client::new()?.total_timeout(d)` needs no clock argument **and stays
+/// `Client`** — the type does not grow parameters because a timeout was
+/// switched on. That property is not cosmetic: `struct App { http: Client
+/// }` is the shape a consumer actually writes, and `docs/v02-design.md`
+/// §W5 rejects tower layers for compression on exactly this ground.
+/// `crates/http-ng/tests/deadline_client_type.rs` pins it.
+///
+/// - Non-wasm, with `default-transport`: [`http_ng_rt_tokio::Tokio`] — the
+///   very clock already inside `DefaultTransport`
+///   (`Native<Tokio, Rustls, SystemDns<Tokio>>`), not a second one. Its
+///   `sleep` panics outside a tokio runtime, the same condition
+///   [`Client::new`] already documents.
+/// - `wasm32-unknown-unknown`, with `default-transport`:
+///   [`http_ng_fetch::BrowserClock`], a `setTimeout` clock. `Fetch` has no
+///   clock inside it, so unlike the native branch this one is a genuinely
+///   separate choice — the browser's transport and the browser's clock are
+///   two independent facts.
+/// - Without the feature: [`NoClock`], which cannot measure anything. Every
+///   setter that could put a bound on a client with this clock is
+///   `#[cfg]`-ed away with the feature, so nothing silently fails to be
+///   measured — see [`NoClock`]'s own doc comment for the complete list.
+/// - `wasm32-wasip2` with the feature: no branch, the same deliberate
+///   compile error as [`DefaultTransport`] there.
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+pub type DefaultClock = http_ng_rt_tokio::Tokio;
+
+/// The browser branch of [`DefaultClock`] — see the other branch's doc
+/// comment for the full per-target table.
+#[cfg(all(
+    feature = "default-transport",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
+pub type DefaultClock = http_ng_fetch::BrowserClock;
+
+/// The clockless branch of [`DefaultClock`]: without the
+/// `default-transport` feature there is no target-chosen clock to point
+/// at, so the default clock is the one that measures nothing. See the
+/// first branch's doc comment, and [`NoClock`] for why that is not a
+/// silent no-op.
+#[cfg(not(feature = "default-transport"))]
+pub type DefaultClock = NoClock;

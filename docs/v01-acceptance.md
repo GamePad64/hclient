@@ -80,6 +80,17 @@ three and no whole-request deadline, so the migration documented in
 [`porting-wasi-fetch.md`](porting-wasi-fetch.md) loses nothing — but it is a
 gap, not a design position.
 
+> Closed in v0.2 W4, and not as a fourth `Timeouts` field: the bound lives
+> in `Client`, because only the client knows where the operation begins and
+> ends (its redirect loop is inside it), and it is set together with the
+> clock that measures it — `ClientBuilder::total_timeout(clock, d)`, or
+> `Client::total_timeout(d)` on a client already carrying the target's
+> default clock. Expiry is `ErrorKind::Timeout(Phase::Total)` and drops the
+> exchange. The dribbling response above is the test that pins it
+> (`crates/http-ng/tests/deadline.rs`); the one case it does not cover — a
+> body that falls completely silent after the head — is `between_bytes`,
+> still `false` on native. See `docs/v02-design.md` §W4.
+
 ## What remains unverified
 
 `RequestBody::Streaming` does not pass through any transport: native buffers

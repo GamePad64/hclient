@@ -32,6 +32,7 @@
 ))]
 
 use http_ng::{Capabilities, Client, RedirectPolicy, RedirectSupport};
+use std::time::Duration;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -180,4 +181,42 @@ async fn a_request_that_mentions_no_redirect_policy_is_not_rejected() {
     let client = Client::new();
     let resp = client.get(&harness_page_url()).send().await.unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ── v0.2 W4: the whole-operation bound, on the target where the clock is
+// the browser's ────────────────────────────────────────────────────────
+
+/// The browser half of `tests/deadline_client_type.rs` (which is gated to
+/// non-wasm): switching a total timeout on must not change `Client`'s
+/// type here either.
+///
+/// It is a separate fact from the native one, not a copy: on this target
+/// `DefaultClock` resolves to `http_ng_fetch::BrowserClock`, a `setTimeout`
+/// clock, and unlike the native branch it is NOT the clock already sitting
+/// inside `DefaultTransport` — `Fetch` has none. If that alias were left
+/// as `NoClock` here, this file would stop compiling, which is the point.
+#[wasm_bindgen_test]
+async fn a_total_timeout_does_not_change_the_clients_type_in_a_browser() {
+    let plain: Client = Client::new();
+    let bounded: Client = plain.total_timeout(Duration::from_secs(30));
+    assert_eq!(bounded.config().total, Some(Duration::from_secs(30)));
+}
+
+/// And the bound runs against the real browser clock without firing on a
+/// request that finishes well inside it. The cutting behaviour itself is
+/// proven on native (`tests/deadline.rs`, against a server that dribbles
+/// for ever); what this adds is that `BrowserClock::sleep` — `setTimeout`
+/// through `js_sys` — is actually driveable from inside `Client::execute`
+/// on this target, which no host test can show.
+#[wasm_bindgen_test]
+async fn a_generous_total_leaves_a_prompt_browser_response_alone() {
+    let c = Client::new().total_timeout(Duration::from_secs(30));
+    let resp = c
+        .get(&harness_page_url())
+        .send()
+        .await
+        .expect("the harness's own page is fetchable");
+    assert!(resp.status().is_success());
+    let body = resp.collect().await.expect("body collects").text().unwrap();
+    assert!(!body.is_empty());
 }

@@ -225,6 +225,42 @@ happens.
   sockets. `tower::limit::concurrency` fits, and reserves its permit in
   `poll_ready` — the contract `http-ng-tower`'s tests already pin.
 
+  **Correction, measured while doing it: the layer bounds requests, not
+  sockets.** `tower`'s permit is dropped when its response future
+  completes, i.e. at the response HEAD; the body streams on afterwards
+  holding its connection, so with a limit of N there can be more than N
+  connections open. Pinned by
+  `crates/http-ng-tower/tests/concurrency.rs`'s
+  `the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded`.
+  Bounding sockets needs a limiter that carries its permit into the
+  response body — the shape `http-ng-wasi`'s `Body` and `http_ng::Deadline`
+  both use — which `http-ng-tower` would have to own rather than borrow
+  from `tower`. Not written; it matters most to W2, which is where a
+  connection count becomes a real resource rather than an incidental one.
+
+**Status: the first and third bullets are done; the middle one is not.**
+`Timeouts.total` shipped as a bound in `Client` — `ClientBuilder::
+total_timeout(clock, d)` for any transport, `Client::total_timeout(d)` for
+a client already carrying the target's default clock — expiring as
+`ErrorKind::Timeout(Phase::Total)` and dropping the exchange rather than
+only reporting on it. It is deliberately NOT a fourth field of `Timeouts`:
+that struct is what transports read out of `http::Extensions` and enforce,
+and no transport can enforce a bound on an operation whose redirect loop it
+does not own — a `TimeoutSupport::total` would be a capability describing
+the client. What could be missing instead is a clock, and that is settled
+in the type system (`http_ng::NoClock`), not by a runtime refusal. See
+`crates/http-ng/src/deadline.rs`, and `tests/deadline.rs` for the server
+that dribbles for ever.
+
+Two limits of it, both stated in the code rather than only here: a body
+that goes **completely silent** after the head is not cut (nothing polls
+the wrapper again, and the deadline holds no sleep of its own — see
+`Deadline`'s doc comment for why it cannot without making every response
+body `!Send`), which is `between_bytes`'s job, i.e. the middle bullet; and
+there is no per-request override yet, only per-client — a `Client` handle
+with a different bound costs one `Arc` bump, which covers most of the same
+ground.
+
 ---
 
 ## W5 — Compression
