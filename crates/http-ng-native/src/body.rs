@@ -347,7 +347,7 @@ mod tests {
     // the void, reads as `Pending` — see `SinkIo::poll_read`'s doc
     // comment), plus one real `hyper::client::conn::http1::handshake` with
     // a real `SendRequest::send_request`. Polled by hand, `Waker::noop()`
-    // (stable since 1.85 — the same MSRV floor the vertical already uses;
+    // (stable since 1.85, comfortably under this project's MSRV;
     // the technique is already used in `http-ng-tls::tests::poll_once`):
     // the whole path — handshake, writing headers, the body failing,
     // delivering the error into `send_request` — fits into one poll of

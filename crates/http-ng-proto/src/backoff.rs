@@ -69,10 +69,10 @@ impl Backoff {
     /// see `MAX_DOUBLINGS` for why this is bounded work even for
     /// `attempt: u32::MAX`.
     pub fn delay(&self, attempt: u32, jitter: f64) -> Option<Duration> {
-        if let Some(limit) = self.max_attempts {
-            if attempt >= limit {
-                return None;
-            }
+        if let Some(limit) = self.max_attempts
+            && attempt >= limit
+        {
+            return None;
         }
 
         let mut raw = self.base.min(self.max);

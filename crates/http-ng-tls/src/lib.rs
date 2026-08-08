@@ -132,7 +132,7 @@ mod tests {
     /// Polls a single `Future`/`poll_fn` synchronously and demands
     /// immediate readiness. Every future in this module's tests is built
     /// on `Loopback`, which never returns `Pending` — a real executor
-    /// would add nothing here; `Waker::noop()` (stable since 1.85, this
+    /// would add nothing here; `Waker::noop()` (stable since 1.85, well under this
     /// vertical's MSRV) settles the matter without an extra dependency
     /// like `futures-executor` for a single synchronous poll.
     fn poll_once<F: Future>(mut fut: Pin<&mut F>) -> F::Output {

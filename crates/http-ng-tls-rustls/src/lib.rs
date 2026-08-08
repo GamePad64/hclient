@@ -3,7 +3,7 @@
 //! **rustls does not appear in `http-ng`'s public API** — otherwise 0.24's
 //! release would become our own breaking release. 0.24 is expected to
 //! bring: the `std` feature removed, providers split out into
-//! `rustls-ring`/`rustls-aws-lc-rs`, MSRV 1.85, edition 2024. One
+//! `rustls-ring`/`rustls-aws-lc-rs`, edition 2024. One
 //! rewritten crate is budgeted for.
 //!
 //! `forbid`, not `deny` (see `http-ng-rt`, Task 2 of vertical 2, fix round

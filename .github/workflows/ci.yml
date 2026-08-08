@@ -204,23 +204,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           # `http-ng-fetch` (Task 1 of vertical 3) is wasm-only — see below
           # for why it needs its own `cargo check` call, on its own target,
-          # rather than joining `$pkgs`.
+          # rather than joining the workspace check.
           targets: wasm32-unknown-unknown
       - shell: bash
         run: |
           set -euo pipefail
-          pkgs=""
-          for p in http-ng-proto http-ng-core http-ng http-ng-rt http-ng-rt-tokio http-ng-rt-smol http-ng-rt-pair-check http-ng-dns http-ng-dns-system http-ng-tls http-ng-tls-rustls http-ng-native; do
-            if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
-          done
-          if [ -z "$pkgs" ]; then
-            echo "::error::the workspace crates is missing — every crate in this workspace exists, so this is a broken path or a renamed crate, not a not-yet-written one; the check must run, not skip"
-            exit 1
-          fi
+          # No hand-maintained crate list any more. It named twelve
+          # crates and excluded `http-ng-wasi`, which used to declare its
+          # own higher `rust-version`; with the MSRV policy now "the
+          # latest stable", nothing in the workspace diverges, so
+          # `--workspace` covers everything and cannot silently omit a
+          # crate added later — which the list could, and which is the
+          # failure mode this file spends most of its length preventing.
           # `--all-targets` — resolution from the branch's final review (§4,
           # "only appears protected"). Without it, only lib targets were
           # checked, and `tests/` were NEVER checked at 1.85 during the
@@ -229,70 +228,26 @@ jobs:
           # exactly the consumer who trusted that promise and wanted to run
           # the test suite themselves.
           #
-          # `http-ng-wasi` is deliberately excluded from this job: it has its
-          # own `rust-version = "1.90"` (a `wasip3` requirement), the
-          # divergence is documented in its Cargo.toml. `http-ng-rt` (Task 1
-          # of vertical 2) was added to the list: the workspace
-          # `rust-version = "1.85"` is a shared promise, and the vertical's
-          # Global Constraints plan does not pin `http-ng-rt` to its own,
-          # higher minimum (unlike `http-ng-wasi`), so it is checked here
-          # along with the rest. `http-ng-rt-tokio` (Task 3) was added for
-          # the same reason: it declares no own `rust-version`, so it
-          # carries the workspace minimum and must build at 1.85.
-          # `http-ng-rt-smol` (Task 4) is the same case a third time: it
-          # also declares no own `rust-version`. `http-ng-rt-pair-check`
-          # (Task 4, fix round 1) is the fourth: `publish = false` (this is
-          # a property proof, not a publishable crate), but
-          # `rust-version.workspace = true` in its Cargo.toml is the same
-          # promise already checked for the other five, and
-          # `publish = false` does not cancel it. `http-ng-dns` (Task 6 of
-          # vertical 2) is the eighth: it also declares no own
-          # `rust-version` (`rust-version.workspace = true` in its
-          # Cargo.toml), so it carries the same workspace minimum as the
-          # other seven.
-          # `http-ng-dns-system` (Task 7 of vertical 2) is the ninth: the
-          # same case a fourth time (after `http-ng-rt`, `http-ng-rt-tokio`,
-          # `http-ng-rt-smol`) — it declares no own `rust-version`,
-          # `rust-version.workspace = true` in its Cargo.toml, so it carries
-          # the workspace minimum of 1.85 and must build at it alongside the
-          # other eight.
-          # `http-ng-tls` (Task 8 of vertical 2) is the tenth: the same case
-          # a fifth time — it also declares no own `rust-version`
-          # (`rust-version.workspace = true` in its Cargo.toml), carries the
-          # workspace minimum of 1.85 and must build at it alongside the
-          # other nine.
-          # `http-ng-tls-rustls` (Task 9 of vertical 2) is the eleventh: the
-          # same case a sixth time — it also declares no own `rust-version`
-          # (`rust-version.workspace = true` in its Cargo.toml). It pulls in
-          # `rustls` (0.23, requires `std`+`ring`+`tls12`) and, under
-          # `--all-features` here, also `rustls-platform-verifier` and
-          # `webpki-roots` — none of these dependencies declares an own
-          # `rust-version` above the workspace minimum, so the crate must
-          # build at 1.85 alongside the other ten.
-          # `http-ng-native` (Task 10 of vertical 2) is the twelfth: the
-          # same case a seventh time — it also declares no own
-          # `rust-version` (`rust-version.workspace = true` in its
-          # Cargo.toml). It pulls in `hyper` (already checked via
-          # `http-ng-rt`/`http-ng-tls`) and the core crates themselves,
-          # `http-ng-core`/`http-ng-proto` — none raises the minimum above
-          # 1.85, so the crate must build at it alongside the other eleven.
-          # The `$pkgs` list is twelve crates, and `--all-targets` does not
-          # expand it.
-          cargo check $pkgs --all-features --all-targets
+          # Nothing in the workspace declares a `rust-version` of its own
+          # any more. `http-ng-wasi` used to (1.90, a `wasip3` requirement)
+          # and was excluded here for it; under the "latest stable" policy
+          # that override sits below the floor and was removed, so the crate
+          # is checked with the rest.
+          cargo check --workspace --all-features --all-targets
 
-          # `http-ng-fetch` (Task 1 of vertical 3) does NOT join `$pkgs`
+          # `http-ng-fetch` (Task 1 of vertical 3) is NOT covered by the
           # above: everything else in that list is a native crate, checked
           # on the job's default host target
           # (`x86_64-unknown-linux-gnu`), and `http-ng-fetch` has no
           # meaningful native build at all — it's `web-sys`/`wasm-bindgen`
-          # over the browser `fetch` API. Folding it into `$pkgs` would
+          # over the browser `fetch` API. Folding it into the host check would
           # either silently host-check it (which type-checks — `wasm-
           # bindgen`'s externs stay inert off wasm32 rather than failing —
           # but never touches any `#[cfg(target_arch = "wasm32")]` branch,
           # so it isn't a faithful MSRV check of the code that actually
           # ships) or, if `--target wasm32-unknown-unknown` were added to
           # the shared `cargo check` line instead, break every native
-          # crate in `$pkgs` that depends on `tokio`/`std::net` and cannot
+          # crate in the workspace that depends on `tokio`/`std::net` and cannot
           # build for wasm32 at all. So it gets its own call, on its own
           # target, verified to actually need it: `cargo +1.85.0 check -p
           # http-ng-fetch --all-features --all-targets --target

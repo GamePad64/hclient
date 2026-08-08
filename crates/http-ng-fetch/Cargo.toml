@@ -61,6 +61,15 @@ repository.workspace = true
 #    `into_stream(self) -> IntoStream<'static>`, a
 #    `Stream<Item = Result<JsValue, JsValue>>` — the exact shape 0.6.0
 #    also has. This is the option taken: `wasm-streams = "0.5"` below.
+#
+#    **The MSRV reason for this choice is gone.** The whole analysis above
+#    was driven by a 1.85 floor that 0.6.0's `rust-version = "1.88"` broke.
+#    The project's MSRV is now the latest stable, so 0.6.0 is reachable and
+#    staying on 0.5 is a preference rather than a constraint. Left alone
+#    deliberately: the two versions expose the same shape by the analysis
+#    above, so moving gains nothing on its own, and a dependency bump is a
+#    change to make on its own merits with its own testing — not a silent
+#    side effect of raising the MSRV.
 #    Only one 0.5.x release exists today (0.5.0), so the range and the
 #    exact pin currently resolve identically; the range is kept (matching
 #    how `wasm-bindgen`/`web-sys` are floored elsewhere in this file, not

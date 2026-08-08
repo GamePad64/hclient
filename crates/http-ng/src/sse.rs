@@ -492,11 +492,11 @@ where
     // same as never having set it) both take this branch and both send
     // nothing; they differ only in what `ReconnectingSseStream::
     // last_event_id()` reports, not in request behavior.
-    if let Some(id) = last_event_id {
-        if !id.is_empty() {
-            let v = http::HeaderValue::from_str(id).map_err(|e| Error::new(ErrorKind::Other, e))?;
-            headers.insert(http::HeaderName::from_static("last-event-id"), v);
-        }
+    if let Some(id) = last_event_id
+        && !id.is_empty()
+    {
+        let v = http::HeaderValue::from_str(id).map_err(|e| Error::new(ErrorKind::Other, e))?;
+        headers.insert(http::HeaderName::from_static("last-event-id"), v);
     }
 
     let mut req = http::Request::new(RequestBody::Empty);

@@ -433,20 +433,16 @@ where
                     // the original `race_connect` brief explicitly
                     // guarded against by checking `attempts.is_empty()`
                     // before the race.
-                    if !v6_done {
-                        if let Poll::Ready(item) = v6_stream.as_mut().poll_next(cx) {
-                            return Poll::Ready(Event::V6(item));
-                        }
+                    if !v6_done && let Poll::Ready(item) = v6_stream.as_mut().poll_next(cx) {
+                        return Poll::Ready(Event::V6(item));
                     }
-                    if !v4_done {
-                        if let Poll::Ready(item) = v4_stream.as_mut().poll_next(cx) {
-                            return Poll::Ready(Event::V4(item));
-                        }
+                    if !v4_done && let Poll::Ready(item) = v4_stream.as_mut().poll_next(cx) {
+                        return Poll::Ready(Event::V4(item));
                     }
-                    if !attempts.is_empty() {
-                        if let Poll::Ready(item) = Pin::new(&mut attempts).poll_next(cx) {
-                            return Poll::Ready(Event::Attempt(item));
-                        }
+                    if !attempts.is_empty()
+                        && let Poll::Ready(item) = Pin::new(&mut attempts).poll_next(cx)
+                    {
+                        return Poll::Ready(Event::Attempt(item));
                     }
                     if sleep_fut.as_mut().poll(cx).is_ready() {
                         return Poll::Ready(Event::TimedOut);
