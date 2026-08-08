@@ -633,6 +633,50 @@ mod alpn_guard {
         accepted.load(Ordering::SeqCst)
     }
 
+    /// The half of the key's security component that can be reached from
+    /// outside today: a plaintext connection must never serve an `https://`
+    /// request, nor the reverse.
+    ///
+    /// The other half — two different TLS *configurations* to the same
+    /// origin — cannot be reached this way, because a pool belongs to one
+    /// `Native` and a `Native` owns one `TlsConnect`, so within any one pool
+    /// the identity is a constant. That is written down on
+    /// `pool::PoolKey`, along with why the component is there anyway; the
+    /// identities themselves are checked at the `TlsConnect` level, in
+    /// `http-ng-tls-rustls/tests/config_id.rs`.
+    ///
+    /// The stub performs no encryption, so both requests really do speak
+    /// plain HTTP/1.1 to the same fixture server on the same port. Nothing
+    /// but the key stops the second one from reusing the first one's
+    /// connection.
+    #[tokio::test]
+    async fn a_plaintext_connection_is_not_handed_to_an_https_request() {
+        let (addr, accepted) = counting_server(Behaviour::default());
+        let client = Client::builder(Native::new(
+            Tokio,
+            ReportsAlpn(b"http/1.1"),
+            SystemDns::new(Tokio),
+        ))
+        .build()
+        .unwrap();
+
+        for url in [format!("http://{addr}/"), format!("https://{addr}/")] {
+            let resp = tokio::time::timeout(BOUND, client.get(&url).send())
+                .await
+                .expect("must not hang")
+                .expect("request must succeed");
+            assert_eq!(resp.status(), 200);
+            assert_eq!(resp.collect().await.unwrap().text().unwrap(), "ok");
+        }
+
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "`http://` and `https://` to the same host and port are different \
+             pool keys, whatever the socket underneath happens to be"
+        );
+    }
+
     #[tokio::test]
     async fn a_connection_negotiated_as_http11_is_pooled() {
         assert_eq!(accepted_for(b"http/1.1").await, 1);
