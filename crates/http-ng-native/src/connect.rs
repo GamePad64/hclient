@@ -173,14 +173,9 @@ impl<P: Write + Unpin, T: Write + Unpin> Write for Conn<P, T> {
 // config was outside the RFC-recommended range) stays visible through a
 // separate type and a separate `ErrorKind`.
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("all {0} connection attempts failed")]
 pub(crate) struct AllAttemptsFailed(pub(crate) usize);
-impl std::fmt::Display for AllAttemptsFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "all {} connection attempts failed", self.0)
-    }
-}
-impl std::error::Error for AllAttemptsFailed {}
 
 /// No address arrived for either family — and THIS DISTINGUISHES whether
 /// the cause was the resolver failing, or the resolver honestly finishing
@@ -257,23 +252,15 @@ impl ResolveErrors {
 /// value, because its signature is fixed by the task's interface — `Self`,
 /// not `Result`. THIS module's signature isn't fixed by anything, so here
 /// it's a typed error rather than the same silent clamp two layers down.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "attempt_delay {requested:?} is outside the RFC 8305 recommended range and would be \
+     silently clamped to {effective:?}; pass a value inside the range instead"
+)]
 struct InvalidHeConfig {
     requested: Duration,
     effective: Duration,
 }
-impl std::fmt::Display for InvalidHeConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "attempt_delay {:?} is outside the RFC 8305 recommended range and would be \
-             silently clamped to {:?}; pass a value inside the range instead",
-            self.requested, self.effective
-        )
-    }
-}
-impl std::error::Error for InvalidHeConfig {}
-
 /// Builds a [`Scheduler`], rejecting an out-of-range `attempt_delay` as a
 /// typed error — instead of accepting `Scheduler::new`'s silent clamp
 /// as-is.
@@ -302,14 +289,9 @@ fn build_scheduler(cfg: HeConfig) -> Result<Scheduler, Error> {
     Ok(sched)
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("request URI has no host to connect to")]
 struct UriError;
-impl std::fmt::Display for UriError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("request URI has no host to connect to")
-    }
-}
-impl std::error::Error for UriError {}
 
 /// The host from `uri`, regardless of scheme: a URI with no authority
 /// (e.g., origin-form `/path`) is rejected right here, before the
@@ -335,14 +317,9 @@ fn port(uri: &Uri, use_tls: bool) -> u16 {
     uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 })
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("unsupported URI scheme: {0:?}")]
 struct UnsupportedScheme(String);
-impl std::fmt::Display for UnsupportedScheme {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unsupported URI scheme: {:?}", self.0)
-    }
-}
-impl std::error::Error for UnsupportedScheme {}
 
 /// `true` — TLS is needed (`https`), `false` — plain TCP (`http`). Any
 /// other (or missing) scheme is a typed `ErrorKind::Unsupported`, not a

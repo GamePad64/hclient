@@ -64,14 +64,9 @@ pub struct SseStream<B> {
     done: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("not an SSE stream: {0}")]
 struct SseRejected(&'static str);
-impl std::fmt::Display for SseRejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "not an SSE stream: {}", self.0)
-    }
-}
-impl std::error::Error for SseRejected {}
 
 /// WHATWG's terminal rules for a (re)connection attempt, factored out of
 /// `SseStream::new` so [`Client::sse`]'s reconnect path shares exactly this
@@ -634,7 +629,8 @@ fn effective_delay(
 /// `downcast_ref::<ReconnectExhausted>()` on `Error::source()` is how a
 /// caller tells them apart — the same idiom as `mock::QueueEmpty` and
 /// `client::TooMany`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("gave up reconnecting the SSE stream after {attempts} attempt(s)")]
 struct ReconnectExhausted {
     /// How many reconnect attempts were actually made before giving up —
     /// NOT `max_attempts` restated: `Backoff::max_attempts` is the ceiling,
@@ -642,17 +638,6 @@ struct ReconnectExhausted {
     /// the configured policy.
     attempts: u32,
 }
-impl std::fmt::Display for ReconnectExhausted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "gave up reconnecting the SSE stream after {} attempt(s)",
-            self.attempts
-        )
-    }
-}
-impl std::error::Error for ReconnectExhausted {}
-
 /// Where a [`ReconnectingSseStream`] currently stands. `B` is `T::Body` —
 /// the SAME concrete body type every (re)connection produces, since every
 /// (re)connection goes through the same `Client<T>`.
