@@ -1,5 +1,5 @@
 [package]
-name = "http-ng-native-tls"
+name = "http-ng-tls-native-tls"
 version = "0.1.0"
 description = "http-ng's native-tls TLS backend — the platform's own TLS stack behind the same hyper::rt-typed seam"
 edition.workspace = true

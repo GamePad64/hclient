@@ -654,20 +654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-ng-native-tls"
-version = "0.1.0"
-dependencies = [
- "async-native-tls",
- "futures-executor",
- "futures-io",
- "http-ng-core",
- "http-ng-rt",
- "http-ng-tls",
- "hyper",
- "native-tls",
-]
-
-[[package]]
 name = "http-ng-proto"
 version = "0.1.0"
 dependencies = [
@@ -731,6 +717,20 @@ version = "0.1.0"
 dependencies = [
  "http-ng-core",
  "hyper",
+]
+
+[[package]]
+name = "http-ng-tls-native-tls"
+version = "0.1.0"
+dependencies = [
+ "async-native-tls",
+ "futures-executor",
+ "futures-io",
+ "http-ng-core",
+ "http-ng-rt",
+ "http-ng-tls",
+ "hyper",
+ "native-tls",
 ]
 
 [[package]]

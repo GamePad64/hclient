@@ -3,8 +3,8 @@
 //! transport.
 
 use http_ng_core::ErrorKind;
-use http_ng_native_tls::NativeTls;
 use http_ng_tls::{TlsConnect, TlsRequest};
+use http_ng_tls_native_tls::NativeTls;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
