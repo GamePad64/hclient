@@ -1208,8 +1208,7 @@ amendment-CN`, checked by its own CI job (`no-unsafe-code`). Those are **C7**
 (`http-ng-fetch/src/promise.rs`), **C8**
 (`http-ng-dns-system/src/sys/res_query.rs` and
 `http-ng-dns-system/src/sys/windows.rs`) and **C9**
-(`http-ng-idn/src/icu/elf.rs` and `http-ng-idn/src/icu/windows.rs`), and
-the two families are never
+(`http-ng-idn/src/icu/windows.rs`), and the two families are never
 interchangeable: each job matches only its own token, and each
 `unsafe-code-exception` marker is additionally pinned to the file paths its
 amendment names.
@@ -2031,18 +2030,31 @@ refusal into an empty result, reading the additional section instead of the
 answer section, each of the four header-classification bounds, and both
 `classify_written` bounds.
 
-### C9. `unsafe` for the platform's UTS 46, in the two files this amendment names
+### C9. `unsafe` for the platform's UTS 46, in the one file this amendment names
 
 The third exception to "no crate writes `unsafe`", and the second at a
 foreign-function boundary. It reuses C8's mechanism verbatim —
 `#![deny(unsafe_code)]` in place of `forbid` for one crate, a per-line
 `unsafe-code-exception` marker, and a CI check that path-scopes that marker to
 the one file this amendment names — under its own token
-`unsafe-code-exception: amendment-C9`, for **`crates/http-ng-idn/src/icu/elf.rs`
-and `crates/http-ng-idn/src/icu/windows.rs`, and nothing else** — one file
-per platform backend, exactly as C8 names one per platform. `icu/mod.rs`
-sitting between them is deliberately not among them, and neither is
-`lib.rs`, and neither is a directory.
+`unsafe-code-exception: amendment-C9`, for **`crates/http-ng-idn/src/icu/windows.rs`
+and nothing else**. `icu/mod.rs` above it is deliberately not among them,
+and neither is `lib.rs`, and neither is a directory.
+
+**It named two files until the ELF backend was removed**, and the removal
+is the more interesting half of this amendment: `icu/elf.rs` reached
+`libicuuc.so.NN` through `dlopen` because both the soname and every symbol
+carry the ICU major version, and it worked — the corpus was validated
+against a real ICU 78.2 through it, which is how the option word and the
+error mask were established in the first place. It was deleted anyway. On
+Linux the ICU version is a property of the user's machine that nobody
+chooses and nothing reports, and for IDN a Unicode version difference is a
+different host; that is a correctness risk accepted in exchange for a size
+saving. The rule the project settled on is narrower than "the platform has
+an ICU": **static linkage against an ABI the OS versions for us**, which
+today is Windows alone. Deleting an `unsafe` file is the best outcome
+available to this amendment family, and it is recorded here so the next
+person does not re-add it for the size number.
 
 **Why the platform's UTS 46 cannot be reached in safe Rust.** Not because
 nobody has wrapped ICU — because nobody has wrapped *this part* of it.

@@ -32,7 +32,6 @@ EXEMPT="http-ng-fetch http-ng-dns-system http-ng-idn"   # amendments C7, C8 and 
 ALLOWED="crates/http-ng-fetch/src/promise.rs:amendment-C7
 crates/http-ng-dns-system/src/sys/res_query.rs:amendment-C8
 crates/http-ng-dns-system/src/sys/windows.rs:amendment-C8
-crates/http-ng-idn/src/icu/elf.rs:amendment-C9
 crates/http-ng-idn/src/icu/windows.rs:amendment-C9"
 fail=0
 

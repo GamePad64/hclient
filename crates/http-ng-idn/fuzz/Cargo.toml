@@ -1,0 +1,34 @@
+[package]
+name = "http-ng-idn-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Default features, i.e. whatever backend this target resolves to. The
+# properties fuzzed here are the crate's OWN safe layer — the deny list,
+# the error mask, the ASCII and A-label handling — and that layer sits in
+# front of every backend, so this target is meaningful on a Linux runner
+# even though Linux has no platform backend.
+#
+# There is deliberately NO `idna` here and no differential assertion. On a
+# target with the bundled backend `domain_to_ascii` *is*
+# `idna::domain_to_ascii_cow`, so comparing the two would be comparing
+# `idna` with itself — a fuzzer that cannot fail. The differential claim is
+# the corpus's job (`tests/differential.rs`, 32 rows against a real ICU
+# 78.2), and it belongs there because it needs a platform backend to mean
+# anything.
+http-ng-idn = { path = ".." }
+
+[[bin]]
+name = "idn_policy"
+path = "fuzz_targets/idn_policy.rs"
+test = false
+doc  = false
+bench = false
+
+[workspace]

@@ -50,10 +50,12 @@ use windows_sys::Win32::Globalization::{
     UIDNA, UIDNAInfo, uidna_close, uidna_nameToASCII_UTF8, uidna_openUTS46,
 };
 
-/// The same assertion `elf.rs` makes about its hand-written struct, made
-/// here about the generated one. If Microsoft's metadata and ICU's header
-/// ever part company on this, the call would be refused at run time with
-/// `U_ILLEGAL_ARGUMENT_ERROR` on a machine nobody here can test.
+/// The generated struct, asserted against the size the removed ELF
+/// backend's hand-written one also had — the two agreed field for field,
+/// which is the only cross-check this layout ever got. If Microsoft's
+/// metadata and ICU's header ever part company, the call is refused at
+/// run time with `U_ILLEGAL_ARGUMENT_ERROR` on a machine nobody here can
+/// test, and the acceptance gate turns that into a fallback.
 const _: () = assert!(size_of::<UIDNAInfo>() == UIDNA_INFO_SIZE as usize);
 
 /// `UIDNA_INFO_INITIALIZER`, which `windows-sys` does not generate: only

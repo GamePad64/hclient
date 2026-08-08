@@ -5,30 +5,38 @@
 //! `forbid` is not usable here (it propagates into the child modules,
 //! which are the crate's foreign-function boundaries), so the crate
 //! root's `deny` stands — and CI's `unsafe-code-policy.sh` path-scopes
-//! the `amendment-C9` marker to `icu/windows.rs` and `icu/elf.rs` alone,
-//! so an `unsafe` block added HERE fails the build exactly as it would in
-//! any other crate. That split is the point of the file: the two backends
-//! do nothing but call C, and every decision about whether to believe the
-//! answer lives here, in safe code.
+//! the `amendment-C9` marker to `icu/windows.rs` alone, so an `unsafe`
+//! block added HERE fails the build exactly as it would in any other
+//! crate. That split is the point of the file: the backend does nothing
+//! but call C, and every decision about whether to believe the answer
+//! lives here, in safe code.
 //!
-//! # Why the two backends are not the same shape
+//! # One backend, and the rule that makes it the only one
 //!
-//! They differ in the one thing that matters for an HTTP client — what
-//! happens on a machine that has no ICU.
+//! **Static linking against an ABI whose version comes with the OS.**
+//! `windows.rs` links `icuuc.dll` through `windows-sys`, whose
+//! declarations are generated from Microsoft's own Win32 metadata.
+//! Windows' ICU is built with `U_DISABLE_RENAMING`, so the exports are
+//! unsuffixed and there is a stable name to link against; `windows-link`
+//! emits a `raw-dylib` import that the *linker* resolves. Nothing in this
+//! crate calls `LoadLibrary` or `dlopen`.
 //!
-//! - **Windows (`windows.rs`)** links `icuuc.dll` through `windows-sys`,
-//!   whose declarations are generated from Microsoft's own Win32
-//!   metadata. Windows' ICU is built with `U_DISABLE_RENAMING`, so the
-//!   exports are unsuffixed and there is a stable name to link against.
-//!   That makes the binding free, and it makes the dependency
-//!   **load-time**: a Windows without `icuuc.dll` — 10 before 1703, and
-//!   Server 2016 — does not fall back, it fails to start the process.
-//!   That is the trade this backend accepts, and it is the reason the
-//!   floor is stated as Windows 10 1703 rather than hedged.
-//! - **ELF unixes (`elf.rs`)** cannot do that: ICU's symbols there ARE
-//!   version-suffixed (`uidna_openUTS46_78`) and so is the soname, so
-//!   there is nothing stable to link. It resolves at run time through
-//!   `libloading` and reports "not found" as an ordinary `None`.
+//! The cost is that the import is load-time: a Windows without
+//! `icuuc.dll` — 10 before 1703, and Server 2016 — does not fall back,
+//! the process fails to start with `STATUS_DLL_NOT_FOUND` and no mention
+//! of IDN. The floor is stated rather than degraded to.
+//!
+//! **An ELF backend lived here and was removed on purpose.** It reached
+//! `libicuuc.so.NN` with `dlopen`, because both the soname and every
+//! symbol carry the ICU major version (`uidna_openUTS46_78`) and there is
+//! nothing stable to link. It worked — the corpus was validated against a
+//! real ICU 78.2 through it, which is how the option word and the error
+//! mask in `lib.rs` were established — but what it returned on any given
+//! machine was whatever ICU that machine happens to carry, on a Unicode
+//! version nobody chose and nothing reports. For IDN a Unicode difference
+//! is a different host, so that is a correctness risk accepted for a size
+//! saving, on the one platform where the version is not ours to know.
+//! Linux and the other ELF unixes take the bundled tables now.
 //!
 //! # The acceptance probe, which is shared and lives here
 //!
@@ -41,8 +49,7 @@
 use crate::{OPTIONS, is_fatal};
 use std::sync::OnceLock;
 
-#[cfg_attr(windows, path = "windows.rs")]
-#[cfg_attr(not(windows), path = "elf.rs")]
+#[path = "windows.rs"]
 mod imp;
 
 pub(crate) use imp::Icu;
@@ -50,13 +57,11 @@ pub(crate) use imp::Icu;
 /// ICU's `UErrorCode`. Zero is success, negative values are warnings,
 /// positive values are errors — the sign is the contract, not a
 /// convention.
-pub(crate) type UErrorCode = i32;
-
-pub(crate) const U_ZERO_ERROR: UErrorCode = 0;
+pub(crate) const U_ZERO_ERROR: i32 = 0;
 
 /// `U_BUFFER_OVERFLOW_ERROR`. The one error worth retrying: the return
 /// value is then the length the output needs.
-pub(crate) const U_BUFFER_OVERFLOW_ERROR: UErrorCode = 15;
+pub(crate) const U_BUFFER_OVERFLOW_ERROR: i32 = 15;
 
 /// The `UIDNAInfo.size` field is load-bearing on both platforms:
 /// `uidna_nameToASCII_UTF8` compares it against its own
@@ -65,12 +70,13 @@ pub(crate) const U_BUFFER_OVERFLOW_ERROR: UErrorCode = 15;
 /// clean refusal — and then, through the acceptance probe, into a
 /// fallback — rather than a write past the end of the struct.
 ///
-/// The struct itself is NOT declared here, because the two backends have
-/// different and better sources for it: Windows uses `windows-sys`'
-/// `UIDNAInfo`, generated from Microsoft's Win32 metadata, and `elf.rs`
-/// declares the same six fields by hand. That they agree field for field
-/// is the one cross-check available for a layout nobody here can run —
-/// and each file asserts this size against its own struct.
+/// The struct itself is NOT declared here: `windows.rs` uses
+/// `windows-sys`' `UIDNAInfo`, generated from Microsoft's Win32 metadata,
+/// which is a better source than anything transcribed by hand. The
+/// removed ELF backend declared the same six fields itself, and that the
+/// two agreed field for field was the one cross-check available for a
+/// layout nobody here can run; the constant survives that check, and
+/// `windows.rs` asserts its own struct against it.
 pub(crate) const UIDNA_INFO_SIZE: i16 = 16;
 
 /// The initial output buffer. A domain needing more than this is not an
@@ -83,7 +89,7 @@ pub(crate) const FIRST_TRY: usize = 256;
 /// cannot come to mean two things. `written` is the length C reported and
 /// is checked rather than trusted, which is the same line
 /// `http-ng-dns-system::sys::classify_written` draws.
-pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: UErrorCode) -> Option<String> {
+pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: i32) -> Option<String> {
     if status > U_ZERO_ERROR || is_fatal(errors) {
         return None;
     }
@@ -103,7 +109,7 @@ pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: UErrorCode) 
 /// Measured, not assumed: deleting `.filter(answers_the_trap_correctly)`
 /// leaves all of this crate's tests green. Do not read that as dead code.
 ///
-/// The gate's *content* is covered — corrupt `PROBES` so it expects the
+/// The gate's *content* is covered — corrupt `crate::PROBES` so it expects the
 /// transitional answer and it rejects a working library, `backend()` stops
 /// reporting `SystemIcu`, and the assertion on `backend()` goes red. What
 /// nothing covers is its *presence*, because killing that mutation needs a
@@ -163,14 +169,33 @@ pub(crate) fn name_to_ascii(domain: &str) -> Option<String> {
 ///   whole crate turns on.
 ///
 /// The cost is two conversions, once per process.
+///
+/// # No test kills the deletion of this gate, and that is not an oversight
+///
+/// Measured rather than assumed: replacing `imp::find().filter(
+/// answers_the_trap_correctly)` with `imp::find` leaves all 13 tests
+/// passing. It has to. Every machine this suite runs on has a *working*
+/// ICU, so the gate never rejects anything, and a guard that never fires
+/// cannot be observed by removing it.
+///
+/// What is killed, and what that pins down:
+///
+/// - changing a [`crate::PROBES`] expectation to the transitional answer reddens
+///   `the_platform_column_is_not_silently_empty`, so the gate is
+///   demonstrably *consulted* and its contents are load-bearing;
+/// - [`crate::accepts`] has unit tests over a fake conversion, so its policy
+///   (all probes not any; a refusal is a failure) is pinned independently
+///   of any real ICU.
+///
+/// So the call site is proven live and the policy is proven correct; only
+/// "someone deletes the whole thing" is invisible. Making that visible
+/// needs an injection point handing the loader a deliberately wrong ICU,
+/// which would exist for no other purpose and would be the only caller of
+/// its own seam. Written down here instead — in a project where tests
+/// that cannot fail are the dominant defect, an untested guard that
+/// *looks* tested is worse than one that says so.
 fn answers_the_trap_correctly(icu: &Icu) -> bool {
-    const PROBES: [(&str, &str); 2] = [
-        ("straße.de", "xn--strae-oqa.de"),
-        ("faß.de", "xn--fa-hia.de"),
-    ];
-    PROBES
-        .iter()
-        .all(|(input, want)| imp::convert(icu, input).as_deref() == Some(*want))
+    crate::accepts(|input| imp::convert(icu, input))
 }
 
 /// The option word, re-exported for the backends so neither reaches past

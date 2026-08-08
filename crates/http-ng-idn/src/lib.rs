@@ -6,47 +6,65 @@
 //! which implementation answered, and is resolved by the same cell the
 //! conversion uses, so the two cannot drift apart.
 //!
-//! # Why this crate exists, and why the usual number for it is wrong
+//! # Why this crate exists — and on Linux it is no longer the size
 //!
-//! `http-ng-proto`'s `idn` feature pulls `idna` → `idna_adapter` →
-//! `icu_normalizer` + `icu_properties`. The figure this project has
-//! repeated for that — "roughly 1.9 MB" — is **vendored source on disk,
-//! not bytes in a binary**, and quoting it against a flash budget
-//! compares two different things. ICU4X stores its tables as compressed
-//! tries and the linker keeps only what is referenced.
+//! Two corrections to the usual justification, in order of how much they
+//! change it.
 //!
-//! Measured instead, on a binary that reads a domain from stdin so the
-//! call cannot be folded away — `opt-level = "z"`, LTO, `panic = abort`,
-//! `strip`, x86-64 Linux. Every row answers `straße.de` with
-//! `xn--strae-oqa.de`:
+//! **First, the number.** `http-ng-proto`'s `idn` feature pulls `idna` →
+//! `idna_adapter` → `icu_normalizer` + `icu_properties`, and the figure
+//! this project has repeated for that — "roughly 1.9 MB" — is **vendored
+//! source on disk, not bytes in a binary**. ICU4X stores its tables as
+//! compressed tries and the linker keeps only what is referenced.
+//! Measured on a binary that reads a domain from stdin so the call cannot
+//! be folded away (`opt-level = "z"`, LTO, `panic = abort`, `strip`,
+//! x86-64 Linux), the tables cost **128,784 B of `.rodata`** in a
+//! 448,184 B binary of 31 crates — not 1.9 MB.
 //!
-//! | build | binary | `.rodata` | crates |
+//! **Second, and this is the one that changed the crate's purpose: on
+//! Linux there is now no saving at all.** An ELF backend existed, reached
+//! `libicuuc.so.NN` through `dlopen`, and did save it — 306,568 B and 10
+//! crates, `.rodata` down to 23,864 B. It was removed deliberately, and
+//! the reason is written out under *Which platform* below: on Linux the
+//! ICU version is a property of the user's machine that nobody chose and
+//! nothing reports, and for IDN a Unicode version difference is a
+//! different host. Measured after the removal, same harness:
+//!
+//! | build, x86-64 Linux | binary | `.rodata` | crates |
 //! |---|---|---|---|
-//! | `idna` called directly — the incumbent, what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
-//! | the same, with `idna_adapter` pinned to 1.1.0 (unicode-rs) | 577,112 B | 257,936 B | **11** |
-//! | this crate, default, on a target with a system ICU | **306,568 B** | **23,864 B** | **10** |
+//! | `idna` called directly — what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
+//! | this crate, default | 448,920 B | 129,144 B | 34 |
 //!
-//! **The middle row is why this crate justifies itself on data rather
-//! than on crate count.** Pinning `idna_adapter` to the unicode-rs
-//! backend is one `cargo update`, needs no code, no `unsafe` and no new
-//! crate, and it collapses the graph. It is a real answer to "36 crates
-//! with `idn`, 10 without", which is how this project has usually stated
-//! the problem. What it does not do is remove any Unicode data: it
-//! **doubles** it, 129 KiB of `.rodata` to 258 KiB — and it buys those
-//! crates with a Unicode version *behind* ICU4X's, which for IDN means a
-//! different host, not a cosmetic difference. It was rejected here for
-//! exactly that reason.
+//! **+736 bytes and +3 crates, for the same answer.** That is the honest
+//! accounting on Linux, and it is stated first rather than buried,
+//! because the earlier version of this section claimed a 138 KiB saving
+//! that a Linux build no longer gets.
 //!
-//! So the two were never competing solutions to one problem. The pin
-//! trades bytes, and correctness, for crates. This crate removes the
-//! bytes: **102.5 KiB of `.rodata` and 138.3 KiB of binary**, because the
-//! tables it uses are already on the machine — and it gets the crate
-//! count as well, 31 down to 10. On a 256 KB part that is the difference
-//! between half the flash and none of it, which is the claim worth
-//! making. "1.9 MB" was not it.
+//! The saving survives only where a platform ICU is linked statically
+//! against an OS-versioned ABI, which today means Windows alone. Its
+//! magnitude there is **unverified**: measuring it needs a Windows
+//! linker, and none produced this crate. What would settle it is the
+//! same stdin harness built on a `windows-latest` runner.
 //!
-//! Those are the two backends, and a build has exactly one of them —
-//! chosen by target, not by a flag (see *Features* below).
+//! So what is the crate for, on the two targets where it saves nothing?
+//! Three things it does that a direct `idna` call does not:
+//!
+//! - **one seam and one policy point.** The option word, the error mask
+//!   and the deny list are decided once, here, instead of at each call
+//!   site — and they are the three things the *Contract* section below
+//!   shows are easy to get individually wrong.
+//! - **the corpus.** `tests/differential.rs` pins both implementations'
+//!   answers on 32 rows; that is what makes "the platform agrees" a
+//!   measurement rather than a hope, and it is shared by every target.
+//! - **a typed error and an honest [`Backend`]**, instead of a `bool`
+//!   from a conversion that silently did something else.
+//!
+//! One alternative was measured and rejected rather than argued about:
+//! pinning `idna_adapter` to 1.1.0 (the unicode-rs backend) is one
+//! `cargo update`, needs no code and collapses the graph to 11 crates —
+//! but it **doubles** the Unicode data, 128,784 B of `.rodata` to
+//! 257,936 B, and runs a Unicode version behind ICU4X, which for IDN is a
+//! different host rather than a cosmetic difference.
 //!
 //! # The contract: this is `idna::domain_to_ascii_cow(_, AsciiDenyList::URL)`
 //!
@@ -98,9 +116,11 @@
 //!
 //! # Which platform, and what it costs
 //!
-//! Two backends, and they are not the same shape — because the two
-//! platforms differ in the one thing that matters, whether there is a
-//! stable symbol to link against:
+//! Two platform backends, and one rule decides who gets one: **static
+//! linkage against an ABI the OS versions for us.** Windows and Apple
+//! qualify by different routes; Linux does not, and the ELF `dlopen`
+//! backend that once lived here was removed for that reason (see
+//! `icu/mod.rs`). They are otherwise nothing alike:
 //!
 //! - **Windows** — `icuuc.dll`, **linked** through `windows-sys`, whose
 //!   `Win32_Globalization` already declares `uidna_openUTS46`,
@@ -124,33 +144,27 @@
 //!   machine with no ICU gets an ordinary miss. It is also what makes this
 //!   crate's central claim *testable on a Linux CI runner* rather than
 //!   only on Windows.
-//! - **macOS — not attempted, and neither of the two obvious reasons is
-//!   the real one.** It is *not* that macOS has no public API: this
-//!   crate's first draft said so, following `docs/v02-design.md`, and it
-//!   is wrong. Nor is it a second helping of the `IdnToAscii` trap:
+//! - **macOS — Foundation, and it is the cheapest backend of the three.**
+//!   `URL(string:)` converts a Unicode host to its A-label, and
 //!   `swift-foundation`'s `URLParser+ICU.swift` opens its handle with
 //!   `UIDNA_CHECK_BIDI | UIDNA_CHECK_CONTEXTJ |
-//!   UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII`,
-//!   which is [`OPTIONS`] exactly, so Foundation agrees with us on
-//!   `straße.de`. The reason is cost and ergonomics, and it is worth
-//!   naming precisely because it is a decision that could be revisited:
-//!   the conversion is reachable only as a **side effect of parsing a
-//!   whole URL**, and that costs four things this crate needs — a failed
-//!   IDNA returns `nil` for the entire URL rather than for the host; the
-//!   `UIDNAInfo.errors` word is consumed and discarded, so there is no
-//!   typed reason; `URL.host(percentEncoded: true)` returns the *less*
-//!   encoded `m%C3%BCnchen.de` while the plain getter returns the
-//!   A-label, which is a wrong-origin bug waiting rather than a compile
-//!   error; and the RFC 3986 parser that does IDNA at all is gated on the
-//!   SDK the binary was **linked against**, which a `cargo`-built binary
-//!   may not satisfy — in which case Foundation silently percent-encodes
-//!   the host instead. Reaching it from Rust means `objc2-foundation` and
-//!   an Objective-C message send per domain. macOS therefore takes the
-//!   bundled path.
-//!   (`libicucore.dylib` — Apple's own ICU, which would have none of
-//!   these problems — is genuinely out of reach: no headers ship for it,
-//!   Apple documents its symbols as not for third-party linking, and
-//!   since Big Sur it is not on disk to `dlopen` at all.)
+//!   UIDNA_NONTRANSITIONAL_TO_UNICODE | UIDNA_NONTRANSITIONAL_TO_ASCII` —
+//!   bit for bit [`OPTIONS`], arrived at independently, which is the best
+//!   corroboration that constant will ever get.
+//!
+//!   **It needs no `unsafe` at all**, and so no spec amendment, where the
+//!   Windows backend needs C9: every `objc2-foundation` call is a safe
+//!   function, measured by a draft that wrapped them and drew ten
+//!   `unnecessary unsafe block` warnings. That is the cheapest reason to
+//!   keep it.
+//!
+//!   The catch is that Foundation converts as a **side effect of parsing a
+//!   whole URL**, which costs four things — a host that changes where the
+//!   URL ends, a scheme the caller could otherwise supply, no error
+//!   channel, and two getters that disagree. Each is closed rather than
+//!   hoped away; see `foundation.rs`. `libicucore.dylib`, Apple's own ICU,
+//!   stays out of reach: no headers, symbols documented as not for
+//!   third-party linking, and since Big Sur not on disk to `dlopen`.
 //! - **wasm** — no dynamic loader and no system ICU, so the bundled path
 //!   today. But **the browser is a platform IDN implementation**, and on
 //!   the evidence it is the best one of the lot: `new URL(…).hostname` in
@@ -183,7 +197,8 @@
 //! |---|---|
 //! | `platform` (default) | **resolved by target**: the platform's ICU on Windows and ELF unixes, the `idna` crate on macOS, wasm and anything else |
 //! | `bundled` | the `idna` crate explicitly, on a target that has no system ICU; a compile error naming the target on one that does |
-//! | `system-icu` | the platform's ICU explicitly, on a target that has one; a compile error naming the target on one that does not |
+//! | `system-icu` | Windows' `icuuc.dll` explicitly; a no-op on a target that has no such dependency |
+//! | `foundation` | Apple's Foundation explicitly; likewise |
 //! | neither | a `compile_error!`, not a silently useless crate |
 //!
 //! The two backends are **never both compiled in**, and that is a
@@ -258,7 +273,10 @@ use std::borrow::Cow;
 #[cfg(icu_backend)]
 mod icu;
 
-#[cfg(not(any(idna_backend, icu_backend)))]
+#[cfg(foundation_backend)]
+mod foundation;
+
+#[cfg(not(any(idna_backend, icu_backend, foundation_backend)))]
 compile_error!(
     "http-ng-idn needs at least one backend: `bundled` (the `idna` crate, the default) or \
      `system-icu` (the platform's own ICU), or both. With neither, `domain_to_ascii` could only \
@@ -319,6 +337,11 @@ pub enum Backend {
     /// guard, and it is a behaviour floor rather than a Unicode-version
     /// floor.
     SystemIcu,
+    /// Apple's Foundation, through `NSURL`. Linked, like the ICU
+    /// backend, and for the same reason: it arrives with the OS rather
+    /// than with whatever the user installed. Unlike the ICU backend it
+    /// needs no `unsafe` at all — see `foundation.rs`.
+    SystemFoundation,
     /// The bundled `idna` crate and its Unicode tables.
     Bundled,
     /// Neither: `system-icu` without `bundled`, on a machine with no ICU.
@@ -473,6 +496,46 @@ pub const fn is_forbidden_domain_byte(b: u8) -> bool {
     )
 }
 
+/// The two inputs a platform backend has to get right, and what "right"
+/// is.
+///
+/// They are the pair the entire crate turns on: a transitional
+/// implementation answers `strasse.de` and `fass.de` here, which are
+/// different origins, registrable by different people.
+///
+/// Shared by every platform backend rather than duplicated per platform.
+/// The two backends have nothing else in common — one links `icuuc.dll`,
+/// the other sends Objective-C messages to Foundation — and this is
+/// exactly the kind of constant that would drift if each kept its own.
+pub(crate) const PROBES: [(&str, &str); 2] = [
+    ("straße.de", "xn--strae-oqa.de"),
+    ("faß.de", "xn--fa-hia.de"),
+];
+
+/// The gate's *policy*, over any conversion function.
+///
+/// Split out from each backend's gate for one reason: a function that
+/// only takes a real handle can only be tested by owning a broken
+/// platform, and nobody here does. Over a closure it is four exhaustively
+/// testable cases — the same move `http-ng-dns-system` makes with
+/// `sys::classify_written`.
+///
+/// **Every probe must pass, not any**: an implementation that gets
+/// `straße.de` right and `faß.de` wrong is not one to trust with the
+/// rest.
+#[cfg_attr(
+    not(any(icu_backend, foundation_backend)),
+    allow(
+        dead_code,
+        reason = "only a platform backend has anything to gate, but the POLICY is                   platform-independent and so are its tests — gating it away here would stop                   them running on the one target CI exercises most"
+    )
+)]
+pub(crate) fn accepts(convert: impl Fn(&str) -> Option<String>) -> bool {
+    PROBES
+        .iter()
+        .all(|(input, want)| convert(input).as_deref() == Some(*want))
+}
+
 /// Converts `domain` to its ASCII (A-label) form.
 ///
 /// ASCII in, ASCII out — but not unchanged: `EXAMPLE.COM` comes back
@@ -490,6 +553,8 @@ pub fn domain_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     match backend() {
         #[cfg(icu_backend)]
         Backend::SystemIcu => system_icu_to_ascii(domain),
+        #[cfg(foundation_backend)]
+        Backend::SystemFoundation => foundation_to_ascii(domain),
         #[cfg(idna_backend)]
         Backend::Bundled => bundled_to_ascii(domain),
         Backend::None => Err(IdnError::NoImplementation {
@@ -513,6 +578,10 @@ pub fn backend() -> Backend {
     #[cfg(icu_backend)]
     if icu::library().is_some() {
         return Backend::SystemIcu;
+    }
+    #[cfg(foundation_backend)]
+    if foundation_backend().is_some() {
+        return Backend::SystemFoundation;
     }
     #[cfg(idna_backend)]
     return Backend::Bundled;
@@ -564,6 +633,36 @@ fn system_icu_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     Ok(Cow::Owned(ascii))
 }
 
+/// Foundation, gated once per process on the same probe pair the ICU
+/// backend uses.
+///
+/// The gate matters more here than it looks. A wrong getter (see
+/// `foundation.rs`, consequence 4) produces a *plausible* answer — a
+/// percent-encoded host rather than an A-label — so the failure would not
+/// announce itself. `straße.de` does.
+#[cfg(foundation_backend)]
+fn foundation_backend() -> Option<&'static foundation::Foundation> {
+    use std::sync::OnceLock;
+    static F: OnceLock<Option<foundation::Foundation>> = OnceLock::new();
+    F.get_or_init(|| foundation::find().filter(|f| accepts(|input| foundation::convert(f, input))))
+        .as_ref()
+}
+
+/// The Foundation path. The deny list runs INSIDE `foundation::convert`,
+/// before the parser and again after it — see that module for why the
+/// input scan is required here and was redundant for ICU.
+#[cfg(foundation_backend)]
+fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
+    let f = foundation_backend().ok_or_else(|| IdnError::NoImplementation {
+        domain: domain.to_owned(),
+    })?;
+    foundation::convert(f, domain)
+        .map(Cow::Owned)
+        .ok_or_else(|| IdnError::NotAnIdn {
+            domain: domain.to_owned(),
+        })
+}
+
 /// Both implementations, reachable side by side, for the differential
 /// corpus in `tests/differential.rs` — which cannot use
 /// [`domain_to_ascii`] for this, since that deliberately exposes only one.
@@ -585,24 +684,45 @@ pub mod testing {
         super::bundled_to_ascii(domain)
     }
 
-    /// The platform implementation, or `None` if no system ICU was found
-    /// — which is the difference between "the corpus checked the platform
-    /// column" and "the corpus silently checked nothing".
+    /// The platform implementation — whichever this target has — or
+    /// `None` if it was not accepted, which is the difference between
+    /// "the corpus checked the platform column" and "the corpus silently
+    /// checked nothing".
+    ///
+    /// One name for both backends on purpose: `tests/differential.rs`
+    /// then contains no `#[cfg]` choosing between Windows and Apple, and
+    /// the same 32 rows are the acceptance for both.
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].
-    #[cfg(icu_backend)]
-    pub fn system_icu(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
-        super::icu::library()?;
-        Some(super::system_icu_to_ascii(domain))
+    #[cfg(any(icu_backend, foundation_backend))]
+    pub fn platform(domain: &str) -> Option<Result<Cow<'_, str>, IdnError>> {
+        #[cfg(icu_backend)]
+        {
+            super::icu::library()?;
+            Some(super::system_icu_to_ascii(domain))
+        }
+        #[cfg(foundation_backend)]
+        {
+            super::foundation_backend()?;
+            Some(super::foundation_to_ascii(domain))
+        }
     }
 
-    /// The file name of the library the platform path is using, for a
-    /// report that says *which* ICU answered rather than "an ICU".
-    #[cfg(icu_backend)]
+    /// What answered, for a report that names it rather than saying "the
+    /// platform" — `icuuc.dll (windows-sys, load-time import)`,
+    /// `Foundation NSURL (objc2-foundation, safe bindings)`.
+    #[cfg(any(icu_backend, foundation_backend))]
     #[must_use]
-    pub fn system_icu_library() -> Option<&'static str> {
-        super::icu::library_name()
+    pub fn platform_name() -> Option<&'static str> {
+        #[cfg(icu_backend)]
+        {
+            super::icu::library_name()
+        }
+        #[cfg(foundation_backend)]
+        {
+            super::foundation_backend().map(super::foundation::Foundation::name)
+        }
     }
 
     /// Re-exported so a test can assert the selected backend without
@@ -707,6 +827,58 @@ mod tests {
         for b in 0x80..=0xffu8 {
             assert!(!is_forbidden_domain_byte(b), "0x{b:02x} is not ASCII");
         }
+    }
+
+    /// A conversion that answers correctly is accepted.
+    #[test]
+    fn a_correct_icu_is_accepted() {
+        assert!(accepts(|input| PROBES
+            .iter()
+            .find(|(i, _)| *i == input)
+            .map(|(_, want)| (*want).to_owned())));
+    }
+
+    /// **The case the gate exists for.** A transitional ICU converts both
+    /// probes successfully, to the wrong origin — no error, no null, just
+    /// a different host. It must be refused.
+    #[test]
+    fn a_transitional_icu_is_refused() {
+        assert!(!accepts(|input| match input {
+            "straße.de" => Some("strasse.de".to_owned()),
+            "faß.de" => Some("fass.de".to_owned()),
+            _ => None,
+        }));
+    }
+
+    /// Right on one probe, wrong on the other. `all`, not `any` — if this
+    /// passed, one correct answer would vouch for an ICU wrong everywhere
+    /// else.
+    #[test]
+    fn getting_only_one_probe_right_is_not_enough() {
+        assert!(!accepts(|input| match input {
+            "straße.de" => Some("xn--strae-oqa.de".to_owned()),
+            _ => Some("fass.de".to_owned()),
+        }));
+    }
+
+    /// A conversion that fails outright — `uidna_openUTS46` refusing for
+    /// want of `CoInitializeEx` looks exactly like this — is refused too,
+    /// rather than read as "nothing to object to".
+    #[test]
+    fn an_icu_that_cannot_convert_at_all_is_refused() {
+        assert!(!accepts(|_| None));
+    }
+
+    /// The probes are the transitional pair and nothing else has crept
+    /// in. If one were softened to a name both flavours agree on, the
+    /// gate would still be consulted, would still pass, and would no
+    /// longer check the one thing it is for.
+    #[test]
+    fn the_probes_are_the_inputs_the_two_flavours_disagree_on() {
+        assert_eq!(PROBES.len(), 2);
+        assert!(PROBES.iter().all(|(_, want)| want.starts_with("xn--")));
+        assert!(PROBES.iter().any(|(i, _)| *i == "straße.de"));
+        assert!(PROBES.iter().any(|(i, _)| *i == "faß.de"));
     }
 
     #[cfg(idna_backend)]
