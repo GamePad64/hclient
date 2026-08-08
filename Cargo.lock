@@ -817,6 +817,7 @@ dependencies = [
  "http-ng",
  "http-ng-core",
  "js-sys",
+ "thiserror",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "wasm-streams",

@@ -64,14 +64,9 @@ use wasm_bindgen::JsValue;
 // it wraps a `dyn Error` rather than stringifying up front.
 // ---------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("fetch forbids setting the `{0}` header")]
 pub(crate) struct ForbiddenHeader(pub(crate) String);
-impl std::fmt::Display for ForbiddenHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fetch forbids setting the `{}` header", self.0)
-    }
-}
-impl std::error::Error for ForbiddenHeader {}
 
 /// A header survived [`check_headers`] (it isn't one of the 14 names
 /// [`crate::FORBIDDEN_HEADERS`] lists) but the browser dropped it anyway
@@ -79,63 +74,35 @@ impl std::error::Error for ForbiddenHeader {}
 /// prefixed name, or one of the ten other forbidden names that fixed array
 /// structurally can't carry (see its doc comment). Caught by
 /// [`verify_headers_survived`], never allowed to pass as a quiet success.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the `{0}` header was accepted but the browser silently dropped it while building the \
+     request (not one of the names FORBIDDEN_HEADERS checks ahead of time — most likely a \
+     `Sec-`/`Proxy-`-prefixed name, which a fixed array cannot express)"
+)]
 pub(crate) struct HeaderSilentlyDropped(pub(crate) String);
-impl std::fmt::Display for HeaderSilentlyDropped {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the `{}` header was accepted but the browser silently dropped it while building the \
-             request (not one of the names FORBIDDEN_HEADERS checks ahead of time — most likely a \
-             `Sec-`/`Proxy-`-prefixed name, which a fixed array cannot express)",
-            self.0
-        )
-    }
-}
-impl std::error::Error for HeaderSilentlyDropped {}
 
 /// A header value with bytes that aren't valid ASCII text. `http::HeaderMap`
 /// allows opaque byte strings (`HeaderValue::from_bytes`); the Fetch API's
 /// `Headers.append` only takes a JS string, so this is a real, nameable
 /// limit of the backend, not an opaque `TypeError`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the value of header `{0}` is not valid ASCII text, which the Fetch API's `Headers` \
+     interface requires"
+)]
 pub(crate) struct NonAsciiHeaderValue(pub(crate) String);
-impl std::fmt::Display for NonAsciiHeaderValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the value of header `{}` is not valid ASCII text, which the Fetch API's `Headers` \
-             interface requires",
-            self.0
-        )
-    }
-}
-impl std::error::Error for NonAsciiHeaderValue {}
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub(crate) struct BadUrl(pub(crate) String);
-impl std::fmt::Display for BadUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for BadUrl {}
 
 /// Fetch throws a `TypeError` if a `GET`/`HEAD` request carries a body.
 /// Checked ahead of time so the caller gets a typed, specific error instead
 /// of `ErrorKind::Other` wrapping a browser-thrown `TypeError` string.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("a `{0}` request cannot carry a body — fetch forbids a body on GET and HEAD requests")]
 pub(crate) struct BodyNotAllowedForMethod(pub(crate) http::Method);
-impl std::fmt::Display for BodyNotAllowedForMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "a `{}` request cannot carry a body — fetch forbids a body on GET and HEAD requests",
-            self.0
-        )
-    }
-}
-impl std::error::Error for BodyNotAllowedForMethod {}
 
 /// Upper bound on `RequestBody::Rewindable` nesting (a factory whose result
 /// is itself another `Rewindable`). No legitimate factory needs this — one
@@ -154,27 +121,16 @@ impl std::error::Error for BodyNotAllowedForMethod {}
 /// `MAX_REWIND_DEPTH` — not a new discrepancy introduced here.
 const MAX_REWIND_DEPTH: u8 = 16;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "RequestBody::Rewindable factory nested {MAX_REWIND_DEPTH} levels deep or more \
+     (each factory call returned another Rewindable instead of a terminal body)"
+)]
 pub(crate) struct RewindTooDeep;
-impl std::fmt::Display for RewindTooDeep {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "RequestBody::Rewindable factory nested {MAX_REWIND_DEPTH} levels deep or more \
-             (each factory call returned another Rewindable instead of a terminal body)"
-        )
-    }
-}
-impl std::error::Error for RewindTooDeep {}
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("javascript error: {0}")]
 pub(crate) struct JsError(pub(crate) String);
-impl std::fmt::Display for JsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "javascript error: {}", self.0)
-    }
-}
-impl std::error::Error for JsError {}
 
 /// Turns a rejected JS promise/thrown value into our `Error`. This is the
 /// generic, honest fallback for a JS failure this file cannot classify any

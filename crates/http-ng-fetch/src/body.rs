@@ -112,14 +112,9 @@ use wasm_bindgen::{JsCast, JsValue};
 /// connection closing before the promised length, an explicit upstream
 /// `controller.error()`). A transport failure, not a decode problem:
 /// `ErrorKind::Body`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("reading the response body stream failed: {0}")]
 struct StreamRead(String);
-impl std::fmt::Display for StreamRead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "reading the response body stream failed: {}", self.0)
-    }
-}
-impl std::error::Error for StreamRead {}
 
 /// A `ReadableStream` chunk that isn't a `Uint8Array`. Every chunk a real
 /// `fetch()` response body produces IS one (`Response.body` is specified as
@@ -130,14 +125,9 @@ impl std::error::Error for StreamRead {}
 /// that's wrong: `ErrorKind::Decode`, the same category
 /// `http-ng`'s `Response::text`/`Response::json` use for "these bytes don't
 /// parse as promised".
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("a ReadableStream chunk from the response body was not a Uint8Array")]
 struct NotAByteChunk;
-impl std::fmt::Display for NotAByteChunk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a ReadableStream chunk from the response body was not a Uint8Array")
-    }
-}
-impl std::error::Error for NotAByteChunk {}
 
 /// Best-effort human-readable text for a `JsValue` a promise rejected with.
 /// Deliberately NOT imported from `convert.rs` — see the module doc comment

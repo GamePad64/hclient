@@ -81,6 +81,7 @@ futures-core = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # See the note above `[dependencies]` for why this moved off the 0.5 line.
 wasm-streams = "0.6"
+thiserror    = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
