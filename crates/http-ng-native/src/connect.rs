@@ -181,48 +181,67 @@ pub(crate) struct AllAttemptsFailed(pub(crate) usize);
 /// the cause was the resolver failing, or the resolver honestly finishing
 /// and finding zero records (e.g. `NXDOMAIN`). Collapsing both cases into
 /// `AllAttemptsFailed(0)` would be exactly the "resolver error becomes
-/// 'no addresses'" this field exists to prevent: it would read as "zero
+/// 'no addresses'" this type exists to prevent: it would read as "zero
 /// TCP attempts failed," even though there was no TCP attempt at all —
 /// not because none were tried, but because there was nothing to try.
-#[derive(Debug, Default)]
-struct ResolveErrors {
-    v6: Option<Error>,
-    v4: Option<Error>,
-}
-
-impl std::fmt::Display for ResolveErrors {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (&self.v6, &self.v4) {
-            (Some(v6), Some(v4)) => {
-                write!(f, "ipv6 lookup failed ({v6}); ipv4 lookup failed ({v4})")
-            }
-            (Some(v6), None) => {
-                write!(
-                    f,
-                    "ipv6 lookup failed ({v6}); ipv4 lookup returned no addresses"
-                )
-            }
-            (None, Some(v4)) => {
-                write!(
-                    f,
-                    "ipv4 lookup failed ({v4}); ipv6 lookup returned no addresses"
-                )
-            }
-            (None, None) => f.write_str("resolver returned no addresses for either address family"),
-        }
-    }
-}
-
-impl std::error::Error for ResolveErrors {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.v6
-            .as_ref()
-            .or(self.v4.as_ref())
-            .map(|e| e as &(dyn std::error::Error + 'static))
-    }
+/// [`Neither`](Self::Neither) is that second case, named rather than
+/// spelled `(None, None)`.
+///
+/// **Four variants rather than two `Option<Error>` fields — because of
+/// `source()`, not for tidiness.** The chain here has to lead to the
+/// first family that actually failed, whichever one that is; as a struct
+/// that is `v6.or(v4)`, and `thiserror` has no way to say it: `#[source]`
+/// marks one field, so marking `v6` would end the chain at `None`
+/// whenever only ipv4 failed — a truncation that changes no message and
+/// breaks no test written about one. Split into variants, each carries
+/// exactly the errors that exist in that case, `#[source]` names the
+/// right one in each, and the case with no cause at all has no `#[source]`
+/// because there is genuinely nothing to point at.
+#[derive(Debug, thiserror::Error)]
+enum ResolveErrors {
+    #[error("ipv6 lookup failed ({v6}); ipv4 lookup failed ({v4})")]
+    Both {
+        #[source]
+        v6: Error,
+        v4: Error,
+    },
+    #[error("ipv6 lookup failed ({v6}); ipv4 lookup returned no addresses")]
+    Ipv6 {
+        #[source]
+        v6: Error,
+    },
+    #[error("ipv4 lookup failed ({v4}); ipv6 lookup returned no addresses")]
+    Ipv4 {
+        #[source]
+        v4: Error,
+    },
+    #[error("resolver returned no addresses for either address family")]
+    Neither,
 }
 
 impl ResolveErrors {
+    /// Whatever each family recorded, if anything — the shape `drive`
+    /// accumulates in, folded into the variant that describes it.
+    fn from_families(v6: Option<Error>, v4: Option<Error>) -> Self {
+        match (v6, v4) {
+            (Some(v6), Some(v4)) => Self::Both { v6, v4 },
+            (Some(v6), None) => Self::Ipv6 { v6 },
+            (None, Some(v4)) => Self::Ipv4 { v4 },
+            (None, None) => Self::Neither,
+        }
+    }
+
+    /// The errors this variant recorded, ipv6 first — the same order
+    /// `source()` follows, so the two cannot drift apart.
+    fn recorded(&self) -> [Option<&Error>; 2] {
+        match self {
+            Self::Both { v6, v4 } => [Some(v6), Some(v4)],
+            Self::Ipv6 { v6 } => [Some(v6), None],
+            Self::Ipv4 { v4 } => [None, Some(v4)],
+            Self::Neither => [None, None],
+        }
+    }
+
     /// The first recorded resolve error (from either family) whose
     /// `kind()` is NOT `ErrorKind::Resolve`. Review round 1, finding 1:
     /// `drive` used to wrap any resolve error (when `launched == 0`) in a
@@ -240,7 +259,7 @@ impl ResolveErrors {
     /// structurally impossible, not merely handled for the one case that
     /// was found.
     fn distinguishing_error(&self) -> Option<&Error> {
-        [&self.v6, &self.v4]
+        self.recorded()
             .into_iter()
             .flatten()
             .find(|e| e.kind() != &ErrorKind::Resolve)
@@ -374,7 +393,12 @@ where
     let mut v4_stream = std::pin::pin!(v4_stream);
     let mut v6_done = false;
     let mut v4_done = false;
-    let mut errs = ResolveErrors::default();
+    // Accumulated as two slots and folded into a `ResolveErrors` variant
+    // only at the failure branch below: until then there is no single
+    // answer to "which families failed", and a partially-filled error
+    // value would be one.
+    let mut v6_err: Option<Error> = None;
+    let mut v4_err: Option<Error> = None;
 
     let start = rt.now();
     let mut attempts = FuturesUnordered::new();
@@ -430,13 +454,13 @@ where
 
                 match ev {
                     Event::V6(Some(Ok(addr))) => sched.offer_v6(&[addr.addr]),
-                    Event::V6(Some(Err(e))) => errs.v6 = Some(e),
+                    Event::V6(Some(Err(e))) => v6_err = Some(e),
                     Event::V6(None) => {
                         v6_done = true;
                         sched.mark_v6_done();
                     }
                     Event::V4(Some(Ok(addr))) => sched.offer_v4(&[addr.addr]),
-                    Event::V4(Some(Err(e))) => errs.v4 = Some(e),
+                    Event::V4(Some(Err(e))) => v4_err = Some(e),
                     Event::V4(None) => {
                         v4_done = true;
                         sched.mark_v4_done();
@@ -463,6 +487,7 @@ where
                         return Ok(s);
                     }
                 }
+                let errs = ResolveErrors::from_families(v6_err, v4_err);
                 // Review round 1, finding 1: checked BEFORE both branches
                 // below, not as a special case inside one of them — so
                 // discarding a differing kind() (in particular,
@@ -1097,6 +1122,170 @@ mod tests {
             rt.log.borrow().len(),
             1,
             "the single (dead) v4 address really was tried"
+        );
+    }
+
+    // --- `ResolveErrors`: the chain, not just the message ---------------
+    //
+    // `ResolveErrors` is the only error in this module that a caller is
+    // expected to WALK rather than read: it says which family failed, and
+    // its `source()` hands back that family's own `Error` — kind, source
+    // chain and all — instead of a copy of its `Display`. The four tests
+    // below pin all four shapes it can take, because a `source()` that
+    // returns `None` where it used to return the resolver's error still
+    // compiles, still prints the same message, and still passes every
+    // assertion written about that message.
+
+    /// A resolver stream that fails once with `ErrorKind::Resolve` and a
+    /// caller-chosen message, then ends. `ErrOnceWithKind` above hardcodes
+    /// `"boom"` for both families, so a test that uses it twice cannot
+    /// tell WHICH family's error came out the far end of the chain — and
+    /// that is exactly the question here.
+    struct NamedResolveErr(bool, &'static str);
+    impl futures_util::Stream for NamedResolveErr {
+        type Item = Result<ResolvedAddr, Error>;
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if this.0 {
+                this.0 = false;
+                Poll::Ready(Some(Err(Error::new(
+                    ErrorKind::Resolve,
+                    std::io::Error::other(this.1),
+                ))))
+            } else {
+                Poll::Ready(None)
+            }
+        }
+    }
+
+    /// The `ResolveErrors` one `source()` hop below what `drive` returned.
+    fn resolve_errors(err: &Error) -> &ResolveErrors {
+        std::error::Error::source(err)
+            .expect("Error::new(ErrorKind::Resolve, ..) always has a source")
+            .downcast_ref::<ResolveErrors>()
+            .expect("the source of a resolve failure is ResolveErrors itself")
+    }
+
+    /// The family failure `ResolveErrors::source()` leads to — the hop a
+    /// caller walks to find out WHY the lookup failed. `None` means the
+    /// chain stops at `ResolveErrors`.
+    fn recorded_family_error(errs: &ResolveErrors) -> Option<&Error> {
+        std::error::Error::source(errs).map(|s| {
+            s.downcast_ref::<Error>().expect(
+                "the recorded family failure must stay the resolver's own Error, \
+                 not a stringified copy of it",
+            )
+        })
+    }
+
+    #[test]
+    fn a_failed_ipv6_lookup_stays_reachable_through_the_source_chain() {
+        let rt = FakeRt::new([]);
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            NamedResolveErr(true, "v6 lookup exploded"),
+            futures_util::stream::empty(),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("v6 failed and v4 found nothing");
+        let errs = resolve_errors(&err);
+        assert_eq!(
+            errs.to_string(),
+            "ipv6 lookup failed (Resolve: v6 lookup exploded); \
+             ipv4 lookup returned no addresses"
+        );
+        let recorded = recorded_family_error(errs)
+            .expect("the ipv6 failure must stay reachable, not be flattened into the message");
+        assert_eq!(recorded.kind(), &ErrorKind::Resolve);
+        assert_eq!(recorded.to_string(), "Resolve: v6 lookup exploded");
+    }
+
+    /// The asymmetric case, and the one a `source()` that only ever reads
+    /// the ipv6 slot gets wrong: ipv6 recorded nothing at all, so the only
+    /// failure there is to hand back is ipv4's. Truncating the chain here
+    /// would leave the message unchanged and the cause unreachable.
+    #[test]
+    fn a_failed_ipv4_lookup_stays_reachable_even_though_ipv6_recorded_nothing() {
+        let rt = FakeRt::new([]);
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            futures_util::stream::empty(),
+            NamedResolveErr(true, "v4 lookup exploded"),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("v4 failed and v6 found nothing");
+        let errs = resolve_errors(&err);
+        assert_eq!(
+            errs.to_string(),
+            "ipv4 lookup failed (Resolve: v4 lookup exploded); \
+             ipv6 lookup returned no addresses"
+        );
+        let recorded = recorded_family_error(errs).expect(
+            "ipv4's failure must not vanish just because ipv6 recorded nothing — \
+             a source() that reads only the ipv6 slot ends the chain right here",
+        );
+        assert_eq!(recorded.to_string(), "Resolve: v4 lookup exploded");
+    }
+
+    #[test]
+    fn when_both_lookups_fail_the_message_names_both_and_the_chain_leads_to_ipv6() {
+        let rt = FakeRt::new([]);
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            NamedResolveErr(true, "v6 lookup exploded"),
+            NamedResolveErr(true, "v4 lookup exploded"),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("both families failed");
+        let errs = resolve_errors(&err);
+        assert_eq!(
+            errs.to_string(),
+            "ipv6 lookup failed (Resolve: v6 lookup exploded); \
+             ipv4 lookup failed (Resolve: v4 lookup exploded)"
+        );
+        let recorded = recorded_family_error(errs).expect("both were recorded");
+        assert_eq!(
+            recorded.to_string(),
+            "Resolve: v6 lookup exploded",
+            "with both families recorded the chain follows the first one, ipv6"
+        );
+    }
+
+    /// The distinction the whole type exists for, seen from the chain: an
+    /// NXDOMAIN-like empty answer is NOT a failure of anything, so there
+    /// is no cause to hand back. `source()` returning `None` here is the
+    /// correct answer, and is what tells this case apart from the three
+    /// above without reading any prose.
+    #[test]
+    fn zero_addresses_and_no_resolver_error_ends_the_chain_instead_of_inventing_a_cause() {
+        let rt = FakeRt::new([]);
+        let sched = build_scheduler(HeConfig::default()).unwrap();
+        let err = bounded_block_on(drive(
+            &rt,
+            sched,
+            futures_util::stream::empty(),
+            futures_util::stream::empty(),
+            81,
+            &TcpOpts::default(),
+        ))
+        .expect_err("both families are empty");
+        let errs = resolve_errors(&err);
+        assert_eq!(
+            errs.to_string(),
+            "resolver returned no addresses for either address family"
+        );
+        assert!(
+            recorded_family_error(errs).is_none(),
+            "nothing failed — an empty answer must not acquire a fabricated cause"
         );
     }
 
