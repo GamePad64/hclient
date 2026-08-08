@@ -167,6 +167,24 @@ instead of a per-crate matrix. CI's `msrv` job pins that exact toolchain and
 runs `cargo check --workspace --all-features --all-targets`, so the promise
 covers tests and examples, not only the libraries.
 
+**`std` is required, and that is not our decision to reverse.** `http` 1.x
+forbids `no_std` outright — `src/lib.rs` carries a commented-out
+`#![cfg_attr(not(feature = "std"), no_std)]` next to
+`compile_error!("`std` feature currently required, support for `no_std` may
+be added later")` — and `http::{Request, Response, HeaderMap, Uri, Method}`
+appear in the public API of seven crates here, including the sans-io
+`http-ng-proto`. `bytes` and `url` are genuine `no_std` + `alloc` crates, so
+two of the four load-bearing dependencies are already there; the other two
+are not, and a feature flag that claimed otherwise would not build.
+
+For constrained targets that *do* have `std` — static musl binaries, small
+containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
+`crates/http-ng-native/examples/minimal.rs`. For microcontrollers, this is
+not the right library: every transport here needs a platform that has one
+(hyper wants std and tokio, `wasi:http` wants a WASI host, `fetch` wants a
+browser), so the work would be a new backend over something like
+`embedded-nal-async`, not a port of this one.
+
 Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
 and WebSocket are v0.2 and later — see
 [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
