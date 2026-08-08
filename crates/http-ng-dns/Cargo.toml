@@ -13,8 +13,8 @@ futures-core = { workspace = true }
 http-ng-core = { workspace = true }
 
 [dev-dependencies]
-# Tests only: `stream::iter`/`stream::empty`/`StreamExt` below, not in the
-# library itself — the one library-side consumer of `stream::empty`
+# Tests only (`tests/`): `stream::iter`/`stream::empty`/`StreamExt`, not in
+# the library itself — the one library-side consumer of `stream::empty`
 # (`Resolve::lookup_svcb`'s default body) is hand-implemented in `lib.rs`
 # (`EmptyStream`), so as not to drag `futures-util` (and with it
 # `futures-task`, `pin-project-lite`, `slab`) into the library's
@@ -22,6 +22,9 @@ http-ng-core = { workspace = true }
 # comment in `lib.rs`.
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 futures-util     = { version = "0.3", default-features = false, features = ["std"] }
+assert_matches   = { workspace = true }
+rstest           = { workspace = true }
+thiserror        = { workspace = true }
 
 [lints]
 workspace = true
