@@ -321,12 +321,33 @@ Different domains, registrable by different people. Under IDNA2003 the sharp
 s maps to `ss` and no punycode is produced at all. Final sigma and ZWJ/ZWNJ
 diverge the same way.
 
-**But Windows ships ICU, and its ICU exposes UTS-46 directly.** ICU was
-integrated into Windows 10 in 1703 and its C APIs are public. The exported
-surface includes `uidna_openUTS46`, `uidna_nameToASCII` and
-`uidna_nameToASCII_UTF8` — the same UTS-46 the Rust `idna` crate implements,
-so this path does **not** change which host is contacted. The UTF-8 entry
-point also means no UTF-16 round trip.
+**Windows ships ICU, and its ICU can produce exactly what we produce — but
+only with the right flags.** Measured on a `windows-latest` runner, not
+inferred, by calling both APIs on the same inputs:
+
+| input | `IdnToAscii` | `uidna_openUTS46(0)` | `uidna_openUTS46(NONTRANSITIONAL)` | Rust `idna` (ours) |
+|---|---|---|---|---|
+| `straße.de` | `strasse.de` | `strasse.de` | `xn--strae-oqa.de` | `xn--strae-oqa.de` |
+| `faß.de` | `fass.de` | `fass.de` | `xn--fa-hia.de` | `xn--fa-hia.de` |
+| `münchen.de` | `xn--mnchen-3ya.de` | same | same | same |
+
+Three things fall out of that table, and the middle one is the reason the
+measurement was worth making.
+
+`IdnToAscii` is IDNA2003, confirmed — Microsoft documents it as RFC 3490,
+and it behaves that way.
+
+**ICU's UTS-46 with default options is transitional, and therefore agrees
+with IDNA2003 rather than with us.** `UIDNA_DEFAULT` is 0; the behaviour
+this project needs requires `UIDNA_NONTRANSITIONAL_TO_ASCII |
+UIDNA_NONTRANSITIONAL_TO_UNICODE` (0x10 | 0x20). An implementation that
+reached for ICU because "it is UTS-46, so it matches" and passed 0 would
+produce a different origin from every other target, silently, for exactly
+the inputs where it matters.
+
+With the non-transitional flags it agrees with the bundled Rust
+implementation on every input tried. The UTF-8 entry point
+(`uidna_nameToASCII_UTF8`) also avoids a UTF-16 round trip.
 
 What the Windows path actually costs:
 
