@@ -223,7 +223,7 @@ where
     // already stands on: the error is re-classified into
     // `http_ng_core::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
-    B::Error: std::error::Error + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
     Tm: Timer,
 {
     type Data = Bytes;

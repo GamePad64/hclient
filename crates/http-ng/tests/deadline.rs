@@ -416,3 +416,32 @@ fn the_clock_client_new_carries_by_default_actually_fires() {
     );
     assert!(started.elapsed() >= TOTAL);
 }
+
+/// The race is decided in favour of the operation.
+///
+/// `within` polls the operation before the deadline, so a request that
+/// finishes in the same wake as its deadline expiring is a success and not
+/// a timeout. Nothing else in this file can see that: every other test
+/// here has a bound that expires long before its server answers.
+///
+/// The setup makes the tie certain rather than likely — `TestTimer::sleep`
+/// resolves immediately, so the deadline is already expired on the first
+/// poll, and `MockTransport` answers on that same first poll. Reverse the
+/// two polls in `within` and every request through this client becomes a
+/// timeout.
+#[cfg(feature = "test-util")]
+#[test]
+fn an_operation_that_finishes_in_the_same_wake_as_its_deadline_wins() {
+    use http_ng::mock::{MockTransport, TestTimer};
+
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("ok").unwrap());
+    let c = Client::builder(m)
+        .total_timeout(TestTimer::new(), Duration::from_millis(1))
+        .build()
+        .expect("the mock supports this configuration");
+
+    let resp = futures_executor::block_on(c.get("https://a/x").send())
+        .expect("an answered request is not a timeout, however expired the clock");
+    assert_eq!(resp.status(), 200);
+}

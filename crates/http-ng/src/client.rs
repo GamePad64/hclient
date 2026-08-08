@@ -297,6 +297,16 @@ impl<T: Transport> Client<T, crate::DefaultClock> {
     /// place: a `Client` behind an `Arc` may already have clones, and
     /// changing their budget from here would be action at a distance.
     /// Clone first if the unbounded handle is still wanted.
+    ///
+    /// **On native the clock is `Tokio`, so a bounded request needs an
+    /// ambient tokio runtime** — the same condition [`Client::new`] already
+    /// carries, now reaching one call further, since an unbounded request
+    /// never constructs a sleep at all. A test that drives a mock on
+    /// `futures_executor` should therefore give the bound its own clock
+    /// through [`ClientBuilder::total_timeout`] (`http-ng`'s `test-util`
+    /// feature carries [`crate::mock::TestTimer`] for exactly this),
+    /// rather than reach for this method and meet
+    /// `tokio::time::sleep`'s panic.
     pub fn total_timeout(mut self, total: Duration) -> Self {
         self.config.total = Some(total);
         self
