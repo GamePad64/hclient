@@ -1006,17 +1006,19 @@ jobs:
           # in the spec) — exactly the case this check must see and pass via
           # the marker, not miss by oversight.
           #
-          # `http-ng-native/src` — Task 13 of vertical 2. The list here is
-          # DELIBERATELY PARTIAL (unlike `no-unsafe-code`'s
-          # `crates/*/src`): runtime- and backend crates like `http-ng-rt`
-          # legitimately carry `Send` on CAPABILITIES (bounds on a trait,
-          # like `Blocking::run` above) and on impls of concrete types
-          # against a concrete foreign API (e.g. `Spawn<F: Send + 'static>
-          # for Tokio` in `http-ng-rt-tokio` — not in this list, and
-          # shouldn't be: scanning runtime backends wholesale would mean
+          # `http-ng-native/src` — Task 13 of vertical 2. The scan is
+          # DELIBERATELY NOT the whole workspace (unlike `no-unsafe-code`'s
+          # `crates/*/src`): runtime- and backend crates legitimately carry
+          # `Send` on CAPABILITIES (bounds on a trait, like `Blocking::run`
+          # above) and on impls of concrete types against a concrete foreign
+          # API (e.g. `Spawn<F: Send + 'static> for Tokio` in
+          # `http-ng-rt-tokio`) — scanning those wholesale would mean
           # requiring a marker on every such impl, of which there are many
           # and which aren't about the invariant "the core doesn't declare
-          # Send/Sync"). There used to be no point scanning
+          # Send/Sync". That exclusion is expressed below as a named set
+          # subtracted from a glob, NOT as an inclusion list: see the block
+          # at the `case` statement for why the inclusion list was wrong in
+          # one direction and a bare glob wrong in the other. There used to be no point scanning
           # `http-ng-native` — before Task 13 the crate exported nothing
           # publicly except `testing` (see `#[doc(hidden)] pub mod testing`
           # in `src/lib.rs`). With Task 13 it gained a genuine public type,
@@ -1059,21 +1061,55 @@ jobs:
           # neighbors) — the existing comment filter below drops every one
           # of them, so adding this directory requires zero new markers,
           # the same clean result Task 13 recorded for `Native`.
-          # A GLOB, not a hand-maintained list — the same shape
-          # `no-unsafe-code` uses further down, and for the same reason. The
-          # list this replaces named seven directories and dropped any that
-          # did not exist, failing only when ALL seven were gone. Renaming
-          # one crate's directory therefore removed it from the scan
-          # silently, with the workspace still building, because `cargo`
-          # resolves a package by its manifest rather than its path. A
-          # reviewer reproduced exactly that: a real `Send` violation planted
-          # in `http-ng-fetch` was caught, and the same violation with the
-          # directory renamed was not. A glob follows the move; a list does
-          # not, and cannot say so.
+          # A GLOB MINUS A NAMED EXCLUSION SET — not a hand-maintained
+          # inclusion list, and not a bare `crates/*/src` either. Both of
+          # those were tried and both were wrong, in opposite directions.
+          #
+          # The inclusion list came first: seven directories, each dropped if
+          # absent, failing only when ALL seven were gone. Renaming one
+          # crate's directory therefore removed it from the scan silently,
+          # with the workspace still building, because `cargo` resolves a
+          # package by its manifest rather than its path. A reviewer
+          # reproduced it: a real `Send` violation planted in
+          # `http-ng-fetch` was caught, and the same violation with the
+          # directory renamed was not.
+          #
+          # Replacing it with a bare glob then broke the job on a clean tree
+          # — eight violations, all legitimate. The excluded crates were not
+          # drift, they were a considered decision recorded above: a runtime
+          # backend's `impl<F: Future + Send + 'static> Spawn<F> for Tokio`
+          # is a bound on a concrete type against a concrete foreign API, not
+          # the invariant this job polices (that the CORE does not declare
+          # `Send`/`Sync`). Scanning them wholesale would demand a marker on
+          # every such impl, of which there are many and none of which are
+          # about the invariant.
+          #
+          # The exclusion set keeps both properties. A crate added later is
+          # scanned by default rather than by remembering to add it. A crate
+          # excluded on purpose is one greppable line saying so. And a MOVE
+          # of an excluded crate re-enters the scan, because the `case` arm
+          # stops matching — so the shape fails closed in the direction the
+          # inclusion list failed open.
           shopt -s nullglob
-          dirs=(crates/*/src)
-          if [ ${#dirs[@]} -eq 0 ]; then
+          all=(crates/*/src)
+          if [ ${#all[@]} -eq 0 ]; then
             echo "::error::crates/*/src matched no directory — the workspace layout changed or the glob itself is broken; this check must see at least one crate"
+            exit 1
+          fi
+          dirs=()
+          for d in "${all[@]}"; do
+            case "$d" in
+              # Runtime backends: `Spawn`/`Blocking` impls carry `Send` on a
+              # concrete type against tokio's and smol's own APIs.
+              crates/http-ng-rt-tokio/src|crates/http-ng-rt-smol/src) ;;
+              # `Blocking::run`'s signature is `T: Send + 'static, F: FnOnce()
+              # -> T + Send + 'static` — the bound the trait itself requires.
+              crates/http-ng-dns-system/src) ;;
+              *) dirs+=("$d") ;;
+            esac
+          done
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo "::error::every crate directory was excluded — the exclusion set has outgrown the workspace and this check now scans nothing"
             exit 1
           fi
           # We look for DECLARED bounds, not mentions in docs: lines whose
