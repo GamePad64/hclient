@@ -38,6 +38,8 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 use hickory_resolver::ConnectionProvider;
 use hickory_resolver::Resolver;
+use hickory_resolver::net::{DnsError, NetError};
+use hickory_resolver::proto::op::ResponseCode;
 use hickory_resolver::proto::rr::rdata::svcb::{SVCB, SvcParamValue};
 use hickory_resolver::proto::rr::{RData, RecordType};
 use http_ng_core::{Error, ErrorKind};
@@ -118,9 +120,52 @@ impl<P: ConnectionProvider> Hickory<P> {
                         .collect();
                     futures_util::stream::iter(items)
                 }
+                Err(e) if is_empty_answer(&e) => futures_util::stream::iter(Vec::new()),
                 Err(e) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
             })
     }
+}
+
+/// Whether a hickory error means "asked, and there is nothing of this type
+/// here" rather than "the lookup failed".
+///
+/// NODATA is an ANSWER, not a failure. hickory does not hand back an empty
+/// `Lookup` for it: "the name exists but has no record of this type" arrives
+/// as `NoRecordsFound` with `response_code: NoError`. Reported as an error,
+/// that made every host with no AAAA record — and every host with no HTTPS
+/// record, which is very nearly every host — reach the caller as
+/// `ErrorKind::Resolve`: a failure that never happened.
+///
+/// `http-ng-native`'s `ResolveErrors` records failure per family, so a
+/// v4-only host contributed a phantom v6 resolver failure to every request;
+/// and when the v4 attempts then failed for their own reasons, the reported
+/// cause blamed a resolver that had worked. An empty stream is the shape
+/// `Resolve`'s own default uses, and the one `IpLiteralOnly` documents as
+/// the rule: "erroring there would make every literal connection report a
+/// failure it did not have."
+///
+/// # The response code check is load-bearing, not decoration
+///
+/// `NoRecordsFound` carries NXDOMAIN too. hickory-net 0.26's
+/// `DnsError::from_response` folds `NXDomain | NoError if
+/// !contains_answer() && !truncation` into the one variant, and
+/// `NoRecords::response_code` is the only thing separating them — its own
+/// doc says as much: "if `NXDOMAIN`, the domain does not exist (and no other
+/// types). If `NoError`, then the domain exists but there exist either other
+/// types at the same label, or subzones of that label."
+///
+/// So matching the variant alone would report "asked and found nothing" for
+/// a domain that is not there at all — the mirror defect, the same lie in
+/// the other direction, told exactly where a caller most needs the truth.
+/// SERVFAIL, REFUSED and the rest never reach this function at all:
+/// `from_response` turns them into `DnsError::ResponseCode`, a different
+/// variant, and they stay errors without help from here.
+fn is_empty_answer(e: &NetError) -> bool {
+    matches!(
+        e,
+        NetError::Dns(DnsError::NoRecordsFound(no_records))
+            if no_records.response_code == ResponseCode::NoError
+    )
 }
 
 /// Maps hickory's parsed record onto this project's shape.
@@ -186,6 +231,13 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
                 // and becomes an empty stream, the same shape as `Resolve`'s
                 // default. `supports_svcb()` above is what keeps the two
                 // distinguishable; that is the whole reason it exists.
+                //
+                // This rests on the `is_empty_answer` arm below, and did not
+                // used to be true: hickory reports NODATA as an error, so
+                // without that arm "this origin publishes no HTTPS record"
+                // went out as a resolver failure — on nearly every origin,
+                // and in the one place `supports_svcb`'s honesty is supposed
+                // to live. Do not remove the arm and leave this paragraph.
                 Ok(lookup) => {
                     let items: Vec<_> = lookup
                         .answers()
@@ -197,6 +249,7 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
                         .collect();
                     futures_util::stream::iter(items)
                 }
+                Err(e) if is_empty_answer(&e) => futures_util::stream::iter(Vec::new()),
                 Err(e) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
             })
     }

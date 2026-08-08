@@ -52,6 +52,12 @@ enum Reply {
     Answer(Vec<Record>),
     /// Fail the exchange the way a dead upstream would.
     Fail,
+    /// Answer NXDOMAIN: the name does not exist at all. Distinct from the
+    /// unscripted default (NOERROR with an empty answer section) — hickory
+    /// reports BOTH as `NoRecordsFound`, and they differ only by
+    /// `response_code`, which is exactly why the crate tests that field
+    /// rather than the variant.
+    NxDomain,
     /// Never answer at all. Holds one query open while another runs.
     Silence,
 }
@@ -74,6 +80,11 @@ impl Upstream {
 
     fn failing(mut self, record_type: RecordType) -> Self {
         self.replies.insert(record_type, Reply::Fail);
+        self
+    }
+
+    fn nxdomain(mut self, record_type: RecordType) -> Self {
+        self.replies.insert(record_type, Reply::NxDomain);
         self
     }
 
@@ -204,6 +215,14 @@ impl DnsHandle for CannedConn {
             Some(Reply::Fail) => Box::pin(stream::once(std::future::ready(Err(
                 NetError::Message("the scripted upstream is down"),
             )))),
+            Some(Reply::NxDomain) => {
+                let mut message = Message::response(request.id, request.op_code);
+                message.metadata.response_code = ResponseCode::NXDomain;
+                message.add_query(query);
+                Box::pin(stream::once(std::future::ready(Ok(
+                    DnsResponse::from_message(message).expect("a response message re-encodes"),
+                ))))
+            }
             Some(Reply::Silence) => Box::pin(stream::pending()),
             // Nothing scripted for this type: NOERROR with an empty answer
             // section, which is what a server says for "asked, found none".
@@ -432,46 +451,39 @@ async fn support_for_svcb_survives_a_lookup_that_finds_nothing() {
     );
 }
 
-/// PINS A DEFECT, deliberately. Do not "fix the test" if it starts failing —
-/// a failure here means the crate started doing the right thing.
+/// NODATA is an answer, and it arrives as an empty stream.
 ///
-/// `lookup_svcb`'s own comment in `lib.rs` says an empty result "is a real
-/// answer — 'asked, found none' — and becomes an empty stream, the same shape
-/// as `Resolve`'s default". It does not. hickory does not return an empty
-/// `Lookup` for NODATA: it returns `NetError::NoRecordsFound(NoRecords {
-/// response_code: NoError, .. })`, which this crate maps, like any other
-/// resolver error, to `ErrorKind::Resolve`. So a host with no HTTPS record —
-/// which is nearly every host on today's web — makes `lookup_svcb` yield one
-/// error rather than the promised empty stream.
+/// hickory does not return an empty `Lookup` for "the name exists but has
+/// no record of this type": it returns `NoRecordsFound` with
+/// `response_code: NoError`. This crate mapped that, like any other
+/// resolver error, to `ErrorKind::Resolve` — so a host with no HTTPS
+/// record, which is nearly every host on today's web, yielded a failure
+/// instead of nothing.
 ///
-/// `http-ng-dns` states the opposite convention outright, in `IpLiteralOnly`'s
-/// doc: a family with nothing in it "produces an empty stream rather than an
+/// `http-ng-dns` states the convention outright in `IpLiteralOnly`'s doc: a
+/// family with nothing in it "produces an empty stream rather than an
 /// error, because ... erroring there would make every literal connection
 /// report a failure it did not have."
 #[tokio::test]
-async fn no_https_record_is_reported_as_an_error_not_as_the_promised_empty_stream() {
+async fn no_https_record_yields_an_empty_stream_not_an_error() {
     let (resolve, _) = Upstream::default().wire();
 
     let got: Vec<_> = resolve.lookup_svcb(HOST).collect().await;
-    assert_eq!(got.len(), 1, "one item, and it is not an endpoint");
-    let err = got
-        .into_iter()
-        .next()
-        .expect("length was just asserted")
-        .expect_err("NODATA reaches the caller as a failure today");
-    assert_matches!(err.kind(), ErrorKind::Resolve);
+    assert!(
+        got.is_empty(),
+        "NODATA is 'asked, found none' — an empty stream, not a failure"
+    );
 }
 
-/// PINS THE SAME DEFECT on the address lookups, where it costs more.
+/// The same on the address lookups, where it cost more.
 ///
-/// A v4-only host answers NOERROR with an empty answer section for AAAA. That
-/// arrives here as `ErrorKind::Resolve`, so `lookup_ipv6` reports a failure
-/// for a host that is simply v4-only — the exact outcome `IpLiteralOnly`'s doc
-/// calls out as wrong ("would make every literal connection report a failure
-/// it did not have"). Happy Eyeballs one layer up sees an error where it
-/// should see a family that ran out of candidates.
+/// A v4-only host answers NOERROR with an empty answer section for AAAA.
+/// While that arrived as `ErrorKind::Resolve`, `http-ng-native`'s
+/// `ResolveErrors` recorded a v6 failure on every request to such a host —
+/// and when the v4 attempts then failed for their own reasons, the reported
+/// cause blamed a resolver that had worked.
 #[tokio::test]
-async fn a_family_with_no_records_is_reported_as_an_error_not_an_empty_stream() {
+async fn a_family_with_no_records_yields_an_empty_stream_not_an_error() {
     let (resolve, _) = Upstream::default()
         .answering(
             RecordType::A,
@@ -480,12 +492,34 @@ async fn a_family_with_no_records_is_reported_as_an_error_not_an_empty_stream() 
         .wire();
 
     let got: Vec<_> = resolve.lookup_ipv6(HOST).collect().await;
-    assert_eq!(got.len(), 1, "one item, and it is not an address");
+    assert!(
+        got.is_empty(),
+        "a v4-only host has no AAAA, and that is an answer, not a failure"
+    );
+    let v4: Vec<_> = resolve.lookup_ipv4(HOST).collect().await;
+    assert_eq!(v4.len(), 1, "the family that does have records is unaffected");
+}
+
+/// The other side of the same guard, and the reason it tests
+/// `response_code` rather than the `NoRecordsFound` variant alone.
+///
+/// NXDOMAIN arrives as `NoRecordsFound` too — verified by inspecting the
+/// error, not assumed — but the name does not exist, which is a real
+/// failure. A guard matching the variant alone swallows it, and that is the
+/// mirror defect: "asked and found nothing" reported for a domain that is
+/// not there at all, leaving a caller to retry a name that can never
+/// resolve.
+#[tokio::test]
+async fn nxdomain_stays_an_error_rather_than_an_empty_stream() {
+    let (resolve, _) = Upstream::default().nxdomain(RecordType::AAAA).wire();
+
+    let got: Vec<_> = resolve.lookup_ipv6(HOST).collect().await;
+    assert_eq!(got.len(), 1, "a nonexistent name is a failure, not nothing");
     let err = got
         .into_iter()
         .next()
         .expect("length was just asserted")
-        .expect_err("a v4-only host reaches the caller as a failure today");
+        .expect_err("NXDOMAIN must not be swallowed by the NODATA guard");
     assert_matches!(err.kind(), ErrorKind::Resolve);
 }
 
