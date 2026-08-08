@@ -77,7 +77,7 @@ serde_json    = { version = "1", default-features = false, features = ["std"], o
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely
 # because it IS one — see that method's doc comment), so `http-ng` sources
 # it itself, the same way `http-ng-proto`'s `Backoff::delay` already takes
-# `jitter` as a parameter expecting SOME caller to supply it. Plain "0.3",
+# `jitter` as a parameter expecting SOME caller to supply it. Plain "0.4",
 # unconditional: on native and on `wasm32-wasip2` its default backend
 # already covers the target (WASI is a first-class `getrandom` backend);
 # the browser needs the extra `wasm_js` feature, added only under that
@@ -86,7 +86,7 @@ serde_json    = { version = "1", default-features = false, features = ["std"], o
 # entry for the target actually being built, so this one line still
 # applies everywhere, and the browser-only line below is additive, not a
 # duplicate declaration of the crate.
-getrandom     = "0.3"
+getrandom     = "0.4"
 
 # Target-dependent optional dependencies for `DefaultTransport` (see
 # `default-transport` in `[features]` above and the `DefaultTransport` doc
@@ -119,7 +119,7 @@ http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", option
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be
 # told which one to use. `all(target_family = "wasm", not(target_os =
 # "wasi"))`, NOT bare `target_family = "wasm"`: WASI is also `wasm32-*` and
-# already gets a working backend from the plain `getrandom = "0.3"` line
+# already gets a working backend from the plain `getrandom = "0.4"` line
 # above, with no extra feature needed. No `wasm-bindgen`/`js-sys` of our
 # own here — `http-ng` does NOT implement `Timer` for any target (a prior
 # version of this file did; see the `SseBuilder::with_timer` doc comment
@@ -129,7 +129,7 @@ http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", option
 # `wasm_js` feature pulls its own `js-sys`/`wasm-bindgen` transitively
 # inside `getrandom` itself, nothing further to add here.
 [target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
-getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 # The browser half of `DefaultTransport` (Task 8 of vertical 3) — the
 # counterpart of the `cfg(not(target_family = "wasm"))` block above, and the
