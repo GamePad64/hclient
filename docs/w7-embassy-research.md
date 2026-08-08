@@ -5,6 +5,17 @@ command and its output; every "it cannot" is the compiler's own words;
 everything that could not be checked here is marked **unverified** together
 with what would settle it.
 
+**Amended after the implementation (`http-ng-rt-embassy`, W7).** Four
+claims below were measured again by code that had to work rather than by a
+spike, and three of them moved. Each is marked **[corrected by the
+implementation]** where it stands; they are, in order: §1.4 `TcpOpts` (two
+of six are appliable, not none), §1.5 `poll_shutdown` (a real half-close is
+available), §6 consequence 1 (`CancelSupport::None` is not a choice this
+task could make), and two behaviours nobody looked for — `embassy_time` is
+unusable below `TcpConnect::connect`, and one abandoned connect starves ARP
+for the whole interface. Both new ones are at the end, under
+"Found while implementing".
+
 Spikes live in `spikes/` (untracked, outside `crates/`): `lifetime`,
 `under-embassy`, `tuntap`, `espidf-check`, `espidf-asyncio`, `espidf-exec`,
 `espidf-tls`.
@@ -225,7 +236,21 @@ leaked a slot would fail on request 3.
 descriptor — and the seam already expresses that by simply not implementing
 it. Nothing to design.
 
-`TcpOpts` is a real gap and **not** a `Capabilities` question. `Native`
+`TcpOpts` is a real gap and **not** a `Capabilities` question.
+
+> **[corrected by the implementation]** "an embassy-net backend can honour
+> none of them" is true of `TcpConnection`, which is what this section
+> looked at, and false of a backend that owns the `TcpSocket` itself — which
+> `http-ng-rt-embassy` does, because the closing list of §6 requires it.
+> `TcpSocket::set_nagle_enabled` and `set_keep_alive`
+> (`embassy-net-0.9.1/src/tcp.rs:353,363`) make **two of the six** real:
+> `nodelay` and `keepalive`. The remaining four are structurally absent, not
+> merely unexposed: the local address belongs to the stack, the send and
+> receive buffer sizes are the const parameters the pool was built with, and
+> smoltcp has no `SO_REUSEADDR` to set. The shipped answer is
+> `TcpConnect::APPLIES` plus `TcpOpts::reject_unsupported`, both added to
+> `http-ng-rt`: what a runtime cannot apply, it refuses by name.
+ `Native`
 passes `&TcpOpts` straight into `TcpConnect::connect`; an embassy-net
 backend can honour none of `nodelay`, `keepalive`, `local_address`,
 `send_buffer_size`, `recv_buffer_size`, `reuse_address` — smoltcp has
@@ -267,6 +292,15 @@ Two costs, both real and both recorded rather than smoothed over:
   forwards it to `poll_flush`. For HTTP/1 without upgrades this has not
   bitten in any of the runs above, but it is a half-close hyper believes it
   performed and did not. Related to §6.
+
+  > **[corrected by the implementation]** Also an artefact of using
+  > `TcpConnection`. `http-ng-rt-embassy` owns the `TcpSocket`, so
+  > `poll_shutdown` is `close()` followed by `flush()` — the FIN hyper asked
+  > for, actually sent. It turns out to carry more weight than "tidier":
+  > with connection reuse off it is hyper's shutdown, not the pool's `Drop`,
+  > that closes a *completed* exchange, which is why mutating the pool's
+  > `close()` away is caught by the cancellation test and not by the
+  > six-request one.
 
 ---
 
@@ -657,6 +691,17 @@ is written:
    `CancelSupport::None`. That is what `CancelSupport` is for, and it is
    the honest answer — but it makes embassy the first backend that cannot
    cancel, right after W1 concluded all three could.
+
+   > **[corrected by the implementation]** There is nowhere to report it
+   > from. `Capabilities` belongs to the `Transport`, and the transport here
+   > is `http_ng_native::Native`, which sets `cancel_on_drop =
+   > CancelSupport::Supported` unconditionally
+   > (`crates/http-ng-native/src/lib.rs`) on the strength of reasoning about
+   > its own future. A runtime plugged in underneath has no channel to lower
+   > it, and giving it one is a change to `http-ng-native`. So option 1 is
+   > not the cheaper of two choices — it is unavailable without that change,
+   > and would leave the capability lying meanwhile. The shipped backend
+   > takes option 2.
 2. Making it `Supported` needs the socket to outlive the drop by at least
    one stack poll: a "closing" list owned by whoever owns the `Stack`, fed
    from `Drop`, drained by the stack task. That is a design, not a detail,
@@ -665,6 +710,62 @@ is written:
    `std::net::TcpStream`/`async_net::TcpStream` closes on drop like every
    other backend in this workspace, and the kernel sends the FIN. Case 3
    above is that control, measured.
+
+---
+
+## Found while implementing (not in the original research)
+
+Two behaviours that no spike hit, both measured by
+`http-ng-rt-embassy`'s acceptance and both now shaping its code.
+
+**`embassy_time` cannot be used below `TcpConnect::connect`.**
+`http_ng_native::connect::drive` polls its connect attempts through
+`futures_util::stream::FuturesUnordered`, which polls each future with a
+waker of its own; embassy's *integrated* timer queue refuses any waker it
+did not make:
+
+```text
+panicked at embassy-executor-0.9.1/src/raw/waker.rs:38:
+  Found waker not created by the Embassy executor.
+  `embassy_time::Timer` only works with the Embassy executor.
+  ...
+  <FuturesUnordered<..connect..> as Stream>::poll_next
+  http_ng_native::connect::drive::{closure#0}
+```
+
+The backend's own `Timer::sleep` is unaffected — `with_connect_timeout` and
+the Happy Eyeballs stagger are hand-rolled `poll_fn`s that pass `cx`
+straight through, and a live connect timeout test pins that. Anything
+inside `connect` has to find another clock; the socket pool uses smoltcp's
+`Socket::set_timeout`, which the stack enforces while dispatching and which
+needs no waker at all. An application that wants `embassy_time` to work
+regardless would have to build it with a `generic-queue-*` feature —
+**unverified**, not needed here, and settled by trying it.
+
+**One abandoned connect starves ARP for the whole interface.** A socket
+given up on before the peer ever answered ends up `Closed` with its
+four-tuple still set, and smoltcp then wants to emit exactly one RST for it
+— retrying once a second for ever when the peer's hardware address cannot
+be resolved, because the tuple is only cleared once that RST is actually
+sent. Each attempt spends the neighbour cache's **global** one-per-second
+ARP budget, so a second socket dialling a perfectly reachable host never
+gets an ARP request out:
+
+```text
+#1: neighbor 192.168.69.9 silence timer expired, rediscovering
+outgoing segment will abort connection / sending RST|ACK
+address 192.168.69.9 not in neighbor cache, sending ARP request
+#3: neighbor 192.168.69.1 silence timer expired, rediscovering
+outgoing segment will send data or flags / sending SYN
+#3: neighbor 192.168.69.1 missing, silencing until t+1.000s
+```
+
+— repeating until the watchdog fired 30s later, with no ARP for `.1` ever
+sent. The way out is `connect`'s own `reset()`, which clears the tuple, so
+the pool hands out finished sockets **first**: the ghost is cleared at the
+next request instead of never. It is the same shape as the `TcpOpts` gap
+and as h3's `AsFd` finding (`docs/h3-research.md`): what the OS socket
+offers, embassy-net structurally does not.
 
 ---
 
@@ -686,6 +787,14 @@ path, since it too compiles and runs.
 `http_ng_rt::TcpConnect::connect` gives a runtime no way to say which socket
 options it could not apply, and both embassy shapes would silently ignore
 several, which this project does not allow.
+
+> **[done, W7 implementation]** `TcpOptsSupport`, `TcpConnect::APPLIES`
+> (defaulting to `NONE`, so silence understates rather than overstates) and
+> `TcpOpts::reject_unsupported` now live in `http-ng-rt`; the two shipped
+> runtimes declare `ALL` and are otherwise untouched. What is still open is
+> enforcement above the runtime: `Native::tcp_opts` could refuse once at
+> build time instead of once per connect, and that line belongs in
+> `http-ng-native`.
 
 **The one thing that would kill it:** the link step. Everything about
 esp-idf in this report is `cargo check` — if `hyper` + `rustls`/`ring` +
