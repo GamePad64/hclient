@@ -354,9 +354,14 @@ fn transparent_mock() -> MockTransport {
     MockTransport::new().with_capabilities(caps)
 }
 
-fn get_from(
-    c: &Client<MockTransport>,
-) -> Result<http::Response<http_ng::mock::MockBody>, http_ng::Error> {
+/// The body type is `Deadline<MockBody, _>`, not `MockBody`: as of v0.2 W4
+/// `Client::execute` wraps whatever the transport returned so the
+/// whole-operation bound survives past the response head. The wrapper is
+/// inert for a client that never set a `total_timeout`, which is every
+/// client in this file.
+type ClientBody = http_ng::Deadline<http_ng::mock::MockBody, http_ng::DefaultClock>;
+
+fn get_from(c: &Client<MockTransport>) -> Result<http::Response<ClientBody>, http_ng::Error> {
     let req = http::Request::builder()
         .uri("https://a/x")
         .body(RequestBody::Empty)

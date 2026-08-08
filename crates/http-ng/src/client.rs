@@ -2,26 +2,45 @@ use crate::config::{
     Config, check_redirect_supported, check_supported, check_timeouts_supported,
     effective_redirect, effective_timeouts, effective_uri,
 };
+use crate::deadline::{Deadline, within};
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
+use core::time::Duration;
 use http_ng_core::Timeouts;
-use http_ng_core::unversioned::Transport;
+use http_ng_core::unversioned::{Timer, Transport};
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
 use http_ng_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 
 #[derive(Debug)]
-pub struct ClientBuilder<T> {
+pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
     transport: T,
+    /// The clock a total timeout is measured with.
+    ///
+    /// Not an `Option`: the absence of a clock is a TYPE
+    /// ([`crate::NoClock`]), not a `None`, so that no total timeout can be
+    /// configured against a client that cannot measure one. See
+    /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
+    timer: Tm,
     config: Config,
 }
 
-impl<T: Transport> ClientBuilder<T> {
+/// `Tm` fixed to [`crate::DefaultClock`], not generic: a `new` over any
+/// `Tm` would have nowhere to get a clock value from, and `Client::builder`
+/// (which forwards here) would leave `Tm` unconstrained by its arguments
+/// and so uninferrable at the call site. Pinning it here is what keeps
+/// `Client::builder(t).build()` resolving to `Client<T>` — the bare form
+/// existing code writes — rather than to some other clock.
+impl<T: Transport> ClientBuilder<T, crate::DefaultClock> {
     pub fn new(transport: T) -> Self {
         Self {
             transport,
+            timer: crate::DefaultClock::default(),
             config: Config::default(),
         }
     }
+}
+
+impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// The redirect policy for every request from this client.
     ///
     /// Stores `Some(policy)`, and that wrapping carries meaning: it is what
@@ -102,10 +121,61 @@ impl<T: Transport> ClientBuilder<T> {
         self.config.base_url = Some(uri);
         self
     }
+    /// A bound on the **whole operation**, and the clock that measures it
+    /// — in one call, because neither is any use without the other.
+    ///
+    /// The gap this closes is recorded in `docs/v01-acceptance.md`:
+    /// `connect`/`first_byte`/`between_bytes` bound three phases, and a
+    /// response that starts promptly and then dribbles just under the
+    /// `between_bytes` threshold is bounded by none of them. This one
+    /// covers everything from the moment `execute` is entered — every
+    /// redirect hop included, which is precisely why it lives in `Client`
+    /// and cannot be a `tower` layer: a layer sees one hop, not the
+    /// operation, and would restart its clock on each one.
+    ///
+    /// What expiry produces is `ErrorKind::Timeout(Phase::Total)` with a
+    /// [`crate::TotalTimeoutElapsed`] source, and it stops the exchange
+    /// rather than only reporting on it — see [`crate::Deadline`], which
+    /// also states exactly what this does NOT cover (a body that goes
+    /// completely silent after the head; that is `between_bytes`).
+    ///
+    /// **The clock is an argument, not something this crate supplies.**
+    /// The reasoning is `SseBuilder::with_timer`'s, in full: an ambient
+    /// per-target clock inside `http-ng` means a `#[cfg]` in the facade
+    /// crate, and a `std::thread`-backed sleep that compiles on
+    /// `wasm32-wasip2` while having no thread to hand out at runtime — a
+    /// capability that looks supported and silently is not. A caller on
+    /// `http-ng-rt-tokio` or `http-ng-rt-smol` already has one in scope,
+    /// and `http-ng`'s `test-util` feature carries
+    /// [`crate::mock::TestTimer`].
+    ///
+    /// A client whose clock is already the target's default does not need
+    /// this call and can adjust the bound alone, on a built client:
+    /// [`Client::total_timeout`].
+    ///
+    /// `Tm2: Clone` because the clock travels into every response body
+    /// this client produces ([`crate::Deadline`] owns one); every clock in
+    /// this workspace is a handle or a ZST, and `tests/two_runtimes.rs`
+    /// already bounds runtimes by `Clone` for the same reason.
+    pub fn total_timeout<Tm2: Timer + Clone>(
+        self,
+        timer: Tm2,
+        total: Duration,
+    ) -> ClientBuilder<T, Tm2> {
+        ClientBuilder {
+            transport: self.transport,
+            timer,
+            config: Config {
+                total: Some(total),
+                ..self.config
+            },
+        }
+    }
+
     /// Checks the configuration against the transport's capabilities. Not
     /// a single silent no-op: an unsupported setting is an error, here and
     /// now.
-    pub fn build(self) -> Result<Client<T>, UnsupportedCapability> {
+    pub fn build(self) -> Result<Client<T, Tm>, UnsupportedCapability> {
         check_supported(
             &self.config,
             self.transport.capabilities(),
@@ -114,8 +184,9 @@ impl<T: Transport> ClientBuilder<T> {
         Ok(Client {
             inner: std::sync::Arc::new(Inner {
                 transport: self.transport,
-                config: self.config,
+                timer: self.timer,
             }),
+            config: self.config,
         })
     }
 }
@@ -141,50 +212,117 @@ fn backend_name<T>() -> &'static str {
 // below), not the signatures of existing impl blocks.
 #[cfg(feature = "default-transport")]
 #[derive(Debug)]
-pub struct Client<T = crate::DefaultTransport> {
-    inner: std::sync::Arc<Inner<T>>,
+pub struct Client<T = crate::DefaultTransport, Tm = crate::DefaultClock> {
+    inner: std::sync::Arc<Inner<T, Tm>>,
+    config: Config,
 }
 #[cfg(not(feature = "default-transport"))]
 #[derive(Debug)]
-pub struct Client<T> {
-    inner: std::sync::Arc<Inner<T>>,
+pub struct Client<T, Tm = crate::DefaultClock> {
+    inner: std::sync::Arc<Inner<T, Tm>>,
+    config: Config,
 }
 
-/// The transport and configuration a `Client` shares with its clones.
+/// The transport and the clock a `Client` shares with its clones.
 ///
 /// Behind an `Arc` so that cloning a `Client` is an atomic increment rather
 /// than a copy of the transport — which for a real backend owns a
 /// connection pool, a TLS configuration and a resolver, none of which
 /// should be duplicated by handing the client to a second task.
+///
+/// **The configuration is deliberately NOT in here**, unlike before v0.2
+/// W4. It sits in `Client` itself, per handle, and is cloned with it
+/// (`Timeouts` and `RedirectPolicy` are `Copy`; cloning an `http::Uri` is
+/// a `Bytes` refcount). That is what lets [`Client::total_timeout`] hand
+/// back a differently-bounded client over the SAME transport for the cost
+/// of one atomic increment — a per-call-site budget without a second
+/// connection pool.
 #[derive(Debug)]
-struct Inner<T> {
+struct Inner<T, Tm> {
     transport: T,
-    config: Config,
+    timer: Tm,
 }
 
-/// Cloning shares the transport; it does not duplicate it.
+/// Cloning shares the transport and the clock; it does not duplicate them.
 ///
 /// Hand-written rather than derived: `#[derive(Clone)]` would require
-/// `T: Clone`, which is both unnecessary — the `Arc` is what is cloned —
-/// and wrong in meaning, since a `T: Clone` transport would then be copied
-/// per clone instead of shared.
-impl<T> Clone for Client<T> {
+/// `T: Clone` and `Tm: Clone`, the first of which is both unnecessary —
+/// the `Arc` is what is cloned — and wrong in meaning, since a `T: Clone`
+/// transport would then be copied per clone instead of shared.
+impl<T, Tm> Clone for Client<T, Tm> {
     fn clone(&self) -> Self {
         Self {
             inner: std::sync::Arc::clone(&self.inner),
+            config: self.config.clone(),
         }
     }
 }
 
-impl<T: Transport> Client<T> {
-    pub fn builder(transport: T) -> ClientBuilder<T> {
+/// `Tm` fixed to [`crate::DefaultClock`] for the same reason
+/// `ClientBuilder::new` is — see its doc comment. `Client::builder(t)`
+/// takes only a transport, so nothing in the call could infer a clock;
+/// this is what keeps the result `Client<T>`, the bare form that already
+/// appears in this workspace's own signatures.
+impl<T: Transport> Client<T, crate::DefaultClock> {
+    pub fn builder(transport: T) -> ClientBuilder<T, crate::DefaultClock> {
         ClientBuilder::new(transport)
     }
+}
+
+/// Adjusting the bound on an already-built client, for a client whose
+/// clock is the target's default one.
+///
+/// This is the call that keeps `Client`'s type from growing when a timeout
+/// is switched on: `Client::new()?.total_timeout(d)` is still a `Client`,
+/// so `struct App { http: Client }` keeps compiling. The design doc
+/// rejects tower layers for compression (§W5) on exactly that ground, and
+/// `tests/deadline_client_type.rs` pins it here.
+///
+/// **Why this is not written over `Tm: Timer`.** [`crate::NoClock`] — the
+/// clock slot of a client that never got one — implements `Timer` too (it
+/// has to; `execute` needs a clock type either way), and Rust cannot say
+/// "any timer except that one". A no-argument setter over all `Tm: Timer`
+/// would therefore exist on a clockless client and do nothing, which is
+/// the silent no-op this crate refuses. For any other clock the bound is
+/// set in the same call that supplies it,
+/// [`ClientBuilder::total_timeout`], where no such gap exists.
+///
+/// `#[cfg(feature = "default-transport")]`: without the feature
+/// `DefaultClock` *is* `NoClock`, so this method must not exist at all.
+#[cfg(feature = "default-transport")]
+impl<T: Transport> Client<T, crate::DefaultClock> {
+    /// A client sharing this one's transport, bounded by `total`.
+    ///
+    /// Consumes `self` and returns a new handle rather than mutating in
+    /// place: a `Client` behind an `Arc` may already have clones, and
+    /// changing their budget from here would be action at a distance.
+    /// Clone first if the unbounded handle is still wanted.
+    ///
+    /// **On native the clock is `Tokio`, so a bounded request needs an
+    /// ambient tokio runtime** — the same condition [`Client::new`] already
+    /// carries, now reaching one call further, since an unbounded request
+    /// never constructs a sleep at all. A test that drives a mock on
+    /// `futures_executor` should therefore give the bound its own clock
+    /// through [`ClientBuilder::total_timeout`] (`http-ng`'s `test-util`
+    /// feature carries [`crate::mock::TestTimer`] for exactly this),
+    /// rather than reach for this method and meet
+    /// `tokio::time::sleep`'s panic.
+    pub fn total_timeout(mut self, total: Duration) -> Self {
+        self.config.total = Some(total);
+        self
+    }
+}
+
+/// `Tm: Timer + Clone` — `Timer` because [`Self::execute`] measures with
+/// it, `Clone` because the clock travels into every response body
+/// ([`crate::Deadline`] owns one). Both hold for every clock in this
+/// workspace, and for [`crate::NoClock`].
+impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     pub fn transport(&self) -> &T {
         &self.inner.transport
     }
     pub fn config(&self) -> &Config {
-        &self.inner.config
+        &self.config
     }
     /// What this client's transport can do.
     ///
@@ -201,25 +339,25 @@ impl<T: Transport> Client<T> {
         self.inner.transport.capabilities()
     }
 
-    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T> {
+    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T, Tm> {
         RequestBuilder::new(self, method, url)
     }
-    pub fn get(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn get(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::GET, url)
     }
-    pub fn post(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn post(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::POST, url)
     }
-    pub fn put(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn put(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::PUT, url)
     }
-    pub fn delete(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn delete(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::DELETE, url)
     }
-    pub fn patch(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn patch(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::PATCH, url)
     }
-    pub fn head(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn head(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::HEAD, url)
     }
     /// HTTP QUERY: a **safe, idempotent** request that carries a body.
@@ -243,7 +381,7 @@ impl<T: Transport> Client<T> {
     /// tests in `http-ng-proto`, since the correct behaviour here follows
     /// only from QUERY not being POST, and would be easy to "fix" into
     /// corruption by anyone who groups it with POST for having a body.
-    pub fn query(&self, url: &str) -> RequestBuilder<'_, T> {
+    pub fn query(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
         self.request(http::Method::QUERY, url)
     }
 
@@ -255,7 +393,7 @@ impl<T: Transport> Client<T> {
     /// get a [`crate::ReconnectingSseStream`] instead — that call is the
     /// actual gate between the two behaviors, not this method or any
     /// option on it.
-    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T> {
+    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T, Tm> {
         crate::sse::SseBuilder::new(self, url)
     }
 
@@ -278,7 +416,43 @@ impl<T: Transport> Client<T> {
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<T::Body>, Error>
+    ) -> Result<http::Response<Deadline<T::Body, Tm>>, Error>
+    where
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    {
+        // The deadline starts HERE, once, and not inside the loop below:
+        // a bound that restarted on every redirect hop would not be a
+        // bound on the operation, and that is the whole reason this is not
+        // a `tower` layer (a layer is called per hop and cannot see the
+        // chain). `now()` is taken before anything is sent, so DNS, the
+        // connect and the TLS handshake are all inside it.
+        let started = self.inner.timer.now();
+        let total = self.config.total;
+        let resp = match total {
+            // No bound asked for: not a `sleep` that never fires, but no
+            // sleep constructed at all. `Tokio::sleep` panics outside a
+            // runtime, and a client that never asked for a timeout must
+            // not start requiring one.
+            None => self.run(req).await?,
+            Some(t) => within(self.run(req), &self.inner.timer, t).await?,
+        };
+        // The bound outlives `execute`, because the operation does: the
+        // dribbling body this exists for arrives entirely after the head.
+        // `http-ng-wasi`'s `Body` carries an unfinished write future the
+        // same way, and for the same reason — `Transport::execute`'s
+        // signature is untouched by either.
+        Ok(resp.map(|body| Deadline::new(body, self.inner.timer.clone(), started, total)))
+    }
+
+    /// The stages themselves, unbounded — `execute` above puts the bound
+    /// around this whole thing.
+    ///
+    /// Split out rather than inlined so that the deadline wraps ONE future
+    /// covering every hop: the redirect loop is inside here, so dropping
+    /// this future on expiry drops whichever hop is in flight, and under
+    /// `Transport::execute`'s contract (v0.2 W1) that stops the exchange
+    /// instead of leaving it to finish unobserved.
+    async fn run(&self, req: http::Request<RequestBody>) -> Result<http::Response<T::Body>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -291,7 +465,7 @@ impl<T: Transport> Client<T> {
         // send` resolves the same URI ahead of time (it needs the result
         // for `Response::url()`), and resolving an already-absolute URI
         // returns it unchanged (RFC 3986 §5.2.2).
-        let uri = effective_uri(self.inner.config.base_url.as_ref(), &parts.uri.to_string())?;
+        let uri = effective_uri(self.config.base_url.as_ref(), &parts.uri.to_string())?;
 
         let mut hp = HopParts {
             method: parts.method,
@@ -316,7 +490,7 @@ impl<T: Transport> Client<T> {
         // result is stored in `extensions` before the loop: subsequent
         // hops clone them from the previous one
         // (`stages::redirect::next_hop`), so merging once is enough.
-        let effective = effective_timeouts(&hp.extensions, &self.inner.config.timeouts);
+        let effective = effective_timeouts(&hp.extensions, &self.config.timeouts);
         check_timeouts_supported(
             &effective,
             self.inner.transport.capabilities(),
@@ -346,7 +520,7 @@ impl<T: Transport> Client<T> {
         // unavoidably — `Extensions` is one shared bag — and carries across
         // hops with everything else (`stages::redirect::next_hop`), which
         // costs nothing here since the value is read once, before the loop.
-        let redirect = effective_redirect(&hp.extensions, &self.inner.config.redirect);
+        let redirect = effective_redirect(&hp.extensions, &self.config.redirect);
         check_redirect_supported(
             &redirect,
             self.inner.transport.capabilities(),

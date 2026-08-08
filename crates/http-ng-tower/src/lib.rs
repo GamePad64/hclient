@@ -38,6 +38,38 @@
 //! When #109417 lands, the fix is one bound in this file. Nothing in the
 //! core or in any backend has to move, which is why the wait is the right
 //! call rather than a resigned one.
+//!
+//! # Bounding concurrency (v0.2 W4)
+//!
+//! Without a limit, in-flight requests are unbounded. The limit is
+//! `tower`'s, applied between the two adapters, and this crate deliberately
+//! neither re-exports nor re-implements it — taking `tower::limit` as a
+//! normal dependency would put `tokio` (`sync`) and `tokio-util` in the
+//! graph of every consumer for a layer they may never use:
+//!
+//! ```text
+//! ServiceTransport::new(ConcurrencyLimit::new(TransportService::new(t), 8), caps)
+//! ```
+//!
+//! That it actually limits is not assumed: `tests/concurrency.rs` drives
+//! three requests through a limit of two and checks the third never
+//! reaches the transport until a permit frees. It works because
+//! `ServiceTransport::execute` drives `poll_ready` to completion on the
+//! clone it is about to call, which is where `ConcurrencyLimit` reserves
+//! its permit — remove that drive and the layer panics rather than
+//! silently overshooting.
+//!
+//! **What it does not bound: sockets.** The permit lives in
+//! `ConcurrencyLimit`'s response future and is dropped when that future
+//! completes — at the response HEAD. The body streams on afterwards,
+//! holding its connection, outside the limit, so with a limit of N there
+//! can be more than N connections open. Measured, in
+//! `the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded`.
+//! A limit that covered bodies too would have to carry its permit into the
+//! response body — the shape `http-ng-wasi`'s `Body` and `http_ng::
+//! Deadline` both use — and that is a layer this crate would have to own
+//! rather than borrow; it is not written yet, and the design document
+//! records the gap rather than implying it away.
 #![forbid(unsafe_code)]
 
 use http_ng_core::unversioned::Transport;

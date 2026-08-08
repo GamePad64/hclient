@@ -1,12 +1,17 @@
 use crate::client::Client;
+use crate::deadline::Deadline;
 use crate::response::Response;
-use http_ng_core::unversioned::Transport;
+use http_ng_core::unversioned::{Timer, Transport};
 use http_ng_core::{Error, ErrorKind, RequestBody};
 use http_ng_proto::redirect::RedirectPolicy;
 
+/// `Tm` is the CLIENT's clock, carried along so that `send`'s response
+/// body can hold the operation's deadline (see [`Deadline`]). It has the
+/// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
+/// keeps naming what it always named.
 #[derive(Debug)]
-pub struct RequestBuilder<'a, T> {
-    client: &'a Client<T>,
+pub struct RequestBuilder<'a, T, Tm = crate::DefaultClock> {
+    client: &'a Client<T, Tm>,
     method: http::Method,
     /// Already resolved against the client's `base_url` (or just parsed,
     /// if there's no base). Resolution lives in `new`, not in `send`,
@@ -26,8 +31,8 @@ pub struct RequestBuilder<'a, T> {
     error: Option<Error>,
 }
 
-impl<'a, T: Transport> RequestBuilder<'a, T> {
-    pub(crate) fn new(client: &'a Client<T>, method: http::Method, url: &str) -> Self {
+impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
+    pub(crate) fn new(client: &'a Client<T, Tm>, method: http::Method, url: &str) -> Self {
         Self {
             client,
             method,
@@ -162,7 +167,13 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
         self
     }
 
-    pub async fn send(self) -> Result<Response<T::Body>, Error>
+    /// Sends the request.
+    ///
+    /// The body comes back wrapped in [`Deadline`], which carries the
+    /// client's whole-operation bound past the response head — inert, and
+    /// costing one `Option` test per frame, for a client that never set
+    /// one.
+    pub async fn send(self) -> Result<Response<Deadline<T::Body, Tm>>, Error>
     where
         // Sibling of the bound on `Client::execute` in `client.rs` (spec
         // amendment-C1): `send` calls `Client::execute`, which requires

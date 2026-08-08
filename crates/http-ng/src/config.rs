@@ -30,6 +30,29 @@ pub struct Config {
     /// this field's type changed, no behavior did.
     pub redirect: Option<RedirectPolicy>,
     pub base_url: Option<http::Uri>,
+    /// A bound on the **whole operation**, measured with the clock the
+    /// client carries as its second type parameter.
+    ///
+    /// **Deliberately not a fourth field of [`Timeouts`]**, and the
+    /// distinction is the difference between a capability that describes
+    /// the transport and one that lies about it. `Timeouts` lives in
+    /// `http-ng-core` because TRANSPORTS read it out of
+    /// `http::Extensions` and enforce it; no transport can enforce this
+    /// one, because none of them owns the redirect loop that defines where
+    /// the operation begins and ends. A `TimeoutSupport::total` next to
+    /// `connect`/`first_byte`/`between_bytes` would therefore be a field
+    /// describing the CLIENT sitting in a struct describing the backend —
+    /// the shape this project has caught four times.
+    ///
+    /// It is consequently not checked against `Capabilities` at all (see
+    /// `check_supported` below). What could be unhonourable here is the
+    /// absence of a clock, and that is settled in the type system instead:
+    /// see [`crate::NoClock`].
+    ///
+    /// Set by [`crate::ClientBuilder::total_timeout`] or
+    /// [`crate::Client::total_timeout`]. There is deliberately no
+    /// per-request override yet — see the v0.2 W4 report.
+    pub total: Option<core::time::Duration>,
 }
 
 /// The base URL is unfit to resolve this request against.
@@ -194,6 +217,12 @@ pub fn check_supported(
         timeouts,
         redirect,
         base_url: _,
+        // Not checked for support, and this one can never be: no transport
+        // enforces a whole-operation bound (see the field's doc comment),
+        // so there is no capability to check it against. What it needs
+        // instead — a clock — is guaranteed by the client's type, not by a
+        // runtime check, so there is nothing for `build()` to refuse.
+        total: _,
     } = cfg;
     check_timeouts_supported(timeouts, caps, backend)?;
     check_redirect_supported(redirect, caps, backend)
