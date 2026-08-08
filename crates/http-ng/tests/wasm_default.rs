@@ -2,13 +2,22 @@
 //! this crate.
 //!
 //! Everything here runs in a real browser under `wasm-pack test`. That
-//! matters more than usual: no CI job in this repository runs a browser
-//! test today, so `cargo test --workspace` being green says nothing about
-//! any line below. Run them with
+//! matters more than usual: `cargo test --workspace` being green says
+//! nothing about any line below, because a host run never touches these
+//! tests at all. CI does execute them, on Chrome and Firefox, in the
+//! `browser` job — it did not when this file was written, which is why an
+//! earlier version of this comment said no CI job ran a browser test.
+//!
+//! Run them with
 //!
 //! ```text
-//! wasm-pack test --headless --chrome crates/http-ng -- --features default-transport,test-util
+//! wasm-pack test --headless --chrome crates/http-ng --features default-transport,test-util
 //! ```
+//!
+//! The feature flags are `wasm-pack`'s own arguments. The `cargo test`-style
+//! `-- --features ...` is rejected outright with "unexpected argument
+//! '--features'", which is worth stating because it looks like the form that
+//! would work.
 //!
 //! `#![cfg(all(feature = "default-transport", target_family = "wasm",
 //! target_os = "unknown"))]` — the same three conditions that gate
@@ -47,10 +56,11 @@ wasm_bindgen_test_configure!(run_in_browser);
 ///    every scheme but `http`/`https` as `ErrorKind::Unsupported`,
 ///    deliberately and documented as such.
 ///
-/// Re-verified rather than inherited: see this task's report for the
-/// `Client::new().get("data:text/plain,portable")` run and the exact error
-/// it produced. Using the loaded page instead keeps the exchange fully
-/// offline — no Internet access needed, which is what the `data:` URL was
+/// Re-verified rather than inherited: `Client::new().get("data:text/plain,
+/// portable")` fails in the browser, because `fetch()` rejects a `data:` URL
+/// for a same-origin-credentialled request rather than serving it inline the
+/// way the plan's example assumed. Using the loaded page instead keeps the
+/// exchange fully offline — no Internet access needed, which is what the `data:` URL was
 /// reaching for — while actually exercising the network path a `data:` URL
 /// skips entirely in a browser.
 fn harness_page_url() -> String {
@@ -136,8 +146,18 @@ async fn a_configured_redirect_policy_is_rejected_by_the_real_browser_transport(
 /// default is not overridable through `http-ng-fetch`. A silent no-op here
 /// would mean a consumer asking not to follow redirects and being followed
 /// anyway, with nothing said.
+///
+/// Named for what this body actually checks. The stronger claim — that the
+/// rejection happens *before* a request goes out — is pinned by the host
+/// sibling `tests/redirect.rs`'s
+/// `a_per_request_policy_against_an_internal_backend_fails_at_send`, which
+/// asserts `requests().is_empty()` and dies to a mutation moving the check
+/// after `execute`. This test cannot: there is no `MockTransport` in a
+/// browser, so nothing here can observe whether a request was issued, and a
+/// name claiming otherwise would be the exact defect this project keeps
+/// finding.
 #[wasm_bindgen_test]
-async fn a_per_request_redirect_policy_is_rejected_before_any_request_is_sent() {
+async fn a_per_request_redirect_policy_is_rejected_as_unsupported() {
     let client = Client::new();
     let err = client
         .get(&harness_page_url())

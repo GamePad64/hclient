@@ -19,6 +19,14 @@ let client = http_ng::Client::new()?; // requires an ambient tokio runtime
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
+The same two lines in a browser, on `wasm32-unknown-unknown`. `Client::new()`
+is infallible there, so there is no `?` on it — that is the only difference:
+
+```rust
+let client = http_ng::Client::new();
+let text = client.get("https://example.com").send().await?.collect().await?.text()?;
+```
+
 End-to-end proof that this SAME generic code (not two
 separate examples) actually runs over the network on two different runtimes
 without a single `#[cfg]` —
@@ -163,10 +171,11 @@ test busy-spin.
 in the vertical — opt in explicitly). On any non-wasm target it resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
-not one with explicitly chosen roots). Without the feature, or on
-`wasm32-unknown-unknown`/`wasm32-wasip2` (`target_os = "wasi"`), the type
-doesn't exist at all — an ordinary compile error, not a silently weaker
-transport; on wasip2/wasip1 there's deliberately no branch that reuses the
+not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves
+to `http_ng_fetch::Fetch`, and `Client::new()` there returns `Self` rather than
+a `Result`, because fetch's constructor cannot fail. Without the feature, or on
+`wasm32-wasip2` (`target_os = "wasi"`), the type doesn't exist at all — an
+ordinary compile error, not a silently weaker transport; on wasip2/wasip1 there's deliberately no branch that reuses the
 already-built `http_ng_wasi::WasiHttp` through this mechanism — `http-ng`
 doesn't depend on `http-ng-wasi` (an invariant recorded in
 `http-ng-wasi/Cargo.toml`), and adding that dependency here would mean a path

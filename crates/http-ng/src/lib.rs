@@ -115,9 +115,23 @@ pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOpti
 ///   both of its tests build `Native` explicitly, the same way
 ///   `Client::builder` does. Note that the browser branch below does NOT
 ///   set this precedent aside: it is checked by a build, on every push
-///   (`cargo check -p http-ng ... --target wasm32-unknown-unknown` in CI's
-///   `msrv` job) and by real browser tests in
-///   `crates/http-ng/tests/wasm_default.rs`.
+///   (`cargo check -p http-ng --features test-util --target
+///   wasm32-unknown-unknown`, in CI's `msrv` job) and executed by real
+///   browser tests on two engines (`crates/http-ng/tests/wasm_default.rs`,
+///   run by the `browser` job under `wasm-pack`).
+///
+///   That sentence was written one commit before it became true: when this
+///   type was added, the `msrv` job ran that command for `http-ng-fetch`
+///   only, and no CI job executed a browser test at all. Both arrived in the
+///   two commits that followed. It is stated here because the asymmetry
+///   above rests on it — "CI builds one branch and not the other" is only an
+///   argument while it is a fact, and it is worth knowing that it briefly
+///   was not one.
+///
+///   Note the command carries `--features test-util`, not `--all-features`:
+///   `--all-features` on this target pulls native-only dev-dependencies that
+///   do not build there. The narrower flag checks this branch, which is what
+///   the argument needs, and nothing wider.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultTransport = http_ng_native::Native<
     http_ng_rt_tokio::Tokio,
