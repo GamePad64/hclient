@@ -1,6 +1,12 @@
-//! Mock transport: lets you test the client and its stages on the host,
-//! with no network and no wasm runtime. Available behind the `test-util`
-//! feature.
+//! Mock transport and a controllable timer: let you test a `Transport`
+//! implementation, or a client built on one, on the host — with no network
+//! and no wasm runtime.
+//!
+//! Depends on `http-ng-core` alone. It was carved out of the `http-ng`
+//! facade for that reason: transports live *below* the facade, so reaching
+//! these doubles through it meant a `Transport` author depending upward on
+//! the whole client. Re-exported as `http_ng::mock` behind the facade's
+//! `test-util` feature, so existing callers see no change.
 //!
 //! The response queue and request log sit behind a `std::sync::Mutex`, not
 //! a `RefCell`. This isn't a style choice: `RefCell` would make

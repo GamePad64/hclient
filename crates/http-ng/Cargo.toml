@@ -9,8 +9,10 @@ repository.workspace = true
 
 [features]
 default = []
-# Mock transport for consumer tests.
-test-util = []
+# Mock transport for consumer tests. Re-exports `http-ng-mock`, which
+# depends on `http-ng-core` alone — a transport author should take that
+# crate directly rather than pulling this facade in to reach it.
+test-util = ["dep:http-ng-mock"]
 # `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — see the
 # `DefaultTransport` doc comment in `src/lib.rs` for what actually resolves
 # per target and why this is a `dep:` list below rather than the crate names
@@ -47,6 +49,7 @@ futures-core  = { workspace = true }
 http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
+http-ng-mock  = { workspace = true, optional = true }
 http-ng-proto = { workspace = true }
 # Only for `Collected::json`, behind the `json` feature (see `[features]`
 # above). Not in `[workspace.dependencies]`: nothing else in the vertical

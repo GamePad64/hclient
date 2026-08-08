@@ -526,6 +526,7 @@ dependencies = [
  "http-ng-core",
  "http-ng-dns-system",
  "http-ng-fetch",
+ "http-ng-mock",
  "http-ng-native",
  "http-ng-proto",
  "http-ng-rt",
@@ -588,6 +589,17 @@ dependencies = [
  "wasm-bindgen-test",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "http-ng-mock"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-executor",
+ "http",
+ "http-body",
+ "http-ng-core",
 ]
 
 [[package]]

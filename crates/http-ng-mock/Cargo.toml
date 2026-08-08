@@ -1,0 +1,30 @@
+[package]
+name = "http-ng-mock"
+version = "0.1.0"
+description = "Mock transport and controllable timer for testing http-ng transports and clients"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Depends on `http-ng-core` ONLY, never on the `http-ng` facade. That is the
+# whole reason this crate exists separately: a transport implementation lives
+# below the facade, so reaching the test doubles through it meant depending
+# upward on everything the facade pulls in. Anyone writing a `Transport` —
+# in this workspace or outside it — now gets `MockTransport` for the cost of
+# `http-ng-core`.
+#
+# Keep it that way. A dependency on `http-ng` here would re-create exactly
+# the coupling this split removed, and would do it silently, since the
+# facade already dev-depends on nothing that would flag the cycle.
+[dependencies]
+bytes         = { workspace = true }
+http          = { workspace = true }
+http-body     = { workspace = true }
+http-ng-core  = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }

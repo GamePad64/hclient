@@ -6,8 +6,14 @@
 
 mod client;
 mod config;
+/// Mock transport and controllable timer, re-exported from `http-ng-mock`.
+///
+/// The doubles live in their own crate because a `Transport` implementation
+/// sits *below* this facade: reaching them through `http_ng::mock` meant a
+/// transport author depending upward on the whole client. This re-export
+/// exists so that callers who already had the facade see no change.
 #[cfg(feature = "test-util")]
-pub mod mock;
+pub use http_ng_mock as mock;
 mod request;
 mod response;
 mod sse;
