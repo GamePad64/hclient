@@ -106,18 +106,19 @@ impl<B> SystemDns<B> {
     }
 }
 
-#[derive(Debug)]
-struct ResolveFailed(String, std::io::Error);
-impl std::fmt::Display for ResolveFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to resolve `{}`: {}", self.0, self.1)
-    }
-}
-impl std::error::Error for ResolveFailed {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.1)
-    }
-}
+/// `getaddrinfo` said no, with the name it was asked about kept alongside
+/// the reason.
+///
+/// The name is in the message AND the `io::Error` is a `#[source]`, which
+/// is not redundant: `http_ng_core::Error` chains `source()`, so a caller
+/// that wants the errno downcasts to `std::io::Error` through this without
+/// parsing text, while a caller that only logs still sees which name
+/// failed. Dropping `#[source]` would leave the second reader with the
+/// same message and the first with nothing — see
+/// `a_resolve_failure_keeps_the_io_error_reachable_by_downcast`.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to resolve `{0}`: {1}")]
+struct ResolveFailed(String, #[source] std::io::Error);
 
 impl<B: Blocking> SystemDns<B> {
     /// `Blocking::run` (Task 1, `amendment-C5`) returns `Result<T,

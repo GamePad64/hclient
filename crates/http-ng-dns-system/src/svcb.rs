@@ -431,9 +431,12 @@ mod wire {
 
 #[cfg(test)]
 mod tests {
+    use super::wire::{Header, read_header};
     use super::*;
     use crate::sys::RawAnswer;
+    use assert_matches::assert_matches;
     use dns_message_parser::rr::ServiceParameter;
+    use rstest::rstest;
 
     /// RR type 65, RFC 9460 §14.1.
     const TYPE_HTTPS: u16 = 65;
@@ -618,9 +621,10 @@ mod tests {
     fn a_message_cut_mid_record_is_an_error_not_a_silently_short_answer() {
         let full = one_record(1, "svc.example.com", &[(KEY_ALPN, vec![2, b'h', b'2'])]);
         let err = endpoints(full[..full.len() - 4].to_vec()).expect_err("half a record");
-        assert!(
-            matches!(err, SvcbLookupError::Malformed(_)),
-            "expected a decode failure, got {err:?}"
+        assert_matches!(
+            err,
+            SvcbLookupError::Malformed(_),
+            "expected a decode failure"
         );
     }
 
@@ -632,9 +636,10 @@ mod tests {
         msg[rdlength_at] = 0xff;
         msg[rdlength_at + 1] = 0xff;
         let err = endpoints(msg).expect_err("65535 bytes of RDATA are not there");
-        assert!(
-            matches!(err, SvcbLookupError::Malformed(_)),
-            "the length claimed on the wire must not be believed, got {err:?}"
+        assert_matches!(
+            err,
+            SvcbLookupError::Malformed(_),
+            "the length claimed on the wire must not be believed"
         );
     }
 
@@ -650,9 +655,10 @@ mod tests {
         msg[12] = 0xc0;
         msg[13] = 0x0c; // the question name points at itself
         let err = endpoints(msg).expect_err("a cycle is not a name");
-        assert!(
-            matches!(err, SvcbLookupError::Malformed(_)),
-            "expected the decoder's recursion guard, got {err:?}"
+        assert_matches!(
+            err,
+            SvcbLookupError::Malformed(_),
+            "expected the decoder's recursion guard"
         );
 
         // And a two-hop cycle, which a naive "pointers must point
@@ -663,10 +669,10 @@ mod tests {
         msg[13] = 20;
         msg[20] = 0xc0;
         msg[21] = 12;
-        assert!(matches!(
+        assert_matches!(
             endpoints(msg).expect_err("a two-hop cycle is not a name"),
             SvcbLookupError::Malformed(_)
-        ));
+        );
     }
 
     #[test]
@@ -697,9 +703,10 @@ mod tests {
             ],
         );
         let err = endpoints(msg).expect_err("a one-byte port is not a port");
-        assert!(
-            matches!(err, SvcbLookupError::Malformed(_)),
-            "the good record must not survive the malformed one, got {err:?}"
+        assert_matches!(
+            err,
+            SvcbLookupError::Malformed(_),
+            "the good record must not survive the malformed one"
         );
     }
 
@@ -752,9 +759,10 @@ mod tests {
             ],
         );
         let err = endpoints(msg).expect_err("stricter than RFC 9460 §2.4.1, deliberately");
-        assert!(
-            matches!(err, SvcbLookupError::Malformed(_)),
-            "expected the decoder to refuse the unconsumed params, got {err:?}"
+        assert_matches!(
+            err,
+            SvcbLookupError::Malformed(_),
+            "expected the decoder to refuse the unconsumed params"
         );
     }
 
@@ -1147,6 +1155,383 @@ mod tests {
             endpoints_from_answer(&RawAnswer::NotSupported),
             Ok(Vec::new()),
             "paired with supports_svcb() == false, this is an absent capability, not a failure"
+        );
+    }
+
+    // ---- the twelve bytes that are still parsed by hand ----------------
+    //
+    // `read_header` is the only wire parsing left in this crate, and the
+    // reason it exists at all is measured two tests below. Everything above
+    // reaches it through `endpoints_from_answer`, which can only observe it
+    // through the outcome; these read the four fields directly, because a
+    // header field that lands in the wrong variable is invisible from a
+    // distance whenever some other field happens to reject the message
+    // first.
+    //
+    // `assert_eq!` on a whole `Header` is safe in a way it is NOT for a
+    // `ServiceParameter` (see the top of this module): `Header` is four
+    // primitives with a derived `PartialEq`, so every field is genuinely
+    // compared.
+
+    /// `ID`, flags, and the four RFC 1035 §4.1.1 counts, written out so a
+    /// case below can put a value in one field and zero everywhere else.
+    fn header_bytes(flags_hi: u8, flags_lo: u8, qdcount: u16, ancount: u16) -> Vec<u8> {
+        let mut out = vec![0x12, 0x34, flags_hi, flags_lo];
+        out.extend_from_slice(&qdcount.to_be_bytes());
+        out.extend_from_slice(&ancount.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+        out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+        out
+    }
+
+    #[rstest]
+    // The header of the captured answer, so at least one case is a shape a
+    // resolver really produced rather than one this file invented.
+    #[case::a_real_answer(
+        hex(REAL_CLOUDFLARE_ANSWER)[..12].to_vec(),
+        Header { is_response: true, truncated: false, rcode: 0, ancount: 1 }
+    )]
+    // The buffer the FFI zeroed and nothing was written into. Every field
+    // false or zero — and `is_response` false is the only thing that keeps
+    // it from reading as a perfectly good NOERROR answer with no records.
+    #[case::nothing_arrived(
+        vec![0u8; 12],
+        Header { is_response: false, truncated: false, rcode: 0, ancount: 0 }
+    )]
+    // `AA` without `QR`: only bit 0x80 means "response".
+    #[case::authoritative_but_not_a_response(
+        header_bytes(0x40, 0x00, 0, 0),
+        Header { is_response: false, truncated: false, rcode: 0, ancount: 0 }
+    )]
+    // `RD` is the neighbouring bit to `TC` and is set on nearly every real
+    // query; reading it as truncation would reject almost every answer.
+    #[case::recursion_desired_is_not_truncation(
+        header_bytes(0x01, 0x00, 0, 0),
+        Header { is_response: false, truncated: false, rcode: 0, ancount: 0 }
+    )]
+    #[case::truncated(
+        header_bytes(0x02, 0x00, 0, 0),
+        Header { is_response: false, truncated: true, rcode: 0, ancount: 0 }
+    )]
+    // RCODE shares its byte with `RA` and the `Z`/`AD`/`CD` bits, all of
+    // which are set here. Unmasked, this reads as RCODE 243 and NXDOMAIN
+    // stops being NXDOMAIN.
+    #[case::the_rcode_is_the_low_nibble_only(
+        header_bytes(0x82, 0xf3, 1, 0),
+        Header { is_response: true, truncated: true, rcode: 3, ancount: 0 }
+    )]
+    // ANCOUNT is bytes 6..8, big-endian. Swapping the pair gives 513 and
+    // reading QDCOUNT instead gives 1, so this one case rules out both.
+    #[case::ancount_is_the_third_count_and_network_order(
+        header_bytes(0x81, 0x80, 1, 258),
+        Header { is_response: true, truncated: false, rcode: 0, ancount: 258 }
+    )]
+    // The mirror image: a huge QDCOUNT with no answers must still be no
+    // answers.
+    #[case::a_large_qdcount_is_not_an_ancount(
+        header_bytes(0x81, 0x80, 0xffff, 0),
+        Header { is_response: true, truncated: false, rcode: 0, ancount: 0 }
+    )]
+    fn the_hand_parsed_header_reads_each_field_from_its_own_bits(
+        #[case] bytes: Vec<u8>,
+        #[case] expected: Header,
+    ) {
+        assert_eq!(read_header(&bytes), Ok(expected));
+    }
+
+    /// Anything shorter than the fixed twelve bytes is refused with the
+    /// length it did have, and the boundary is exact: eleven is short,
+    /// twelve is a header. The bound guards four indexed reads (`msg[2]`,
+    /// `msg[3]`, `msg[6]`, `msg[7]`), so an off-by-one here is a panic on a
+    /// short answer, not a wrong value.
+    #[rstest]
+    fn fewer_than_twelve_bytes_is_never_a_header(#[values(0, 1, 6, 8, 11)] len: usize) {
+        assert_eq!(
+            read_header(&vec![0u8; len]),
+            Err(SvcbLookupError::HeaderTruncated { got: len })
+        );
+    }
+
+    #[test]
+    fn exactly_twelve_bytes_is_a_header() {
+        assert_matches!(read_header(&[0u8; 12]), Ok(_));
+    }
+
+    /// Why `read_header` exists at all, pinned rather than left in a
+    /// comment: `Dns::decode` cannot read a bare header, so the FFI's
+    /// failure path — which yields twelve bytes and no length — has nothing
+    /// else to be classified by.
+    ///
+    /// If this ever starts succeeding, the hand-written header parser can
+    /// be deleted, and that is a decision worth being told about.
+    #[test]
+    fn the_decoder_cannot_read_a_bare_header_which_is_why_one_is_parsed_by_hand() {
+        // One question, which is the shape a failed `res_query` really
+        // leaves behind: the query it echoed, and no answer section.
+        let bare = header_bytes(0x81, 0x80, 1, 0);
+        assert_eq!(bare.len(), 12);
+        assert_matches!(
+            endpoints(bare),
+            Err(SvcbLookupError::Malformed(_)),
+            "the decoder goes on to look for the question the header promised, so twelve \
+             bytes are not a message to it — only to `read_header`"
+        );
+
+        // And the other direction, which is the more dangerous half: a
+        // header claiming NO questions decodes cleanly into a message with
+        // nothing in it. Routing the FFI's failure path through
+        // `Dns::decode` would therefore not simply fail — it would return
+        // "no HTTPS records" for whatever a header said, ANCOUNT included.
+        // `endpoints_from_answer` never lets that happen, because
+        // `RawAnswer::HeaderOnly` is classified from the header's own
+        // fields and never handed to the decoder at all.
+        assert_matches!(endpoints(header_bytes(0x81, 0x80, 0, 0)), Ok(records) if records.is_empty());
+    }
+
+    /// The header is read BEFORE the body, on the full-message path too.
+    ///
+    /// Both of these carry the captured answer's hundred-odd valid bytes
+    /// and differ from it by one bit, so a decode that ran first would
+    /// happily produce the endpoint and the flag would never be consulted.
+    #[rstest]
+    #[case::qr_clear(0x81 & !0x80, SvcbLookupError::NoResponse)]
+    #[case::tc_set(0x81 | 0x02, SvcbLookupError::Truncated)]
+    fn a_flag_in_the_header_rejects_an_otherwise_decodable_answer(
+        #[case] flags_hi: u8,
+        #[case] expected: SvcbLookupError,
+    ) {
+        let mut msg = hex(REAL_CLOUDFLARE_ANSWER);
+        assert!(
+            endpoints(msg.clone()).is_ok(),
+            "the unmodified answer must parse, or this case proves nothing"
+        );
+        msg[2] = flags_hi;
+        assert_eq!(endpoints(msg), Err(expected));
+    }
+
+    // ---- the header's counts against the body they describe -------------
+
+    /// ANCOUNT is never used as a bound in this crate — it is only compared
+    /// against zero — so the question these two answer is what the decoder
+    /// does when the count and the section disagree, in both directions.
+    /// Both must be refusals: a count larger than the records present is
+    /// the shape that would index past a section, and a count smaller than
+    /// them is the shape that would let an injected record ride along
+    /// unread behind a header claiming fewer.
+    #[test]
+    fn an_ancount_larger_than_the_records_present_is_refused() {
+        let mut msg = one_record(1, "svc.example.com", &[]);
+        msg[6..8].copy_from_slice(&3u16.to_be_bytes());
+        assert_matches!(
+            endpoints(msg),
+            Err(SvcbLookupError::Malformed(_)),
+            "three records claimed, one supplied — the decoder must run out of bytes rather \
+             than read past the section"
+        );
+    }
+
+    #[test]
+    fn an_ancount_smaller_than_the_records_present_is_refused_not_silently_truncated() {
+        let good = svcb_rdata(1, "good.example.com", &[]);
+        let extra = svcb_rdata(2, "extra.example.com", &[]);
+        let mut msg = response(
+            "example.com",
+            &[
+                ("example.com", TYPE_HTTPS, good),
+                ("example.com", TYPE_HTTPS, extra),
+            ],
+        );
+        msg[6..8].copy_from_slice(&1u16.to_be_bytes());
+        assert_matches!(
+            endpoints(msg),
+            Err(SvcbLookupError::Malformed(_)),
+            "a message with bytes left over after its own counts is not a message with one \
+             record in it — accepting the prefix would be the whole RRSet decided by \
+             whoever wrote the header"
+        );
+    }
+
+    // ---- more than one record ------------------------------------------
+
+    /// Every usable record in the RRSet reaches the caller, not just the
+    /// first one the loop happens to find. Ordering is deliberately not
+    /// asserted: `Resolve` promises none (see the `http-ng-dns` module doc),
+    /// and priority selection is the consumer's, so this checks the set.
+    #[test]
+    fn every_usable_record_in_an_rrset_reaches_the_caller() {
+        let msg = response(
+            "example.com",
+            &[
+                (
+                    "example.com",
+                    TYPE_HTTPS,
+                    svcb_rdata(3, "third.example.com", &[]),
+                ),
+                (
+                    "example.com",
+                    TYPE_HTTPS,
+                    svcb_rdata(1, "first.example.com", &[]),
+                ),
+                (
+                    "example.com",
+                    TYPE_HTTPS,
+                    svcb_rdata(2, "second.example.com", &[]),
+                ),
+            ],
+        );
+        let got = endpoints(msg).expect("valid");
+        let mut seen: Vec<(u16, &str)> = got
+            .iter()
+            .map(|e| (e.priority, e.target.as_str()))
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec![
+                (1, "first.example.com"),
+                (2, "second.example.com"),
+                (3, "third.example.com")
+            ],
+            "an RRSet is all of its usable records — dropping any of them would silently \
+             narrow the choice a Happy Eyeballs consumer gets"
+        );
+    }
+
+    // ---- the ECHConfigList's length prefix, at more than one length -----
+
+    /// The prefix RFC 9460 §7.3 makes part of the SvcParamValue is written
+    /// back on as a **two-byte, big-endian** length. One five-byte payload
+    /// cannot tell that apart from a single byte, or from a constant: 300
+    /// can, because its high byte is not zero and its low byte is 44.
+    #[rstest]
+    fn the_ech_length_prefix_is_two_big_endian_bytes_of_the_real_length(
+        #[values(1, 5, 255, 300)] payload_len: usize,
+    ) {
+        let payload: Vec<u8> = (0..payload_len).map(|i| (i % 251) as u8).collect();
+        let mut ech = u16::try_from(payload.len())
+            .expect("under 64 KiB")
+            .to_be_bytes()
+            .to_vec();
+        ech.extend_from_slice(&payload);
+        let msg = one_record(1, "svc.example.com", &[(KEY_ECH, ech.clone())]);
+        let got = endpoints(msg).expect("valid");
+        assert_eq!(
+            got[0].ech_config_list.as_deref(),
+            Some(ech.as_slice()),
+            "rustls reads an ECHConfigList as a TLS vector — a length that is short by a \
+             byte, or written little-endian, fails inside rustls and not here"
+        );
+    }
+
+    // ---- AliasMode meets `mandatory`, which only Windows can produce ----
+    //
+    // RFC 9460 §2.4.1 says SvcParams in an AliasMode record are ignored,
+    // and `endpoint_from_binding` returns before it ever looks at
+    // `mandatory`. On the Unix path the decoder refuses such a record
+    // outright, so these two rules only meet on the Windows path — where
+    // the OS parses the params and hands them over whatever the priority
+    // says. That makes these the only tests that can reach the
+    // interaction, and it is the one place "ignored" has to mean ignored
+    // rather than "checked and then dropped".
+
+    #[test]
+    fn an_aliasmode_record_stays_usable_despite_a_mandatory_key_we_do_not_understand() {
+        let got = endpoint_from_binding(&binding(
+            0,
+            "example.com",
+            "alias.example.com",
+            vec![RawParam::Mandatory(vec![7]), RawParam::Other(7)],
+        ))
+        .expect("valid")
+        .expect(
+            "RFC 9460 §2.4.1: the params are ignored, so nothing here can make it \
+                 unusable",
+        );
+        assert_eq!(got.target, "alias.example.com");
+    }
+
+    #[test]
+    fn an_aliasmode_record_with_a_mandatory_key_that_is_absent_is_not_malformed() {
+        assert_matches!(
+            endpoint_from_binding(&binding(
+                0,
+                "example.com",
+                "alias.example.com",
+                vec![RawParam::Mandatory(vec![3])],
+            )),
+            Ok(Some(_)),
+            "the §8 check is about SvcParams, and §2.4.1 has already said there are none to \
+             check — rejecting the RRSet over one would be strictly worse than ignoring it"
+        );
+    }
+
+    /// **A known asymmetry, pinned so it is a decision rather than a
+    /// surprise.** `endpoint_from_binding` walks the `mandatory` list in
+    /// wire order and stops at the first key that is either absent (an
+    /// error, which rejects the whole RRSet) or unrecognised (drop this
+    /// record only). So one record that is both — naming an absent key AND
+    /// an unrecognised one — resolves differently depending on which comes
+    /// first in a list whoever wrote the record chose the order of.
+    ///
+    /// Both outcomes are safe in isolation: neither yields an endpoint from
+    /// the offending record. What differs is the fate of the OTHER records
+    /// in the RRSet, and that is worth knowing: a server (or anyone able to
+    /// inject a record) can pick "reject everything" or "drop just this
+    /// one" by ordering two numbers. RFC 9460 §8 reads as if the malformed
+    /// check settles it — a record whose `mandatory` names an absent key is
+    /// malformed, and §2.2 rejects the RRSet for a malformed record —
+    /// which would mean checking every key for presence before acting on
+    /// any of them.
+    #[rstest]
+    #[case::absent_first(vec![3, 7])]
+    #[case::unrecognised_first(vec![7, 3])]
+    fn the_mandatory_scan_stops_at_the_first_offending_key_in_wire_order(
+        #[case] mandatory: Vec<u16>,
+    ) {
+        // Key 3 (port) is absent; key 7 (dohpath) is present and not one
+        // this client acts on. Only the order differs between the cases.
+        let got = endpoint_from_binding(&binding(
+            1,
+            "example.com",
+            "svc.example.com",
+            vec![RawParam::Mandatory(mandatory.clone()), RawParam::Other(7)],
+        ));
+        match mandatory[0] {
+            3 => assert_eq!(
+                got,
+                Err(SvcbLookupError::MandatoryKeyAbsent { key: 3 }),
+                "an absent key reached first rejects the whole RRSet"
+            ),
+            _ => assert_eq!(
+                got,
+                Ok(None),
+                "an unrecognised key reached first drops this record and keeps the RRSet — \
+                 the same record, the same two keys, a different blast radius"
+            ),
+        }
+    }
+
+    /// The other half of the sharp edge at the top of this module:
+    /// `ServiceParameter` hashes by key as well as comparing by it, so a
+    /// `HashSet` of them — which is what the decoder returns
+    /// (`ServiceBinding::parameters`) — holds at most one parameter per
+    /// key, and a set-based assertion proves nothing about a value either.
+    #[test]
+    fn service_parameter_hashes_by_key_so_a_set_of_them_holds_one_per_key() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(ServiceParameter::ALPN {
+            alpn_ids: vec!["h2".to_owned()],
+        });
+        set.insert(ServiceParameter::ALPN {
+            alpn_ids: vec!["h3".to_owned()],
+        });
+        assert_eq!(
+            set.len(),
+            1,
+            "upstream hashes SvcParamKey numbers only — if this ever fails, upstream fixed \
+             its Hash impl and the field-by-field style in this module can be revisited"
         );
     }
 }

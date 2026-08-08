@@ -21,9 +21,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 http-ng-core = { workspace = true }
 http-ng-dns  = { path = "../http-ng-dns", version = "0.1.0" }
 http-ng-rt   = { path = "../http-ng-rt",  version = "0.1.0" }
+thiserror      = { workspace = true }
 
 [dev-dependencies]
+assert_matches   = { workspace = true }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+rstest           = { workspace = true }
 
 # NOT `[lints] workspace = true`, for the same reason `http-ng-fetch` isn't
 # (see amendment C7): the workspace table sets `unsafe_code = "forbid"`,
