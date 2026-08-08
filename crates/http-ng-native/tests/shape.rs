@@ -15,6 +15,34 @@ use http_ng_native::testing::OutgoingBody;
 /// requires `B::Error: Into<Box<dyn StdError + Send + Sync>>` and
 /// `B::Data: Send`, see `body.rs`'s module doc comment), moved here once
 /// `no-declared-send` started scanning this crate's `src`.
+/// Auto traits reach the transport and its response body, rather than
+/// being cut off by a `dyn`.
+///
+/// Both halves of this were untrue or fragile before v0.2 W2 and are
+/// asserted here because both are now claims the documentation makes.
+/// `Native` was `Send + Sync` by luck — a pool holding `Box<dyn Future>`
+/// connections would have taken both away, and nothing would have noticed.
+/// `NativeBody` was `!Send` outright, so a response could not be handed to
+/// `tokio::spawn`; storing hyper's concrete `Connection<I, B>` instead of a
+/// boxed future is what changed that (`h1.rs`, "Nothing here is boxed behind
+/// `dyn`").
+///
+/// These are `Send`/`Sync` *assertions*, not declared bounds — the
+/// distinction CI's `no-declared-send` cares about, and the reason this file
+/// lives outside `src` (see the module doc above).
+#[test]
+fn auto_traits_reach_the_transport_and_its_body() {
+    fn assert_send<T: Send>() {}
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    type Rt = http_ng_rt_tokio::Tokio;
+    type Tls = http_ng_tls_rustls::Rustls;
+    type Dns = http_ng_dns_system::SystemDns<Rt>;
+
+    assert_send_sync::<http_ng_native::Native<Rt, Tls, Dns>>();
+    assert_send::<http_ng_native::testing::NativeBody<http_ng_native::NativeIo<Rt, Tls>>>();
+}
+
 #[test]
 fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
     fn assert_bound<B: http_body::Body>()
