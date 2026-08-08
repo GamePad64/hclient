@@ -99,6 +99,45 @@ Three ways out, and the choice must be made before any h2 code is written:
 Recommendation: (1), with the floor rule kept for `capabilities()` so no
 existing caller is silently reinterpreted.
 
+**Both h2 and h3 sit behind a cargo feature on `http-ng-native`** — owner's
+decision. There is no `[features]` section in that crate today and `hyper`
+is already pulled with `default-features = false, features = ["client",
+"http1"]`, so the shape is clean:
+
+```toml
+[features]
+default = []
+http2 = ["hyper/http2"]
+```
+
+What it buys: h2 pulls hyper's own h2 implementation, and h3 pulls a
+different stack entirely (`h3` plus `quinn`, and UDP with it). Keeping both
+out of a default build is the same concern `NoTls` and `IpLiteralOnly` exist
+for.
+
+**What it does to the question above, which is more than it first appears.**
+With the feature OFF, every connection is h1 and `capabilities()` answers
+with a fixed value — the "determined once, at construction" contract holds
+exactly as it does today, and nothing needs to change. With it ON, the
+per-connection problem is entirely present. So the question is not universal;
+it is a question about one configuration, which is a much smaller thing to
+get right.
+
+**The catch, and it is not obvious.** Cargo features are additive across a
+dependency graph. If any crate in a build enables `http-ng-native/http2`,
+every crate gets it. So "the feature is off, therefore capabilities are
+fixed" is a conclusion available to a **final binary** and not to a library
+built on `http-ng` — for a library, the state is always "h2 may be on".
+Whichever resolution is chosen for the ON case must therefore be the one a
+library-facing API can live with; the OFF case cannot be treated as the
+common path.
+
+**h3's feature name is the easy part.** It is not a hyper feature but a
+separate stack, and it needs UDP, which the runtime seam does not have —
+`http_ng_rt` offers `TcpConnect` and nothing else. Behind that flag is a new
+runtime capability, which is why h3 stays out of v0.2 (see the closing
+section) even though the flag can be reserved now.
+
 **A second constraint, already known.** `http-ng-tls-native-tls` cannot
 report the negotiated ALPN — `async-native-tls` does not expose it. So h2 is
 unavailable over the platform TLS backend, and that must be declared before
@@ -156,9 +195,12 @@ wait until W3 lands.
 2. **Whether the pool is configurable through `Client` or only through
    `Native`.** The first is friendlier; the second keeps the facade free of
    a concept two backends do not have.
-3. **Whether h2 is a feature or a default.** As a default it changes what
-   every existing native user negotiates; as a feature it is another axis
-   in the build matrix.
+3. ~~**Whether h2 is a feature or a default.**~~ **Decided: a feature**, on
+   `http-ng-native`, and the same for h3 (W3). It keeps hyper's h2 and — for
+   h3 — a whole UDP stack out of a default build. It also narrows decision 1
+   to the feature-ON configuration, though not as far as it looks: cargo
+   features unify across a graph, so a library on top of `http-ng` must
+   assume h2 may be enabled by someone else in the build.
 
 ## Not in v0.2, and why
 
