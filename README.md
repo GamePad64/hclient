@@ -37,6 +37,25 @@ cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
 wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm
 ```
 
+The acceptance for the whole `Transport` shape — a live consumer, written
+against another library *before* this one existed, ported line for line and
+building for all three targets from one source with no `#[cfg]` at all —
+[`crates/http-ng/examples/portable.rs`](crates/http-ng/examples/portable.rs):
+
+```
+cargo build -p http-ng --example portable
+cargo build -p http-ng --example portable --target wasm32-wasip2
+cargo build -p http-ng --example portable --target wasm32-unknown-unknown
+```
+
+The original is `act`'s `http-client` component on `wasi-fetch`. What the
+port keeps, what it fixes and the four things it changes are written down in
+[`docs/porting-wasi-fetch.md`](docs/porting-wasi-fetch.md); the behaviours
+the example claims to have ported are pinned by
+[`crates/http-ng/tests/portable_example.rs`](crates/http-ng/tests/portable_example.rs),
+because three green builds on their own would also be green for an example
+that never streams and never sets a timeout.
+
 ## What's in the dependency graph
 
 The first row of the table, as before, is verifiable directly in this

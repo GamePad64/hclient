@@ -1596,3 +1596,82 @@ jobs:
             --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
             && { echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"; exit 1; } \
             || echo "OK: correctly rejected under +atomics"
+
+  # Task 10 of vertical 3 — the acceptance, and the one job in this file
+  # that checks a property of the whole library rather than of one crate:
+  # `examples/portable.rs` (the port of `act`'s `http-client` component,
+  # written against `wasi-fetch` before this library existed) builds for
+  # native, WASI and the browser from ONE source with not a single
+  # `#[cfg]`. The spec calls that the stop criterion for the `Transport`
+  # shape.
+  #
+  # Both halves are needed, and neither is redundant:
+  #
+  #   1. Three builds. Without them, the example rots the first time a
+  #      signature changes on a path only one target takes.
+  #   2. The `#[cfg]` scan. Without it, the three builds stay green forever
+  #      by the simplest possible means — someone adds a `#[cfg]` to the
+  #      example, the builds pass, and the criterion silently becomes a
+  #      statement about nothing. That is precisely the failure mode the
+  #      task brief calls out ("a `#[cfg]` quietly inserted to make it
+  #      build destroys the result"), so it is checked mechanically rather
+  #      than trusted to review.
+  #
+  # The scan is Python, not `grep -n '#\[cfg'`: the example's own doc
+  # comment talks ABOUT `#[cfg]`, and its `main` prints a string containing
+  # it. A grep that cannot tell an attribute from prose would either fail
+  # on the honest file (and get "fixed" by deleting the explanation) or be
+  # weakened until it matched nothing. Comments and string literals are
+  # stripped first, then what is left is searched — verified against the
+  # real file in both directions: green as written, red once a `#[cfg]`
+  # attribute is planted.
+  portable-example-three-targets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2, wasm32-unknown-unknown
+      - shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f crates/http-ng/examples/portable.rs ]; then
+            echo "::notice::examples/portable.rs not present yet — acceptance skipped"
+            exit 0
+          fi
+          python3 - <<'PYEOF'
+          import re
+          import sys
+          from pathlib import Path
+
+          src = Path("crates/http-ng/examples/portable.rs").read_text(encoding="utf-8")
+          # Comment lines first, then string literals over what is left --
+          # in that order, and the string pass over the WHOLE text rather
+          # than line by line. The example's `main` prints a string that
+          # mentions `#[cfg]` and wraps it across two lines with a trailing
+          # backslash, so a per-line pass sees neither of the two quotes
+          # paired and leaves the mention standing. `re.S` is what lets
+          # `\\.` step over that escaped newline. Measured: without either,
+          # this scan goes red on the honest file.
+          code = "\n".join(
+              line for line in src.splitlines() if not line.lstrip().startswith("//")
+          )
+          code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code, flags=re.S)
+
+          hits = [
+              m.group(0)
+              for m in re.finditer(r"#!?\[\s*cfg[_a-z]*|\bcfg!\s*\(", code)
+          ]
+          if hits:
+              print(
+                  "::error file=crates/http-ng/examples/portable.rs::"
+                  f"the acceptance example must contain no cfg switch, found: {hits}. "
+                  "If it needs one to build, the Transport shape is wrong and that is "
+                  "the finding — do not add the cfg."
+              )
+              sys.exit(1)
+          print("OK: no cfg switch in the acceptance example")
+          PYEOF
+          cargo build -p http-ng --example portable
+          cargo build -p http-ng --example portable --target wasm32-wasip2
+          cargo build -p http-ng --example portable --target wasm32-unknown-unknown
