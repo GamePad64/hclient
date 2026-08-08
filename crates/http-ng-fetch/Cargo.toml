@@ -34,68 +34,23 @@ repository.workspace = true
 # today, not silent truncation, and why the MSRV conflict below is
 # unaffected.
 #
-# Found while wiring the crate into the `msrv` CI job (Task 1), not
-# assumed: `wasm-streams` 0.6.0 requires rustc 1.88 (`cargo +1.85.0 check
-# --target wasm32-unknown-unknown` on a Cargo.toml carrying it fails with
-# "rustc 1.85.0 is not supported by wasm-streams@0.6.0, requires 1.88"
-# before a single line of this crate's own code is even checked) — a real
-# conflict with the workspace's `rust-version = "1.85"` promise. Task 4
-# (`src/body.rs`, this file) is the one that actually needs a
-# `ReadableStream` bridge, and resolves the conflict rather than inheriting
-# it:
+# `wasm-streams` was pinned to 0.5 for one reason, and that reason is gone.
+# The workspace floor used to be 1.85; `wasm-streams` 0.6.0 declares
+# `rust-version = "1.88"`, so it could not be used, and ~90 lines here
+# recorded the search for an alternative — an older release, driving
+# `ReadableStreamDefaultReader` through `web-sys` directly, and so on.
 #
-# **Considered, in the order the task's dispatch asked for.**
-# 1. An older, still-1.85-compatible `wasm-streams`. `cargo info
-#    wasm-streams@0.5.0` reports `rust-version: unknown` (no MSRV declared
-#    at all, unlike 0.6.0's explicit `1.88`) — not proof by itself, so it
-#    was verified directly rather than trusted: a scratch crate depending
-#    on exactly `wasm-streams = "=0.5.0"` (plus `wasm-bindgen`, `js-sys`,
-#    `futures-core`, matching this crate's own versions) compiles cleanly
-#    with `cargo +1.85.0 check --target wasm32-unknown-unknown` — full
-#    output kept in the task report. Its public shape is what
-#    `Body::from_response` below actually uses:
-#    `ReadableStream::from_raw(raw: web_sys::ReadableStream) -> Self` (its
-#    `sys::ReadableStream` is a plain `pub use web_sys::ReadableStream`, not
-#    a distinct extension type — no `unchecked_into` needed converting into
-#    it, unlike the brief's own reference code) and
-#    `into_stream(self) -> IntoStream<'static>`, a
-#    `Stream<Item = Result<JsValue, JsValue>>` — the exact shape 0.6.0
-#    also has. This is the option taken: `wasm-streams = "0.5"` below.
+# The MSRV policy is now "the latest stable", so 0.6 is simply available.
+# Verified rather than assumed before moving: `cargo check -p http-ng-fetch
+# --all-features --all-targets --target wasm32-unknown-unknown` is clean on
+# 0.6.0, and the crate's 65 browser tests pass on both Chrome and Firefox
+# against it. `Cargo.lock` resolves 0.6.0.
 #
-#    **The MSRV reason for this choice is gone.** The whole analysis above
-#    was driven by a 1.85 floor that 0.6.0's `rust-version = "1.88"` broke.
-#    The project's MSRV is now the latest stable, so 0.6.0 is reachable and
-#    staying on 0.5 is a preference rather than a constraint. Left alone
-#    deliberately: the two versions expose the same shape by the analysis
-#    above, so moving gains nothing on its own, and a dependency bump is a
-#    change to make on its own merits with its own testing — not a silent
-#    side effect of raising the MSRV.
-#    Only one 0.5.x release exists today (0.5.0), so the range and the
-#    exact pin currently resolve identically; the range is kept (matching
-#    how `wasm-bindgen`/`web-sys` are floored elsewhere in this file, not
-#    upper-bounded) because the committed `Cargo.lock` — not the range —
-#    is what actually protects a given CI run, and the `msrv` job already
-#    re-checks this crate at 1.85.0 on every push regardless.
-# 2. Driving `ReadableStreamDefaultReader` directly through `web-sys`/
-#    `js-sys`, skipping `wasm-streams` altogether. Not obviously hard, as
-#    flagged — but not obviously free either: `wasm-streams`'s own
-#    `IntoStream` (read via its source while verifying option 1) is ~50
-#    lines handling exactly the bookkeeping a hand-rolled version would
-#    have to reproduce — one in-flight `read()` future at a time, dropping
-#    the reader (and catching, not propagating, its rejection) on both a
-#    natural end and an error, and releasing the lock on drop so a
-#    cancelled read doesn't wedge the stream. None of that is exotic, but
-#    reimplementing it inside `#![deny(unsafe_code)]` gains nothing over a
-#    dependency that already exists, is already 1.85-compatible (option 1),
-#    and is already the crate this vertical's own brief was written
-#    against — this option is strictly more code for the same behavior.
-# 3. Raising the workspace MSRV to 1.88. Rejected: it would break the
-#    promise every other crate in the workspace makes in its own
-#    `rust-version`, for a version bump whose only payoff is not having to
-#    write the three lines above — option 1 gets the same `wasm-streams`
-#    API (0.5.0 and 0.6.0 are the same shape; the only difference the
-#    upgrade would buy today is the MSRV number itself) at zero cost to the
-#    published promise.
+# The old archaeology was deleted rather than annotated. It argued from a
+# floor that no longer exists, and a reader who trusted it would have been
+# told the crate is constrained by something this branch removed — the same
+# defect this repository keeps finding, a declaration and the code written
+# at different times. What it was protecting no longer needs protecting.
 [dependencies]
 http          = { workspace = true }
 http-ng-core  = { workspace = true }
@@ -124,9 +79,8 @@ futures-core = { workspace = true }
 # already used by `http-ng-native`, `http-ng-dns`, and `http-ng-dns-system`
 # for the identical need (`StreamExt::map`), not a preset copied blind.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-# See the MSRV comment above `[dependencies]`: pinned to the 0.5 line,
-# verified 1.85-compatible, not 0.6 (rustc 1.88).
-wasm-streams = "0.5"
+# See the note above `[dependencies]` for why this moved off the 0.5 line.
+wasm-streams = "0.6"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

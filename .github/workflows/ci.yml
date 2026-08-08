@@ -249,34 +249,19 @@ jobs:
           # the shared `cargo check` line instead, break every native
           # crate in the workspace that depends on `tokio`/`std::net` and cannot
           # build for wasm32 at all. So it gets its own call, on its own
-          # target, verified to actually need it: `cargo +1.85.0 check -p
-          # http-ng-fetch --all-features --all-targets --target
-          # wasm32-unknown-unknown` was run by hand against this crate
-          # before writing this job (Task 1) and passed — but only once
-          # `Cargo.toml` dropped `wasm-streams` (unused by Task 1's code;
-          # 0.6.0 requires rustc 1.88 and would have failed the workspace's
-          # 1.85 promise for a dependency nothing in Task 1 even called).
-          # STALE AS OF TASK 1 — UPDATED HERE (Task 4, fix round 1, review
-          # finding 3): Task 4 (`src/body.rs`, the response body over
-          # `ReadableStream`) is the task that actually (re)introduces
-          # `wasm-streams`, per the instruction two sentences above. It
-          # pins `wasm-streams = "0.5"`, not `0.6` — 0.5.0 was verified
-          # directly (not merely "should work"): a scratch crate depending
-          # on `wasm-streams = "=0.5.0"` plus this crate's own
-          # `wasm-bindgen`/`js-sys`/`futures-core` versions compiles cleanly
-          # with `cargo +1.85.0 check --target wasm32-unknown-unknown` (full
-          # trace in the Task 4 report), and the exact command this job
-          # runs below — `cargo +1.85.0 check -p http-ng-fetch
-          # --all-features --all-targets --target wasm32-unknown-unknown`
-          # — was re-run against the real crate (not the scratch one) with
-          # `wasm-streams` present and passes. The reasoning for pinning 0.5
-          # over raising the workspace MSRV to 1.88, or hand-rolling the
-          # `ReadableStreamDefaultReader` bridge instead of depending on
-          # `wasm-streams` at all, is recorded in full in
-          # `crates/http-ng-fetch/Cargo.toml`, next to the dependency
-          # itself — the next task to touch this crate's dependencies
-          # should update THAT comment and re-verify this line, the same
-          # way Task 4 did for Task 1's.
+          # target. The command the job runs below was verified by hand
+          # against this crate before the job was written, and re-runs on
+          # every push.
+          #
+          # This passage used to carry three paragraphs of archaeology about
+          # `wasm-streams` 0.5 versus 0.6: 0.6.0 declares
+          # `rust-version = "1.88"`, which broke the workspace's then-floor
+          # of 1.85, so the crate was pinned to 0.5 and the reasoning was
+          # written out here and in that crate's manifest. The MSRV policy
+          # is now "the latest stable", the crate is on 0.6, and every
+          # version number in that argument was stale. Deleted rather than
+          # annotated — a comment arguing from a floor the repository no
+          # longer has does not become true by being labelled historical.
           if [ ! -d "crates/http-ng-fetch" ]; then
             echo "::error::crates/http-ng-fetch is missing — this is CI's only wasm32-unknown-unknown MSRV check; a renamed directory must fail the job, not quietly remove the check"
             exit 1

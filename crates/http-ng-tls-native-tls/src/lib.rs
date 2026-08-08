@@ -8,12 +8,20 @@
 //! client certs, a FIPS-validated provider — needs the platform stack, and
 //! that is a deployment fact no library can argue with.
 //!
-//! **What this backend cannot report, and why `TlsInfo`'s fields are all
-//! `Option`.** `native-tls` exposes the negotiated ALPN protocol and the
-//! peer's certificate, and nothing else this seam asks for: no protocol
-//! version, no cipher suite, and only the LEAF certificate rather than the
-//! chain. Those come back as `None` and a one-element `Vec` respectively —
-//! `None` meaning "this backend cannot tell you", never "there was none".
+//! **The limitation to know before choosing this backend: `TlsInfo::alpn`
+//! is always `None` here.** ALPN is still SENT — the server sees the offer
+//! — but the negotiated answer is unreadable, so a caller cannot learn from
+//! this backend whether h2 was agreed. ALPN-driven protocol selection does
+//! not work over it; use `http-ng-tls-rustls` where the negotiated protocol
+//! matters. This is the wrapper's doing rather than the platform's: the
+//! reason is at [`NativeTls::connect`], on the field itself.
+//!
+//! **What else it cannot report, and why `TlsInfo`'s fields are all
+//! `Option`.** No protocol version and no cipher suite — `native-tls`
+//! exposes neither — and only the LEAF certificate rather than the chain,
+//! returned as a one-element `Vec` rather than `None`, because there IS a
+//! certificate and the chain is what is missing. `None` throughout means
+//! "this backend cannot tell you", never "there was none".
 //! `http-ng-tls`'s own doc comment anticipated exactly this backend when it
 //! made every field optional.
 #![forbid(unsafe_code)]
