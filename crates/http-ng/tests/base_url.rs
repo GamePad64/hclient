@@ -19,6 +19,10 @@
 
 use http_ng::mock::MockTransport;
 use http_ng::{Client, ErrorKind, InvalidBaseUrl, RequestBody};
+// Only the feature-off test names this type; importing it
+// unconditionally would be an unused import in a default build.
+#[cfg(not(feature = "idn"))]
+use http_ng::UriError;
 
 fn client_with_base(base: &str) -> Client<MockTransport> {
     let m = MockTransport::new();
@@ -189,4 +193,105 @@ fn a_path_relative_reference_is_expressible_through_the_builder_only() {
     let c = client_with_base("https://example.test/api/");
     futures_executor::block_on(c.get("v1/things").send()).unwrap();
     assert_eq!(sent_uri(&c), "https://example.test/api/v1/things");
+}
+
+// ── internationalised hosts ──────────────────────────────────────────
+//
+// Not a `base_url` feature, but a `base_url` BUG until this round, which
+// is why it is pinned in this file. Measured before the fix:
+//
+//   client.get("https://münchen.de/x")
+//     with no base_url  ->  error: invalid uri character
+//     with any base_url ->  ok, https://xn--mnchen-3ya.de/x
+//
+// Two different code paths, and the difference was never decided by
+// anyone: without a base the string went to `http::Uri`, which rejects a
+// non-ASCII authority; with one it went through `url::Url`, whose IDNA
+// punycoded it. `Location:` on a redirect took the second path for the
+// same reason. Both paths now go through `http_ng_proto::uri`, so the
+// answer no longer depends on an unrelated setting — which is the whole
+// point of the first two tests standing next to each other.
+
+/// The `idn` feature is on by default, so this is what a plain build does.
+#[cfg(feature = "idn")]
+#[test]
+fn an_internationalised_host_resolves_the_same_with_and_without_a_base() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let no_base = Client::builder(m).build().unwrap();
+    futures_executor::block_on(no_base.get("https://münchen.de/x").send()).unwrap();
+    assert_eq!(
+        sent_uri(&no_base),
+        "https://xn--mnchen-3ya.de/x",
+        "with no base configured, the host must still be punycoded"
+    );
+
+    let with_base = client_with_base("https://example.test/api/");
+    futures_executor::block_on(with_base.get("https://münchen.de/x").send()).unwrap();
+    assert_eq!(
+        sent_uri(&with_base),
+        sent_uri(&no_base),
+        "the same absolute URL must not depend on whether a base URL is set"
+    );
+}
+
+/// A relative reference against an internationalised base. The base itself
+/// cannot be a U-label — `ClientBuilder::base_url` takes an `http::Uri`,
+/// which will not hold one — so the A-label is the only way to express it,
+/// and it must survive resolution untouched. That is the idempotence the
+/// conversion is built on, seen from the facade.
+#[test]
+fn a_relative_request_against_an_a_label_base_keeps_the_host_untouched() {
+    let c = client_with_base("https://xn--mnchen-3ya.de/api/");
+    futures_executor::block_on(c.get("v1/things").send()).unwrap();
+    assert_eq!(sent_uri(&c), "https://xn--mnchen-3ya.de/api/v1/things");
+}
+
+/// With the feature off there is no `idna` in the build at all, and the
+/// answer must say so — with or without a base, and in words that name the
+/// A-label as the way through. `http::Uri`'s own "invalid uri character"
+/// is exactly the message this replaces.
+#[cfg(not(feature = "idn"))]
+#[test]
+fn without_the_idn_feature_a_u_label_is_a_typed_error_that_names_the_way_out() {
+    for (label, client) in [
+        ("no base", {
+            let m = MockTransport::new();
+            m.push_response(http::Response::builder().status(200).body("").unwrap());
+            Client::builder(m).build().unwrap()
+        }),
+        ("with a base", client_with_base("https://example.test/api/")),
+    ] {
+        let err = futures_executor::block_on(client.get("https://münchen.de/x").send())
+            .expect_err("no `idn` feature, so this cannot be sent");
+        assert_eq!(*err.kind(), ErrorKind::Other, "{label}: {err}");
+        let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+        let named = src
+            .downcast_ref::<UriError>()
+            .unwrap_or_else(|| panic!("{label}: the source must be a `UriError`, got {src}"));
+        assert!(
+            matches!(named, UriError::NonAsciiHost { host } if host == "münchen.de"),
+            "{label}: the error must name the host: {named:?}"
+        );
+        assert!(
+            named.to_string().contains("xn--"),
+            "{label}: the error must name the A-label form as the way through: {named}"
+        );
+        assert!(
+            client.transport().requests().is_empty(),
+            "{label}: nothing may be sent"
+        );
+    }
+}
+
+/// The A-label works whichever way `idn` is set — an A-label is ASCII, and
+/// nothing about it should depend on the feature. This is what makes the
+/// advice in the error above true rather than merely polite.
+#[test]
+fn an_a_label_host_is_sent_as_written_whichever_way_idn_is_set() {
+    let m = MockTransport::new();
+    m.push_response(http::Response::builder().status(200).body("").unwrap());
+    let c = Client::builder(m).build().unwrap();
+    futures_executor::block_on(c.get("https://xn--mnchen-3ya.de/x").send()).unwrap();
+    assert_eq!(sent_uri(&c), "https://xn--mnchen-3ya.de/x");
 }

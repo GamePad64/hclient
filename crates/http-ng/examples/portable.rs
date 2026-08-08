@@ -157,12 +157,20 @@ impl StdError for ComponentError {}
 /// component split on it: a URL the caller mistyped is `invalid_args`,
 /// anything else is `internal`. `http-ng` has no `ErrorKind` for that —
 /// a URL that does not parse comes back as `ErrorKind::Other` carrying
-/// `http::uri::InvalidUri` as its source (`config::effective_uri`) — so the
+/// `http_ng::UriError` as its source (`config::effective_uri`) — so the
 /// same split is available, but through `source().is::<..>()` rather than
 /// through `kind()`. That is a downgrade in ergonomics, not in
 /// expressiveness, and it is recorded as such in the porting guide.
+///
+/// `UriError` rather than `http::uri::InvalidUri`, which this line used to
+/// name: since URL parsing moved behind `http_ng_proto::uri`, one type
+/// covers every way a caller's URL can be unusable — unparseable, an
+/// unusable base, or a non-ASCII host in a build without the `idn`
+/// feature. All three are the caller's argument being wrong, which is
+/// exactly the split this function exists to make; matching the inner
+/// `InvalidUri` alone would have classified the other two as `internal`.
 fn classify(e: http_ng::Error) -> ComponentError {
-    if e.source().is_some_and(|s| s.is::<http::uri::InvalidUri>()) {
+    if e.source().is_some_and(|s| s.is::<http_ng::UriError>()) {
         ComponentError::InvalidArgs(e.to_string())
     } else {
         ComponentError::Internal(format!("HTTP error: {e}"))

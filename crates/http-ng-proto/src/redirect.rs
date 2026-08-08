@@ -76,10 +76,13 @@ pub enum RedirectAction {
 
 /// Port with the scheme's default substituted in.
 ///
-/// `http::Uri` preserves an explicit `:443`, while the redirect target goes
-/// through `url::Url`, which strips it. Without normalization,
-/// `https://a:443/` → `https://a/` would read as an origin change and
-/// strip Authorization on every hop.
+/// Neither side of the comparison is normalized any more. `current`
+/// arrives from the caller as written, and since `url` was removed the
+/// resolved target keeps whatever the `Location` header said — `url` used
+/// to strip a default port on serialization, so this function used to
+/// correct an asymmetry and now covers both sides. Without it,
+/// `https://a:443/` → `https://a/` reads as an origin change and strips
+/// Authorization on every hop.
 fn port_of(uri: &Uri) -> Option<u16> {
     uri.port_u16().or_else(|| match uri.scheme_str() {
         Some("https") => Some(443),
@@ -132,13 +135,22 @@ pub fn decide(
     // see `crate::uri`'s doc comment: this client has exactly one rule for
     // resolving a relative reference, regardless of whether the server sent
     // it in `Location:` or the caller sent it in `client.get(..)`.
-    let Some(uri) = crate::uri::resolve_reference(current, location) else {
+    let Ok(uri) = crate::uri::resolve_reference(current, location) else {
         return RedirectAction::InvalidLocation;
     };
 
-    let cross_origin = uri.host() != current.host()
-        || uri.scheme_str() != current.scheme_str()
-        || port_of(&uri) != port_of(current);
+    // The host is case-insensitive (RFC 3986 §6.2.2.1) and nothing
+    // lower-cases it any more: `url` used to, on the target only, so
+    // `https://A.test/` + `Location: y` compared `a.test` against `A.test`
+    // and stripped Authorization from a request that never left the host
+    // it started on. `scheme_str` needs no such care — `http::Uri`
+    // lower-cases the scheme itself.
+    let same_host = match (uri.host(), current.host()) {
+        (Some(target), Some(from)) => target.eq_ignore_ascii_case(from),
+        (target, from) => target == from,
+    };
+    let cross_origin =
+        !same_host || uri.scheme_str() != current.scheme_str() || port_of(&uri) != port_of(current);
 
     // 303 is always GET (except HEAD). Browsers and reqwest downgrade
     // 301/302 with POST to GET; diverging from 303 here would be
@@ -422,9 +434,9 @@ mod tests {
     // ── review: finding 1 — asymmetry in default ports ──────────────
     //
     // `current` arrives as-is from the caller (it may carry an explicit
-    // `:443`), while the redirect target always goes through `url::Url`,
-    // which strips the default port on serialization. Without
-    // normalization this would read as an origin change and strip
+    // `:443`), and so does the redirect target now that `url` — which
+    // stripped the default port on serialization — is gone. Without
+    // `port_of` this would read as an origin change and strip
     // Authorization on every hop.
 
     #[test]
@@ -469,6 +481,46 @@ mod tests {
         assert!(
             f.strip_sensitive,
             "8443 vs default 443 is a real origin change"
+        );
+    }
+
+    // ── the same asymmetry, in the host ─────────────────────────────
+    //
+    // The host is case-insensitive (RFC 3986 §6.2.2.1) and nothing
+    // lower-cases it any more: `url` did, on the RESOLVED TARGET ONLY,
+    // while `current` came from the caller as written. So before `url` was
+    // removed, `current = https://A.test/` plus ANY Location — even a
+    // relative one — compared `a.test` against `A.test` and stripped
+    // Authorization from a request that never left the host it started on.
+    // Both directions are checked because the old asymmetry only broke one
+    // of them, and a fix that only handles that one would look right.
+
+    #[test]
+    fn a_host_differing_only_in_case_is_not_a_change_of_origin() {
+        for (from, to) in [
+            ("https://A.test/", "https://a.test/x"),
+            ("https://a.test/", "https://A.TEST/x"),
+            ("https://A.test/", "y"),
+        ] {
+            let RedirectAction::Follow(f) = go(302, from, to, Method::GET) else {
+                panic!("{from} -> {to} must be followed at all")
+            };
+            assert!(
+                !f.strip_sensitive,
+                "{from} -> {to}: a host that differs only in case is the same origin"
+            );
+        }
+    }
+
+    #[test]
+    fn a_genuinely_different_host_is_still_cross_origin() {
+        let RedirectAction::Follow(f) = go(302, "https://a.test/", "https://b.test/x", Method::GET)
+        else {
+            panic!()
+        };
+        assert!(
+            f.strip_sensitive,
+            "case-insensitivity must not turn into host-insensitivity"
         );
     }
 
@@ -537,6 +589,15 @@ mod tests {
         assert_eq!(f.uri, u("https://a/caf%C3%A9"));
     }
 
+    /// The `idn` feature is what decides this one, and the two answers are
+    /// written out rather than one being `cfg`-ed away, so neither build
+    /// can quietly stop testing it. With the feature: the same A-label
+    /// `url` used to produce. Without it: `InvalidLocation`, because the
+    /// crate has no Unicode tables and will not guess — the error that
+    /// says so and names the A-label is `uri::UriError::NonAsciiHost`,
+    /// which `decide` flattens into `InvalidLocation` the same way it
+    /// flattens every other resolution failure.
+    #[cfg(feature = "idn")]
     #[test]
     fn raw_utf8_idn_host_is_followed() {
         let RedirectAction::Follow(f) = go(
@@ -549,6 +610,33 @@ mod tests {
         };
         assert_eq!(f.uri, u("https://xn--mnchen-3ya.example/"));
         assert!(f.strip_sensitive, "host actually changed");
+    }
+
+    #[cfg(not(feature = "idn"))]
+    #[test]
+    fn raw_utf8_idn_host_is_rejected_without_the_idn_feature() {
+        let r = go(
+            302,
+            "https://a/",
+            "https://m\u{fc}nchen.example/",
+            Method::GET,
+        );
+        assert!(
+            matches!(r, RedirectAction::InvalidLocation),
+            "without `idn` there is nothing to convert a U-label with, and inventing \
+             a host would be worse than refusing: {r:?}"
+        );
+        // The A-label form of the same host is ASCII and still followed —
+        // the feature removes IDNA, not internationalised hosts.
+        let RedirectAction::Follow(f) = go(
+            302,
+            "https://a/",
+            "https://xn--mnchen-3ya.example/",
+            Method::GET,
+        ) else {
+            panic!("an A-label needs no Unicode tables and must still be followed")
+        };
+        assert_eq!(f.uri, u("https://xn--mnchen-3ya.example/"));
     }
 
     #[test]

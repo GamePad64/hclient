@@ -954,6 +954,122 @@ jobs:
             exit 1
           fi
 
+  # The `idn` feature has to be a real switch in both directions, and the
+  # `url` dependency it replaced has to be really gone. Three failure modes
+  # this job exists for, all of which look green without it:
+  #
+  #   1. `url` creeps back into `[dependencies]` — the whole point of
+  #      writing RFC 3986 §5.2 out by hand was that one `Url::join` call
+  #      pulled `idna` + four ICU data crates into every build of the
+  #      sans-io crate, on every target.
+  #   2. `--no-default-features` stops removing the Unicode tables, because
+  #      somebody depended on `http-ng-proto` with default features
+  #      somewhere in the workspace and cargo unioned the feature back on.
+  #      That is exactly why `[workspace.dependencies]` carries
+  #      `default-features = false` for it, and it is invisible in any
+  #      build that happens to want `idn` anyway.
+  #   3. The feature switch survives but its OFF path is never compiled or
+  #      run: `cargo test --workspace --all-features` turns `idn` ON, so
+  #      every `#[cfg(not(feature = "idn"))]` test in the workspace is
+  #      dead code as far as the rest of CI is concerned.
+  #
+  # Fails closed on a broken `cargo tree` invocation, the same way
+  # `ambient-has-no-tokio` does: an empty tree would otherwise satisfy
+  # every "must not contain" assertion below.
+  idn-feature-is-real:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - name: url is gone from http-ng-proto, with the feature either way
+        shell: bash
+        run: |
+          set -euo pipefail
+          for flags in "" "--no-default-features"; do
+            # shellcheck disable=SC2086
+            tree_out="$(cargo tree -p http-ng-proto -e normal --prefix none $flags)" || tree_rc=$?
+            tree_rc="${tree_rc:-0}"
+            if [ "$tree_rc" -ne 0 ]; then
+              echo "::error::cargo tree failed (exit $tree_rc) for http-ng-proto ${flags:-with default features} — a check that cannot run must not pass"
+              exit 1
+            fi
+            if [ -z "$tree_out" ]; then
+              echo "::error::cargo tree produced no output for http-ng-proto ${flags:-with default features} — an empty tree satisfies every 'must not contain' below, so this is a failure, not a pass"
+              exit 1
+            fi
+            if printf '%s\n' "$tree_out" | grep -Eq '^(url|form_urlencoded|percent-encoding) '; then
+              echo "::error::http-ng-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs"
+              printf '%s\n' "$tree_out" | grep -E '^(url|form_urlencoded|percent-encoding) '
+              exit 1
+            fi
+          done
+      - name: without idn there are no Unicode tables at all
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree_out="$(cargo tree -p http-ng-proto -e normal --prefix none --no-default-features)"
+          if [ -z "$tree_out" ]; then
+            echo "::error::cargo tree produced no output — fails closed"
+            exit 1
+          fi
+          if printf '%s\n' "$tree_out" | grep -Eq '^(idna|idna_adapter|icu_)'; then
+            echo "::error::--no-default-features still pulls in idna/ICU. This is the entire measurable benefit of the feature (icu_properties_data alone is 1.9 MB of vendored source). Most likely cause: some crate in the workspace depends on http-ng-proto WITH default features, and cargo unioned idn back on — check [workspace.dependencies], which sets default-features = false for exactly this reason."
+            printf '%s\n' "$tree_out" | grep -E '^(idna|idna_adapter|icu_)'
+            exit 1
+          fi
+          # And the same for the facade, which is what a consumer actually
+          # depends on: `http-ng`'s own `idn` is in its `default`, so this
+          # only holds if the forwarding is wired up correctly.
+          facade="$(cargo tree -p http-ng -e normal --prefix none --no-default-features)"
+          if [ -z "$facade" ]; then
+            echo "::error::cargo tree produced no output for http-ng — fails closed"
+            exit 1
+          fi
+          if printf '%s\n' "$facade" | grep -Eq '^(idna|idna_adapter|icu_)'; then
+            echo "::error::http-ng --no-default-features still pulls in idna/ICU — the facade's idn feature is not actually forwarding, or something else in its graph turns it on"
+            printf '%s\n' "$facade" | grep -E '^(idna|idna_adapter|icu_)'
+            exit 1
+          fi
+      - name: with idn the Unicode tables ARE there
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The other direction, and not a formality: if this stops holding,
+          # the two "must not contain" checks above pass for the wrong
+          # reason and IDN support has silently disappeared.
+          tree_out="$(cargo tree -p http-ng-proto -e normal --prefix none)"
+          if ! printf '%s\n' "$tree_out" | grep -q '^idna '; then
+            echo "::error::the default build of http-ng-proto has no idna — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached; without it the checks above prove nothing"
+            exit 1
+          fi
+      - name: the feature-off path is compiled and run, not merely declared
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `cargo test --workspace --all-features` (the `test` job) turns
+          # `idn` ON. Every `#[cfg(not(feature = "idn"))]` test — the typed
+          # `NonAsciiHost` error and the divergence list that names what a
+          # build without Unicode tables gives up — runs only here.
+          out="$(cargo nextest run -p http-ng-proto --no-default-features 2>&1)"
+          printf '%s\n' "$out"
+          if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
+            echo "::error::nextest did not report a summary for http-ng-proto --no-default-features — the run did not happen"
+            exit 1
+          fi
+          out="$(cargo nextest run -p http-ng --no-default-features --features test-util 2>&1)"
+          printf '%s\n' "$out"
+          if ! printf '%s\n' "$out" | grep -qE '^[[:space:]]*Summary.*tests run'; then
+            echo "::error::nextest did not report a summary for http-ng --no-default-features — the run did not happen"
+            exit 1
+          fi
+      - name: clippy is clean with the feature off too
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p http-ng-proto --all-targets --no-default-features -- -D warnings
+          cargo clippy -p http-ng --all-targets --no-default-features --features test-util -- -D warnings
+
   no-declared-send:
     runs-on: ubuntu-latest
     steps:

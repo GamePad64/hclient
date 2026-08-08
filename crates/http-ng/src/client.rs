@@ -76,8 +76,14 @@ impl<T: Transport> ClientBuilder<T> {
     /// In other words, a base with a path should almost always end in a
     /// slash, and a reference should NOT start with one. Neither of these
     /// lines is our own invention — they're the merge algorithm and RFC
-    /// §5.2.2; the same rules drive `url::Url::join`, the browser's
-    /// `new URL(ref, base)`, and `urllib.parse.urljoin`.
+    /// §5.2.2; the same rules drive the `url` crate's `Url::join`, the
+    /// browser's `new URL(ref, base)`, and `urllib.parse.urljoin`. Since
+    /// this round the implementation is our own
+    /// (`http_ng_proto::uri::resolve_reference`, RFC 3986 §5.2 written
+    /// out rather than delegated to `url`); the handful of places where
+    /// the RFC and WHATWG genuinely disagree are listed on that function
+    /// and pinned against `url` itself in
+    /// `crates/http-ng-proto/tests/uri_resolution.rs`.
     ///
     /// The base itself must be absolute. A relative one (`/api/`) is a
     /// typed `InvalidBaseUrl` error from `send()`/`execute()`, not a

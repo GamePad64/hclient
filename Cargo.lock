@@ -865,9 +865,12 @@ dependencies = [
 name = "http-ng-proto"
 version = "0.1.0"
 dependencies = [
+ "assert_matches",
  "bytes",
  "http",
+ "idna",
  "proptest",
+ "rstest",
  "thiserror",
  "url",
 ]
