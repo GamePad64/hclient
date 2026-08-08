@@ -40,7 +40,7 @@ mod h1;
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
     Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, TimeoutSupport, Timeouts,
-    TlsSupport, UpgradeSupport,
+    UpgradeSupport,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{TcpConnect, TcpOpts, Timer};
@@ -69,7 +69,11 @@ pub struct Native<R, T, D> {
     caps: Capabilities,
 }
 
-impl<R, T, D> Native<R, T, D> {
+/// `T: TlsConnect` on the constructor only — not on the struct — so the
+/// bound is paid where the answer is needed. `new` has to ask the TLS
+/// implementation what to advertise; nothing else about `Native` requires
+/// knowing.
+impl<R, T: TlsConnect, D> Native<R, T, D> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let mut caps = Capabilities::none();
         // Honest about v0.1: no connection pool, no upgrade — the
@@ -92,7 +96,14 @@ impl<R, T, D> Native<R, T, D> {
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         caps.redirects = RedirectSupport::Configurable;
-        caps.tls_config = TlsSupport::Full;
+        // Asked, not assumed. This line used to be a hardcoded
+        // `TlsSupport::Full` regardless of which `TlsConnect` was plugged
+        // in, so `Native<R, NoTls, D>` would have advertised full TLS while
+        // refusing every `https://` connect — a capability that lies, of
+        // exactly the kind this project has caught in three other backends.
+        // `TlsConnect::tls_support` defaults to `Full`, so every real
+        // implementation reports what it did before; only a stub differs.
+        caps.tls_config = tls.tls_support();
         caps.version_reported = true;
         caps.timeouts = TimeoutSupport {
             // Actually enforced — see `execute`'s race between

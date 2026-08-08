@@ -9,7 +9,7 @@
 //! not one more layer stacked on top.
 #![forbid(unsafe_code)]
 
-use http_ng_core::Error;
+use http_ng_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 
 /// Parameters for a single TLS connection.
@@ -118,6 +118,101 @@ pub trait TlsConnect {
     ) -> impl Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    /// What a transport built on this implementation should advertise in
+    /// [`Capabilities::tls_config`].
+    ///
+    /// Defaulted to `Full` so that adding this method broke no existing
+    /// implementation — every one of them does perform TLS. It exists for
+    /// the one that does not: [`NoTls`] returns `None`, and a transport
+    /// that asks instead of assuming cannot end up advertising TLS it will
+    /// refuse to perform.
+    ///
+    /// The same shape as [`http_ng_dns::Resolve::supports_svcb`], and for
+    /// the same reason: a capability has to come from the component that
+    /// knows, not from whoever assembles it.
+    fn tls_support(&self) -> TlsSupport {
+        TlsSupport::Full
+    }
+}
+
+/// A [`TlsConnect`] that performs no TLS, for a client built without it.
+///
+/// For constrained targets that have `std` but no room for a TLS stack:
+/// plain HTTP works, and `https://` fails at connect with a typed error
+/// instead of failing to link. `Native<R, NoTls, D>` drops rustls,
+/// native-tls and their transitive trees from the build entirely.
+///
+/// It advertises [`TlsSupport::None`], so a caller who reads
+/// `Capabilities::tls_config` before making a request learns the truth
+/// rather than discovering it at connect time.
+///
+/// `Stream<S>` is an uninhabited type. That is not a trick: it is the type
+/// system carrying the same fact the error does — this implementation
+/// cannot produce a TLS stream, and no code path can pretend otherwise,
+/// because there is no value to pretend with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoTls;
+
+/// The stream [`NoTls`] never returns. Uninhabited, so every method is
+/// unreachable by construction rather than by a panic.
+#[derive(Debug)]
+pub enum NoStream {}
+
+impl hyper::rt::Read for NoStream {
+    fn poll_read(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+        _: hyper::rt::ReadBufCursor<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl hyper::rt::Write for NoStream {
+    fn poll_write(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+        _: &[u8],
+    ) -> core::task::Poll<std::io::Result<usize>> {
+        match *self {}
+    }
+    fn poll_flush(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+    fn poll_shutdown(
+        self: core::pin::Pin<&mut Self>,
+        _: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<std::io::Result<()>> {
+        match *self {}
+    }
+}
+
+impl TlsConnect for NoTls {
+    type Stream<S>
+        = NoStream
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    async fn connect<S>(&self, _io: S, req: TlsRequest<'_>) -> Result<(NoStream, TlsInfo), Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
+        Err(Error::new(
+            ErrorKind::Tls,
+            std::io::Error::other(format!(
+                "this client was built without TLS support (NoTls); cannot secure a connection to {}",
+                req.server_name
+            )),
+        ))
+    }
+
+    fn tls_support(&self) -> TlsSupport {
+        TlsSupport::None
+    }
 }
 
 #[cfg(test)]

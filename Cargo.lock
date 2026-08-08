@@ -715,6 +715,7 @@ dependencies = [
 name = "http-ng-tls"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "http-ng-core",
  "hyper",
 ]
