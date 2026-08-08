@@ -11,9 +11,11 @@ repository.workspace = true
 bytes     = { workspace = true }
 http      = { workspace = true }
 http-body = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+
 
 [lints]
 workspace = true

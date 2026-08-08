@@ -104,14 +104,9 @@ pub struct MockTransport {
 /// any other `ErrorKind::Other` error via
 /// `Error::source().downcast_ref::<QueueEmpty>()`, rather than relying on
 /// this being the mock's only path to an error today.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("MockTransport: response queue is empty")]
 pub struct QueueEmpty;
-impl std::fmt::Display for QueueEmpty {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MockTransport: response queue is empty")
-    }
-}
-impl std::error::Error for QueueEmpty {}
 
 impl MockTransport {
     pub fn new() -> Self {

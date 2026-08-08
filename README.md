@@ -8,9 +8,15 @@ streaming bodies, connection reuse, protocol negotiation, cancellation that
 actually cancels. A client that serves one ends up wrong for the other.
 
 Most HTTP clients are shaped by the first thing they were used for. This one
-is shaped by refusing to choose: the same application code runs on a native
-socket, on `wasi:http`, and on the browser's own `fetch`, and no backend is
+is shaped by refusing to choose. The same application code runs on a native
+socket, on `wasi:http`, and on the browser's own `fetch` — and no backend is
 allowed to claim a capability it does not have.
+
+It is a kit, not a monolith. The transport, the TLS stack, the resolver and
+the async runtime are each a seam with more than one part behind it: rustls
+or the platform's own TLS, the system resolver or hickory, tokio or smol.
+Take the pieces you need. A build with no room for TLS or a resolver takes
+neither, and still makes requests.
 
 v0.1 is HTTP/1.1 over those three backends. Connection pooling, HTTP/2 and
 /3, streaming request bodies and WebSocket are not built yet — this is the

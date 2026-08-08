@@ -153,22 +153,12 @@ impl Capabilities {
 ///
 /// Returned from `build()` rather than silently ignored. The model is
 /// wasi:http itself, whose setters return `request-options-error::not-supported`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("backend `{backend}` does not support `{what}`")]
 pub struct UnsupportedCapability {
     pub what: &'static str,
     pub backend: &'static str,
 }
-
-impl std::fmt::Display for UnsupportedCapability {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "backend `{}` does not support `{}`",
-            self.backend, self.what
-        )
-    }
-}
-impl std::error::Error for UnsupportedCapability {}
 
 #[cfg(test)]
 mod tests {
