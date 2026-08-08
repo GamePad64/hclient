@@ -993,6 +993,7 @@ dependencies = [
  "http-ng",
  "http-ng-core",
  "serde_json",
+ "thiserror",
  "wasip3",
 ]
 

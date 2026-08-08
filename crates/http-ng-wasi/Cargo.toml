@@ -33,6 +33,13 @@ http-ng-core = { workspace = true }
 # disable the default features (`std`, `bitflags`): this crate only ever
 # targets `wasm32-wasip2`, a `no_std` build isn't a scenario here.
 wasip3       = { version = "0.7.0", features = ["http-compat"] }
+# Not a new crate in the wasm32-wasip2 graph: both `http-ng-core` and
+# `wasip3` (its own `http_compat::Error` is a `thiserror` derive) already
+# pull it in — checked with
+# `cargo tree -p http-ng-wasi -e normal --target wasm32-wasip2 -i thiserror`,
+# which lists all three as dependents. This line makes an existing edge
+# direct, it does not add one.
+thiserror    = { workspace = true }
 
 # Guest for the `tests/live_roundtrip.rs` integration run (Task 16) — see
 # the doc comment in the file itself for why this is a `cdylib` example via

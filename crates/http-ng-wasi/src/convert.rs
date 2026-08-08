@@ -35,14 +35,9 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("URI scheme must be http or https")]
 pub(crate) struct BadScheme;
-impl std::fmt::Display for BadScheme {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "URI scheme must be http or https")
-    }
-}
-impl std::error::Error for BadScheme {}
 
 /// Review resolution, finding B-12: `BadScheme` is the same class of
 /// failure as `Rejected` (below) — "the backend just doesn't take this
@@ -100,24 +95,16 @@ fn unsupported_timeout(what: &'static str, source: RequestOptionsError) -> Error
 /// `Error::source()`. The same principle as `wasi_err` for `ErrorCode`:
 /// the category (`ErrorKind::Unsupported`) is kept separate from the
 /// reason, and the reason isn't a string.
-#[derive(Debug)]
+///
+/// The field is named `source` on purpose, not by accident of naming:
+/// that is what makes it the `Error::source()` of this type, without an
+/// attribute — and it must stay so, because the reason is exactly what a
+/// caller comes down the chain for.
+#[derive(Debug, thiserror::Error)]
+#[error("backend `wasi:http` does not support `{what}`: {source}")]
 pub(crate) struct TimeoutRejected {
     what: &'static str,
     source: RequestOptionsError,
-}
-impl std::fmt::Display for TimeoutRejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "backend `wasi:http` does not support `{}`: {}",
-            self.what, self.source
-        )
-    }
-}
-impl std::error::Error for TimeoutRejected {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
 }
 
 /// The host's rejection of applying `method`/`scheme`/`authority`/
@@ -126,32 +113,22 @@ impl std::error::Error for TimeoutRejected {
 /// Unlike `TimeoutRejected`, these `wasi:http` setters return a bare
 /// `Result<(), ()>` — the host never sends back any reason at all,
 /// there's nothing to wrap in `source`. `what` is all there is to report.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("wasi:http host rejected setting `{0}`")]
 pub(crate) struct Rejected(&'static str);
-impl std::fmt::Display for Rejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "wasi:http host rejected setting `{}`", self.0)
-    }
-}
-impl std::error::Error for Rejected {}
 pub(crate) fn rejected(what: &'static str) -> Error {
     Error::new(ErrorKind::Unsupported, Rejected(what))
 }
 
 /// `Fields::from_list` failed: the header is syntactically invalid,
 /// forbidden, or exceeds a host limit.
-#[derive(Debug)]
-pub(crate) struct FieldsError(HeaderError);
-impl std::fmt::Display for FieldsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid headers: {}", self.0)
-    }
-}
-impl std::error::Error for FieldsError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
+///
+/// `#[source]`, not `#[from]`: the category is chosen per variant by
+/// `fields_error` below, so there is no single `HeaderError -> Error`
+/// conversion to hand out.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid headers: {0}")]
+pub(crate) struct FieldsError(#[source] HeaderError);
 /// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
 /// — the host refuses to accept a specific header — structurally the same
 /// class of failure as `Rejected`/`TimeoutRejected` (`ErrorKind::Unsupported`),
@@ -230,18 +207,9 @@ pub(crate) fn wasi_err(e: ErrorCode) -> Error {
 /// transfer) stays reachable through `Error::source()` instead of being
 /// flattened into a string. See `resolve_send` for exactly when this
 /// error wins and when it yields to the `send` error.
-#[derive(Debug)]
-pub(crate) struct BodyWriteFailed(wasip3::http_compat::Error);
-impl std::fmt::Display for BodyWriteFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "failed to write request body: {}", self.0)
-    }
-}
-impl std::error::Error for BodyWriteFailed {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
+#[derive(Debug, thiserror::Error)]
+#[error("failed to write request body: {0}")]
+pub(crate) struct BodyWriteFailed(#[source] wasip3::http_compat::Error);
 fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
     Error::new(ErrorKind::Body, BodyWriteFailed(e))
 }
@@ -403,27 +371,16 @@ pub(crate) fn declared_trailer_names(
 /// has ended, and there's no predicting that before the headers. Don't
 /// take this as a sign the request can be blindly retried: for a
 /// non-idempotent request, that's a double send.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "streaming request body emitted trailer field(s) [{}] that the request's \
+     `Trailer:` header did not declare — wasi:http's HTTP/1.1 encoder drops undeclared \
+     trailer fields silently. This error arrives after the request already reached the \
+     server and was answered (race_send_with_body already succeeded) — do not retry \
+     blindly, a non-idempotent request may already have taken effect.",
+    .0.iter().map(http::HeaderName::as_str).collect::<Vec<_>>().join(", ")
+)]
 pub(crate) struct UndeclaredTrailers(Vec<http::HeaderName>);
-impl std::fmt::Display for UndeclaredTrailers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let names = self
-            .0
-            .iter()
-            .map(http::HeaderName::as_str)
-            .collect::<Vec<_>>()
-            .join(", ");
-        write!(
-            f,
-            "streaming request body emitted trailer field(s) [{names}] that the request's \
-             `Trailer:` header did not declare — wasi:http's HTTP/1.1 encoder drops undeclared \
-             trailer fields silently. This error arrives after the request already reached the \
-             server and was answered (race_send_with_body already succeeded) — do not retry \
-             blindly, a non-idempotent request may already have taken effect."
-        )
-    }
-}
-impl std::error::Error for UndeclaredTrailers {}
 pub(crate) fn undeclared_trailers(names: Vec<http::HeaderName>) -> Error {
     Error::new(ErrorKind::Body, UndeclaredTrailers(names))
 }
@@ -538,18 +495,12 @@ impl std::fmt::Debug for Payload {
 /// resolution, finding B-11).
 const MAX_REWIND_DEPTH: u8 = 16;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
+     (each factory call returned another Rewindable instead of a terminal body)"
+)]
 pub(crate) struct RewindTooDeep;
-impl std::fmt::Display for RewindTooDeep {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "RequestBody::Rewindable factory nested more than {MAX_REWIND_DEPTH} levels deep \
-             (each factory call returned another Rewindable instead of a terminal body)"
-        )
-    }
-}
-impl std::error::Error for RewindTooDeep {}
 
 /// Unwraps `RequestBody` into what actually needs to be sent: `None` for
 /// an empty body, otherwise bytes or a stream.
@@ -616,6 +567,21 @@ mod tests {
         let ftp: http::Uri = "ftp://a/x".parse().unwrap();
         let err = scheme_of(&ftp).unwrap_err();
         assert!(err.is_unsupported(), "{err:?}");
+    }
+
+    /// The category above says "the backend doesn't take this"; the
+    /// message is the only place the caller is told WHICH schemes it does
+    /// take. `Error`'s own `Display` prefixes the kind, so the check goes
+    /// one hop down, at the concrete type.
+    #[test]
+    fn bad_scheme_message_names_the_schemes_that_are_accepted() {
+        let ftp: http::Uri = "ftp://a/x".parse().unwrap();
+        let err = scheme_of(&ftp).unwrap_err();
+        let bad = std::error::Error::source(&err)
+            .expect("Error::new always has a source")
+            .downcast_ref::<BadScheme>()
+            .expect("the source of a scheme rejection is BadScheme");
+        assert_eq!(bad.to_string(), "URI scheme must be http or https");
     }
 
     #[test]
@@ -724,6 +690,40 @@ mod tests {
         };
         let err = resolve_send::<u32>(Ok(7), Err(write_err)).unwrap_err();
         assert_eq!(err.kind(), &ErrorKind::Body);
+    }
+
+    /// `BodyWriteFailed` exists to wrap the whole
+    /// `wasip3::http_compat::Error` rather than its `Display` — the
+    /// reason (which end closed, how far the write got) is only in the
+    /// value. `StreamReaderClosed` carries `written`/`unwritten`, so a
+    /// truncated chain here loses a byte count no message reproduces.
+    #[test]
+    fn a_failed_body_write_keeps_the_hosts_own_error_reachable() {
+        let write_err = wasip3::http_compat::Error::StreamReaderClosed {
+            written: 2,
+            unwritten: vec![9, 9],
+        };
+        let err = resolve_send::<u32>(Ok(7), Err(write_err)).unwrap_err();
+        let failed = std::error::Error::source(&err)
+            .expect("Error::new always has a source")
+            .downcast_ref::<BodyWriteFailed>()
+            .expect("the source of a body-write failure is BodyWriteFailed");
+        assert_eq!(
+            failed.to_string(),
+            "failed to write request body: stream reader closed"
+        );
+        let host = std::error::Error::source(failed)
+            .expect("BodyWriteFailed must keep the host's own error as its source");
+        assert!(
+            matches!(
+                host.downcast_ref::<wasip3::http_compat::Error>(),
+                Some(wasip3::http_compat::Error::StreamReaderClosed {
+                    written: 2,
+                    unwritten
+                }) if unwritten == &[9, 9]
+            ),
+            "the write's progress must survive whole: {host}"
+        );
     }
 
     #[test]
@@ -848,7 +848,19 @@ mod tests {
             .expect("top-level source is TimeoutRejected");
         let level2 = std::error::Error::source(rejected)
             .expect("TimeoutRejected must store the host's reason as its own source");
-        assert!(level2.downcast_ref::<RequestOptionsError>().is_some());
+        assert!(
+            matches!(
+                level2.downcast_ref::<RequestOptionsError>(),
+                Some(RequestOptionsError::NotSupported),
+            ),
+            "not just SOME RequestOptionsError — the one the host actually sent, unaltered"
+        );
+        assert_eq!(
+            rejected.to_string(),
+            "backend `wasi:http` does not support `connect_timeout`: \
+             RequestOptionsError::NotSupported",
+            "the message reports both WHAT was rejected and WHY"
+        );
     }
 
     #[test]
@@ -856,6 +868,27 @@ mod tests {
         let e = rejected("scheme");
         assert!(e.is_unsupported());
         assert!(e.to_string().contains("scheme"));
+    }
+
+    /// The counterpart of the test above, and the reason these are two
+    /// types rather than one: `set_method`/`set_scheme`/`set_authority`/
+    /// `set_path_with_query` return a bare `Result<(), ()>`, so the host
+    /// sends back no reason at all and there is nothing to put in
+    /// `source()`. Pinned so the chain cannot later be given a fabricated
+    /// link, and so the field name stays in the message — the only place
+    /// it is reported.
+    #[test]
+    fn a_bare_setter_rejection_has_no_reason_to_expose_as_a_source() {
+        let e = rejected("authority");
+        let r = std::error::Error::source(&e)
+            .expect("Error::new always has a source")
+            .downcast_ref::<Rejected>()
+            .expect("the source of a setter rejection is Rejected");
+        assert_eq!(r.to_string(), "wasi:http host rejected setting `authority`");
+        assert!(
+            std::error::Error::source(r).is_none(),
+            "the host sent no reason — the chain must end here rather than invent one"
+        );
     }
 
     /// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
@@ -874,6 +907,35 @@ mod tests {
         let bad = fields_error(HeaderError::InvalidSyntax);
         assert!(!bad.is_unsupported(), "{bad:?}");
         assert_eq!(bad.kind(), &ErrorKind::Other);
+    }
+
+    /// `fields_error` classifies by variant (finding B-6), so the variant
+    /// itself is information the caller may want back — and the chain is
+    /// the only way to get it: the two tests above read `kind()`, which
+    /// collapses five `HeaderError` variants into two categories.
+    /// `SizeExceeded` on purpose: it is one of the variants that shares
+    /// `ErrorKind::Other` with two others, so `kind()` alone cannot tell
+    /// them apart.
+    #[test]
+    fn fields_error_keeps_the_hosts_header_error_reachable_below_the_category() {
+        let e = fields_error(HeaderError::SizeExceeded);
+        let fields = std::error::Error::source(&e)
+            .expect("Error::new always has a source")
+            .downcast_ref::<FieldsError>()
+            .expect("the source of a header rejection is FieldsError");
+        assert_eq!(
+            fields.to_string(),
+            "invalid headers: HeaderError::SizeExceeded"
+        );
+        let host = std::error::Error::source(fields)
+            .expect("FieldsError must keep the host's HeaderError as its own source");
+        assert!(
+            matches!(
+                host.downcast_ref::<HeaderError>(),
+                Some(HeaderError::SizeExceeded)
+            ),
+            "the variant must survive whole, not as a substring of the message"
+        );
     }
 
     /// Review resolution, finding B-8: `ErrorCode` variants that clearly
@@ -903,6 +965,142 @@ mod tests {
         // into an ill-fitting bucket.
         let e = wasi_err(ErrorCode::HttpProtocolError);
         assert_eq!(e.kind(), &ErrorKind::Other);
+    }
+
+    /// The whole classification, one row per `ErrorCode` variant.
+    ///
+    /// The three tests above sample it; this one pins it. B2 of the
+    /// branch's final review was a layer discarding exactly this
+    /// classification, and the two `_ => `-style fallbacks it is built on
+    /// (`wasi_err`'s own `_ => Other`, and `to_error` being the identity)
+    /// mean a variant can change category — or slide into `Other` — with
+    /// nothing failing to compile. Nine categories over 39 variants; the
+    /// count is asserted below so a row deleted by accident does not
+    /// simply shrink the table.
+    ///
+    /// Variant list checked against
+    /// `wasip3-0.7.0+wasi-0.3.0/src/service.rs:161-206`, the same source
+    /// `wasi_err`'s own doc comment cites.
+    #[test]
+    fn wasi_err_gives_every_error_code_variant_the_category_it_is_documented_to_have() {
+        use http_ng_core::Phase;
+        use wasip3::http::types::{DnsErrorPayload, FieldSizePayload, TlsAlertReceivedPayload};
+
+        fn field_size() -> FieldSizePayload {
+            FieldSizePayload {
+                field_name: None,
+                field_size: None,
+            }
+        }
+
+        let table = [
+            (ErrorCode::DnsTimeout, ErrorKind::Resolve),
+            (
+                ErrorCode::DnsError(DnsErrorPayload {
+                    rcode: None,
+                    info_code: None,
+                }),
+                ErrorKind::Resolve,
+            ),
+            (ErrorCode::DestinationNotFound, ErrorKind::Connect),
+            (ErrorCode::DestinationUnavailable, ErrorKind::Connect),
+            (ErrorCode::DestinationIpProhibited, ErrorKind::Connect),
+            (ErrorCode::DestinationIpUnroutable, ErrorKind::Connect),
+            (ErrorCode::ConnectionRefused, ErrorKind::Connect),
+            (ErrorCode::ConnectionTerminated, ErrorKind::Connect),
+            (ErrorCode::ConnectionLimitReached, ErrorKind::Connect),
+            (
+                ErrorCode::ConnectionTimeout,
+                ErrorKind::Timeout(Phase::Connect),
+            ),
+            (
+                ErrorCode::ConnectionReadTimeout,
+                ErrorKind::Timeout(Phase::FirstByte),
+            ),
+            (
+                ErrorCode::HttpResponseTimeout,
+                ErrorKind::Timeout(Phase::FirstByte),
+            ),
+            (
+                ErrorCode::ConnectionWriteTimeout,
+                ErrorKind::Timeout(Phase::BetweenBytes),
+            ),
+            (ErrorCode::TlsProtocolError, ErrorKind::Tls),
+            (ErrorCode::TlsCertificateError, ErrorKind::Tls),
+            (
+                ErrorCode::TlsAlertReceived(TlsAlertReceivedPayload {
+                    alert_id: None,
+                    alert_message: None,
+                }),
+                ErrorKind::Tls,
+            ),
+            (ErrorCode::HttpRequestDenied, ErrorKind::Status),
+            (ErrorCode::LoopDetected, ErrorKind::Redirect),
+            (ErrorCode::HttpUpgradeFailed, ErrorKind::Unsupported),
+            (ErrorCode::ConfigurationError, ErrorKind::Unsupported),
+            (ErrorCode::HttpResponseIncomplete, ErrorKind::Body),
+            (ErrorCode::HttpResponseBodySize(Some(1)), ErrorKind::Body),
+            (ErrorCode::HttpResponseTransferCoding(None), ErrorKind::Body),
+            (ErrorCode::HttpResponseContentCoding(None), ErrorKind::Body),
+            (ErrorCode::HttpRequestLengthRequired, ErrorKind::Body),
+            (ErrorCode::HttpRequestBodySize(Some(1)), ErrorKind::Body),
+            (
+                ErrorCode::HttpRequestTrailerSectionSize(Some(1)),
+                ErrorKind::Body,
+            ),
+            (
+                ErrorCode::HttpRequestTrailerSize(field_size()),
+                ErrorKind::Body,
+            ),
+            (
+                ErrorCode::HttpResponseTrailerSectionSize(Some(1)),
+                ErrorKind::Body,
+            ),
+            (
+                ErrorCode::HttpResponseTrailerSize(field_size()),
+                ErrorKind::Body,
+            ),
+            // Honest `Other`: no existing category fits, and finding B-8
+            // deliberately stopped short of inventing one. A row moving
+            // out of this block is a real decision, and has to be made
+            // here as well as in `wasi_err`.
+            (ErrorCode::HttpRequestMethodInvalid, ErrorKind::Other),
+            (ErrorCode::HttpRequestUriInvalid, ErrorKind::Other),
+            (ErrorCode::HttpRequestUriTooLong, ErrorKind::Other),
+            (
+                ErrorCode::HttpRequestHeaderSectionSize(Some(1)),
+                ErrorKind::Other,
+            ),
+            (
+                ErrorCode::HttpRequestHeaderSize(Some(field_size())),
+                ErrorKind::Other,
+            ),
+            (
+                ErrorCode::HttpResponseHeaderSectionSize(Some(1)),
+                ErrorKind::Other,
+            ),
+            (
+                ErrorCode::HttpResponseHeaderSize(field_size()),
+                ErrorKind::Other,
+            ),
+            (ErrorCode::HttpProtocolError, ErrorKind::Other),
+            (ErrorCode::InternalError(None), ErrorKind::Other),
+        ];
+
+        assert_eq!(
+            table.len(),
+            39,
+            "`wasi:http` 0.3 has 39 error codes — a shorter table means a variant \
+             stopped being checked, not that the protocol shrank"
+        );
+        for (code, expected) in table {
+            let described = format!("{code:?}");
+            assert_eq!(
+                wasi_err(code).kind(),
+                &expected,
+                "{described} must stay {expected:?}"
+            );
+        }
     }
 
     #[test]
@@ -970,6 +1168,28 @@ mod tests {
         }
         let err = resolve_payload(RequestBody::rewindable(infinite)).unwrap_err();
         assert_eq!(err.kind(), &ErrorKind::Other);
+    }
+
+    /// `ErrorKind::Other` above is shared with several unrelated
+    /// failures, so the message is what actually tells the caller a
+    /// bound was hit and which one — it has to carry the number, not
+    /// just the word "deep".
+    #[test]
+    fn the_rewind_depth_error_names_the_bound_it_stopped_at() {
+        fn infinite() -> RequestBody {
+            RequestBody::rewindable(infinite)
+        }
+        let err = resolve_payload(RequestBody::rewindable(infinite)).unwrap_err();
+        let too_deep = std::error::Error::source(&err)
+            .expect("Error::new always has a source")
+            .downcast_ref::<RewindTooDeep>()
+            .expect("the source of a nesting-bound failure is RewindTooDeep");
+        let msg = too_deep.to_string();
+        assert!(
+            msg.contains(&MAX_REWIND_DEPTH.to_string()),
+            "the bound that was hit must appear in the message: {msg}"
+        );
+        assert!(msg.contains("Rewindable"), "{msg}");
     }
 
     struct DataThenTrailers {
@@ -1108,6 +1328,22 @@ mod tests {
         assert!(
             msg.to_lowercase().contains("retry"),
             "must warn against blind retries: {msg}"
+        );
+    }
+
+    /// Two fields, not one: the joining is part of the message, and with a
+    /// single name (as in the test above) a broken separator — or a
+    /// message that only ever reports the first field — is invisible.
+    #[test]
+    fn undeclared_trailers_lists_every_field_it_saw_not_just_the_first() {
+        let e = undeclared_trailers(vec![
+            http::HeaderName::from_static("x-checksum"),
+            http::HeaderName::from_static("x-signature"),
+        ]);
+        let msg = e.to_string();
+        assert!(
+            msg.contains("[x-checksum, x-signature]"),
+            "every undeclared field, comma-separated: {msg}"
         );
     }
 }
