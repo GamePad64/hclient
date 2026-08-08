@@ -97,6 +97,31 @@ pub(crate) fn accept(buf: &[u8], written: i32, errors: u32, status: UErrorCode) 
 /// Searched once, and the search includes the acceptance probe below, so
 /// a `Some` here means "an ICU that has demonstrably answered the
 /// transitional pair correctly", not "some symbols resolved".
+///
+/// # The `filter` below is not covered by any test, and cannot be
+///
+/// Measured, not assumed: deleting `.filter(answers_the_trap_correctly)`
+/// leaves all of this crate's tests green. Do not read that as dead code.
+///
+/// The gate's *content* is covered — corrupt `PROBES` so it expects the
+/// transitional answer and it rejects a working library, `backend()` stops
+/// reporting `SystemIcu`, and the assertion on `backend()` goes red. What
+/// nothing covers is its *presence*, because killing that mutation needs a
+/// machine where ICU is **present but wrong**: `open` failing without COM,
+/// a layout drift, an ICU that ignores `OPTIONS`. No runner offers it —
+/// Linux has a working ICU 78.2, macOS has none at all, and
+/// `windows-latest` has a working one. Unlike the version-suffixed symbol
+/// name, a Windows runner does **not** close this; no environment does.
+///
+/// It stays because it changes behaviour in the failure mode that costs
+/// most: without it, a broken ICU reports every good domain invalid, one
+/// at a time, and the user is told their ordinary domain is malformed.
+/// With it, that ICU is simply not used and the bundled path answers.
+///
+/// Making it killable would need an injection point for a deliberately
+/// lying `Icu` — a test seam in the one file that must stay free of
+/// `unsafe` and keep the whole policy in safe code. That price is higher
+/// than the mutation is likely.
 pub(crate) fn library() -> Option<&'static Icu> {
     static LIBRARY: OnceLock<Option<Icu>> = OnceLock::new();
     LIBRARY

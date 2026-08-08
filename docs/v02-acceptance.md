@@ -135,6 +135,15 @@ someone to "fix" an item whose absence is the decision.
   selected one.** Harmless while `http/1.1` is the only proposal; the moment
   h2 is proposed it becomes a `PROTOCOL_ERROR` per request. `reports_alpn()`
   is the fix and it is in W3's scope, not yet landed.
+- **Two things about `http-ng-idn` that no test reaches.** The gate that
+  refuses to trust an ICU until it has answered `straße.de` correctly has
+  covered *content* and uncovered *presence*: deleting the filter leaves
+  every test green, because killing that mutation needs a machine where ICU
+  is present but wrong, and no runner is one. And on Windows the absence of
+  `icuuc.dll` is a `STATUS_DLL_NOT_FOUND` at process start with no mention
+  of IDN at all — the 1703 floor the crate's docs state is checked by
+  nothing, at build time or at run time. Both are written where the code
+  is, not only here.
 - **The platform IDN question is open on one measurement, not two.**
   macOS is settled from Apple's own source: `swift-foundation`'s
   `UIDNAHookICU` calls `uidna_openUTS46` with `0x3C`, i.e. non-transitional,
