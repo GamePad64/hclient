@@ -512,7 +512,7 @@ jobs:
           # skip into a FAILURE, but only as long as it actually reaches the
           # test: a typo in the name, `env:` moved to the wrong step,
           # `cargo install` silently installing the binary outside `PATH` —
-          # and the five live tests print `NOTICE` again and report `ok`,
+          # and every live test prints `NOTICE` again and reports `ok`,
           # while the job stays green, having checked nothing. The name
           # symmetry between the guard and this file is held by a test
           # inside `live_roundtrip.rs`; here we verify that the skip did not
@@ -1651,7 +1651,7 @@ jobs:
   # rationale true again; the hardcoding is correct, and its own reasoning
   # is written out at length in `caps.rs` itself.
   #
-  # The matrix is kept anyway, for what's actually still true: 65 tests run
+  # The matrix is kept anyway, for what's actually still true: 68 tests run
   # against two independent engine implementations of the Fetch/Promise/
   # setTimeout surface this crate depends on, and one genuinely
   # browser-varying runtime probe that survives —
@@ -1722,7 +1722,11 @@ jobs:
             echo "$crate on ${{ matrix.browser }}: $passed browser tests passed (minimum $min)"
           }
 
-          run_browser_suite crates/http-ng-fetch 65
+          # 65 -> 68 in v0.2 W1: three tests in `tests/transport.rs` for
+          # `Transport::execute`'s drop-cancellation contract (the abort
+          # the browser actually performs, its control, and the capability
+          # declaration). Counted with the same summation this job does.
+          run_browser_suite crates/http-ng-fetch 68
           # `http-ng`'s own browser tests: `Client::new()` on the browser
           # target, added in Task 8. The features are `wasm-pack`'s own
           # arguments, not `cargo test --` passthrough — `-- --features ...`

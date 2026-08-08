@@ -13,8 +13,8 @@ pub use body::Body;
 use convert::{Payload, TrailerWatch};
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
-    Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, Timeouts, TlsSupport,
-    UpgradeSupport,
+    CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport, Timeouts,
+    TlsSupport, UpgradeSupport,
 };
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
@@ -154,6 +154,24 @@ impl WasiHttp {
         // `redirects == None` that redirects were impossible here, would
         // be wrong about the one backend that actually exists.
         caps.redirects = RedirectSupport::Transparent;
+        // The guest owns no socket, so this is the host's to perform — and
+        // the Component Model requires it to. `wasip3::http::client::send`
+        // is an `[async-lower]` import, and the future wit-bindgen
+        // generates for it is a `WaitableOperation` whose `Drop` calls
+        // `[subtask-cancel]` synchronously
+        // (`wit-bindgen-0.57.1/src/rt/async_support/{waitable.rs,
+        // subtask.rs}`); the host must then either return the result or
+        // report the subtask cancelled, it may not simply keep going.
+        //
+        // v0.2's design document guessed the other way — "a WASI host may
+        // not expose it" — so this was measured, on a live wasmtime host,
+        // rather than read off the bindings: `tests/live_roundtrip.rs`'s
+        // `dropping_the_execute_future_closes_the_connection_the_server_sees`
+        // watches the mock server's own socket, and sees it close 0.3s in,
+        // at the drop, while the guest itself stays alive for another 1.5s.
+        // The control run, holding the same future instead of dropping it,
+        // leaves the connection open through the whole observation window.
+        caps.cancel_on_drop = CancelSupport::Supported;
         caps.tls_config = TlsSupport::None;
         caps.upgrade = UpgradeSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();

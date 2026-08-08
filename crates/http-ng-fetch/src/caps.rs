@@ -19,7 +19,9 @@
 //! lives next to the probe so `Capabilities` is assembled in one place,
 //! not split between "facts" and "probes" for no reason a caller can see.
 
-use http_ng_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport, UpgradeSupport};
+use http_ng_core::{
+    CancelSupport, Capabilities, RedirectSupport, TimeoutSupport, TlsSupport, UpgradeSupport,
+};
 
 /// Headers that fetch forbids scripts from setting. We **declare** them
 /// rather than silently dropping them on the floor: a caller who tries to
@@ -185,6 +187,20 @@ pub(crate) fn probe() -> Capabilities {
     // browser, and the JS code sees only the final response" — written
     // before this crate existed, describing this crate.
     c.redirects = RedirectSupport::Internal;
+    // The browser owns the connection, and `AbortController` is how it is
+    // asked to drop it. `crate::AbortOnDrop` arms that controller across
+    // the one `.await` in `execute` that can be interrupted, so a dropped
+    // future aborts the signal the browser is actually fetching with — and
+    // the Fetch Standard's "abort a fetch" algorithm terminates the ongoing
+    // fetch from there.
+    //
+    // Not taken on the spec's word: `tests/transport.rs`'s
+    // `dropping_the_execute_future_makes_the_browser_report_an_aborted_fetch`
+    // wraps `globalThis.fetch` (where `execute` looks it up), lets a real
+    // request go out to a real URL, drops the future, and then reads the
+    // browser's own verdict on the promise it kept — a `DOMException` named
+    // `AbortError`, which is a value nothing on this side can produce.
+    c.cancel_on_drop = CancelSupport::Supported;
     c.owns_cookie_jar = true;
     c.owns_cache = true;
     // `AbortSignal` is one deadline for the whole exchange; none of the

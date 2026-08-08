@@ -44,6 +44,19 @@ not expose it — that is a capability, not silence.
 are different claims. A test that only checks the first is the vacuous kind
 this project keeps finding.
 
+**DONE, and the WASI guess above was wrong.** `wasi:http` cancels: dropping
+the future cancels the Component Model subtask, measured on a live wasmtime
+host by watching the mock server's own socket
+(`crates/http-ng-wasi/tests/live_roundtrip.rs`,
+`dropping_the_execute_future_closes_the_connection_the_server_sees`, with
+`holding_the_execute_future_leaves_the_connection_open` as its control). All
+three backends cancel, `execute`'s contract now requires it, and
+`Capabilities::cancel_on_drop` (`CancelSupport::{None, Supported}`) is the
+one honest way for a fourth to say it cannot. Native's pair is
+`crates/http-ng-native/tests/cancel.rs`, fetch's is in
+`crates/http-ng-fetch/tests/transport.rs` — each with a server, a socket or
+the browser as the observer, never the client's own task.
+
 ---
 
 ## W2 — Connection reuse

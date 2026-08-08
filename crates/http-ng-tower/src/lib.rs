@@ -199,6 +199,20 @@ impl<S> ServiceTransport<S> {
     /// A layer that changes behaviour and leaves these untouched produces
     /// exactly the defect this project has caught in four backends — a
     /// capability describing something other than what the code does.
+    ///
+    /// **`cancel_on_drop` is the field a tower stack is most likely to
+    /// invalidate, and the easiest to carry over by accident.**
+    /// `Transport::execute` requires that dropping its future stop the
+    /// exchange, and this adapter passes the drop straight through — but a
+    /// layer that hands the request to a worker task does not.
+    /// `tower::buffer::Buffer` is the plain example: it spawns, the request
+    /// is already in its channel, and dropping the future the adapter
+    /// returns leaves that request to be sent and answered by somebody
+    /// else. A stack with such a layer must report
+    /// `CancelSupport::None` here even when the transport underneath
+    /// reports `Supported` — that is what the "adjust for a layer that
+    /// changes what the stack can do" sentence above means in the one case
+    /// where the adjustment is downward.
     pub fn new(inner: S, capabilities: Capabilities) -> Self {
         Self {
             inner,
