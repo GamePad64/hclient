@@ -106,8 +106,10 @@ impl<T: Transport> ClientBuilder<T> {
             backend_name::<T>(),
         )?;
         Ok(Client {
-            transport: self.transport,
-            config: self.config,
+            inner: std::sync::Arc::new(Inner {
+                transport: self.transport,
+                config: self.config,
+            }),
         })
     }
 }
@@ -134,14 +136,38 @@ fn backend_name<T>() -> &'static str {
 #[cfg(feature = "default-transport")]
 #[derive(Debug)]
 pub struct Client<T = crate::DefaultTransport> {
-    transport: T,
-    config: Config,
+    inner: std::sync::Arc<Inner<T>>,
 }
 #[cfg(not(feature = "default-transport"))]
 #[derive(Debug)]
 pub struct Client<T> {
+    inner: std::sync::Arc<Inner<T>>,
+}
+
+/// The transport and configuration a `Client` shares with its clones.
+///
+/// Behind an `Arc` so that cloning a `Client` is an atomic increment rather
+/// than a copy of the transport — which for a real backend owns a
+/// connection pool, a TLS configuration and a resolver, none of which
+/// should be duplicated by handing the client to a second task.
+#[derive(Debug)]
+struct Inner<T> {
     transport: T,
     config: Config,
+}
+
+/// Cloning shares the transport; it does not duplicate it.
+///
+/// Hand-written rather than derived: `#[derive(Clone)]` would require
+/// `T: Clone`, which is both unnecessary — the `Arc` is what is cloned —
+/// and wrong in meaning, since a `T: Clone` transport would then be copied
+/// per clone instead of shared.
+impl<T> Clone for Client<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
 }
 
 impl<T: Transport> Client<T> {
@@ -149,10 +175,10 @@ impl<T: Transport> Client<T> {
         ClientBuilder::new(transport)
     }
     pub fn transport(&self) -> &T {
-        &self.transport
+        &self.inner.transport
     }
     pub fn config(&self) -> &Config {
-        &self.config
+        &self.inner.config
     }
     /// What this client's transport can do.
     ///
@@ -166,7 +192,7 @@ impl<T: Transport> Client<T> {
     /// `client.transport()` returns `&T`, so calling `.capabilities()` on
     /// it would require `Transport` in a `use`.
     pub fn capabilities(&self) -> &Capabilities {
-        self.transport.capabilities()
+        self.inner.transport.capabilities()
     }
 
     pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T> {
@@ -259,7 +285,7 @@ impl<T: Transport> Client<T> {
         // send` resolves the same URI ahead of time (it needs the result
         // for `Response::url()`), and resolving an already-absolute URI
         // returns it unchanged (RFC 3986 §5.2.2).
-        let uri = effective_uri(self.config.base_url.as_ref(), &parts.uri.to_string())?;
+        let uri = effective_uri(self.inner.config.base_url.as_ref(), &parts.uri.to_string())?;
 
         let mut hp = HopParts {
             method: parts.method,
@@ -284,10 +310,10 @@ impl<T: Transport> Client<T> {
         // result is stored in `extensions` before the loop: subsequent
         // hops clone them from the previous one
         // (`stages::redirect::next_hop`), so merging once is enough.
-        let effective = effective_timeouts(&hp.extensions, &self.config.timeouts);
+        let effective = effective_timeouts(&hp.extensions, &self.inner.config.timeouts);
         check_timeouts_supported(
             &effective,
-            self.transport.capabilities(),
+            self.inner.transport.capabilities(),
             backend_name::<T>(),
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
@@ -314,10 +340,10 @@ impl<T: Transport> Client<T> {
         // unavoidably — `Extensions` is one shared bag — and carries across
         // hops with everything else (`stages::redirect::next_hop`), which
         // costs nothing here since the value is read once, before the loop.
-        let redirect = effective_redirect(&hp.extensions, &self.config.redirect);
+        let redirect = effective_redirect(&hp.extensions, &self.inner.config.redirect);
         check_redirect_supported(
             &redirect,
-            self.transport.capabilities(),
+            self.inner.transport.capabilities(),
             backend_name::<T>(),
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
@@ -334,6 +360,7 @@ impl<T: Transport> Client<T> {
             let sending = std::mem::replace(&mut body, RequestBody::Empty);
 
             let resp = self
+                .inner
                 .transport
                 .execute(hp.to_request(sending))
                 .await
@@ -344,7 +371,7 @@ impl<T: Transport> Client<T> {
                 // decides, not this line: the default `Transport::to_error`
                 // wraps exactly the same way, and a backend whose error is
                 // already an `Error` hands it back as-is.
-                .map_err(|e| self.transport.to_error(e))?;
+                .map_err(|e| self.inner.transport.to_error(e))?;
 
             let location = resp
                 .headers()

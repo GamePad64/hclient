@@ -20,6 +20,9 @@ proptest       = "1"
 http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0" }
 http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
 http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
+thiserror     = "2"
+rstest        = { version = "0.26", default-features = false }
+assert_matches = "1.5"
 http-ng       = { path = "crates/http-ng",       version = "0.1.0" }
 
 [workspace.lints.rust]
