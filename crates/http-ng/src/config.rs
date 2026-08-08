@@ -7,12 +7,15 @@ use http_ng_proto::redirect::RedirectPolicy;
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub timeouts: Timeouts,
-    /// `None` is "the caller never asked for a redirect policy", **not**
-    /// "don't follow redirects" — and today there is no spelling for that
-    /// second meaning at all (`TODO(redirect-policy-shape)`, see
-    /// [`crate::RequestBuilder::redirect`]): the nearest thing,
-    /// `Some(RedirectPolicy { limit: 0 })`, turns the first 3xx into
-    /// `ErrorKind::Redirect` instead of handing the response back.
+    /// `Option::None` here is "the caller never asked for a redirect
+    /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
+    /// caller explicitly asking not to follow and to be handed the 3xx.
+    /// The distinction is load-bearing: the first is accepted by every
+    /// backend, the second is refused by one that follows redirects
+    /// internally, because it cannot be honoured there.
+    ///
+    /// A third thing again is `Some(RedirectPolicy::Limited(0))` — follow
+    /// zero hops, so the first 3xx is `ErrorKind::Redirect`.
     ///
     /// An `Option` rather than a bare `RedirectPolicy` because
     /// `check_supported` has to tell those two apart:
@@ -480,7 +483,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_an_internal_backend_is_an_error() {
         let cfg = Config {
-            redirect: Some(RedirectPolicy { limit: 5 }),
+            redirect: Some(RedirectPolicy::Limited(5)),
             ..Default::default()
         };
         let err = check_supported(
@@ -525,7 +528,7 @@ mod tests {
     #[test]
     fn configured_redirect_policy_against_a_transparent_backend_is_fine() {
         let cfg = Config {
-            redirect: Some(RedirectPolicy { limit: 5 }),
+            redirect: Some(RedirectPolicy::Limited(5)),
             ..Default::default()
         };
         assert!(
@@ -545,21 +548,21 @@ mod tests {
     /// directions are checked here, and the client-only case below.
     #[test]
     fn request_redirect_policy_replaces_the_clients() {
-        let client = Some(RedirectPolicy { limit: 3 });
+        let client = Some(RedirectPolicy::Limited(3));
         let mut ext = http::Extensions::new();
-        ext.insert(RedirectPolicy { limit: 7 });
+        ext.insert(RedirectPolicy::Limited(7));
         assert_eq!(
-            effective_redirect(&ext, &client).map(|p| p.limit),
-            Some(7),
+            effective_redirect(&ext, &client),
+            Some(RedirectPolicy::Limited(7)),
             "the request's policy wins"
         );
         assert_eq!(
-            effective_redirect(&http::Extensions::new(), &client).map(|p| p.limit),
-            Some(3),
+            effective_redirect(&http::Extensions::new(), &client),
+            Some(RedirectPolicy::Limited(3)),
             "with nothing on the request, the client's stands"
         );
         assert_eq!(
-            effective_redirect(&http::Extensions::new(), &None).map(|p| p.limit),
+            effective_redirect(&http::Extensions::new(), &None),
             None,
             "neither side configured anything, and that stays distinguishable"
         );
@@ -572,7 +575,7 @@ mod tests {
     #[test]
     fn a_request_only_redirect_policy_is_still_checked_against_internal() {
         let mut ext = http::Extensions::new();
-        ext.insert(RedirectPolicy { limit: 0 });
+        ext.insert(RedirectPolicy::Limited(0));
         let merged = effective_redirect(&ext, &None);
         let err = check_redirect_supported(
             &merged,

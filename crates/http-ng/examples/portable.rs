@@ -42,7 +42,7 @@
 //! reported rather than smoothed over — see `docs/porting-wasi-fetch.md`
 //! for the full list:
 //!
-//! 1. `follow_redirects: false` becomes `RedirectPolicy { limit: 0 }`,
+//! 1. `follow_redirects: false` becomes `RedirectPolicy::Limited(0)`,
 //!    which makes a 3xx an `ErrorKind::Redirect` here, where `wasi-fetch`
 //!    handed the 3xx response back to the caller.
 //! 2. Against a backend that follows redirects internally (the browser
@@ -226,13 +226,24 @@ where
     // { 10 } else { 0 };`, then `.redirect_limit(redirect_limit)` on the
     // per-request builder. Before `RequestBuilder::redirect` existed, the
     // only way to say this through `http-ng` was one `Client` per request.
-    let redirect_limit = if args.follow_redirects { 10 } else { 0 };
+    //
+    // `false` maps to `RedirectPolicy::None`, NOT to `Limited(0)`. The
+    // consumer forwards the 3xx upward — status and `Location` become its
+    // output — and `wasi-fetch`, which it migrates from, did the same:
+    // `redirect_limit(0)` there skipped the redirect branch entirely rather
+    // than failing. `Limited(0)` would turn that answer into an error, which
+    // is the mistake a mechanical migration makes. This branch was
+    // inexpressible until the Task 10 acceptance found it and `RedirectPolicy`
+    // became an enum.
+    let redirect = if args.follow_redirects {
+        RedirectPolicy::Limited(10)
+    } else {
+        RedirectPolicy::None
+    };
 
     let mut builder = client
         .request(args.method.clone(), &args.url)
-        .redirect(RedirectPolicy {
-            limit: redirect_limit,
-        });
+        .redirect(redirect);
 
     // Set headers
     for (k, v) in &args.headers {

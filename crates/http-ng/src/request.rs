@@ -129,12 +129,12 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
     /// `http-ng` was a fresh `Client` per request — the very cost
     /// `RequestBuilder::timeouts` already exists to avoid (reqwest #2641).
     ///
-    /// **`RedirectPolicy { limit: 0 }` is not quite the consumer's other
-    /// branch, and this is a known gap** (`TODO(redirect-policy-shape)`).
-    /// It means "follow up to zero hops", so the first 301/302/303/307/308
-    /// carrying a `Location` becomes `ErrorKind::Redirect` — where
-    /// `wasi-fetch`, which that component migrates from, returned the 3xx
-    /// to the caller as an ordinary response
+    /// **The consumer's other branch is [`RedirectPolicy::None`], not
+    /// `Limited(0)`.** `Limited(0)` means "follow up to zero hops", so the
+    /// first 301/302/303/307/308 carrying a `Location` becomes
+    /// `ErrorKind::Redirect`. `None` returns that response to the caller
+    /// untouched — which is what `wasi-fetch`, the library that component
+    /// migrates from, did for `redirect_limit(0)`
     /// (`wasi-fetch/src/request.rs`: `if redirect_limit > 0 &&
     /// status.is_redirection()`), and the component forwards its status
     /// and `Location` upward. `limit: u8` cannot express "do not follow,

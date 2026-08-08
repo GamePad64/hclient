@@ -84,26 +84,28 @@ compiled and tested.
 
 Four items, none of them papered over.
 
-1. **`redirect_limit(0)` changes meaning.** In `wasi-fetch` the loop was
-   gated on `if redirect_limit > 0 && …`, so a limit of `0` returned the
-   3xx **to the caller as an ordinary response**. `RedirectPolicy { limit:
-   0 }` reaches `decide`, where `hops >= policy.limit` holds immediately,
-   and `Client::execute` returns `Err(ErrorKind::Redirect)`. If your code
-   used `redirect_limit(0)` to *inspect* a redirect — which is exactly what
-   `act`'s `http-client` component does for `follow_redirects: false` —
-   this is a behaviour change, and `RedirectPolicy`'s single `limit: u8`
-   cannot currently express "do not follow, hand me the 3xx". It is the
-   distinction reqwest draws between `Policy::none()` and
-   `Policy::limited(0)`, and it is an open finding against the shape of
-   `RedirectPolicy`, not a decision.
+1. **`redirect_limit(0)` maps to `RedirectPolicy::None`, never to
+   `Limited(0)`.** This is the one substitution a mechanical migration gets
+   wrong, and it is silent when it does.
 
-   `TODO(redirect-policy-shape)`: when `RedirectPolicy` becomes an enum,
-   `redirect_limit(0)` maps to `RedirectPolicy::None` and **not** to
-   `Limited(0)` — `Limited(0)` keeps today's "error on the first redirect"
-   meaning, so a mechanical `0` → `Limited(0)` migration would silently
-   preserve exactly the behaviour change this item is about. Update this
-   row, the sentence above, and `wasi-fetch` 0.3's facade plan below
-   together.
+   In `wasi-fetch` the redirect loop was gated on
+   `if redirect_limit > 0 && status.is_redirection()` (`request.rs:135`), so
+   a limit of `0` skipped the branch entirely and returned the 3xx **to the
+   caller as an ordinary response**. `http-ng` spells that
+   `RedirectPolicy::None`: `decide` answers `Stop` before any hop counting,
+   and the response arrives with its `Location` intact.
+
+   `RedirectPolicy::Limited(0)` is a different instruction — follow up to
+   zero hops, so the first 301/302/303/307/308 carrying a `Location` becomes
+   `Err(ErrorKind::Redirect)`. Translating `0` to `0` therefore turns an
+   answer into an error, and does it only on the redirect path, where a test
+   suite that never redirects will not notice.
+
+   It is the distinction `reqwest` draws between `Policy::none()` and
+   `Policy::limited(0)`. `RedirectPolicy` was a `struct { limit: u8 }` and
+   could express only the second; porting `act`'s `http-client` component,
+   whose `follow_redirects: false` forwards the 302 upward, is what surfaced
+   that, and the type became an enum before v0.1 shipped.
 2. **There is still no total-deadline timeout, in either library** —
    `Timeouts` is `connect`/`first_byte`/`between_bytes`, `wasi-fetch` had
    the same three and no whole-request deadline, so a response that starts

@@ -9,23 +9,44 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
     http::header::PROXY_AUTHORIZATION,
 ];
 
-/// How far to follow a redirect chain.
+/// Whether, and how far, to follow a redirect chain.
 ///
-/// **`limit: 0` is "follow up to zero hops", i.e. the first redirect is an
-/// error — it is NOT "do not follow, hand me the 3xx"**, which this type
-/// cannot express at all (`TODO(redirect-policy-shape)`). reqwest keeps
-/// the two apart as `Policy::none()` and `Policy::limited(0)`; the live
-/// consumer this library is built for needs the first of those, and the
-/// Task 10 acceptance is where that came out. Being fixed by turning this
-/// into an enum.
-#[derive(Debug, Clone, Copy)]
-pub struct RedirectPolicy {
-    pub limit: u8,
+/// Two different intents, kept apart deliberately: [`Self::None`] returns
+/// the 3xx to the caller, [`Self::Limited`] follows and errors on
+/// exceeding. `reqwest` draws the same line as `Policy::none()` versus
+/// `Policy::limited(0)`.
+///
+/// This was a `struct { limit: u8 }` until the Task 10 acceptance ported a
+/// live consumer onto it and found the first intent inexpressible — the
+/// consumer's `follow_redirects: false` forwards the 302 upward, and
+/// `limit: 0` turned that answer into an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectPolicy {
+    /// Do not follow. A 3xx reaches the caller as an ordinary response, its
+    /// `Location` header intact, for the caller to inspect or forward.
+    ///
+    /// This is what `wasi-fetch`'s `redirect_limit(0)` did
+    /// (`request.rs:135`: `if redirect_limit > 0 && status.is_redirection()`
+    /// skips the whole redirect branch), and what the live consumer
+    /// `act/components/http-client` means by `follow_redirects: false`. It
+    /// was inexpressible here until this type became an enum.
+    None,
+    /// Follow up to this many hops; exceeding it is `TooManyRedirects`.
+    ///
+    /// `Limited(0)` therefore means "follow zero hops" — the first 3xx with
+    /// a `Location` is an error. That is deliberately NOT the same as
+    /// [`RedirectPolicy::None`], and the distinction is the entire reason
+    /// this is an enum: folding the two into a single `limit: 0` put a
+    /// discontinuity inside one field, where `0` returned the response and
+    /// `1` errored on exceeding. `reqwest` keeps them apart the same way,
+    /// as `Policy::none()` and `Policy::limited(0)`.
+    Limited(u8),
 }
 
 impl Default for RedirectPolicy {
+    /// Ten hops, matching what the struct form defaulted to.
     fn default() -> Self {
-        Self { limit: 10 }
+        Self::Limited(10)
     }
 }
 
@@ -85,7 +106,13 @@ pub fn decide(
     let Some(location) = location else {
         return RedirectAction::Stop;
     };
-    if hops >= policy.limit {
+    let limit = match policy {
+        // "Do not follow" is a `Stop`, not an error: the 3xx is the caller's
+        // answer, not a failure to reach one.
+        RedirectPolicy::None => return RedirectAction::Stop,
+        RedirectPolicy::Limited(n) => *n,
+    };
+    if hops >= limit {
         return RedirectAction::TooManyRedirects;
     }
 
@@ -141,7 +168,7 @@ mod tests {
     use http::{Method, StatusCode, Uri};
 
     fn p() -> RedirectPolicy {
-        RedirectPolicy { limit: 10 }
+        RedirectPolicy::Limited(10)
     }
     fn u(s: &str) -> Uri {
         s.parse().unwrap()
@@ -264,7 +291,7 @@ mod tests {
     #[test]
     fn limit_is_enforced() {
         let r = decide(
-            &RedirectPolicy { limit: 2 },
+            &RedirectPolicy::Limited(2),
             2,
             &u("https://a/"),
             &Method::GET,

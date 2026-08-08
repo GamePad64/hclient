@@ -279,11 +279,9 @@ impl<T: Transport> Client<T> {
         // unchecked. Any policy at all is what a browser can never
         // honour: fetch's `redirect: "follow"` default isn't overridable
         // through `http-ng-fetch`, so it can be told neither "stop" nor a
-        // limit. Note that the branch that consumer actually takes,
-        // `limit: 0`, is not "do not follow" but "error on the first
-        // redirect" — a known gap in the shape of `RedirectPolicy`, see
-        // `RequestBuilder::redirect`'s doc comment
-        // (`TODO(redirect-policy-shape)`).
+        // limit. The branch that consumer actually takes is
+        // `RedirectPolicy::None` — "do not follow, hand me the 3xx" — which
+        // `decide` answers with `Stop` before any hop counting.
         //
         // Unlike the timeouts, the merged value is NOT written back into
         // `extensions`: no transport reads a `RedirectPolicy`, and the only
@@ -340,7 +338,14 @@ impl<T: Transport> Client<T> {
             match action {
                 RedirectAction::Stop => return Ok(resp),
                 RedirectAction::TooManyRedirects => {
-                    return Err(Error::new(ErrorKind::Redirect, TooMany(redirect.limit)));
+                    // Only `Limited` can reach here: `decide` turns `None`
+                    // into `Stop` before any counting, because "do not
+                    // follow" means the 3xx IS the answer.
+                    let limit = match redirect {
+                        RedirectPolicy::Limited(n) => n,
+                        RedirectPolicy::None => 0,
+                    };
+                    return Err(Error::new(ErrorKind::Redirect, TooMany(limit)));
                 }
                 RedirectAction::InvalidLocation => {
                     return Err(Error::new(ErrorKind::Redirect, BadLocation));

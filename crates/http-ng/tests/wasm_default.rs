@@ -131,7 +131,7 @@ async fn client_news_own_config_passes_the_real_fetch_capabilities() {
 #[wasm_bindgen_test]
 async fn a_configured_redirect_policy_is_rejected_by_the_real_browser_transport() {
     let err = Client::builder(http_ng_fetch::Fetch::new())
-        .redirect(RedirectPolicy { limit: 5 })
+        .redirect(RedirectPolicy::Limited(5))
         .build()
         .unwrap_err();
     assert_eq!(err.what, "redirect_policy");
@@ -161,7 +161,7 @@ async fn a_per_request_redirect_policy_is_rejected_as_unsupported() {
     let client = Client::new();
     let err = client
         .get(&harness_page_url())
-        .redirect(RedirectPolicy { limit: 0 })
+        .redirect(RedirectPolicy::Limited(0))
         .send()
         .await
         .unwrap_err();

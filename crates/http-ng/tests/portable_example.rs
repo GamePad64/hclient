@@ -334,25 +334,26 @@ fn follow_redirects_true_takes_the_hop() {
     );
 }
 
-/// `follow_redirects: false` → limit 0, and **this is the one place the
-/// port is not behaviour-for-behaviour**.
+/// `follow_redirects: false` → `RedirectPolicy::None`, and the port is now
+/// behaviour-for-behaviour with the original.
+///
+/// This is the test that had to change when `RedirectPolicy` became an enum,
+/// and it failed loudly when it did rather than quietly passing for a new
+/// reason — which is why it was named for what actually happened rather than
+/// for what the port wanted.
 ///
 /// `wasi-fetch` with `redirect_limit == 0` short-circuits on
-/// `if redirect_limit > 0 && status.is_redirection()` and returns the 3xx
-/// **as an ordinary response**, so the component forwards status 302 and
-/// the `Location` header to its caller. `http-ng` reaches
-/// `redirect::decide`, where `hops >= policy.limit` holds at `0 >= 0`, and
-/// `Client::execute` turns that into `Err(ErrorKind::Redirect)`.
+/// `if redirect_limit > 0 && status.is_redirection()` (`request.rs:135`) and
+/// returns the 3xx **as an ordinary response**, so the component forwards
+/// status 302 and the `Location` header to its caller. `RedirectPolicy::None`
+/// now does the same: `decide` returns `Stop` before any hop counting, and
+/// the response reaches the caller intact.
 ///
-/// The name of this test says what actually happens, not what the port
-/// wanted: `RedirectPolicy { limit: u8 }` cannot express "do not follow,
-/// hand me the 3xx" at all — it is the same distinction reqwest draws
-/// between `Policy::none()` and `Policy::limited(0)`. Reported as a
-/// finding against the shape of `RedirectPolicy`; when that is fixed, this
-/// test is the one that has to change, and it will fail loudly rather than
-/// silently start passing for a new reason.
+/// `Limited(0)` still errors, and the test below pins that — the two are
+/// different intents and collapsing them is the defect this enum exists to
+/// prevent.
 #[test]
-fn follow_redirects_false_stops_at_the_first_3xx_but_reports_it_as_an_error() {
+fn follow_redirects_false_hands_the_3xx_to_the_caller_like_the_original() {
     let m = transparent_mock();
     m.push_response(
         http::Response::builder()
@@ -366,21 +367,50 @@ fn follow_redirects_false_stops_at_the_first_3xx_but_reports_it_as_an_error() {
     let mut rec = Recorder::default();
     let mut a = args("https://a/first");
     a.follow_redirects = false;
-    let err = run(&c, a, &mut rec).unwrap_err();
+    run(&c, a, &mut rec).expect("the 302 is the answer, not a failure");
 
     assert_eq!(
         c.transport().requests().len(),
         1,
-        "not a single hop was taken — that half matches the original"
+        "not a single hop was taken"
     );
+    assert_eq!(
+        meta_value(&rec.sent[0], "http-client:status"),
+        Some(b"302".as_slice()),
+        "the component forwards the 3xx upward, exactly as it did on wasi-fetch"
+    );
+    let headers = String::from_utf8_lossy(
+        meta_value(&rec.sent[0], "http-client:headers").expect("headers metadata"),
+    )
+    .to_string();
     assert!(
-        matches!(err, ComponentError::Internal(_)),
-        "the divergence: an error, where the original returned the 302: {err:?}"
+        headers.contains("https://a/second"),
+        "Location must reach the caller — a status without it is not usable: {headers}"
     );
-    assert!(
-        rec.sent.is_empty(),
-        "and nothing reaches the caller, where the original forwarded the 302"
+}
+
+/// `Limited(0)` is NOT `None`: follow zero hops, so the first 3xx carrying a
+/// `Location` is an error. Task 8 pinned this when `limit: 0` was the only
+/// way to spell either intent; it survives the enum unchanged, and it must,
+/// or the two intents have quietly re-merged into one.
+#[test]
+fn limited_zero_still_errors_and_is_not_the_same_as_none() {
+    let m = transparent_mock();
+    m.push_response(
+        http::Response::builder()
+            .status(302)
+            .header("location", "https://a/second")
+            .body("")
+            .unwrap(),
     );
+
+    let c = Client::builder(m)
+        .redirect(http_ng::RedirectPolicy::Limited(0))
+        .build()
+        .unwrap();
+    let err = futures_executor::block_on(c.get("https://a/first").send())
+        .expect_err("Limited(0) must not hand the 302 back");
+    assert_eq!(*err.kind(), ErrorKind::Redirect, "{err}");
 }
 
 /// The browser-shaped backend refuses both branches, because the component
