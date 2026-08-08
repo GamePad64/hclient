@@ -146,3 +146,100 @@ where
         })
     }
 }
+
+/// A [`tower_service::Service`] wearing the seam's clothes — the return
+/// journey, so a tower stack can sit *underneath* [`http_ng::Client`]
+/// rather than replacing it.
+///
+/// Without this, a `tower-http` layer could only be applied on top of the
+/// transport, which meant giving up everything `Client` does: the redirect
+/// stage, `base_url` resolution, timeout merging, the capability check. The
+/// two adapters together close the loop:
+///
+/// ```text
+/// Native -> TransportService -> [tower layers] -> ServiceTransport -> Client
+/// ```
+///
+/// **The client's type does not change shape** — `Client<T>` was always
+/// generic over its transport, so this is a different `T`, not a different
+/// `Client`. Nothing in the facade moves.
+///
+/// # Readiness, and what cloning costs
+///
+/// `Service::call` needs `&mut self` and `Transport::execute` has `&self`,
+/// so each call clones the service and drives `poll_ready` on the clone —
+/// the same thing `tower::ServiceExt::oneshot` does. Readiness is therefore
+/// not cached between calls.
+///
+/// For the standard layers this is correct rather than merely acceptable:
+/// their backpressure state is shared through an `Arc` (a concurrency
+/// limit's semaphore, a rate limiter's clock), so a clone observes the same
+/// limit. A layer that keeps its budget in a plain field, unshared, would
+/// hand every clone a fresh budget and enforce nothing. That is a property
+/// of such a layer, not of this adapter, but it is the failure mode to look
+/// for if a limit stops limiting.
+#[derive(Debug, Clone)]
+pub struct ServiceTransport<S> {
+    inner: S,
+    capabilities: Capabilities,
+}
+
+impl<S> ServiceTransport<S> {
+    /// Wrap a service, declaring what the stack underneath it can do.
+    ///
+    /// **The capabilities are an argument because a `Service` has none, and
+    /// this adapter must not invent them.** Take them from the transport at
+    /// the bottom of the stack —
+    /// `TransportService::capabilities()` — and adjust only for a layer
+    /// that genuinely changes what the stack can do. Passing
+    /// `Capabilities::none()` to avoid thinking is worse than wrong: it
+    /// tells `Client::build` to reject configurations the stack supports
+    /// perfectly well.
+    ///
+    /// A layer that changes behaviour and leaves these untouched produces
+    /// exactly the defect this project has caught in four backends — a
+    /// capability describing something other than what the code does.
+    pub fn new(inner: S, capabilities: Capabilities) -> Self {
+        Self {
+            inner,
+            capabilities,
+        }
+    }
+
+    /// The wrapped service.
+    pub fn get_ref(&self) -> &S {
+        &self.inner
+    }
+}
+
+impl<S, B, E> Transport for ServiceTransport<S>
+where
+    S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
+        + Clone,
+    B: http_body::Body<Data = bytes::Bytes>,
+    E: std::error::Error + 'static,
+{
+    type Body = B;
+    type Error = E;
+
+    fn execute(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> impl Future<Output = Result<http::Response<B>, E>> {
+        let mut svc = self.inner.clone();
+        async move {
+            // `poll_ready` to completion BEFORE `call`, which is tower's
+            // contract and not a formality: a service is entitled to panic
+            // if called unready, and the layers that matter here —
+            // concurrency limits, rate limits — reserve their permit in
+            // `poll_ready` and would otherwise hand out work they have no
+            // budget for.
+            std::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
+            svc.call(req).await
+        }
+    }
+
+    fn capabilities(&self) -> &Capabilities {
+        &self.capabilities
+    }
+}
