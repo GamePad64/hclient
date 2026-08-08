@@ -191,8 +191,13 @@ jobs:
           # `|| rc=$?` rather than a bare capture: under `set -e` a failing
           # test would abort the step before the line below prints anything,
           # so the run would go red with no indication of WHICH test failed.
+          # `--no-fail-fast`: nextest cancels the remaining tests on the first
+          # failure by default, which is the same blindness this job moved
+          # off `cargo test` to escape — one Windows failure hid the other
+          # 122 tests that had not run yet. A red run should report
+          # everything that is red, in one round trip.
           rc=0
-          out="$(cargo nextest run --workspace --all-features --color never \
+          out="$(cargo nextest run --workspace --all-features --color never --no-fail-fast \
             -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
           printf '%s\n' "$out"
           [ "$rc" -eq 0 ] || exit "$rc"
