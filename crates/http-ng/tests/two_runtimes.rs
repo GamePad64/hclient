@@ -23,6 +23,31 @@
 //! tokio::time::Instant`, a wrapper) and doesn't break `Smol` (`Instant =
 //! std::time::Instant`), see `http-ng-rt-pair-check`'s `pair_property.rs`,
 //! from which the mutation trick itself was borrowed.
+//!
+//! # The one `#[cfg]` in this file, and why it isn't the one forbidden above
+//!
+//! "Zero cfg" above is a claim about the RUNTIME SEAM: nothing in this file
+//! may branch on which runtime is being used, because the whole point is
+//! that `fetch_once` is one body serving both. The whole-file gate below
+//! makes no such distinction — it excludes `wasm32-*` entirely, where
+//! NEITHER runtime exists (`http-ng-rt-tokio` and `http-ng-rt-smol` are
+//! equally absent, along with the real `std::net::TcpListener` this file
+//! spawns), so it cannot make the seam decorative: there is no seam to
+//! decorate on a target where neither side of it is present. Every line
+//! that follows still compiles for every target this test can run on at
+//! all, with no branch between tokio and smol anywhere.
+//!
+//! Introduced by Task 8 of vertical 3, which made `http-ng` buildable for
+//! `wasm32-unknown-unknown` (`DefaultTransport = http_ng_fetch::Fetch`) and
+//! added `tests/wasm_default.rs` to be run there by `wasm-pack test` — a
+//! command that builds EVERY test target of the crate. It pairs with the
+//! target gate on this file's dependencies in `Cargo.toml`
+//! (`[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]`, see the
+//! comment there): the gate and this line only work together, and removing
+//! either brings back a `mio`/`socket2` compile failure that has nothing to
+//! do with anything in this workspace.
+#![cfg(not(target_family = "wasm"))]
+
 use http_ng::{Client, Timeouts};
 use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;

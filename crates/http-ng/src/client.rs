@@ -1,5 +1,6 @@
 use crate::config::{
-    Config, check_supported, check_timeouts_supported, effective_timeouts, effective_uri,
+    Config, check_redirect_supported, check_supported, check_timeouts_supported,
+    effective_redirect, effective_timeouts, effective_uri,
 };
 use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
@@ -21,8 +22,25 @@ impl<T: Transport> ClientBuilder<T> {
             config: Config::default(),
         }
     }
+    /// The redirect policy for every request from this client.
+    ///
+    /// Stores `Some(policy)`, and that wrapping carries meaning: it is what
+    /// makes "the caller asked for a redirect policy" distinguishable from
+    /// "the caller said nothing", which is the difference between rejecting
+    /// an unhonourable setting and rejecting every client built on a
+    /// backend that follows redirects itself (see `check_redirect_supported`
+    /// in `config.rs`). Never call this and the policy stays `None`, which
+    /// every read site turns into `RedirectPolicy::default()` — ten hops,
+    /// exactly as before this method learned to say `Some`.
+    ///
+    /// Overridden wholesale by [`RequestBuilder::redirect`]; the merge is
+    /// `config::effective_redirect`, run by `Client::execute`, and it is
+    /// the MERGED value that gets checked against the transport's
+    /// `Capabilities` — same shape as `timeouts` below.
+    ///
+    /// [`RequestBuilder::redirect`]: crate::RequestBuilder::redirect
     pub fn redirect(mut self, policy: RedirectPolicy) -> Self {
-        self.config.redirect = policy;
+        self.config.redirect = Some(policy);
         self
     }
     /// Default timeouts for every request from this client.
@@ -251,6 +269,34 @@ impl<T: Transport> Client<T> {
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         hp.extensions.insert(effective);
 
+        // The redirect policy gets the same treatment as the timeouts
+        // above, for the same two reasons. It can be overridden per request
+        // (`RequestBuilder::redirect`; `act`'s `http-client` component
+        // computes its limit as `follow_redirects ? 10 : 0` on every call),
+        // so only here are both operands known — and the CHECK has to see
+        // the merged value, or a per-request policy against a backend that
+        // follows redirects internally would be the one path left
+        // unchecked. `RedirectPolicy { limit: 0 }` — "do not follow
+        // redirects", the branch that consumer actually takes — is exactly
+        // what a browser can never honour: fetch's `redirect: "follow"`
+        // default isn't overridable through `http-ng-fetch`.
+        //
+        // Unlike the timeouts, the merged value is NOT written back into
+        // `extensions`: no transport reads a `RedirectPolicy`, and the only
+        // consumer is the loop right below. What a `RequestBuilder` put
+        // there does travel on to the transport, harmlessly and
+        // unavoidably — `Extensions` is one shared bag — and carries across
+        // hops with everything else (`stages::redirect::next_hop`), which
+        // costs nothing here since the value is read once, before the loop.
+        let redirect = effective_redirect(&hp.extensions, &self.config.redirect);
+        check_redirect_supported(
+            &redirect,
+            self.transport.capabilities(),
+            backend_name::<T>(),
+        )
+        .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
+        let redirect = redirect.unwrap_or_default();
+
         let mut hops: u8 = 0;
 
         loop {
@@ -279,7 +325,7 @@ impl<T: Transport> Client<T> {
                 .get(http::header::LOCATION)
                 .map(|v| v.as_bytes());
             let action = decide(
-                &self.config.redirect,
+                &redirect,
                 hops,
                 &hp.uri,
                 &hp.method,
@@ -290,10 +336,7 @@ impl<T: Transport> Client<T> {
             match action {
                 RedirectAction::Stop => return Ok(resp),
                 RedirectAction::TooManyRedirects => {
-                    return Err(Error::new(
-                        ErrorKind::Redirect,
-                        TooMany(self.config.redirect.limit),
-                    ));
+                    return Err(Error::new(ErrorKind::Redirect, TooMany(redirect.limit)));
                 }
                 RedirectAction::InvalidLocation => {
                     return Err(Error::new(ErrorKind::Redirect, BadLocation));
@@ -399,6 +442,77 @@ impl Client<crate::DefaultTransport> {
             tls,
             http_ng_dns_system::SystemDns::new(rt),
         ))
+    }
+}
+
+// The browser sibling of the `impl Client<crate::DefaultTransport>` above.
+// The gate is the mirror image of that one and of `DefaultTransport`'s own
+// (`lib.rs`): `all(target_family = "wasm", target_os = "unknown")`, NOT a
+// bare `target_family = "wasm"` — `wasm32-wasip2` is also `wasm`, and there
+// is deliberately no `DefaultTransport` branch there (see that type's doc
+// comment for why `http-ng` doesn't depend on `http-ng-wasi`), so a bare
+// wasm gate would `impl` for a type that doesn't exist on that target.
+#[cfg(all(
+    feature = "default-transport",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
+impl Client<crate::DefaultTransport> {
+    /// A client with the browser transport.
+    ///
+    /// No `Result`, unlike the native [`Client::new`] — and no panic
+    /// smuggled in to pay for that. The native version's `Result` exists
+    /// for one failure that has no counterpart here: reading the OS trust
+    /// store. `Fetch::new()` cannot fail at all — it probes the running
+    /// browser and stores the answer (`http-ng-fetch`'s `caps::probe`),
+    /// with no I/O and no fallible step — and TLS is the browser's
+    /// business, not ours.
+    ///
+    /// # Panics
+    ///
+    /// The `.expect` below is unreachable for the configuration this
+    /// function itself builds, and that rests on one fact two files away
+    /// rather than on anything visible at the call site — so, named here:
+    /// **`Config::default()` leaves `redirect: None`** (`config.rs`), and
+    /// `check_redirect_supported` rejects only a `Some` policy against a
+    /// `RedirectSupport::Internal` backend, which `Fetch` is. Nothing else
+    /// in the default config can trip `build()`: `Timeouts::default()` is
+    /// three `None`s, and `base_url` is not checked against `Capabilities`
+    /// at all.
+    ///
+    /// **The moment `Config`'s default becomes
+    /// `Some(RedirectPolicy::default())`, or `ClientBuilder` starts
+    /// storing a policy eagerly instead of leaving it `None` until
+    /// `.redirect(...)` is called, this line panics in every browser
+    /// program that calls `Client::new()`** — not in a test here, in the
+    /// consumer's own program. That is the dependency to preserve, or to
+    /// replace this constructor's signature over.
+    ///
+    /// A caller who does configure a redirect policy on a browser client
+    /// gets an ordinary `Err` from `Client::builder(Fetch::new())
+    /// .redirect(..).build()`, never a panic: that path doesn't go
+    /// through this function.
+    pub fn new() -> Self {
+        Self::builder(http_ng_fetch::Fetch::new())
+            .build()
+            .expect("fetch transport with default config is always supported")
+    }
+}
+
+// Not for looks and not to silence `clippy::new_without_default`, though it
+// does both: on this target `Client::new()` is infallible and takes no
+// arguments, which is exactly the shape `Default` describes. The native
+// `Client::new()` returns a `Result` and so has no `Default` to offer —
+// the asymmetry is in the constructors, not in this impl. `http-ng-fetch`
+// makes the same pairing for `Fetch` itself.
+#[cfg(all(
+    feature = "default-transport",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
+impl Default for Client<crate::DefaultTransport> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

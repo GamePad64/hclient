@@ -16,11 +16,19 @@ test-util = []
 # per target and why this is a `dep:` list below rather than the crate names
 # themselves: it hides the implicit features cargo would otherwise create for
 # each optional target-dependency, leaving exactly one feature switch.
+# Every entry is a TARGET-specific optional dependency, and listing all of
+# them here unconditionally is correct, not sloppy: a `dep:` that names an
+# optional dependency declared only under a `[target.'cfg(...)']` table is a
+# no-op on any target that table doesn't match. That is what keeps this a
+# single feature switch instead of one per platform — the four native crates
+# are already relied on to behave this way when building for wasm, and
+# `http-ng-fetch` is the same arrangement pointing the other way.
 default-transport = [
     "dep:http-ng-native",
     "dep:http-ng-rt-tokio",
     "dep:http-ng-tls-rustls",
     "dep:http-ng-dns-system",
+    "dep:http-ng-fetch",
 ]
 # `Collected::json`. Off by default: measured on a real wasm32-unknown-unknown
 # build (opt-level=z, lto=true, strip=true) — 74 bytes when `.json()` is never
@@ -103,6 +111,30 @@ http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0", option
 [target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
+# The browser half of `DefaultTransport` (Task 8 of vertical 3) — the
+# counterpart of the `cfg(not(target_family = "wasm"))` block above, and the
+# reason the paragraph there saying "building for wasm leaves
+# `default-transport` pulling in nothing" no longer holds for the browser.
+#
+# `cfg(all(target_family = "wasm", target_os = "unknown"))`, matching the
+# type alias's own gate in `src/lib.rs` exactly: `wasm32-wasip2` is also
+# `target_family = "wasm"` and deliberately still has no `DefaultTransport`
+# branch, so a bare `target_family = "wasm"` here would pull a browser-only
+# crate into every WASI build to satisfy a type that isn't declared there.
+# Note this is a NARROWER cfg than the `getrandom` block just above, which
+# is `not(target_os = "wasi")` rather than `target_os = "unknown"` — the two
+# happen to select the same targets among those this workspace builds for,
+# and they are written differently on purpose: `getrandom`'s condition is
+# "any wasm that isn't WASI needs a backend named", this one is "exactly the
+# browser".
+#
+# `optional = true` + `dep:http-ng-fetch` in `[features]` above, not a plain
+# dependency: without the `default-transport` feature this crate must not
+# pull in a transport at all, on any target — the same contract the four
+# native entries keep.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+http-ng-fetch = { path = "../http-ng-fetch", version = "0.1.0", optional = true }
+
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 # The derive lives only here: the test behind the `json` feature needs
@@ -111,13 +143,28 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 # part of `-e normal`, so this doesn't count against the consumer's graph
 # even though it's available to tests.
 serde             = { version = "1", features = ["derive"] }
-# `tests/two_runtimes.rs` — an end-to-end run of one generic body on both
-# tokio and smol without a single `#[cfg]` (Task 14). `webpki-roots`, not
-# `platform-verifier`: the test never performs a real TLS handshake (the
-# server answers over plain HTTP), but the `Native::new` constructor still
-# needs a concrete `T: TlsConnect` type — `with_webpki_roots()` doesn't need
-# access to the system certificate store and doesn't pull in
-# `rustls-platform-verifier`, which isn't needed in a dev context anyway.
+
+# `tests/two_runtimes.rs`'s dependencies — an end-to-end run of one generic
+# body on both tokio and smol without a single `#[cfg]` (Task 14).
+# `webpki-roots`, not `platform-verifier`: the test never performs a real
+# TLS handshake (the server answers over plain HTTP), but the `Native::new`
+# constructor still needs a concrete `T: TlsConnect` type —
+# `with_webpki_roots()` doesn't need access to the system certificate store
+# and doesn't pull in `rustls-platform-verifier`, which isn't needed in a
+# dev context anyway.
+#
+# TARGET-GATED as of Task 8 of vertical 3, having been unconditional
+# before. Not tidiness — without the gate, `http-ng` cannot be built for
+# `wasm32-unknown-unknown` with `--all-targets` AT ALL, and that is the
+# build both the new browser test and CI's new per-target check need:
+# `tokio`'s `rt-multi-thread` drags in `mio` and `socket2`, neither of which
+# compiles for that target (measured: 48 and 9 errors respectively, from
+# inside those crates, before a line of this workspace is even reached).
+# Dev-dependencies are resolved per target like any other, so a test file
+# that is itself `#[cfg]`-ed out still forces its dependencies to build
+# unless they are gated here too — `two_runtimes.rs` carries the matching
+# `#![cfg(not(target_family = "wasm"))]`, and the pair only works together.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 http-ng-native     = { path = "../http-ng-native" }
 http-ng-rt         = { path = "../http-ng-rt" }
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio" }
@@ -125,6 +172,20 @@ http-ng-rt-smol    = { path = "../http-ng-rt-smol" }
 http-ng-tls-rustls = { path = "../http-ng-tls-rustls", features = ["webpki-roots"] }
 http-ng-dns-system = { path = "../http-ng-dns-system" }
 tokio              = { version = "1", features = ["rt-multi-thread"] }
+
+# `tests/wasm_default.rs` — the first browser tests in this crate (Task 8 of
+# vertical 3). `wasm-bindgen-test` is the harness `wasm-pack test` drives;
+# `web-sys`'s `Window`/`Location` are there so the end-to-end test can fetch
+# the harness's own already-loaded page (`window.location.href`) instead of
+# reaching for the Internet — the same trick, and the same two features,
+# `http-ng-fetch`'s own `tests/transport.rs` uses.
+#
+# Same gate as the browser `[dependencies]` block above and for the same
+# reason, not a bare `target_family = "wasm"`: on `wasm32-wasip2` there is
+# no browser, no `DefaultTransport`, and nothing here to build.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+web-sys           = { version = "0.3.103", features = ["Window", "Location"] }
 
 [lints]
 workspace = true

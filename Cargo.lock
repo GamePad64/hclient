@@ -525,6 +525,7 @@ dependencies = [
  "http-body",
  "http-ng-core",
  "http-ng-dns-system",
+ "http-ng-fetch",
  "http-ng-native",
  "http-ng-proto",
  "http-ng-rt",
@@ -534,6 +535,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
