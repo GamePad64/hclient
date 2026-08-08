@@ -190,6 +190,30 @@ impl<T: Transport> Client<T> {
     pub fn head(&self, url: &str) -> RequestBuilder<'_, T> {
         self.request(http::Method::HEAD, url)
     }
+    /// HTTP QUERY: a **safe, idempotent** request that carries a body.
+    ///
+    /// The method GET should have had for large or structured queries. A
+    /// filter that does not fit in a URI has, until now, had to be sent as
+    /// POST — losing safety, idempotency and cacheability to work around a
+    /// length limit. QUERY keeps all three and puts the query in the body.
+    ///
+    /// Specified in `draft-ietf-httpbis-safe-method-w-body`; `http` 1.5
+    /// carries [`http::Method::QUERY`], so nothing here parses a string.
+    ///
+    /// **A body is the point** — `client.query(url)` with no `.body(..)`
+    /// sends an empty one, which is a well-formed but pointless request.
+    ///
+    /// Redirects treat it as the safe method it is: 301 and 302 preserve
+    /// both the method and the body, exactly as they do for PUT or PATCH,
+    /// because the historical rewrite-to-GET applies to POST alone. A 303
+    /// still becomes a GET without a body — that is what 303 means, and
+    /// QUERY claims no exemption from it. Both directions are pinned by
+    /// tests in `http-ng-proto`, since the correct behaviour here follows
+    /// only from QUERY not being POST, and would be easy to "fix" into
+    /// corruption by anyone who groups it with POST for having a body.
+    pub fn query(&self, url: &str) -> RequestBuilder<'_, T> {
+        self.request(http::Method::QUERY, url)
+    }
 
     /// Starts an SSE request. **On its own, `.connect()` is one-shot** —
     /// a single attempt, no reconnect, the same contract as

@@ -347,6 +347,65 @@ mod tests {
         );
     }
 
+    /// QUERY is safe and idempotent, so 301 and 302 preserve it — method
+    /// AND body — exactly as they do for PUT or PATCH. The rewrite-to-GET
+    /// in `decide` applies to POST alone, which is what RFC 9110 §15.4.2
+    /// and §15.4.3 describe as the historical behaviour being codified.
+    ///
+    /// This holds today only because QUERY is not POST. It would be easy to
+    /// "fix" into corruption by anyone who groups QUERY with POST for
+    /// having a body — which is why it is pinned rather than left implied.
+    /// Dropping the body of a QUERY does not degrade the request, it
+    /// changes what was asked.
+    #[test]
+    fn query_survives_301_and_302_with_its_body() {
+        for status in [301u16, 302] {
+            let r = decide(
+                &p(),
+                0,
+                &u("https://a/search"),
+                &Method::QUERY,
+                StatusCode::from_u16(status).unwrap(),
+                Some(b"https://a/search2"),
+            );
+            let RedirectAction::Follow(f) = r else {
+                panic!("expected a Follow for status {status}, got {r:?}");
+            };
+            assert_eq!(
+                f.method,
+                Method::QUERY,
+                "QUERY is safe; only POST is rewritten to GET on {status}"
+            );
+            assert!(
+                !f.drop_body,
+                "the body IS the query on {status} — dropping it changes the question, \
+                 it does not merely weaken the request"
+            );
+        }
+    }
+
+    /// 303 is the exception, and QUERY claims none: "retrieve the result
+    /// with GET" is what the status means, so the method becomes GET and
+    /// the body goes. The pair with the test above is the point — one
+    /// without the other would let a blanket rule pass for half the wrong
+    /// reason.
+    #[test]
+    fn query_is_still_downgraded_by_303_like_every_other_method() {
+        let r = decide(
+            &p(),
+            0,
+            &u("https://a/search"),
+            &Method::QUERY,
+            StatusCode::SEE_OTHER,
+            Some(b"https://a/result"),
+        );
+        let RedirectAction::Follow(f) = r else {
+            panic!("expected a Follow, got {r:?}");
+        };
+        assert_eq!(f.method, Method::GET);
+        assert!(f.drop_body);
+    }
+
     #[test]
     fn garbage_location_is_reported() {
         let r = decide(

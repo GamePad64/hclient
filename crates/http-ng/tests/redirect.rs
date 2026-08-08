@@ -551,3 +551,44 @@ fn an_unconfigured_client_against_an_internal_backend_works_normally() {
     let resp = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+/// `Client::query` end-to-end: the method reaches the transport, and it
+/// survives a 302 together with its body.
+///
+/// The body assertion uses `body_size_hint`, which is what `MockTransport`
+/// records — a hint of `Some(0)` on the second hop would mean the body was
+/// dropped even though the method was preserved, and that is the halfway
+/// failure a method-only assertion would miss.
+#[test]
+fn query_reaches_the_transport_and_survives_a_redirect_with_its_body() {
+    let m = MockTransport::new();
+    m.push_response(redirect_to("https://a/search2"));
+    m.push_response(http::Response::builder().status(200).body("hits").unwrap());
+
+    let c = Client::builder(m).build().unwrap();
+    let resp = futures_executor::block_on(
+        c.query("https://a/search")
+            .body(RequestBody::Full(bytes::Bytes::from_static(
+                b"filter=colour:blue",
+            )))
+            .send(),
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let seen = c.transport().requests();
+    assert_eq!(seen.len(), 2, "the redirect must have been followed");
+    for (i, r) in seen.iter().enumerate() {
+        assert_eq!(
+            r.method,
+            http::Method::QUERY,
+            "hop {i} must still be a QUERY — a rewrite to GET would silently \
+             turn a filtered search into a fetch of the whole collection"
+        );
+        assert_eq!(
+            r.body_size_hint,
+            Some(18),
+            "hop {i} must carry the query body; the body IS the request"
+        );
+    }
+}
