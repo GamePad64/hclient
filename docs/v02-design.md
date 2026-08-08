@@ -195,6 +195,49 @@ different stack entirely (`h3` plus `quinn`, and UDP with it). Keeping both
 out of a default build is the same concern `NoTls` and `IpLiteralOnly` exist
 for.
 
+> **CORRECTION, written while implementing W3: `hyper/http2` is not
+> available to this crate at any price, and the reason is that the trait
+> is `sealed`.**
+>
+> `hyper::client::conn::http2::handshake` takes its executor as a *type
+> parameter*, `E: Http2ClientConnExec<B, T>` (hyper 1.11.0,
+> `src/client/conn/http2.rs:75-84`) — not as an option that can be left
+> unset. And `Http2ClientConnExec` is declared `pub trait
+> Http2ClientConnExec<B, T>: … + sealed_client::Sealed<(B, T)>`
+> (`src/rt/bounds.rs:51-52`): **sealed**, with one blanket impl over
+> `hyper::rt::Executor`. So an executor of our own — one that queues
+> futures and lets the request future poll them, which is what a crate
+> with no `Spawn` would need — cannot be written. Not "written at a cost":
+> the impl does not exist to be written.
+>
+> What that executor receives is not an optional extra either: the
+> handshake hands it the h2 connection itself,
+> `exec.execute_h2_future(H2ClientFuture::Task { .. })`
+> (`src/proto/h2/client.rs:192`). The `Connection` value handshake returns
+> to the caller is a *different* future, the request dispatcher. Polling
+> only that one moves no bytes.
+>
+> Even setting the sealing aside, the shape it forces costs something this
+> vertical will not pay. `H2ClientFuture<B, T, E>` lives in hyper's
+> private `proto` module and cannot be named, so any queue of ours is
+> `Box<dyn Future>` — which is either not `Send` (taking `NativeBody:
+> Send` with it, the property v0.2 W2 restored) or `dyn Future + Send`
+> (adding a `Send` bound on this crate's IO, which is "single-threaded
+> runtimes shut out", the thing the crate exists to avoid). `handshake`
+> also requires `B::Data: Send`, a third bound of the same kind. Under
+> Cargo's feature unification all of these are paid by builds that never
+> asked for h2.
+>
+> **What shipped instead: the `h2` crate directly**, the same one hyper
+> uses. `h2::client::Connection<T, B>` is a concrete future this crate
+> polls by hand, exactly as it already polls hyper's HTTP/1 `Connection` —
+> no executor, no `dyn`, no new bound anywhere in the public shape. The
+> feature reads `http2 = ["dep:h2", "dep:tokio"]`, `tokio` being present
+> for its `AsyncRead`/`AsyncWrite` traits alone (no features, so no
+> runtime and no reactor); `http2::TokioIo` bridges them to
+> `hyper::rt::{Read, Write}`, `unsafe`-free. See
+> `crates/http-ng-native/src/http2.rs`'s module doc.
+
 **What it does to the question above, which is more than it first appears.**
 With the feature OFF, every connection is h1 and `capabilities()` answers
 with a fixed value — the "determined once, at construction" contract holds

@@ -719,13 +719,23 @@ mod alpn_guard {
         assert_eq!(accepted_for(b"http/1.1").await, 1);
     }
 
+    /// `h2` is the reported protocol here, and it is the right choice in
+    /// **both** feature configurations, for two different reasons that
+    /// happen to demand the same behaviour.
+    ///
+    /// Without the `http2` feature it is simply a protocol this transport
+    /// does not speak. With the feature it is one it does — but `ReportsAlpn`
+    /// leaves `TlsConnect::reports_alpn` at its `false` default, so `h2` was
+    /// never in the offer, and a peer cannot select what was never proposed.
+    /// Either way the connection is one this client must not go on using, and
+    /// pooling it would hand it to the next request.
     #[tokio::test]
     async fn a_connection_negotiated_as_something_else_is_not_pooled() {
         assert_eq!(
             accepted_for(b"h2").await,
             2,
-            "a connection speaking a protocol this transport does not must not \
-             be handed to an HTTP/1 request"
+            "a connection reporting a protocol this transport did not offer \
+             must not be handed to a later request"
         );
     }
 }

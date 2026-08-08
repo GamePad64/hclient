@@ -63,16 +63,18 @@ pub struct TlsRequest<'a> {
     ///    ([`TlsConnect::reports_alpn`] is the shape), with the
     ///    conservative value as the default.
     ///
-    /// One thing that is already in place, and is not obvious: rustls
-    /// keeps session resumption in `ClientConfig`
+    /// One thing that is already half in place, and is not obvious:
+    /// rustls keeps session resumption in `ClientConfig`
     /// (`ClientSessionStore`), and `http_ng_tls_rustls::Rustls::
     /// from_config` stores exactly one `Arc<ClientConfig>` — so the
     /// session cache is already scoped to one `Rustls` value, which is
-    /// the same thing [`TlsConfigId`] identifies and which v0.2 W2
-    /// already put in the connection pool's key. The half of 0-RTT that
-    /// is about *which* sessions may be resumed for *which* client has
-    /// assembled itself as a side effect of two other tasks; it does not
-    /// need designing again.
+    /// the same thing [`TlsConfigId`] identifies and which v0.2 W2 already
+    /// put in the connection pool's key. **Half, not ready**: rustls keys
+    /// its ticket store by `ServerName` alone, while a TLS 1.3 ticket also
+    /// carries transport parameters, and `enable_early_data` sits on the
+    /// config rather than on a per-connection request. The part that
+    /// assembled itself is "which client may resume whose sessions"; the
+    /// rest has not been designed.
     pub early_data: Option<usize>,
 }
 
@@ -146,6 +148,17 @@ pub struct TlsInfo {
     /// `false` would resend needlessly; one that read it as `true` would
     /// drop a request on the floor. See [`TlsRequest::early_data`] for
     /// what an implementer needs to know before touching any of this.
+    ///
+    /// **This field answers for the streaming path — TLS 1.3 over TCP —
+    /// and must not be read as the general contract for early data.**
+    /// There the verdict is known by the time the handshake completes,
+    /// which is what makes a field on a handshake result the honest shape.
+    /// In QUIC it is not: measured in `docs/h3-research.md`, `into_0rtt()`
+    /// returns at 1.3 ms, the response arrives at 8.5 ms and the
+    /// acceptance verdict only at 8.6 ms — *after* the response. HTTP/3
+    /// will therefore need a shape of its own for this (and has a third
+    /// rejection path nobody here has, `425 Too Early`, RFC 8470); it must
+    /// not be forced into this one.
     pub early_data_accepted: Option<bool>,
 }
 

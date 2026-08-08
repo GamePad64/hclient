@@ -1,4 +1,5 @@
-//! Native transport for http-ng: TCP + TLS + HTTP/1.1 on top of hyper.
+//! Native transport for http-ng: TCP + TLS + HTTP/1.1, and HTTP/2 behind
+//! a feature.
 //!
 //! This crate wires together the runtime ([`http_ng_rt`]), DNS ([`http_ng_dns`])
 //! and TLS ([`http_ng_tls`]) on top of `hyper`. Task 10 laid down the request
@@ -6,7 +7,11 @@
 //! ([`connect`], also `pub(crate)`); Task 12 added the HTTP/1 driver
 //! ([`h1`], `pub(crate)`); Task 13 assembles all of this into [`Native`] —
 //! the crate's only public type, which implements `http_ng_core::
-//! unversioned::Transport`.
+//! unversioned::Transport`. v0.2 W2 added the connection pool
+//! ([`pool`]); v0.2 W3 added the HTTP/2 driver ([`http2`], behind the
+//! `http2` feature and **not** on hyper — see its module doc) and
+//! [`established`], the one place that knows there is more than one
+//! protocol.
 //!
 //! # `Native::execute` does not resolve DNS itself
 //!
@@ -73,9 +78,15 @@ pub type NativeIo<R, T> =
 /// Connections are reused (v0.2 W2): see [`PoolConfig`], [`Native::pool`]
 /// and [`Native::without_pool`], and read [`crate::pool`]'s module doc for
 /// what "reused" costs when there is no `Spawn` to drive an idle
-/// connection. HTTP/1.1 only, no upgrade — see [`Native::new`] and
-/// [`Capabilities`], which state these limits honestly rather than staying
-/// silent about them. The request body is **not** buffered whole:
+/// connection.
+///
+/// HTTP/1.1 always; **HTTP/2 with the `http2` feature**, on `https://`
+/// origins whose TLS backend both negotiated `h2` and can say so — see
+/// `TlsConnect::reports_alpn` and [`crate::http2`]'s module doc. There is
+/// no h2c: cleartext stays HTTP/1.1. What was negotiated is readable after
+/// the fact from `Response::version()`; it is deliberately not readable
+/// from [`Capabilities`], which report the floor (see [`Native::new`]).
+/// No upgrade on either protocol. The request body is **not** buffered whole:
 /// `RequestBody::Streaming` goes to the wire as a stream (see
 /// [`Native::new`]'s doc comment on `streaming_request_body` — an earlier
 /// version of this paragraph claimed the opposite and was wrong).
@@ -135,6 +146,38 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // understated, but a caller who believes it will buffer a large
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
+        // **The floor, and it is the same value with the `http2` feature on
+        // as off** (v0.2 W3). `full_duplex`, `request_trailers` and
+        // `response_trailers` are all things HTTP/2 can do and HTTP/1.1
+        // cannot, and they all stay at `Capabilities::none()`'s `false`
+        // here, because what this reports is the value that holds on the
+        // WORST protocol this transport might negotiate.
+        //
+        // Not blanket conservatism — chosen per field by what over-claiming
+        // costs. Over-claiming `streaming_request_body` (above) would cost
+        // a buffered copy: recoverable, visible. Over-claiming
+        // `full_duplex` costs a **deadlock**: a caller structured for
+        // bidirectional streaming writes its request body while reading the
+        // response, and on HTTP/1.1 the response does not arrive until the
+        // request completes. A capability whose over-claim hangs the
+        // program cannot be optimistic.
+        //
+        // And it has to be the floor rather than the best case for a second
+        // reason that has nothing to do with this crate: Cargo unifies
+        // features across the whole graph, so a *library* built on `http-ng`
+        // can never know whether some other crate turned h2 on. The floor is
+        // the only answer such a library can act on.
+        //
+        // On this implementation it is not merely a declaration:
+        // `http2::exchange` writes the whole request body before it awaits
+        // the response, so `full_duplex: false` is literally what the code
+        // does. `tests/http2.rs`'s
+        // `capabilities_report_the_floor_with_the_feature_on` pins it.
+        //
+        // What a caller who wants to know the protocol gets instead:
+        // `Response::version()`, after the fact, which is the only honest
+        // time — `version_reported` below is `true` and the negotiated
+        // version really does come off the wire.
         caps.redirects = RedirectSupport::Configurable;
         // Asked of the pool, never written down twice. `reuse_of` reads the
         // same `Option<PoolConfig>` the pool actually behaves on, so the
