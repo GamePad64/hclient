@@ -250,8 +250,9 @@ line, nearer to the native one than `fetch` is. Two things stand in the way:
   checks all of that, in both directions, and runs the feature-off test
   suite that `--all-features` cannot reach.
 
-Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3, connection pooling
-and WebSocket are v0.2 and later — see
+Runtimes exercised in CI: tokio and smol. HTTP/2, HTTP/3 and WebSocket are
+v0.2 and later; connection reuse landed in v0.2 (W2) and `Native::new` now
+pools by default — see
 [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
 does not do, and what proves the four claims it does make.
 
@@ -306,7 +307,9 @@ runtime model for fetch with its Chrome/Safari difference; `SseStream`
 reconnection; `act` acceptance.
 
 **Deliberately not done in v0.1** (recorded, not hidden): connection pooling
-(one connection per request); streaming request bodies; `first_byte`/
+(one connection per request — **since done in v0.2 W2**, and `Native::new`
+pools by default; `Native::without_pool()` restores this v0.1 behaviour);
+streaming request bodies; `first_byte`/
 `between_bytes` timeouts (declared unsupported via `Capabilities`, rather than
 silently unimplemented); a single `getaddrinfo` call for both address families
 instead of separate v4/v6 slots; h1 upgrade.
