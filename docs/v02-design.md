@@ -519,6 +519,37 @@ the kind of thing that is false in the tail.
 
 ---
 
+## 0-RTT must stay reachable
+
+Not v0.2 work, but a constraint on every seam v0.2 touches, recorded here
+because it is cheap now and a breaking change later.
+
+`TlsRequest::ech` already establishes the rule in this codebase: the slot
+was reserved before any implementation needed it, because *adding a field to
+a request struct later breaks every `TlsConnect` implementation already
+written*. Early data gets the same treatment — an "offer early data" slot on
+the request and an "early data was accepted" answer on `TlsInfo`, reserved
+without a backend behind them.
+
+Three things a future implementer should not have to re-derive:
+
+- **0-RTT is replayable, so which requests may use it is a policy, not a
+  crypto detail.** `RequestBody::retry_kind()` and W2's reasoning about
+  `is_canceled()` are where that policy already half exists.
+- **The floor rule applies with unusual force.** Over-claiming
+  `streaming_request_body` costs a buffered copy and over-claiming
+  `full_duplex` costs a deadlock; over-claiming 0-RTT costs replay exposure.
+- **Half the machinery assembled itself.** rustls keeps session tickets in
+  `ClientConfig`'s `ClientSessionStore`, `Rustls::from_config` already holds
+  exactly that, and W2's `TlsConfigId` identifies that value and is already
+  in the pool key. A session cache does not need designing from scratch —
+  it needs noticing.
+
+`native-tls` will not be able to do this, in the same shape it cannot report
+the negotiated ALPN.
+
+---
+
 ## Not in v0.2, and why
 
 **HTTP/3** needs QUIC, which needs UDP, which is a runtime capability the
