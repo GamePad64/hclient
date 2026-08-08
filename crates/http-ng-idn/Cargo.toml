@@ -1,0 +1,70 @@
+[package]
+name = "http-ng-idn"
+version = "0.1.0"
+description = "IDN (UTS 46) domain-to-ASCII for http-ng, through the platform's own ICU where there is one"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A leaf on purpose: no `http-ng-core`, no `http-ng-proto`, nothing else
+# from this workspace. The whole point is that a build may take this crate
+# INSTEAD of the Unicode tables, and a crate that dragged the rest of the
+# client in with it could not be used that way.
+[dependencies]
+thiserror = { workspace = true }
+
+# The bundled implementation — the same call `http-ng-proto` makes today,
+# so `bundled` alone is exactly current behaviour. `default-features =
+# false` + the two features named explicitly is copied from
+# `http-ng-proto`'s manifest for the same reason it gives there: a future
+# change to `idna`'s defaults must not silently change what is in this
+# graph.
+idna = { version = "1.1", optional = true, default-features = false, features = [
+    "std",
+    "compiled_data",
+] }
+
+# The loader for the platform path, and the reason this crate does not
+# declare `dlopen`/`LoadLibraryW` itself. 467M downloads, one dependency on
+# unix (`cfg-if`) and one on Windows (`windows-link`), MSRV 1.88 — well
+# under this workspace's floor. It removes the platform-difference half of
+# the FFI entirely; what is left of `unsafe` here is the three ICU
+# signatures and the calls, in `src/icu.rs` alone (spec amendment C9).
+libloading = { version = "0.9", optional = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+assert_matches = { workspace = true }
+
+[features]
+default = ["bundled"]
+
+# The `idna` crate and its ICU tables. On its own: today's behaviour,
+# byte for byte, on every target.
+bundled = ["dep:idna"]
+
+# The platform's own ICU, resolved at RUN time (see `src/icu.rs` for why
+# it cannot be resolved at link time). Combined with `bundled`, a platform
+# without a usable ICU falls back to the tables. WITHOUT `bundled`, there
+# is no `idna` in the graph at all — that is the build this crate exists
+# for — and a platform without ICU answers `IdnError::NoImplementation`
+# rather than pretending.
+system-icu = ["dep:libloading"]
+
+# NOT `[lints] workspace = true`, for the same reason `http-ng-fetch`
+# (amendment C7) and `http-ng-dns-system` (amendment C8) are not: the
+# workspace table sets `unsafe_code = "forbid"`, and `forbid` cannot be
+# relaxed from inside a crate (`E0453`). This crate carries the project's
+# fourth `unsafe` file — the three `uidna_*` declarations and calls in
+# `src/icu.rs` — which needs `deny`, overridable by a scoped `#[allow]`,
+# not `forbid`. See
+# `docs/superpowers/specs/2026-08-05-http-ng-design.md` amendment C9.
+#
+# `missing_debug_implementations` and `unexpected_cfgs` are restated here
+# because opting out of the workspace table drops them along with
+# `unsafe_code`.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }

@@ -1205,9 +1205,10 @@ citation and its justification turn up in the same search.
 A second, separate family of amendments covers a different invariant — "no
 crate writes `unsafe`" — under its own token, `unsafe-code-exception:
 amendment-CN`, checked by its own CI job (`no-unsafe-code`). Those are **C7**
-(`http-ng-fetch/src/promise.rs`) and **C8**
+(`http-ng-fetch/src/promise.rs`), **C8**
 (`http-ng-dns-system/src/sys/res_query.rs` and
-`http-ng-dns-system/src/sys/windows.rs`), and the two families are never
+`http-ng-dns-system/src/sys/windows.rs`) and **C9**
+(`http-ng-idn/src/icu.rs`), and the two families are never
 interchangeable: each job matches only its own token, and each
 `unsafe-code-exception` marker is additionally pinned to the file paths its
 amendment names.
@@ -2002,7 +2003,9 @@ following line, as rustfmt writes it, passes; a marker *above* the line does
 not excuse it; a marker two lines away excuses nothing; the real marked lines
 in `res_query.rs` and `windows.rs` pass; an unmarked `unsafe` in `sys/mod.rs`
 (same crate, one directory up), in `svcb.rs`, in `windows.rs`, and in another
-crate entirely all fail; a marker citing a nonexistent `amendment-C9` fails;
+crate entirely all fail; a marker citing a nonexistent amendment fails (the probe used
+`amendment-C9`, which has since been allocated — see C9 below; the probe now
+uses `amendment-C99`);
 the correct C8 marker planted in a different file fails; and swapping the two
 amendments' tokens — C7's marker in `res_query.rs`, C8's in `promise.rs` —
 fails both. The whole set was re-run after `cargo fmt --all`, which is the
@@ -2026,3 +2029,101 @@ as ALPN, leaving the trailing root dot on a target, swallowing a decoder
 refusal into an empty result, reading the additional section instead of the
 answer section, each of the four header-classification bounds, and both
 `classify_written` bounds.
+
+### C9. `unsafe` for the platform's UTS 46, in `http-ng-idn/src/icu.rs` alone
+
+The third exception to "no crate writes `unsafe`", and the second at a
+foreign-function boundary. It reuses C8's mechanism verbatim —
+`#![deny(unsafe_code)]` in place of `forbid` for one crate, a per-line
+`unsafe-code-exception` marker, and a CI check that path-scopes that marker to
+the one file this amendment names — under its own token
+`unsafe-code-exception: amendment-C9`, for **`crates/http-ng-idn/src/icu.rs`
+and nothing else**. `lib.rs` in the same crate is deliberately not among them,
+and neither is a directory.
+
+**Why the platform's UTS 46 cannot be reached in safe Rust.** Not because
+nobody has wrapped ICU — because nobody has wrapped *this part* of it.
+Established by reading the published sources, not by searching for a crate
+name:
+
+- There is **no `rust_icu_uidna` crate**. The `rust_icu` family (Google,
+  5.7.0, 2026-07-06, 25 crates) covers `ustring`, `uloc`, `ucol`, `unorm2`,
+  `ubrk` and twenty others; `rust_icu_sys`' own
+  `BINDGEN_SOURCE_MODULES` in `build.rs` does not list `uidna`, and its
+  `BINDGEN_ALLOWLIST_FUNCTIONS` has no `uidna_.*`. So the family does not
+  expose the entry point even at the `-sys` level.
+- It would be the wrong shape even if it did. `rust_icu_sys` defaults to
+  `use-bindgen` + `icu_config`, i.e. **`bindgen` (libclang) and
+  `icu-config`/`pkg-config` at build time**, and declares `links = "icuuc"`.
+  That resolves the ICU of the machine doing the *building*. A client library
+  has to run on machines it was not built on, against ICU 74 or 78 or none.
+- **ICU4X is not an alternative**, and this is worth recording because it
+  looks like one: it is a reimplementation in Rust with its own bundled data,
+  and it is already what `idna` uses. `idna_adapter`'s own README settles the
+  "smaller subset" question — 1.2.x is ICU4X, 1.1.x is unicode-rs with
+  *larger* binary size, 1.0.x is a stub with no Unicode data — and the choice
+  is a pin in the top-level `Cargo.lock`, which a library cannot express.
+- `IdnToAscii`, which `windows-sys` does expose, is **IDNA2003** and answers
+  `strasse.de` where this project answers `xn--strae-oqa.de`. Reaching it in
+  safe Rust would be worse than not reaching ICU at all.
+
+So the alternative to declaring three foreign functions is not "the same thing
+in safe Rust" — it is carrying 1.9 MB of Unicode tables on every target that
+already ships them.
+
+**Why it must be resolved at run time, which is what forces `unsafe` rather
+than a `#[link]`.** ICU's exported symbols are version-suffixed:
+`uidna_openUTS46_78` on this development machine (`nm -D --defined-only
+/usr/lib/x86_64-linux-gnu/libicuuc.so.78`), `_74` on the next machine, and
+unsuffixed on a build configured with `-DU_DISABLE_RENAMING=1`. There is no
+stable symbol to link against. Run-time resolution is also what makes an
+older Windows a *fallback* rather than a failure to start, since a static
+import of a missing DLL stops the process at load time.
+
+**The scope, and the two things kept out of it.** `icu.rs` declares three
+signatures, resolves them through `libloading`, calls them into a buffer it
+sized itself, and returns an owned `String` or `None`. It parses nothing and
+hands nothing borrowed upward. Two decisions were deliberately moved *out* of
+it, for the same reason C8 moved `classify_written` and the RCODE
+classification out of its FFI files:
+
+- **the option word** (`OPTIONS`) and **which of ICU's error bits are fatal**
+  (`IGNORED_ERRORS`, `is_fatal`) live in `lib.rs` as plain constants with unit
+  tests around them. `OPTIONS` in particular is the whole point of the crate —
+  `UIDNA_DEFAULT` is 0 and 0 is *transitional*, so a handle opened with it
+  agrees with IDNA2003 rather than with this project — and a constant nobody
+  can see is a constant nobody reviews;
+- **the WHATWG deny list** (`is_forbidden_domain_byte`), because ICU has no
+  option for it: `UIDNA_USE_STD3_RULES` is a different set, not a stricter
+  one.
+
+**`libloading`, not our own `dlopen`.** The loading half is a solved problem
+with a 467M-download solution, one transitive dependency per platform
+(`cfg-if` on unix, `windows-link` on Windows) and an MSRV under this
+workspace's floor. Writing `dlopen`/`LoadLibraryW` here instead would have
+doubled the file and added the one bug class — a wrong loader flag on one
+platform — that a widely used crate has already had found for it. What
+`libloading` does not remove is the `unsafe`: `Library::new` and
+`Library::get` are both unsafe, because loading runs initialisers and because
+the caller asserts each symbol's type. Those assertions are the three
+signatures, transcribed from `unicode/uidna.h` and restated above each type
+alias, and a layout disagreement is caught rather than silent —
+`uidna_nameToASCII_UTF8` validates `UIDNAInfo.size` against its own
+`sizeof` and refuses the call.
+
+**The check that holds this in place, and a gap it had.** The
+`unsafe-code-policy.sh` job now carries an explicit `file:token` map rather
+than a crate list plus an `amendment-C[78]` regex. That regex was the gap: the
+spec said each marker was "pinned to the file paths its amendment names", and
+the script did not do it — a correct C7 marker anywhere under
+`http-ng-dns-system/src` was accepted. Both halves are now enforced and both
+were probed: fifteen directions, all as expected. A marker trailing on the
+line passes; alone on the line below (what `cargo fmt` writes) passes; above
+the line does not excuse; two lines away does not excuse; C7's token in a C9
+file fails, and C8's does; `amendment-C99` fails; a correct C9 marker in
+`lib.rs` fails; renaming `icu.rs` out from under the amendment fails; an
+exempt crate that downgrades its own `deny` to `allow` and then writes an
+unmarked `unsafe` still fails; a non-exempt crate that drops
+`[lints] workspace = true` fails; and a non-exempt crate that writes `unsafe`
+is left to rustc, whose `forbid` refuses to compile it (checked separately —
+`error: usage of an unsafe block`, citing the workspace table).

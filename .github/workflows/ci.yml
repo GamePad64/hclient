@@ -267,6 +267,96 @@ jobs:
           cargo clippy -p http-ng-proto --all-targets --no-default-features -- -D warnings
           cargo clippy -p http-ng --all-targets --no-default-features --features test-util -- -D warnings
 
+  # The whole claim of `http-ng-idn` is that the platform's ICU answers
+  # what the bundled `idna` crate answers. That claim is only tested where
+  # an ICU exists, and a green run on a machine without one proves nothing
+  # — so `HTTP_NG_IDN_REQUIRE_PLATFORM` turns a missing library into a
+  # failure here, while leaving it a documented skip for a contributor on
+  # a machine that genuinely has none.
+  #
+  # macOS is deliberately absent from the matrix: there is no reachable
+  # system UTS 46 there (`libicucore.dylib` is private; Foundation's `URL`
+  # does IDNA as a side effect of parsing, with no flag control and no
+  # error channel), so the crate takes the bundled path and the workspace
+  # `test` job already covers it.
+  idn-platform-agrees-with-idna:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          components: clippy
+          bins: cargo-nextest
+      # The runner images carry `libicuuc.so.NN`; the unversioned
+      # development symlink is what `libicu-dev` adds. Either is found, so
+      # this is belt and braces rather than a requirement — and it fails
+      # loudly if apt cannot supply one, because the alternative is the
+      # platform column quietly not running.
+      - name: a system ICU to measure against
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libicu-dev
+          ls -1 /usr/lib/*/libicuuc.so* || { echo "::error::no libicuuc after installing libicu-dev"; exit 1; }
+      - name: the differential corpus, with the platform column required
+        shell: bash
+        env:
+          HTTP_NG_IDN_REQUIRE_PLATFORM: "1"
+        run: |
+          set -euo pipefail
+          # Both single-feature builds and the combined one. The
+          # `system-icu`-only run is the only place the crate is compiled
+          # with no `idna` at all, so it is the only place a dependence on
+          # it would show up as a build error rather than as a silent
+          # union of features.
+          for args in "--all-features" \
+                      "--no-default-features --features system-icu" \
+                      "--no-default-features --features bundled"; do
+            rc=0
+            out="$(cargo nextest run -p http-ng-idn $args --color never --no-fail-fast 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            [ "$rc" -eq 0 ] || exit "$rc"
+            if ! printf '%s\n' "$out" | grep -qE '[0-9]+ tests? run:'; then
+              echo "::error::nextest reported no summary for [$args] — the run did not happen"
+              exit 1
+            fi
+          done
+      - name: the platform path carries no Unicode tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The entire point of the crate: with `system-icu` alone there is
+          # no `idna` and no ICU4X data crate in the graph. Measured on
+          # x86-64 Linux while this was written — 34 crates and 448,936
+          # bytes with `bundled`, 10 crates and 305,880 bytes with
+          # `system-icu`, same answer for `straße.de` from both.
+          .github/scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
+            "http-ng-idn with system-icu alone still pulls in idna/ICU — the whole reason the crate exists is that it does not" \
+            -- -p http-ng-idn --no-default-features --features system-icu
+          # Without this the check above would also pass if `bundled` had
+          # simply stopped working.
+          .github/scripts/tree-guard.sh present '^idna ' \
+            "http-ng-idn with the bundled feature has no idna — the fallback everything else rests on is gone" \
+            -- -p http-ng-idn --no-default-features --features bundled
+          # And the loader belongs to exactly one of the two.
+          .github/scripts/tree-guard.sh absent '^libloading ' \
+            "the bundled-only build pulls in libloading, which it has nothing to load" \
+            -- -p http-ng-idn --no-default-features --features bundled
+      - name: clippy on all three feature settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p http-ng-idn --all-targets --all-features -- -D warnings
+          cargo clippy -p http-ng-idn --all-targets --no-default-features --features system-icu -- -D warnings
+          cargo clippy -p http-ng-idn --all-targets --no-default-features --features bundled -- -D warnings
+
   portable-example-three-targets:
     runs-on: ubuntu-latest
     steps:
