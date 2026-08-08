@@ -1,5 +1,5 @@
 use crate::client::Client;
-use crate::deadline::Deadline;
+
 use crate::response::Response;
 use http_ng_core::unversioned::{Timer, Transport};
 use http_ng_core::{Error, ErrorKind, RequestBody};
@@ -173,7 +173,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
     /// client's whole-operation bound past the response head — inert, and
     /// costing one `Option` test per frame, for a client that never set
     /// one.
-    pub async fn send(self) -> Result<Response<Deadline<T::Body, Tm>>, Error>
+    pub async fn send(self) -> Result<Response<crate::ClientBody<T::Body, Tm>>, Error>
     where
         // Sibling of the bound on `Client::execute` in `client.rs` (spec
         // amendment-C1): `send` calls `Client::execute`, which requires

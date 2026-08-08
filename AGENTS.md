@@ -256,6 +256,22 @@ pools by default — see
 [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
 does not do, and what proves the four claims it does make.
 
+**Response decompression landed in v0.2 (W5), inside `Client` and behind
+the `gzip` and `brotli` features** (off by default, `json`'s precedent: a
+browser build would be linking decoders that cannot run there). With either
+on, a client asks for the codings it can actually reverse and reverses
+whatever the server chose — unless the transport says it did that already.
+That is a capability of its own, `Capabilities::response_decompression`,
+and deliberately NOT read off `forbidden_request_headers`: `http-ng-fetch`
+both forbids `Accept-Encoding` and decompresses internally, so the two
+coincide there by accident, and a transport that forbids the header while
+decoding nothing must still have its responses decoded.
+`crates/http-ng/tests/compression_capability.rs` pins both directions.
+The body comes back as `ClientBody<B, Tm>` = `Decompressed<Deadline<B,
+Tm>>`, and that order is load-bearing: the deadline is polled once per
+COMPRESSED frame, or a slow server sending well-compressing padding would
+walk around a `total_timeout`.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code

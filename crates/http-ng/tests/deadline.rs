@@ -372,7 +372,11 @@ fn a_client_with_no_total_is_not_bounded_by_the_wrapper_being_present() {
             .send()
             .await
             .expect("responds");
-        let (_, deadline_body) = resp.into_parts();
+        // `into_inner()` peels off the decompression wrapper v0.2 W5
+        // added OUTSIDE this one; what is underneath is the `Deadline`
+        // this file is about. The order is pinned by
+        // `tests/compression_client_type.rs`, not assumed here.
+        let deadline_body = resp.into_parts().1.into_inner();
         let total = deadline_body.total_timeout();
         (deadline_body, total)
     });

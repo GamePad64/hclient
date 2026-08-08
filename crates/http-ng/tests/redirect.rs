@@ -354,12 +354,17 @@ fn transparent_mock() -> MockTransport {
     MockTransport::new().with_capabilities(caps)
 }
 
-/// The body type is `Deadline<MockBody, _>`, not `MockBody`: as of v0.2 W4
-/// `Client::execute` wraps whatever the transport returned so the
-/// whole-operation bound survives past the response head. The wrapper is
-/// inert for a client that never set a `total_timeout`, which is every
-/// client in this file.
-type ClientBody = http_ng::Deadline<http_ng::mock::MockBody, http_ng::DefaultClock>;
+/// The body type is not `MockBody`: `Client::execute` wraps whatever the
+/// transport returned, twice — v0.2 W4 so the whole-operation bound
+/// survives past the response head, v0.2 W5 so a `Content-Encoding` can be
+/// reversed. Both wrappers are inert here: no client in this file sets a
+/// `total_timeout`, and the mock sends no `Content-Encoding`.
+///
+/// Written through the `http_ng::ClientBody` alias rather than spelled
+/// out, so that the ORDER of the two wrappers lives in one place (see that
+/// alias's doc comment) instead of being restated by every test that names
+/// the type.
+type ClientBody = http_ng::ClientBody<http_ng::mock::MockBody, http_ng::DefaultClock>;
 
 fn get_from(c: &Client<MockTransport>) -> Result<http::Response<ClientBody>, http_ng::Error> {
     let req = http::Request::builder()

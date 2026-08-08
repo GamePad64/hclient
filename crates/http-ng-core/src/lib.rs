@@ -16,7 +16,7 @@ pub mod unversioned;
 
 pub use body::{RequestBody, RetryKind, RewindFactory};
 pub use caps::{
-    CancelSupport, Capabilities, RedirectSupport, ReuseSupport, TimeoutSupport, Timeouts,
-    TlsSupport, UnsupportedCapability, UpgradeSupport,
+    CancelSupport, Capabilities, DecompressionSupport, RedirectSupport, ReuseSupport,
+    TimeoutSupport, Timeouts, TlsSupport, UnsupportedCapability, UpgradeSupport,
 };
 pub use error::{Error, ErrorKind, Phase};

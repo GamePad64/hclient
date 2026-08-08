@@ -7,6 +7,7 @@
 mod client;
 mod config;
 mod deadline;
+mod decompress;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -23,6 +24,27 @@ mod stages;
 pub use client::{Client, ClientBuilder};
 pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
 pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
+pub use decompress::{DecodeFailed, Decompressed};
+
+/// The response body a [`Client`] hands back: the transport's own body,
+/// with this client's two wrappers around it **in the order the client
+/// applies them**.
+///
+/// The order is not a formatting choice. [`Deadline`] goes on first,
+/// directly around the transport's body, so it is polled once for every
+/// frame that arrives off the wire; [`Decompressed`] goes outside it,
+/// because reversing a content coding can consume many compressed frames
+/// before it produces a single byte for the caller. Written the other way
+/// round, one poll of the decoder could pull an unbounded amount of
+/// traffic without the clock ever being consulted — a slow server sending
+/// well-compressing padding would be bounded by nothing. See
+/// `Client::execute` and the `decompress` module's doc comment.
+///
+/// Both wrappers are always present, whether or not either is doing
+/// anything: a type cannot appear and disappear with a runtime value. An
+/// unbounded, undecoded response pays one `Option` test and one enum test
+/// per frame for that.
+pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
 // Task 17 fix round 1: this list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `http-ng-core` type
 // reachable from the signature, a field, or a variant of something already
@@ -56,8 +78,8 @@ pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
 // the trait: the most common question about `Capabilities` is answered,
 // the quarantine stays a quarantine.
 pub use http_ng_core::{
-    Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody, RetryKind, RewindFactory,
-    TimeoutSupport, TlsSupport, UnsupportedCapability, UpgradeSupport,
+    Capabilities, DecompressionSupport, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
+    RetryKind, RewindFactory, TimeoutSupport, TlsSupport, UnsupportedCapability, UpgradeSupport,
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;

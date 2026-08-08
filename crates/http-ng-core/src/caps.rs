@@ -176,6 +176,96 @@ pub enum ReuseSupport {
     Supported,
 }
 
+/// Whether the transport hands back a response body it has already
+/// decoded, or the bytes exactly as the server put them on the wire.
+///
+/// The question a caller asks of this is "must I reverse a
+/// `Content-Encoding` myself, and may I ask for one?" — both halves at
+/// once, because they are one fact about the transport. `http-ng`'s
+/// `Client` is that caller: it reads this field and nothing else to decide
+/// whether to advertise `Accept-Encoding` and whether to decode.
+///
+/// # Why this is NOT read off `forbidden_request_headers`
+///
+/// `http-ng-fetch` lists [`http::header::ACCEPT_ENCODING`] among its
+/// forbidden request headers, and it also decompresses internally, so on
+/// that one backend the two answers coincide — which is exactly what makes
+/// deriving one from the other tempting and wrong. "This header cannot be
+/// sent" and "the body reaching you is already decoded" are different
+/// claims: a transport that forbids the header while decompressing nothing
+/// is perfectly coherent (a proxy-shaped backend that pins its own
+/// `Accept-Encoding`, say), and a client that inferred "already decoded"
+/// from "header forbidden" would hand that caller compressed bytes
+/// labelled as plaintext. That is the "capability that lies" defect this
+/// workspace has caught four times, which is why this is its own field.
+///
+/// The reverse inference is just as wrong and is the one `Client`
+/// implements: a `None` transport that forbids `Accept-Encoding` gets no
+/// header from us and still gets its response decoded, because a
+/// `Content-Encoding` the server applied unbidden is still ours to reverse.
+///
+/// # Why two variants and not three
+///
+/// [`CancelSupport`]'s rule, applied a third time: a variant exists only
+/// if a caller decision turns on it. The third variant that suggests
+/// itself is "the transport can decompress, if asked" — configurable
+/// rather than automatic. No transport in this workspace or outside it
+/// works that way today, and there is no client-level setting for it to
+/// answer: `Client` does not offer "decompress, but at the transport
+/// layer". A variant no caller can branch on is a distinction the
+/// capability set carries forever for nothing.
+///
+/// **The condition under which it arrives**, on
+/// [`RedirectSupport::Transparent`]'s precedent: together with the setting
+/// that asks for it and its arm in `check_supported`, once a backend
+/// exists that is being misread without it. Not before.
+///
+/// # Silence and the substantive claim coincide here
+///
+/// [`Self::None`] is what [`Capabilities::none()`] returns, so "the
+/// backend never filled this in" and "the backend hands the bytes over
+/// untouched" are the same value — and, as with [`CancelSupport::None`]
+/// and [`ReuseSupport::None`], that costs nothing, because the two mean
+/// the same thing to a caller: decode it yourself. The
+/// [`RedirectSupport`] problem, where `None` was a strictly stronger claim
+/// than silence and a `Transparent` backend was misread for lack of a
+/// third value, does not arise.
+///
+/// Not `#[non_exhaustive]`, for consistency with every other enum in this
+/// file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecompressionSupport {
+    /// The response body arrives exactly as it came off the wire: a
+    /// `Content-Encoding` the server applied is still applied, and
+    /// reversing it belongs to whoever reads the body.
+    ///
+    /// The conservative base — [`Capabilities::none()`] returns this — and
+    /// the honest answer for every transport that moves bytes rather than
+    /// interpreting them: `http-ng-native` (hyper hands the body through
+    /// as it arrives) and `http-ng-wasi` (`wasi:http` 0.3 defines no
+    /// content-coding behaviour of its own) are both this.
+    None,
+    /// The transport decodes `Content-Encoding` itself, before a single
+    /// byte reaches us, and chooses what to ask for — so `Accept-Encoding`
+    /// is not ours to set either, and decoding again would corrupt every
+    /// compressed response.
+    ///
+    /// Named after [`RedirectSupport::Internal`], and for the same shape
+    /// of reason: the backend does it, we neither control nor see it. The
+    /// example is again the browser — `http-ng-fetch` reports this,
+    /// derived from the same in-crate fact its `Body::size_hint` already
+    /// rests on (a `Content-Length` under a `Content-Encoding` describes
+    /// bytes this transport never yields, because the browser has already
+    /// reversed the coding).
+    ///
+    /// Note what this does NOT promise: that the response headers were
+    /// tidied up afterwards. `fetch` leaves `Content-Encoding` and
+    /// `Content-Length` on the response describing the wire, not the body
+    /// you get — which is precisely why the size hint has to distrust
+    /// them.
+    Internal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsSupport {
     None,
@@ -233,6 +323,9 @@ pub struct Capabilities {
     /// Whether a connection is reused across requests — see
     /// [`ReuseSupport`].
     pub connection_reuse: ReuseSupport,
+    /// Whether the transport already decoded the response body's
+    /// `Content-Encoding` — see [`DecompressionSupport`].
+    pub response_decompression: DecompressionSupport,
     pub tls_config: TlsSupport,
     pub client_certs: bool,
     pub proxy: bool,
@@ -257,6 +350,7 @@ impl Capabilities {
             redirects: RedirectSupport::None,
             cancel_on_drop: CancelSupport::None,
             connection_reuse: ReuseSupport::None,
+            response_decompression: DecompressionSupport::None,
             tls_config: TlsSupport::None,
             client_certs: false,
             proxy: false,
@@ -293,7 +387,7 @@ mod tests {
 
     #[test]
     fn none_is_the_conservative_base() {
-        // Every one of the 17 fields, spelled out individually — not
+        // Every one of the 18 fields, spelled out individually — not
         // `assert_eq!` on the whole struct via a derived `PartialEq`, which
         // `Capabilities` deliberately does not implement (it's
         // `#[non_exhaustive]` so its shape stays ours to change, and a
@@ -319,6 +413,7 @@ mod tests {
             redirects,
             cancel_on_drop,
             connection_reuse,
+            response_decompression,
             tls_config,
             client_certs,
             proxy,
@@ -338,6 +433,7 @@ mod tests {
         assert_eq!(redirects, RedirectSupport::None);
         assert_eq!(cancel_on_drop, CancelSupport::None);
         assert_eq!(connection_reuse, ReuseSupport::None);
+        assert_eq!(response_decompression, DecompressionSupport::None);
         assert_eq!(tls_config, TlsSupport::None);
         assert!(!client_certs);
         assert!(!proxy);
