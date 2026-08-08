@@ -121,9 +121,13 @@ where
 
     /// Always ready.
     ///
-    /// `Transport` has no notion of backpressure — no connection pool, no
-    /// permit — so there is nothing to be not-ready about, and reporting
-    /// `Pending` here would invent a signal the layer below cannot produce.
+    /// `Transport` has no notion of backpressure — no permit to acquire, and
+    /// nothing to wait for — so there is nothing to be not-ready about, and
+    /// reporting `Pending` here would invent a signal the layer below cannot
+    /// produce. `http-ng-native` has had a connection pool since v0.2 W2, and
+    /// it does not change this: it never makes a caller wait for a
+    /// connection — a checkout that finds nothing dials — so there is still
+    /// no state in which this service could honestly say "not yet".
     /// A tower user accustomed to `poll_ready` gating a bounded resource
     /// should read this as "this service imposes no limit", not as "the
     /// limit is always satisfied".

@@ -150,7 +150,7 @@ async fn capabilities_are_honest_about_v01_limits() {
     assert!(caps.timeouts.connect);
     assert!(
         !caps.timeouts.first_byte,
-        "there's no pool and no response timer — can't be claimed"
+        "there is no response timer — can't be claimed"
     );
     assert!(
         !caps.timeouts.between_bytes,
