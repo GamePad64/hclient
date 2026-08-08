@@ -32,13 +32,14 @@ test failed.
 
 **`rust-toolchain.toml` outranks the installed toolchain.** The file in the
 repository root pins stable for *every* rustup-proxied `cargo` call in this
-directory, whatever the setup action installed. A job that installs `1.97.0`
-or `nightly` and then runs a bare `cargo` silently gets stable — `msrv`
-would have stayed green while checking nothing. The three jobs that need a
-different toolchain set `RUSTUP_TOOLCHAIN`, which outranks the file, and
-then *assert* what `rustc --version` reports, because an override that
-silently fails to apply is the same defect one level down. Measured:
-`cargo --version` → 1.97.1 plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`.
+directory, whatever the setup action installed. A job that installs
+`nightly` and then runs a bare `cargo` silently gets stable. The two jobs
+that need nightly —
+`fuzz-smoke` and `fetch-must-fail-under-wasm-threads` — set
+`RUSTUP_TOOLCHAIN`, which outranks the file, and then *assert* what
+`rustc --version` reports, because an override that silently fails to apply
+is the same defect one level down. Measured: `cargo --version` → 1.97.1
+plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`.
 
 ---
 
@@ -87,20 +88,11 @@ filterset, so a renamed test would already fail — but that is a default
 (`--no-tests` can change it), and "exactly one ran" is the stronger claim
 this job actually needs.
 
-### `msrv`
-
-`cargo check --workspace --all-features --all-targets` on the pinned
-toolchain, plus the two wasm-only crates on their own target.
-
-`--all-targets` is load-bearing: without it only lib targets were checked and
-`tests/` were never checked at the stated minimum for an entire vertical.
-MSRV is a published promise in `rust-version`; a test that fails to build at
-that minimum breaks it.
-
-### `fmt`, `clippy`
+### `lint`
 
 `cargo fmt --all --check` and `cargo clippy --workspace --all-targets
---all-features -- -D warnings`.
+--all-features -- -D warnings` — one job, because they were two runners for
+two commands.
 
 ### `fuzz-smoke`
 
@@ -223,3 +215,10 @@ it. Its dependency-graph half moved to `dependency-graph`.
 **A job per text scan.** Five greps that need no toolchain were five runner
 setups. They are steps of one job now; a failed step is named in the UI just
 as a failed job was.
+
+**`msrv`.** The MSRV policy is "the latest stable release", so a job pinning
+a version was a second, older statement of the same promise — and the one
+people would believe. The moment stable moved past the pin it would have
+gone on passing, verifying a toolchain nobody supports. The full suite
+already runs on stable across three platforms, and that is the promise in
+full.

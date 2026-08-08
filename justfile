@@ -79,15 +79,15 @@ fuzz TARGET="sse" SECONDS="60":
 
 # ── dependency facts this project makes claims about ────────────────────
 
+# The same script the `dependency-graph` job runs, not a second copy of it:
+# this recipe existed to mirror CI, and a hand-rolled twin is exactly the
+# drift the header warns about.
+
 # the browser and wasi graphs must contain no tokio, hyper or h2 at all
 tree-ambient:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for spec in "http-ng-fetch wasm32-unknown-unknown" "http-ng-wasi wasm32-wasip2"; do
-        set -- $spec
-        echo "── $1 on $2 ──"
-        out="$(cargo tree -p "$1" -e normal --prefix none --target "$2")"
-        [ -n "$out" ] || { echo "cargo tree produced nothing — the check did not run"; exit 1; }
-        printf '%s\n' "$out" | grep -E '^(tokio|hyper|h2) ' \
-            || echo "  none of tokio/hyper/h2 — as promised ($(printf '%s\n' "$out" | wc -l) crates)"
-    done
+    .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
+        "http-ng-fetch's browser graph contains the native HTTP stack" \
+        -- -p http-ng-fetch --target wasm32-unknown-unknown
+    .github/scripts/tree-guard.sh absent '^(tokio|hyper|h2) ' \
+        "http-ng-wasi's wasip2 graph contains the native HTTP stack" \
+        -- -p http-ng-wasi --target wasm32-wasip2

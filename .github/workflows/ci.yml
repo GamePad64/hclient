@@ -73,37 +73,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  msrv:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: moonrepo/setup-rust@v1
-        with:
-          channel: "1.97.0"
-          targets: wasm32-unknown-unknown
-      - shell: bash
-        env:
-          # `rust-toolchain.toml` pins stable and outranks whatever the setup
-          # action installed, so without this the job would check the MSRV
-          # promise against today's stable and stay GREEN while testing
-          # nothing. RUSTUP_TOOLCHAIN outranks the file.
-          RUSTUP_TOOLCHAIN: "1.97.0"
-        run: |
-          set -euo pipefail
-          # And prove the override took: this job's whole value is the
-          # version it runs on, so getting that wrong must be loud.
-          rustc --version
-          rustc --version | grep -q '1\.97\.0' || {
-            echo "::error::the MSRV job is not running on 1.97.0 — RUSTUP_TOOLCHAIN did not take effect and this job would pass without checking the MSRV promise at all"
-            exit 1
-          }
-          # `--all-targets` is load-bearing: without it `tests/` were never
-          # checked at the stated minimum for an entire vertical.
-          cargo check --workspace --all-features --all-targets
-          # The two wasm-only crates, which the workspace check cannot reach.
-          cargo check -p http-ng-fetch --all-features --all-targets --target wasm32-unknown-unknown
-          cargo check -p http-ng --features test-util --target wasm32-unknown-unknown
-
   sse-complexity-guard:
     runs-on: ubuntu-latest
     steps:
@@ -323,8 +292,8 @@ jobs:
       - name: the unsafe Send must be rejected when atomics are on
         shell: bash
         env:
-          # As in `msrv` and `fuzz-smoke`: `rust-toolchain.toml` pins stable,
-          # and `-Z build-std` needs nightly.
+          # As in `fuzz-smoke`: `rust-toolchain.toml` pins stable, and
+          # `-Z build-std` needs nightly.
           RUSTUP_TOOLCHAIN: nightly
         run: |
           set -euo pipefail
