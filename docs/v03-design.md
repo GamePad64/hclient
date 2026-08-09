@@ -31,9 +31,19 @@ fourth section was stale for its whole length:
 - **§W7 said embassy's `'static` problem sat in the `TcpConnect` seam.** It
   did not: `embassy_net::tcp::TcpSocket` holds no buffers at all
   (`docs/w7-embassy-research.md` §1.1), and the `'static` was
-  `http-ng-native`'s own — `R::Stream: 'static` at
-  `crates/http-ng-native/src/lib.rs:166-171`, there because `NativeBody`
-  boxes hyper's `Connection` as a `dyn Future` (`h1.rs:130`).
+  `http-ng-native`'s own — `R::Stream: 'static` in `impl Transport for
+  Native` (`crates/http-ng-native/src/lib.rs:754-760`), which the research
+  traced to `H1Body` storing hyper's `Connection` as a `Pin<Box<dyn
+  Future>>`.
+
+  **And that reason has since gone while the bound has stayed**, which is
+  worth noticing here rather than being surprised by later: v0.2 W2 replaced
+  the box with the concrete `hyper::client::conn::http1::Connection`,
+  precisely because `Box<dyn Future>` is never `Send`
+  (`crates/http-ng-native/src/h1.rs:29-45`). So what the two `'static`s are
+  holding up **today** is *unverified*, and the check is to delete them and
+  read the errors. That matters to anyone taking the embassy path further,
+  and it is the same shape of staleness this document is written against.
 - **§W2 said `Spawn` does not compile on this seam, because `Spawn<F>`
   requires `F: Send + 'static` and the native IO is not `Send`.** Both
   halves were false. `Spawn<F>` declares no bounds; the auto traits come
@@ -75,7 +85,7 @@ disagreeing with one is allowed, re-discovering it is waste.
 | the question | the answer | where it was settled |
 |---|---|---|
 | Can library code `spawn` on this seam? | Yes, with a **named** future type. `Spawn<F>` declares no bounds; `Send + 'static` belong to the `Tokio`/`Smol` impls. An `async` block cannot be spawned because it cannot be named — that, not auto traits, is the wall. | `docs/v02-design.md` §W2 correction; `crates/http-ng-native/src/lib.rs:341-375` (`with_reaper`, `Reaper`) |
-| Does `'static` in the seam shut out embassy? | No. The `'static` is `http-ng-native`'s (`lib.rs:166-171`), and embassy's own `TcpClient`/`TcpClientState` is the bounded buffer pool that satisfies it. Four variants compiled, one runs over a TAP device. | `docs/w7-embassy-research.md` §1.1–1.3 |
+| Does `'static` in the seam shut out embassy? | No. The `'static` is `http-ng-native`'s (`lib.rs:754-760`), and embassy's own `TcpClient`/`TcpClientState` is the bounded buffer pool that satisfies it. Four variants compiled, one runs over a TAP device. Its *stated cause* is stale — see the bullet above | `docs/w7-embassy-research.md` §1.1–1.3 |
 | Can hyper's HTTP/2 client be used without a spawner? | No, and not for reasons of cost: the trait is sealed. Use `h2` directly. | `hyper-1.11.0/src/rt/bounds.rs:51-52`; `crates/http-ng-native/src/http2.rs` |
 | Which UTS-46 option word does this project need? | `0x3C` — non-transitional both ways, plus the two context checks. `UIDNA_DEFAULT` is `0`, which is *transitional*, agrees with IDNA2003, and therefore disagrees with us on `straße.de`. Apple's `swift-foundation` uses the same word. | `docs/v02-design.md` "Platform IDN"; `docs/icu-ecosystem-survey.md`; the `OPTIONS` unit test in `crates/http-ng-idn/src/lib.rs` |
 | Does `Timer` need an absolute-deadline sleep for QUIC? | No. quinn's `Instant` *is* `std::time::Instant` (`quinn-0.11.11/src/lib.rs:56`), so `reset(i)` is `sleep(i - now)`. The recommendation was measured away rather than implemented. | `docs/v03-acceptance.md` "The seam changes" |
@@ -210,7 +220,7 @@ doc that the plumbing was built and never used, and `:595` passes
 
 1. **The ECH slot stops being a silent drop.** Of the three TLS backends,
    two refuse a non-`None` `TlsRequest::ech` by name and say why
-   (`crates/http-ng-tls-native-tls/src/lib.rs:128`,
+   (`crates/http-ng-tls-native-tls/src/lib.rs:129`,
    `crates/http-ng-tls-rustls/src/quic.rs:76`). The third — the rustls TCP
    path, which is the default backend — **neither refuses nor honours it:
    it never reads the field.** `Rustls::connect`
@@ -368,8 +378,8 @@ architecture is frozen*. The pool froze in v0.2 W2 without it. The cost of
 that is measurable rather than hypothetical, and it is written below.
 
 `Capabilities::upgrade` exists (`crates/http-ng-core/src/caps.rs:277`, field
-at `:478`) and is `UpgradeSupport::None` in every backend and in the default
-(`caps.rs:508`, `http-ng-native/src/lib.rs:259`, `http-ng-wasi/src/lib.rs:194`,
+at `:492`) and is `UpgradeSupport::None` in every backend and in the default
+(`caps.rs:522`, `http-ng-native/src/lib.rs:259`, `http-ng-wasi/src/lib.rs:194`,
 `http-ng-fetch/src/caps.rs:407`, `http-ng-h3/src/lib.rs:342`). Four variants,
 zero uses: exactly the shape v0.2's rule was written against.
 
