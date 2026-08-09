@@ -102,6 +102,32 @@ are stated as prohibitions rather than facts:
 
 ---
 
+## The order, and what it rests on
+
+Stated separately because an order presented as forced is one more premise
+written as a fact. **There is exactly one hard dependency in this document**:
+inside W2, the ECH decision has to be made before the resolver is allowed to
+fill `TlsRequest::ech`, because the moment it does, the default TLS backend
+starts dropping an anti-surveillance setting in silence. Everything else
+below is preference, and can be reordered by whoever is doing the work.
+
+1. **W1 first** — it is the cheapest item here, it defends an existing claim
+   rather than adding a feature, and it reopens the h3 test suite, which is
+   where the 0-RTT acceptance gap also lives.
+2. **W2 second** — assessed by its own research as a task rather than a
+   vertical, and it carries the one ordering constraint above.
+3. **W3 next**, because it is the same theme as W2 and consumes one thing W2
+   produces: the RFC 9460 client-semantics layer, moved out of
+   `http-ng-dns-system` where both resolvers can reach it.
+4. **W4 last** — the largest, the only one adding a public seam, and the one
+   nothing else depends on, so its slipping costs least. Its first act is a
+   measurement that may turn it into a bug fix before it is a feature.
+5. **W5 and W6 are not in the sequence.** W5's "a commit" items belong
+   wherever their crate is already open; W6 changes documentation and
+   touches no code.
+
+---
+
 ## W1 — The UDP seam gets its second implementation
 
 **Why first.** It is the cheapest thing in this document and it defends a
@@ -703,3 +729,87 @@ covered by what exists: `NoTls`, `IpLiteralOnly`,
 `crates/http-ng-native/examples/minimal.rs`, and — for parts that do have
 `std` — `http-ng-rt-embassy`, which is where the microcontroller story
 actually lives.
+
+---
+
+## Decisions needed before work starts
+
+Five, each named where it belongs above, gathered here because each one
+shows in a signature and is expensive to walk back.
+
+1. **ECH on the rustls TCP path: refuse, or honour.** (W2, part 1.) The
+   answer has to exist before `connect.rs` may pass anything but `None`.
+   Refusing is one `if` and matches what the other two backends already do;
+   honouring is a second construction path and a third cache dimension.
+2. **Does `UpgradeSupport` become real, or go?** (W4.) If the WebSocket seam
+   is a trait, no caller decision turns on the field, and v0.2's rule says
+   it should not exist. The alternative is that it describes something else
+   — a raw upgrade or `CONNECT` tunnel exposed to callers — which nobody has
+   asked for.
+3. **Where the WebSocket seam lives.** The trait has to be somewhere every
+   backend can implement it, which argues for `http-ng-core` beside
+   `Transport`; the framing implementation has to be somewhere a browser
+   build never links, which argues for a leaf crate. The `http-ng-h3`
+   precedent (its own crate, because of bounds and because Cargo's features
+   are additive) applies to the second half and not to the first.
+4. **The DoH bootstrap default.** (W3.) IP-literal endpoint, system
+   resolver once, or caller-supplied addresses. It shows in the
+   constructor.
+5. **Whether a protocol-racing transport is the next vertical.** W2 stops
+   short of choosing HTTP/3 because nothing owns both stacks, and Alt-Svc
+   has nowhere to live for the same reason. If that transport is imminent,
+   W2's shape should anticipate it; if it is not, W2 should not pretend to.
+
+---
+
+## Not in v0.3, and why
+
+**Alt-Svc**, and the question is narrower than it was. `docs/h3-research.md`
+§4 measured that it is not needed for the first flight — `SvcbEndpoint::alpn`
+already carries `h3`, and the record's TTL is a cache nobody here has to
+write. W2 narrows it twice more: the negative cache turns out to belong to
+h3 rather than to Alt-Svc, so that is not a reason for it either; and what
+is genuinely left — a positive cache keyed by origin, learned from a
+response header, covering origins whose DNS carries no HTTPS RR, plus the
+host/port change — **has nowhere to live until something owns both protocol
+stacks.** That is a better reason to defer it than "closer to a browser's
+job", which is what v0.2 said.
+
+**A protocol-racing transport** — QUIC against TCP with a delay, the
+fallback, and the broken backoff (the original spec's §5.6). Named here
+because W2 and Alt-Svc both stop at its edge. It is a vertical: it owns two
+transports, it decides `Capabilities` for a protocol it has not chosen yet,
+and it is where a per-origin cache would finally have an owner.
+
+**WebSocket over HTTP/2**, with the multiplexing pool it actually needs.
+Deferred together, because RFC 8441 buys nothing while an h2 connection is
+handed out exclusively, and because lifting that exclusivity moves v0.2 W1's
+cancellation rule from "free" to "owed" (`crates/http-ng-native/src/pool.rs:184-189`
+says so where the policy is).
+
+**HTTP/3 streaming request bodies and full duplex** — W5's first line, with
+the technique already recorded and the two things that would move it up.
+
+**An ECH implementation** on either path; the typed refusal is the honest
+state, and after W2 it is the state everywhere rather than in two places out
+of three.
+
+**`no_std` as a feature** — W6. It would not build.
+
+**A compio backend, and event hooks / connection observability.** Both were
+on the original spec's v0.3 list. Neither has a consumer asking, and the
+evidence a third runtime would buy is arriving more cheaply elsewhere: W1
+gives the seam its second UDP implementation, and `http-ng-rt-embassy`
+already gave it a third executor model with a different set of things it
+cannot do.
+
+**`http-ng-rmcp`, and the `act` acceptance.** The spec put "the second
+verification loop" in v0.2 and made both a condition for 1.0; neither
+happened, and this document does not schedule them either. Worth saying why
+they keep being worth more than they look: a consumer refutes capability
+claims in a way a test cannot, because it was not written against them. Of
+everything deferred here, this is the item most likely to find something
+wrong with a claim the acceptance documents currently call proven.
+
+**Publishing, versions, a CHANGELOG.** `AGENTS.md` says why, and the trigger
+is the owner's.
