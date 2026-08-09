@@ -14,7 +14,9 @@ available), §6 consequence 1 (`CancelSupport::None` is not a choice this
 task could make), and two behaviours nobody looked for — `embassy_time` is
 unusable below `TcpConnect::connect`, and one abandoned connect starves ARP
 for the whole interface. Both new ones are at the end, under
-"Found while implementing".
+"Found while implementing" — and a later section, "Found by mutating the
+tests", records the two places where the suite was measured to be checking
+less than it looked like it was.
 
 Spikes live in `spikes/` (untracked, outside `crates/`): `lifetime`,
 `under-embassy`, `tuntap`, `espidf-check`, `espidf-asyncio`, `espidf-exec`,
@@ -766,6 +768,61 @@ the pool hands out finished sockets **first**: the ghost is cleared at the
 next request instead of never. It is the same shape as the `TcpOpts` gap
 and as h3's `AsFd` finding (`docs/h3-research.md`): what the OS socket
 offers, embassy-net structurally does not.
+
+---
+
+## Found by mutating the tests (not in the original research)
+
+The backend's own suite was mutation-tested afterwards, and two of the
+mutations survived. Both are recorded here because both were **holes in the
+tests, not in the code** — the code was right and nothing was checking it.
+
+**The closing list's *wait* was unreachable.** §6's fix has two halves: keep
+the socket alive past the drop so the FIN can be dispatched, and, when the
+slot is reclaimed, wait for that FIN before aborting what is left. The first
+half was well covered — removing the list, or the `close()` that feeds it,
+fails the cancellation scenario at once. The second was not covered at all:
+deleting `sockets::finish_closing`'s `sock.flush().await` passed the whole
+crate suite, 15/15. An `eprintln!` at the top of that function explains why —
+**zero calls across all seven scenarios**. Every one of them awaits something
+between releasing a socket and asking for the next, so the stack has always
+run by then, `Inner::reclaim_finished` finds the socket already `Closed`, and
+the closing list is never popped.
+
+Reaching it takes a pool of exactly one slot and a release whose next
+`acquire` lands in the *same executor turn* — the drop queues the FIN and
+wakes the stack task, but waking is not running.
+`a_slot_reclaimed_while_still_closing_waits_for_its_fin` arranges that, and
+the probe confirms the state it produces: `finish_closing entered,
+state=FinWait1`. Under the mutation that scenario reports `StillThere` where
+it owes `Eof`: the abort replaces the undispatched FIN, and `connect`'s own
+`reset()` then clears the pending RST too, so the far end learns nothing at
+all — §6's silent teardown, reached from the other direction.
+
+**The observer could not have seen an RST.** `ClientEnd` separates `Eof` from
+`Reset` precisely so a FIN quietly swapped for an abort fails a test. Nothing
+exercised the distinction: every scenario ended in a FIN, so `observe`'s
+`ConnectionReset` arm was never taken, and folding it into `Eof` passed 16/16.
+`an_abort_with_a_stack_poll_is_seen_as_a_reset` puts a real RST on the wire —
+`abort()` with the stack given the one poll `TcpSocket::drop` denies it, which
+is case 2 of the `cancel2` spike above, now in the tracked suite. It is also
+the control for `naive`: the two differ by exactly one `await`, so "the server
+saw nothing" is a fact about the missing poll and not about the tap link
+swallowing packets.
+
+Everything else held. The mutations that were killed, each by a named test:
+the closing list itself and the `close()` in `PooledSocket::drop` (both by the
+cancellation scenario, and the second by that one *only* — the six-request one
+passes, since with reuse off it is hyper's shutdown that closes a completed
+exchange); `TcpConnect::APPLIES`' default flipped from `NONE` to `ALL` (by
+`a_runtime_that_declares_nothing_applies_nothing`, the only test that reads
+it); each of the four fields embassy cannot apply flipped to `true` in turn,
+one mutation per field, each caught both by the unit table and by the live
+`connect`; `UnsupportedTcpOpts::names` made to name every option regardless of
+what was asked for; the `reject_unsupported` call deleted from
+`Embassy::connect` (by the live scenario alone — the unit tests call it
+directly and cannot notice); and the two ends-with-a-FIN assertions inverted
+to expect an RST.
 
 ---
 
