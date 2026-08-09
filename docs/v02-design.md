@@ -739,8 +739,37 @@ and it is the opposite of what a naive `IdnToAscii` binding would be.
 implementation on a shared corpus.** The whole claim is that the two agree;
 an untested claim of agreement between two IDNA implementations is exactly
 the kind of thing that is false in the tail. Built:
-`crates/http-ng-idn/tests/differential.rs`, 32 rows, both answers pinned per
+`crates/http-ng-idn/tests/differential.rs`, 40 rows, both answers pinned per
 row, zero divergences.
+
+**And it paid for itself the first time it ran on a real Apple machine.**
+Three rows of the then-32 failed on `macos-latest`, and the acceptance
+probe the gate is built around — `straße.de`/`faß.de` — passed, so nothing
+but the corpus could have caught them. The cause was a premise this section
+had wrong: **Apple's Foundation is not a UTS 46 implementation, it is a URL
+parser that calls one, and only for a host that is not ASCII.** An ASCII
+host is copied into the URL verbatim, so `EXAMPLE.COM` kept its case,
+`xn--zzzz.test` was never decoded and so never found to be invalid
+punycode, and `""` produced no host at all.
+
+That is not "the platform offers the same standard" failing — it is the
+platform being asked a *different question* than Windows' `icuuc.dll`,
+which really is a UTS 46 implementation and answered all three correctly.
+The narrower rule the sidebar above arrived at ("static linkage against an
+ABI the OS versions for us") is necessary and turns out not to be
+sufficient: it says the ABI is stable, not that the entry point implements
+the standard rather than embedding it.
+
+The fix is `crates/http-ng-idn/src/policy.rs` — one layer both backends go
+through, so that a backend is only ever asked the question they answer the
+same way, and the corpus on Windows is what says the layer changed nothing
+there. One divergence remains and cannot be closed from that layer:
+Foundation's `shouldAllow(_:encodeToASCII: true)` allows no
+`UIDNAInfo.errors` bit at all, so a name with a non-ASCII label that also
+trips one of the six this crate has to mask is refused where `idna` accepts
+it. It has no error channel to distinguish it (`foundation.rs`,
+consequence 3), so what is asserted instead — on the runner, per input — is
+that it is a **refusal** rather than a third host.
 
 ---
 

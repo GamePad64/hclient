@@ -52,9 +52,15 @@
 //! - **one seam and one policy point.** The option word, the error mask
 //!   and the deny list are decided once, here, instead of at each call
 //!   site — and they are the three things the *Contract* section below
-//!   shows are easy to get individually wrong.
+//!   shows are easy to get individually wrong. `policy.rs` is the rest of
+//!   it, and it earned its own file the hard way: the two platform
+//!   backends turn out to answer a *different question* — Windows' ICU is
+//!   a UTS 46 implementation, Apple's Foundation is a URL parser that
+//!   calls one, and only for a host that is not ASCII. Everything
+//!   decidable from ASCII alone is decided there, once, rather than
+//!   repaired per platform.
 //! - **the corpus.** `tests/differential.rs` pins both implementations'
-//!   answers on 32 rows; that is what makes "the platform agrees" a
+//!   answers on 40 rows; that is what makes "the platform agrees" a
 //!   measurement rather than a hope, and it is shared by every target.
 //! - **a typed error and an honest [`Backend`]**, instead of a `bool`
 //!   from a conversion that silently did something else.
@@ -165,6 +171,14 @@
 //!   hoped away; see `foundation.rs`. `libicucore.dylib`, Apple's own ICU,
 //!   stays out of reach: no headers, symbols documented as not for
 //!   third-party linking, and since Big Sur not on disk to `dlopen`.
+//!
+//!   **A fifth cost, and it is the one the first live run found: the hook
+//!   only runs when the host is not ASCII.** An ASCII host passes RFC 3986
+//!   `reg_name` validation and is copied into the URL verbatim, so nothing
+//!   lower-cases it, nothing decodes an `xn--` label in it, and an empty
+//!   host is a parse failure rather than the empty name. `policy.rs` takes
+//!   all of that over, for both backends rather than for this one; see its
+//!   module docs for the three corpus rows that measured it.
 //! - **wasm** — no dynamic loader and no system ICU, so the bundled path
 //!   today. But **the browser is a platform IDN implementation**, and on
 //!   the evidence it is the best one of the lot: `new URL(…).hostname` in
@@ -240,7 +254,7 @@
 //! - **The corpus, per platform, in CI.** `tests/differential.rs` runs
 //!   the platform backend against `idna` — a dev-dependency, so it is
 //!   there on exactly the targets where the tables are not — and pins
-//!   both answers on all 32 rows. A divergence is a red build on the
+//!   both answers on all 40 rows. A divergence is a red build on the
 //!   platform that has it, which is where the answer differs.
 //! - **The load-time acceptance probe** in `icu.rs`: a library that does
 //!   not answer the transitional pair correctly is not used at all, and
@@ -275,6 +289,17 @@ mod icu;
 
 #[cfg(foundation_backend)]
 mod foundation;
+
+/// This crate's own layer, shared by every backend and reached through
+/// all of them — see the module docs for what it takes over and why.
+///
+/// Compiled on every target, including the ones with no platform backend
+/// at all, and reachable there through [`testing::policy_over`]: the
+/// layer is platform-independent, everything in it is decided against
+/// `idna` (a dev-dependency everywhere), and gating it away on Linux
+/// would take its tests and its fuzz target with it — on the one runner
+/// this project exercises most.
+mod policy;
 
 #[cfg(not(any(idna_backend, icu_backend, foundation_backend)))]
 compile_error!(
@@ -409,9 +434,19 @@ pub const UIDNA_CHECK_CONTEXTO: u32 = 0x0040;
 /// by people with no connection to this one.
 ///
 /// They then diverge from us on the *errors*, which is exactly why
-/// [`IGNORED_ERRORS`] is a separate decision and not a footnote: Apple
-/// allows none of them, so its `URL` rejects `a..b` and `ab--cd.com`
-/// where `idna` — and therefore this crate — accepts both.
+/// [`IGNORED_ERRORS`] is a separate decision and not a footnote:
+/// `shouldAllow(_:encodeToASCII: true)` sets `allowedErrors = 0`, so
+/// Apple's `URL` refuses a name on any bit at all, the six this crate
+/// masks included.
+///
+/// **An earlier version of this paragraph gave `a..b` and `ab--cd.com` as
+/// the examples, and `macos-latest` measured both as accepted.** The
+/// reason is one level up and is the whole of `foundation.rs`'s first
+/// section: those two are all-ASCII, so Foundation's IDNA hook never runs
+/// on them and there is no `errors` word to be strict about. The
+/// divergence is real, but its inputs are names with a non-ASCII label
+/// *and* one of those defects — `-münchen.de`, `münchen..de`,
+/// `ab--cd.münchen`.
 pub const OPTIONS: u32 = UIDNA_NONTRANSITIONAL_TO_ASCII
     | UIDNA_NONTRANSITIONAL_TO_UNICODE
     | UIDNA_CHECK_BIDI
@@ -600,37 +635,29 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     })
 }
 
-/// The platform path: ICU, then the deny list on what came back.
+/// The ICU path: the shared policy, with ICU as its conversion.
 ///
-/// **On the output only, and that was measured rather than argued.** The
-/// first draft scanned the input as well, on the reasoning that a denied
-/// ASCII character can hide inside an already-A-label input — `xn--%-0fa`
-/// decodes to `%ä`, and ICU with STD3 rules off (as it must be here)
-/// considers `%` valid. Deleting that scan and running the corpus killed
-/// nothing: every row still passed. The reason is a property of punycode
-/// rather than an accident of the corpus — **basic code points are copied
-/// into the A-label literally**, so a denied ASCII byte in an `xn--`
-/// label is still a denied ASCII byte in ICU's output, and the output
-/// scan sees it. Nothing in UTS 46 removes an ASCII character either: the
-/// only ASCII mapping is upper-case to lower-case, and no code point in
-/// the ignored set is ASCII. So the input scan could not catch anything
-/// the output scan does not, and it is gone.
+/// ICU would answer every one of [`policy::to_ascii_over`]'s five steps correctly
+/// on its own — it is a UTS 46 implementation, and the corpus measured
+/// that on a real `windows-latest` runner before this policy existed. It
+/// goes through the policy anyway, because the alternative is two
+/// statements of one contract and the newer one is always the one that
+/// rots. What the Windows corpus run now checks is that the shared policy
+/// left ICU's answers alone.
 ///
-/// The output scan, by contrast, is load-bearing twice over: it catches
-/// the `xn--%…` case above **and** the opposite one, where UTS 46 mapping
-/// *produces* a denied character from one that is not — U+FF0F FULLWIDTH
-/// SOLIDUS maps to `/`, U+FF03 to `#`, and neither is an ASCII byte on
-/// the way in. Removing it kills two corpus rows.
+/// Two consequences worth naming. An all-ASCII name no longer reaches
+/// `uidna_nameToASCII_UTF8` at all — step 4 answers it — so the `unsafe`
+/// boundary is crossed for fewer inputs than before. And the input deny
+/// scan is back after having been measured redundant and deleted: it is
+/// redundant *for ICU*, and it is not redundant for a policy that hands a
+/// decoded label onward.
 #[cfg(icu_backend)]
 fn system_icu_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    let reject = || IdnError::NotAnIdn {
-        domain: domain.to_owned(),
-    };
-    let ascii = icu::name_to_ascii(domain).ok_or_else(reject)?;
-    if ascii.bytes().any(is_forbidden_domain_byte) {
-        return Err(reject());
-    }
-    Ok(Cow::Owned(ascii))
+    policy::to_ascii_over(icu::name_to_ascii, domain)
+        .map(Cow::Owned)
+        .ok_or_else(|| IdnError::NotAnIdn {
+            domain: domain.to_owned(),
+        })
 }
 
 /// Foundation, gated once per process on the same probe pair the ICU
@@ -648,15 +675,19 @@ fn foundation_backend() -> Option<&'static foundation::Foundation> {
         .as_ref()
 }
 
-/// The Foundation path. The deny list runs INSIDE `foundation::convert`,
-/// before the parser and again after it — see that module for why the
-/// input scan is required here and was redundant for ICU.
+/// The Foundation path: the same shared policy, with Foundation as its
+/// conversion.
+///
+/// Foundation reaches a UTS 46 implementation only for a host that is not
+/// ASCII — which is the one question [`policy::to_ascii_over`] asks a backend, and
+/// the reason the three rows that failed on `macos-latest` were all
+/// all-ASCII ones.
 #[cfg(foundation_backend)]
 fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     let f = foundation_backend().ok_or_else(|| IdnError::NoImplementation {
         domain: domain.to_owned(),
     })?;
-    foundation::convert(f, domain)
+    policy::to_ascii_over(|unicode| foundation::convert(f, unicode), domain)
         .map(Cow::Owned)
         .ok_or_else(|| IdnError::NotAnIdn {
             domain: domain.to_owned(),
@@ -691,7 +722,7 @@ pub mod testing {
     ///
     /// One name for both backends on purpose: `tests/differential.rs`
     /// then contains no `#[cfg]` choosing between Windows and Apple, and
-    /// the same 32 rows are the acceptance for both.
+    /// the same 40 rows are the acceptance for both.
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].
@@ -730,6 +761,24 @@ pub mod testing {
     #[must_use]
     pub fn selected() -> Backend {
         super::backend()
+    }
+
+    /// The crate's own layer, over a conversion the caller supplies.
+    ///
+    /// This is what makes the layer fuzzable **differentially**, which
+    /// `domain_to_ascii` is not: on a target with the bundled backend that
+    /// function *is* `idna::domain_to_ascii_cow`, so comparing it with
+    /// `idna` compares `idna` with itself. Hand `idna` in here as the
+    /// backend instead and the only thing left in the comparison is this
+    /// crate's own code — the deny list, the case folding, the ASCII
+    /// short-circuit and a hand-written RFC 3492 decoder, which is the
+    /// riskiest thing in the crate because it sits in the path that
+    /// decides which host is contacted.
+    ///
+    /// See `fuzz/fuzz_targets/idn_policy_vs_idna.rs`.
+    #[must_use]
+    pub fn policy_over(convert: impl Fn(&str) -> Option<String>, domain: &str) -> Option<String> {
+        super::policy::to_ascii_over(convert, domain)
     }
 }
 
