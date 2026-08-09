@@ -10,14 +10,24 @@ repository.workspace = true
 [features]
 default = []
 platform-verifier = ["dep:rustls-platform-verifier"]
+# HTTP/3's TLS, behind a feature and off by default: it pulls
+# `quinn-proto` (and the QUIC key-schedule machinery inside rustls), which
+# a build that only ever speaks TLS over TCP has no use for. Same shape as
+# every other optional dependency in this workspace.
+quic              = ["dep:http-ng-tls-quic", "dep:quinn-proto"]
 webpki-roots      = ["dep:webpki-roots"]
 
 [dependencies]
 http-ng-core     = { workspace = true }
 http-ng-tls      = { path = "../http-ng-tls", version = "0.1.0" }
+http-ng-tls-quic = { path = "../http-ng-tls-quic", version = "0.1.0", optional = true }
 hyper            = { version = "1.11", default-features = false }
 rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pki-types = "1.15"
+# `rustls-ring` and nothing else: this crate already picks `ring` for
+# rustls itself, and the two must agree or the QUIC config would be built
+# from a provider the TLS config does not use.
+quinn-proto      = { version = "0.11", default-features = false, features = ["rustls-ring"], optional = true }
 rustls-platform-verifier = { version = "0.7", optional = true }
 webpki-roots     = { version = "1.0", optional = true }
 

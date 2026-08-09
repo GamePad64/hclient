@@ -7,8 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# UDP is behind a feature, off by default, for one reason that is a
+# measurement rather than a preference: the GSO/GRO/ECN work is `cmsg` on a
+# descriptor, `quinn-udp` already does it correctly for six platforms, and
+# reimplementing it here would be a second copy of the hardest part of a
+# UDP stack in a crate whose job is to adapt a runtime. So the feature
+# pulls `quinn-udp` — and a build that only ever speaks HTTP/1 or HTTP/2
+# does not pay for it.
+[features]
+default = []
+udp = ["dep:quinn-udp"]
+
 [dependencies]
 http-ng-rt = { path = "../http-ng-rt", version = "0.1.0" }
+quinn-udp  = { version = "0.5", default-features = false, optional = true }
 hyper      = { version = "1.11", default-features = false }
 socket2    = { version = "0.6", features = ["all"] }
 tokio      = { version = "1", features = ["net", "rt", "time", "sync"] }

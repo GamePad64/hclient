@@ -7,12 +7,17 @@
 
 mod caps;
 mod futures_io;
+mod udp;
 
 pub use caps::{
     Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport,
     UnsupportedTcpOpts,
 };
 pub use futures_io::FuturesIo;
+pub use udp::{
+    Datagrams, EcnCodepoint, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams,
+    UnsupportedUdpOffload,
+};
 
 /// `Timer` is defined once, in `http-ng-core`: the portable core needs it
 /// for timeouts and backoff. This is just a re-export.

@@ -1,0 +1,57 @@
+[package]
+name = "http-ng-h3"
+version = "0.1.0"
+description = "HTTP/3 transport for http-ng: QUIC over the runtime seam's UDP capability"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Its own crate, not a feature of `http-ng-native`, and the reason is in the
+# type system rather than in the dependency count. This transport's bounds
+# are `R: UdpBind + Spawn<..>` and `T: QuicTlsConnect` — neither of which
+# `Native<R, T, D>` has, and Cargo's features are additive, so a
+# `http-ng-native/http3` feature would have to make them unconditional for
+# every build in the graph. The 55-crate stack behind it is the second
+# reason, not the first.
+[dependencies]
+bytes          = { workspace = true }
+h3             = "0.0.8"
+h3-quinn       = "0.0.10"
+http           = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http-body      = { workspace = true }
+http-ng-core   = { workspace = true }
+http-ng-dns    = { path = "../http-ng-dns",      version = "0.1.0" }
+http-ng-rt     = { path = "../http-ng-rt",       version = "0.1.0" }
+http-ng-tls    = { path = "../http-ng-tls",      version = "0.1.0" }
+http-ng-tls-quic = { path = "../http-ng-tls-quic", version = "0.1.0" }
+pin-project-lite = "0.2"
+# No `runtime-*` feature: the runtime is ours (`crate::runtime`), which is
+# the whole point — see that module's doc. `futures-io` is not optional,
+# `h3-quinn` requires it. No `rustls-*` either: the TLS crypto arrives as
+# an already-built `Arc<dyn quinn_proto::crypto::ClientConfig>` from
+# `http-ng-tls-quic`, so this crate picks no TLS provider.
+#
+# `ring` is not that, and is not optional: a QUIC ENDPOINT needs an HMAC key
+# for stateless resets and an AEAD for retry tokens, independently of any
+# TLS session, and quinn expresses that as a crypto feature —
+# `EndpointConfig` has no `Default` without one. It is the same provider
+# rustls already uses in this graph, not a second one.
+quinn          = { version = "0.11", default-features = false, features = ["futures-io", "ring"] }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+futures-executor   = { version = "0.3", default-features = false, features = ["std"] }
+http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0" }
+http-body-util     = { workspace = true }
+http-ng            = { workspace = true }
+http-ng-rt-tokio   = { path = "../http-ng-rt-tokio", version = "0.1.0", features = ["udp"] }
+http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["quic"] }
+quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
+rcgen              = "0.14"
+rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio              = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[lints]
+workspace = true

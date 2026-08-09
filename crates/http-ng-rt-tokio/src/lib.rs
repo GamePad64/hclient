@@ -3,9 +3,13 @@
 
 mod handle;
 mod io;
+#[cfg(feature = "udp")]
+mod udp;
 
 pub use handle::TokioHandle;
 pub use io::TokioIo;
+#[cfg(feature = "udp")]
+pub use udp::TokioUdpSocket;
 
 use http_ng_rt::{
     Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,

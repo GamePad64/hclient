@@ -229,13 +229,58 @@ impl TlsConfigId {
     }
 }
 
+/// Which trust configuration a TLS backend applies — see [`TlsConfigId`].
+///
+/// # Why this is a trait of its own rather than a method on [`TlsConnect`]
+///
+/// It was a method on `TlsConnect` until HTTP/3 (v0.3). QUIC needs a
+/// *second* TLS trait — `http_ng_tls_quic::QuicTlsConnect` — because the
+/// intersection of `TlsConnect`'s methods with what a QUIC stack asks of a
+/// TLS session is empty: QUIC wants per-encryption-level key schedules and
+/// CRYPTO-frame payloads, and `TlsConnect` can only hand back a wrapped
+/// byte stream. Both traits need the identity, for the same reason and with
+/// the same meaning, and `http-ng-tls-rustls` implements both.
+///
+/// Declaring `config_id` on each of them would give such a backend two
+/// inherent methods of the same name, so every concrete-typed call site
+/// becomes `E0034`. Declaring it once, here, and making both traits require
+/// it costs each implementation a three-line `impl` and **costs consumers
+/// nothing**: a call through a `T: TlsConnect` bound still resolves through
+/// the supertrait, so no code that reads an identity moved when this was
+/// extracted.
+///
+/// The alternative — leaving `config_id` on `TlsConnect` alone and having
+/// the QUIC side require `T: TlsConnect + QuicTlsConnect` — is cheaper
+/// today and forecloses a TLS backend that speaks QUIC and not TCP.
+/// SChannel and Security.framework both support QUIC natively, so that is
+/// not a hypothetical shape, merely an absent one.
+pub trait TlsIdentity {
+    /// Which trust configuration this connector applies — see
+    /// [`TlsConfigId`].
+    ///
+    /// The answer must be **fixed for this connector's lifetime** and equal
+    /// only to itself: return a [`TlsConfigId::new_unique`] drawn once in
+    /// the constructor and stored, not one drawn here.
+    ///
+    /// # Why this has no default, when [`TlsConnect::tls_support`] does
+    ///
+    /// `tls_support` is defaulted because getting it wrong understates what
+    /// the transport can do: a capability weaker than the truth, which
+    /// costs a caller an opportunity. Getting *this* wrong hands one
+    /// client's socket to another client's trust configuration. A default
+    /// would let an implementation be wrong by saying nothing, and this is
+    /// not a field to be wrong about by silence — so every implementation
+    /// answers, and adding one is a compile error until it does.
+    fn config_id(&self) -> TlsConfigId;
+}
+
 /// A pluggable TLS handshake over an arbitrary transport.
 ///
 /// One method, `connect`, not separate "handshake" and "wrap" steps:
 /// there's nothing to gain from splitting them — no caller anywhere in
 /// this vertical wants a bare handshake without a wrapped stream, or the
 /// reverse.
-pub trait TlsConnect {
+pub trait TlsConnect: TlsIdentity {
     /// The wrapped stream after the handshake. `S: hyper::rt::Read + Write
     /// + Unpin` appears in both places (on the type itself and in its
     /// where clause) — an implementation can't promise a wrapper for only
@@ -304,24 +349,6 @@ pub trait TlsConnect {
     fn reports_alpn(&self) -> bool {
         false
     }
-
-    /// Which trust configuration this connector applies — see
-    /// [`TlsConfigId`].
-    ///
-    /// The answer must be **fixed for this connector's lifetime** and equal
-    /// only to itself: return a [`TlsConfigId::new_unique`] drawn once in
-    /// the constructor and stored, not one drawn here.
-    ///
-    /// # Why this has no default, when [`tls_support`](Self::tls_support) does
-    ///
-    /// `tls_support` is defaulted because getting it wrong understates what
-    /// the transport can do: a capability weaker than the truth, which
-    /// costs a caller an opportunity. Getting *this* wrong hands one
-    /// client's socket to another client's trust configuration. A default
-    /// would let an implementation be wrong by saying nothing, and this is
-    /// not a field to be wrong about by silence — so every implementation
-    /// answers, and adding one is a compile error until it does.
-    fn config_id(&self) -> TlsConfigId;
 }
 
 /// A [`TlsConnect`] that performs no TLS, for a client built without it.
@@ -379,6 +406,14 @@ impl hyper::rt::Write for NoStream {
     }
 }
 
+impl TlsIdentity for NoTls {
+    /// See [`TlsConfigId::no_tls`]: every `NoTls` is interchangeable with
+    /// every other, because none of them makes any trust decision at all.
+    fn config_id(&self) -> TlsConfigId {
+        TlsConfigId::no_tls()
+    }
+}
+
 impl TlsConnect for NoTls {
     type Stream<S>
         = NoStream
@@ -400,12 +435,6 @@ impl TlsConnect for NoTls {
 
     fn tls_support(&self) -> TlsSupport {
         TlsSupport::None
-    }
-
-    /// See [`TlsConfigId::no_tls`]: every `NoTls` is interchangeable with
-    /// every other, because none of them makes any trust decision at all.
-    fn config_id(&self) -> TlsConfigId {
-        TlsConfigId::no_tls()
     }
 }
 
@@ -517,15 +546,17 @@ mod tests {
         }
     }
 
+    impl TlsIdentity for NoOpTls {
+        fn config_id(&self) -> TlsConfigId {
+            self.0
+        }
+    }
+
     impl TlsConnect for NoOpTls {
         type Stream<S>
             = PassThrough<S>
         where
             S: Read + Write + Unpin;
-
-        fn config_id(&self) -> TlsConfigId {
-            self.0
-        }
 
         fn connect<S>(
             &self,

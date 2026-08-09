@@ -304,6 +304,103 @@ pub struct Timeouts {
     pub between_bytes: Option<core::time::Duration>,
 }
 
+/// Whether a transport can put a request into TLS 1.3 early data (0-RTT).
+///
+/// # This is the floor, and it says less than it looks like
+///
+/// [`Self::Supported`] means only *"this transport is able to offer early
+/// data"*. It never means a particular request went into early data, and it
+/// never means one was accepted. In QUIC the acceptance verdict arrives
+/// **after the response** — measured at 8.63 ms against a response at
+/// 8.58 ms (`docs/h3-research.md` §3.2) — so it is a future, not a
+/// property of a transport, and nothing about it can live in a value that
+/// [`Transport::capabilities`](crate::unversioned::Transport::capabilities)
+/// determines once at construction.
+///
+/// # Why the default is `None` with unusual force
+///
+/// Every other capability here follows the rule that a default must not be
+/// stronger than the truth, and the cost of breaking it is a buffered copy,
+/// a lost optimisation, or — for `full_duplex` — a deadlock. This one costs
+/// **replay exposure**: early data is data an attacker who captured it can
+/// send again, at a moment of their choosing, to a server that will act on
+/// it. So [`Capabilities::none()`] reports `None`, every transport that
+/// ships today reports `None`, and a transport that forgets this field
+/// reports `None`.
+///
+/// # Reporting `Supported` is not sufficient to put anything in early data
+///
+/// It is necessary and nothing more. The gate is the caller's, per request
+/// — see [`AllowEarlyData`] — and a transport that reports `Supported` must
+/// still refuse to place a request the caller did not mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EarlyDataSupport {
+    /// This transport never offers early data. The conservative base, what
+    /// [`Capabilities::none()`] returns, and the honest answer for every
+    /// transport in this workspace except `http-ng-h3`.
+    None,
+    /// This transport can offer early data for a request the caller has
+    /// marked with [`AllowEarlyData`]. See this enum's doc for the three
+    /// things it still does not mean.
+    Supported,
+}
+
+/// The caller's per-request statement that this request may go into TLS 1.3
+/// early data (0-RTT).
+///
+/// Put into `http::Extensions` on the request. Absent, the request waits
+/// for the handshake to complete, and **there is no configuration in which
+/// a request the caller did not mark ends up in early data**. Present
+/// against a transport reporting [`EarlyDataSupport::None`], it is a typed
+/// [`UnsupportedCapability`] rather than a silent no-op.
+///
+/// # What marking a request asserts, and what it does not
+///
+/// **It is an assertion that replaying this request is SAFE — not that
+/// replaying it is POSSIBLE.** Those are different questions, and only the
+/// caller can answer the first one.
+///
+/// [`RequestBody::retry_kind`](crate::RequestBody::retry_kind) answers the
+/// second: `Free`, `ViaFactory`, `Impossible` — *can I send these bytes
+/// again*. A transport needs that answer, because a rejected 0-RTT request
+/// has to be replayed after the handshake and a
+/// [`RetryKind::Impossible`](crate::RetryKind::Impossible) body cannot be.
+/// So `RetryKind` is a **correctness** precondition here, and it is checked
+/// as one.
+///
+/// It is emphatically **not** a safety condition, and reading it as one is
+/// the mistake this paragraph exists to prevent. `POST /transfer` with a
+/// fully buffered body is `RetryKind::Free` — trivially replayable, and
+/// precisely the request that must never enter early data, because *an
+/// attacker* can replay it too. quinn says the same in one line: *"this
+/// enables transmission of 0-RTT data, which is vulnerable to replay
+/// attacks, and should therefore never invoke non-idempotent operations"*.
+///
+/// The notion that would answer the safety question — method safety and
+/// idempotency — deliberately does not exist in this codebase, and its
+/// absence is written down where the one v0.2 retry lives. RFC 8470 §2 puts
+/// the default on the conservative side (*"clients MAY send requests with
+/// safe HTTP methods … and MUST NOT send unsafe methods (or methods whose
+/// safety is not known) in early data"*) and, in the same sentence, says
+/// why a method table cannot be the whole answer: *"absent other
+/// information"*. `GET` is not safe on plenty of real APIs, and only the
+/// caller knows which. Hence this extension: **a caller-visible decision,
+/// with a method check beneath it, rather than a table hidden in a
+/// transport.**
+///
+/// # The third failure path
+///
+/// A request placed in early data can fail in three places, not one: no
+/// usable key material (nothing was risked, fall back silently), the server
+/// rejecting the 0-RTT keys (replay on the same connection once the
+/// handshake finishes — the transport's job, invisible to the caller), and
+/// **HTTP `425 Too Early`** (RFC 8470 §5.2), which arrives a full round
+/// trip later and must be retried *not* in early data. The third is a
+/// status-code branch in the client, not in a transport, and as of v0.3 it
+/// is **not implemented anywhere** — see `http_ng_h3::early`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllowEarlyData;
+
 /// What the transport can do **in this process, right now**.
 ///
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
@@ -326,6 +423,10 @@ pub struct Capabilities {
     /// Whether the transport already decoded the response body's
     /// `Content-Encoding` — see [`DecompressionSupport`].
     pub response_decompression: DecompressionSupport,
+    /// Whether the transport can put a marked request into TLS 1.3 early
+    /// data — see [`EarlyDataSupport`], which says less than its name
+    /// suggests and says so at length.
+    pub early_data: EarlyDataSupport,
     pub tls_config: TlsSupport,
     pub client_certs: bool,
     pub proxy: bool,
@@ -383,6 +484,7 @@ impl Capabilities {
             cancel_on_drop: CancelSupport::None,
             connection_reuse: ReuseSupport::None,
             response_decompression: DecompressionSupport::None,
+            early_data: EarlyDataSupport::None,
             tls_config: TlsSupport::None,
             client_certs: false,
             proxy: false,
@@ -446,6 +548,7 @@ mod tests {
             cancel_on_drop,
             connection_reuse,
             response_decompression,
+            early_data,
             tls_config,
             client_certs,
             proxy,
@@ -466,6 +569,12 @@ mod tests {
         assert_eq!(cancel_on_drop, CancelSupport::None);
         assert_eq!(connection_reuse, ReuseSupport::None);
         assert_eq!(response_decompression, DecompressionSupport::None);
+        assert_eq!(
+            early_data,
+            EarlyDataSupport::None,
+            "the one capability whose over-claim costs replay exposure rather \
+             than a buffered copy"
+        );
         assert_eq!(tls_config, TlsSupport::None);
         assert!(!client_certs);
         assert!(!proxy);

@@ -30,7 +30,7 @@ mod hyper_io;
 
 use http_ng_core::{Error, ErrorKind};
 use http_ng_rt::FuturesIo;
-use http_ng_tls::{TlsConfigId, TlsConnect, TlsInfo, TlsRequest};
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use hyper_io::HyperIo;
 
 /// The platform TLS backend.
@@ -106,15 +106,17 @@ impl NativeTls {
     }
 }
 
+impl TlsIdentity for NativeTls {
+    fn config_id(&self) -> TlsConfigId {
+        self.config_id
+    }
+}
+
 impl TlsConnect for NativeTls {
     type Stream<S>
         = FuturesIo<async_native_tls::TlsStream<HyperIo<S>>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
-
-    fn config_id(&self) -> TlsConfigId {
-        self.config_id
-    }
 
     async fn connect<S>(
         &self,

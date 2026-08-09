@@ -624,15 +624,18 @@ mod alpn_guard {
     /// ALPN, which is the one input the guard reads.
     struct ReportsAlpn(&'static [u8]);
 
+    impl http_ng_tls::TlsIdentity for ReportsAlpn {
+        fn config_id(&self) -> http_ng_tls::TlsConfigId {
+            static ID: OnceLock<http_ng_tls::TlsConfigId> = OnceLock::new();
+            *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
+        }
+    }
+
     impl http_ng_tls::TlsConnect for ReportsAlpn {
         type Stream<S>
             = S
         where
             S: hyper::rt::Read + hyper::rt::Write + Unpin;
-        fn config_id(&self) -> http_ng_tls::TlsConfigId {
-            static ID: OnceLock<http_ng_tls::TlsConfigId> = OnceLock::new();
-            *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
-        }
         async fn connect<S>(
             &self,
             io: S,

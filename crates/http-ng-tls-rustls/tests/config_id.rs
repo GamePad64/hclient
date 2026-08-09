@@ -14,7 +14,7 @@
 //! That is what these two tests fail on. They are not about rustls; they are
 //! about the property `TlsConfigId` exists to carry, checked at the level
 //! where it is still observable.
-use http_ng_tls::TlsConnect;
+use http_ng_tls::TlsIdentity;
 use http_ng_tls_rustls::Rustls;
 use std::sync::Arc;
 

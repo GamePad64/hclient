@@ -37,7 +37,7 @@ use http_ng::Client;
 use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
-use http_ng_tls::{TlsConfigId, TlsConnect, TlsInfo, TlsRequest};
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -212,15 +212,17 @@ impl FakeTls {
     }
 }
 
+impl TlsIdentity for FakeTls {
+    fn config_id(&self) -> TlsConfigId {
+        self.id
+    }
+}
+
 impl TlsConnect for FakeTls {
     type Stream<S>
         = S
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
-
-    fn config_id(&self) -> TlsConfigId {
-        self.id
-    }
 
     fn reports_alpn(&self) -> bool {
         self.reports_alpn
