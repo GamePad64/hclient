@@ -161,8 +161,12 @@ fn client_config(c: &Certs) -> quinn::ClientConfig {
     ));
     let mut tp = quinn::TransportConfig::default();
     tp.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().unwrap()));
-    // No keep-alive: the connection lives only if somebody drives it.
-    tp.keep_alive_interval(None);
+    // **Keep-alive on.** This is the realistic configuration for a pooled
+    // QUIC connection, and it is also the exact mechanism that needs a
+    // background driver: quinn only emits the PING when its connection
+    // driver is polled and the keep-alive timer fires. Set to a third of
+    // the idle timeout.
+    tp.keep_alive_interval(Some(IDLE_TIMEOUT / 3));
     cfg.transport_config(Arc::new(tp));
     cfg
 }
@@ -175,27 +179,61 @@ async fn roundtrip(conn: &quinn::Connection) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-async fn run(label: &str, rt: Arc<dyn quinn::Runtime>, c: &Certs, addr: SocketAddr) {
+type Queue = Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>>;
+
+/// `docs/h3-research.md` §1.2's loop: the queued driver futures are polled
+/// **by the request's own future**, inside the same `poll_fn`. That works
+/// perfectly while a request is in flight, and does nothing at all between
+/// two of them — which is the whole finding of §1.5.
+async fn drive<T>(q: &Option<Queue>, fut: impl Future<Output = T>) -> T {
+    let mut fut = Box::pin(fut);
+    let q = q.clone();
+    std::future::poll_fn(move |cx| {
+        if let Some(q) = &q {
+            let mut g = q.lock().unwrap();
+            let mut i = 0;
+            while i < g.len() {
+                match g[i].as_mut().poll(cx) {
+                    std::task::Poll::Ready(()) => {
+                        let _done = g.remove(i);
+                    }
+                    std::task::Poll::Pending => i += 1,
+                }
+            }
+        }
+        fut.as_mut().poll(cx)
+    })
+    .await
+}
+
+async fn run(
+    label: &str,
+    rt: Arc<dyn quinn::Runtime>,
+    q: Option<Queue>,
+    c: &Certs,
+    addr: SocketAddr,
+) {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let mut ep =
-        quinn::Endpoint::new(quinn::EndpointConfig::default(), None, sock, rt).unwrap();
+    let mut ep = quinn::Endpoint::new(quinn::EndpointConfig::default(), None, sock, rt).unwrap();
     ep.set_default_client_config(client_config(c));
 
-    let conn = match ep.connect(addr, "localhost").unwrap().await {
+    let connecting = ep.connect(addr, "localhost").unwrap();
+    let conn = match drive(&q, connecting).await {
         Ok(c) => c,
         Err(e) => {
             println!("  {label}: could not even connect: {e}");
             return;
         }
     };
-    println!("  {label}: request 1 -> {:?}", roundtrip(&conn).await);
+    println!("  {label}: request 1 -> {:?}", drive(&q, roundtrip(&conn)).await);
     println!(
-        "  {label}: gap of {}ms with idle_timeout {}ms and no keep-alive",
+        "  {label}: gap of {}ms, idle_timeout {}ms, keep-alive every {}ms — the request future is gone, so only a spawned driver can send the PING",
         GAP.as_millis(),
-        IDLE_TIMEOUT.as_millis()
+        IDLE_TIMEOUT.as_millis(),
+        (IDLE_TIMEOUT / 3).as_millis()
     );
     tokio::time::sleep(GAP).await;
-    println!("  {label}: request 2 -> {:?}", roundtrip(&conn).await);
+    println!("  {label}: request 2 -> {:?}", drive(&q, roundtrip(&conn)).await);
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -206,33 +244,73 @@ async fn main() {
     let c = certs();
     let (addr, _server_ep) = server(&c).await;
 
-    println!("A. QueueRuntime — quinn's driver futures queued, nobody drains them");
-    let queued: Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    println!(
+        "A. QueueRuntime — quinn's driver futures are polled by the request future and by nothing else"
+    );
+    let queued: Queue = Arc::new(Mutex::new(Vec::new()));
     run(
         "A",
         Arc::new(QueueRuntime {
             inner: quinn::TokioRuntime,
             queued: queued.clone(),
         }),
+        Some(queued.clone()),
         &c,
         addr,
     )
     .await;
     println!(
-        "  A: quinn futures queued and never run: {}",
+        "  A: quinn driver futures still queued at the end: {}",
         queued.lock().unwrap().len()
     );
 
-    println!("\nB. SeamRuntime<http_ng_rt_tokio::Tokio> — the SAME futures, handed to http_ng_rt::Spawn::spawn");
+    println!(
+        "\nB. SeamRuntime<http_ng_rt_tokio::Tokio> — the SAME futures, handed to http_ng_rt::Spawn::spawn"
+    );
     run(
         "B",
         Arc::new(SeamRuntime {
             inner: quinn::TokioRuntime,
             rt: http_ng_rt_tokio::Tokio,
         }),
+        None,
         &c,
         addr,
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Negative control: the LOCAL runtimes cannot be plugged in here at all
+// ---------------------------------------------------------------------------
+
+/// `quinn::Runtime` is declared `pub trait Runtime: Send + Sync + Debug +
+/// 'static` (quinn 0.11.11, `src/runtime.rs:16`). So a `!Send` runtime type
+/// — `TokioLocal`, `SmolLocal` — is refused by quinn regardless of what our
+/// own seam allows. Build with `--features must-fail` to see it.
+#[cfg(feature = "must-fail")]
+mod local_is_refused {
+    use super::*;
+
+    struct NotSendRt(#[allow(dead_code)] std::rc::Rc<()>);
+
+    impl Spawn<Pin<Box<dyn Future<Output = ()> + Send>>> for NotSendRt {
+        fn spawn(&self, f: Pin<Box<dyn Future<Output = ()> + Send>>) {
+            drop(f);
+        }
+    }
+
+    impl std::fmt::Debug for NotSendRt {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("NotSendRt")
+        }
+    }
+
+    #[allow(dead_code)]
+    fn check() {
+        let _: Arc<dyn quinn::Runtime> = Arc::new(SeamRuntime {
+            inner: quinn::TokioRuntime,
+            rt: NotSendRt(std::rc::Rc::new(())),
+        });
+    }
 }
