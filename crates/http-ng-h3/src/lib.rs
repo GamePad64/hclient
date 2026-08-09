@@ -118,7 +118,20 @@ struct Pooled {
 }
 
 struct Shared {
-    endpoint: Mutex<Option<quinn::Endpoint>>,
+    /// One endpoint per address family, bound on first use.
+    ///
+    /// **Not one dual-stack v6 endpoint serving both**, which is the
+    /// tempting shape and the wrong one. A wildcard v6 socket reaches a v4
+    /// peer only through v4-mapped addresses, and this workspace has just
+    /// finished documenting what dual-stack costs on that path: `IP_RECVTOS`
+    /// is unsupported on dual-stack sockets on macOS and iOS
+    /// (`quinn-udp-0.5.15/src/unix.rs:114`), so such an endpoint reports
+    /// `ecn: false` there — for *every* connection, including the v4 ones
+    /// that would have had ECN on a socket of their own.
+    ///
+    /// Two endpoints cost one extra `UdpSocket` on a host that talks to
+    /// both families, and nothing at all on a host that talks to one.
+    endpoints: Mutex<HashMap<bool, quinn::Endpoint>>,
     conns: Mutex<HashMap<PoolKey, Pooled>>,
 }
 
@@ -228,7 +241,7 @@ where
             caps: capabilities(early_data),
             keep_alive: Some(DEFAULT_KEEP_ALIVE),
             shared: Arc::new(Shared {
-                endpoint: Mutex::new(None),
+                endpoints: Mutex::new(HashMap::new()),
                 conns: Mutex::new(HashMap::new()),
             }),
         })
@@ -343,21 +356,24 @@ where
     /// requires being inside the runtime — and a client is usually built
     /// outside one. `TokioHandle` carries its handle and does not have that
     /// constraint, but `H3` is generic and cannot assume it.
-    fn endpoint(&self) -> Result<quinn::Endpoint, Error> {
-        let mut slot = self
+    fn endpoint(&self, peer: SocketAddr) -> Result<quinn::Endpoint, Error> {
+        let v6 = peer.is_ipv6();
+        let mut slots = self
             .shared
-            .endpoint
+            .endpoints
             .lock()
             .expect("endpoint mutex poisoned");
-        if let Some(e) = slot.as_ref() {
+        if let Some(e) = slots.get(&v6) {
             return Ok(e.clone());
         }
-        // `[::]:0` with a v4-mapped fallback: one endpoint socket serves
-        // every destination, so it is bound once and to the wildcard.
-        let bound = runtime::endpoint(&self.rt, SocketAddr::from(([0u8; 16], 0)))
-            .or_else(|_| runtime::endpoint(&self.rt, SocketAddr::from(([0, 0, 0, 0], 0))))
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-        *slot = Some(bound.clone());
+        let wildcard = if v6 {
+            SocketAddr::from(([0u8; 16], 0))
+        } else {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        };
+        let bound =
+            runtime::endpoint(&self.rt, wildcard).map_err(|e| Error::new(ErrorKind::Connect, e))?;
+        slots.insert(v6, bound.clone());
         Ok(bound)
     }
 
@@ -409,7 +425,7 @@ where
             ech: None,
             early_data: key.early_data,
         })?;
-        let endpoint = self.endpoint()?;
+        let endpoint = self.endpoint(addr)?;
         let mut cfg = quinn::ClientConfig::new(crypto);
         if let Some(d) = self.keep_alive {
             let mut transport = quinn::TransportConfig::default();
@@ -567,5 +583,115 @@ where
 
     fn capabilities(&self) -> &Capabilities {
         &self.caps
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Never called: `H3::new` reads `offers_early_data` and nothing else,
+    /// so a stub is enough to construct one and look at what it decided.
+    #[derive(Debug)]
+    struct StubTls(bool);
+
+    impl http_ng_tls::TlsIdentity for StubTls {
+        fn config_id(&self) -> TlsConfigId {
+            TlsConfigId::no_tls()
+        }
+    }
+
+    impl QuicTlsConnect for StubTls {
+        fn quic_client_config(
+            &self,
+            _: QuicTlsRequest<'_>,
+        ) -> Result<Arc<dyn quinn_proto::crypto::ClientConfig>, Error> {
+            unreachable!("this stub never connects")
+        }
+        fn offers_early_data(&self) -> bool {
+            self.0
+        }
+    }
+
+    fn h3(tls: StubTls) -> H3<(), StubTls, ()> {
+        H3::new((), tls, ()).expect("H3::new does no I/O")
+    }
+
+    #[test]
+    fn a_pooled_connection_is_kept_alive_by_default() {
+        // The DEFAULT, which `tests/live.rs`'s idle A/B cannot reach: both
+        // of its arms set the interval explicitly, because a 1000 ms server
+        // idle timeout is the only way to run that test in three seconds
+        // and `DEFAULT_KEEP_ALIVE` is five. So without this, flipping the
+        // default to `None` passes every live test — measured, mutation M9.
+        //
+        // The default matters as much as the mechanism: a pooled QUIC
+        // connection that nobody pings dies between requests, and a
+        // transport that pooled connections and did not keep them alive
+        // would pay for a pool it could not use.
+        assert_eq!(h3(StubTls(false)).keep_alive, Some(DEFAULT_KEEP_ALIVE));
+        assert!(h3(StubTls(false)).without_keep_alive().keep_alive.is_none());
+        assert_eq!(
+            h3(StubTls(false))
+                .keep_alive_interval(std::time::Duration::from_millis(7))
+                .keep_alive,
+            Some(std::time::Duration::from_millis(7))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_is_bound_in_the_peers_address_family() {
+        // Not observable from outside the crate, and that is the whole
+        // reason it is tested from inside: a wildcard v6 socket reaches
+        // 127.0.0.1 through a v4-mapped address and every live test here
+        // passes either way (measured — mutation M16 survives the entire
+        // integration suite). What it costs is invisible in the same way:
+        // on macOS a dual-stack socket cannot ask for `IP_RECVTOS`, so one
+        // shared v6 endpoint would report `ecn: false` for the v4
+        // connections too.
+        let h3: H3<_, _, http_ng_dns::IpLiteralOnly> = H3::new(
+            http_ng_rt_tokio::TokioHandle::current().unwrap(),
+            StubTls(false),
+            http_ng_dns::IpLiteralOnly,
+        )
+        .unwrap();
+
+        let v4 = h3
+            .endpoint(SocketAddr::from(([127, 0, 0, 1], 443)))
+            .expect("a v4 wildcard bind");
+        assert!(
+            v4.local_addr().unwrap().is_ipv4(),
+            "a v4 peer must be reached from a v4 socket, not through a mapped address"
+        );
+
+        let Ok(v6) = h3.endpoint(SocketAddr::from(([0u8; 16], 443))) else {
+            eprintln!("skipped the v6 half: this host has no IPv6");
+            return;
+        };
+        assert!(v6.local_addr().unwrap().is_ipv6());
+        assert_ne!(
+            v4.local_addr().unwrap(),
+            v6.local_addr().unwrap(),
+            "two families, two endpoints"
+        );
+
+        // And each is bound once: a second ask for the same family returns
+        // the same socket rather than leaking one per request.
+        let again = h3
+            .endpoint(SocketAddr::from(([127, 0, 0, 1], 8443)))
+            .unwrap();
+        assert_eq!(again.local_addr().unwrap(), v4.local_addr().unwrap());
+    }
+
+    #[test]
+    fn early_data_is_read_from_the_tls_backend_not_from_a_constant() {
+        // Both directions, because a constant would be right half the time
+        // and this is the capability whose over-claim costs replay
+        // exposure rather than a lost optimisation.
+        assert_eq!(
+            h3(StubTls(true)).caps.early_data,
+            EarlyDataSupport::Supported
+        );
+        assert_eq!(h3(StubTls(false)).caps.early_data, EarlyDataSupport::None);
     }
 }

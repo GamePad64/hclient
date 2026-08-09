@@ -93,26 +93,23 @@ async fn the_socket_refuses_a_gso_batch_it_cannot_send() {
     );
 }
 
-#[tokio::test]
-async fn ecn_is_reported_from_the_kernel_not_assumed() {
-    // A socket that CLAIMS ECN must actually carry it: send an `Ect0` to
-    // ourselves and read the codepoint back off the receive metadata.
-    //
-    // The mutation this kills is `caps.ecn = true` hardcoded — on a kernel
-    // without `IP_RECVTOS` the claim would then be false and this test
-    // fails. **On a kernel that has it, the mutant survives**, which is a
-    // property of the environment rather than of the test: see
-    // `docs/v03-acceptance.md`. What it does pin everywhere is the other
-    // direction — a socket that reports `ecn: false` must not be silently
-    // fabricating codepoints on the way in.
-    let a = bind();
-    let b = bind();
-    let to = b.local_addr().unwrap();
-
+/// Send an `Ect0` from `a` to `b` and check that what `b` reports agrees
+/// with what `b` claims.
+///
+/// Both directions are checked, and only one of them is about ECN working:
+/// a socket that **claims** ECN must deliver the codepoint that was sent,
+/// and a socket that does **not** claim it must report `None` rather than a
+/// plausible-looking value. The second half is the one that matters most —
+/// an invented `Ect0` would feed a congestion controller evidence of a mark
+/// that never happened.
+async fn ecn_claim_matches_reality(
+    a: &http_ng_rt_tokio::TokioUdpSocket,
+    b: &http_ng_rt_tokio::TokioUdpSocket,
+) {
     send(
-        &a,
+        a,
         &Datagrams {
-            destination: to,
+            destination: b.local_addr().unwrap(),
             src_ip: None,
             ecn: Some(EcnCodepoint::Ect0),
             segment_size: None,
@@ -145,6 +142,43 @@ async fn ecn_is_reported_from_the_kernel_not_assumed() {
             "a socket that does not claim ECN must report the absence, never a plausible value"
         );
     }
+}
+
+#[tokio::test]
+async fn ecn_is_reported_from_the_kernel_not_assumed() {
+    let (a, b) = (bind(), bind());
+    ecn_claim_matches_reality(&a, &b).await;
+}
+
+#[tokio::test]
+async fn ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too() {
+    // The v4 case above cannot distinguish "asked the kernel" from "assumed
+    // Linux" — on this kernel both answers are `true`, so a hardcoded
+    // `ecn: true` survives it. **A dual-stack v6 socket is the case where
+    // they come apart**, and it is not hypothetical: `quinn-udp`'s own unix
+    // backend carries "mac and ios do not support IP_RECVTOS on dual-stack
+    // sockets" (`unix.rs:114`), so on the macOS runner already in this
+    // project's matrix the honest answer here is `false` while a hardcoded
+    // `true` would be a claim the socket cannot keep.
+    //
+    // That is why the report is a method on the SOCKET rather than a const
+    // on the runtime: two sockets from one runtime, on one machine, in one
+    // process, differ.
+    let Ok(a) = http_ng_rt_tokio::Tokio.bind(SocketAddr::from(([0u8; 16], 0))) else {
+        // No IPv6 on this host at all — not a failure of anything under
+        // test, and skipping is honest where pretending would not be.
+        eprintln!("skipped: this host has no IPv6 loopback");
+        return;
+    };
+    let b = http_ng_rt_tokio::Tokio
+        .bind(SocketAddr::from(([0u8; 16], 0)))
+        .expect("the first v6 bind succeeded, so the second must too");
+    println!(
+        "dual-stack v6 socket reports ecn={} (v4 socket reports {})",
+        b.caps().ecn,
+        bind().caps().ecn
+    );
+    ecn_claim_matches_reality(&a, &b).await;
 }
 
 #[tokio::test]

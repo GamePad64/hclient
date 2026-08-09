@@ -1273,6 +1273,7 @@ dependencies = [
  "http-ng-tls-rustls",
  "pin-project-lite",
  "quinn",
+ "quinn-proto",
  "rcgen",
  "rustls",
  "thiserror",
