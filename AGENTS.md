@@ -364,11 +364,11 @@ resolves *after* the response body (8.63 ms against 8.58 ms, measured), so
 it is a `Shared` future, and a rejection is replayed by the transport
 rather than surfaced. `425 Too Early` is the third failure path and is not
 the transport's: a `425` leaves `http-ng-h3` untouched, with a test pinning
-it. Whoever writes the client-side retry owes one line back —
-`AllowEarlyData` must be removed from the replayed request, because the mark
-is part of the pool key, so a marked replay would ask for the early-data
-connection and, if that one has since been evicted, would go out in early
-data against the very server that refused to risk it.
+it. The one line it owed back — `AllowEarlyData` removed from the replayed
+request, because the mark is part of the pool key, so a marked replay would
+ask for the early-data connection and, if that one had since been evicted,
+would go out in early data against the very server that refused to risk it
+— is paid, in `Client::run`'s `425` branch.
 
 **Response decompression landed in v0.2 (W5), inside `Client` and behind
 the `gzip` and `brotli` features** (off by default, `json`'s precedent: a
@@ -453,18 +453,29 @@ requests and the caller getting the second `425`, and a 600 ms bound
 against 400 ms answers ending in `Timeout(Total)` with two requests on the
 server.
 
-Two things worth knowing before touching the neighbourhood. **The replay
-is not yet stripped of its early-data mark, and that duty stopped being
-vacuous when HTTP/3 landed.** This paragraph read "no transport here can
-put a request into early data yet (HTTP/3 is not in this tree)" when it was
-written, and both halves were true of the branch it was written on; the two
-branches merged in the other order. `http-ng-h3` offers early data for a
-request carrying `http_ng_core::AllowEarlyData`, so `Client::run`'s `425`
-branch owes RFC 8470 §5.2 one line — `hp.extensions.remove::<AllowEarlyData>()`
-before `send_hop` — and does not yet pay it. The site is marked in
-`client.rs` with the comment that predicted it.
+Two things worth knowing before touching the neighbourhood. **The replay is
+stripped of its early-data mark, and that duty was vacuous for exactly one
+merge.** This paragraph read "no transport here can put a request into early
+data yet (HTTP/3 is not in this tree)" when it was written, and both halves
+were true of the branch it was written on; the two branches merged in the
+other order, which turned a note for later into a live RFC 8470 §5.2 MUST
+NOT on `main`. It is one line —
+`retry.extensions.remove::<AllowEarlyData>()` — and it is in `Client::run`'s
+`425` branch now.
 
-It is worth knowing *why* the gap is real rather than theoretical, because
+**Stripped on a clone of the hop, so the mark survives to the next hop**,
+and that is a decision rather than an implementation detail. A redirect
+after a `425` is a different request, and the caller marked it too; the
+client withdrawing that opt-in for the rest of the chain would be a silent
+downgrade nothing announces, where the cost of keeping it is bounded and
+self-correcting — the next hop that meets a `425` gets its own replay.
+Three tests read the mark at the transport boundary, and between them make
+four claims: the first attempt carries it, the replay does not, the hop
+after a replayed `425` does, and a redirect chain that never sees a `425`
+keeps it throughout. The last of those exists because the mutant that
+strips on every response rather than on a `425` passed the other three.
+
+It is worth knowing *why* the strip is real rather than theoretical, because
 the obvious argument says otherwise: by the time a `425` comes back the
 handshake completed long ago, and streams opened afterwards are 1-RTT
 whatever the request asks for. True — of the connection `http-ng-h3`

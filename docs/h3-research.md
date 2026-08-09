@@ -803,15 +803,28 @@ of it from the server's side of the wire — including the control where a
 server wedged on `425` must produce two requests rather than a loop, and
 the budget test where answers cost 400 ms each under a 600 ms bound.
 
-Two things follow for whoever builds the other two rows.
+Two things follow, and the first of them was true in this document for
+exactly one merge.
 
-**"Not in early data" is owed vacuously today.** No transport in this
-workspace can put anything into early data, so the replay satisfies RFC
-8470 §5.2 by there being nothing to satisfy. What keeps it true once one
-can is the admission bullet above: a request carrying no mark cannot end up
-in early data, so the replay must be built without the mark. The site that
-has to strip it is named in the call-site comment rather than left to be
-rediscovered here.
+**"Not in early data" was owed vacuously — until it wasn't.** When the
+`425` branch was written no transport here could put anything into early
+data, so the replay satisfied RFC 8470 §5.2 by there being nothing to
+satisfy, and what the branch carried was the invariant plus the site a
+future strip would go at. `http-ng-h3` merged first and `AllowEarlyData`
+with it, which turned that note into a live MUST NOT violation on `main`
+for the length of one commit. It is now paid, in `Client::run`'s `425`
+branch: `retry.extensions.remove::<AllowEarlyData>()`, on a clone of the
+hop, so the mark still reaches the next redirect hop — a different request,
+which the caller marked too, and whose own `425` would get its own replay.
+
+The reason the line is not decoration is worth keeping, because the
+argument against it is nearly right: by the time a `425` arrives the
+handshake finished long ago, so a further stream is 1-RTT whatever the
+request asks for — true only of the connection h3 happens to still have
+pooled. The mark is part of the pool key, so a marked replay asks for the
+early-data entry specifically; evicted, closed by the peer or timed out,
+and the replay opens a fresh connection with `into_0rtt`, back into early
+data against the server that has just refused to risk it.
 
 **And the trap, stated once more because it is now two lines of code
 apart from its victim.** `retry_kind()` is what the `425` branch consults,

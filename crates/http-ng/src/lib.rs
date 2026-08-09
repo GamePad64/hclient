@@ -89,9 +89,17 @@ pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
 // `Client::capabilities()` forwarder (`client.rs`) instead of re-exporting
 // the trait: the most common question about `Capabilities` is answered,
 // the quarantine stays a quarantine.
+// `AllowEarlyData` and `EarlyDataSupport` are on this list for the reason
+// every other capability type is, and one of their own: `AllowEarlyData` is
+// a value the CALLER puts on a request — it is the only thing that can
+// admit a request to 0-RTT, and `Client::run`'s `425` branch is what takes
+// it back off a replay — so a facade that names `TimeoutSupport` and
+// `UpgradeSupport` while making callers reach past it into `http-ng-core`
+// for this one would be arbitrary.
 pub use http_ng_core::{
-    Capabilities, DecompressionSupport, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
-    RetryKind, RewindFactory, TimeoutSupport, TlsSupport, UnsupportedCapability, UpgradeSupport,
+    AllowEarlyData, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
+    RedirectSupport, RequestBody, RetryKind, RewindFactory, TimeoutSupport, TlsSupport,
+    UnsupportedCapability, UpgradeSupport,
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;
