@@ -196,10 +196,16 @@ fn caps_that_stream() -> http_ng_core::Capabilities {
 /// Firefox-side assertion below reads the invented `Content-Type` and the
 /// stringified text instead, and why the drain-based tests gate on this
 /// function rather than trying to assert something weaker everywhere.
+///
+/// Reads the raw probe rather than `Capabilities::streaming_request_body`,
+/// deliberately. This is a question about the ENGINE — "can these
+/// assertions be made here at all" — and it must stay true even while the
+/// capability derived from it is what a mutation moves. Gating on the
+/// capability would let `probe()` be frozen to `true` and quietly skip the
+/// corruption test on Firefox, which is exactly the mutation the suite has
+/// to catch.
 fn browser_streams() -> bool {
-    http_ng_fetch::Fetch::new()
-        .capabilities_for_test()
-        .streaming_request_body
+    http_ng_fetch::testing::supports_streaming_request_body_for_test()
 }
 
 /// The corruption itself, reproduced in whichever browser has it — the
@@ -749,6 +755,36 @@ fn nonempty_body_on_get_is_rejected_not_silently_sent() {
         .body(RequestBody::Full(Bytes::from_static(b"nope")))
         .unwrap();
     let err = http_ng_fetch::testing::to_web_request(&f, req).unwrap_err();
+    assert!(
+        matches!(err.kind(), http_ng_core::ErrorKind::Unsupported),
+        "{err}"
+    );
+    assert!(err.to_string().contains("GET"), "{err}");
+}
+
+/// The same rule for a body whose length nobody knows yet.
+///
+/// W6 widened this guard from `matches!(resolved, ResolvedBody::Full(_))`
+/// to "any arm that is not `None`", and this test is what holds the widened
+/// form in place: a `RequestBody::Streaming` on a `GET` is still a body as
+/// far as the `Request` constructor is concerned, and fetch throws on it
+/// however the body is expressed. Under the pre-W6 shape this conversion
+/// would succeed and the browser would throw later, at a point where the
+/// error is no longer ours to type.
+///
+/// Runs against `caps_that_stream()`, so it exercises the guard in both
+/// engines rather than only where the real probe says `true` — otherwise
+/// the streaming arm would exit at the capability check above and never
+/// reach the method check at all.
+#[wasm_bindgen_test]
+fn a_streaming_body_on_get_is_rejected_just_as_a_buffered_one_is() {
+    let req = http::Request::builder()
+        .method("GET")
+        .uri("https://example.com/")
+        .body(streaming_body())
+        .unwrap();
+    let err =
+        http_ng_fetch::testing::to_web_request_with_caps(req, &caps_that_stream()).unwrap_err();
     assert!(
         matches!(err.kind(), http_ng_core::ErrorKind::Unsupported),
         "{err}"
