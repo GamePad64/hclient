@@ -239,4 +239,90 @@ input on the path that decides **which host is contacted** — the same
 sentence `http-ng-idn` is written under. `svcb.rs` already refuses a record
 that makes an unrecognised key mandatory (`RECOGNISED_KEYS`, `:54`), and
 that refusal is the thing to keep rather than relax when the list is
-revisited for `dohpath` in W4.
+revisited for `dohpath` in W3.
+
+---
+
+## W3 — DoH, and the bootstrap that is the actual problem
+
+**Why here, and why it is not a vertical.** v0.2 deferred DoH in one line:
+*"needs an HTTP client to resolve names for an HTTP client. The bootstrap is
+the design problem, not the protocol."* That line is the work item. It is
+next to W2 because it is the same theme — it is the answer for every
+platform whose system resolver cannot ask for an HTTPS record, which is
+Windows 10, wasm, and anything behind a stub resolver that drops type 65.
+Without it, tier 2 discovery is a Linux-and-macOS-and-Windows-11 feature.
+
+**The bootstrap, in the four shapes it can take.** The decision belongs in
+this document; the code does not follow from it automatically, but the wrong
+choice is expensive to walk back because it shows in the constructor.
+
+1. **An IP-literal endpoint** — `https://1.1.1.1/dns-query`. No bootstrap at
+   all, and `IpLiteralOnly` already exists as the resolver for exactly this
+   shape. It needs a certificate with an IP SAN and a verifier that accepts
+   one. *Unverified*: whether `rustls-platform-verifier` accepts an IP SAN
+   on each of the three platforms in the matrix. One live request settles
+   it, per platform.
+2. **The system resolver, once, for the DoH host** — then DoH for
+   everything else. Cheap, and the failure mode is a cycle (below).
+3. **Caller-supplied bootstrap addresses** for the DoH host. Always
+   available, always someone else's problem, and the right default for a
+   build that has no system resolver at all.
+4. **RFC 9461 `dohpath`** — SVCB key 7, which `svcb.rs` deliberately does
+   **not** recognise today (`RECOGNISED_KEYS`, `crates/http-ng-dns-system/src/svcb.rs:54`,
+   and its comment names `dohpath` as the example of a key that is real,
+   registered, and acted on by nothing here). Discovering a DoH endpoint by
+   DNS to avoid using DNS is circular for the *first* lookup and useful for
+   every one after it; it is not a first cut.
+
+**The cycle, and the claim that it need not be a runtime guard.** A DoH
+resolver whose own client resolves through the same DoH resolver is an
+infinite regress. The interesting claim is that **the type system already
+refuses it**: a `Doh<C>` parameterised by the client it uses makes
+`Native<R, T, Doh<Client<Native<R, T, Doh<…>>>>>` an infinitely-sized type,
+which is a compile error rather than a stack overflow at run time. This is
+*unverified* — nobody has written the type — and the check is to write it
+and read the error, which must be a recursion or size error rather than an
+accepted definition. It also has a named escape hatch that must be recorded
+next to the claim: **any `Arc<dyn Resolve>` erasure reopens the cycle**, so
+the guard is a property of not erasing, and a later convenience that boxes
+the resolver would remove it silently.
+
+**Deliverable.** `http-ng-dns-doh`: a `Resolve` implementation over any
+`Transport`, answering `lookup_ips` and — the point of the crate —
+`lookup_svcb` with `supports_svcb() == true`, filling `ResolvedAddr::ttl`
+from the answer, with the bootstrap chosen from the list above and stated in
+the constructor rather than in prose.
+
+**Premises.**
+
+| claim | how to refute it | status |
+|---|---|---|
+| The DNS codec would have to be chosen, and hickory-proto is the candidate the spec named | **The codec is already in this tree.** `dns-message-parser = "0.9"` is a normal dependency of `http-ng-dns-system` (`Cargo.toml:18`), decodes HTTPS RR (type 65 — `rr/enums.rs:203`, `rr/draft_ietf_dnsop_svcb_https.rs`), and has an `encode()` on its message type. `svcb.rs`'s module doc records why it was chosen: no `unsafe` in its `src`, and name decompression that terminates by tracking visited offsets | measured here |
+| Reaching for `hickory-proto` instead is a small cost | **No.** `cargo tree -p http-ng-dns-hickory -e normal` is **92 unique crates** against **25** for `http-ng-dns-system`, and it brings back `url`, `idna` and the ICU data crates — the graph `http-ng-proto` spent a whole task removing. `hickory-proto`'s `std` feature includes `url/std` | measured here |
+| `dns-message-parser` can encode a *query*, not only decode a response | The decode path is what `http-ng-dns-system` uses; the encode path is used by nothing here. Check: build a `Dns` with one question for `A`/`HTTPS`, call `encode()`, and compare the bytes against `dig +qr` | **unverified** |
+| A cert with an IP SAN validates through the default verifier | One request to an IP-literal DoH endpoint, on each of the three matrix platforms | **unverified** |
+| The cycle is a compile error rather than a runtime guard | Write the recursive type and read the error | **unverified**, and the escape hatch (`dyn Resolve`) is named above |
+| DoH over HTTP/1.1 is adequate | RFC 8484 says HTTP/2 SHOULD be used; our h2 is a feature and off by default, and the pool hands an h2 connection out **exclusively** (`crates/http-ng-native/src/pool.rs:155`), so h2 buys nothing for concurrent queries here either. The honest consequence is one connection per outstanding query on the default build | reasoned here from measured facts; the *latency* cost is **unverified** |
+
+**Watch for.** Three.
+
+*A resolver's client is not the user's client.* It must not carry the
+caller's cookie jar, redirect policy, or `Authorization`. Whatever
+constructor exists has to make the shared-`Client` case the awkward one
+rather than the default, or the first bug report is a cookie sent to a DNS
+provider.
+
+*The TTL is the first consumer of a field nothing reads.* `ResolvedAddr::ttl`
+has been filled by hickory and read by nobody since v0.2 (W2's premises).
+DoH is the first place a cache could be ours rather than the OS's, and it is
+also the first place where getting it wrong is a stale-address bug rather
+than a redundancy.
+
+*The `wasm` case is the one that would justify the whole crate, and it is
+the one nobody can test cheaply.* In a browser the transport is `fetch`,
+which cannot see DNS at all — so DoH is the only name resolution a wasm
+build could ever have. Whether that is useful, given that `fetch` resolves
+names itself, is a design question this document does not answer: it would
+matter for a wasm build that wants an HTTPS record's `alpn` or ECH, and
+`fetch` gives access to neither.
