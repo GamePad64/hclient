@@ -7,6 +7,21 @@ hooks = [
     { id = "end-of-file-fixer" },
 ]
 
+# `actionlint` replaces `check_workflow_structure.py`, which was written
+# after a merged step (one mapping carrying both `uses:` and `run:`) made
+# Actions reject the whole file with no job log and no message beyond
+# "this run likely failed because of a workflow file issue". actionlint
+# catches that class and a great deal more, including shellcheck over the
+# `run:` blocks — several hundred lines of bash that nothing checked.
+#
+# `language = "golang"` so prek builds it itself: it is a Go binary, not a
+# crate, so `cargo binstall` cannot fetch it and `bins:` in CI cannot
+# either.
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.12"
+hooks = [{ id = "actionlint" }]
+
 [[repos]]
 repo = "local"
 hooks = [

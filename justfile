@@ -103,6 +103,18 @@ tree-ambient:
     cargo deny --manifest-path crates/http-ng-wasi/Cargo.toml \
         --config .github/deny/ambient.toml -t wasm32-wasip2 check bans
 
+# `cargo hack --each-feature` enumerates combinations instead of listing
+# them. Two crates are excluded because their features are not independent:
+# `http-ng-idn` needs at least one backend and `http-ng-rt-embassy`'s
+# `smoltcp` needs at least one protocol and medium, both enforced with a
+# `compile_error!`, so isolating one feature is a build they refuse.
+
+# every feature combination compiles (62 of them)
+features:
+    cargo hack --workspace \
+        --exclude http-ng-idn --exclude http-ng-rt-embassy \
+        --each-feature --no-dev-deps check
+
 # advisories, licences and sources for the shipped graph
 supply-chain:
     cargo deny --all-features check

@@ -578,13 +578,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # `actionlint`, the official image, rather than a hand-written
+      # validator. It catches the class that once made Actions reject this
+      # whole file — a step carrying both `uses:` and `run:` — with a line
+      # number and a message, and it runs shellcheck over the `run:`
+      # blocks, which nothing did before. Verified by mutation: reinstating
+      # the merged step is reported at the exact line.
+      - uses: docker://rhysd/actionlint:1.7.12
       - name: workflows are valid YAML and valid workflows
         run: |
           set -euo pipefail
           python3 -c "import yaml" 2>/dev/null || \
             python3 -m pip install --quiet --break-system-packages pyyaml || \
             python3 -m pip install --quiet pyyaml
-          python3 .github/scripts/check_workflow_structure.py
+          # Replaced by `actionlint`, which runs as a prek hook and as the
+          # step below. See docs/ci.md.
       - name: no Send/Sync bounds declared in the core surface
         shell: bash
         run: |
@@ -637,7 +645,7 @@ jobs:
       - uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-          bins: cargo-deny
+          bins: cargo-deny,cargo-hack
       # Supply chain: RUSTSEC advisories, licence policy and source policy.
       # Neither question had any check here before; `deny.toml` carries the
       # policy and its reasoning.
@@ -701,6 +709,26 @@ jobs:
       # The `cookies` feature is off by default because `http-ng-cookie`'s
       # compiled-in public suffix list is +77 KiB — a claim nothing checked
       # until here. Exact analogue of the `idna`/ICU guard above.
+      # `cargo hack --each-feature` enumerates feature combinations — 62 of
+      # them — instead of the four-entry list this replaced, which had to be
+      # remembered and was twice wrong: `http-ng-native`'s h1-only build
+      # went uncompiled from the moment h2 landed behind a feature, and
+      # `http-ng-rt-embassy`'s default build likewise.
+      #
+      # Two crates are excluded, and not for convenience: their features are
+      # not independent. `http-ng-idn` needs at least one backend and says
+      # so with a `compile_error!`; `http-ng-rt-embassy` forwards to
+      # `smoltcp`, which demands at least one protocol and one medium the
+      # same way. Isolating one feature of either is a build the crate
+      # deliberately refuses, so those two keep the targeted checks they
+      # already have.
+      - name: every feature combination compiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo hack --workspace \
+            --exclude http-ng-idn --exclude http-ng-rt-embassy \
+            --each-feature --no-dev-deps check
       - name: the default http-ng build carries no cookie jar
         shell: bash
         run: |
