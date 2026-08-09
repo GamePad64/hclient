@@ -26,6 +26,15 @@ proptest       = "1"
 http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0", default-features = false }
 http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
 http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
+# Default features left ON, unlike `http-ng-proto` above: that crate's
+# default (`idn`) is what `http-ng` forwards as a feature of its own, while
+# this one's (`public-suffix`) is what makes `Domain=co.uk` a refusal
+# rather than a cookie shared across every registrant under `.uk`. Turning
+# it off does not make the jar smaller in any way a consumer of `http-ng`
+# asked for — it makes it host-only, which is a different jar, not a
+# cheaper one. A consumer who wants that build takes `http-ng-cookie`
+# directly.
+http-ng-cookie = { path = "crates/http-ng-cookie", version = "0.1.0" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 assert_matches = "1.5"

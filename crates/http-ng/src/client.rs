@@ -23,6 +23,11 @@ pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
     /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
     timer: Tm,
     config: Config,
+    /// The jar itself, on its way to `Inner`. `Config` carries only the
+    /// bit that says one was asked for — see `Config::cookies` for why the
+    /// two halves live apart.
+    #[cfg(feature = "cookies")]
+    jar: Option<http_ng_cookie::CookieJar>,
 }
 
 /// `Tm` fixed to [`crate::DefaultClock`], not generic: a `new` over any
@@ -37,6 +42,8 @@ impl<T: Transport> ClientBuilder<T, crate::DefaultClock> {
             transport,
             timer: crate::DefaultClock::default(),
             config: Config::default(),
+            #[cfg(feature = "cookies")]
+            jar: None,
         }
     }
 }
@@ -170,7 +177,62 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
                 total: Some(total),
                 ..self.config
             },
+            // Carried over, not dropped: this method changes the clock and
+            // nothing else, and a jar silently lost by adding a timeout
+            // would be the exact class of defect `base_url` and
+            // `timeouts` were each caught being once.
+            #[cfg(feature = "cookies")]
+            jar: self.jar,
         }
+    }
+
+    /// Keep cookies: attach `Cookie` to every request this client sends,
+    /// and store every `Set-Cookie` it gets back.
+    ///
+    /// `.cookie_jar(CookieJar::new())` is the "just turn it on" form; the
+    /// argument is there because a jar is worth configuring
+    /// ([`Limits`](http_ng_cookie::Limits), a fresher public suffix list)
+    /// and worth restoring from disk, and a `bool` could express neither.
+    /// The jar is shared by every clone of the built client — it is state,
+    /// not configuration, and [`Client::cookies`] is how to read it back
+    /// out.
+    ///
+    /// **Against a transport that keeps its own jar this is an error at
+    /// [`build`](Self::build)**, not a setting that quietly does the work
+    /// twice — see `config::check_cookies_supported` for what "twice"
+    /// actually costs. `http-ng-fetch` is the backend that reports it.
+    ///
+    /// The rules are RFC 6265bis and they live in `http-ng-cookie`, which
+    /// has no clock and no I/O; what this crate adds is the three things a
+    /// jar cannot do for itself — deciding *when* (`Client::run`, once per
+    /// redirect hop rather than once per operation), deciding *whether*
+    /// (the capability gate above), and supplying a `now`.
+    ///
+    /// **The `now` is `SystemTime::now()`, read once per operation, and
+    /// not the client's [`Timer`].** That is a deliberate difference from
+    /// the total timeout one method up, and the reason is in the two
+    /// clocks' shapes: `Timer::Instant` is `Copy + PartialOrd` with an
+    /// `elapsed_since` — a stopwatch with no epoch — while `Expires` is a
+    /// calendar date, and no amount of elapsed time names one. Anchoring a
+    /// wall clock once and advancing it with `Timer::elapsed_since` would
+    /// use the client's clock, and would freeze outright for
+    /// [`NoClock`](crate::NoClock), whose `elapsed_since` is
+    /// `Duration::ZERO` for ever: every `Expires` in the future, every
+    /// deletion ignored, silently. A clockless client can configure a jar
+    /// — nothing about cookies needs a timer — so that is not a
+    /// hypothetical.
+    ///
+    /// One consequence worth knowing before it surprises anyone:
+    /// `SystemTime::now()` **panics on `wasm32-unknown-unknown`**, where
+    /// `std` has no clock at all. That target is also the one whose
+    /// transport is refused above, so the combination that would reach the
+    /// panic is a browser build driving some transport other than the
+    /// browser's own.
+    #[cfg(feature = "cookies")]
+    pub fn cookie_jar(mut self, jar: http_ng_cookie::CookieJar) -> Self {
+        self.config.cookies = true;
+        self.jar = Some(jar);
+        self
     }
 
     /// Checks the configuration against the transport's capabilities. Not
@@ -186,6 +248,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
             inner: std::sync::Arc::new(Inner {
                 transport: self.transport,
                 timer: self.timer,
+                #[cfg(feature = "cookies")]
+                cookies: self.jar.map(std::sync::Mutex::new),
             }),
             config: self.config,
         })
@@ -242,6 +306,18 @@ pub struct Client<T, Tm = crate::DefaultClock> {
 struct Inner<T, Tm> {
     transport: T,
     timer: Tm,
+    /// The cookie jar, if one was asked for — **here and not in `Config`**
+    /// for the reason the `Config::cookies` bit records: a jar is shared
+    /// state, and `Config` is cloned per handle.
+    ///
+    /// `Mutex` rather than `RefCell` because a `Client` is meant to cross
+    /// a `tokio::spawn`, and `!Sync` here would take that away from every
+    /// client whether or not it keeps cookies. The lock is held across no
+    /// `.await` at all — `cookie_header` and `store_response` are pure
+    /// functions of the jar, the URI and a `now`, which is what the
+    /// sans-io shape of `http-ng-cookie` buys here.
+    #[cfg(feature = "cookies")]
+    cookies: Option<std::sync::Mutex<http_ng_cookie::CookieJar>>,
 }
 
 /// Cloning shares the transport and the clock; it does not duplicate them.
@@ -338,6 +414,32 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// it would require `Transport` in a `use`.
     pub fn capabilities(&self) -> &Capabilities {
         self.inner.transport.capabilities()
+    }
+
+    /// This client's cookie jar, if it was given one — locked for as long
+    /// as the guard is held.
+    ///
+    /// `None` when no jar was configured. That is the same answer for
+    /// "cookies were never switched on" and for "the transport keeps its
+    /// own", because the second case never gets past
+    /// [`ClientBuilder::build`] and so cannot reach this method at all.
+    ///
+    /// The guard is the API rather than a snapshot: persisting a jar
+    /// ([`CookieJar::iter`](http_ng_cookie::CookieJar::iter)) and seeding
+    /// one from disk are both wanted, and a `Vec<Cookie>` copy would
+    /// answer only the first. Every clone of this client shares the jar
+    /// behind it, so a guard held across an `.await` blocks that client's
+    /// other requests — hold it to read, not to work.
+    ///
+    /// A poisoned lock is recovered rather than propagated
+    /// (`PoisonError::into_inner`): the jar is a `Vec` of parsed cookies,
+    /// a panic while holding it cannot leave it half-written in any sense
+    /// this type can observe, and a client that stopped sending cookies
+    /// because an unrelated task panicked would be a worse answer than a
+    /// slightly stale jar.
+    #[cfg(feature = "cookies")]
+    pub fn cookies(&self) -> Option<std::sync::MutexGuard<'_, http_ng_cookie::CookieJar>> {
+        Some(lock(self.inner.cookies.as_ref()?))
     }
 
     pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T, Tm> {
@@ -565,9 +667,27 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         let redirect = redirect.unwrap_or_default();
 
+        // Read once, before the loop, and about the CALLER's request
+        // rather than about the hop in hand — a `Cookie` header attached
+        // by the jar on hop 1 would otherwise read as the caller's on hop
+        // 2, and the jar would then stop attaching for the rest of the
+        // chain. The rule this decides is `attach_cookies`'.
+        let caller_owns_the_cookie_header = hp.headers.contains_key(http::header::COOKIE);
+
         let mut hops: u8 = 0;
 
         loop {
+            // Cookies are attached PER HOP, not once for the operation,
+            // and re-derived rather than carried: `next_hop` clones the
+            // previous hop's headers, and a 302 within one origin is
+            // exactly where a `Cookie` scoped to `/one` would otherwise
+            // travel to `/two`. The redirect stage's `SENSITIVE_HEADERS`
+            // strip covers the cross-origin case and only that one, which
+            // is a different question (credentials leaving the origin)
+            // from this one (a header that stopped being right for the
+            // path).
+            self.attach_cookies(&mut hp, caller_owns_the_cookie_header);
+
             // The replay snapshot is taken BEFORE sending: after that, the
             // body is already consumed. For `Streaming` this returns
             // `None` — and that's known honestly ahead of time, not after
@@ -588,6 +708,14 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                 // wraps exactly the same way, and a backend whose error is
                 // already an `Error` hands it back as-is.
                 .map_err(|e| self.inner.transport.to_error(e))?;
+
+            // Stored per hop too, and against THIS hop's URI: a login
+            // handing back `Set-Cookie` on its 302 is the ordinary case,
+            // and a jar that only looked at the final response would miss
+            // every one of them. Scoped to the hop that sent the header,
+            // because `Domain`/`Path` are relative to the request that got
+            // the response, not to wherever the chain ends up.
+            self.store_cookies(&hp.uri, resp.headers());
 
             let location = resp
                 .headers()
@@ -628,6 +756,83 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             }
         }
     }
+
+    /// Puts this hop's cookies on the request, if this client keeps a jar.
+    ///
+    /// Three decisions are in these few lines, and none of them is
+    /// obvious.
+    ///
+    /// **A caller's own `Cookie` header wins, for the whole operation.**
+    /// The precedent is `decompress::negotiate`'s treatment of a
+    /// caller-set `Accept-Encoding` — "the caller did their own
+    /// negotiating" — and reqwest makes the same call. Note the scope:
+    /// `caller_owns_the_header` is decided once, from the original
+    /// request, so a cross-origin redirect that strips the caller's header
+    /// (`SENSITIVE_HEADERS`) does not hand the jar the wheel halfway
+    /// through. Hands off means hands off.
+    ///
+    /// **Removed before it is set**, rather than `insert`-ed over.
+    /// `HeaderMap::insert` would in fact overwrite, but only when there is
+    /// something to write: a hop whose jar match is empty has to end up
+    /// with NO header, and the previous hop's — cloned in by `next_hop` —
+    /// is what would otherwise remain.
+    ///
+    /// **`SystemTime::now()`, read here.** Why the client's [`Timer`]
+    /// cannot supply it is on [`ClientBuilder::cookie_jar`]; the short
+    /// form is that `Timer` is a stopwatch and `Expires` is a date.
+    #[cfg(feature = "cookies")]
+    fn attach_cookies(&self, hp: &mut HopParts, caller_owns_the_header: bool) {
+        let Some(jar) = self.inner.cookies.as_ref() else {
+            return;
+        };
+        if caller_owns_the_header {
+            return;
+        }
+        hp.headers.remove(http::header::COOKIE);
+        if let Some(v) = lock(jar).cookie_header(&hp.uri, std::time::SystemTime::now()) {
+            hp.headers.insert(http::header::COOKIE, v);
+        }
+    }
+
+    /// The twin without the feature. A no-op function rather than a
+    /// `#[cfg]` around the call site in `run`: the call site says what
+    /// happens and when, and burying it in a conditional would put the
+    /// per-hop reasoning above behind a feature flag too.
+    #[cfg(not(feature = "cookies"))]
+    fn attach_cookies(&self, _: &mut HopParts, _: bool) {}
+
+    /// Stores this hop's `Set-Cookie` headers, if this client keeps a jar.
+    ///
+    /// Runs even when the caller supplied their own `Cookie` header and
+    /// `attach_cookies` therefore did nothing: the two halves are separate
+    /// decisions, a browser behaves the same way, and a jar that stopped
+    /// learning because one request was hand-rolled would go stale in a
+    /// way nothing announces.
+    ///
+    /// Refusals are dropped here, by `CookieJar::store_response`'s
+    /// contract — one malformed `Set-Cookie` must not stop the others, and
+    /// a server sending `Domain=co.uk` gets no say in whether the rest of
+    /// its cookies arrive. A caller who needs the reasons calls
+    /// `CookieJar::store` per header, through [`Client::cookies`].
+    #[cfg(feature = "cookies")]
+    fn store_cookies(&self, uri: &http::Uri, headers: &http::HeaderMap) {
+        let Some(jar) = self.inner.cookies.as_ref() else {
+            return;
+        };
+        lock(jar).store_response(uri, headers, std::time::SystemTime::now());
+    }
+
+    /// The twin without the feature — see `attach_cookies`'.
+    #[cfg(not(feature = "cookies"))]
+    fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
+}
+
+/// Locks the jar, recovering from poisoning rather than propagating it.
+///
+/// See [`Client::cookies`] for why a poisoned jar is still a usable one.
+#[cfg(feature = "cookies")]
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // `not(target_family = "wasm")`, not just `feature = "default-transport"`

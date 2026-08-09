@@ -71,6 +71,24 @@ json = ["dep:serde", "dep:serde_json"]
 # CI's `test` job runs `--all-features`, so both codings stay under test.
 gzip = ["dep:flate2"]
 brotli = ["dep:brotli-decompressor"]
+# A cookie jar owned by the `Client` — `ClientBuilder::cookie_jar`, and the
+# `http_ng::cookie` re-export that names its type. OFF by default, the same
+# call as `json`/`gzip`/`brotli` above and made on the same measurement
+# rather than by analogy: `http-ng-cookie`'s compiled-in public suffix list
+# is +77,296 bytes in a stripped release binary (the numbers for the four
+# candidates are in that crate's commit message and in `suffix.rs`), and
+# `wasm32-unknown-unknown` is the one target where paying it is certainly
+# wrong — the browser keeps the jar itself, `Capabilities::owns_cookie_jar`
+# says so, and `check_cookies_supported` refuses a client-side jar against
+# `http-ng-fetch` at `build()`. A build that needs cookies says so.
+#
+# One switch, not one per piece: unlike `gzip`/`brotli`, whose weights
+# differ by an order of magnitude and which a caller genuinely picks
+# between, there is nothing here to pick — the parse, the storage model and
+# the retrieval order are one RFC and one crate.
+#
+# CI's `test` job runs `--all-features`, so this path stays under test.
+cookies = ["dep:http-ng-cookie"]
 
 [dependencies]
 bytes         = { workspace = true }
@@ -78,6 +96,11 @@ futures-core  = { workspace = true }
 http          = { workspace = true }
 http-body     = { workspace = true }
 http-ng-core  = { workspace = true }
+# The `cookies` feature above. A leaf — `http`, `thiserror` and
+# `public-suffix` — with no dependency on `http-ng-core` or on any
+# transport, which is what lets the same jar behave identically behind
+# every backend instead of once per backend.
+http-ng-cookie = { workspace = true, optional = true }
 http-ng-mock  = { workspace = true, optional = true }
 # No default features (that is set in `[workspace.dependencies]`): the
 # `idn` feature above is what turns IDN back on, and it is in this crate's
