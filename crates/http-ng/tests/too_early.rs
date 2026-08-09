@@ -559,4 +559,94 @@ mod replayability {
              very server that just refused to risk one"
         );
     }
+
+    /// The strip is on a clone of the hop, so the mark reaches the next
+    /// redirect hop — and that is a decision, not a detail of where the
+    /// line sits.
+    ///
+    /// A redirect after a `425` is a **different request**, which the
+    /// caller marked too. Withdrawing the opt-in for the rest of the chain
+    /// would be a silent downgrade to 1-RTT that nothing announces, and it
+    /// would buy nothing that is not already bought: if the next hop's
+    /// origin is also unwilling, it answers `425` and that hop gets its own
+    /// replay. The cost of keeping the mark is bounded and self-correcting;
+    /// the cost of dropping it is invisible.
+    ///
+    /// Stripping `hp` itself instead of a clone passes the test above and
+    /// fails this one, which is the only thing that tells the two apart.
+    #[test]
+    fn the_hop_after_a_replayed_425_still_carries_the_mark() {
+        let m = MockTransport::new();
+        m.push_response(too_early()); // hop 1
+        m.push_response(
+            http::Response::builder() // hop 1, replayed
+                .status(302)
+                .header("location", "https://a/second")
+                .body("")
+                .unwrap(),
+        );
+        m.push_response(ok()); // hop 2
+
+        let c = Client::builder(m).build().expect("client");
+        let mut req = http::Request::builder()
+            .method("POST")
+            .uri("https://a/first")
+            .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
+            .unwrap();
+        req.extensions_mut().insert(http_ng_core::AllowEarlyData);
+
+        let resp = futures_executor::block_on(c.execute(req)).expect("execute");
+        assert_eq!(resp.status(), 200);
+
+        assert_eq!(marks(&c), vec![true, false, true], "{}", MARKS);
+    }
+
+    /// And with no `425` anywhere, the mark survives every hop untouched.
+    ///
+    /// This is the control that keeps the other two honest, and it needs to
+    /// span a redirect rather than a single request: a strip moved one line
+    /// out of the `425` branch — into the loop body, after the send —
+    /// passes every other assertion in this file, because nowhere else does
+    /// the mark have to survive a hop boundary. What it would take away is
+    /// not safety but the caller's opt-in, silently, from the second hop
+    /// on. (Measured, not imagined: that mutant survived the first pass of
+    /// this module.)
+    #[test]
+    fn a_redirect_chain_without_a_425_keeps_the_mark_on_every_hop() {
+        let m = MockTransport::new();
+        m.push_response(
+            http::Response::builder()
+                .status(302)
+                .header("location", "https://a/second")
+                .body("")
+                .unwrap(),
+        );
+        m.push_response(ok());
+
+        let c = Client::builder(m).build().expect("client");
+        let mut req = http::Request::builder()
+            .uri("https://a/first")
+            .body(RequestBody::Empty)
+            .unwrap();
+        req.extensions_mut().insert(http_ng_core::AllowEarlyData);
+
+        let resp = futures_executor::block_on(c.execute(req)).expect("execute");
+        assert_eq!(resp.status(), 200);
+
+        assert_eq!(marks(&c), vec![true, true], "{}", MARKS);
+    }
+
+    const MARKS: &str = "one bool per request the transport was handed, in order: \
+                         whether it carried AllowEarlyData";
+
+    /// The mark as the transport saw it, per request, in order — the
+    /// observer being what was handed over rather than what the client
+    /// believes it sent.
+    fn marks(c: &Client<MockTransport>) -> Vec<bool> {
+        c.transport()
+            .requests()
+            .iter()
+            .map(|r| r.extensions.get::<http_ng_core::AllowEarlyData>().is_some())
+            .collect()
+    }
 }
