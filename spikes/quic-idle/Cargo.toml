@@ -1,0 +1,20 @@
+# Spike: does the `Spawn` seam carry the driver of an idle QUIC
+# connection — the thing `docs/h3-research.md` §1.5 measured as fatal?
+#
+# Separate from `spikes/spawn-local` so that the tokio/hyper spike does not
+# grow a QUIC dependency tree.
+[package]
+name    = "quic-idle-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+http-ng-rt       = { path = "../../crates/http-ng-rt" }
+http-ng-rt-tokio = { path = "../../crates/http-ng-rt-tokio" }
+quinn            = { version = "0.11", default-features = false, features = ["rustls-ring", "runtime-tokio"] }
+rustls           = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rcgen            = "0.13"
+tokio            = { version = "1", features = ["rt", "net", "time", "macros", "io-util", "sync"] }
