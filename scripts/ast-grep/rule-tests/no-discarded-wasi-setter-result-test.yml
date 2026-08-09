@@ -1,0 +1,284 @@
+# The corpus this rule was accepted against. Every snippet below was run
+# through BOTH `no_discarded_wasi_setters.py` (the 235-line scanner this
+# replaces, rooted at the corpus instead of crates/http-ng-wasi/src) and this
+# rule, and the two agreed on every one of them — same verdict, same line.
+# The one input on which they deliberately DISAGREE lives in
+# `no-wasi-setter-inside-a-macro-test.yml`, with the reason.
+#
+# `valid` here means "the scanner said nothing", not "this is good code".
+id: no-discarded-wasi-setter-result
+
+valid:
+  # ── propagation, in every shape the scanner let through ────────────────
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_connect_timeout(t)?;
+        Ok(())
+    }
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_method(m).map_err(Error::from)?;
+        Ok(())
+    }
+  # `?` reached BEFORE the terminal ends the walk, as `walk_chain` did.
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_method(m)?.ok();
+        Ok(())
+    }
+  # `let _v` notwithstanding: the scanner tested propagation before the
+  # `let _` prefix, so this is not a violation.
+  - |
+    fn f() -> Result<(), E> {
+        let _v = opts.set_method(m).map(|_| 1)?;
+        Ok(())
+    }
+  - |
+    fn f() -> Result<(), E> {
+        foo(opts.set_method(m)?);
+        Ok(())
+    }
+  # ── the error is used ──────────────────────────────────────────────────
+  - |
+    fn f() -> Result<(), E> {
+        if let Err(e) = opts.set_method(m) {
+            return Err(e.into());
+        }
+        Ok(())
+    }
+  # `_e` is named but the block is not empty — honest propagation.
+  - |
+    fn f() -> Result<(), E> {
+        if let Err(_e) = opts.set_method(m) {
+            return Err(Error::Refused);
+        }
+        Ok(())
+    }
+  - |
+    fn f() -> Result<(), E> {
+        match opts.set_method(m) {
+            Ok(()) => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+  - |
+    fn f() -> Result<(), E> {
+        let r = opts.set_method(m);
+        r?;
+        Ok(())
+    }
+  # `expect` panics; it does not discard. Not in the scanner's list either.
+  - |
+    fn f() {
+        opts.set_method(m).expect("the host refused a method it declared");
+    }
+  # ── not a setter, or not this statement ────────────────────────────────
+  - |
+    fn f() {
+        opts.get_method().ok();
+    }
+  - |
+    fn f() {
+        opts.setup_method(m).ok();
+    }
+  - |
+    fn f() {
+        let _ = compute();
+    }
+  # A brace between the `let _` and the call: the scanner's `[^;{}]*` window
+  # ends at `{`, and so does this rule's walk.
+  - |
+    fn f() {
+        let _ = {
+            opts.set_method(m)
+        };
+    }
+  # ── comments are not code ──────────────────────────────────────────────
+  - |
+    fn f() {
+        // let _ = opts.set_method(m);
+    }
+  - |
+    fn f() {
+        /* let _ = opts.set_scheme(s);
+           drop(opts.set_method(m)); */
+    }
+  - |
+    /// let _ = opts.set_method(m);
+    fn documented() {}
+
+invalid:
+  # ── the `let _` family, with and without a name and a type ─────────────
+  - |
+    fn f() {
+        let _ = opts.set_connect_timeout(t);
+    }
+  - |
+    fn f() {
+        let _ignored = opts.set_method(m);
+    }
+  - |
+    fn f() {
+        let _: Result<(), ErrorCode> = opts.set_scheme(s);
+    }
+  - |
+    fn f() {
+        let _x: Result<(), E> = opts.set_authority(a);
+    }
+  - |
+    fn f() {
+        let _guard = opts.set_method(m);
+    }
+  # rustfmt wraps; the scanner joined lines into one stream for this reason.
+  - |
+    fn f() {
+        let _ =
+            opts.set_method(m);
+    }
+  - |
+    fn f() {
+        let _ = req
+            .set_method(m);
+    }
+  # ── drop, and the bare `_ =` that is not a `let` ───────────────────────
+  - |
+    fn f() {
+        drop(opts.set_path_with_query(p));
+    }
+  - |
+    fn f() {
+        _ = opts.set_connect_timeout(t);
+    }
+  # ── the terminal family, directly after the call ───────────────────────
+  - |
+    fn f() {
+        opts.set_first_byte_timeout(t).ok();
+    }
+  - |
+    fn f() {
+        opts.set_between_bytes_timeout(t).unwrap_or_default();
+    }
+  - |
+    fn f() {
+        opts.set_method(m).unwrap_or(());
+    }
+  - |
+    fn f() {
+        opts.set_method(m).unwrap_or_else(|_| ());
+    }
+  - |
+    fn f() {
+        opts.set_method(m).map_or((), |_| ());
+    }
+  - |
+    fn f() {
+        let _b = opts.set_method(m).is_ok();
+    }
+  - |
+    fn f() {
+        let _c = opts.set_method(m).is_err();
+    }
+  # ── the terminal family AFTER transparent combinators — round 2 ────────
+  - |
+    fn f() {
+        opts.set_method(m).map_err(Error::from).ok();
+    }
+  - |
+    fn f() {
+        opts.set_method(m).map(|v| v).and_then(|_| Ok(())).ok();
+    }
+  - |
+    fn f() {
+        opts.set_between_bytes_timeout(y)
+            .map_err(Error::from)
+            .ok();
+    }
+  - |
+    fn f() {
+        req
+            .set_scheme(m)
+            .ok();
+    }
+  # `.ok()` has already eaten the error by the time `?` sees one.
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_method(m).ok()?;
+        Ok(())
+    }
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_method(m).map_or((), |_| ())?;
+        Ok(())
+    }
+  # ── `if let Err(_e) = .. { }` with an empty body — round 3 ─────────────
+  - |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) {}
+    }
+  - |
+    fn f() {
+        if let Err(_) = opts.set_method(m) {}
+    }
+  # The brace that matters is the `if`'s, not one inside `map_err`.
+  - |
+    fn f() {
+        if let Err(_e) = opts.set_method(m).map_err(E::from) {}
+    }
+  - |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) { /* deliberately ignored */ }
+    }
+  - |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) {} else { return; }
+    }
+  # A let-chain: `if` does not sit immediately before `let Err`.
+  - |
+    fn f() {
+        if let Some(_x) = m.take()
+            && let Err(_e) = opts.set_method(m)
+        {
+        }
+    }
+  # ── the `let _` window is wider than the call itself ───────────────────
+  - |
+    fn f() {
+        let _ = opts.set_method(m).map_err(E::from);
+    }
+  - |
+    fn f() {
+        let _ = || opts.set_method(m);
+    }
+  - |
+    fn f() {
+        let _ = with(|| opts.set_method(m));
+    }
+  - |
+    fn f() {
+        spawn(|| {
+            let _ = opts.set_method(m);
+        });
+    }
+  - |
+    fn f() {
+        let _ = opts.inner().set_method(m);
+    }
+  # ── the two lexer traps the scanner had to grow ────────────────────────
+  # A `//` inside a string is not a comment: the naive split hid everything
+  # after it on the same line, including this discard.
+  - |
+    fn f() {
+        println!("scheme http://example.com"); let _ = opts.set_method(m);
+    }
+  # A `"` inside a char literal must not desync the string tracker.
+  - |
+    fn f() {
+        let _q = '"'; let _ = opts.set_scheme(s);
+    }
+  # An attribute between the statements changes nothing.
+  - |
+    fn f() {
+        #[allow(unused)]
+        let _ = opts.set_scheme(m);
+    }

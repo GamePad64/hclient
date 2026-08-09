@@ -5,6 +5,42 @@ This file explains what each job guarantees and the trap it defends
 against. The archaeology — which review round found which defect — is in
 `git log` for the workflow file, where it belongs.
 
+## Where the commands are
+
+**In the `justfile`, not in the workflow.** Every `run:` in `ci.yml` is a
+call to a `just` recipe, and `scripts/ci-mirrors-just.py` fails the build if
+one is not — or if it names a recipe the justfile does not define. What a job
+still carries is what a job is for: a matrix, a runner OS, a toolchain, a
+cache, an `env:` and an `if:`. What it no longer carries is a decision. Every
+flag, filterset, threshold and grep-over-output lives in a recipe, where it
+can be run before pushing rather than discovered afterwards.
+
+The justfile's header has claimed since it was written that its recipes
+mirror CI. The guard is what turned that from a hope into a check; before it,
+nothing at all compared the two. It fails closed three further ways: an
+`EXCEPTIONS` entry naming a step that no longer exists, a workflow it cannot
+parse, and finding no `run:` steps at all. `EXCEPTIONS` is currently empty
+and is meant to stay that way.
+
+Three layers, for three questions:
+
+| | |
+|---|---|
+| `just test` | the suite, everywhere, fast |
+| `just check` | the above plus fmt and clippy — before a commit |
+| `just ci` | everything the pipeline runs that is not bound to one OS |
+
+**`just ci` skips where the environment cannot answer, and CI turns each skip
+into a failure.** No headless browser, no `wasmtime`, no `/dev/net/tun`, no
+nightly toolchain: on a laptop each of those prints a `NOTICE` and moves on,
+because a laptop that cannot run the browser suite is a limitation and not a
+regression. In the job that *promised to install the thing*, a marker —
+`HTTP_NG_REQUIRE_BROWSERS`, `HTTP_NG_REQUIRE_WASMTIME`,
+`HTTP_NG_REQUIRE_TUNTAP`, `HTTP_NG_REQUIRE_NIGHTLY` — makes the same skip a
+red step with a message naming what is missing. The strictness sits exactly
+where the promise was made; everywhere else the run degrades honestly. Two of
+the four predate this arrangement and are the pattern the other two copy.
+
 ## The two rules the whole file is built on
 
 **Every check fails closed.** If the crate or file a check names is absent,
@@ -33,13 +69,15 @@ test failed.
 **`rust-toolchain.toml` outranks the installed toolchain.** The file in the
 repository root pins stable for *every* rustup-proxied `cargo` call in this
 directory, whatever the setup action installed. A job that installs
-`nightly` and then runs a bare `cargo` silently gets stable. The two jobs
-that need nightly —
-`fuzz-smoke` and `fetch-must-fail-under-wasm-threads` — set
-`RUSTUP_TOOLCHAIN`, which outranks the file, and then *assert* what
-`rustc --version` reports, because an override that silently fails to apply
-is the same defect one level down. Measured: `cargo --version` → 1.97.1
-plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`.
+`nightly` and then runs a bare `cargo` silently gets stable. The two recipes
+that need nightly — `fuzz-smoke` and `fetch-must-fail-under-atomics` — set
+`RUSTUP_TOOLCHAIN` themselves, which outranks the file, and then *assert*
+what `rustc --version` reports, because an override that silently fails to
+apply is the same defect one level down. Measured: `cargo --version` → 1.97.1
+plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`. The export lives in the recipe
+rather than in the job's `env:` so that running it by hand does the same
+thing; what the job supplies is `HTTP_NG_REQUIRE_NIGHTLY`, which decides
+whether a missing nightly is a skip or a failure.
 
 ---
 
@@ -233,31 +271,85 @@ for any reason, which a typo in the flag would also achieve.
 
 ## Invariants that no build can express
 
-### `invariants` — text scans, no toolchain
+### `invariants` — text scans, no build
 
-- **No `Send`/`Sync` bounds in the core surface.** Erasing a type behind
+Four of the five things this job checks are `ast-grep` rules in
+`scripts/ast-grep/rules`, run by `just ast-grep`. They replaced 235 lines of
+python and two greps; what makes that a fair trade rather than a tidier-looking
+one is `scripts/ast-grep/rule-tests`, which holds the corpus each rule was
+accepted against — every input was run through the scanner AND the rule, and
+the two had to agree before the scanner was deleted.
+
+`ast-grep` does not fail closed on its own: a rule whose `files:` glob matches
+nothing scans nothing and reports success. `scripts/ast-grep-scan.sh` expands
+every rule's globs first and errors on an empty one, then runs the rules' own
+tests, then the scan.
+
+- **No discarded `wasi:http` setter results**
+  (`no-discarded-wasi-setter-result`). `wasi:http` setters return
+  `result<_, _>` precisely so the host can refuse; the predecessor library
+  discarded seven such results with `let _ =`. The rule knows `let _ =`,
+  `let _ident =`, `let _: Type =`, a bare `_ = ..`, `drop(..)`,
+  `if let Err(_e) = .. {}` with a body holding nothing but comments, and the
+  `.ok()` / `.is_ok()` / `.is_err()` / `.unwrap_or…` / `.map_or(..)` family at
+  *any* position in a chain of combinators. A `?` reached before the discard
+  is propagation and excuses it; a `?` reached after one does not, because
+  `.ok()?` has already lost the error.
+
+  **One companion rule is deliberately stricter than the scanner it
+  replaces**: `no-wasi-setter-inside-a-macro`. tree-sitter flattens macro
+  arguments into a token tree, so `assert!(opts.set_x(y).is_ok())` contains no
+  call for a structural rule to find, while the text-based scanner did flag
+  it. Refusing setters inside macros outright is the only way to be no weaker
+  without reimplementing an expression parser over token soup. Measured when
+  it was written: zero such sites in the crate.
+- **`examples/portable.rs` has no `#[cfg]`** (`no-cfg-in-the-portable-example`)
+  — see above. Comments and string literals are nodes rather than text to be
+  stripped, which matters here: the file's own module doc and its closing
+  `println!` both mention `#[cfg]` on purpose, and a scan that read them would
+  go red on the honest file.
+- **`http-ng-proto` contains no `async fn`** (`no-async-fn-in-the-sans-io-crate`).
+  It is the sans-io crate. Strictly stronger than the grep it replaced, which
+  missed `const async unsafe extern "C" fn` — the two words are not adjacent
+  there — and needed a second grep to subtract lines *beginning* with a
+  comment, leaving a mention mid-line in a doc comment standing.
+- **`unsafe_code` stays forbidden by declaration**
+  (`scripts/unsafe-code-policy.sh`). The workspace sets
+  `unsafe_code = "forbid"` and every crate root repeats it, so *rustc*
+  enforces the absence of `unsafe` — a `forbid` cannot be overridden by a
+  local `allow`. What CI has to check is the one thing the compiler cannot:
+  that no crate quietly downgrades `forbid` to `deny` or `allow`.
+  `http-ng-fetch`, `http-ng-dns-system` and `http-ng-idn` are the three
+  allowed to, for amendments C7, C8 and C9, and their `allow(unsafe_code)`
+  sites must name the amendment *and* sit in a file that amendment names.
+- **No `Send`/`Sync` bounds in the core surface**
+  (`scripts/no-send-or-sync-in-the-core-surface.sh`). Erasing a type behind
   `dyn Trait` drops auto-traits (spec amendment C1), so declaring the bound
   in the seam forces it on backends that cannot satisfy it. Exceptions carry
   a `send-bound-exception: amendment-C…` marker. The runtime crates and
   `http-ng-dns-system` are excluded by name — an exclusion list that grew to
   cover the whole workspace would make this check scan nothing, so the job
   fails if it does.
-- **`unsafe_code` stays forbidden by declaration.** The workspace sets
-  `unsafe_code = "forbid"` and every crate root repeats it, so *rustc*
-  enforces the absence of `unsafe` — a `forbid` cannot be overridden by a
-  local `allow`. What CI has to check is the one thing the compiler cannot:
-  that no crate quietly downgrades `forbid` to `deny` or `allow`.
-  `http-ng-fetch` and `http-ng-dns-system` are the two allowed to, for
-  amendments C7 and C8, and their `allow(unsafe_code)` sites must name the
-  amendment.
-- **`http-ng-proto` contains no `async fn`.** It is the sans-io crate.
-- **No discarded `wasi:http` setter results**
-  (`.github/scripts/no_discarded_wasi_setters.py`). `wasi:http` setters
-  return `result<_, _>` precisely so the host can refuse; the predecessor
-  library discarded seven such results with `let _ =`. The scanner
-  understands `let _ =`, `drop(...)`, `_ = ...`, `if let Err(_)`, and the
-  `.ok()` / `.unwrap_or…` family.
-- **`examples/portable.rs` has no `#[cfg]`** — see above.
+
+  **This one stays a grep, and that is a finding rather than an omission.**
+  ast-grep expresses the *detection* better: `Send` in a `trait_bounds` or a
+  `bounded_type` is a node, so prose and string literals stop being false
+  positives a second grep has to subtract. What it cannot express is the
+  *exception*, and the exception is the whole design — the marker is a
+  trailing comment on the **same line**, and ast-grep's relational operators
+  work over the tree with no notion of a line. `precedes` was measured against
+  this tree and is wrong in both directions: it misses markers on
+  `field_declaration` and `enum_variant`, where the separating `,` stands
+  between the node and its comment, and with `stopBy: end` it excuses far too
+  much, because any ancestor followed by a marker excuses everything inside it
+  (measured: one bound came out excused by the marker belonging to the bound
+  one line below it). ast-grep's own `// ast-grep-ignore` suppressions are
+  line-oriented and would work, but must sit on the line *above* the match and
+  would replace a marker convention the spec amendments name by hand — 38
+  sites across seven crates, changed in service of the tool. A scanner that is
+  honest beats a rule that is quiet.
+- **Every `run:` in `ci.yml` is a `just` call**
+  (`scripts/ci-mirrors-just.py`) — see "Where the commands are" above.
 
 ### `dependency-graph` — `cargo tree`, no build
 
@@ -274,16 +366,19 @@ for any reason, which a typo in the flag would also achieve.
   absence is not achievable: `hyper` depends on `tokio` unconditionally.
   Checked for three host triples from one runner via `cargo tree --target`.
 
-### `workflow-yaml-is-valid`
-
-Parses every workflow file, then checks the structural rules Actions
-enforces but YAML does not: every step has exactly one of `uses:` and `run:`.
+### `actionlint`, a step of `invariants`
 
 Valid YAML is not a valid workflow. An edit once deleted a `- shell: bash`
 line, merging a `uses:` step into the `run:` step below it — a mapping with
 both keys is well-formed YAML, and Actions rejected the entire file. No job
 started, no job log existed, and the only diagnostic was "this run likely
 failed because of a workflow file issue".
+
+A hand-written validator was written for exactly that class and has been
+replaced by `actionlint` (the official image, and a `prek` hook), which
+catches it with a line number and a great deal more besides — including
+shellcheck over the `run:` blocks, which nothing did before. Verified by
+mutation: reinstating the merged step is reported at the exact line.
 
 ## Deliberately not separate jobs
 
@@ -292,9 +387,11 @@ three operating systems. The workspace `test` matrix already runs that file
 on the same three, so the job was paying for three extra runners to repeat
 it. Its dependency-graph half moved to `dependency-graph`.
 
-**A job per text scan.** Five greps that need no toolchain were five runner
+**A job per text scan.** Five greps that need no build were five runner
 setups. They are steps of one job now; a failed step is named in the UI just
-as a failed job was.
+as a failed job was. The job does still install a toolchain, for one reason
+only: `bins:` is how `just` and `ast-grep` arrive. Nothing in it compiles
+anything.
 
 **`msrv`.** The MSRV policy is "the latest stable release", so a job pinning
 a version was a second, older statement of the same promise — and the one

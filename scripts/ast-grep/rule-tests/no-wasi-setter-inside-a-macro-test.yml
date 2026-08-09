@@ -1,0 +1,46 @@
+# The blind spot this rule closes, and the one place the pair of rules is
+# deliberately STRICTER than the python scanner they replace.
+#
+# tree-sitter parses macro arguments as a flat `token_tree`: inside
+# `assert!(opts.set_x(y).is_ok())` there is no `call_expression` and no
+# `field_expression` at all, so `no-discarded-wasi-setter-result` sees no
+# call. The scanner was text-based and DID flag these three. Refusing the
+# construct outright is the only way to be no weaker without reimplementing
+# an expression parser over token soup.
+#
+# The last `invalid` entry is the divergence: `matches!(opts.set_x(y),
+# Ok(()))` discards nothing and the scanner said nothing about it. This rule
+# refuses it anyway, because the claim is "this cannot be analysed", not
+# "this is wrong".
+id: no-wasi-setter-inside-a-macro
+
+valid:
+  - |
+    fn f() -> Result<(), E> {
+        opts.set_method(m)?;
+        Ok(())
+    }
+  # The macro is not the problem; a setter inside one is.
+  - |
+    fn f() {
+        assert!(opts.method().is_some());
+        println!("set_method was called");
+    }
+
+invalid:
+  - |
+    fn f() {
+        assert!(opts.set_method(m).is_ok());
+    }
+  - |
+    fn f() {
+        debug_assert!(opts.set_method(m).is_ok());
+    }
+  - |
+    fn f() {
+        println!("{}", opts.set_method(m).is_ok());
+    }
+  - |
+    fn f() {
+        matches!(opts.set_method(m), Ok(()));
+    }

@@ -1,0 +1,61 @@
+id: no-async-fn-in-the-sans-io-crate
+snapshots:
+  ? |
+    async fn b() {}
+  : labels:
+    - source: async
+      style: primary
+      start: 0
+      end: 5
+    - source: async fn b() {}
+      style: secondary
+      start: 0
+      end: 15
+  ? |
+    impl T for S {
+        async fn d(&self) {}
+    }
+  : labels:
+    - source: async
+      style: primary
+      start: 19
+      end: 24
+    - source: async fn d(&self) {}
+      style: secondary
+      start: 19
+      end: 39
+  ? |
+    pub async fn a() {}
+  : labels:
+    - source: async
+      style: primary
+      start: 4
+      end: 9
+    - source: pub async fn a() {}
+      style: secondary
+      start: 0
+      end: 19
+  ? |
+    pub const async unsafe extern "C" fn c() {}
+  : labels:
+    - source: const async unsafe extern "C"
+      style: primary
+      start: 4
+      end: 33
+    - source: pub const async unsafe extern "C" fn c() {}
+      style: secondary
+      start: 0
+      end: 43
+  ? |
+    trait T {
+        async fn d(&self);
+    }
+  : labels:
+    - source: async
+      style: primary
+      start: 14
+      end: 19
+    - source: async fn d(&self);
+      style: secondary
+      start: 14
+      end: 32

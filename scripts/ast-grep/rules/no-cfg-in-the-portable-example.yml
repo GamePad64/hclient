@@ -1,0 +1,47 @@
+id: no-cfg-in-the-portable-example
+language: rust
+severity: error
+files:
+  - crates/http-ng/examples/portable.rs
+
+message: >-
+  the acceptance example must contain no cfg switch — if it needs one to build,
+  the Transport shape is wrong and THAT is the finding; do not add the cfg
+note: >-
+  `examples/portable.rs` is the acceptance for the whole `Transport` shape: one
+  source, built for native, wasm32-wasip2 and wasm32-unknown-unknown. Three
+  green builds alone would also be green for an example that quietly branched
+  per target, which is the one thing this acceptance exists to disprove.
+  Comments and string literals are not code and are not matched — the file's
+  own module doc and its closing `println!` both mention `#[cfg]` on purpose,
+  and a scan that read them would go red on the honest file. (The python
+  scanner this replaces stripped both by hand, in that order, and said so.)
+
+rule:
+  any:
+    # `#[cfg(..)]`, `#![cfg_attr(..)]`: the attribute's own path, which is its
+    # first child — an argument that happens to be named `cfg` sits one level
+    # further down, inside the arguments token tree.
+    - kind: identifier
+      regex: '^cfg[_a-z]*$'
+      inside:
+        kind: attribute
+
+    # `cfg!(..)` as an expression.
+    - kind: macro_invocation
+      has:
+        field: macro
+        kind: identifier
+        regex: '^cfg[_a-z]*$'
+
+    # `cfg!(..)` inside ANOTHER macro's arguments — `assert!(cfg!(unix))`.
+    # tree-sitter flattens macro arguments into a token tree, so there is no
+    # `macro_invocation` in there for the branch above to find; what survives
+    # is the bare identifier. A string is a `string_literal` node with no
+    # identifiers inside it, so `println!("no #[cfg] here")` is untouched —
+    # checked, because that println is in the file.
+    - kind: identifier
+      regex: '^cfg[_a-z]*$'
+      inside:
+        stopBy: end
+        kind: token_tree

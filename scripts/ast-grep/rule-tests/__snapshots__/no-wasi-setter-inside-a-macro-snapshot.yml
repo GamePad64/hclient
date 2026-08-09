@@ -1,0 +1,38 @@
+id: no-wasi-setter-inside-a-macro
+snapshots:
+  ? |
+    fn f() {
+        assert!(opts.set_method(m).is_ok());
+    }
+  : labels:
+    - source: (opts.set_method(m).is_ok())
+      style: primary
+      start: 20
+      end: 48
+  ? |
+    fn f() {
+        debug_assert!(opts.set_method(m).is_ok());
+    }
+  : labels:
+    - source: (opts.set_method(m).is_ok())
+      style: primary
+      start: 26
+      end: 54
+  ? |
+    fn f() {
+        matches!(opts.set_method(m), Ok(()));
+    }
+  : labels:
+    - source: (opts.set_method(m), Ok(()))
+      style: primary
+      start: 21
+      end: 49
+  ? |
+    fn f() {
+        println!("{}", opts.set_method(m).is_ok());
+    }
+  : labels:
+    - source: ("{}", opts.set_method(m).is_ok())
+      style: primary
+      start: 21
+      end: 55

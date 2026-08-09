@@ -1,0 +1,986 @@
+id: no-discarded-wasi-setter-result
+snapshots:
+  ? |
+    fn f() -> Result<(), E> {
+        opts.set_method(m).map_or((), |_| ())?;
+        Ok(())
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: map_or
+      style: secondary
+      start: 49
+      end: 55
+    - source: opts.set_method(m).map_or
+      style: secondary
+      start: 30
+      end: 55
+    - source: opts.set_method(m).map_or((), |_| ())
+      style: secondary
+      start: 30
+      end: 67
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() -> Result<(), E> {
+        opts.set_method(m).ok()?;
+        Ok(())
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: ok
+      style: secondary
+      start: 49
+      end: 51
+    - source: opts.set_method(m).ok
+      style: secondary
+      start: 30
+      end: 51
+    - source: opts.set_method(m).ok()
+      style: secondary
+      start: 30
+      end: 53
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() {
+        #[allow(unused)]
+        let _ = opts.set_scheme(m);
+    }
+  : labels:
+    - source: set_scheme
+      style: primary
+      start: 47
+      end: 57
+    - source: let _ = opts.set_scheme(m);
+      style: secondary
+      start: 34
+      end: 61
+    - source: opts.set_scheme(m)
+      style: secondary
+      start: 42
+      end: 60
+    - source: opts.set_scheme
+      style: secondary
+      start: 42
+      end: 57
+  ? |
+    fn f() {
+        _ = opts.set_connect_timeout(t);
+    }
+  : labels:
+    - source: set_connect_timeout
+      style: primary
+      start: 22
+      end: 41
+    - source: _
+      style: secondary
+      start: 13
+      end: 14
+    - source: _ = opts.set_connect_timeout(t)
+      style: secondary
+      start: 13
+      end: 44
+    - source: opts.set_connect_timeout(t)
+      style: secondary
+      start: 17
+      end: 44
+    - source: opts.set_connect_timeout
+      style: secondary
+      start: 17
+      end: 41
+  ? |
+    fn f() {
+        drop(opts.set_path_with_query(p));
+    }
+  : labels:
+    - source: set_path_with_query
+      style: primary
+      start: 23
+      end: 42
+    - source: drop
+      style: secondary
+      start: 13
+      end: 17
+    - source: drop(opts.set_path_with_query(p))
+      style: secondary
+      start: 13
+      end: 46
+    - source: opts.set_path_with_query(p)
+      style: secondary
+      start: 18
+      end: 45
+    - source: opts.set_path_with_query
+      style: secondary
+      start: 18
+      end: 42
+  ? |
+    fn f() {
+        if let Err(_) = opts.set_method(m) {}
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 34
+      end: 44
+    - source: '{}'
+      style: secondary
+      start: 48
+      end: 50
+    - source: if let Err(_) = opts.set_method(m) {}
+      style: secondary
+      start: 13
+      end: 50
+    - source: Err(_)
+      style: secondary
+      start: 20
+      end: 26
+    - source: let Err(_) = opts.set_method(m)
+      style: secondary
+      start: 16
+      end: 47
+    - source: opts.set_method(m)
+      style: secondary
+      start: 29
+      end: 47
+    - source: opts.set_method
+      style: secondary
+      start: 29
+      end: 44
+  ? |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) { /* deliberately ignored */ }
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: '{ /* deliberately ignored */ }'
+      style: secondary
+      start: 49
+      end: 79
+    - source: if let Err(_e) = opts.set_method(m) { /* deliberately ignored */ }
+      style: secondary
+      start: 13
+      end: 79
+    - source: Err(_e)
+      style: secondary
+      start: 20
+      end: 27
+    - source: let Err(_e) = opts.set_method(m)
+      style: secondary
+      start: 16
+      end: 48
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) {}
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: '{}'
+      style: secondary
+      start: 49
+      end: 51
+    - source: if let Err(_e) = opts.set_method(m) {}
+      style: secondary
+      start: 13
+      end: 51
+    - source: Err(_e)
+      style: secondary
+      start: 20
+      end: 27
+    - source: let Err(_e) = opts.set_method(m)
+      style: secondary
+      start: 16
+      end: 48
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() {
+        if let Err(_e) = opts.set_method(m) {} else { return; }
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: '{}'
+      style: secondary
+      start: 49
+      end: 51
+    - source: if let Err(_e) = opts.set_method(m) {} else { return; }
+      style: secondary
+      start: 13
+      end: 68
+    - source: Err(_e)
+      style: secondary
+      start: 20
+      end: 27
+    - source: let Err(_e) = opts.set_method(m)
+      style: secondary
+      start: 16
+      end: 48
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() {
+        if let Err(_e) = opts.set_method(m).map_err(E::from) {}
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 35
+      end: 45
+    - source: '{}'
+      style: secondary
+      start: 66
+      end: 68
+    - source: if let Err(_e) = opts.set_method(m).map_err(E::from) {}
+      style: secondary
+      start: 13
+      end: 68
+    - source: Err(_e)
+      style: secondary
+      start: 20
+      end: 27
+    - source: let Err(_e) = opts.set_method(m).map_err(E::from)
+      style: secondary
+      start: 16
+      end: 65
+    - source: opts.set_method(m)
+      style: secondary
+      start: 30
+      end: 48
+    - source: opts.set_method
+      style: secondary
+      start: 30
+      end: 45
+  ? |
+    fn f() {
+        if let Some(_x) = m.take()
+            && let Err(_e) = opts.set_method(m)
+        {
+        }
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 70
+      end: 80
+    - source: |-
+        {
+            }
+      style: secondary
+      start: 88
+      end: 95
+    - source: |-
+        if let Some(_x) = m.take()
+                && let Err(_e) = opts.set_method(m)
+            {
+            }
+      style: secondary
+      start: 13
+      end: 95
+    - source: Err(_e)
+      style: secondary
+      start: 55
+      end: 62
+    - source: let Err(_e) = opts.set_method(m)
+      style: secondary
+      start: 51
+      end: 83
+    - source: opts.set_method(m)
+      style: secondary
+      start: 65
+      end: 83
+    - source: opts.set_method
+      style: secondary
+      start: 65
+      end: 80
+  ? |
+    fn f() {
+        let _ =
+            opts.set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 34
+      end: 44
+    - source: |-
+        let _ =
+                opts.set_method(m);
+      style: secondary
+      start: 13
+      end: 48
+    - source: opts.set_method(m)
+      style: secondary
+      start: 29
+      end: 47
+    - source: opts.set_method
+      style: secondary
+      start: 29
+      end: 44
+  ? |
+    fn f() {
+        let _ = opts.inner().set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 34
+      end: 44
+    - source: let _ = opts.inner().set_method(m);
+      style: secondary
+      start: 13
+      end: 48
+    - source: opts.inner().set_method(m)
+      style: secondary
+      start: 21
+      end: 47
+    - source: opts.inner().set_method
+      style: secondary
+      start: 21
+      end: 44
+  ? |
+    fn f() {
+        let _ = opts.set_connect_timeout(t);
+    }
+  : labels:
+    - source: set_connect_timeout
+      style: primary
+      start: 26
+      end: 45
+    - source: let _ = opts.set_connect_timeout(t);
+      style: secondary
+      start: 13
+      end: 49
+    - source: opts.set_connect_timeout(t)
+      style: secondary
+      start: 21
+      end: 48
+    - source: opts.set_connect_timeout
+      style: secondary
+      start: 21
+      end: 45
+  ? |
+    fn f() {
+        let _ = opts.set_method(m).map_err(E::from);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 26
+      end: 36
+    - source: let _ = opts.set_method(m).map_err(E::from);
+      style: secondary
+      start: 13
+      end: 57
+    - source: opts.set_method(m)
+      style: secondary
+      start: 21
+      end: 39
+    - source: opts.set_method
+      style: secondary
+      start: 21
+      end: 36
+  ? |
+    fn f() {
+        let _ = req
+            .set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 34
+      end: 44
+    - source: |-
+        let _ = req
+                .set_method(m);
+      style: secondary
+      start: 13
+      end: 48
+    - source: |-
+        req
+                .set_method(m)
+      style: secondary
+      start: 21
+      end: 47
+    - source: |-
+        req
+                .set_method
+      style: secondary
+      start: 21
+      end: 44
+  ? |
+    fn f() {
+        let _ = with(|| opts.set_method(m));
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 34
+      end: 44
+    - source: let _ = with(|| opts.set_method(m));
+      style: secondary
+      start: 13
+      end: 49
+    - source: opts.set_method(m)
+      style: secondary
+      start: 29
+      end: 47
+    - source: opts.set_method
+      style: secondary
+      start: 29
+      end: 44
+  ? |
+    fn f() {
+        let _ = || opts.set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 29
+      end: 39
+    - source: let _ = || opts.set_method(m);
+      style: secondary
+      start: 13
+      end: 43
+    - source: opts.set_method(m)
+      style: secondary
+      start: 24
+      end: 42
+    - source: opts.set_method
+      style: secondary
+      start: 24
+      end: 39
+  ? |
+    fn f() {
+        let _: Result<(), ErrorCode> = opts.set_scheme(s);
+    }
+  : labels:
+    - source: set_scheme
+      style: primary
+      start: 49
+      end: 59
+    - source: 'let _: Result<(), ErrorCode> = opts.set_scheme(s);'
+      style: secondary
+      start: 13
+      end: 63
+    - source: opts.set_scheme(s)
+      style: secondary
+      start: 44
+      end: 62
+    - source: opts.set_scheme
+      style: secondary
+      start: 44
+      end: 59
+  ? |
+    fn f() {
+        let _b = opts.set_method(m).is_ok();
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 27
+      end: 37
+    - source: is_ok
+      style: secondary
+      start: 41
+      end: 46
+    - source: opts.set_method(m).is_ok
+      style: secondary
+      start: 22
+      end: 46
+    - source: opts.set_method(m).is_ok()
+      style: secondary
+      start: 22
+      end: 48
+    - source: opts.set_method(m)
+      style: secondary
+      start: 22
+      end: 40
+    - source: opts.set_method
+      style: secondary
+      start: 22
+      end: 37
+  ? |
+    fn f() {
+        let _c = opts.set_method(m).is_err();
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 27
+      end: 37
+    - source: is_err
+      style: secondary
+      start: 41
+      end: 47
+    - source: opts.set_method(m).is_err
+      style: secondary
+      start: 22
+      end: 47
+    - source: opts.set_method(m).is_err()
+      style: secondary
+      start: 22
+      end: 49
+    - source: opts.set_method(m)
+      style: secondary
+      start: 22
+      end: 40
+    - source: opts.set_method
+      style: secondary
+      start: 22
+      end: 37
+  ? |
+    fn f() {
+        let _guard = opts.set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 31
+      end: 41
+    - source: let _guard = opts.set_method(m);
+      style: secondary
+      start: 13
+      end: 45
+    - source: opts.set_method(m)
+      style: secondary
+      start: 26
+      end: 44
+    - source: opts.set_method
+      style: secondary
+      start: 26
+      end: 41
+  ? |
+    fn f() {
+        let _ignored = opts.set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 33
+      end: 43
+    - source: let _ignored = opts.set_method(m);
+      style: secondary
+      start: 13
+      end: 47
+    - source: opts.set_method(m)
+      style: secondary
+      start: 28
+      end: 46
+    - source: opts.set_method
+      style: secondary
+      start: 28
+      end: 43
+  ? |
+    fn f() {
+        let _q = '"'; let _ = opts.set_scheme(s);
+    }
+  : labels:
+    - source: set_scheme
+      style: primary
+      start: 40
+      end: 50
+    - source: let _ = opts.set_scheme(s);
+      style: secondary
+      start: 27
+      end: 54
+    - source: opts.set_scheme(s)
+      style: secondary
+      start: 35
+      end: 53
+    - source: opts.set_scheme
+      style: secondary
+      start: 35
+      end: 50
+  ? |
+    fn f() {
+        let _x: Result<(), E> = opts.set_authority(a);
+    }
+  : labels:
+    - source: set_authority
+      style: primary
+      start: 42
+      end: 55
+    - source: 'let _x: Result<(), E> = opts.set_authority(a);'
+      style: secondary
+      start: 13
+      end: 59
+    - source: opts.set_authority(a)
+      style: secondary
+      start: 37
+      end: 58
+    - source: opts.set_authority
+      style: secondary
+      start: 37
+      end: 55
+  ? |
+    fn f() {
+        opts.set_between_bytes_timeout(t).unwrap_or_default();
+    }
+  : labels:
+    - source: set_between_bytes_timeout
+      style: primary
+      start: 18
+      end: 43
+    - source: unwrap_or_default
+      style: secondary
+      start: 47
+      end: 64
+    - source: opts.set_between_bytes_timeout(t).unwrap_or_default
+      style: secondary
+      start: 13
+      end: 64
+    - source: opts.set_between_bytes_timeout(t).unwrap_or_default()
+      style: secondary
+      start: 13
+      end: 66
+    - source: opts.set_between_bytes_timeout(t)
+      style: secondary
+      start: 13
+      end: 46
+    - source: opts.set_between_bytes_timeout
+      style: secondary
+      start: 13
+      end: 43
+  ? |
+    fn f() {
+        opts.set_between_bytes_timeout(y)
+            .map_err(Error::from)
+            .ok();
+    }
+  : labels:
+    - source: set_between_bytes_timeout
+      style: primary
+      start: 18
+      end: 43
+    - source: ok
+      style: secondary
+      start: 86
+      end: 88
+    - source: |-
+        opts.set_between_bytes_timeout(y)
+                .map_err(Error::from)
+                .ok
+      style: secondary
+      start: 13
+      end: 88
+    - source: |-
+        opts.set_between_bytes_timeout(y)
+                .map_err(Error::from)
+                .ok()
+      style: secondary
+      start: 13
+      end: 90
+    - source: opts.set_between_bytes_timeout(y)
+      style: secondary
+      start: 13
+      end: 46
+    - source: opts.set_between_bytes_timeout
+      style: secondary
+      start: 13
+      end: 43
+  ? |
+    fn f() {
+        opts.set_first_byte_timeout(t).ok();
+    }
+  : labels:
+    - source: set_first_byte_timeout
+      style: primary
+      start: 18
+      end: 40
+    - source: ok
+      style: secondary
+      start: 44
+      end: 46
+    - source: opts.set_first_byte_timeout(t).ok
+      style: secondary
+      start: 13
+      end: 46
+    - source: opts.set_first_byte_timeout(t).ok()
+      style: secondary
+      start: 13
+      end: 48
+    - source: opts.set_first_byte_timeout(t)
+      style: secondary
+      start: 13
+      end: 43
+    - source: opts.set_first_byte_timeout
+      style: secondary
+      start: 13
+      end: 40
+  ? |
+    fn f() {
+        opts.set_method(m).map(|v| v).and_then(|_| Ok(())).ok();
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 18
+      end: 28
+    - source: ok
+      style: secondary
+      start: 64
+      end: 66
+    - source: opts.set_method(m).map(|v| v).and_then(|_| Ok(())).ok
+      style: secondary
+      start: 13
+      end: 66
+    - source: opts.set_method(m).map(|v| v).and_then(|_| Ok(())).ok()
+      style: secondary
+      start: 13
+      end: 68
+    - source: opts.set_method(m)
+      style: secondary
+      start: 13
+      end: 31
+    - source: opts.set_method
+      style: secondary
+      start: 13
+      end: 28
+  ? |
+    fn f() {
+        opts.set_method(m).map_err(Error::from).ok();
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 18
+      end: 28
+    - source: ok
+      style: secondary
+      start: 53
+      end: 55
+    - source: opts.set_method(m).map_err(Error::from).ok
+      style: secondary
+      start: 13
+      end: 55
+    - source: opts.set_method(m).map_err(Error::from).ok()
+      style: secondary
+      start: 13
+      end: 57
+    - source: opts.set_method(m)
+      style: secondary
+      start: 13
+      end: 31
+    - source: opts.set_method
+      style: secondary
+      start: 13
+      end: 28
+  ? |
+    fn f() {
+        opts.set_method(m).map_or((), |_| ());
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 18
+      end: 28
+    - source: map_or
+      style: secondary
+      start: 32
+      end: 38
+    - source: opts.set_method(m).map_or
+      style: secondary
+      start: 13
+      end: 38
+    - source: opts.set_method(m).map_or((), |_| ())
+      style: secondary
+      start: 13
+      end: 50
+    - source: opts.set_method(m)
+      style: secondary
+      start: 13
+      end: 31
+    - source: opts.set_method
+      style: secondary
+      start: 13
+      end: 28
+  ? |
+    fn f() {
+        opts.set_method(m).unwrap_or(());
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 18
+      end: 28
+    - source: unwrap_or
+      style: secondary
+      start: 32
+      end: 41
+    - source: opts.set_method(m).unwrap_or
+      style: secondary
+      start: 13
+      end: 41
+    - source: opts.set_method(m).unwrap_or(())
+      style: secondary
+      start: 13
+      end: 45
+    - source: opts.set_method(m)
+      style: secondary
+      start: 13
+      end: 31
+    - source: opts.set_method
+      style: secondary
+      start: 13
+      end: 28
+  ? |
+    fn f() {
+        opts.set_method(m).unwrap_or_else(|_| ());
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 18
+      end: 28
+    - source: unwrap_or_else
+      style: secondary
+      start: 32
+      end: 46
+    - source: opts.set_method(m).unwrap_or_else
+      style: secondary
+      start: 13
+      end: 46
+    - source: opts.set_method(m).unwrap_or_else(|_| ())
+      style: secondary
+      start: 13
+      end: 54
+    - source: opts.set_method(m)
+      style: secondary
+      start: 13
+      end: 31
+    - source: opts.set_method
+      style: secondary
+      start: 13
+      end: 28
+  ? |
+    fn f() {
+        println!("scheme http://example.com"); let _ = opts.set_method(m);
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 65
+      end: 75
+    - source: let _ = opts.set_method(m);
+      style: secondary
+      start: 52
+      end: 79
+    - source: opts.set_method(m)
+      style: secondary
+      start: 60
+      end: 78
+    - source: opts.set_method
+      style: secondary
+      start: 60
+      end: 75
+  ? |
+    fn f() {
+        req
+            .set_scheme(m)
+            .ok();
+    }
+  : labels:
+    - source: set_scheme
+      style: primary
+      start: 26
+      end: 36
+    - source: ok
+      style: secondary
+      start: 49
+      end: 51
+    - source: |-
+        req
+                .set_scheme(m)
+                .ok
+      style: secondary
+      start: 13
+      end: 51
+    - source: |-
+        req
+                .set_scheme(m)
+                .ok()
+      style: secondary
+      start: 13
+      end: 53
+    - source: |-
+        req
+                .set_scheme(m)
+      style: secondary
+      start: 13
+      end: 39
+    - source: |-
+        req
+                .set_scheme
+      style: secondary
+      start: 13
+      end: 36
+  ? |
+    fn f() {
+        spawn(|| {
+            let _ = opts.set_method(m);
+        });
+    }
+  : labels:
+    - source: set_method
+      style: primary
+      start: 45
+      end: 55
+    - source: let _ = opts.set_method(m);
+      style: secondary
+      start: 32
+      end: 59
+    - source: opts.set_method(m)
+      style: secondary
+      start: 40
+      end: 58
+    - source: opts.set_method
+      style: secondary
+      start: 40
+      end: 55

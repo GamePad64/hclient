@@ -1,0 +1,57 @@
+# The corpus this rule was accepted against, run through both this rule and
+# `no_cfg_in_portable_example.py`. On the real file both say nothing; on the
+# adversarial file both find the same six, in the same order and at the same
+# places; and adding one `#[cfg(target_os = "linux")]` above `fn main` in
+# `examples/portable.rs` turns both red.
+#
+# The two `valid` entries are the whole reason the python script grew its two
+# passes: the file's module doc and its closing `println!` both mention
+# `#[cfg]`, and a naive scan goes red on the honest file.
+id: no-cfg-in-the-portable-example
+
+valid:
+  - |
+    //! What matters is what is **not** here: not a single `#[cfg]`, and no
+    //! `cfg!(unix)` either. One source, three targets.
+    fn main() {}
+  - |
+    fn main() {
+        println!(
+            "act's http-client component on http-ng: one source, no #[cfg], \
+             built for native, wasm32-wasip2 and wasm32-unknown-unknown"
+        );
+    }
+  # An argument that happens to be spelled like the attribute is not one.
+  - |
+    #[allow(unused)]
+    fn a() {}
+  - |
+    fn a() {
+        matches!(self, Body::Json(_));
+        write!(f, "invalid arguments: {m}");
+    }
+
+invalid:
+  - |
+    #![cfg_attr(docsrs, feature(doc_cfg))]
+  - |
+    #[cfg(unix)]
+    fn a() {}
+  - |
+    #[cfg_attr(test, allow(dead_code))]
+    fn b() {}
+  - |
+    fn c() {
+        if cfg!(target_family = "wasm") {}
+    }
+  - |
+    fn c() {
+        #[cfg(feature = "x")]
+        let y = 1;
+    }
+  # Buried in another macro's token tree, where there is no `macro_invocation`
+  # left to match — the text-based script saw this and so must this rule.
+  - |
+    fn c() {
+        assert!(cfg!(unix));
+    }

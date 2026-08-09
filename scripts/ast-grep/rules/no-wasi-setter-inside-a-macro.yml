@@ -1,0 +1,24 @@
+id: no-wasi-setter-inside-a-macro
+language: rust
+severity: error
+files:
+  - crates/http-ng-wasi/src/**/*.rs
+
+message: >-
+  a wasi:http setter is called inside a macro invocation, where no structural
+  rule can see whether its Result is discarded — lift the call out of the macro
+note: >-
+  tree-sitter parses a macro's arguments as a flat `token_tree`: there is no
+  `call_expression` and no `field_expression` inside `assert!(opts.set_x(y)
+  .is_ok())`, so `no-discarded-wasi-setter-result` reads it as no call at all.
+  The python scanner this replaced was text-based and did see through macros;
+  refusing the construct outright is the only way to be no weaker than it
+  without reimplementing an expression parser over token soup. Measured when
+  this rule was written: zero such sites in the crate, so it forbids nothing
+  that exists. It is deliberately STRICTER than the scanner in one direction —
+  `matches!(opts.set_x(y), Ok(()))` discards nothing and is refused anyway,
+  because "this cannot be analysed" is the claim, not "this is wrong".
+
+rule:
+  kind: token_tree
+  regex: '\.set_[A-Za-z0-9_]*\s*\('

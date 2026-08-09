@@ -22,9 +22,14 @@ repo = "https://github.com/rhysd/actionlint"
 rev = "v1.7.12"
 hooks = [{ id = "actionlint" }]
 
+# Through `just`, and for the same reason ci.yml goes through it: a hook that
+# spells the command out itself is a third copy to keep in step with the
+# workflow and the justfile. `scripts/ci-mirrors-just.py` holds ci.yml to the
+# recipes; nothing holds these, so the least that can be done is to make them
+# the same call.
 [[repos]]
 repo = "local"
 hooks = [
-    { id = "cargo-clippy", name = "cargo clippy (host)", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", language = "system", pass_filenames = false, always_run = true },
-    { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt --all", language = "system", pass_filenames = false, always_run = true },
+    { id = "cargo-clippy", name = "cargo clippy (host)", entry = "just lint", language = "system", pass_filenames = false, always_run = true },
+    { id = "cargo-fmt", name = "cargo fmt", entry = "just fmt", language = "system", pass_filenames = false, always_run = true },
 ]

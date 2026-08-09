@@ -1,0 +1,5 @@
+ruleDirs:
+  - scripts/ast-grep/rules
+testConfigs:
+  - testDir: scripts/ast-grep/rule-tests
+    snapshotDir: __snapshots__
