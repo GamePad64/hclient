@@ -190,7 +190,12 @@ jobs:
           # `Transport::execute`'s drop-cancellation contract — the abort the
           # browser actually performs, its control, and the capability
           # declaration. Counted with the same summation this job does.
-          run_browser_suite crates/http-ng-fetch 68
+          # 68 -> 78 in v0.2 W6: ten tests for the streaming request body
+          # and the probe that decides whether to offer it. Measured by
+          # running both engines locally, not inferred from the attribute
+          # count — several `#[wasm_bindgen_test]`s are cfg-gated, so the
+          # two numbers do not agree. Chrome 78, Firefox 78.
+          run_browser_suite crates/http-ng-fetch 78
           # `--features` here are wasm-pack's own arguments, not a
           # `cargo test --` passthrough.
           run_browser_suite crates/http-ng 6 --features default-transport,test-util
