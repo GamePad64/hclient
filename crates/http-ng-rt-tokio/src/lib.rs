@@ -18,7 +18,10 @@ pub struct Tokio;
 
 impl Timer for Tokio {
     type Instant = tokio::time::Instant;
-    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+    /// `tokio::time::Sleep` already resolves to `()`, so this side needs
+    /// no adapter — unlike smol's, see `http-ng-rt-smol`.
+    type Sleep = tokio::time::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         tokio::time::sleep(d)
     }
     fn now(&self) -> Self::Instant {

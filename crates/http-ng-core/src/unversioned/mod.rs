@@ -12,5 +12,5 @@
 mod timer;
 mod transport;
 
-pub use timer::Timer;
+pub use timer::{Discard, Timer};
 pub use transport::Transport;

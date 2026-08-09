@@ -66,7 +66,13 @@ impl Timer for NoClock {
     /// instant, and it cannot be mistaken for a real one.
     type Instant = ();
 
-    fn sleep(&self, _: Duration) -> impl Future<Output = ()> {
+    /// `Pending<()>`: the name of "never resolves", which is what this
+    /// clock's sleep always was. Naming it changed nothing here but the
+    /// signature — and it is worth noticing that the type now says out
+    /// loud what the prose below explains.
+    type Sleep = std::future::Pending<()>;
+
+    fn sleep(&self, _: Duration) -> Self::Sleep {
         std::future::pending()
     }
     fn now(&self) -> Self::Instant {}
@@ -120,15 +126,7 @@ where
 /// # What this bounds, and what it does not
 ///
 /// The deadline is checked on every poll, against `Timer::now`/
-/// `Timer::elapsed_since` — it does **not** hold a sleep of its own. That
-/// is forced by the shape of [`Timer`]: `sleep` returns `impl Future`, an
-/// RPITIT whose type cannot be named and therefore cannot be a field of
-/// this struct. The only way to store it is `Pin<Box<dyn Future>>`, which
-/// is `!Send` — proving `Send` through an RPITIT needs return type
-/// notation (rust-lang/rust#109417, the same wait `http-ng-tower`
-/// documents) — and that would make **every** response body `!Send`, so
-/// `tokio::spawn(client.get(u).send())` would stop compiling. That
-/// property is not worth trading for this one.
+/// `Timer::elapsed_since` — it does **not** hold a sleep of its own.
 ///
 /// So, precisely:
 ///
@@ -145,6 +143,38 @@ where
 ///
 /// Claiming "we bound the operation as a whole" without that second
 /// bullet would be stronger than the truth.
+///
+/// ## The second bullet is now **liftable**, and this says how
+///
+/// This section used to give a reason as well as a description, and the
+/// reason has since stopped being true. It read: "That is forced by the
+/// shape of [`Timer`]: `sleep` returns `impl Future`, an RPITIT whose type
+/// cannot be named and therefore cannot be a field of this struct. The
+/// only way to store it is `Pin<Box<dyn Future>>`, which is `!Send` …
+/// and that would make **every** response body `!Send`."
+///
+/// Both halves were right about the shape available at the time and wrong
+/// as a permanent conclusion. [`Timer`] now has an associated
+/// [`Timer::Sleep`], so the sleep **can** be a field: `Pin<Box<Tm::Sleep>>`
+/// (or `Tm::Sleep` directly where it is `Unpin`) is a box around a
+/// *concrete* type, and auto traits pass straight through it — `Send` is
+/// then inferred exactly as it is for `H1Body<I>`, rather than lost as it
+/// would be through `dyn`. The `Pin<Box<dyn Future>>` half of the old
+/// reasoning was checked and is correct; it simply was never the only
+/// option once the type had a name.
+///
+/// Measured, so the next reader does not have to re-derive it: with a
+/// counting waker and no executor running at all, the elapsed-time wrapper
+/// registers **zero** wakes after one `Pending` poll on a silent body —
+/// nothing will ever poll it again, so the deadline can never fire — while
+/// a wrapper holding the sleep registers one and fires on its own deadline
+/// (302 ms against a 300 ms bound, versus 1202 ms only because the harness
+/// happened to wake it).
+///
+/// **Deliberately not done here.** Racing a real sleep changes when this
+/// type cancels a transfer, which is a behavioural change in `Client`'s
+/// contract and wants its own measurement and its own tests. What changed
+/// is that it is now a decision rather than an impossibility.
 ///
 /// # Firing drops the inner body
 ///

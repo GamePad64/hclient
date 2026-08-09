@@ -109,13 +109,30 @@ someone to "fix" an item whose absence is the decision.
   our checkout poll and our write. Every HTTP/1 pool has this, hyper and
   reqwest included; the retry is what makes it recoverable rather than
   visible.
-- **`total` does not cut a body that goes completely silent after the head.**
-  `Timer::sleep` is an RPITIT, so its future cannot be stored in a struct
-  field, and boxing it would make *every* response body `!Send`. The body
-  wrapper therefore checks elapsed time on each `poll_frame`, which catches
-  a dribbling body on its next byte and never wakes for one that stops
-  entirely. That is `between_bytes`' job, and `between_bytes` is still
-  honestly declared `false`.
+- **`total` does not cut a body that goes completely silent after the head**
+  — **still true, but no longer for the reason given here, and no longer
+  permanent.** The body wrapper checks elapsed time on each `poll_frame`,
+  which catches a dribbling body on its next byte and never wakes for one
+  that stops entirely. That is `between_bytes`' job, and `between_bytes` is
+  still honestly declared `false`.
+
+  The reason this bullet used to give was: "`Timer::sleep` is an RPITIT, so
+  its future cannot be stored in a struct field, and boxing it would make
+  *every* response body `!Send`." The first half has since been fixed at
+  the source — `Timer` now carries an associated `Sleep` type, so the
+  future has a name and can be a field. The second half was right only
+  about `Pin<Box<dyn Future>>`; a box around a *concrete* `Tm::Sleep` is
+  transparent to auto traits, so `Send` survives. Measured with a counting
+  waker and no executor running at all: the elapsed-time wrapper registers
+  **zero** wakes after one `Pending` poll on a silent body and can
+  therefore never fire, while a wrapper holding the sleep registers one and
+  fires on its own deadline.
+
+  So this is now a **decision not to change behaviour in that work item**,
+  not a limitation of the seam. Racing a real sleep changes when a transfer
+  is cancelled and wants its own measurement and its own tests; see
+  `Deadline`'s doc comment, which carries the same correction next to the
+  code.
 - **The concurrency limit bounds requests, not sockets.** `tower` releases
   its permit when the `call` future completes — at the response head — so a
   streaming body holds its connection outside the limit. The design doc

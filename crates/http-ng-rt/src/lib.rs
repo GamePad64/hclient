@@ -13,4 +13,10 @@ pub use futures_io::FuturesIo;
 
 /// `Timer` is defined once, in `http-ng-core`: the portable core needs it
 /// for timeouts and backoff. This is just a re-export.
-pub use http_ng_core::unversioned::Timer;
+///
+/// `Discard` comes with it: `Timer::Sleep` is a named associated type, and
+/// a runtime whose native timer resolves to something other than `()` — as
+/// `async_io::Timer` does — needs the adapter to satisfy it. Re-exported
+/// here so a runtime crate does not have to depend on `http-ng-core`
+/// directly just to name one wrapper.
+pub use http_ng_core::unversioned::{Discard, Timer};

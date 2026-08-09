@@ -694,10 +694,45 @@ mod tests {
         }
     }
 
+    /// The virtual clock's sleep, as a named future — and the one place in
+    /// this port where naming the type was not a rename.
+    ///
+    /// **The advance must happen on the first `poll`, not when `sleep` is
+    /// called.** The `async fn` this replaces did that for free: an
+    /// `async fn` body runs on first poll, not at the call. Happy Eyeballs
+    /// creates several of these and polls them selectively, so advancing at
+    /// construction moves the clock for a sleep that is never awaited — five
+    /// `connect::tests` caught exactly that during this change
+    /// (`attempt_staggering_delay_is_respected_through_the_connector` and
+    /// four neighbours). Real clocks are the opposite: `tokio::time::sleep`,
+    /// `async_io::Timer::after` and `setTimeout` all fix their deadline at
+    /// the call, and for them the RPITIT's laziness was the accident.
+    struct FakeSleep {
+        clock: Rc<RefCell<Duration>>,
+        /// `Some` until the advance has been applied; `take`n on first
+        /// poll so a re-poll cannot double-count.
+        d: Option<Duration>,
+    }
+
+    impl Future for FakeSleep {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            let me = self.get_mut();
+            if let Some(d) = me.d.take() {
+                *me.clock.borrow_mut() += d;
+            }
+            Poll::Ready(())
+        }
+    }
+
     impl Timer for FakeRt {
         type Instant = Duration;
-        async fn sleep(&self, d: Duration) {
-            *self.clock.borrow_mut() += d;
+        type Sleep = FakeSleep;
+        fn sleep(&self, d: Duration) -> Self::Sleep {
+            FakeSleep {
+                clock: Rc::clone(&self.clock),
+                d: Some(d),
+            }
         }
         fn now(&self) -> Duration {
             *self.clock.borrow()

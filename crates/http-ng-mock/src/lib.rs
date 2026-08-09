@@ -426,7 +426,11 @@ impl http_ng_core::unversioned::Timer for TestTimer {
     /// wall-clock time.
     type Instant = std::time::Duration;
 
-    fn sleep(&self, d: std::time::Duration) -> impl std::future::Future<Output = ()> {
+    /// Already `std::future::ready(())` before `Timer` grew this
+    /// associated type — naming it changed nothing here but the signature.
+    type Sleep = std::future::Ready<()>;
+
+    fn sleep(&self, d: std::time::Duration) -> Self::Sleep {
         self.sleeps.lock().expect("TestTimer lock poisoned").push(d);
         std::future::ready(())
     }
