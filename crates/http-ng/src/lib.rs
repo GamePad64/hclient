@@ -6,6 +6,18 @@
 
 mod client;
 mod config;
+/// The cookie jar, re-exported from `http-ng-cookie` — the `cookies`
+/// feature.
+///
+/// Re-exported for the same reason `mock` is, and with the same
+/// arrangement: the jar is a leaf crate that knows nothing about this
+/// facade (nor about `http-ng-core`, nor about any transport), which is
+/// what makes "cookies behave the same behind every backend" structural.
+/// A consumer only needs the name to call
+/// [`ClientBuilder::cookie_jar`] and to read [`Client::cookies`], and
+/// should not have to take a second dependency for it.
+#[cfg(feature = "cookies")]
+pub use http_ng_cookie as cookie;
 mod deadline;
 mod decompress;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.

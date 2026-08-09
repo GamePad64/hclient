@@ -53,6 +53,27 @@ pub struct Config {
     /// [`crate::Client::total_timeout`]. There is deliberately no
     /// per-request override yet — see the v0.2 W4 report.
     pub total: Option<core::time::Duration>,
+    /// The caller asked this client to keep a cookie jar of its own.
+    ///
+    /// A `bool` here and the jar itself in `Client`'s `Inner`, which is
+    /// not an arrangement anyone would pick for its looks. `Config` is
+    /// per-handle and `Clone`: [`crate::Client::total_timeout`] hands back
+    /// a second handle over the same transport by cloning it. A jar in
+    /// here would be *copied* by that call, and the two handles would then
+    /// disagree about what the server had set — the jar is shared state,
+    /// so it lives behind the same `Arc` the transport does. What has to
+    /// be in `Config` is the one bit `check_supported` reads at
+    /// `build()`, and this is that bit.
+    ///
+    /// Set only by [`crate::ClientBuilder::cookie_jar`], which exists only
+    /// under the `cookies` feature. **The field is not `#[cfg]`-ed with
+    /// it**, on purpose: `check_supported` destructures `Config` without a
+    /// `..`-remainder precisely so that a new field cannot be forgotten,
+    /// and a field that appears and disappears would take that check —
+    /// and the refusal it performs — with it into half the builds.
+    /// Without the feature nothing can set this, so it is `false` and
+    /// `check_cookies_supported` is inert.
+    pub cookies: bool,
 }
 
 /// The base URL is unfit to resolve this request against.
@@ -208,6 +229,13 @@ pub(crate) fn effective_redirect(
 ///
 /// `base_url` remains deliberately unchecked **for support** — the `_`
 /// records that decision rather than forgetting the field.
+///
+/// `cookies` arrived the same way `redirect` did, and the condition for it
+/// was written down before the field existed: `Capabilities::
+/// owns_cookie_jar`'s doc comment says a client-level cookie setting
+/// "earns its refusal here the way `RedirectSupport::Internal` earned its
+/// variant — the setting, the variant and the `check_supported` arm arrive
+/// together". This is that arm; see `check_cookies_supported`.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
@@ -223,9 +251,61 @@ pub fn check_supported(
         // instead — a clock — is guaranteed by the client's type, not by a
         // runtime check, so there is nothing for `build()` to refuse.
         total: _,
+        cookies,
     } = cfg;
     check_timeouts_supported(timeouts, caps, backend)?;
-    check_redirect_supported(redirect, caps, backend)
+    check_redirect_supported(redirect, caps, backend)?;
+    check_cookies_supported(*cookies, caps, backend)
+}
+
+/// A cookie jar of the client's own, against a transport that already
+/// keeps one, is an error — not a setting that quietly does the work
+/// twice.
+///
+/// **Twice is the point, and it is worse than useless.** `http-ng-fetch`
+/// is the case this exists for: the browser attaches `Cookie` itself and
+/// processes `Set-Cookie` itself, and `Cookie` is on that backend's
+/// `forbidden_request_headers`. A client-side jar there would store every
+/// `Set-Cookie` a second time — including the ones the browser refused, on
+/// its own rules — while the header it produced was dropped on the way
+/// out. The result is not "redundant"; it is a jar whose contents differ
+/// from the ones actually being sent, which is the worst of the three
+/// possible outcomes.
+///
+/// **Only the jar-owning direction is rejected.** A backend that does not
+/// keep a jar is exactly where the client's own belongs, and that includes
+/// every backend reporting `Capabilities::none()` — silence there means
+/// "keeps no jar", which is the truth for a transport that has never
+/// thought about cookies.
+///
+/// **The gate is `owns_cookie_jar` and nothing else** — in particular NOT
+/// `forbidden_request_headers` containing `Cookie`, even though the one
+/// transport here that owns a jar also forbids the header. That is the
+/// same trap `decompress::negotiate` spells out for `Accept-Encoding`: the
+/// two claims coincide in `http-ng-fetch` by accident, and they are
+/// different claims. A transport that forbade `Cookie` while keeping no
+/// jar would be a real hole — our header dropped, the jar filling up
+/// anyway — and it is deliberately left as one rather than papered over
+/// here, because it does not exist: no backend in this workspace takes
+/// that shape, and a check with no case to catch is a check nobody can
+/// test. The place to add it, if such a backend ever arrives, is this
+/// function.
+///
+/// `pub(crate)`, like its two siblings and for the same reason: the
+/// `http-ng` facade already exports more plumbing than it should (finding
+/// §6.7 of the branch's final review).
+pub(crate) fn check_cookies_supported(
+    cookies: bool,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    if cookies && caps.owns_cookie_jar {
+        return Err(UnsupportedCapability {
+            what: "cookie_jar",
+            backend,
+        });
+    }
+    Ok(())
 }
 
 /// A `RedirectPolicy` the caller actually asked for, against a backend

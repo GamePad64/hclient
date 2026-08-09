@@ -19,13 +19,17 @@ use std::task::{Context, Poll};
 /// measured them:
 ///
 /// - **A struct cannot hold a sleep.** `http_ng::deadline::Deadline`
-///   therefore checks elapsed time on each `poll_frame` rather than racing
-///   a sleep, and so cannot cut a response body that goes *completely*
-///   silent after the head: nothing wakes the wrapper, so nothing ever
-///   looks at the clock again. Measured with a counting waker and no
-///   executor running: today's shape registers **zero** wakes and can
-///   never fire; a stored sleep registers one. See `Deadline`'s own doc
-///   comment for what this crate does about it today.
+///   therefore checked elapsed time on each `poll_frame` rather than
+///   racing a sleep, and so could not cut a response body that goes
+///   *completely* silent after the head: nothing wakes the wrapper, so
+///   nothing ever looks at the clock again. Measured with a counting waker
+///   and no executor running: that shape registers **zero** wakes and can
+///   never fire; a stored sleep registers one. **Since collected**:
+///   `Deadline` holds a `Pin<Box<Tm::Sleep>>` and polls it whenever the
+///   wrapped body answers `Pending`, and `http-ng`'s `tests/deadline.rs`
+///   cuts a server that sends the head and then nothing for ever. This
+///   bullet is the reason the associated type exists, not a cost still
+///   being paid.
 /// - **Generic code cannot spawn a background task.**
 ///   `http_ng_rt::Spawn<F>` takes the future as a type parameter, so a
 ///   bound has to name it — and an anonymous future has no name. That is

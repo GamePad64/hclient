@@ -274,6 +274,42 @@ Tm>>`, and that order is load-bearing: the deadline is polled once per
 COMPRESSED frame, or a slow server sending well-compressing padding would
 walk around a `total_timeout`.
 
+`Deadline` now **races a real sleep** rather than only stamping each frame
+with the elapsed time, so `total` also cuts a body that goes completely
+silent after the head — the one case an elapsed-time check structurally
+cannot reach, since nothing will ever poll the wrapper again. That was
+written down as impossible (`Timer::sleep` was an RPITIT), then as
+possible-but-deferred, and is now done; `crates/http-ng/tests/deadline.rs`
+carries the server that sends a head and then nothing, for ever.
+`between_bytes` is unaffected and still `false`: it bounds the gap between
+two frames and restarts on each, which is a different promise.
+
+**A cookie jar landed in `Client`, behind the `cookies` feature** (off by
+default — `http-ng-cookie`'s compiled-in public suffix list is +77 KiB, and
+the browser, where paying that is certainly wrong, keeps its own jar
+anyway). `ClientBuilder::cookie_jar(jar)` switches it on; the rules are
+`http-ng-cookie`'s, sans-io and clockless, and what `Client` adds is *when*
+(once per redirect hop, and re-derived rather than carried, so a cookie
+scoped to `/one` cannot ride a same-origin 302 to `/two`), *whether*, and a
+`now`.
+
+*Whether* is `Capabilities::owns_cookie_jar`, and a client-side jar against
+a backend that reports it is an `UnsupportedCapability` at `build()` — the
+same shape as a `RedirectPolicy` against `RedirectSupport::Internal`, and
+exactly the arm that capability's own doc comment said would arrive with
+the setting. `http-ng-fetch` is the backend: the browser attaches and
+stores cookies itself and forbids the `Cookie` header, so a second jar
+there would store every `Set-Cookie` twice — including the ones the browser
+refused — while the header it produced was dropped on the way out.
+
+The *`now`* is `SystemTime::now()` and deliberately **not** the client's
+`Timer`: `Timer::Instant` is `Copy + PartialOrd` with an `elapsed_since` —
+a stopwatch with no epoch — and `Expires` is a calendar date. Anchoring a
+wall clock and advancing it with `elapsed_since` would freeze outright
+under `NoClock`, whose `elapsed_since` is `Duration::ZERO` for ever. The
+cost of the choice is that `SystemTime::now()` panics on
+`wasm32-unknown-unknown`, which is written where the setter is.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
