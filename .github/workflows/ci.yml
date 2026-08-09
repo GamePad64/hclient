@@ -346,7 +346,7 @@ jobs:
               "http-ng-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
               -- -p http-ng-proto $flags
           done
-      - name: without idn there are no Unicode tables, with it there are
+      - name: without idn there is no IDN implementation, with it there is
         shell: bash
         run: |
           set -euo pipefail
@@ -362,9 +362,32 @@ jobs:
             -- -p http-ng --no-default-features
           # Without this the two checks above would also pass if idn had
           # simply been deleted.
-          .github/scripts/tree-guard.sh present '^idna ' \
-            "the default build of http-ng-proto has no idna — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
+          # What the feature MEANS, and this half holds on every target:
+          # since `idn` stopped naming `idna` and started naming
+          # `http-ng-idn` (which picks its backend by target), the
+          # implementation being in the graph is the target-independent
+          # claim.
+          .github/scripts/tree-guard.sh present '^http-ng-idn ' \
+            "the default build of http-ng-proto has no http-ng-idn — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
             -- -p http-ng-proto
+          # What it COSTS on this runner, and deliberately not
+          # target-independent: measured, `--target x86_64-pc-windows-msvc`
+          # brings `windows-sys` and no `idna`, `aarch64-apple-darwin`
+          # brings `objc2-foundation` and no `idna`. This job is
+          # ubuntu-only, and if it is ever put on the other two runners
+          # this line is the one that must move rather than be widened.
+          .github/scripts/tree-guard.sh present '^idna ' \
+            "the default build of http-ng-proto on Linux has no idna — http-ng-idn takes the bundled tables on every target that is not Windows or Apple, so these are the tables the feature is supposed to bring here" \
+            -- -p http-ng-proto
+          # And that the feature is the ONLY thing bringing it, stated
+          # target-independently: the `idna|icu_` absence above passes
+          # trivially on Windows and Apple, where those never appear.
+          .github/scripts/tree-guard.sh absent '^http-ng-idn ' \
+            "--no-default-features still pulls in http-ng-idn — the idn feature is the only thing that should" \
+            -- -p http-ng-proto --no-default-features
+          .github/scripts/tree-guard.sh absent '^http-ng-idn ' \
+            "http-ng --no-default-features still pulls in http-ng-idn — the facade's idn feature is not forwarding" \
+            -- -p http-ng --no-default-features
       - name: the feature-off path is compiled and run, not merely declared
         shell: bash
         run: |
