@@ -13,12 +13,14 @@
 //! the crate at all (`E0453`).
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "quic")]
+mod quic;
 mod stream;
 
 pub use stream::TlsStream;
 
 use http_ng_core::{Error, ErrorKind};
-use http_ng_tls::{TlsConfigId, TlsConnect, TlsInfo, TlsRequest};
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -40,6 +42,11 @@ pub struct Rustls {
     /// connection is a separate component of the pool key anyway, so the
     /// distinction is already carried, once, where it belongs.
     config_id: TlsConfigId,
+    /// The QUIC path's config cache and ticket store, built on first use.
+    /// See `crate::quic`'s module doc for why they are separate from
+    /// `by_alpn` and from `base`'s own resumption store.
+    #[cfg(feature = "quic")]
+    quic: std::sync::OnceLock<quic::QuicState>,
 }
 
 impl Rustls {
@@ -48,6 +55,8 @@ impl Rustls {
             base: cfg,
             by_alpn: Mutex::new(HashMap::new()),
             config_id: TlsConfigId::new_unique(),
+            #[cfg(feature = "quic")]
+            quic: std::sync::OnceLock::new(),
         }
     }
 
@@ -156,15 +165,17 @@ fn normalize_cipher_suite(suite: rustls::CipherSuite) -> Option<String> {
     })
 }
 
+impl TlsIdentity for Rustls {
+    fn config_id(&self) -> TlsConfigId {
+        self.config_id
+    }
+}
+
 impl TlsConnect for Rustls {
     type Stream<S>
         = TlsStream<S>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
-
-    fn config_id(&self) -> TlsConfigId {
-        self.config_id
-    }
 
     /// rustls reports the selection: `connect` below fills `TlsInfo::alpn`
     /// from `ClientConnection::alpn_protocol()`, so `None` from this

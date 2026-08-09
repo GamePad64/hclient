@@ -1427,20 +1427,24 @@ mod tests {
     /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
     /// tests (Task 8).
     struct NoOpTls;
-    impl TlsConnect for NoOpTls {
-        type Stream<S>
-            = S
-        where
-            S: Read + Write + Unpin;
+    impl http_ng_tls::TlsIdentity for NoOpTls {
         /// One stub, one configuration, therefore one identity — drawn
         /// once into a `OnceLock` rather than freshly on every call, which
-        /// is the contract `TlsConnect::config_id` states and which a
+        /// is the contract `TlsIdentity::config_id` states and which a
         /// `NoOpTls::new_unique()` here would quietly break for anyone who
         /// copied this stub.
         fn config_id(&self) -> http_ng_tls::TlsConfigId {
             static ID: std::sync::OnceLock<http_ng_tls::TlsConfigId> = std::sync::OnceLock::new();
             *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
         }
+    }
+
+    impl TlsConnect for NoOpTls {
+        type Stream<S>
+            = S
+        where
+            S: Read + Write + Unpin;
+
         async fn connect<S>(&self, io: S, req: TlsRequest<'_>) -> Result<(S, TlsInfo), Error>
         where
             S: Read + Write + Unpin,

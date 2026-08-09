@@ -630,6 +630,39 @@ jobs:
             --config .github/deny/ambient.toml -t wasm32-unknown-unknown check bans
           cargo deny --manifest-path crates/http-ng-wasi/Cargo.toml \
             --config .github/deny/ambient.toml -t wasm32-wasip2 check bans
+      # The two seams v0.3 changed for HTTP/3 must stay implementable
+      # without a QUIC stack: `http-ng-rt` re-declares `RecvMeta` and
+      # `EcnCodepoint` instead of re-exporting `quinn-udp`'s, and
+      # `http-ng-tls-quic` is a separate crate rather than a feature of
+      # `http-ng-tls`. Both are trades paid in conversion code and crate
+      # count, and both are worthless the moment this stops holding.
+      - name: the runtime and TLS seams contain no QUIC
+        shell: bash
+        run: |
+          set -euo pipefail
+          for c in http-ng-rt http-ng-tls; do
+            cargo deny --manifest-path "crates/$c/Cargo.toml" \
+              --config .github/deny/no-quic-in-the-seams.toml check bans
+          done
+      # And the other direction, because a ban that would pass against an
+      # empty graph proves nothing: the tokio runtime's `udp` feature really
+      # does pull `quinn-udp`, so the ban above is being checked against a
+      # graph where the crate is one step away rather than absent from the
+      # workspace.
+      - name: and the udp feature really does pull it
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(cargo tree -p http-ng-rt-tokio --features udp -e normal --prefix none)"
+          printf '%s\n' "$out" | grep -q '^quinn-udp ' || {
+            echo "::error::http-ng-rt-tokio/udp no longer pulls quinn-udp — either the feature is dead or the ban above is now vacuous"
+            exit 1
+          }
+          off="$(cargo tree -p http-ng-rt-tokio -e normal --prefix none)"
+          if printf '%s\n' "$off" | grep -q '^quinn-udp '; then
+            echo "::error::quinn-udp is in http-ng-rt-tokio's default graph; the udp feature is not off by default"
+            exit 1
+          fi
       - name: the smol path carries no reactor, only hyper's inert tokio leaf
         shell: bash
         run: |

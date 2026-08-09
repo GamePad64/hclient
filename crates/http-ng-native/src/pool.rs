@@ -187,6 +187,32 @@
 //!   Whoever makes check-out non-exclusive takes the rule with them; see
 //!   `crate::http2`'s module doc, which says the same thing from the other
 //!   end.
+//!
+//! # `http-ng-h3` does the opposite, and that is not a disagreement
+//!
+//! v0.3's HTTP/3 transport shares a connection and multiplexes requests on
+//! it. Read next to the paragraphs above that looks like two crates
+//! answering the same question differently; it is not, and the difference
+//! is worth having in both places so that whoever changes one does not
+//! import the other's justification along with it.
+//!
+//! The argument above is conditional, and states its condition: *with no
+//! background task*, the only things that can drive a shared connection are
+//! the in-flight request futures, so a caller that stops polling wedges its
+//! neighbours. `http-ng-h3` has a background task — not as an optimisation
+//! but because it has no choice. A QUIC connection that nobody polls does
+//! not idle, it dies: the PING that resets the peer's idle timer comes from
+//! the connection's driver rather than from the kernel, so a pooled h3
+//! connection with no driver is a pool that cannot be used. Its driver is
+//! therefore spawned, and a driver that is nobody's request future cannot
+//! be stalled by any request's polling behaviour.
+//!
+//! So W1's rule holds in both crates, for opposite reasons: here because
+//! there are no neighbours, there because dropping one stream sends
+//! `STOP_SENDING` for that stream alone. And the "a build that opts into a
+//! spawner could multiplex" sentence above now has a worked example
+//! sitting in the workspace — including the price it pays, which is a
+//! `R: Spawn` bound on the transport.
 use crate::established::Established;
 use http_ng_core::unversioned::Timer;
 use http_ng_tls::TlsConfigId;

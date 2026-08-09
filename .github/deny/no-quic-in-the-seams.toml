@@ -1,0 +1,38 @@
+# The seams HTTP/3 needed must not become QUIC-shaped.
+#
+# Two claims, one config, applied per crate by `--manifest-path` in the
+# `dependency-graph` job.
+#
+# `http-ng-rt` gained `UdpBind`/`UdpDatagrams` for QUIC and declares
+# `RecvMeta` and `EcnCodepoint` itself rather than re-exporting `quinn-udp`'s
+# identical structs. That costs a field-for-field conversion in two places
+# and buys this: a runtime seam that any UDP backend can implement —
+# including one with no descriptor and therefore no `quinn-udp` — without a
+# QUIC stack in its graph. The conversion is only worth its price while this
+# holds, so it is checked rather than asserted.
+#
+# `http-ng-tls` is the same claim one crate over, and the reason
+# `http-ng-tls-quic` exists as a separate crate rather than as a `quic`
+# feature here: Cargo unifies features across a graph, so a feature would
+# put `quinn-proto` into every build in which *any* crate wanted h3 —
+# including the `NoTls` builds whose whole point is having no room for a
+# stack.
+#
+# `exclude-dev`: this is a claim about what a consumer links. Both crates
+# have QUIC in their dev-dependencies on purpose — that is where the tests
+# that drive the seam live.
+[graph]
+exclude-dev = true
+
+[advisories]
+[licenses]
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "ISC", "Unicode-3.0", "Unlicense", "Zlib", "CDLA-Permissive-2.0", "MPL-2.0"]
+
+[bans]
+deny = [
+    { crate = "quinn", reason = "the seam is a UDP capability, not a QUIC one" },
+    { crate = "quinn-proto", reason = "the seam is a UDP capability, not a QUIC one" },
+    { crate = "quinn-udp", reason = "RecvMeta and EcnCodepoint are re-declared here precisely so this stays true" },
+    { crate = "h3", reason = "nothing below the transport knows what HTTP/3 is" },
+    { crate = "h3-quinn", reason = "nothing below the transport knows what HTTP/3 is" },
+]
