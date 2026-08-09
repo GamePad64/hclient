@@ -60,6 +60,7 @@ use embassy_time::Timer;
 use http_ng::Client;
 use http_ng_dns::IpLiteralOnly;
 use http_ng_native::Native;
+use http_ng_rt::{TcpConnect, TcpOpts};
 use http_ng_rt_embassy::{Embassy, SocketPool};
 use http_ng_tls::NoTls;
 use std::io::{Read, Write};
@@ -124,6 +125,22 @@ fn more_requests_than_pool_slots_reuse_the_slots_instead_of_running_out() {
 #[test]
 fn connect_timeout_is_enforced_over_this_runtimes_clock() {
     scenario("connect-timeout");
+}
+
+/// The seam's one obligation, checked where it is owed: **inside
+/// `connect`**, not next to it.
+///
+/// `src/lib.rs`'s unit tests call `TcpOpts::reject_unsupported` directly,
+/// which proves the check computes the right answer and nothing about
+/// whether `connect` ever calls it. Deleting the
+/// `opts.reject_unsupported(Self::APPLIES)?` line from `Embassy::connect`
+/// — a backend that silently ignores every option it cannot apply, the one
+/// answer `TcpConnect::connect`'s doc says is unavailable — passed the
+/// whole crate suite, 14/14 (W7 mutation M6). This scenario is what makes
+/// that mutation fail.
+#[test]
+fn options_this_runtime_cannot_apply_are_refused_by_connect_itself() {
+    scenario("refuse-opts");
 }
 
 /// The W1 contract, observed from the far end: dropping the `execute`
@@ -217,6 +234,7 @@ fn test_fn_name(scenario: &str) -> &'static str {
         "request" => "a_request_goes_out_over_embassy_net_and_the_response_comes_back",
         "slots" => "more_requests_than_pool_slots_reuse_the_slots_instead_of_running_out",
         "connect-timeout" => "connect_timeout_is_enforced_over_this_runtimes_clock",
+        "refuse-opts" => "options_this_runtime_cannot_apply_are_refused_by_connect_itself",
         "cancel" => "dropping_the_execute_future_closes_the_connection_the_server_sees",
         "cancel-control" => "holding_the_execute_future_leaves_the_connection_open",
         "naive" => "embassys_own_socket_teardown_is_invisible_to_the_server",
@@ -286,6 +304,7 @@ async fn scenario_task(stack: Stack<'static>, name: String) {
         "request" => request(stack).await,
         "slots" => slots(stack).await,
         "connect-timeout" => connect_timeout(stack).await,
+        "refuse-opts" => refuse_opts(stack).await,
         "cancel" => cancel(stack, true).await,
         "cancel-control" => cancel(stack, false).await,
         "naive" => naive(stack).await,
@@ -467,6 +486,86 @@ async fn connect_timeout(stack: Stack<'static>) {
     );
 }
 
+/// Every option this runtime cannot apply is refused **by `connect`**, and
+/// the two it can apply still connect.
+///
+/// Both halves are needed. Without the second, a `connect` that refused
+/// everything unconditionally would pass; without the first, the silent
+/// ignore is invisible — which is exactly what mutation M6 measured.
+async fn refuse_opts(stack: Stack<'static>) {
+    let pool = SocketPool::<2, 1536, 1536>::leak(stack);
+    let rt = Embassy::new(stack, pool);
+    let addr = spawn_accept_only();
+
+    let cases: [(&str, TcpOpts); 4] = [
+        (
+            "local_address",
+            TcpOpts {
+                local_address: Some(std::net::IpAddr::from(CLIENT_IP)),
+                ..TcpOpts::default()
+            },
+        ),
+        (
+            "send_buffer_size",
+            TcpOpts {
+                send_buffer_size: Some(64 * 1024),
+                ..TcpOpts::default()
+            },
+        ),
+        (
+            "recv_buffer_size",
+            TcpOpts {
+                recv_buffer_size: Some(64 * 1024),
+                ..TcpOpts::default()
+            },
+        ),
+        (
+            "reuse_address",
+            TcpOpts {
+                reuse_address: true,
+                ..TcpOpts::default()
+            },
+        ),
+    ];
+
+    for (name, opts) in cases {
+        let before = rt.sockets().counts();
+        let Err(err) = TcpConnect::connect(&rt, addr, &opts).await else {
+            panic!("`connect` must refuse {name}, not ignore it and connect anyway");
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported, "{name}: {err}");
+        assert!(
+            err.to_string().contains(name),
+            "the refusal must name {name}, got: {err}"
+        );
+        // Refused *before* a slot was taken — `connect` checks the options
+        // as its first act. A refusal that cost a slot would turn a
+        // caller's bad option into a leak of this pool's scarcest
+        // resource.
+        assert_eq!(
+            rt.sockets().counts(),
+            before,
+            "{name}: the refusal must not cost a pool slot"
+        );
+    }
+
+    // And the pair it does apply is not refused: `connect` really reaches
+    // the socket. Without this the test above would pass against a
+    // `connect` whose first line was `return Err(...)`.
+    let io = TcpConnect::connect(
+        &rt,
+        addr,
+        &TcpOpts {
+            nodelay: true,
+            keepalive: Some(Duration::from_secs(30)),
+            ..TcpOpts::default()
+        },
+    )
+    .await
+    .expect("nodelay and keepalive are the two this runtime applies");
+    println!("four options refused by name, and nodelay+keepalive connected: {io:?}");
+}
+
 async fn cancel(stack: Stack<'static>, drop_it: bool) {
     let (addr, seen, verdict) = spawn_silent_server();
     let client = client(stack, true);
@@ -645,6 +744,23 @@ fn observe(s: &mut std::net::TcpStream, window: Duration) -> ClientEnd {
         Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => ClientEnd::Reset,
         Err(e) => panic!("observing the client end: {e}"),
     }
+}
+
+/// A listener that accepts and then simply holds the connection open.
+///
+/// Deliberately not [`spawn_http_server`]: that one calls `read_head`,
+/// which asserts the client sends a request, and `refuse_opts` connects
+/// without ever sending one.
+fn spawn_accept_only() -> SocketAddr {
+    let l = std::net::TcpListener::bind((SERVER_IP, 0)).expect("bind");
+    let addr = l.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        // One connect reaches here — the four refused ones never open a
+        // socket at all, which is half of what the scenario asserts.
+        let _held = l.accept().expect("accept");
+        std::thread::sleep(BOUND);
+    });
+    addr
 }
 
 /// A server that accepts one connection, reads one request, and then never
