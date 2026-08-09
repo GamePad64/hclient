@@ -235,6 +235,15 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
     /// `Client::execute`, inside the runtime that is already polling it,
     /// and only ever with `total: Some(..)` for a client that named a
     /// clock in the same call that set the bound (see [`NoClock`]).
+    ///
+    /// **`total.map`, and never an unconditional sleep** — `Tokio::sleep`
+    /// panics outside a runtime, and a client that never asked for a bound
+    /// must not start requiring one. That is not a theory anyone has to
+    /// take on trust: building the sleep unconditionally (`Duration::MAX`
+    /// where there is no bound) turns eleven tests across `sse_reconnect`,
+    /// `timeouts` and `two_runtimes` red at once, because they drive a
+    /// `Client` on a bare `futures_executor` with `DefaultClock = Tokio`.
+    /// Measured as one of the mutations over this change.
     pub(crate) fn new(inner: B, timer: Tm, started: Tm::Instant, total: Option<Duration>) -> Self {
         let sleep = total.map(|t| {
             let left = t.saturating_sub(timer.elapsed_since(started));
