@@ -305,8 +305,9 @@ mod tests {
     use super::*;
 
     /// The oracle, called exactly as `http-ng-proto::uri::host_to_ascii`
-    /// calls it — and, in [`over_idna`], standing in for a platform that
-    /// IS a full UTS 46 implementation, which is what Windows' ICU is.
+    /// reaches it through this crate — and, in [`over_idna`], standing in
+    /// for a platform that IS a full UTS 46 implementation, which is what
+    /// Windows' ICU is.
     fn idna_says(domain: &str) -> Option<String> {
         idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
             .ok()

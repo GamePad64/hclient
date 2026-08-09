@@ -35,6 +35,15 @@ http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
 # cheaper one. A consumer who wants that build takes `http-ng-cookie`
 # directly.
 http-ng-cookie = { path = "crates/http-ng-cookie", version = "0.1.0" }
+# Default features left ON, for the same reason as `http-ng-cookie` and the
+# opposite of `http-ng-proto`: this crate's default is `platform`, which is
+# not a choice a consumer makes but a fact about the target — the bundled
+# `idna` tables on Linux and wasm, `icuuc.dll` on Windows, Foundation on
+# Apple, resolved in its `build.rs`. Turning it off leaves the crate with
+# no backend at all, which its own `compile_error!` refuses. The switch a
+# consumer actually wants is one level up: `http-ng-proto`'s `idn`, which
+# decides whether this crate is in the graph at all.
+http-ng-idn   = { path = "crates/http-ng-idn",   version = "0.1.0" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 assert_matches = "1.5"

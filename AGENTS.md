@@ -281,13 +281,37 @@ line, nearer to the native one than `fetch` is. Two things stand in the way:
   that pins both implementations' answers and enumerates every place they
   deliberately differ. IDN survives as the `idn` feature of
   `http-ng-proto`, forwarded by `http-ng` and **on by default**, so a plain
-  build behaves as before; `--no-default-features` removes `idna` and the
-  ICU crates altogether and turns a non-ASCII host into a typed
-  `UriError::NonAsciiHost` naming the A-label to send instead. Measured
-  `cargo tree -e normal` for `http-ng-proto`: **36 crates with `idn`, 10
-  without**, and no `url` either way. The `idn-feature-is-real` CI job
-  checks all of that, in both directions, and runs the feature-off test
-  suite that `--all-features` cannot reach.
+  build behaves as before; `--no-default-features` removes the whole IDN
+  implementation and turns a non-ASCII host into a typed
+  `UriError::NonAsciiHost` naming the A-label to send instead. The
+  `idn-feature-is-real` CI job checks all of that, in both directions, and
+  runs the feature-off test suite that `--all-features` cannot reach.
+
+  **The feature no longer names `idna`; it names `http-ng-idn`**, which
+  chooses the implementation by target in its own `build.rs`. `uri.rs`
+  calls `http_ng_idn::domain_to_ascii` and maps two error variants, and
+  nothing in `http-ng-proto` mentions `idna` any more. What that changes
+  is where the Unicode tables are, not what a host converts to: on Linux
+  and the other ELF unixes, and on wasm, the backend *is*
+  `idna::domain_to_ascii_cow(…, AsciiDenyList::URL)` — the same call
+  `uri.rs` used to make itself, with the same arguments. Measured before
+  believing: the 96-pair corpus is unchanged and green in both feature
+  settings, and `http_ng_idn::domain_to_ascii` against `idna` directly
+  over 9,739 inputs on this host gave 0 differences.
+
+  So the crate count is now a fact about the target rather than one
+  number. Measured `cargo tree -e normal`, unique crates, this tree:
+
+  | build of `http-ng-proto` | crates | what supplies UTS 46 |
+  |---|---|---|
+  | default (`idn`), x86-64 Linux | **37** | `idna` + the ICU data crates |
+  | default (`idn`), `--target x86_64-pc-windows-msvc` | **13** | `icuuc.dll`, through `windows-sys` |
+  | default (`idn`), `--target aarch64-apple-darwin` | **15** | Foundation, through `objc2-foundation` |
+  | `--no-default-features` | **10** | nothing — `NonAsciiHost` |
+
+  The Linux row is the old **36** plus `http-ng-idn` itself and nothing
+  else: `thiserror` was already there, and no new Unicode crate arrives.
+  There is no `url` in any of them.
 
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,

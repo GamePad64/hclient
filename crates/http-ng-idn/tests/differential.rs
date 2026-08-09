@@ -10,7 +10,8 @@
 //!
 //! Modelled on `http-ng-proto/tests/uri_resolution.rs`, which is the same
 //! shape with `url` as the oracle. Here the oracle is `idna`, called
-//! exactly as `http-ng-proto::uri::host_to_ascii` calls it.
+//! exactly as `http-ng-proto::uri::host_to_ascii` used to call it
+//! directly and now reaches it through this crate.
 //!
 //! # Which rows actually ran, and where
 //!
@@ -59,11 +60,14 @@ use http_ng_idn::testing;
 use rstest::rstest;
 
 /// The oracle, called exactly as `http-ng-proto::uri::host_to_ascii`
-/// calls it — through the DEV-dependency, so this runs on the targets
-/// where `idna` is deliberately absent from the crate's own graph, which
-/// is every target that has a system ICU. That is the whole reason it is
-/// a dev-dependency: the comparison has to be possible precisely where
-/// the shipped build does not contain the thing being compared against.
+/// reaches it: that function's `idn` feature is now this crate, and on a
+/// target with the bundled backend `domain_to_ascii` *is* this call.
+///
+/// Through the DEV-dependency, so this runs on the targets where `idna`
+/// is deliberately absent from the crate's own graph, which is every
+/// target that has a system ICU. That is the whole reason it is a
+/// dev-dependency: the comparison has to be possible precisely where the
+/// shipped build does not contain the thing being compared against.
 fn idna_says(domain: &str) -> Option<String> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
         .ok()

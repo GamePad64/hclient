@@ -15,11 +15,13 @@ default = ["idn"]
 # feature, because it is the entire weight of the dependency graph this
 # crate used to carry unconditionally.
 #
-# Turning it off removes `idna`, `icu_normalizer`, `icu_properties` and
-# their data crates from the build ENTIRELY (`cargo tree -p http-ng-proto
-# -e normal --no-default-features` has none of them), and a non-ASCII host
-# becomes `uri::UriError::NonAsciiHost`, which names the cause and tells
-# the caller to supply the A-label itself.
+# Turning it off removes the whole IDN implementation from the build
+# ENTIRELY — on Linux and wasm that is `idna`, `icu_normalizer`,
+# `icu_properties` and their data crates (`cargo tree -p http-ng-proto -e
+# normal --no-default-features` has none of them); on Windows and Apple it
+# is the platform binding `http-ng-idn` uses instead. A non-ASCII host
+# then becomes `uri::UriError::NonAsciiHost`, which names the cause and
+# tells the caller to supply the A-label itself.
 #
 # There is no middle setting. `idna`'s own `compiled_data` feature cannot
 # be turned off in isolation: `idna_adapter` (the back end `idna` reaches
@@ -30,17 +32,28 @@ default = ["idn"]
 # top-level `Cargo.lock` (1.1.x = unicode-rs, "binary size larger"; 1.0.x =
 # a stub with no Unicode data at all), which is an application's decision
 # to make in its own lock file, not something a library can express.
-idn = ["dep:idna"]
+idn = ["dep:http-ng-idn"]
 
 [dependencies]
 bytes = { workspace = true }
 http  = { workspace = true }
 thiserror = { workspace = true }
-# Only under the `idn` feature, and deliberately `default-features = false`
-# plus an explicit `std`/`compiled_data`: the default set is the same two,
-# but naming them keeps a future change to `idna`'s defaults from silently
-# changing what this crate pulls in.
-idna  = { version = "1.1", optional = true, default-features = false, features = ["std", "compiled_data"] }
+# Only under the `idn` feature. This used to be `idna` directly, with an
+# explicit `default-features = false` plus `std`/`compiled_data`; those
+# three words now live in `http-ng-idn`'s own manifest, copied there
+# verbatim when the crate was written, and this crate no longer names
+# `idna` at all.
+#
+# **What that changes, and what it deliberately does not.** On Linux and
+# every other ELF unix, and on wasm, `http-ng-idn` resolves to the bundled
+# `idna` crate and `bundled_to_ascii` is `idna::domain_to_ascii_cow(…,
+# AsciiDenyList::URL)` — the same call this file used to reach directly,
+# with the same arguments, so the answer is byte for byte what it was.
+# On Windows and Apple it resolves to the platform's own UTS 46
+# (`icuuc.dll`, Foundation) and `idna` is not in the graph at all. Which
+# one a target gets is decided by `http-ng-idn/build.rs`, not here and not
+# by a feature.
+http-ng-idn = { workspace = true, optional = true }
 
 # `url` is a DEV-dependency only, and deliberately so: it is the incumbent
 # implementation of `uri::resolve_reference` and the only oracle the

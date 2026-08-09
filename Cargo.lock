@@ -1338,7 +1338,7 @@ dependencies = [
  "assert_matches",
  "bytes",
  "http",
- "idna",
+ "http-ng-idn",
  "proptest",
  "rstest",
  "thiserror",

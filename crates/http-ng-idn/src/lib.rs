@@ -32,13 +32,18 @@
 //!
 //! | build, x86-64 Linux | binary | `.rodata` | crates |
 //! |---|---|---|---|
-//! | `idna` called directly — what `http-ng-proto` compiles today | 448,184 B | 128,784 B | 31 |
+//! | `idna` called directly — what `http-ng-proto` compiled before it took this crate | 448,184 B | 128,784 B | 31 |
 //! | this crate, default | 448,920 B | 129,144 B | 34 |
 //!
 //! **+736 bytes and +3 crates, for the same answer.** That is the honest
 //! accounting on Linux, and it is stated first rather than buried,
 //! because the earlier version of this section claimed a 138 KiB saving
 //! that a Linux build no longer gets.
+//!
+//! The +3 is this harness's, not every caller's: it is `http-ng-idn`,
+//! `thiserror` and `thiserror-impl`, and a graph that already had
+//! `thiserror` pays only the first. In `http-ng-proto`'s own `cargo tree
+//! -e normal` the `idn` feature went from **36 unique crates to 37**.
 //!
 //! The saving survives only where a platform ICU is linked statically
 //! against an OS-versioned ABI, which today means Windows alone. Its
@@ -624,8 +629,10 @@ pub fn backend() -> Backend {
     Backend::None
 }
 
-/// The bundled path: the exact call `http-ng-proto` makes today, so
-/// enabling `bundled` alone changes nothing at all.
+/// The bundled path: the exact call `http-ng-proto` used to make itself,
+/// so a target that resolves to this backend answers what that crate
+/// answered before it took this one — byte for byte, and measured that
+/// way rather than argued (`docs/v02-design.md`, "Wired").
 #[cfg(idna_backend)]
 fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL).map_err(|_| {

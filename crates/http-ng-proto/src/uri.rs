@@ -56,10 +56,20 @@
 //! `Uri` ([`parse`]), which every backend reaches through the same sans-io
 //! crate — rather than in the `http-ng` facade, where "the same everywhere"
 //! would have rested on everyone going through `Client`. It is behind the
-//! `idn` feature, **on by default**; turning it off removes the Unicode
-//! tables from the build entirely and turns a non-ASCII host into
+//! `idn` feature, **on by default**; turning it off removes the IDN
+//! implementation from the build entirely and turns a non-ASCII host into
 //! [`UriError::NonAsciiHost`], which names the cause and says what to send
 //! instead.
+//!
+//! **Which implementation, though, is not this crate's decision.** The
+//! feature pulls in `http-ng-idn`, and *that* crate resolves the backend
+//! by target in its own `build.rs`: the bundled `idna` crate and its
+//! Unicode tables on Linux, the other ELF unixes and wasm; the platform's
+//! own UTS 46 on Windows (`icuuc.dll`) and Apple (Foundation), where the
+//! tables never enter the graph. This module knows only
+//! `http_ng_idn::domain_to_ascii` and two error variants, which is the
+//! point — the target predicate is written down once, over there, rather
+//! than a second time here.
 //!
 //! **A host that is already ASCII is never handed to IDNA at all.** That
 //! is what makes [`parse`] idempotent: the output of one call is pure
@@ -90,19 +100,33 @@ pub enum UriError {
         /// The offending base, as written.
         base: String,
     },
-    /// The host is not ASCII and this build has no IDNA to convert it.
-    /// Only reachable with the `idn` feature off.
+    /// The host is not ASCII and **no IDN implementation ran on it**: the
+    /// name itself was never judged.
+    ///
+    /// Two causes, and the message names both because a caller cannot see
+    /// which applies. The `idn` feature is off, so there is no
+    /// implementation compiled in at all — this is the usual one. Or the
+    /// feature is on and `http-ng-idn` reported
+    /// `IdnError::NoImplementation` (named without a link, because with
+    /// the feature off that crate is not in the build to link to), which
+    /// on a target whose backend is the platform's own — Windows, Apple —
+    /// means the OS did not supply one this process can use; targets that
+    /// take the bundled tables always have theirs.
+    ///
+    /// The way out is the same either way, which is why it is one variant
+    /// and not two: send the A-label.
     #[error(
-        "`{host}` is not an ASCII host and this build has no IDN support: enable the `idn` \
-         feature of `http-ng` (it is on by default), or supply the host in its A-label form — \
-         `münchen.de` is written `xn--mnchen-3ya.de`"
+        "`{host}` is not an ASCII host and no IDN implementation in this build converted it: \
+         either the `idn` feature of `http-ng` is off (it is on by default), or it is on and \
+         this machine supplied no UTS 46 implementation `http-ng-idn` could use. Supply the \
+         host in its A-label form instead — `münchen.de` is written `xn--mnchen-3ya.de`"
     )]
     NonAsciiHost {
         /// The host, as written.
         host: String,
     },
-    /// The host is not ASCII and UTS 46 refused to convert it. Only
-    /// reachable with the `idn` feature on.
+    /// The host is not ASCII and a UTS 46 implementation **ran and refused
+    /// it**. Only reachable with the `idn` feature on.
     #[error("`{host}` is not a usable internationalised domain name: UTS 46 rejected it")]
     NotAnIdn {
         /// The host, as written.
@@ -137,11 +161,13 @@ pub enum UriError {
 /// host and applies its own IDNA to it, which is a no-op on A-labels, so
 /// the three targets converge rather than each doing their own thing.
 ///
-/// The conversion is UTS 46 through the `idna` crate, called exactly as
-/// `url` called it (`AsciiDenyList::URL`, `Hyphens::Allow`,
-/// `DnsLength::Ignore`), so a host that resolved before resolves to the
-/// same A-label now. Without the `idn` feature there is no `idna` in the
-/// build at all and a non-ASCII host is [`UriError::NonAsciiHost`].
+/// The conversion is UTS 46 through `http-ng-idn`, whose bundled backend
+/// is the `idna` crate called exactly as `url` called it
+/// (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`), so a
+/// host that resolved before resolves to the same A-label now. Without
+/// the `idn` feature there is no UTS 46 in the build at all and a
+/// non-ASCII host is [`UriError::NonAsciiHost`]; with it on and a name
+/// the implementation refuses, [`UriError::NotAnIdn`].
 ///
 /// An **ASCII string is passed through untouched**: no IDNA, and no
 /// re-encoding of a `%` that is already there. That is what makes the
@@ -337,20 +363,69 @@ fn percent_encode_into(s: &str, out: &mut String) {
     }
 }
 
-/// UTS 46, called exactly as `url` called it, so a host that resolved
-/// before resolves to the same A-label now.
+/// UTS 46, through [`http_ng_idn`], which is *which* implementation of it
+/// runs — the bundled `idna` crate on Linux and wasm, the platform's own
+/// on Windows and Apple.
+///
+/// On the targets that take the bundled backend this is still literally
+/// `idna::domain_to_ascii_cow(host.as_bytes(), AsciiDenyList::URL)`, the
+/// call this function used to make itself, so a host that resolved before
+/// resolves to the same A-label now. `tests/uri_resolution.rs` is what
+/// says so rather than this comment: every U-label row there pins the
+/// A-label `url` produced, and `url` reaches `idna` by its own route.
 #[cfg(feature = "idn")]
 fn host_to_ascii(host: &str) -> Result<String, UriError> {
-    idna::domain_to_ascii_cow(host.as_bytes(), idna::AsciiDenyList::URL)
+    http_ng_idn::domain_to_ascii(host)
         .map(std::borrow::Cow::into_owned)
-        .map_err(|_| UriError::NotAnIdn {
-            host: host.to_owned(),
-        })
+        .map_err(|e| idn_error(host, e))
 }
 
-/// Without the `idn` feature there is no `idna` in the build — this is the
-/// whole point of the feature — so the only honest answer is an error that
-/// says so and says what to send instead.
+/// The whole of the [`IdnError`](http_ng_idn::IdnError) → [`UriError`]
+/// mapping, in one place and over the error value rather than at the call
+/// site, so it can be tested on both variants — only one of which a given
+/// target can actually produce.
+///
+/// **The split is "did an implementation answer".**
+/// [`NoImplementation`](http_ng_idn::IdnError::NoImplementation) is the
+/// one variant that means *nothing ran*: this build has no backend that
+/// works on this machine, the name was never judged, and the caller's way
+/// out is the one [`UriError::NonAsciiHost`] already describes — send the
+/// A-label. Everything else comes from a backend that ran and refused, and
+/// that is [`UriError::NotAnIdn`].
+///
+/// Which is also why the wildcard falls on the `NotAnIdn` side.
+/// `IdnError` is `#[non_exhaustive]`, so this match must have one; a
+/// variant added later is a *refusal reason* — a bidi violation, bad
+/// punycode, a disallowed code point — because "no implementation at all"
+/// is not a thing there can be a second of. Mapping the wildcard to
+/// `NonAsciiHost` instead would make the client tell a user to fix their
+/// build when the build is fine and the name is not.
+///
+/// **The wildcard is the one line here no test can reach**, and that is
+/// recorded rather than papered over: no third variant exists to
+/// construct, and `#[non_exhaustive]` is what stops the compiler from
+/// noticing when one appears. So a mutation that changes only the
+/// wildcard survives the suite by construction. The two arms that a
+/// caller can actually reach are pinned below, in both directions.
+#[cfg(feature = "idn")]
+fn idn_error(host: &str, e: http_ng_idn::IdnError) -> UriError {
+    match e {
+        // Both arms take the `domain` the error already owns: it is this
+        // same host, and moving it means the error path allocates nothing
+        // the conversion had not allocated already.
+        http_ng_idn::IdnError::NoImplementation { domain } => {
+            UriError::NonAsciiHost { host: domain }
+        }
+        http_ng_idn::IdnError::NotAnIdn { domain } => UriError::NotAnIdn { host: domain },
+        _ => UriError::NotAnIdn {
+            host: host.to_owned(),
+        },
+    }
+}
+
+/// Without the `idn` feature there is no IDN implementation in the build
+/// at all — this is the whole point of the feature — so the only honest
+/// answer is an error that says so and says what to send instead.
 #[cfg(not(feature = "idn"))]
 fn host_to_ascii(host: &str) -> Result<String, UriError> {
     Err(UriError::NonAsciiHost {
@@ -741,5 +816,89 @@ mod tests {
             });
             assert_eq!(got, expected, "host of {input:?}");
         }
+    }
+
+    /// The two ends of the `IdnError` → `UriError` mapping, over the
+    /// error value, because only one of them can arise on any given
+    /// target: a build with the bundled tables (Linux, wasm) always has
+    /// an implementation and so can never produce `NoImplementation`,
+    /// and a build on a platform backend that the OS did not supply can
+    /// produce nothing else.
+    ///
+    /// Collapsing the two — `_ => NonAsciiHost` was the obvious way to
+    /// write this function — tells a caller with a genuinely broken name
+    /// to go and enable a feature that is already on. Collapsing them the
+    /// other way tells a caller on a machine with no UTS 46 that their
+    /// perfectly ordinary domain is invalid. This test fails on either.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn a_name_the_implementation_refused_and_a_build_that_has_none_are_different_errors() {
+        assert_matches!(
+            idn_error(
+                "münchen.de",
+                http_ng_idn::IdnError::NotAnIdn { domain: "münchen.de".to_owned() },
+            ),
+            UriError::NotAnIdn { host } if host == "münchen.de",
+            "a backend ran and refused the name: the caller's problem is the name"
+        );
+        assert_matches!(
+            idn_error(
+                "münchen.de",
+                http_ng_idn::IdnError::NoImplementation { domain: "münchen.de".to_owned() },
+            ),
+            UriError::NonAsciiHost { host } if host == "münchen.de",
+            "no backend ran at all: the name was never judged, and saying it is not a usable \
+             IDN would be a claim nothing in this build is in a position to make"
+        );
+    }
+
+    /// `NonAsciiHost` is now reachable with the feature ON, so its
+    /// message may not say the feature is what is missing.
+    ///
+    /// The wording is load-bearing twice over: `tests/uri_resolution.rs`
+    /// checks the same message on the feature-OFF path, where the cause
+    /// really is the feature, and both builds share one string. What it
+    /// has to be is true in both — name the two causes and, above all,
+    /// still say what to send instead.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn the_no_implementation_message_does_not_blame_a_feature_that_is_on() {
+        let message = idn_error(
+            "münchen.de",
+            http_ng_idn::IdnError::NoImplementation {
+                domain: "münchen.de".to_owned(),
+            },
+        )
+        .to_string();
+        assert!(
+            message.contains("xn--"),
+            "the escape hatch is the whole value of this variant: {message}"
+        );
+        assert!(
+            message.contains("this machine"),
+            "with the feature on, the second cause is the machine, and the message must \
+             offer it: {message}"
+        );
+    }
+
+    /// The reachable half of the same mapping, end to end through the
+    /// public API rather than over a hand-built error: a host with a
+    /// non-ASCII label AND a byte the WHATWG deny list forbids. It gets
+    /// as far as UTS 46 (an all-ASCII host never does) and is refused
+    /// there.
+    ///
+    /// This is the only place `UriError::NotAnIdn` was ever produced, and
+    /// until now nothing asserted it: the corpus rows pin resolutions,
+    /// not which error a refusal becomes.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn a_refused_name_is_not_an_idn_rather_than_an_unparsable_uri() {
+        assert_matches!(
+            parse("https://a<b.münchen.de/x"),
+            Err(UriError::NotAnIdn { host }) if host == "a<b.münchen.de",
+            "the deny list runs inside UTS 46, so the answer must name the name — not \
+             `NotAUri`, which would be `http::Uri` complaining about a string we should \
+             never have handed it"
+        );
     }
 }
