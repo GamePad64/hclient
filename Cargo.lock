@@ -1031,6 +1031,7 @@ dependencies = [
 name = "http-ng-rt-tokio"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "http-ng-rt",
  "hyper",
  "socket2",

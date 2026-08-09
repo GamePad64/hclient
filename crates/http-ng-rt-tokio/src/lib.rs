@@ -1,8 +1,10 @@
 //! `http-ng-rt` capabilities implemented on top of tokio.
 #![forbid(unsafe_code)]
 
+mod handle;
 mod io;
 
+pub use handle::TokioHandle;
 pub use io::TokioIo;
 
 use http_ng_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
@@ -13,6 +15,13 @@ use std::time::Duration;
 /// ZST: the tokio handle is picked up from the ambient runtime, the same
 /// way reqwest does it. Outside a runtime, `spawn`/`sleep` panic —
 /// documented behavior.
+///
+/// [`TokioHandle`] is the same capabilities with the runtime carried as a
+/// value instead, which turns that panic into a `Result` at construction.
+/// It does not replace this type: inside `#[tokio::main]` the precondition
+/// always holds, and a ZST costs a pointer less. Its module doc has a
+/// measured table of exactly which capabilities the handle makes total —
+/// notably not `TcpConnect`, and it says why.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tokio;
 
