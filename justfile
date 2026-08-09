@@ -306,6 +306,15 @@ fetch-must-fail-under-atomics:
 # The same is true of `http-ng-cookie`'s `public-suffix`, and of
 # `http-ng-native`'s h1-only build, which went uncompiled from the moment h2
 # landed behind a feature.
+#
+# **This recipe is the one place where CI now does MORE than it did**, and
+# deliberately: `http-ng-cookie --no-default-features` was in this recipe and
+# NOT in the job it claimed to mirror, so `tests/without_the_list.rs` — the
+# only thing checking that a no-list build is NARROWER than a list build,
+# rather than quietly wider — ran on laptops and nowhere else. 78 tests.
+# Resolving the drift by deleting the line would have been the other
+# direction. `--no-fail-fast` is the same story one size smaller: the recipe
+# had it, the job did not, and it only ever reports more.
 
 # the feature-off builds, which --all-features can never exercise
 test-no-default:
