@@ -97,5 +97,146 @@ are stated as prohibitions rather than facts:
   ABI the OS versions for us*. Windows and Apple qualify; Linux does not.
   (`docs/v02-design.md`, "Superseded on two counts".)
 - **Do not add an MSRV job, a CHANGELOG, or a version bump** as tidying.
-  Both have written reasons in `AGENTS.md`, and both have been proposed
-  before.
+  Each has a written reason in `AGENTS.md` ("Minimum supported Rust" and
+  "Nothing here is published"), and each has been proposed before.
+
+---
+
+## W1 — The UDP seam gets its second implementation
+
+**Why first.** It is the cheapest thing in this document and it defends a
+claim rather than adding a feature. "The runtime seam is real" is one of the
+four things v0.1 set out to prove, and what proves it is
+`crates/http-ng/tests/two_runtimes.rs` — the same generic function under two
+runtimes, over a real socket. The UDP half of that seam has **one**
+implementation (`crates/http-ng-rt-tokio/src/udp.rs`), so `http-ng-h3` has
+no two-runtime acceptance and the portability claim for `UdpBind`/
+`UdpDatagrams` rests on the crate they were designed against. A seam with
+one implementation is a design, not a seam; `docs/v03-acceptance.md` records
+this as one of its "deliberately not done" items, and it is the one that
+should not stay there.
+
+**Deliverable.** `UdpBind`/`UdpAdoptStd`/`UdpDatagrams` on
+`http_ng_rt_smol::Smol`, behind a `udp` feature mirroring
+`crates/http-ng-rt-tokio/Cargo.toml:17-19`; plus `http-ng-h3`'s live suite
+instantiated under both runtimes the way `two_runtimes.rs` does for HTTP/1,
+so that the acceptance is *the same generic code* rather than two similar
+test files. The ECN read-back the tokio backend performs
+(`crates/http-ng-rt-tokio/src/udp.rs:18-29` — it asks the kernel with
+`getsockopt` rather than trusting `quinn-udp`'s documented graceful
+degradation) is part of the deliverable, not an extra: a backend that
+reports what it *attempted* is exactly the over-claim this seam exists to
+prevent.
+
+**Premises.**
+
+| claim | how to refute it | status |
+|---|---|---|
+| The only thing standing between `Smol` and h3 is the UDP triple | Write `fn assert<R: H3Runtime>()` and instantiate it with `Smol`; the error list must name `UdpBind`, `UdpAdoptStd` and nothing else. `H3Runtime` is `Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static` (`crates/http-ng-h3/src/lib.rs:353`), and `Smol` already has `Timer`, `Spawn`, `Blocking`, `TcpConnect`, `TcpAdoptStd` (`crates/http-ng-rt-smol/src/lib.rs:19,46,74,105,154`) | **unverified** — read from the two files, not compiled |
+| `async_io::Async<UdpSocket>` gives `quinn-udp` the descriptor it needs | `docs/h3-research.md` §2.4 measured `gso=64 gro=64` through it | measured **in a spike**, not in this crate; the check that transfers it is `crates/http-ng-rt-tokio/tests/udp.rs` run against the new backend |
+| It costs no new dependency beyond the one tokio pays | `async-io = "2"` is already a direct dependency (`crates/http-ng-rt-smol/Cargo.toml:12`); only `quinn-udp` arrives, optional, exactly as on tokio | measured here |
+| `Spawn` is not a problem for the h3 driver on smol | `QuinnTask` is `Pin<Box<dyn Future<Output = ()> + Send>>` (`crates/http-ng-h3/src/runtime.rs:66`) — a **named** type, so the naming wall does not apply; `Smol`'s impl takes `F: Send + 'static` (`lib.rs:46`) | measured here by reading, not compiled |
+| The separated `try_send`/`poll_writable` shape fits a second runtime | It was separated because a QUIC endpoint must be able to wait *without a datagram in hand*, which is a claim about quinn, not about `async-io`. The check is whether `async-io`'s readiness API can express it without a dummy datagram | **unverified** |
+
+**Watch for.** Two.
+
+*A second implementation does not kill M14.* `docs/v03-acceptance.md`
+records one surviving mutation — `ecn: ecn_is_really_on(&io)` replaced with
+`ecn: true` — which is indistinguishable from the truth on a kernel where
+ECN works. Two runtimes on the same kernel is still one kernel. What kills
+it is the `macos-latest` leg, not a second backend.
+
+*The acceptance must be one function, not two files.* `two_runtimes.rs` is
+worth what it is because the same `fetch_once<R>` is instantiated twice, and
+its sensitivity was demonstrated by a bound that breaks instantiation on one
+runtime and not the other. An h3 pair written as two copies would prove that
+both compile and nothing else.
+
+**Fold in here, because it reopens the same suite:** the 0-RTT *acceptance*
+path (`docs/v03-acceptance.md`: "0-RTT ACCEPTANCE has not been observed end
+to end here; rejection has"). The material exists — the test server already
+sets `max_early_data_size = u32::MAX` — and what is missing is the timing
+instrumentation the research spike had. It is a test, not a feature, and it
+belongs to whoever is already inside `crates/http-ng-h3/tests/live.rs`.
+
+---
+
+## W2 — Discovery, tier 2: the HTTPS record we already fetch
+
+**Why.** `http-ng-h3` chose HTTP/3 by being constructed. That is honest, and
+it is tier 1 of `docs/h3-research.md` §4's ladder. Tier 2 — "consume the
+`alpn` field that already exists, on the resolvers that already answer" —
+was assessed there as *a task rather than a vertical*, and its argument is
+the strongest in that research: **the cache with a lifetime already exists
+and is not ours.** It is the DNS record's TTL.
+
+The plumbing has been in the tree since v0.2 and is used by nothing:
+`SvcbEndpoint` (`crates/http-ng-dns/src/lib.rs:85`) carries `alpn`, `port`,
+`ipv4hint`, `ipv6hint` and `ech_config_list`; `Resolve::supports_svcb`
+(`:144`) says whether a resolver can ask; the system resolver answers
+through `res_query`/`DnsQueryRaw` and the hickory one through its own
+queries. `crates/http-ng-native/src/connect.rs:83-91` says in its own module
+doc that the plumbing was built and never used, and `:595` passes
+`ech: None`.
+
+**Deliverable, in three parts, and the order between them is load-bearing.**
+
+1. **The ECH slot stops being a silent drop.** Of the three TLS backends,
+   two refuse a non-`None` `TlsRequest::ech` by name and say why
+   (`crates/http-ng-tls-native-tls/src/lib.rs:128`,
+   `crates/http-ng-tls-rustls/src/quic.rs:76`). The third — the rustls TCP
+   path, which is the default backend — **neither refuses nor honours it:
+   it never reads the field.** `Rustls::connect`
+   (`crates/http-ng-tls-rustls/src/lib.rs:189-198`) uses `req.server_name`
+   and `req.alpn`, and nothing else. That is harmless only for as long as
+   `connect.rs` passes `None`, which is exactly what part 2 changes. So
+   part 1 comes first, and its content is a decision — refuse, or honour —
+   rather than code that can follow afterwards.
+2. **`connect.rs` consults `lookup_svcb` when `supports_svcb()`**, and uses
+   what comes back: the ALPN offer, the port, the address hints as an input
+   to Happy Eyeballs, and `ech_config_list` into `TlsRequest::ech`.
+3. **A negative cache for a failed attempt** — see the premises below, where
+   the assumption that this belongs to Alt-Svc is the one this section
+   corrects.
+
+**What is deliberately *not* in the deliverable, and it is the structural
+finding of this section.** Tier 2 cannot choose HTTP/3. `SvcbEndpoint::alpn`
+containing `h3` is a fact `http-ng-native` can read and cannot act on:
+`http-ng-h3` is a different crate with different bounds (`R: UdpBind +
+Spawn<QuinnTask>`, `T: QuicTlsConnect`), `Native<R, T, D>` has neither, and
+`Client<T>` names exactly one transport type. **There is nowhere in this
+codebase for "choose between two protocol stacks" to live.** That is a
+transport owning both — a racing transport, with the fallback and the
+broken-backoff the original spec sketched (`docs/superpowers/specs/2026-08-05-http-ng-design.md`
+§5.6) — and it is a vertical, not a task. So tier 2 delivers everything an
+HTTPS record says *except* the protocol choice: hints, port, the ALPN offer
+for the TCP stack, and ECH.
+
+That also settles where Alt-Svc goes: it has nowhere to live until that
+racing transport exists, which is a better reason for deferring it than the
+one v0.2 gave ("a cache with a lifetime, closer to a browser's job").
+
+**Premises.**
+
+| claim | how to refute it | status |
+|---|---|---|
+| Two shipped resolvers can answer SVCB | `supports_svcb()` is `cfg`-accurate rather than optimistic, and its own test says so (`crates/http-ng-dns-system/src/lib.rs:332`); hickory overrides both methods together (`crates/http-ng-dns-hickory/src/lib.rs:221-225`) | measured here |
+| The RFC 9460 client-semantics layer would have to be written | **False, and it is why this is a task.** It exists: `crates/http-ng-dns-system/src/svcb.rs`, 1537 lines with its tests, deciding AliasMode against ServiceMode, `mandatory`, and what "no records" means. It is `pub(crate)` (`:41`), so the deliverable includes moving it where both resolvers and a DoH one can reach it | measured here |
+| "The cache with a lifetime is the resolver's, so we need none" | **Half false, and worth checking before relying on it.** `http-ng-dns-hickory` caches and shares one cache across clones (`crates/http-ng-dns-hickory/src/lib.rs:63`). `http-ng-dns-system` caches **nothing** — grep it for `cache`, zero hits — so an SVCB lookup there is a fresh `res_query` per request unless the OS stub resolver happens to cache. What would settle the cost: time two consecutive `lookup_svcb` calls through `SystemDns`, on a machine with `systemd-resolved` and on one without | the absence of a cache in our code is measured here; the cost is **unverified** |
+| A TTL is available to cache with | `ResolvedAddr::ttl` exists (`crates/http-ng-dns/src/lib.rs:76`), hickory fills it (`crates/http-ng-dns-hickory/src/lib.rs:105-117`), `getaddrinfo` cannot and leaves it `None` — and **nothing anywhere reads it**: grep `.ttl` outside the resolvers | measured here |
+| A negative cache is Alt-Svc's problem | **False.** UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken-backoff mandatory; an HTTPS record advertising `h3` on such a network costs something on every request, whoever produced the record. The negative cache is h3's, and tier 2 inherits it | argued from `docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with and without a race, would settle it |
+| What Alt-Svc adds over SVCB is only a positive cache | Partly: also a host/port *change* for an origin, and coverage of origins whose DNS carries no HTTPS RR. How many origins that is, nobody here has counted | **unverified**; one sweep over a list of origins, comparing HTTPS RR presence against the `Alt-Svc` header, settles it |
+| An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/http-ng-tls-rustls/src/lib.rs` → no matches | measured here |
+
+**Watch for.** The capability question arrives again, and its answer already
+exists: a transport whose ALPN offer is decided per origin, by a record it
+has not fetched yet, cannot answer `full_duplex` at construction. That is
+v0.2 §W3's floor rule, and it must be *applied* deliberately rather than
+inherited by accident (`docs/h3-research.md` §4, fourth bullet).
+
+One trap is specific to this item. An HTTPS record is attacker-influenced
+input on the path that decides **which host is contacted** — the same
+sentence `http-ng-idn` is written under. `svcb.rs` already refuses a record
+that makes an unrecognised key mandatory (`RECOGNISED_KEYS`, `:54`), and
+that refusal is the thing to keep rather than relax when the list is
+revisited for `dohpath` in W4.
