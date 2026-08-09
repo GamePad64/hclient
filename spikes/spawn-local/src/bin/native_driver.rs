@@ -23,9 +23,8 @@
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
-use http_ng_rt::{Spawn, TcpConnect, TcpOpts};
+use http_ng_rt::{Discard, Spawn, TcpConnect, TcpOpts};
 use spawn_local_spike::TokioLocal;
-use spawn_local_spike::reaper::Discard;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::pin::Pin;
@@ -119,8 +118,8 @@ fn main() {
                     .unwrap();
 
                 // `Connection<I, B>` is a NAMED struct, which is what makes
-                // `Spawn<F>`'s shape usable here at all — unlike the reaper,
-                // no `NamedTimer` is needed. `Discard` only adapts
+                // `Spawn<F>`'s shape usable here at all — no named associated
+                // type is needed for it. `Discard` only adapts
                 // `Output = Result<(), hyper::Error>` to `Output = ()`.
                 let driver: Discard<
                     hyper::client::conn::http1::Connection<

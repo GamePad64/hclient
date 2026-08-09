@@ -74,7 +74,8 @@ impl<F: Future<Output = ()> + 'static> Spawn<F> for TokioLocal {
 // `Native<Tokio, _, _>` have the same IO type.
 impl Timer for TokioLocal {
     type Instant = <Tokio as Timer>::Instant;
-    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+    type Sleep = <Tokio as Timer>::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         Tokio.sleep(d)
     }
     fn now(&self) -> Self::Instant {
@@ -145,7 +146,8 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for TokioHandle {
 
 impl Timer for TokioHandle {
     type Instant = <Tokio as Timer>::Instant;
-    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+    type Sleep = <Tokio as Timer>::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         Tokio.sleep(d)
     }
     fn now(&self) -> Self::Instant {
@@ -204,7 +206,8 @@ impl<F: Future<Output = ()> + 'static> Spawn<F> for SmolLocal {
 
 impl Timer for SmolLocal {
     type Instant = <Smol as Timer>::Instant;
-    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+    type Sleep = <Smol as Timer>::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         Smol.sleep(d)
     }
     fn now(&self) -> Self::Instant {

@@ -28,7 +28,6 @@ use bytes::Bytes;
 use http_body::{Body, Frame};
 use http_body_util::BodyExt;
 use http_ng_rt::Timer;
-use spawn_local_spike::reaper::NamedTimer;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -107,7 +106,7 @@ where
 // B — with `type Sleep`: the wrapper owns a real sleep
 // ---------------------------------------------------------------------------
 
-struct DeadlineSleep<B, Tm: NamedTimer> {
+struct DeadlineSleep<B, Tm: Timer> {
     inner: Option<B>,
     /// `Pin<Box<Tm::Sleep>>`, not `Pin<Box<dyn Future>>`. The box is only
     /// there because `tokio::time::Sleep` is `!Unpin`; it wraps a
@@ -117,18 +116,18 @@ struct DeadlineSleep<B, Tm: NamedTimer> {
     sleep: Pin<Box<Tm::Sleep>>,
 }
 
-impl<B: Unpin, Tm: NamedTimer> Unpin for DeadlineSleep<B, Tm> {}
+impl<B: Unpin, Tm: Timer> Unpin for DeadlineSleep<B, Tm> {}
 
-impl<B: Body<Data = Bytes> + Unpin, Tm: NamedTimer> DeadlineSleep<B, Tm> {
+impl<B: Body<Data = Bytes> + Unpin, Tm: Timer> DeadlineSleep<B, Tm> {
     fn new(inner: B, timer: &Tm, total: Duration) -> Self {
         Self {
             inner: Some(inner),
-            sleep: Box::pin(timer.sleep_named(total)),
+            sleep: Box::pin(timer.sleep(total)),
         }
     }
 }
 
-impl<B: Body<Data = Bytes> + Unpin, Tm: NamedTimer> Body for DeadlineSleep<B, Tm>
+impl<B: Body<Data = Bytes> + Unpin, Tm: Timer> Body for DeadlineSleep<B, Tm>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {

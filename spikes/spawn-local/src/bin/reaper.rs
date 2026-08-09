@@ -143,7 +143,7 @@ fn main() {
             NotSendConn { _sock: TcpStream::connect(addr).unwrap(), _proof: std::rc::Rc::new(()) },
             IDLE,
         );
-        // Shape C: no `NamedTimer`, no struct — a generic method quantifies
+        // Shape C: no named sleep, no struct — a generic method quantifies
         // the future instead.
         start_reaper_local(local.clone(), pool.weak(), PERIOD, s);
         local.block_on(async { async_io::Timer::after(OBSERVE).await; });
