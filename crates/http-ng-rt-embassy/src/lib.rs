@@ -419,9 +419,15 @@ mod tests {
             ),
         ];
         for (name, opts) in cases {
-            let err = opts
-                .reject_unsupported(<Rt as TcpConnect>::APPLIES)
-                .expect_err("this runtime cannot apply {name}");
+            // `let ... else`, not `expect_err`: `expect_err` takes a
+            // plain `&str`, so a `{name}` in it is printed literally and
+            // all four cases fail with the same message naming nothing.
+            // Measured — each of the four `APPLIES` fields was flipped to
+            // `true` in turn (W7 mutations M5a-d), and all four reported
+            // an identical "cannot apply {name}".
+            let Err(err) = opts.reject_unsupported(<Rt as TcpConnect>::APPLIES) else {
+                panic!("this runtime cannot apply {name}, so asking for it must be refused");
+            };
             assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
             assert!(
                 err.to_string().contains(name),
