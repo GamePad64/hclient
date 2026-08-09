@@ -469,11 +469,25 @@ after a `425` is a different request, and the caller marked it too; the
 client withdrawing that opt-in for the rest of the chain would be a silent
 downgrade nothing announces, where the cost of keeping it is bounded and
 self-correcting — the next hop that meets a `425` gets its own replay.
-Three tests read the mark at the transport boundary, and between them make
-four claims: the first attempt carries it, the replay does not, the hop
-after a replayed `425` does, and a redirect chain that never sees a `425`
-keeps it throughout. The last of those exists because the mutant that
-strips on every response rather than on a `425` passed the other three.
+**The one boundary it does not cross is an origin.** `next_hop` takes the
+mark off on the hop that strips `Authorization` — host or scheme changed —
+because "replaying this is safe" is a claim about what a request does *at
+a server*, and carried to another origin it is a judgement nobody made,
+acted on by sending replayable data to a server the caller never vouched
+for. That closes a debt `next_hop`'s own doc had recorded with the
+condition for calling it in: extensions crossing an origin was harmless
+"while the only type in `extensions` is `Timeouts`", and `AllowEarlyData`
+is the type that ended that. It did not need an origin inside the
+extension, which was the reason the gap had been recorded rather than
+closed: `Follow::strip_sensitive` already answers the question.
+
+Four tests read the mark at the transport boundary, and between them make
+five claims: the first attempt carries it, the replay does not, the hop
+after a replayed `425` does, a redirect chain that never sees a `425`
+keeps it throughout, and a cross-origin hop drops it. The fourth exists
+because the mutant that strips on every response rather than on a `425`
+passed the other three; the fifth sits next to it because the pair is the
+decision, and either alone reads as an accident.
 
 It is worth knowing *why* the strip is real rather than theoretical, because
 the obvious argument says otherwise: by the time a `425` comes back the

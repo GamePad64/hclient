@@ -2,7 +2,7 @@
 //! lives here: all the logic is in the pure function
 //! `proto::redirect::decide`.
 
-use http_ng_core::RequestBody;
+use http_ng_core::{AllowEarlyData, RequestBody};
 use http_ng_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
 /// Everything that carries over between hops, except the body.
@@ -39,16 +39,36 @@ impl HopParts {
 /// downgraded: in that case it's more honest to return the 3xx as-is than
 /// to send an empty body where one is expected.
 ///
-/// **`extensions` carry over to the next hop unconditionally, including
-/// across origins** — unlike `headers`, where `strip_sensitive` scrubs
-/// credentials. The asymmetry has no consequences today: the only type in
-/// `extensions` is `Timeouts`, which is safe, and necessary, to carry
-/// across an origin boundary (otherwise timeouts would vanish after a
-/// redirect, and with B1 that's exactly where they get put). Recorded as a
-/// known debt, not an overlooked one: design §4.9 puts authorization and
-/// policy into the per-request config, and at that point `extensions` will
-/// need the same sensitivity filter headers already have (m7 of the
-/// branch's final review).
+/// **`extensions` cross an origin boundary with one exception, and the
+/// exception is the reason this paragraph changed.** It used to read that
+/// they carry over unconditionally, which had no consequences while
+/// `Timeouts` was the only type in the bag — safe, and necessary, to carry
+/// across an origin (otherwise timeouts would vanish after a redirect,
+/// which is exactly where B1 puts them). It recorded a debt for the day
+/// something else moved in: *"at that point `extensions` will need the
+/// same sensitivity filter headers already have"* (m7 of that branch's
+/// final review). [`AllowEarlyData`] is that day.
+///
+/// It is not a credential, so `SENSITIVE_HEADERS` reasoning does not reach
+/// it directly, but it is the same *kind* of thing: a statement the caller
+/// made about a request **to a particular server**. "Replaying this is
+/// safe" is a claim about what the request does at origin `A`; carried to
+/// `B`, it is a judgement nobody made — and acting on it means sending
+/// early data, which an attacker can replay, to a server the caller never
+/// vouched for. So it comes off exactly where the credentials do, on the
+/// hop `decide` marked `strip_sensitive` (host or scheme changed), and the
+/// invariant that leaves is one sentence: **the mark survives only while
+/// the chain stays inside the origin the caller addressed.**
+///
+/// Deliberately NOT removed on a same-origin hop — that judgement still
+/// applies there, and withdrawing it would be a silent downgrade of a
+/// setting the caller wrote. Nor on a method downgrade: a `303` turning
+/// `POST` into `GET` yields a request at most as consequential as the one
+/// that was marked. Both directions are pinned next to each other in
+/// `crates/http-ng/tests/too_early.rs`, with the client's other use of
+/// this mark (the `425` retry strips it from the retry alone).
+///
+/// `Timeouts` still carries over unconditionally, for the reason above.
 pub(crate) fn next_hop(
     prev: &HopParts,
     replay: Option<RequestBody>,
@@ -60,18 +80,10 @@ pub(crate) fn next_hop(
         for h in SENSITIVE_HEADERS {
             headers.remove(&h);
         }
-        // `AllowEarlyData` is caller-scoped material of exactly the kind
-        // `SENSITIVE_HEADERS` exists to drop, so it goes on the same
-        // condition and for the same reason.
-        //
-        // The mark says "replaying this is safe", and replay-safety is a
-        // claim about what a request does **at a server**. A caller who
-        // marked a request for origin A never judged origin B, so carrying
-        // it across is inheriting a judgement nobody made. A method change
-        // is different and stays: a `303` rewriting `POST` to `GET` makes
-        // the request strictly less consequential than the one the caller
-        // already vouched for.
-        extensions.remove::<http_ng_core::AllowEarlyData>();
+        // The extension half of the same boundary — see this function's
+        // doc comment for why a replay-safety judgement does not cross an
+        // origin, and why nothing else in the bag moves with it.
+        extensions.remove::<AllowEarlyData>();
     }
     let body = if follow.drop_body {
         headers.remove(http::header::CONTENT_LENGTH);
