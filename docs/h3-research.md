@@ -22,7 +22,8 @@ versions under test: `quinn 0.11.11`, `quinn-proto 0.11.16`,
 | Q1 sealed? | **Nothing is sealed.** All four `quinn` runtime traits and all five `h3::quic` traits are implemented from outside their crates in one file that compiles. The h2 disaster does not repeat. | §1.1 |
 | Q1 no-spawn? | **Yes, measured end to end.** A real HTTP/3 GET over real QUIC on loopback, driven by one `futures_executor::block_on(poll_fn(..))`, with a `quinn::Runtime` whose `spawn` only queues. `wall=2.9ms`. Not a busy-spin: `wall 608.9ms / cpu 10ms` against a server that answers after 600 ms. | §1.2, §1.3 |
 | Q1 `Send` leaks | **Three, all quotable, none in the protocol layer.** `quinn::Runtime`, `AsyncTimer` and `AsyncUdpSocket` are each `Send + Sync + Debug + 'static`; `http_ng_rt`'s `Timer` and `TcpConnect` promise none of that. The h3 layer itself demands nothing. | §1.4 |
-| **not asked, and it is the real blocker** | **An idle QUIC connection nobody polls dies.** Same gap, same config: unpolled → request 2 fails; driven → request 2 succeeds. Without `Spawn` (which does not compile on this seam) h3 cannot be pooled the way W2 pools h1. | §1.5 |
+| **not asked, and it is the real blocker** | **An idle QUIC connection nobody polls dies.** Same gap, same config: unpolled → request 2 fails; driven → request 2 succeeds. So h3 cannot be pooled the way W2 pools h1 unless *something* drives the connection between requests. | §1.5 |
+| **correction, after this document shipped** | The row above originally added "without `Spawn`, which does not compile on this seam". **That was measured and is false** — quinn's driver is a named `Send + 'static` type that the shipped `Tokio` impl already accepts, and spawning it through `http_ng_rt::Spawn` keeps the connection alive across the same gap. What remains of the objection is policy, not compilation. | §1.5 |
 | Q2 the trait | Unconnected, batch, caller-owned buffers, per-datagram ECN + segment size. Signatures in §2.3. GSO/GRO/ECN are three separate capabilities, not one. | §2 |
 | Q2 measured | GSO 64, GRO 64, ECN round-trips (`Ect0` in, `Some(Ect0)` out), `may_fragment=false` — one `sendmsg`, 3 datagrams, one `recvmmsg`. tokio and smol both expose the descriptor; embassy-net has none, quoted. | §2.1, §2.4 |
 | Q3 the TLS seam | `TlsConnect` cannot carry QUIC, and it is not close. A **second trait**, rustls-only, is the only honest option. `native-tls` is out — not "reports less", out. | §3.1, §3.6 |
@@ -251,12 +252,36 @@ B. control, same gap, connection driven:
   gap 1501ms (DRIVEN), idle_timeout 1000ms -> request 2: OK 200 OK "pooled?"
 ```
 
-Now put that next to the two facts v0.2 already established:
+Now put that next to the two facts v0.2 had established when this was
+written — **both of which have since been measured and corrected**, see the
+box below:
 
 - `http_ng_rt::Spawn<F>`'s implementations require `F: Send + 'static`,
   and "a pool driven by a spawned background task does not compile on
   this seam at all" (`docs/v02-acceptance.md`).
 - W2's pool therefore has no reaper, by the same argument.
+
+> **Correction.** `Spawn<F>` declares no bounds at all; `Send + 'static`
+> belongs to the `Tokio` and `Smol` impls. The `!Send` IO the argument
+> rested on is `connect.rs`'s `FakeStream`, a test stub. What actually
+> stops generic library code using `Spawn<F>` is that the future is a type
+> parameter of the *trait*, so a bound has to name it and an `async` block
+> has no name — but **that does not bite here**: `quinn::Runtime::spawn`
+> takes `Pin<Box<dyn Future<Output = ()> + Send>>` (quinn 0.11.11,
+> `src/runtime.rs:21`), a named `Send + 'static` type which
+> `impl<F: Future<Output=()> + Send + 'static> Spawn<F> for Tokio` accepts
+> verbatim. Measured: the same A/B as above, with a `quinn::Runtime` whose
+> `spawn` forwards to `http_ng_rt::Spawn::spawn` — request 2 goes from
+> `Err("read error: connection lost")` to `Ok("pong")` across a 1500 ms gap
+> under a 1000 ms idle timeout. The reverse also holds and constrains the
+> design: `quinn::Runtime` is declared `Send + Sync + Debug + 'static`
+> (`runtime.rs:16`), so a single-threaded runtime type is refused by quinn
+> itself — h3 wants a handle-carrying `Tokio`, not a `!Send` one.
+>
+> Way out 3 below is therefore **cheap in the type system**. Everything it
+> says after the semicolon still stands: making the h3 backend the first
+> consumer of `Spawn` makes `Spawn` mandatory for any runtime that wants
+> h3. That is a policy question, and this correction does not touch it.
 
 For h1 that was a cosmetic loss — an idle socket held a few minutes too
 long. For h3 it is the whole feature: **an h3 connection that is not
@@ -277,12 +302,17 @@ Three ways out, and none of them is free:
    must be polled between requests is not the `Client` this project
    ships.
 3. **`Spawn` becomes usable.** Not by relaxing `F: Send` — quinn's
-   futures *are* `Send`, so this specific case would work — but the
-   seam's implementations also require `'static`, and `Spawn` is
-   currently implemented by exactly two runtimes and used by none of the
-   library code. Making the h3 backend the first consumer of `Spawn`
-   makes `Spawn` mandatory for any runtime that wants h3, which is the
-   opposite of the direction W7 established for embassy.
+   futures *are* `Send`, so this specific case works, and `'static` turns
+   out not to be an obstacle either: what quinn hands over is
+   `Pin<Box<dyn Future<Output = ()> + Send>>`, which is `'static` by
+   default and which the shipped `Tokio` impl takes unchanged (see the
+   correction above; this bullet originally read "the seam's
+   implementations also require `'static`", which was not checked). What
+   is left is the real cost: `Spawn` is currently implemented by exactly
+   two runtimes and used by none of the library code, so making the h3
+   backend its first consumer makes `Spawn` mandatory for any runtime that
+   wants h3, which is the opposite of the direction W7 established for
+   embassy.
 
 I would take (2) for a first cut and say so in the type system, because
 it is the only one that is both honest and cheap. But it is a change to

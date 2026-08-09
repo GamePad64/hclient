@@ -51,14 +51,30 @@ request.
 
 ## Three things that were found rather than designed
 
-**`Spawn` was never usable here, so the pool never had a choice.**
-`http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and the native IO is
-deliberately not `Send` — `connect.rs`'s `FakeStream` holds an `Rc<()>` for
-the sole purpose of proving it. So "a pool driven by a spawned background
-task" does not compile on this seam at all; the design doc's framing of it
-as a trade-off was wrong, and there was one option, not two. What exists
-instead is a poll at checkout plus a second look while the request is still
-ours.
+**`Spawn` was never usable here, so the pool never had a choice** — **and
+this, the origin of a sentence three later pieces of work built on, is
+wrong.** It read: "`http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and
+the native IO is deliberately not `Send` — `connect.rs`'s `FakeStream` holds
+an `Rc<()>` for the sole purpose of proving it. So 'a pool driven by a
+spawned background task' does not compile on this seam at all." Measured
+afterwards, both halves fail. `Spawn<F>` declares **no bounds**; `Send +
+'static` belongs to the `Tokio` and `Smol` impls. `FakeStream` is a test
+stub, and the inference ran from "the test does not require `Send`" to
+"production cannot have it" — a fixture built to prove an absence taken as
+evidence about a presence. A reaper over this pool (`Arc<Inner<I>>` around a
+`Mutex`) compiles and runs on the shipped `Tokio` and the shipped `Smol`,
+measured against a real socket with the server observing the close.
+
+What is true is narrower and was not noticed: `Spawn<F>` makes the future a
+type parameter of the *trait*, so a bound must name it, and an `async` block
+has no name. Generic library code cannot spawn a future it wrote itself,
+whatever the auto traits say — the same wall the h2 bullet below hits with
+hyper's private `H2ClientFuture`, not recognised there as a property of the
+trait. And the pool's conclusion survives on a different footing:
+`Native` is generic over `R`, not every `R` has a `Spawn` impl, so a reaper
+in `Native::new` would be a default stronger than the truth. Opt-in with a
+bound, not impossible. What exists today is still a poll at checkout plus a
+second look while the request is still ours.
 
 **A hang in hyper's dispatcher that would otherwise have shipped.** Reading
 it to implement retry turned up a window where a keep-alive connection

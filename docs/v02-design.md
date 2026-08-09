@@ -90,14 +90,48 @@ silently ignore. Reuse has no such setting (the pool is configured on
 refuses, and "who owns the pool" turns no caller decision — the same axis
 `CancelSupport` rejected one work item earlier.
 
-**A finding from W2 that belongs to W7, recorded here because W7 needs it:**
-a pool driven by a spawned task is not merely undesirable on this seam, it
-does not compile. `http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and
-the native IO is deliberately not `Send` (`connect.rs`'s `FakeStream` holds
-an `Rc<()>` to prove no path requires it). So `Spawn` is not the thing that
-would have made the pool easy, and its absence on a future embassy runtime
-is a smaller obstacle than it looks — what the pool actually needed was a
-poll at checkout, which needs no executor at all.
+**A finding from W2 that belongs to W7 — and the correction it needed.**
+This section used to read: "a pool driven by a spawned task is not merely
+undesirable on this seam, it does not compile. `http_ng_rt::Spawn<F>`
+requires `F: Send + 'static`, and the native IO is deliberately not `Send`."
+**Measured, and false in both halves.** `Spawn<F>` declares no bounds at
+all — its own doc comment says why, and `Send + 'static` is added by the
+`Tokio` and `Smol` *impls*. The `Rc<()>` that was cited is `connect.rs`'s
+`FakeStream`, a test stub whose whole purpose is to prove no path *requires*
+`Send`; the shipped IO is `Send`, and so `Native<Tokio, Rustls,
+SystemDns<Tokio>>` is `Send + Sync` and always was. A reaper over W2's pool
+(an `Arc<Inner<I>>` around a `Mutex`) compiles and runs on the shipped
+`Tokio` and the shipped `Smol` with no change to either — measured against a
+real socket with the server observing the close.
+
+**What actually blocks `Spawn` is not `Send`, it is naming.** `Spawn<F>` is
+hyper's `Executor<Fut>` shape: the future is a type parameter of the trait,
+so a bound must *name* it, and an `async` block has no name — `E0308:
+expected type parameter F, found async block`. Library code therefore cannot
+spawn a future it wrote itself, whatever the auto traits say. This is the
+same wall §W3 below hits from the other side with hyper's private
+`H2ClientFuture`; it was not recognised there as a general property of the
+trait. Two ways past it, both compiled: give `Timer` an associated `Sleep`
+type so the background task can be a named struct, or quantify the future in
+a generic *method* rather than in the trait (which puts the `Send` decision
+back in the trait declaration, so `Tokio` and `Smol` could not implement it).
+The first is the one this design takes, and it has a second consumer already
+in the tree — see §W4.
+
+Nothing quoted from hyper or quinn hits this wall:
+`hyper::client::conn::http1::Connection<I, B>` and quinn's
+`Pin<Box<dyn Future<Output = ()> + Send>>` are both named types.
+
+**The conclusion "no reaper by default" survives, on the project's own
+rule rather than on a compile error.** `Native` is generic over `R`; not
+every `R` has a `Spawn` impl (`connect.rs`'s `FakeRt` has none, and the
+embassy survey below expects none), so a reaper started by `Native::new`
+would assume a capability the type parameter does not promise — a default
+stronger than the truth. The opt-in shape is a constructor bounded on
+`R: Spawn<Reaper<R, I>>`, which makes the mismatch a compile error where the
+caller wrote it instead of a reaper that never fires. What the pool needed to
+be *correct* is still the poll at checkout, which needs no executor at all;
+a reaper is a resource optimisation on top of that.
 
 ---
 
