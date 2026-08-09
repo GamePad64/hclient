@@ -354,6 +354,58 @@ touches — and the capability there must stop being a constant and start
 being derived, the way `ReuseSupport` and `DecompressionSupport` already
 are.
 
+### Landed. The capability is a runtime probe, and it had to be
+
+The section above asked whether the honest answer might be "Chrome yes,
+Firefox no", making this a runtime probe rather than a constant. It is, and
+the reason is worse than a refusal.
+
+**Firefox 153 does not reject a `ReadableStream` request body — it replaces
+it.** The `Request` constructor succeeds, `fetch` resolves, the server
+answers `200`, and what arrives is the 23-byte ASCII string
+`[object ReadableStream]` (`5b6f626a656374205265616461626c6553747265616d5d`)
+with `Content-Type: text/plain;charset=UTF-8`. The caller's stream is never
+pulled. Measured by a Node server recording the bytes it received —
+`docs/measurements/w6-request-streams/`, whose whole design premise is that
+no observer inside the page can see this, because from inside the page
+nothing went wrong.
+
+So "try it and map the error" was never available: there is no error to
+map. The decision has to be made **before** `fetch` is called, which is what
+makes this a probe and not a policy.
+
+**The probe is behavioural, not a feature check.** `'duplex' in
+Request.prototype` is the check the ecosystem reaches for and it is not the
+one used here — whatwg/fetch#1470 is precisely the ticket about a browser
+exposing the getter and still not honouring it. What decides is #1470's own
+detection: construct one throwaway `Request` with a stream body and a
+`duplex` **getter**, then ask whether the getter ran and whether the browser
+invented a `Content-Type`. Chrome 151: `true`/no. Firefox 153: `false`/yes.
+No request is sent. The cheap check is kept beside it and pinned against it
+by a test, because the day the two disagree is the day the cheap one starts
+lying.
+
+**`true` is not the floor, and that is deliberate — see W3.** Chrome sends a
+stream body only over HTTP/2; over an HTTP/1.1 origin `fetch` fails in ~3 ms
+with a bare `TypeError: Failed to fetch`, before pulling the stream and with
+nothing on the wire. That is a fact about an ORIGIN, and `Capabilities` has
+no per-origin dimension; nor can it be predicted per request, since
+`PerformanceResourceTiming.nextHopProtocol` arrives only after a first
+response to that origin. W3's floor rule is therefore **cited and not
+followed here**, and the argument is the cost ordering the rule itself is
+built on: over-claiming `full_duplex` costs a deadlock, over-claiming
+`streaming_request_body` on an h1 origin costs a loud immediate error with
+no bytes sent, and under-claiming it costs every HTTP/2 origin in Chrome the
+feature entirely. `full_duplex` itself stays `false` — `duplex: "half"` is
+half duplex by name and by measurement (the response was unreadable until
+the request body finished).
+
+The one thing the browser cannot report is added back:
+`convert::StreamingBodyFetchFailed` names the h1 cause on top of the
+browser's opaque `TypeError`, which is otherwise byte-identical to a refused
+connection. `ErrorKind` stays `Connect`, because that is still what
+happened.
+
 ---
 
 ## W7 — Embassy as a third runtime
