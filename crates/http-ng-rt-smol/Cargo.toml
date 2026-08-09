@@ -7,6 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# UDP is behind a feature, off by default, mirroring
+# `crates/http-ng-rt-tokio/Cargo.toml` line for line and for the same
+# measurement rather than preference: the GSO/GRO/ECN work is `cmsg` on a
+# descriptor, `quinn-udp` already does it correctly for six platforms, and
+# reimplementing it here would be a second copy of the hardest part of a
+# UDP stack in a crate whose job is to adapt a runtime. So the feature
+# pulls `quinn-udp` — and a build that only ever speaks HTTP/1 or HTTP/2
+# does not pay for it.
+#
+# It costs **no other new dependency**: `async-io` is already a direct
+# dependency below, and it is the only thing this backend needs from smol.
+[features]
+default = []
+udp = ["dep:quinn-udp"]
+
 [dependencies]
 async-net      = "2"
 async-io       = "2"
@@ -14,6 +29,7 @@ async-executor = "1"
 blocking       = "1"
 futures-lite   = "2"
 http-ng-rt     = { path = "../http-ng-rt", version = "0.1.0" }
+quinn-udp      = { version = "0.5", default-features = false, optional = true }
 socket2        = { version = "0.6", features = ["all"] }
 
 # `EINPROGRESS` can't be observed through `std::io::ErrorKind`: the

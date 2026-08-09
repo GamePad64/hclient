@@ -5,6 +5,12 @@
 //! is meant to surface.
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "udp")]
+mod udp;
+
+#[cfg(feature = "udp")]
+pub use udp::SmolUdpSocket;
+
 use http_ng_rt::{
     Blocking, Cancelled, Discard, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts,
     TcpOptsSupport, Timer,
