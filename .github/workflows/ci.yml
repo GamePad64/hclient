@@ -61,6 +61,18 @@ jobs:
           HTTP_NG_REQUIRE_TUNTAP: "1"
         run: |
           set -euo pipefail
+          # Measured on this runner: `unshare -Ur --net` fails, and the
+          # marker turned that into a red job instead of nine silent skips —
+          # which is what the marker is for. The cause is ubuntu-24.04's
+          # AppArmor restriction on unprivileged user namespaces, and it is
+          # lifted the documented way. `|| true`: if a future image drops
+          # the knob, the run below is what reports it, with the test's own
+          # message, rather than this line failing with a sysctl error.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare -Ur --net true || {
+            echo "::error::unprivileged user namespaces are still unavailable after lifting the AppArmor restriction — the embassy live scenarios cannot run on this image. Do not paper over this by dropping HTTP_NG_REQUIRE_TUNTAP: that returns nine silent skips."
+            exit 1
+          }
           cargo nextest run -p http-ng-rt-embassy --all-features --color never
       - shell: bash
         run: |

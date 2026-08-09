@@ -52,6 +52,13 @@ embassy-net  = { version = "0.9", features = ["tcp", "proto-ipv4", "medium-ether
 # The Linux TAP driver for embassy-net: an ordinary `embassy_net::driver::
 # Driver` over `/dev/net/tun`, which is what lets the acceptance run a real
 # smoltcp stack against a real kernel-side peer.
+
+# Linux only, and it must say so: `embassy-net-tuntap` reaches for
+# `libc::IFF_TAP`, which does not exist on macOS or Windows, so an
+# ungated dev-dependency breaks `cargo test` on two of the three
+# platforms this workspace supports. Measured on `macos-latest`:
+# `error[E0425]: cannot find value \`IFF_TAP\` in crate \`libc\``.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 embassy-net-tuntap = "0.1"
 heapless           = "0.9"
 # Tracing for the acceptance, off unless `HTTP_NG_EMBASSY_TRACE` is set.

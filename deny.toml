@@ -33,6 +33,11 @@ allow = [
     "Zlib",              # tinyvec
     "CDLA-Permissive-2.0", # webpki-roots' certificate data
     "MPL-2.0",
+    # `managed` and `smoltcp`, reached through `embassy-net` (v0.2 W7).
+    # 0BSD is BSD-3-Clause with the attribution requirement removed — the
+    # most permissive of the family, and strictly weaker in obligations
+    # than entries already on this list.
+    "0BSD",
 ]
 confidence-threshold = 0.9
 
