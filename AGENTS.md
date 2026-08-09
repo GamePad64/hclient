@@ -319,6 +319,40 @@ under `NoClock`, whose `elapsed_since` is `Duration::ZERO` for ever. The
 cost of the choice is that `SystemTime::now()` panics on
 `wasm32-unknown-unknown`, which is written where the setter is.
 
+**`425 Too Early` is replayed once, in `Client`** (RFC 8470 §5.2). 0-RTT
+has three failure paths and a transport can close only two of them — the
+handshake refusing early data, and the server rejecting the 0-RTT keys;
+the third is a *status code*, and the decision to repeat belongs to
+whoever owns the operation. So `Client::run` sends the request again,
+once per hop, and only when `RequestBody::retry_kind()` says the body can
+be sent again — reusing that vocabulary rather than inventing a second
+one. A body that cannot be replayed leaves the `425` standing as the
+answer: it is the server's answer, and replacing it with an error of ours
+would hide a status the caller can act on.
+
+The part that had to be built rather than declared is the budget. The
+replay lives **inside the future `Client::execute` wraps in `within(..)`**
+after reading the clock once, so it spends what is left of
+`Timeouts.total` rather than a fresh copy of it — a bound a server can
+double by answering `425` is not a bound. Watched from the server's side
+of the wire in `crates/http-ng/tests/too_early.rs`: the same request
+arriving twice byte for byte, a server wedged on `425` getting exactly two
+requests and the caller getting the second `425`, and a 600 ms bound
+against 400 ms answers ending in `Timeout(Total)` with two requests on the
+server.
+
+Two things worth knowing before touching the neighbourhood. **No transport
+here can put a request into early data yet** (HTTP/3 is not in this tree),
+so "the replay is not in early data" holds vacuously today; what the code
+carries is the invariant and the exact site the future admission mark must
+be stripped at. And **`RetryKind` answers only half of what 0-RTT needs**:
+"can I send this again" is the whole question for a `425` — the server
+asked for the repeat — but admission into early data also asks "may an
+attacker send this again", which is method safety, a notion this codebase
+deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
+is `RetryKind::Free` and is precisely what must never go into early data.
+`docs/h3-research.md` §3.5 has the three-row table.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
