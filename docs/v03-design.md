@@ -218,17 +218,29 @@ doc that the plumbing was built and never used, and `:595` passes
 
 **Deliverable, in three parts, and the order between them is load-bearing.**
 
-1. **The ECH slot stops being a silent drop.** Of the three TLS backends,
-   two refuse a non-`None` `TlsRequest::ech` by name and say why
-   (`crates/http-ng-tls-native-tls/src/lib.rs:129`,
+1. **The ECH slot stops being a silent drop. DONE — refuse.** Of the three
+   TLS backends, two refused a non-`None` `TlsRequest::ech` by name and
+   said why (`crates/http-ng-tls-native-tls/src/lib.rs:129`,
    `crates/http-ng-tls-rustls/src/quic.rs:76`). The third — the rustls TCP
-   path, which is the default backend — **neither refuses nor honours it:
-   it never reads the field.** `Rustls::connect`
-   (`crates/http-ng-tls-rustls/src/lib.rs:189-198`) uses `req.server_name`
-   and `req.alpn`, and nothing else. That is harmless only for as long as
-   `connect.rs` passes `None`, which is exactly what part 2 changes. So
-   part 1 comes first, and its content is a decision — refuse, or honour —
-   rather than code that can follow afterwards.
+   path, which is the default backend — **neither refused nor honoured it:
+   it never read the field.** It does now, and refuses, which unblocks
+   part 2: `connect.rs` may fill `TlsRequest::ech` without any backend
+   dropping it in silence.
+
+   The decision was taken against the alternative rather than by default,
+   and the three obstacles are recorded at the refusal
+   (`ech_refused`'s doc comment, `crates/http-ng-tls-rustls/src/lib.rs`),
+   measured against rustls 0.23.43: the HPKE suites `EchConfig::new` needs
+   exist only in rustls's `aws_lc_rs` provider — `src/crypto/ring/` has no
+   `hpke.rs` — and this crate pins `ring` so that it agrees with
+   `quinn-proto`'s `rustls-ring`; `ClientConfig::ech_mode` is `pub(super)`
+   where `alpn_protocols` is `pub`, so the clone-and-set that makes the
+   ALPN cache work has no counterpart and the only entry point is a
+   builder running before the verifier is chosen, which `from_config` no
+   longer has; and `with_ech` pins TLS 1.3 alone. Honouring ECH therefore
+   starts with a second crypto provider and a C toolchain, not with a
+   line — which is what W5's "A line, and the reason" predicted, now
+   checked rather than assumed.
 2. **`connect.rs` consults `lookup_svcb` when `supports_svcb()`**, and uses
    what comes back: the ALPN offer, the port, the address hints as an input
    to Happy Eyeballs, and `ech_config_list` into `TlsRequest::ech`.
@@ -263,7 +275,7 @@ one v0.2 gave ("a cache with a lifetime, closer to a browser's job").
 | A TTL is available to cache with | `ResolvedAddr::ttl` exists (`crates/http-ng-dns/src/lib.rs:76`), hickory fills it (`crates/http-ng-dns-hickory/src/lib.rs:105-117`), `getaddrinfo` cannot and leaves it `None` — and **nothing anywhere reads it**: grep `.ttl` outside the resolvers | measured here |
 | A negative cache belongs to Alt-Svc, so tier 2 needs none | **False**, and this is what the h3 research's four-item Alt-Svc scope loses when tier 2 is read carefully. UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken backoff mandatory — and a record advertising `h3` on such a network produces a failed attempt per request whether the advertisement came from DNS or from a header. The cache of *what failed* is h3's; only the cache of *what was advertised* is Alt-Svc's | argued from `docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with a race and without one, would settle it |
 | What Alt-Svc adds over SVCB is only a positive cache | Partly: also a host/port *change* for an origin, and coverage of origins whose DNS carries no HTTPS RR. How many origins that is, nobody here has counted | **unverified**; one sweep over a list of origins, comparing HTTPS RR presence against the `Alt-Svc` header, settles it |
-| An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/http-ng-tls-rustls/src/lib.rs` → no matches | measured here |
+| An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/http-ng-tls-rustls/src/lib.rs` → no matches | measured here, and **since fixed**: the same grep now finds the refusal, and `crates/http-ng-tls-rustls/tests/ech.rs` measures it from the peer's side of a loopback socket — nothing on the wire with `ech: Some(_)`, and, as its control, the server name in the clear with `ech: None` |
 
 **Watch for.** The capability question arrives again, and its answer already
 exists: a transport whose ALPN offer is decided per origin, by a record it
@@ -457,7 +469,7 @@ polls `Connection` as a `Future` precisely this way (its module doc,
 "What happens when `Connection` finishes first, or fails"). A 101 must be
 detected by **status**, before the connection is polled to completion.
 
-### The check to run before any code is written
+### The check to run before any code is written — RUN, and the answer is no
 
 Nothing in `http-ng-native` mentions 101 or Switching Protocols — grep the
 crate. So today, a server that answers `101` to an ordinary request produces
@@ -465,11 +477,37 @@ a response with a body that ends immediately, and `checkin_for`
 (`crates/http-ng-native/src/lib.rs:527`) hands the connection back to the
 pool when the body ends cleanly. **If that is what happens, the pool is
 being poisoned with a connection that is no longer speaking HTTP, and that
-is a bug today rather than a WebSocket feature.** It is two dozen lines to
-find out: a loopback server that answers `101 Switching Protocols`, two
-requests, and the server's own accept count as the observer — the same
-observer `crates/http-ng-native/tests/pool.rs` already uses. Run it first;
-its answer changes whether this item starts with a fix or with a feature.
+is a bug today rather than a WebSocket feature.**
+
+It is not what happens. `crates/http-ng-native/tests/switching_protocols.rs`
+is the experiment this paragraph asked for, with the accept count and the
+upgraded socket as the observer, in both shapes — a `101` on a fresh
+connection and a `101` on one the pool really did hand out. Neither reuses
+it, and no HTTP is ever written onto a socket that has stopped speaking it.
+**So this item starts with a feature, not with a fix.**
+
+The reason is worth carrying into the work rather than only the verdict,
+because it was not the obvious one. hyper decodes a `101` as a zero-length
+body with `keep_alive = false` and `wants_upgrade`
+(`proto/h1/role.rs:1273`, `:1169-1177`), so its dispatcher finishes inside
+the very `Connection::poll` that delivers the head — and `h1::exchange`
+polls the connection *before* the request future, so the response arrives
+with `conn_done` already `true` and the body is built carrying neither the
+connection nor a check-in token. But that is only the first of **five**
+places where "this `Connection` has finished" is asked: with it disabled,
+the upgraded connection does reach the pool, and the request still does
+not, because `is_reusable` polls the connection and then asks
+`SendRequest::poll_ready`, which a finished dispatcher answers `Err` to for
+ever. Four of the five can be removed together and the outside observation
+does not change. The enumeration is in that test file's module doc, and the
+mechanism is in `h1.rs`'s.
+
+What this does **not** settle is anything about the upgrade itself. The
+paragraph above about `pending.manual()` stands unchanged: the upgrade is
+destroyed, and "the exchange finished" and "the upgrade was thrown away"
+are the same observation. Detecting a `101` by status before polling
+`Connection` to completion is still the requirement for W4 — it is just a
+requirement of the feature rather than the fix for a live defect.
 
 ### WebSocket over HTTP/2, and why it is out of scope
 
@@ -518,7 +556,7 @@ of that miss.
 | hyper hands back the IO without a `Send` bound | `into_parts`/`poll_without_shutdown` bounds at `hyper-1.11.0/src/client/conn/http1.rs:68-113` | measured here |
 | `hyper::upgrade::Upgraded` cannot be used | It is `Rewind<Box<dyn Io + Send>>` (`src/upgrade.rs:66-67`) | measured here |
 | Polling `Connection` to completion destroys an upgrade | `src/client/conn/http1.rs:313-320` | measured here |
-| A 101 today poisons the pool | The loopback experiment above | **unverified**, and it is the first thing to run |
+| A 101 today poisons the pool | The loopback experiment above | **run, and the answer is no** — `crates/http-ng-native/tests/switching_protocols.rs`. The connection is never offered to the pool (`exchange` sees it finished before the response exists), and four further checks would each stop it alone; measured by disabling them |
 | RFC 8441 is reachable through the `h2` crate we already drive | `h2-0.4.15/src/client.rs:547`, `proto/streams/streams.rs:227` | measured here by reading; no request has been sent |
 | WS-over-h2 is worth having under the current pool | It is not, and the reason is `pool.rs:155-172`, not h2 | argued here |
 | A framing library exists that does not force a runtime | `tungstenite` 0.30's `WebSocketContext::read/write` take the stream per call (`tungstenite-0.30.0/src/protocol/mod.rs:449,491`) — a state machine separate from the socket, but typed against `std::io::{Read, Write}`. `async-tungstenite` 0.35 bridges it with `AllowStd` + `AtomicWaker` over `futures_io`, and its only `unsafe` is in `gio.rs` | measured here |
@@ -619,8 +657,12 @@ for. **Delete it.**
   somewhere.
 - **No ECH implementation, on either path.** rustls builds ECH through a
   different builder entry point, so it is a second construction path and a
-  third cache dimension. A typed refusal is the honest state, and after W2
-  it will be the state on all three backends rather than two.
+  third cache dimension. A typed refusal is the honest state, and it now
+  **is** the state on all three backends rather than two (W2 part 1, done).
+  The estimate was right and one item short: past the builder there is also
+  no HPKE at all in the `ring` provider this crate pins, so honouring ECH
+  starts by adding `aws-lc-rs`. See `ech_refused` in
+  `crates/http-ng-tls-rustls/src/lib.rs`.
 - **No reaper for dead pooled h3 connections.** Same shape and same reason
   as v0.2 W2's HTTP/1 pool: a connection the peer closed is dropped at the
   next checkout.
@@ -754,10 +796,12 @@ actually lives.
 Five, each named where it belongs above, gathered here because each one
 shows in a signature and is expensive to walk back.
 
-1. **ECH on the rustls TCP path: refuse, or honour.** (W2, part 1.) The
-   answer has to exist before `connect.rs` may pass anything but `None`.
-   Refusing is one `if` and matches what the other two backends already do;
-   honouring is a second construction path and a third cache dimension.
+1. ~~**ECH on the rustls TCP path: refuse, or honour.**~~ (W2, part 1.)
+   **Decided: refuse**, and done — so `connect.rs` may now pass a real
+   `ech_config_list`. Honouring it is not a second construction path and a
+   third cache dimension only; it is also a second crypto provider, because
+   the `ring` provider this crate pins has no HPKE for `EchConfig::new` to
+   use. Measured at the refusal site.
 2. **Does `UpgradeSupport` become real, or go?** (W4.) If the WebSocket seam
    is a trait, no caller decision turns on the field, and v0.2's rule says
    it should not exist. The alternative is that it describes something else
