@@ -1,10 +1,11 @@
 # v0.3 design — the rest of the vertical
 
 **Theme: the two things around a request that are not the request.** How a
-client works out where to connect and what to speak (W2, W4), and what a
-connection becomes once the exchange is over (W5). Plus the work that
-defends claims already made (W1), the debts the first half of this vertical
-wrote down (W6), and one external answer that has not changed (W7).
+client works out where to connect and what to speak (W2, W3), and what a
+connection becomes once the exchange is over (W4). Around those: the work
+that defends a claim already made rather than adding a feature (W1), a
+verdict on every debt the first half of this vertical wrote down (W5), and
+one external answer that has not changed (W6).
 
 v0.3 did not begin with this document. **HTTP/3 shipped first**, planned by
 [`docs/h3-research.md`](h3-research.md) and accounted for by
@@ -162,7 +163,7 @@ prevent.
 | `async_io::Async<UdpSocket>` gives `quinn-udp` the descriptor it needs | `docs/h3-research.md` §2.4 measured `gso=64 gro=64` through it | measured **in a spike**, not in this crate; the check that transfers it is `crates/http-ng-rt-tokio/tests/udp.rs` run against the new backend |
 | It costs no new dependency beyond the one tokio pays | `async-io = "2"` is already a direct dependency (`crates/http-ng-rt-smol/Cargo.toml:12`); only `quinn-udp` arrives, optional, exactly as on tokio | measured here |
 | `Spawn` is not a problem for the h3 driver on smol | `QuinnTask` is `Pin<Box<dyn Future<Output = ()> + Send>>` (`crates/http-ng-h3/src/runtime.rs:66`) — a **named** type, so the naming wall does not apply; `Smol`'s impl takes `F: Send + 'static` (`lib.rs:46`) | measured here by reading, not compiled |
-| The separated `try_send`/`poll_writable` shape fits a second runtime | It was separated because a QUIC endpoint must be able to wait *without a datagram in hand*, which is a claim about quinn, not about `async-io`. The check is whether `async-io`'s readiness API can express it without a dummy datagram | **unverified** |
+| The separated `try_send`/`poll_writable` shape fits a second runtime | The separation was justified by what *quinn* needs — waiting to write with no datagram in hand — and never by what a second runtime can express. Refuted if `async-io`'s readiness API cannot register a write waker without one | **unverified**, and it is the only place this item could turn out to be a seam change rather than a backend |
 
 **Watch for.** Two.
 
@@ -250,7 +251,7 @@ one v0.2 gave ("a cache with a lifetime, closer to a browser's job").
 | The RFC 9460 client-semantics layer would have to be written | **False, and it is why this is a task.** It exists: `crates/http-ng-dns-system/src/svcb.rs`, 1537 lines with its tests, deciding AliasMode against ServiceMode, `mandatory`, and what "no records" means. It is `pub(crate)` (`:41`), so the deliverable includes moving it where both resolvers and a DoH one can reach it | measured here |
 | "The cache with a lifetime is the resolver's, so we need none" | **Half false, and worth checking before relying on it.** `http-ng-dns-hickory` caches and shares one cache across clones (`crates/http-ng-dns-hickory/src/lib.rs:63`). `http-ng-dns-system` caches **nothing** — grep it for `cache`, zero hits — so an SVCB lookup there is a fresh `res_query` per request unless the OS stub resolver happens to cache. What would settle the cost: time two consecutive `lookup_svcb` calls through `SystemDns`, on a machine with `systemd-resolved` and on one without | the absence of a cache in our code is measured here; the cost is **unverified** |
 | A TTL is available to cache with | `ResolvedAddr::ttl` exists (`crates/http-ng-dns/src/lib.rs:76`), hickory fills it (`crates/http-ng-dns-hickory/src/lib.rs:105-117`), `getaddrinfo` cannot and leaves it `None` — and **nothing anywhere reads it**: grep `.ttl` outside the resolvers | measured here |
-| A negative cache is Alt-Svc's problem | **False.** UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken-backoff mandatory; an HTTPS record advertising `h3` on such a network costs something on every request, whoever produced the record. The negative cache is h3's, and tier 2 inherits it | argued from `docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with and without a race, would settle it |
+| A negative cache belongs to Alt-Svc, so tier 2 needs none | **False**, and this is what the h3 research's four-item Alt-Svc scope loses when tier 2 is read carefully. UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken backoff mandatory — and a record advertising `h3` on such a network produces a failed attempt per request whether the advertisement came from DNS or from a header. The cache of *what failed* is h3's; only the cache of *what was advertised* is Alt-Svc's | argued from `docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with a race and without one, would settle it |
 | What Alt-Svc adds over SVCB is only a positive cache | Partly: also a host/port *change* for an origin, and coverage of origins whose DNS carries no HTTPS RR. How many origins that is, nobody here has counted | **unverified**; one sweep over a list of origins, comparing HTTPS RR presence against the `Alt-Svc` header, settles it |
 | An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/http-ng-tls-rustls/src/lib.rs` → no matches | measured here |
 
@@ -384,8 +385,9 @@ stream. `wasi:http` has no upgrade either: the protocol has an
 `HTTP-upgrade-failed` error code and no mechanism.
 
 So a seam shaped as "give me back the socket" is implementable by exactly
-one of the four backends here, and the one it excludes is the one this
-project exists for. **The seam to add is a WebSocket seam — message
+one of the four backends here, and among the three it shuts out is the
+browser — the target whose inclusion is this project's whole claim.
+**The seam to add is a WebSocket seam — message
 oriented, `Stream<Item = Result<Message>> + Sink<Message>` — and h1 upgrade
 is an implementation detail underneath it on native.** That is the spec's
 §5.7 conclusion, and it is worth restating because `UpgradeSupport`'s
@@ -430,9 +432,10 @@ disqualified `hyper/http2` in v0.2 W3.
 the upgrade away:
 
 ```rust
-// hyper-1.11.0/src/client/conn/http1.rs:311-321
+// hyper-1.11.0/src/client/conn/http1.rs:313-320, inside `impl Future for Connection`
 proto::Dispatched::Upgrade(pending) => {
-    // With no `Send` bound on `I`, we can't try to do upgrades here.
+    // With no `Send` bound on `I`, we can't try to do
+    // upgrades here. …
     pending.manual();
     Poll::Ready(Ok(()))
 }
@@ -504,7 +507,7 @@ of that miss.
 |---|---|---|
 | hyper hands back the IO without a `Send` bound | `into_parts`/`poll_without_shutdown` bounds at `hyper-1.11.0/src/client/conn/http1.rs:68-113` | measured here |
 | `hyper::upgrade::Upgraded` cannot be used | It is `Rewind<Box<dyn Io + Send>>` (`src/upgrade.rs:66-67`) | measured here |
-| Polling `Connection` to completion destroys an upgrade | `src/client/conn/http1.rs:311-321` | measured here |
+| Polling `Connection` to completion destroys an upgrade | `src/client/conn/http1.rs:313-320` | measured here |
 | A 101 today poisons the pool | The loopback experiment above | **unverified**, and it is the first thing to run |
 | RFC 8441 is reachable through the `h2` crate we already drive | `h2-0.4.15/src/client.rs:547`, `proto/streams/streams.rs:227` | measured here by reading; no request has been sent |
 | WS-over-h2 is worth having under the current pool | It is not, and the reason is `pool.rs:155-172`, not h2 | argued here |
