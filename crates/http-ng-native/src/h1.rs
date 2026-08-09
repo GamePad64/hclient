@@ -148,6 +148,17 @@
 //! the mechanism, and `tests/switching_protocols.rs` for the consequence,
 //! with the server's accept count and the upgraded socket as the observer.
 //!
+//! **That first paragraph is the mechanism, not the reason it is safe.**
+//! Measured by taking the checks away one at a time: with `conn_done`
+//! forced to `false` the body does carry the connection, and the pool does
+//! receive it — and a request still never reaches it, because the same
+//! "this `Connection` has finished" fact is asked for again at four more
+//! places, ending with `SendRequest::poll_ready`, which a finished
+//! dispatcher answers `Err` for ever. `tests/switching_protocols.rs`
+//! enumerates them. So the reuse of a 101'd connection is not prevented by
+//! one line that could be deleted; it is prevented by every path that
+//! could reuse a connection asking first.
+//!
 //! What is **not** settled by that is the upgrade itself. `pending.manual()`
 //! destroys it, and hyper reports the destruction as `Ready(Ok(()))` — so
 //! "the exchange finished" and "the upgrade was thrown away" are the same
@@ -819,13 +830,12 @@ mod tests {
     ///
     /// The two assertions are deliberately not the same one. The fields
     /// say the connection was never *offered*; the empty pool says it was
-    /// never *accepted*. Only the first distinguishes this from the
-    /// second line of defence in [`H1Body::poll_frame`], which would clear
-    /// `reuse` on the next poll anyway — a redundancy worth knowing about,
-    /// since it means the outcome alone survives a mutation of either half
-    /// (`tests/pool.rs`'s
-    /// `a_connection_the_server_asked_to_close_is_not_reused` is what
-    /// stands behind the other half).
+    /// never *accepted*. Only the first is sensitive: replacing
+    /// `if conn_done` in [`exchange`] with `if false` fails this test on
+    /// the field assertion and nothing else in the workspace — measured —
+    /// because everything downstream would catch it. See
+    /// `tests/switching_protocols.rs` for the list of what does, and why
+    /// that makes the outcome half of this test worth writing anyway.
     #[test]
     fn a_101_is_never_offered_to_the_pool() {
         let io = ScriptIo::new(
