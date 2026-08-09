@@ -47,6 +47,21 @@ jobs:
           except OSError as e:
               sys.exit(f"::error::127.0.0.2 is still not bindable after `ifconfig lo0 alias`: {e}")
           PY
+      # `http-ng-rt-embassy`'s live scenarios drive a real embassy-net stack
+      # over a TAP device and are the only thing proving the W1 cancellation
+      # contract holds there. Without the marker they SKIP — quietly, which
+      # is what this file exists to prevent. Its own step, Linux only, so a
+      # runner that has lost `/dev/net/tun` or unprivileged user namespaces
+      # goes red HERE with a name that says so, rather than reddening the
+      # whole matrix or passing while testing nothing.
+      - name: the embassy tuntap scenarios run, rather than skip
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          HTTP_NG_REQUIRE_TUNTAP: "1"
+        run: |
+          set -euo pipefail
+          cargo nextest run -p http-ng-rt-embassy --all-features --color never
       - shell: bash
         run: |
           set -euo pipefail
@@ -268,6 +283,7 @@ jobs:
           # a consumer gets — was compiled by nothing in CI.
           for args in "-p http-ng-proto --no-default-features" \
                       "-p http-ng-native --no-default-features" \
+                      "-p http-ng-rt-embassy" \
                       "-p http-ng --no-default-features --features test-util"; do
             rc=0
             out="$(cargo nextest run $args --color never 2>&1)" || rc=$?
@@ -280,6 +296,7 @@ jobs:
           done
           cargo clippy -p http-ng-proto --all-targets --no-default-features -- -D warnings
           cargo clippy -p http-ng-native --all-targets --no-default-features -- -D warnings
+          cargo clippy -p http-ng-rt-embassy --all-targets -- -D warnings
           cargo clippy -p http-ng --all-targets --no-default-features --features test-util -- -D warnings
 
   # The whole claim of `http-ng-idn` is that the platform's ICU answers
