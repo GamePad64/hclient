@@ -400,6 +400,78 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_that_declares_nothing_applies_nothing() {
+        // The default is a claim made by silence, and this is the only
+        // test that reads it. All three shipped runtimes declare
+        // `APPLIES` explicitly — tokio and smol `ALL`, embassy its own
+        // two-of-six — so flipping the default to `ALL` passes the whole
+        // workspace suite otherwise: 878/878, measured (W7 mutation M4).
+        // The rule it protects is that a backend which forgets the line
+        // must understate itself, so the worst case is one refused
+        // connect too many rather than an option dropped on the floor
+        // without a trace.
+        struct Forgetful;
+        // Never constructed: it exists only so `Forgetful` can satisfy
+        // the associated type without a runtime behind it.
+        struct NeverIo;
+        impl hyper::rt::Read for NeverIo {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: hyper::rt::ReadBufCursor<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+        }
+        impl hyper::rt::Write for NeverIo {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                unreachable!("this runtime never connects")
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+        }
+        impl TcpConnect for Forgetful {
+            type Stream = NeverIo;
+            // No `APPLIES` line, deliberately — that absence is the
+            // subject of this test.
+            async fn connect(&self, _: SocketAddr, _: &TcpOpts) -> std::io::Result<NeverIo> {
+                unreachable!("this runtime never connects")
+            }
+        }
+
+        assert_eq!(
+            <Forgetful as TcpConnect>::APPLIES,
+            TcpOptsSupport::NONE,
+            "a runtime that declares nothing must not claim to apply anything"
+        );
+        // And the consequence, not only the constant: a caller who asks
+        // such a runtime for all six gets all six refused by name, rather
+        // than silently honoured on paper.
+        let err = all_six_set()
+            .reject_unsupported(<Forgetful as TcpConnect>::APPLIES)
+            .expect_err("a runtime that applies nothing must refuse everything asked of it");
+        let payload = err
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .expect("typed payload");
+        assert_eq!(payload.names().collect::<Vec<_>>(), NAMES);
+    }
+
+    #[test]
     fn spawn_is_generic_over_the_future_not_boxed() {
         // The shape is copied from hyper::rt::Executor: generic over F,
         // zero bounds in the declaration. Send is added by the impl, not
