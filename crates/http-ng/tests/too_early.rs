@@ -636,6 +636,45 @@ mod replayability {
         assert_eq!(marks(&c), vec![true, true], "{}", MARKS);
     }
 
+    /// A **cross-origin** redirect drops the mark, where the same-origin
+    /// one above keeps it.
+    ///
+    /// The pair is the point, which is why the two tests sit together
+    /// rather than one of them living with the redirect tests. The mark is
+    /// the caller saying "replaying this is safe" — a claim about what the
+    /// request does *at a server*. Same origin: still their claim, and
+    /// withdrawing it would be a silent downgrade of a setting they wrote.
+    /// Different origin: a judgement nobody made about `b`, and acting on
+    /// it means sending early data — replayable by an attacker — to a
+    /// server the caller never vouched for. So `next_hop` takes it off on
+    /// exactly the hop that strips `Authorization`, and the invariant is
+    /// one sentence: the mark survives only while the chain stays inside
+    /// the origin the caller addressed.
+    #[test]
+    fn a_cross_origin_redirect_drops_the_mark() {
+        let m = MockTransport::new();
+        m.push_response(
+            http::Response::builder()
+                .status(302)
+                .header("location", "https://b/second")
+                .body("")
+                .unwrap(),
+        );
+        m.push_response(ok());
+
+        let c = Client::builder(m).build().expect("client");
+        let mut req = http::Request::builder()
+            .uri("https://a/first")
+            .body(RequestBody::Empty)
+            .unwrap();
+        req.extensions_mut().insert(http_ng_core::AllowEarlyData);
+
+        let resp = futures_executor::block_on(c.execute(req)).expect("execute");
+        assert_eq!(resp.status(), 200);
+
+        assert_eq!(marks(&c), vec![true, false], "{}", MARKS);
+    }
+
     const MARKS: &str = "one bool per request the transport was handed, in order: \
                          whether it carried AllowEarlyData";
 
