@@ -9,7 +9,7 @@ use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
 use http_ng_core::Timeouts;
 use http_ng_core::unversioned::{Timer, Transport};
-use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
+use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use http_ng_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 
 #[derive(Debug)]
@@ -691,31 +691,80 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             // The replay snapshot is taken BEFORE sending: after that, the
             // body is already consumed. For `Streaming` this returns
             // `None` — and that's known honestly ahead of time, not after
-            // a failed retry.
+            // a failed retry. It has two readers below: the `425 Too Early`
+            // replay, and the next redirect hop.
             let replay = body.rewind();
             let sending = std::mem::replace(&mut body, RequestBody::Empty);
 
-            let resp = self
-                .inner
-                .transport
-                .execute(hp.to_request(sending))
-                .await
-                // Not `Error::new(ErrorKind::Other, e)`: B2 of the
-                // branch's final review — unconditional wrapping flattened
-                // the category of ANY transport error into `Other`,
-                // devaluing the whole `ErrorKind` taxonomy. The backend
-                // decides, not this line: the default `Transport::to_error`
-                // wraps exactly the same way, and a backend whose error is
-                // already an `Error` hands it back as-is.
-                .map_err(|e| self.inner.transport.to_error(e))?;
+            let mut resp = self.send_hop(&hp, sending).await?;
 
-            // Stored per hop too, and against THIS hop's URI: a login
-            // handing back `Set-Cookie` on its 302 is the ordinary case,
-            // and a jar that only looked at the final response would miss
-            // every one of them. Scoped to the hop that sent the header,
-            // because `Domain`/`Path` are relative to the request that got
-            // the response, not to wherever the chain ends up.
-            self.store_cookies(&hp.uri, resp.headers());
+            // **RFC 8470 §5.2 — `425 Too Early`: the third way a request
+            // that went into early data can fail, and the only one of the
+            // three a transport structurally cannot close.** The other two
+            // never reach this code: the handshake refusing early data
+            // (nothing was sent, so nothing is at risk) and the server
+            // rejecting the 0-RTT keys (`ZeroRttRejected`, which the
+            // transport replays on the same connection once the handshake
+            // completes). This one is a *status code* — the server got the
+            // data, declined to risk processing it, and asked for the
+            // request again outside early data. Deciding that belongs to
+            // whoever owns the operation, which is this loop and not a
+            // transport. The three-row table is `docs/h3-research.md` §3.5.
+            //
+            // **Once, and by construction rather than by a counter**: there
+            // is no loop around these two lines, so a server wedged on
+            // `425` gets two requests and the caller gets the second `425`.
+            // An unbounded retry against exactly that server is an infinite
+            // one.
+            //
+            // **Per hop, not per operation.** A `425` on hop 3 answers a
+            // different request than hop 1 sent, and declining to replay it
+            // because hop 1 was already replayed would make the behaviour
+            // depend on history. The count is bounded either way: at most
+            // two attempts per hop, and the hops are bounded by the
+            // redirect limit — and by the paragraph below.
+            //
+            // **The replay is inside `run`, and that is what puts it inside
+            // the operation's budget.** `execute` reads the clock once and
+            // wraps the whole of `run` in `within(..)`; a replay bolted on
+            // outside that — around `execute`, or in a caller — would give
+            // the second attempt a fresh `total`, and a `total` a server
+            // can double by answering `425` is not a bound.
+            //
+            // **"Outside early data" is what the replay owes RFC 8470, and
+            // today it is owed vacuously**: no transport in this workspace
+            // can put anything in early data. It stops being vacuous the
+            // moment one can, and the shape that keeps it true is already
+            // settled (`docs/h3-research.md` §3.5): admission is a
+            // per-request opt-in the CALLER sets, so a request carrying no
+            // mark cannot end up in early data. **Whoever adds that mark
+            // strips it from the replay built here** — this sentence is
+            // what the comment exists for.
+            //
+            // **The trap is not in this branch; it is in the one that will
+            // sit next to it.** `retry_kind()` below answers "can I send
+            // this body again", and for `425` that is the entire question:
+            // the server asked for the repeat itself, so there is nobody to
+            // protect the request from. Admission to early data asks the
+            // OTHER question — "may an attacker send this again" — which is
+            // method safety, a notion this codebase deliberately does not
+            // have (`http-ng-native`'s W2 retry documents why it never
+            // needed one: nothing had reached the wire). The two questions
+            // disagree on the same request: `POST /transfer` with
+            // `RequestBody::Full(..)` is `RetryKind::Free` and is precisely
+            // what must never enter early data. `RetryKind` is a
+            // precondition for 0-RTT, never a permission.
+            //
+            // **And no `else` carrying an error of ours.** A body that
+            // cannot be sent twice leaves the `425` standing as the answer:
+            // it is the server's answer, complete and typed already, and
+            // replacing it with an `Error` would hide a status the caller
+            // can act on behind a category it cannot.
+            if resp.status() == http::StatusCode::TOO_EARLY
+                && let Some(again) = replay_for_too_early(replay.as_ref())
+            {
+                resp = self.send_hop(&hp, again).await?;
+            }
 
             let location = resp
                 .headers()
@@ -755,6 +804,47 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                 }
             }
         }
+    }
+
+    /// One attempt at one hop: send it, classify a transport failure, and
+    /// let the jar learn from whatever came back.
+    ///
+    /// Two callers, and they are the two attempts a single hop can make —
+    /// the request as it stands, and the `425 Too Early` replay above.
+    /// Factored out rather than written twice so the replay cannot drift
+    /// from the original: both need `to_error`'s classification, and both
+    /// need `store_cookies`, since a `Set-Cookie` riding a `425` is exactly
+    /// what a hand-copied second call site would eventually stop storing.
+    async fn send_hop(
+        &self,
+        hp: &HopParts,
+        body: RequestBody,
+    ) -> Result<http::Response<T::Body>, Error>
+    where
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    {
+        let resp = self
+            .inner
+            .transport
+            .execute(hp.to_request(body))
+            .await
+            // Not `Error::new(ErrorKind::Other, e)`: B2 of the branch's
+            // final review — unconditional wrapping flattened the category
+            // of ANY transport error into `Other`, devaluing the whole
+            // `ErrorKind` taxonomy. The backend decides, not this line: the
+            // default `Transport::to_error` wraps exactly the same way, and
+            // a backend whose error is already an `Error` hands it back
+            // as-is.
+            .map_err(|e| self.inner.transport.to_error(e))?;
+
+        // Stored per hop too, and against THIS hop's URI: a login handing
+        // back `Set-Cookie` on its 302 is the ordinary case, and a jar that
+        // only looked at the final response would miss every one of them.
+        // Scoped to the hop that sent the header, because `Domain`/`Path`
+        // are relative to the request that got the response, not to
+        // wherever the chain ends up.
+        self.store_cookies(&hp.uri, resp.headers());
+        Ok(resp)
     }
 
     /// Puts this hop's cookies on the request, if this client keeps a jar.
@@ -825,6 +915,37 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// The twin without the feature — see `attach_cookies`'.
     #[cfg(not(feature = "cookies"))]
     fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
+}
+
+/// The body a `425 Too Early` replay is sent with, or `None` when this
+/// request cannot honestly be sent a second time.
+///
+/// `snapshot` is the rewind taken before the attempt that got the `425`.
+/// The verdict is read off the body **that is about to be sent**, never off
+/// one cached from before a `rewind()` — `RequestBody::Rewindable`'s own doc
+/// comment makes that an invariant, because a factory is allowed to hand
+/// back a `Streaming` body, in which case the snapshot of a `ViaFactory`
+/// body is an `Impossible` one.
+///
+/// `RetryKind` and `rewind()` are two spellings of the same three-way
+/// split, so the match below is not the only thing standing between a
+/// `Streaming` body and a second send — `rewind()` would answer `None` for
+/// it anyway. It is written as the gate regardless, because it is the
+/// question being asked ("may this be replayed"), and because the honest
+/// failure mode of deleting it is not "no retry" but "retry with whatever
+/// body is to hand", which is how a truncated or empty request reaches a
+/// server that asked for the real one again.
+///
+/// What this deliberately does NOT consult is the method. `425` needs no
+/// idempotency judgement: the server asked for the repeat. Early data does,
+/// and this function is not the place to grow one — see the long comment at
+/// the call site.
+fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
+    match snapshot.map(|b| (b.retry_kind(), b)) {
+        Some((RetryKind::Free | RetryKind::ViaFactory, b)) => b.rewind(),
+        // `Impossible`, or nothing was replayable to begin with.
+        _ => None,
+    }
 }
 
 /// Locks the jar, recovering from poisoning rather than propagating it.

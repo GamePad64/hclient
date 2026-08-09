@@ -28,7 +28,7 @@ versions under test: `quinn 0.11.11`, `quinn-proto 0.11.16`,
 | Q2 measured | GSO 64, GRO 64, ECN round-trips (`Ect0` in, `Some(Ect0)` out), `may_fragment=false` — one `sendmsg`, 3 datagrams, one `recvmmsg`. tokio and smol both expose the descriptor; embassy-net has none, quoted. | §2.1, §2.4 |
 | Q3 the TLS seam | `TlsConnect` cannot carry QUIC, and it is not close. A **second trait**, rustls-only, is the only honest option. `native-tls` is out — not "reports less", out. | §3.1, §3.6 |
 | **Q3, 0-RTT** | **Works, measured, and it breaks W3's reserved `TlsInfo::early_data_accepted`.** The acceptance answer is a *future* that resolved at `8.6ms`, after the response arrived at `8.5ms`. On rejection the request fails with `ZeroRttRejected` and must be replayed. | §3.2, §3.3 |
-| Q3, replay policy | **`RetryKind` covers the wrong half.** It answers "can I resend this", which 0-RTT also needs; it does not answer "may an attacker resend this", which is method safety — a notion this codebase deliberately does not have (quoted). And early data fails in **three** places, not one: no key material, `ZeroRttRejected`, and HTTP `425 Too Early`. | §3.5 |
+| Q3, replay policy | **`RetryKind` covers the wrong half.** It answers "can I resend this", which 0-RTT also needs; it does not answer "may an attacker resend this", which is method safety — a notion this codebase deliberately does not have (quoted). And early data fails in **three** places, not one: no key material, `ZeroRttRejected`, and HTTP `425 Too Early`. **The third is now closed** — `Client` replays a `425` once, inside the operation's own budget; the other two remain the transport's. | §3.5 |
 | Q4 discovery | **Alt-Svc is not the first cut, and need not be.** `http_ng_dns::SvcbEndpoint` already carries `alpn` and `port`, and real HTTPS/SVCB lookup already ships. That is a discovery path with a TTL owned by the resolver, not a cache we invent. | §4 |
 | Q5 CI | **Not compile-only.** The whole h3 client + server ran on loopback in this environment in single-digit milliseconds with an `rcgen` cert. The uncertain part is GSO/GRO/ECN on a GitHub runner, which is a capability report, not a pass/fail. | §5 |
 
@@ -789,6 +789,39 @@ option):
   and the caller sees a normal response. If the outcome is worth
   surfacing at all it belongs in `http::Extensions` on the response, next
   to where the negotiated version already lives — not in `TlsInfo`.
+
+**Update, after this document shipped: the third row of that table is
+done, and it needed nothing from the seam.** `Client` replays a `425`
+once — per hop, only when `RequestBody::retry_kind()` says the body can be
+sent again, and inside the same `Timeouts.total` as the rest of the
+operation, because the replay sits in the future `Client::execute` already
+wraps in `within(..)`. A body that cannot be replayed leaves the `425`
+standing as the answer, since it is the server's and not ours.
+`crates/http-ng/src/client.rs` (`replay_for_too_early` and the comment at
+its call site) and `crates/http-ng/tests/too_early.rs`, which watches all
+of it from the server's side of the wire — including the control where a
+server wedged on `425` must produce two requests rather than a loop, and
+the budget test where answers cost 400 ms each under a 600 ms bound.
+
+Two things follow for whoever builds the other two rows.
+
+**"Not in early data" is owed vacuously today.** No transport in this
+workspace can put anything into early data, so the replay satisfies RFC
+8470 §5.2 by there being nothing to satisfy. What keeps it true once one
+can is the admission bullet above: a request carrying no mark cannot end up
+in early data, so the replay must be built without the mark. The site that
+has to strip it is named in the call-site comment rather than left to be
+rediscovered here.
+
+**And the trap, stated once more because it is now two lines of code
+apart from its victim.** `retry_kind()` is what the `425` branch consults,
+and for `425` it is the whole question — the server asked for the repeat
+itself, so there is nobody to protect the request from. Admission asks the
+other question, and the answers differ on the same request: `POST
+/transfer` with `RequestBody::Full(..)` is `RetryKind::Free` and is exactly
+what must never enter early data. Reading the existing branch as a
+precedent — "the replay path checks `retry_kind`, so admission can too" —
+is the mistake this paragraph exists to prevent.
 
 ### 3.6 The options, costed
 
