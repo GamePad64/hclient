@@ -388,11 +388,22 @@ in the type system (`http_ng::NoClock`), not by a runtime refusal. See
 `crates/http-ng/src/deadline.rs`, and `tests/deadline.rs` for the server
 that dribbles for ever.
 
-Two limits of it, both stated in the code rather than only here: a body
-that goes **completely silent** after the head is not cut by `total`
-(nothing polls the wrapper again, and the deadline holds no sleep of its
-own — see `Deadline`'s doc comment), which is `between_bytes`'s job, i.e.
-the middle bullet, now enforced by `http-ng-native`; and there is no
+This paragraph used to list two limits of it, and **the first has since
+been lifted twice over, by two different pieces of work in the same
+week**. It read: a body that goes **completely silent** after the head is
+not cut, because nothing polls the wrapper again and the deadline holds no
+sleep of its own — `Deadline`'s doc comment then explained why it could
+not have one without making every response body `!Send`. Both halves are
+gone. `Timer` gained an associated `Sleep` type, so `Deadline` now holds a
+`Pin<Box<Tm::Sleep>>` — a box around a *concrete* type, transparent to
+auto traits — and cuts the silent body itself; and `between_bytes` landed
+in `http-ng-native` (the middle bullet), which cuts the same shape one
+layer down and, unlike `total`, restarts on every frame. Neither makes the
+other redundant: `total` bounds the operation once, `between_bytes` bounds
+each gap, and a transfer that legitimately runs for an hour needs the
+second and not the first.
+
+What is left of the paragraph is the second limit, unchanged: there is no
 per-request override yet, only per-client — a `Client` handle with a
 different bound costs one `Arc` bump, which covers most of the same
 ground.

@@ -143,15 +143,25 @@ where
 /// separately by `within` in `Client::execute`, so a server that answers
 /// nothing at all is cut before this type exists.
 ///
-/// **This is still not `between_bytes`**, which stays declared `false` by
-/// `http-ng-native` (v0.2 W4's middle bullet), and the difference is not a
+/// **This is still not `between_bytes`**, and the difference is not a
 /// technicality: `between_bytes` bounds the GAP between two frames and
 /// restarts on each one, so it cuts a stall at any point in an
 /// arbitrarily long transfer. What is here bounds the operation once, from
 /// `Client::execute`'s entry; a body that produces a byte every 50 ms for
-/// an hour is fine by `between_bytes` and cut by this. A caller who needs
-/// the other one should read `Capabilities::timeouts` rather than assume
-/// `total` covers it.
+/// an hour is fine by `between_bytes` and cut by this, and a transfer that
+/// legitimately takes an hour and stalls for ten minutes in the middle is
+/// the reverse.
+///
+/// The sentence that used to end this paragraph — "which stays declared
+/// `false` by `http-ng-native` (v0.2 W4's middle bullet)" — is out of date:
+/// that middle bullet has since landed, and `http-ng-native` declares and
+/// enforces both `first_byte` and `between_bytes`
+/// (`http_ng_native::IdleTimeout`, a body wrapper holding a sleep of its
+/// own restarted on every frame). What has not changed is that the two
+/// bounds are different questions and neither implies the other, so a
+/// caller wanting the gap bounded must still ask for it — and must still
+/// read `Capabilities::timeouts` rather than assume, because it is a
+/// per-transport answer and the ambient backends give their own.
 ///
 /// ## Why the sleep is here now, when it once could not be
 ///
