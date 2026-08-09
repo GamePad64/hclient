@@ -152,10 +152,16 @@ fn content_length(head: &str) -> usize {
 
 /// A `POST` with a body, so a replay that lost the payload is visible in
 /// the recording rather than only in the status.
-fn post_payload<'c>(
-    c: &'c Client<NativeTransport>,
+///
+/// Generic over the clock, and it has to be: the budget test's client
+/// carries `Tokio`, the others carry `DefaultClock` — which is `Tokio` in
+/// an `--all-features` build and `NoClock` in a `--no-default-features`
+/// one, so a signature naming either concretely compiles in exactly one of
+/// the two builds `just test`/`just test-no-default` run.
+fn post_payload<'c, Tm: http_ng_core::unversioned::Timer + Clone>(
+    c: &'c Client<NativeTransport, Tm>,
     url: &str,
-) -> http_ng::RequestBuilder<'c, NativeTransport> {
+) -> http_ng::RequestBuilder<'c, NativeTransport, Tm> {
     c.post(url)
         .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
 }
@@ -292,6 +298,55 @@ fn the_replay_spends_what_is_left_of_the_total_rather_than_a_fresh_one() {
         seen.lock().expect("recorder lock").len(),
         2,
         "the replay did reach the server, and then the budget ended it"
+    );
+}
+
+// =====================================================================
+// The jar, which learns from a `425` without rewriting the replay.
+// =====================================================================
+
+/// A `Set-Cookie` on the `425` is stored — and the replay still goes out
+/// as the request the server asked to have repeated, without it.
+///
+/// Both halves are the decision, not an accident of ordering.
+/// `attach_cookies` runs once per hop, before the first attempt, so the two
+/// attempts of one hop carry the same headers; the cookie a `425` hands
+/// back reaches the next HOP, where the jar's per-hop rule derives it
+/// fresh. The alternative — re-deriving between two attempts of one hop —
+/// would make the replay a request the server never asked for, which is
+/// the opposite of what a retry is.
+#[cfg(feature = "cookies")]
+#[test]
+fn a_425_teaches_the_jar_without_rewriting_the_replay() {
+    const R425_COOKIE: &str =
+        "HTTP/1.1 425 Too Early\r\nSet-Cookie: k=v; Path=/\r\nContent-Length: 0\r\n\r\n";
+
+    let (addr, seen) = scripted_server(vec![R425_COOKIE, R200], Duration::ZERO);
+    let c = Client::builder(transport())
+        .cookie_jar(http_ng::cookie::CookieJar::new())
+        .build()
+        .expect("client");
+    let url = format!("http://{addr}/t");
+
+    let status = rt().block_on(guarded("a 425 carrying a cookie", async {
+        post_payload(&c, &url).send().await.expect("send").status()
+    }));
+    assert_eq!(status, 200);
+
+    let seen = seen.lock().expect("recorder lock");
+    assert_eq!(seen.len(), 2);
+    assert!(
+        !seen[1].to_ascii_lowercase().contains("\r\ncookie:"),
+        "the replay is the same request, not a new one built from the 425's answer: {:?}",
+        seen[1]
+    );
+    assert_eq!(
+        c.cookies()
+            .expect("this client has a jar")
+            .cookie_header(&url.parse().expect("uri"), std::time::SystemTime::now())
+            .map(|v| v.to_str().expect("ascii").to_owned()),
+        Some("k=v".to_owned()),
+        "the jar learned from the 425 all the same"
     );
 }
 
