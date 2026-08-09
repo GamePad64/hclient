@@ -275,6 +275,35 @@ async fn plaintext_http_is_refused_rather_than_silently_upgraded() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn capabilities_describe_this_implementation_not_the_protocol() {
+    // HTTP/3 does full duplex and streaming request bodies: a QUIC stream's
+    // two halves are independent. `execute` does neither — it writes the
+    // whole request body, then reads the head — and these two `false`s are
+    // therefore about this code and not about the protocol.
+    //
+    // The one that matters is `full_duplex`: over-claiming it costs a
+    // caller a deadlock rather than a degradation, which is the argument
+    // W3's floor rule is built on. Pinned here so that implementing duplex
+    // and forgetting to move the declaration is a red test, and so that
+    // moving the declaration without implementing it is one too.
+    let s = server::start(Behaviour::Echo);
+    let t = h3(&s.cert_der);
+    let c = t.capabilities();
+    assert!(
+        !c.full_duplex,
+        "execute writes the request body before reading the response head"
+    );
+    assert!(
+        !c.streaming_request_body,
+        "and it refuses a streaming body outright — see the test below"
+    );
+    // The two `true`s in the same set, so this is a description of the
+    // implementation rather than a habit of saying no.
+    assert!(c.response_trailers, "H3Body yields a trailers frame");
+    assert_eq!(c.connection_reuse, http_ng_core::ReuseSupport::Supported);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_streaming_request_body_is_refused_by_name() {
     // `Capabilities::streaming_request_body` is `false`, and this is what
     // makes that declaration cost something: the refusal is typed and names
