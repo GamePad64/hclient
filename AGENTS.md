@@ -362,9 +362,13 @@ attacker resend this" are different questions and only the caller can
 answer the second. The acceptance verdict is never a field: in QUIC it
 resolves *after* the response body (8.63 ms against 8.58 ms, measured), so
 it is a `Shared` future, and a rejection is replayed by the transport
-rather than surfaced. `425 Too Early` is the third failure path, is
-implemented nowhere, and has a test pinning that it reaches the caller
-untouched.
+rather than surfaced. `425 Too Early` is the third failure path and is not
+the transport's: a `425` leaves `http-ng-h3` untouched, with a test pinning
+it. Whoever writes the client-side retry owes one line back —
+`AllowEarlyData` must be removed from the replayed request, because the mark
+is part of the pool key, so a marked replay would ask for the early-data
+connection and, if that one has since been evicted, would go out in early
+data against the very server that refused to risk it.
 
 **Response decompression landed in v0.2 (W5), inside `Client` and behind
 the `gzip` and `brotli` features** (off by default, `json`'s precedent: a

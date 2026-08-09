@@ -396,8 +396,15 @@ pub enum EarlyDataSupport {
 /// handshake finishes — the transport's job, invisible to the caller), and
 /// **HTTP `425 Too Early`** (RFC 8470 §5.2), which arrives a full round
 /// trip later and must be retried *not* in early data. The third is a
-/// status-code branch in the client, not in a transport, and as of v0.3 it
-/// is **not implemented anywhere** — see `http_ng_h3::early`.
+/// status-code branch in the client, not in a transport.
+///
+/// **A retry built for a `425` must remove this extension from the request
+/// it replays.** RFC 8470 requires it, and it is not a formality: on
+/// `http-ng-h3` this mark is part of the connection pool's key, so a
+/// replay that kept it would ask for the early-data connection and — if
+/// that one has been evicted or closed since — would open a fresh one and
+/// go out in early data again, to the server that just refused to risk it.
+/// See `http_ng_h3::early`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllowEarlyData;
 
