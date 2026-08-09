@@ -777,6 +777,54 @@ the bundled Rust implementation everywhere else. That is an implementation
 detail rather than a behaviour change, which is what makes it worth doing —
 and it is the opposite of what a naive `IdnToAscii` binding would be.
 
+### Wired: `http-ng-proto`'s `idn` feature is `http-ng-idn`
+
+The crate stood built and reached by nothing for as long as the wiring
+was a *behaviour* decision — on a machine with no system ICU, a non-ASCII
+host would have stopped converting. The sidebar above is what made it a
+non-decision: Linux and the other ELF unixes take the bundled `idna`, so
+the machine with no ICU is exactly the machine that keeps the tables.
+
+`crates/http-ng-proto/Cargo.toml` now has `idn = ["dep:http-ng-idn"]` and
+no `idna` at all; `uri::host_to_ascii` calls
+`http_ng_idn::domain_to_ascii`. The feature keeps its name and its place
+in `default`, and `http-ng`'s forwarding `idn` feature is untouched.
+
+**Measured rather than argued, because "no behaviour change" is the whole
+claim:**
+
+- The 96-pair corpus in `crates/http-ng-proto/tests/uri_resolution.rs` is
+  unchanged and green in both settings of `idn` — 133 tests with it on,
+  126 with it off. Its seven U-label rows pin the A-label `url` produces,
+  and `url` reaches `idna` by its own route, so those rows are a
+  differential and not a self-comparison.
+- `http_ng_idn::domain_to_ascii` against `idna::domain_to_ascii_cow(…,
+  AsciiDenyList::URL)` over 9,739 inputs (every string of up to three
+  characters over an alphabet chosen for the edges — ASCII deny-list
+  bytes, `xn`, a hyphen, a dot, U+00FC, U+00DF, ZWJ, an RTL letter, a CJK
+  letter, a combining mark, DEL, space — plus the real-world shapes):
+  **0 differences**, `backend = Bundled`. A one-off measurement, not a
+  committed test: on a target with the bundled backend the two sides are
+  the same function, and a test asserting that would only assert that
+  `cfg` still works.
+- `cargo tree -e normal` for `http-ng-proto`, unique crates: **37** with
+  `idn` on x86-64 Linux (36 before, plus `http-ng-idn` itself — its only
+  normal dependencies are `idna` and `thiserror`, both already there),
+  **13** on `x86_64-pc-windows-msvc`, **15** on `aarch64-apple-darwin`,
+  **10** with the feature off.
+
+**The error mapping is the one place a decision had to be made**, because
+`IdnError` has two variants where `uri.rs` had one code path.
+`IdnError::NotAnIdn` becomes `UriError::NotAnIdn` and
+`IdnError::NoImplementation` becomes `UriError::NonAsciiHost` — the split
+being "did an implementation run at all", which is also why the
+`#[non_exhaustive]` wildcard falls on the `NotAnIdn` side: a variant added
+later is a refusal reason, and "no implementation at all" is not something
+there can be a second of. `NonAsciiHost`'s message had to change with it:
+it is now reachable with the feature ON — on Windows or Apple, where the
+backend is the OS's and the OS did not supply one — so it can no longer
+say the feature is what is missing.
+
 **Whatever is built must have a differential test against the bundled
 implementation on a shared corpus.** The whole claim is that the two agree;
 an untested claim of agreement between two IDNA implementations is exactly
