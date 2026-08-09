@@ -54,7 +54,7 @@
 //!   site — and they are the three things the *Contract* section below
 //!   shows are easy to get individually wrong.
 //! - **the corpus.** `tests/differential.rs` pins both implementations'
-//!   answers on 32 rows; that is what makes "the platform agrees" a
+//!   answers on 40 rows; that is what makes "the platform agrees" a
 //!   measurement rather than a hope, and it is shared by every target.
 //! - **a typed error and an honest [`Backend`]**, instead of a `bool`
 //!   from a conversion that silently did something else.
@@ -240,7 +240,7 @@
 //! - **The corpus, per platform, in CI.** `tests/differential.rs` runs
 //!   the platform backend against `idna` — a dev-dependency, so it is
 //!   there on exactly the targets where the tables are not — and pins
-//!   both answers on all 32 rows. A divergence is a red build on the
+//!   both answers on all 40 rows. A divergence is a red build on the
 //!   platform that has it, which is where the answer differs.
 //! - **The load-time acceptance probe** in `icu.rs`: a library that does
 //!   not answer the transitional pair correctly is not used at all, and
@@ -706,7 +706,7 @@ pub mod testing {
     ///
     /// One name for both backends on purpose: `tests/differential.rs`
     /// then contains no `#[cfg]` choosing between Windows and Apple, and
-    /// the same 32 rows are the acceptance for both.
+    /// the same 40 rows are the acceptance for both.
     ///
     /// # Errors
     /// As [`super::domain_to_ascii`].

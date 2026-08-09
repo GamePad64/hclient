@@ -19,7 +19,7 @@ libfuzzer-sys = "0.4"
 # target with the bundled backend `domain_to_ascii` *is*
 # `idna::domain_to_ascii_cow`, so comparing the two would be comparing
 # `idna` with itself — a fuzzer that cannot fail. The differential claim is
-# the corpus's job (`tests/differential.rs`, 32 rows against a real ICU
+# the corpus's job (`tests/differential.rs`, 40 rows against a real ICU
 # 78.2), and it belongs there because it needs a platform backend to mean
 # anything.
 http-ng-idn = { path = ".." }

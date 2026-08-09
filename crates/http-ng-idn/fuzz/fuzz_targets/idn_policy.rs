@@ -4,7 +4,7 @@
 //! `domain_to_ascii` against `idna` would be comparing `idna` with itself
 //! on every target that has the bundled backend — which is every target a
 //! fuzzing runner is likely to be — so it could not fail. That claim is
-//! the corpus's, in `tests/differential.rs`, where it is 32 rows measured
+//! the corpus's, in `tests/differential.rs`, where it is 40 rows measured
 //! against a real ICU 78.2 and where it needs a platform backend to mean
 //! anything at all.
 //!

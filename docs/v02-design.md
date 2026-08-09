@@ -739,7 +739,7 @@ and it is the opposite of what a naive `IdnToAscii` binding would be.
 implementation on a shared corpus.** The whole claim is that the two agree;
 an untested claim of agreement between two IDNA implementations is exactly
 the kind of thing that is false in the tail. Built:
-`crates/http-ng-idn/tests/differential.rs`, 32 rows, both answers pinned per
+`crates/http-ng-idn/tests/differential.rs`, 40 rows, both answers pinned per
 row, zero divergences.
 
 ---

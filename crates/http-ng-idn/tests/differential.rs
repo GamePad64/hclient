@@ -18,9 +18,18 @@
 //!
 //! - **`idna_says`** runs everywhere, on every target, because `idna` is
 //!   a dev-dependency of this crate rather than a feature of it.
-//! - **`icu_says`** runs only where a system ICU was found:
-//!   `libicuuc.so.NN` on Linux, `icuuc.dll` on Windows, nowhere on macOS
-//!   or wasm (see the crate docs).
+//! - **`icu_says`** runs only where a platform backend was compiled in
+//!   AND accepted: `icuuc.dll` on Windows, Foundation on Apple, nowhere
+//!   on Linux or wasm (see the crate docs — the ELF `dlopen` backend was
+//!   removed on purpose).
+//!
+//! Its name is older than the second backend and is kept: the column is
+//! one column, and it being one column is the point — the same rows are
+//! the acceptance for both platforms, and `src/policy.rs` is what makes
+//! that possible, because it takes over everything the two do
+//! differently. The one family where they are expected to differ is not
+//! in the table at all; see
+//! [`where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently`].
 //!
 //! So a green run of this file on a machine with no ICU proves nothing at
 //! all about the platform column, and saying "the corpus passes" without
@@ -101,6 +110,10 @@ const CORPUS: &[Case] = &[
     Case { what: "the plain IDN case", input: "münchen.de", idna_says: Some("xn--mnchen-3ya.de"), icu_says: Some("xn--mnchen-3ya.de") },
     Case { what: "upper-case non-ASCII: case folding happens before punycode", input: "MÜNCHEN.de", idna_says: Some("xn--mnchen-3ya.de"), icu_says: Some("xn--mnchen-3ya.de") },
     Case { what: "an input that is already an A-label: must be a no-op", input: "xn--mnchen-3ya.de", idna_says: Some("xn--mnchen-3ya.de"), icu_says: Some("xn--mnchen-3ya.de") },
+    Case { what: "upper-case ACE prefix: case folding runs BEFORE `xn--` is recognised, or this is not an A-label at all", input: "XN--MNCHEN-3YA.DE", idna_says: Some("xn--mnchen-3ya.de"), icu_says: Some("xn--mnchen-3ya.de") },
+    Case { what: "the A-label of a DEVIATION name: a transitional platform re-encodes it to `strasse.de`, i.e. another origin", input: "xn--strae-oqa.de", idna_says: Some("xn--strae-oqa.de"), icu_says: Some("xn--strae-oqa.de") },
+    Case { what: "an A-label beside a U-label: both come back as A-labels, and the first must come back byte for byte", input: "xn--mnchen-3ya.münchen.de", idna_says: Some("xn--mnchen-3ya.xn--mnchen-3ya.de"), icu_says: Some("xn--mnchen-3ya.xn--mnchen-3ya.de") },
+    Case { what: "IDEOGRAPHIC FULL STOP: a label separator that is not `.`, and the row that fails if only `.` is split on", input: "a\u{3002}b", idna_says: Some("a.b"), icu_says: Some("a.b") },
     Case { what: "all-ASCII", input: "example.com", idna_says: Some("example.com"), icu_says: Some("example.com") },
     Case { what: "upper-case ASCII: lower-cased, NOT passed through", input: "EXAMPLE.COM", idna_says: Some("example.com"), icu_says: Some("example.com") },
     Case { what: "two non-ASCII labels, non-Latin script", input: "例え.テスト", idna_says: Some("xn--r8jz45g.xn--zckzah"), icu_says: Some("xn--r8jz45g.xn--zckzah") },
@@ -124,11 +137,15 @@ const CORPUS: &[Case] = &[
     Case { what: "space: the glyphless half of the deny list", input: "a b.com", idna_says: None, icu_says: None },
     Case { what: "NUL: the other end of the glyphless range, and no NUL terminator is involved", input: "a\u{0}b.com", idna_says: None, icu_says: None },
     Case { what: "underscore: allowed by the URL list, DENIED by STD3 — the row that fails if UIDNA_USE_STD3_RULES is ever set", input: "a_b.com", idna_says: Some("a_b.com"), icu_says: Some("a_b.com") },
+    Case { what: "a quote: allowed by the WHATWG deny list, forbidden in an RFC 3986 `reg_name` — so a URL parser refuses it and only the ASCII short-circuit can answer it", input: "a\"b.com", idna_says: Some("a\"b.com"), icu_says: Some("a\"b.com") },
     Case { what: "fullwidth solidus: MAPS to `/`, so only a scan of the OUTPUT can catch it", input: "a\u{ff0f}b.de", idna_says: None, icu_says: None },
     Case { what: "a denied byte inside an A-label: punycode copies basic code points literally", input: "xn--%-0fa.de", idna_says: None, icu_says: None },
 
     // ── Rejections that must stay rejections ──────────────────────────
     Case { what: "an `xn--` label that is not valid punycode", input: "xn--zzzz.test", idna_says: None, icu_says: None },
+    Case { what: "the shortest invalid `xn--` label, and the one browsers accept — see docs/icu-ecosystem-survey.md", input: "xn--a.de", idna_says: None, icu_says: None },
+    Case { what: "`xn--` with nothing after it at all", input: "xn--.de", idna_says: None, icu_says: None },
+    Case { what: "an ACE label whose punycode is valid and decodes to ASCII alone: UIDNA_ERROR_INVALID_ACE_LABEL, which is NOT the decoder's refusal but the layer above it", input: "xn--a-.de", idna_says: None, icu_says: None },
     Case { what: "a leading combining mark", input: "\u{301}abc.de", idna_says: None, icu_says: None },
     // Written into the corpus as `None`/`None` on the assumption that
     // emoji are disallowed — IDNA2008 does disallow them. Both
@@ -238,7 +255,7 @@ fn the_divergences_from_idna_are_exactly_the_documented_ones() {
     );
     assert_eq!(
         CORPUS.len(),
-        32,
+        40,
         "a corpus row was added or removed without the divergence list being reconsidered"
     );
 }
@@ -270,34 +287,137 @@ fn the_platform_column_is_not_silently_empty() {
 /// hoped for. A `SystemIcu` over a library that is not there, or a
 /// `Bundled` while ICU is doing the work, is the "capability that lies"
 /// this project keeps catching.
+/// Both platform variants are here, and each asserts two things rather
+/// than one: that a backend was actually accepted at run time, and that
+/// the variant names the backend *this build compiled in*. The second is
+/// what makes the variant mean something — without it a `SystemFoundation`
+/// reported by a Windows build would pass, and "the reported backend is
+/// the one that answers" would only be checking that some backend
+/// answered.
+///
+/// The wildcard arm below stays, and it is not decoration: [`Backend`] is
+/// `#[non_exhaustive]` and this is a different crate, so a variant added
+/// tomorrow lands there. It has already done its job once — `Backend`
+/// gained `SystemFoundation` and this test said so by name.
 #[cfg(any(icu_backend, foundation_backend))]
 #[test]
 fn the_reported_backend_is_the_one_that_answers() {
     use http_ng_idn::Backend;
     let reported = testing::selected();
-    let has_icu = testing::platform_name().is_some();
+    let has_platform = testing::platform_name().is_some();
     match reported {
-        Backend::SystemIcu => assert!(has_icu, "reports SystemIcu with no library accepted"),
+        Backend::SystemIcu => {
+            assert!(
+                cfg!(icu_backend),
+                "reports SystemIcu in a build with no ICU backend compiled in — `backend()`'s \
+                 resolution and `build.rs`'s target predicate have drifted apart"
+            );
+            assert!(has_platform, "reports SystemIcu with no library accepted");
+        }
+        Backend::SystemFoundation => {
+            assert!(
+                cfg!(foundation_backend),
+                "reports SystemFoundation in a build with no Foundation backend compiled in — \
+                 `backend()`'s resolution and `build.rs`'s target predicate have drifted apart"
+            );
+            assert!(
+                has_platform,
+                "reports SystemFoundation while nothing was accepted — on Apple the backend is \
+                 linked, so the only way to get here is the acceptance gate having refused \
+                 Foundation on `straße.de`, and then `None` is the honest answer"
+            );
+        }
         Backend::None => assert!(
-            !has_icu,
-            "reports None while an ICU was accepted — this build has no bundled fallback, so \
-             `None` and a live library at once is a straight contradiction"
+            !has_platform,
+            "reports None while a platform backend was accepted — this build has no bundled \
+             fallback, so `None` and a live backend at once is a straight contradiction"
         ),
         Backend::Bundled => panic!(
-            "reports Bundled in a build compiled with `icu_backend` and no `idna` at all: the \
-             tables are not here to fall back to"
+            "reports Bundled in a build compiled with a platform backend and no `idna` at all: \
+             the tables are not here to fall back to"
         ),
         other => {
             panic!("a new Backend variant, {other:?}, with nothing here deciding what it means")
         }
     }
-    // And the public entry point agrees: `backend()` claiming an ICU
+    // And the public entry point agrees: `backend()` claiming a platform
     // while `domain_to_ascii` cannot convert would be the same lie told
     // one level down.
     assert_eq!(
-        has_icu,
+        has_platform,
         http_ng_idn::domain_to_ascii("münchen.de").as_deref() == Ok("xn--mnchen-3ya.de"),
         "`backend()` and `domain_to_ascii` disagree about whether this build can convert"
+    );
+}
+
+/// **Where this crate is stricter than `idna`, it must REFUSE — never
+/// answer a different host.**
+///
+/// The corpus above pins inputs whose answer is known on both sides. This
+/// pins the family whose answer is not: a name with a non-ASCII label that
+/// also trips one of the six `UIDNAInfo.errors` bits `IGNORED_ERRORS`
+/// masks. `idna` accepts every one of them, and Apple's Foundation —
+/// whose `shouldAllow(_:encodeToASCII: true)` in `URLParser+ICU.swift`
+/// allows no error bit at all, `allowedErrors = 0` — is expected to refuse
+/// them. Nothing in `policy.rs` can repair that: Foundation answers nil
+/// rather than a reason, which is `foundation.rs`'s consequence 3, and the
+/// six bits are exactly the ones this crate has to ignore to agree with
+/// `idna`.
+///
+/// They are not corpus rows because a corpus row pins ONE answer for a
+/// platform column that Windows and Apple share, and here the two
+/// platforms are expected to differ. What is shared, and is asserted, is
+/// the property that matters: the disagreement is a refusal. A third
+/// answer would be a different host — the defect this whole crate exists
+/// to prevent — where a refusal is only a name the caller must spell as an
+/// A-label itself.
+///
+/// Every row prints what actually happened, so the macOS and Windows runs
+/// *report* which of the two it was instead of leaving it to be predicted
+/// from Apple's source.
+#[cfg(any(icu_backend, foundation_backend))]
+#[test]
+fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_differently() {
+    const STRICTER: &[(&str, &str)] = &[
+        ("-münchen.de", "UIDNA_ERROR_LEADING_HYPHEN, masked here"),
+        ("münchen-.de", "UIDNA_ERROR_TRAILING_HYPHEN, masked here"),
+        ("ab--cd.münchen", "UIDNA_ERROR_HYPHEN_3_4, masked here"),
+        ("münchen..de", "UIDNA_ERROR_EMPTY_LABEL, masked here"),
+        (".münchen.de", "UIDNA_ERROR_EMPTY_LABEL, leading"),
+        ("münchen.de.", "the root label, beside a non-ASCII one"),
+        (
+            "müncheeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeen.de",
+            "UIDNA_ERROR_LABEL_TOO_LONG once encoded, masked here",
+        ),
+        (
+            "a\"ü.de",
+            "the A-label keeps the quote, which RFC 3986's reg_name forbids",
+        ),
+    ];
+    let Some(lib) = testing::platform_name() else {
+        println!("no platform backend accepted here — nothing to compare");
+        return;
+    };
+    let mut wrong = Vec::new();
+    for (input, why) in STRICTER {
+        let oracle = idna_says(input);
+        let ours = testing::platform(input)
+            .expect("the backend was found a line ago")
+            .ok();
+        println!("  {input:?} ({why}): `idna` {oracle:?}, {lib} {ours:?}");
+        if ours.is_some() && ours != oracle {
+            wrong.push(format!(
+                "  {input:?}: `idna` says {oracle:?} and {lib} says {ours:?} — a THIRD host, \
+                 not a refusal"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} inputs came back as a host that is neither `idna`'s answer nor an error:\n{}",
+        wrong.len(),
+        STRICTER.len(),
+        wrong.join("\n")
     );
 }
 
