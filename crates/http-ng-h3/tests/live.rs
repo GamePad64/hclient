@@ -372,3 +372,152 @@ async fn a_streaming_request_body_is_refused_by_name() {
     assert!(err.is_unsupported(), "{err}");
     assert!(err.to_string().contains("streaming_request_body"), "{err}");
 }
+
+// ── `Timeouts::connect`, declared and enforced in the same change ───────
+//
+// `docs/v03-acceptance.md` recorded "no timeouts" as deliberate, with
+// `connect` named as the cheapest one and deliberately not added, because
+// v0.2 W4's rule puts a declaration and its enforcement in one commit. This
+// is that commit, and these are its halves.
+
+/// A UDP port that is bound and answers nothing. The socket is returned so
+/// that the caller keeps it alive for the length of the test.
+///
+/// **Held rather than merely picked, and on this kernel that makes no
+/// measurable difference** — which is worth writing down, because the
+/// obvious justification for holding it is not one this suite can produce.
+/// The argument would be that a datagram to a port nobody holds draws an
+/// ICMP port-unreachable, which quinn could turn into a prompt connection
+/// error, making an "unused port" fixture measure an error path rather than
+/// a silence. Mutated and run: dropping the socket and keeping the address
+/// leaves all three tests below green on this Linux runner, so nothing here
+/// is delivering that ICMP to quinn.
+///
+/// The socket stays anyway, as a portability precaution named as such. The
+/// arm that would break if some platform *did* deliver it is the control,
+/// [`without_the_bound_the_same_handshake_is_still_going`] — a prompt error
+/// there turns a control into a flake, on a runner nobody is watching. Two
+/// lines is a cheap way not to find that out on macOS.
+fn black_hole() -> (std::net::UdpSocket, std::net::SocketAddr) {
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+    let addr = sock.local_addr().expect("local_addr");
+    (sock, addr)
+}
+
+/// How long the bounded arm is given, and the unit the control's window is
+/// a multiple of.
+const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_millis(300);
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
+    let (_hole, addr) = black_hole();
+    // A certificate with no server behind it: nothing here gets far enough
+    // to check one, and starting a server would give the handshake
+    // something to complete against.
+    let id = server::identity();
+    let t = h3(&id.cert_der);
+
+    let mut req = get(addr, "/x");
+    req.extensions_mut().insert(http_ng_core::Timeouts {
+        connect: Some(CONNECT_BOUND),
+        ..Default::default()
+    });
+
+    let started = std::time::Instant::now();
+    let err = t
+        .execute(req)
+        .await
+        .expect_err("nothing answers on that port");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        *err.kind(),
+        http_ng_core::ErrorKind::Timeout(http_ng_core::Phase::Connect),
+        "the phase has to be readable without parsing a message: {err}"
+    );
+    assert_eq!(
+        std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<http_ng_h3::ConnectTimedOut>()),
+        Some(&http_ng_h3::ConnectTimedOut(CONNECT_BOUND)),
+        "and the bound that was in force has to be readable off the source rather than \
+         reconstructed from the caller's own copy: {err}"
+    );
+    assert!(
+        elapsed < CONNECT_BOUND * 4,
+        "the bound must be what ended this, not quinn's own idle timeout: {elapsed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_bound_the_same_handshake_is_still_going() {
+    // The control, and the half that gives the test above its meaning: the
+    // same black hole, the same transport, one difference — no `Timeouts`
+    // in the extensions. Without it, "it failed after 300 ms" would equally
+    // be what a handshake that fails on its own in 300 ms looks like, and
+    // the bound would be measuring nothing.
+    //
+    // Four times the bound, so the two windows cannot overlap on a loaded
+    // runner. The wait is real time in the suite, and it is what a control
+    // costs here.
+    let (_hole, addr) = black_hole();
+    let id = server::identity();
+    let t = h3(&id.cert_der);
+
+    let outcome = tokio::time::timeout(CONNECT_BOUND * 4, t.execute(get(addr, "/x"))).await;
+    assert!(
+        outcome.is_err(),
+        "an unbounded handshake against a black hole must still be waiting when the bounded \
+         one has already given up; it finished instead"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_may_now_set_a_connect_timeout_over_h3() {
+    // The caller-visible half, and the reason the capability had to move in
+    // the same change: `check_timeouts_supported` refuses a `connect`
+    // timeout at `build()` against a transport declaring
+    // `timeouts.connect == false`, so before this commit these lines were
+    // an `UnsupportedCapability` rather than a timeout.
+    let (_hole, addr) = black_hole();
+    let id = server::identity();
+    let client = http_ng::Client::builder(h3(&id.cert_der))
+        .timeouts(http_ng::Timeouts {
+            connect: Some(CONNECT_BOUND),
+            ..Default::default()
+        })
+        .build()
+        .expect("the capability is declared, so the builder must accept the setting");
+
+    let err = client
+        .get(&format!("https://{addr}/x"))
+        .send()
+        .await
+        .expect_err("nothing answers on that port");
+    assert_eq!(
+        *err.kind(),
+        http_ng_core::ErrorKind::Timeout(http_ng_core::Phase::Connect),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn h3_declares_the_timeouts_it_enforces_and_no_others() {
+    // The declaration pinned beside the measurement, the shape
+    // `capabilities_describe_the_implementation_not_the_protocol` above
+    // uses for `full_duplex`: turning `connect` back off would put the two
+    // tests above out of a `Client`'s reach and otherwise leave a green
+    // suite, and turning either of the other two on would claim a bound
+    // nothing in `execute` applies.
+    let id = server::identity();
+    let t = h3(&id.cert_der);
+    let c = t.capabilities().timeouts;
+    assert!(c.connect, "enforced in `execute`, measured above");
+    assert!(
+        !c.first_byte,
+        "nothing bounds `one_attempt`; declaring this would be a silent no-op"
+    );
+    assert!(
+        !c.between_bytes,
+        "`H3Body` holds no sleep; declaring this would be a silent no-op"
+    );
+}

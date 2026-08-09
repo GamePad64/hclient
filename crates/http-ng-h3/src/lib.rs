@@ -78,9 +78,9 @@ pub use runtime::QuinnTask;
 
 use bytes::Bytes;
 use http_ng_core::{
-    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind,
-    RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, TlsSupport, UpgradeSupport,
-    unversioned::Transport,
+    CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
+    RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
+    UpgradeSupport, unversioned::Transport,
 };
 use http_ng_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use http_ng_tls::TlsConfigId;
@@ -247,9 +247,11 @@ where
     ///   capability has to come from the component that knows.
     /// - `version_reported: true`, `version_select: false` — this transport
     ///   speaks exactly one version and has nothing to select.
-    /// - `timeouts`: all three `false`, honestly. `connect` is the one that
-    ///   would be cheapest to add and it is not added, because declaring it
-    ///   and enforcing it belong in the same change.
+    /// - `timeouts`: `connect` is `true` and enforced in `execute` — it
+    ///   bounds resolution, the QUIC handshake and h3's settings exchange
+    ///   together, the same scope `http-ng-native` gives the same setting.
+    ///   `first_byte` and `between_bytes` stay `false`, and the comment on
+    ///   [`capabilities`] says what each of them would cost.
     pub fn new(rt: R, tls: T, dns: D) -> Result<Self, Error> {
         let early_data = if tls.offers_early_data() {
             EarlyDataSupport::Supported
@@ -331,11 +333,24 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
     // One version, nothing to select, and `Response::version()` reports it.
     c.version_select = false;
     c.version_reported = true;
-    // All three honestly `false`. `connect` would be the cheapest to add
-    // and is not added, because a declaration and its enforcement belong in
-    // the same change.
+    // `connect` is declared and enforced in the same change, which is v0.2
+    // W4's rule and the reason it was `false` until now rather than
+    // "cheapest to add" and added: `execute` reads `Timeouts::connect` from
+    // the request's extensions and races the whole
+    // resolve-plus-QUIC-plus-h3-handshake against `Timer::sleep`, ending in
+    // `ErrorKind::Timeout(Phase::Connect)` with a `ConnectTimedOut` source.
+    // `tests/live.rs` measures it against a UDP black hole, with the
+    // control that must still be waiting when the bounded one has already
+    // given up.
+    //
+    // The other two stay honestly `false`. Neither is a line of code away:
+    // `first_byte` would have to bound `one_attempt` and then decide what a
+    // 0-RTT replay does to the budget, and `between_bytes` needs a body
+    // wrapper holding a sleep, the shape `http_ng_native::IdleTimeout` has.
+    // Declaring either without that is the silent no-op this field exists
+    // to make impossible.
     c.timeouts = TimeoutSupport {
-        connect: false,
+        connect: true,
         first_byte: false,
         between_bytes: false,
     };
@@ -636,14 +651,49 @@ where
             return Err(early::refuse_early_data("http-ng-h3"));
         }
 
-        let addr = self.resolve(&host, port).await?;
-        let key = PoolKey {
-            host,
-            port,
-            tls: self.tls.config_id(),
-            early_data: wants_early,
+        // `Timeouts` is read field by field, from a copy, and never branched
+        // on as a whole — `Transport::execute`'s doc comment states the
+        // reading literally, and "presence is not intent" is what it means:
+        // an extension carrying only `first_byte` must not be read as a
+        // request for a `connect` bound, nor its absence as a refusal.
+        // Only `connect` is honoured here; the other two are declared
+        // `false` and would be silent no-ops, which is the defect this
+        // whole channel exists to prevent.
+        let timeouts = req
+            .extensions()
+            .get::<Timeouts>()
+            .copied()
+            .unwrap_or_default();
+
+        // Everything between "a URI" and "a connection that can carry a
+        // request" — address resolution, the QUIC handshake, and h3's own
+        // settings exchange on top of it — under one bound.
+        //
+        // The same scope `http-ng-native` gives `connect`, deliberately:
+        // there `with_connect_timeout` wraps `connect::connect`, which is
+        // DNS plus the TCP race plus the TLS handshake. A portable setting
+        // that meant "DNS included" on one transport and "handshake only"
+        // on another would be a capability that lies in the most tiresome
+        // way — by being true.
+        //
+        // A pooled checkout does no I/O at all, so it is inside the bound
+        // for want of a reason to write a second path rather than because
+        // it needs one: `checkout` returns a live `SendRequest` clone
+        // without awaiting anything the timer could beat.
+        let connect = async {
+            let addr = self.resolve(&host, port).await?;
+            let key = PoolKey {
+                host,
+                port,
+                tls: self.tls.config_id(),
+                early_data: wants_early,
+            };
+            self.checkout(&key, addr).await
         };
-        let (mut send, zero_rtt) = self.checkout(&key, addr).await?;
+        let (mut send, zero_rtt) = match timeouts.connect {
+            Some(d) => within_connect(&self.rt, d, connect).await?,
+            None => connect.await?,
+        };
 
         let (parts, body) = req.into_parts();
         // Taken before the first attempt, because after it the body is
@@ -707,6 +757,48 @@ where
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
+}
+
+/// The failure [`within_connect`] ends in when the timer wins.
+///
+/// A named type rather than a string, for the reason
+/// `http_ng_native::FirstByteTimedOut` gives: a caller must be able to tell
+/// the phases apart with `Error::source().downcast_ref()`, and to read the
+/// bound that was actually in force rather than parse it back out of a
+/// message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no HTTP/3 connection within the connect timeout of {0:?}")]
+pub struct ConnectTimedOut(pub std::time::Duration);
+
+/// Races `fut` against `rt.sleep(d)`, and reports `ErrorKind::
+/// Timeout(Phase::Connect)` if the sleep wins.
+///
+/// `poll_fn` polling both arms by hand rather than a `select` combinator,
+/// and **`fut` first**, which is the part that is a decision rather than a
+/// style: a handshake that completed in the same wake as the timer expiring
+/// is a handshake that completed. The opposite order turns every bound into
+/// a race the caller loses at the boundary. The same ordering rule as
+/// `http_ng_native::with_connect_timeout` and `http_ng::within`.
+async fn within_connect<R, F, T>(rt: &R, d: std::time::Duration, fut: F) -> Result<T, Error>
+where
+    R: Timer,
+    F: Future<Output = Result<T, Error>>,
+{
+    let mut fut = std::pin::pin!(fut);
+    let mut sleep = std::pin::pin!(rt.sleep(d));
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(r) = fut.as_mut().poll(cx) {
+            return std::task::Poll::Ready(r);
+        }
+        if sleep.as_mut().poll(cx).is_ready() {
+            return std::task::Poll::Ready(Err(Error::new(
+                ErrorKind::Timeout(Phase::Connect),
+                ConnectTimedOut(d),
+            )));
+        }
+        std::task::Poll::Pending
+    })
+    .await
 }
 
 #[cfg(test)]
