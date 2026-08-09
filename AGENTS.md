@@ -429,11 +429,27 @@ requests and the caller getting the second `425`, and a 600 ms bound
 against 400 ms answers ending in `Timeout(Total)` with two requests on the
 server.
 
-Two things worth knowing before touching the neighbourhood. **No transport
-here can put a request into early data yet** (HTTP/3 is not in this tree),
-so "the replay is not in early data" holds vacuously today; what the code
-carries is the invariant and the exact site the future admission mark must
-be stripped at. And **`RetryKind` answers only half of what 0-RTT needs**:
+Two things worth knowing before touching the neighbourhood. **The replay
+is not yet stripped of its early-data mark, and that duty stopped being
+vacuous when HTTP/3 landed.** This paragraph read "no transport here can
+put a request into early data yet (HTTP/3 is not in this tree)" when it was
+written, and both halves were true of the branch it was written on; the two
+branches merged in the other order. `http-ng-h3` offers early data for a
+request carrying `http_ng_core::AllowEarlyData`, so `Client::run`'s `425`
+branch owes RFC 8470 §5.2 one line — `hp.extensions.remove::<AllowEarlyData>()`
+before `send_hop` — and does not yet pay it. The site is marked in
+`client.rs` with the comment that predicted it.
+
+It is worth knowing *why* the gap is real rather than theoretical, because
+the obvious argument says otherwise: by the time a `425` comes back the
+handshake completed long ago, and streams opened afterwards are 1-RTT
+whatever the request asks for. True — of the connection `http-ng-h3`
+happens to still have pooled. The mark is part of that pool's key, so a
+marked replay asks for the early-data connection *specifically*; if that
+entry has been evicted, closed by the peer or timed out, the replay opens a
+**fresh** connection and `into_0rtt` puts it back into early data, against
+the server that just refused to risk one. And **`RetryKind` answers only
+half of what 0-RTT needs**:
 "can I send this again" is the whole question for a `425` — the server
 asked for the repeat — but admission into early data also asks "may an
 attacker send this again", which is method safety, a notion this codebase
