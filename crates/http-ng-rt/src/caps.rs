@@ -23,9 +23,158 @@ pub struct TcpOpts {
     pub reuse_address: bool,
 }
 
+/// Which of [`TcpOpts`]' six fields a runtime can actually apply.
+///
+/// One `bool` per field of `TcpOpts`, not a count and not a bitflags crate:
+/// the error a caller gets has to name the option it asked for, and a
+/// field-per-field mirror is the only shape that can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpOptsSupport {
+    pub nodelay: bool,
+    pub keepalive: bool,
+    pub local_address: bool,
+    pub send_buffer_size: bool,
+    pub recv_buffer_size: bool,
+    pub reuse_address: bool,
+}
+
+impl TcpOptsSupport {
+    /// Everything applied — what a runtime that hands the whole set to a
+    /// `socket2::Socket` says. Both shipped runtimes do exactly that.
+    pub const ALL: Self = Self {
+        nodelay: true,
+        keepalive: true,
+        local_address: true,
+        send_buffer_size: true,
+        recv_buffer_size: true,
+        reuse_address: true,
+    };
+    /// Nothing applied — the default for [`TcpConnect::APPLIES`], and the
+    /// conservative base a runtime turns individual fields on from.
+    pub const NONE: Self = Self {
+        nodelay: false,
+        keepalive: false,
+        local_address: false,
+        send_buffer_size: false,
+        recv_buffer_size: false,
+        reuse_address: false,
+    };
+}
+
+/// The caller set socket options this runtime cannot apply.
+///
+/// Carried inside an [`std::io::Error`] with
+/// [`ErrorKind::Unsupported`](std::io::ErrorKind::Unsupported) by
+/// [`TcpOpts::reject_unsupported`], and reachable again through
+/// `io::Error::get_ref().downcast_ref()`.
+///
+/// `Display` names **every** offending option, not just the first: a caller
+/// who set two unappliable options and fixed the one the message mentioned
+/// would otherwise get a second, identical-looking failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedTcpOpts {
+    /// `true` where the caller asked for an option the runtime does not
+    /// apply — i.e. set in [`TcpOpts`] and absent from
+    /// [`TcpConnect::APPLIES`].
+    missing: TcpOptsSupport,
+}
+
+impl UnsupportedTcpOpts {
+    /// The offending option names, in [`TcpOpts`]' own field order.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> {
+        let m = self.missing;
+        [
+            ("nodelay", m.nodelay),
+            ("keepalive", m.keepalive),
+            ("local_address", m.local_address),
+            ("send_buffer_size", m.send_buffer_size),
+            ("recv_buffer_size", m.recv_buffer_size),
+            ("reuse_address", m.reuse_address),
+        ]
+        .into_iter()
+        .filter_map(|(name, missing)| missing.then_some(name))
+    }
+}
+
+// Hand-written rather than `thiserror`: the message is a computed list, so
+// the derive would buy nothing, and this way the names are written straight
+// into the formatter instead of through an intermediate `String`.
+impl std::fmt::Display for UnsupportedTcpOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "this runtime cannot apply these TCP socket options, and does not ignore them:",
+        )?;
+        for (i, name) in self.names().enumerate() {
+            f.write_str(if i > 0 { ", " } else { " " })?;
+            f.write_str(name)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for UnsupportedTcpOpts {}
+
+impl TcpOpts {
+    /// Fail when the caller set an option `can` says this runtime does not
+    /// apply — the one sanctioned answer to an option a runtime cannot
+    /// honour, since silently ignoring it is not one.
+    ///
+    /// Only fields that are actually *set* can offend: [`TcpOpts::default`]
+    /// is all-off, so even a runtime with [`TcpOptsSupport::NONE`] still
+    /// serves every caller that never asked for anything.
+    ///
+    /// A runtime whose [`TcpConnect::APPLIES`] is [`TcpOptsSupport::ALL`]
+    /// need not call this at all — the call is a no-op by construction,
+    /// which `reject_unsupported_is_a_no_op_against_all` pins.
+    pub fn reject_unsupported(&self, can: TcpOptsSupport) -> std::io::Result<()> {
+        let missing = TcpOptsSupport {
+            nodelay: self.nodelay && !can.nodelay,
+            keepalive: self.keepalive.is_some() && !can.keepalive,
+            local_address: self.local_address.is_some() && !can.local_address,
+            send_buffer_size: self.send_buffer_size.is_some() && !can.send_buffer_size,
+            recv_buffer_size: self.recv_buffer_size.is_some() && !can.recv_buffer_size,
+            reuse_address: self.reuse_address && !can.reuse_address,
+        };
+        if missing == TcpOptsSupport::NONE {
+            return Ok(());
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            UnsupportedTcpOpts { missing },
+        ))
+    }
+}
+
 pub trait TcpConnect {
     type Stream: hyper::rt::Read + hyper::rt::Write + Unpin;
 
+    /// Which [`TcpOpts`] fields this runtime actually applies.
+    ///
+    /// # Why the default is `NONE` and not `ALL`
+    ///
+    /// A default is a claim made by silence, and it must never be stronger
+    /// than the truth — the rule written down on
+    /// [`CancelSupport::None`](http_ng_core::CancelSupport::None) and
+    /// learned from `RedirectSupport::Transparent`. `ALL` would make a
+    /// backend that forgot the line claim it applies every option; `NONE`
+    /// makes it understate itself, so the worst case is one refused connect
+    /// too many rather than an option dropped on the floor without a trace.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::NONE;
+
+    /// # The options are not optional
+    ///
+    /// A runtime that cannot apply an option the caller set **must fail
+    /// this call** — [`TcpOpts::reject_unsupported`] is the shared way to
+    /// do it, and the error it builds names the option. Ignoring it is not
+    /// an available answer: `connect` returns `io::Result<Self::Stream>`
+    /// and nothing else, so an option quietly dropped here is dropped
+    /// without a trace anywhere in the stack.
+    ///
+    /// On platforms with file descriptors the whole set is applied outside
+    /// the runtime, on a `socket2::Socket`, and the runtime only adopts the
+    /// finished socket ([`TcpAdoptStd`]) — which is why both shipped
+    /// runtimes declare [`TcpOptsSupport::ALL`] and never have to refuse
+    /// anything.
     fn connect(
         &self,
         addr: SocketAddr,
@@ -114,6 +263,212 @@ mod tests {
         assert!(o.send_buffer_size.is_none());
         assert!(o.recv_buffer_size.is_none());
         assert!(!o.reuse_address);
+    }
+
+    /// Every field of `TcpOpts` set to something a runtime would have to
+    /// act on, paired with the `TcpOptsSupport` field that covers it.
+    fn all_six_set() -> TcpOpts {
+        TcpOpts {
+            nodelay: true,
+            keepalive: Some(Duration::from_secs(30)),
+            local_address: Some(IpAddr::from([127, 0, 0, 1])),
+            send_buffer_size: Some(4096),
+            recv_buffer_size: Some(4096),
+            reuse_address: true,
+        }
+    }
+
+    const NAMES: [&str; 6] = [
+        "nodelay",
+        "keepalive",
+        "local_address",
+        "send_buffer_size",
+        "recv_buffer_size",
+        "reuse_address",
+    ];
+
+    /// `TcpOptsSupport::ALL` with exactly one field turned off, in the same
+    /// order as `NAMES` — so a test can walk both together and check that
+    /// the error names the one option that was withheld.
+    fn all_but(i: usize) -> TcpOptsSupport {
+        let mut can = TcpOptsSupport::ALL;
+        match i {
+            0 => can.nodelay = false,
+            1 => can.keepalive = false,
+            2 => can.local_address = false,
+            3 => can.send_buffer_size = false,
+            4 => can.recv_buffer_size = false,
+            5 => can.reuse_address = false,
+            _ => unreachable!("NAMES has six entries"),
+        }
+        can
+    }
+
+    #[test]
+    fn reject_unsupported_is_a_no_op_against_all() {
+        // The claim `TcpConnect::APPLIES`' doc makes about the two shipped
+        // runtimes: they apply the whole set, so the check they don't call
+        // could not have refused anything anyway.
+        assert!(
+            all_six_set()
+                .reject_unsupported(TcpOptsSupport::ALL)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_runtime_that_applies_nothing_still_serves_a_caller_that_asked_for_nothing() {
+        // Why `TcpOptsSupport::NONE` is a usable default and not a brick
+        // wall: `TcpOpts::default()` sets nothing, and that is what
+        // `Native` passes unless the caller called `tcp_opts`.
+        assert!(
+            TcpOpts::default()
+                .reject_unsupported(TcpOptsSupport::NONE)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn each_unappliable_option_is_named_on_its_own() {
+        // Six separate cases, not one: an implementation that named a
+        // fixed option, or the first one it found, would pass a test that
+        // only ever withheld `nodelay`.
+        for (i, name) in NAMES.iter().enumerate() {
+            let err = all_six_set()
+                .reject_unsupported(all_but(i))
+                .expect_err("the one option this runtime cannot apply was set");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(name),
+                "the error for a withheld {name} must name it, got: {msg}"
+            );
+            for other in NAMES.iter().filter(|o| *o != name) {
+                assert!(
+                    !msg.contains(other),
+                    "only {name} was withheld, but the error also names {other}: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_offending_options_are_named_not_only_the_first() {
+        let err = all_six_set()
+            .reject_unsupported(TcpOptsSupport::NONE)
+            .expect_err("nothing can be applied and everything was asked for");
+        let msg = err.to_string();
+        for name in NAMES {
+            assert!(msg.contains(name), "{name} missing from: {msg}");
+        }
+    }
+
+    #[test]
+    fn the_error_is_unsupported_and_carries_a_typed_payload() {
+        // `ErrorKind::Unsupported` rather than `Other`, and the names
+        // reachable as data rather than only by parsing the message —
+        // otherwise a caller wanting to react per-option has to scrape
+        // `Display`.
+        let err = all_six_set()
+            .reject_unsupported(all_but(2))
+            .expect_err("local_address was withheld");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        let payload = err
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .expect("the typed payload survives the trip through io::Error");
+        assert_eq!(payload.names().collect::<Vec<_>>(), ["local_address"]);
+    }
+
+    #[test]
+    fn an_option_left_unset_is_not_an_offence_even_when_unsupported() {
+        // The check is about what the caller ASKED for, not about what the
+        // runtime lacks: a runtime that applies nothing owes nothing to a
+        // caller who set nothing. Without this distinction
+        // `TcpOptsSupport::NONE` would refuse every connect.
+        let opts = TcpOpts {
+            nodelay: true,
+            ..TcpOpts::default()
+        };
+        let err = opts
+            .reject_unsupported(TcpOptsSupport::NONE)
+            .expect_err("nodelay was set and cannot be applied");
+        let payload = err
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .expect("typed payload");
+        assert_eq!(payload.names().collect::<Vec<_>>(), ["nodelay"], "{err}");
+    }
+
+    #[test]
+    fn a_runtime_that_declares_nothing_applies_nothing() {
+        // The default is a claim made by silence, and this is the only
+        // test that reads it. All three shipped runtimes declare
+        // `APPLIES` explicitly — tokio and smol `ALL`, embassy its own
+        // two-of-six — so flipping the default to `ALL` passes the whole
+        // workspace suite otherwise: 878/878, measured (W7 mutation M4).
+        // The rule it protects is that a backend which forgets the line
+        // must understate itself, so the worst case is one refused
+        // connect too many rather than an option dropped on the floor
+        // without a trace.
+        struct Forgetful;
+        // Never constructed: it exists only so `Forgetful` can satisfy
+        // the associated type without a runtime behind it.
+        struct NeverIo;
+        impl hyper::rt::Read for NeverIo {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: hyper::rt::ReadBufCursor<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+        }
+        impl hyper::rt::Write for NeverIo {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                unreachable!("this runtime never connects")
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                unreachable!("this runtime never connects")
+            }
+        }
+        impl TcpConnect for Forgetful {
+            type Stream = NeverIo;
+            // No `APPLIES` line, deliberately — that absence is the
+            // subject of this test.
+            async fn connect(&self, _: SocketAddr, _: &TcpOpts) -> std::io::Result<NeverIo> {
+                unreachable!("this runtime never connects")
+            }
+        }
+
+        assert_eq!(
+            <Forgetful as TcpConnect>::APPLIES,
+            TcpOptsSupport::NONE,
+            "a runtime that declares nothing must not claim to apply anything"
+        );
+        // And the consequence, not only the constant: a caller who asks
+        // such a runtime for all six gets all six refused by name, rather
+        // than silently honoured on paper.
+        let err = all_six_set()
+            .reject_unsupported(<Forgetful as TcpConnect>::APPLIES)
+            .expect_err("a runtime that applies nothing must refuse everything asked of it");
+        let payload = err
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+            .expect("typed payload");
+        assert_eq!(payload.names().collect::<Vec<_>>(), NAMES);
     }
 
     #[test]

@@ -5,7 +5,9 @@ mod io;
 
 pub use io::TokioIo;
 
-use http_ng_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
+use http_ng_rt::{
+    Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
+};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -71,6 +73,11 @@ fn classify<T>(r: Result<T, tokio::task::JoinError>) -> Result<T, Cancelled> {
 
 impl TcpConnect for Tokio {
     type Stream = TokioIo;
+
+    /// Every field, and `build_socket` below is where each one is applied.
+    /// Stated rather than left to the trait's `NONE` default, which would
+    /// understate this runtime — see `TcpConnect::APPLIES`.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL;
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<TokioIo> {
         // Options are applied on the `socket2::Socket` **once**, and the
@@ -257,10 +264,15 @@ mod tests {
         // actually reached the socket: read the option back from the
         // `TcpStream` itself, rather than relying on the call having
         // happened.
+        let applied = s.get_ref().nodelay().expect("nodelay query");
         assert!(
-            s.get_ref().nodelay().expect("nodelay query"),
+            applied,
             "TcpOpts::nodelay was not applied to the connected socket"
         );
+        // And `APPLIES` is not a free-floating claim: it is compared
+        // against what the socket just said, so the constant is checked by
+        // the test that measures the behaviour rather than by nobody.
+        assert_eq!(<Tokio as TcpConnect>::APPLIES.nodelay, applied);
     }
 
     #[tokio::test]
@@ -290,5 +302,6 @@ mod tests {
             enabled,
             "TcpOpts::keepalive was not applied to the connected socket"
         );
+        assert_eq!(<Tokio as TcpConnect>::APPLIES.keepalive, enabled);
     }
 }
