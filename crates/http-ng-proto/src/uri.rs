@@ -400,6 +400,13 @@ fn host_to_ascii(host: &str) -> Result<String, UriError> {
 /// is not a thing there can be a second of. Mapping the wildcard to
 /// `NonAsciiHost` instead would make the client tell a user to fix their
 /// build when the build is fine and the name is not.
+///
+/// **The wildcard is the one line here no test can reach**, and that is
+/// recorded rather than papered over: no third variant exists to
+/// construct, and `#[non_exhaustive]` is what stops the compiler from
+/// noticing when one appears. So a mutation that changes only the
+/// wildcard survives the suite by construction. The two arms that a
+/// caller can actually reach are pinned below, in both directions.
 #[cfg(feature = "idn")]
 fn idn_error(host: &str, e: http_ng_idn::IdnError) -> UriError {
     match e {
@@ -809,5 +816,89 @@ mod tests {
             });
             assert_eq!(got, expected, "host of {input:?}");
         }
+    }
+
+    /// The two ends of the `IdnError` → `UriError` mapping, over the
+    /// error value, because only one of them can arise on any given
+    /// target: a build with the bundled tables (Linux, wasm) always has
+    /// an implementation and so can never produce `NoImplementation`,
+    /// and a build on a platform backend that the OS did not supply can
+    /// produce nothing else.
+    ///
+    /// Collapsing the two — `_ => NonAsciiHost` was the obvious way to
+    /// write this function — tells a caller with a genuinely broken name
+    /// to go and enable a feature that is already on. Collapsing them the
+    /// other way tells a caller on a machine with no UTS 46 that their
+    /// perfectly ordinary domain is invalid. This test fails on either.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn a_name_the_implementation_refused_and_a_build_that_has_none_are_different_errors() {
+        assert_matches!(
+            idn_error(
+                "münchen.de",
+                http_ng_idn::IdnError::NotAnIdn { domain: "münchen.de".to_owned() },
+            ),
+            UriError::NotAnIdn { host } if host == "münchen.de",
+            "a backend ran and refused the name: the caller's problem is the name"
+        );
+        assert_matches!(
+            idn_error(
+                "münchen.de",
+                http_ng_idn::IdnError::NoImplementation { domain: "münchen.de".to_owned() },
+            ),
+            UriError::NonAsciiHost { host } if host == "münchen.de",
+            "no backend ran at all: the name was never judged, and saying it is not a usable \
+             IDN would be a claim nothing in this build is in a position to make"
+        );
+    }
+
+    /// `NonAsciiHost` is now reachable with the feature ON, so its
+    /// message may not say the feature is what is missing.
+    ///
+    /// The wording is load-bearing twice over: `tests/uri_resolution.rs`
+    /// checks the same message on the feature-OFF path, where the cause
+    /// really is the feature, and both builds share one string. What it
+    /// has to be is true in both — name the two causes and, above all,
+    /// still say what to send instead.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn the_no_implementation_message_does_not_blame_a_feature_that_is_on() {
+        let message = idn_error(
+            "münchen.de",
+            http_ng_idn::IdnError::NoImplementation {
+                domain: "münchen.de".to_owned(),
+            },
+        )
+        .to_string();
+        assert!(
+            message.contains("xn--"),
+            "the escape hatch is the whole value of this variant: {message}"
+        );
+        assert!(
+            message.contains("this machine"),
+            "with the feature on, the second cause is the machine, and the message must \
+             offer it: {message}"
+        );
+    }
+
+    /// The reachable half of the same mapping, end to end through the
+    /// public API rather than over a hand-built error: a host with a
+    /// non-ASCII label AND a byte the WHATWG deny list forbids. It gets
+    /// as far as UTS 46 (an all-ASCII host never does) and is refused
+    /// there.
+    ///
+    /// This is the only place `UriError::NotAnIdn` was ever produced, and
+    /// until now nothing asserted it: the corpus rows pin resolutions,
+    /// not which error a refusal becomes.
+    #[cfg(feature = "idn")]
+    #[test]
+    fn a_refused_name_is_not_an_idn_rather_than_an_unparsable_uri() {
+        assert_matches!(
+            parse("https://a<b.münchen.de/x"),
+            Err(UriError::NotAnIdn { host }) if host == "a<b.münchen.de",
+            "the deny list runs inside UTS 46, so the answer must name the name — not \
+             `NotAUri`, which would be `http::Uri` complaining about a string we should \
+             never have handed it"
+        );
     }
 }
