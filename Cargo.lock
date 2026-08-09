@@ -1268,6 +1268,7 @@ dependencies = [
  "http-ng-dns",
  "http-ng-dns-system",
  "http-ng-rt",
+ "http-ng-rt-smol",
  "http-ng-rt-tokio",
  "http-ng-tls",
  "http-ng-tls-quic",

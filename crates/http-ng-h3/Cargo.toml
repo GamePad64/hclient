@@ -47,6 +47,9 @@ http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0" }
 http-body-util     = { workspace = true }
 http-ng            = { workspace = true }
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio", version = "0.1.0", features = ["udp"] }
+# The second runtime, for `tests/two_runtimes.rs`. A dev-dependency only:
+# this crate is generic over `R` and names neither backend.
+http-ng-rt-smol    = { path = "../http-ng-rt-smol", version = "0.1.0", features = ["udp"] }
 http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["quic"] }
 quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
 quinn-proto        = { version = "0.11", default-features = false }
