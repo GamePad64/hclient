@@ -344,7 +344,18 @@ happens.
   error, which would bypass the `ErrorKind` taxonomy entirely.
 - **`first_byte` and `between_bytes` on native.** Declared `false` today,
   honestly. Making them true means enforcing them, and the declaration and
-  the enforcement move in the same commit.
+  the enforcement move in the same commit. **LANDED, and they did.**
+  `first_byte` races the whole of `established::exchange` — the request
+  written and the response head in hand — and is per *attempt*, because an
+  attempt is retried only when hyper hands the request back untouched, so
+  no response was ever waited for on the one that failed; it expires as
+  `Failed::Sent`, which is what stops the retry firing on a request that did
+  go out. `between_bytes` is a body wrapper (`IdleTimeout<B, Tm>`) holding a
+  real `Tm::Sleep`, restarted on every frame — the only shape that can cut a
+  body which has gone *completely* silent, since an elapsed-time wrapper is
+  never polled again once the peer stops. `Transport for Native` gained
+  `R: Clone` for it: the body outlives `execute` and cannot borrow the
+  transport's clock.
 - **A concurrency limit.** Needed the moment a pool exists, and useful
   before it: without one, in-flight requests are unbounded and so are
   sockets. `tower::limit::concurrency` fits, and reserves its permit in
@@ -363,7 +374,7 @@ happens.
   from `tower`. Not written; it matters most to W2, which is where a
   connection count becomes a real resource rather than an incidental one.
 
-**Status: the first and third bullets are done; the middle one is not.**
+**Status: all three bullets are done — the middle one last.**
 `Timeouts.total` shipped as a bound in `Client` — `ClientBuilder::
 total_timeout(clock, d)` for any transport, `Client::total_timeout(d)` for
 a client already carrying the target's default clock — expiring as
@@ -378,12 +389,12 @@ in the type system (`http_ng::NoClock`), not by a runtime refusal. See
 that dribbles for ever.
 
 Two limits of it, both stated in the code rather than only here: a body
-that goes **completely silent** after the head is not cut (nothing polls
-the wrapper again, and the deadline holds no sleep of its own — see
-`Deadline`'s doc comment for why it cannot without making every response
-body `!Send`), which is `between_bytes`'s job, i.e. the middle bullet; and
-there is no per-request override yet, only per-client — a `Client` handle
-with a different bound costs one `Arc` bump, which covers most of the same
+that goes **completely silent** after the head is not cut by `total`
+(nothing polls the wrapper again, and the deadline holds no sleep of its
+own — see `Deadline`'s doc comment), which is `between_bytes`'s job, i.e.
+the middle bullet, now enforced by `http-ng-native`; and there is no
+per-request override yet, only per-client — a `Client` handle with a
+different bound costs one `Arc` bump, which covers most of the same
 ground.
 
 ---

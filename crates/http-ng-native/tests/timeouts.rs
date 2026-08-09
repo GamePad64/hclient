@@ -47,6 +47,7 @@ use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// The bound the tests set. Long enough not to race the loopback, short
@@ -74,7 +75,14 @@ enum Behaviour {
 /// Reads one request head off `sock`, then does `behaviour` — and in every
 /// case holds the socket open afterwards, so that nothing the client sees
 /// can be attributed to the server hanging up.
-fn serve(mut sock: TcpStream, behaviour: Behaviour) {
+///
+/// `closed` is told when, and only when, the **client** closes its end:
+/// `Ok(0)` from `read` is a `FIN` and cannot be anything else (a timeout
+/// is `Err`, data is `Ok(n > 0)`). That is how
+/// `a_between_bytes_timeout_closes_the_connection_the_server_sees` gets an
+/// observer for the one half of this bound that a returned error does not
+/// show.
+fn serve(mut sock: TcpStream, behaviour: Behaviour, closed: mpsc::Sender<()>) {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -109,19 +117,28 @@ fn serve(mut sock: TcpStream, behaviour: Behaviour) {
     // client closing its end is what ends this thread, and that is the
     // only thing that should.
     let _ = sock.set_read_timeout(Some(PATIENCE * 4));
-    let _ = sock.read(&mut chunk);
+    if let Ok(0) = sock.read(&mut chunk) {
+        let _ = closed.send(());
+    }
 }
 
-fn server(behaviour: Behaviour) -> SocketAddr {
+fn server_watching(behaviour: Behaviour) -> (SocketAddr, mpsc::Receiver<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("local_addr");
+    let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for sock in listener.incoming() {
             let Ok(sock) = sock else { continue };
-            std::thread::spawn(move || serve(sock, behaviour));
+            let tx = tx.clone();
+            std::thread::spawn(move || serve(sock, behaviour, tx));
         }
     });
-    addr
+    (addr, rx)
+}
+
+/// The same server for the tests that have no interest in the close.
+fn server(behaviour: Behaviour) -> SocketAddr {
+    server_watching(behaviour).0
 }
 
 fn client(timeouts: Timeouts) -> Client<Native<Tokio, Rustls, SystemDns<Tokio>>> {
@@ -342,4 +359,60 @@ async fn a_silent_body_is_between_bytes_even_with_a_tighter_first_byte_bound_set
         "the head arrived inside the first_byte bound, so the phase that failed is the \
          body's: {err}"
     );
+}
+
+/// Firing the bound **drops the body**, and dropping a response body
+/// before it ends is a cancellation under `Transport::execute`'s contract
+/// (v0.2 W1) — so the socket goes away rather than being left to drain
+/// into nobody. A bound that returned an error and left the transfer
+/// running would be a bound on the caller's patience, not on the
+/// operation.
+///
+/// This is the one half of the bound the tests above cannot see: they call
+/// `collect`, which consumes the response, so the socket would close on
+/// the drop whatever the wrapper did. Here the `Response` is deliberately
+/// **kept alive** past the error — `Response::chunk` seals after the first
+/// `Err` but does not drop the body — so the only thing that can close the
+/// connection is the wrapper having dropped it already.
+#[tokio::test]
+async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
+    let (addr, closed) = server_watching(Behaviour::HeadThenSilence);
+    let c = client(Timeouts {
+        between_bytes: Some(BOUND),
+        ..Default::default()
+    });
+    let mut resp = tokio::time::timeout(PATIENCE, c.get(&format!("http://{addr}/")).send())
+        .await
+        .expect("the head arrives at once")
+        .expect("and is a response");
+
+    let err = tokio::time::timeout(PATIENCE, async {
+        loop {
+            match resp.chunk().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!("a body that never arrives must not end cleanly"),
+            }
+        }
+    })
+    .await
+    .expect("the bound must fire");
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Timeout(Phase::BetweenBytes),
+        "{err}"
+    );
+
+    let saw_close =
+        tokio::task::spawn_blocking(move || closed.recv_timeout(Duration::from_millis(500)))
+            .await
+            .expect("join");
+    assert!(
+        saw_close.is_ok(),
+        "the server must have seen its connection close while the response was still held: \
+         an error alone leaves the transfer running"
+    );
+    // Held to exactly here: dropping it earlier would close the socket for
+    // a reason that has nothing to do with the bound.
+    drop(resp);
 }

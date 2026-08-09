@@ -15,6 +15,7 @@ do.
 | Dropping an in-flight request stops the exchange | `crates/http-ng-native/tests/cancel.rs`, `crates/http-ng-wasi/tests/live_roundtrip.rs`, `crates/http-ng-fetch/tests/transport.rs` — one per backend, and in every case the **observer is outside the client**: a server reporting the socket closed, a wasmtime guest that outlives its own drop, and the browser rejecting its own promise with `AbortError`, which our side cannot synthesise |
 | Connections are reused | `crates/http-ng-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
 | Two clients with different trust cannot share a socket | `crates/http-ng-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
+| A response that never starts, or a body that goes silent, is cut | `crates/http-ng-native/tests/timeouts.rs` — three misbehaving servers (answers never; head then silence; stalls mid-body), each paired with a control that must **hang** with the bound unset, plus a dribbling server that takes twice the bound in total and must not be cut. `first_byte` and `between_bytes` were declared `true` in the same commit that enforced them, which is the rule v0.2 W4's middle bullet was written under |
 | An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
 | …including a body that goes **completely silent** after the head | the same file — a server that sends the head under a `Content-Length` of ten million and then nothing at all. Nothing will wake the body wrapper, so only the sleep it holds can end this; with the sleep never polled, the bound fires at 6 s instead of 400 ms, off a wake the test harness happened to supply, and the tightness assertion catches it. The observer is the server watching for the client's FIN |
 | Idle connections are closed, not merely refused | `crates/http-ng-native/tests/reaper.rs` — the server watches its own end of the socket and reports when the client's `FIN` arrives: 299.7 ms (`Tokio`) and 300.6 ms (`Smol`) after the response, under a 300 ms idle timeout. Its control differs in one call (`pool` where the claim has `with_reaper`) and requires the socket still be open 1200 ms later |
@@ -157,13 +158,17 @@ someone to "fix" an item whose absence is the decision.
   can therefore never fire, while a wrapper holding the sleep registers
   one.
 
-  **`between_bytes` is still `false` and is still a different thing**, so
-  nothing about that declaration changed: it bounds the GAP between two
-  frames and restarts on each one, catching a stall anywhere in an
-  arbitrarily long transfer, where `total` bounds the operation once from
-  `Client::execute`'s entry. A body dripping a byte every 50 ms for an hour
-  passes `between_bytes` and is cut by `total`; a transfer that legitimately
-  takes an hour and stalls for ten minutes in the middle is the reverse.
+  **`between_bytes` is still a different thing**, and that has not changed
+  either — only its declaration has, in the same week and by a different
+  route (see the row above): it bounds the GAP between two frames and
+  restarts on each one, catching a stall anywhere in an arbitrarily long
+  transfer, where `total` bounds the operation once from `Client::execute`'s
+  entry. A body dripping a byte every 50 ms for an hour passes
+  `between_bytes` and is cut by `total`; a transfer that legitimately takes
+  an hour and stalls for ten minutes in the middle is the reverse. Both are
+  now reachable on `http-ng-native`, and neither replaces the other: a
+  caller that sets only one of them has bounded only one of those two
+  shapes.
 - **A `Client` cannot be given a jar over a caller-supplied public suffix
   list.** `CookieJar<P>` is generic over the list — that is the seam
   `http-ng-cookie` built so a caller can supply a fresher snapshot than
