@@ -642,6 +642,16 @@ jobs:
       # name, and this one bans a FAMILY by prefix. Enumerating today's
       # names would pass for tomorrow's `futures-whatever`, which is the
       # regression the check exists for. docs/ci.md says so.
+      # The `cookies` feature is off by default because `http-ng-cookie`'s
+      # compiled-in public suffix list is +77 KiB — a claim nothing checked
+      # until here. Exact analogue of the `idna`/ICU guard above.
+      - name: the default http-ng build carries no cookie jar
+        shell: bash
+        run: |
+          set -euo pipefail
+          .github/scripts/tree-guard.sh absent '^(http-ng-cookie|public-suffix) ' \
+            "http-ng's default build pulled in the cookie jar and its public suffix list — the feature is off by default precisely so this does not happen" \
+            -- -p http-ng
       - name: http-ng-proto pulls in no async runtime, on any target
         shell: bash
         run: |
