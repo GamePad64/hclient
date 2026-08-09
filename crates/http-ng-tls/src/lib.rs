@@ -31,6 +31,18 @@ pub struct TlsRequest<'a> {
     /// first implementation needed it: adding a new field to a request
     /// struct later would be a breaking change for every already-written
     /// `TlsConnect` implementation.
+    ///
+    /// **Reserved is not the same as ignorable, and this field is the one
+    /// where the difference is a security property.** No backend in this
+    /// workspace implements ECH; all three refuse a non-`None` value with a
+    /// typed error before a byte reaches the wire —
+    /// `http-ng-tls-native-tls`, `http-ng-tls-rustls` on the TCP path, and
+    /// the same crate's QUIC path. A backend that connected anyway would
+    /// send in the clear the very name the caller asked to encrypt, and
+    /// would report success while doing it: the caller cannot detect the
+    /// difference from the response, which is what makes best-effort worse
+    /// here than an error. A new `TlsConnect` implementation that does not
+    /// honour this field owes the same refusal.
     pub ech: Option<&'a [u8]>,
     /// TLS 1.3 early data (0-RTT): `Some(n)` asks the backend to offer it
     /// and to accept up to `n` bytes of application data in the first
