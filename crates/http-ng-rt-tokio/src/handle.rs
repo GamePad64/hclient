@@ -387,6 +387,11 @@ mod tests {
     /// The delegation is exact, so a value from one clock is comparable
     /// with a value from the other. This is what stops the two types from
     /// being silently non-interchangeable as a runtime for `Native`.
+    ///
+    /// Both directions, deliberately. The first version of this test
+    /// measured only `Tokio::elapsed_since(h.now())`, and a mutant making
+    /// `TokioHandle::elapsed_since` return a constant hour SURVIVED it:
+    /// the handle's own method was never called.
     #[test]
     fn the_two_clocks_are_the_same_clock() {
         let rt = rt();
@@ -394,9 +399,20 @@ mod tests {
         let a = Tokio.now();
         let b = h.now();
         assert!(b >= a, "the handle's clock ran backwards against the ZST's");
+
+        // The handle measuring an instant the ZST produced...
+        let by_handle = h.elapsed_since(a);
+        // ...and the ZST measuring one the handle produced.
+        let by_zst = Tokio.elapsed_since(b);
         assert!(
-            Tokio.elapsed_since(b) < Duration::from_secs(1),
-            "elapsed_since across the two types did not measure the same clock"
+            by_handle < Duration::from_secs(1),
+            "TokioHandle::elapsed_since reported {by_handle:?} for an instant \
+             taken microseconds earlier — it is not reading the same clock"
+        );
+        assert!(
+            by_zst < Duration::from_secs(1),
+            "Tokio::elapsed_since reported {by_zst:?} for an instant the \
+             handle produced — the two Instant types are not the same clock"
         );
     }
 }
