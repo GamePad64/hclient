@@ -611,8 +611,9 @@ already at `ClientBuilder::build()`, rather than being silently ignored; the
 same holds one level down — the `wasi:http` host rejecting a request-option
 value (timeout, method, scheme) also becomes an error rather than being
 dropped, and this isn't only verified by hand during implementation — it's
-held in place by static analysis in CI (`no-discarded-wasi-setters`) on every
-push.
+held in place by static analysis in CI (the `no-discarded-wasi-setter-result`
+ast-grep rule, with the corpus it was accepted against next to it in
+`scripts/ast-grep/rule-tests`) on every push.
 
 **`full_duplex` is declared `false` — and that's about the `http-ng-wasi`
 implementation, not about the shape of the seam.** The `wasi:http` 0.3

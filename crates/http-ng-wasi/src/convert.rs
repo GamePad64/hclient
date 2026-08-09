@@ -8,8 +8,9 @@
 //! `set_connect_timeout`, `set_first_byte_timeout`, `set_between_bytes_timeout`,
 //! `set_method`, `set_scheme`, `set_authority`, `set_path_with_query`). Here
 //! every such rejection becomes a typed `Error` instead of silently
-//! vanishing — CI (the `no-discarded-wasi-setters` job) checks this
-//! structurally, without relying on review discipline.
+//! vanishing — CI checks this structurally, without relying on review
+//! discipline: the `no-discarded-wasi-setter-result` ast-grep rule, and
+//! the corpus it was accepted against, in `scripts/ast-grep`.
 
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
