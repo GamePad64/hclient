@@ -113,6 +113,50 @@ impl Blocking for TokioLocal {
 }
 
 // ---------------------------------------------------------------------------
+// Candidate A': TokioHandle — the same idea applied to the Send spawner
+// ---------------------------------------------------------------------------
+
+/// `Tokio` is a ZST, so `Tokio::spawn` reads ambient thread-local state and
+/// panics when there is none. That is a *second* place where a default is
+/// stronger than the truth, and it is fixed by the same move that fixes the
+/// local case: carry the proof.
+///
+/// `TokioHandle` holds a `tokio::runtime::Handle`, which cannot be obtained
+/// without a runtime. It is `Send + Sync`, so — unlike `TokioLocal` — it
+/// costs `Native` none of its auto traits.
+#[derive(Clone, Debug)]
+pub struct TokioHandle(tokio::runtime::Handle);
+
+impl TokioHandle {
+    /// The precondition, as a value rather than a panic.
+    pub fn current() -> Result<Self, tokio::runtime::TryCurrentError> {
+        tokio::runtime::Handle::try_current().map(Self)
+    }
+    pub fn from_handle(h: tokio::runtime::Handle) -> Self {
+        Self(h)
+    }
+}
+
+impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for TokioHandle {
+    fn spawn(&self, f: F) {
+        self.0.spawn(f);
+    }
+}
+
+impl Timer for TokioHandle {
+    type Instant = <Tokio as Timer>::Instant;
+    fn sleep(&self, d: Duration) -> impl Future<Output = ()> {
+        Tokio.sleep(d)
+    }
+    fn now(&self) -> Self::Instant {
+        Tokio.now()
+    }
+    fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
+        Tokio.elapsed_since(earlier)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Candidate B: SmolLocal
 // ---------------------------------------------------------------------------
 

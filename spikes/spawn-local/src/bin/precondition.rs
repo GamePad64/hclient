@@ -12,7 +12,7 @@
 //!   the precondition is discharged at construction. `spawn` is total.
 
 use http_ng_rt::Spawn;
-use spawn_local_spike::{SmolLocal, TokioLocal};
+use spawn_local_spike::{SmolLocal, TokioHandle, TokioLocal};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -85,6 +85,25 @@ fn main() {
     });
     sl.block_on(async { futures_lite::future::yield_now().await });
     println!("  SmolLocal:  the queued !Send task ran = {}", flag.get() == 1);
+
+    // The same move on the `Send` side: a handle instead of a ZST.
+    println!(
+        "  TokioHandle::current() outside a runtime -> {:?}",
+        TokioHandle::current().map(|_| "Ok")
+    );
+    let h = rt.block_on(async { TokioHandle::current().unwrap() });
+    let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let r = ran.clone();
+    panic_message("TokioHandle::spawn from OUTSIDE the runtime", || {
+        Spawn::spawn(&h, async move {
+            r.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+    });
+    rt.block_on(async { tokio::task::yield_now().await });
+    println!(
+        "  TokioHandle: the task ran = {}",
+        ran.load(std::sync::atomic::Ordering::SeqCst)
+    );
 
     println!("\nC. the residual truth gap: a spawner nobody drives");
     // This is what a `Capabilities`-style claim would have to be honest
