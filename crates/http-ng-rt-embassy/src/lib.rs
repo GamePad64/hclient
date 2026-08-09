@@ -322,6 +322,40 @@ fn no_family(family: &str, feature: &str) -> std::io::Error {
     )
 }
 
+// Every test binary of this crate needs `embassy-executor` LINKED, not
+// only the acceptance in `tests/tuntap.rs` that actually runs one.
+//
+// The chain, each link measured rather than assumed. `embassy-net` — a
+// normal dependency, used by `sockets.rs` — calls `embassy_time::Instant::
+// now()`, so a test binary needs a time driver: with the `std` feature
+// taken out of the dev-dependencies, `_embassy_time_now` and
+// `_embassy_time_schedule_wake` go undefined. A driver needs a timer
+// queue, and embassy's DEFAULT queue is the *integrated* one — its
+// per-task storage lives in `embassy-executor`'s task headers, which it
+// reaches through `__embassy_time_queue_item_from_waker`, a symbol only
+// `embassy-executor` defines (`embassy-executor-0.9.1/src/raw/mod.rs:52`).
+// The unit tests below name nothing from that crate, so without this line
+// it is never loaded, its rlib is never handed to the linker, and the
+// reference has nothing to bind to.
+//
+// Linux hid that for as long as it stood: `ld --gc-sections` drops the
+// dead reference before it ever has to be resolved. `link.exe` resolves
+// first and reported `LNK2019: unresolved external symbol
+// __embassy_time_queue_item_from_waker` against the `lib test` binary —
+// the library itself was always fine, libraries are not linked. Reproduce
+// it on Linux with `-C link-arg=-Wl,--no-gc-sections`; that is what the
+// `embassy-tests-link-under-a-strict-linker` CI job runs, so this does not
+// go back to being a Windows-only discovery.
+//
+// The other way out was `embassy-time/generic-queue-N`, a queue that needs
+// no executor at all. Rejected: cargo features are per package, not per
+// test target, so enabling it would also swap the queue under the
+// acceptance — or have to be gated on `cfg(not(target_os = "linux"))`,
+// which leaves the Linux build resting on the linker discarding a
+// reference that nothing in it defines.
+#[cfg(test)]
+use embassy_executor as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
