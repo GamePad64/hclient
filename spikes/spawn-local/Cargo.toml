@@ -44,3 +44,7 @@ required-features = ["must-fail"]
 [[bin]]
 name              = "unnameable"
 required-features = ["must-fail"]
+
+[[bin]]
+name              = "reaper_refused"
+required-features = ["must-fail"]
