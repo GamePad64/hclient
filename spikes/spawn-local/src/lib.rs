@@ -4,6 +4,9 @@
 //! Nothing under `crates/` is touched. Everything here is a *candidate*
 //! that would eventually live in `http-ng-rt-tokio` / `http-ng-rt-smol`.
 
+pub mod minipool;
+pub mod reaper;
+
 use http_ng_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
 use http_ng_rt_smol::Smol;
 use http_ng_rt_tokio::Tokio;

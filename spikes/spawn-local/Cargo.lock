@@ -497,6 +497,7 @@ name = "spawn-local-spike"
 version = "0.0.0"
 dependencies = [
  "async-executor",
+ "async-io",
  "bytes",
  "futures-executor",
  "futures-lite",
