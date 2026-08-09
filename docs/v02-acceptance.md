@@ -97,9 +97,19 @@ Recorded, not hidden — and each with the reason, because a bare list invites
 someone to "fix" an item whose absence is the decision.
 
 - **No reaper for idle sockets.** The idle timeout is a filter applied at
-  checkout, not a background task that closes what has gone stale. Without
-  `Spawn` — see above — there is nobody to run one. A client that goes quiet
-  for an hour holds its sockets until the next request or until `Drop`.
+  checkout, not a background task that closes what has gone stale. A client
+  that goes quiet for an hour holds its sockets until the next request or
+  until `Drop`.
+
+  Not "because `Spawn` cannot run one" — see the correction above, where
+  that claim was measured and withdrawn; a reaper compiles and runs on both
+  shipped runtimes. Because `Native` is generic over `R` and not every `R`
+  can spawn, so starting one in `Native::new` would be a default stronger
+  than the truth. The opt-in shape is a constructor bounded on
+  `R: Spawn<Reaper<R, I>>`, and one piece of it has since landed:
+  `http_ng_rt_tokio::TokioHandle`, whose `spawn` works off a runtime thread
+  where the ZST `Tokio`'s panics — which is where a client is usually
+  constructed. The constructor itself is still not written.
 - **No pool shared between clients.** Each `Native` owns its own, which is
   why the TLS configuration identity in `PoolKey` is a constant within any
   one pool today. The field is not decoration: it must be in the key before
