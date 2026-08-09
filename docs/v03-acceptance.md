@@ -124,14 +124,30 @@ exists to skip.
 Recorded, not hidden, and each with the reason — a bare list invites
 someone to "fix" an item whose absence is the decision.
 
-- **`425 Too Early` is handled nowhere.** RFC 8470 §5.2's third failure
+- **`425 Too Early` is not this transport's, and the retry that is
+  somebody's owes this crate one line.** RFC 8470 §5.2's third failure
   path: a server unwilling to risk a replayable request answers `425`, and a
   user agent *"SHOULD retry automatically, but any retries MUST NOT be sent
-  in early data"*. That is a status-code branch in `Client`, not in a
-  transport — only the client owns the retry loop. `a_425_reaches_the_caller_untouched`
-  pins that it is **not** handled, so implementing it later is a visible
-  change rather than a silent one, and `src/early.rs`'s module doc says the
-  same next to the code.
+  in early data"*. The retry is a status-code branch in `Client` — only the
+  client owns the retry loop — and `a_425_reaches_the_caller_untouched` pins
+  that this layer passes a `425` through untouched, which stays true however
+  `Client` evolves.
+
+  The second half is a live obligation rather than a note for later, and it
+  is aimed at whoever writes that retry (v0.3's `425` work, in flight
+  separately): **the replayed request must have `AllowEarlyData` removed
+  from its extensions.** The mark is the only thing that can put a request
+  into early data, so removing it is necessary and sufficient.
+
+  It is tempting to think the duty is vacuous — by the time a `425` comes
+  back the handshake completed long ago, and streams opened after that are
+  1-RTT whatever the request asks for. That is true only of the connection
+  this crate happens to still have pooled. The mark is part of the pool key,
+  so a marked replay asks for the early-data connection specifically; if
+  that entry was evicted, closed by the peer or timed out, the replay builds
+  a fresh connection and `into_0rtt` puts it straight back into early data,
+  against the server that just refused to risk one. `src/early.rs`'s module
+  doc carries the argument next to the code.
 - **No streaming request body, and no full duplex.** HTTP/3 does both — a
   QUIC stream's halves are independent — and `execute` does neither: it
   writes the whole body, then reads the head. Both capabilities are declared

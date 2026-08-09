@@ -23,22 +23,51 @@
 //! |---|---|---|
 //! | no usable key material | `into_0rtt()` returns the `Connecting` back | fall back to a full handshake, silently: nothing was risked |
 //! | the server rejected the 0-RTT keys | `ZeroRttRejected` on the h3 stream | replayed on the same connection once the handshake completes; the caller sees a normal response |
-//! | the server refuses to risk it | HTTP **`425 Too Early`** (RFC 8470 §5.2) | **NOT HANDLED — see below** |
+//! | the server refuses to risk it | HTTP **`425 Too Early`** (RFC 8470 §5.2) | **not this layer\'s — see below** |
 //!
-//! ## `425 Too Early` is not handled, anywhere
+//! ## `425 Too Early` is not, and cannot be, this transport\'s
 //!
 //! RFC 8470 §5.2 gives a server `425` to say *"I am unwilling to risk
 //! processing a request that might be replayed"*, and requires that *"a
 //! user agent SHOULD retry automatically, but any retries MUST NOT be sent
 //! in early data"*. That is a **status-code branch in `Client`**, not in a
-//! transport: only the client owns the retry loop, and the retry has to go
-//! out on a connection whose handshake has completed.
+//! transport: only the client owns the retry loop. `Transport::execute`
+//! returns one response for one request, and a transport that resent a
+//! request on a `425` would be making a redirect-shaped decision behind
+//! the caller\'s back.
 //!
-//! Nothing in this workspace does it. A `425` reaches the caller as an
-//! ordinary response, and a caller using [`AllowEarlyData`] must be
-//! prepared for one. This paragraph is here, rather than only in a report,
-//! because a design that handles two of three failure paths and says
-//! nothing about the third reads as complete.
+//! So a `425` leaves this crate as an ordinary response —
+//! `a_425_reaches_the_caller_untouched` in `tests/live.rs` pins that, and
+//! it stays true however `Client` evolves, because it is a claim about
+//! this layer.
+//!
+//! ### What the client\'s retry owes this module, and why it is not vacuous
+//!
+//! *"Any retries MUST NOT be sent in early data"* is a duty on whoever
+//! writes the retry, and discharging it is one line: **remove
+//! [`AllowEarlyData`] from the replayed request\'s extensions.** The mark
+//! is the only thing that can put a request into early data
+//! ([`admits_early_data`]), so removing it is both necessary and
+//! sufficient.
+//!
+//! It is worth saying that this duty is **real rather than theoretical**,
+//! because the obvious reason to think otherwise is wrong. One might
+//! reason: by the time a `425` has come back, the connection\'s handshake
+//! has long completed, and streams opened after that are 1-RTT whatever
+//! the request says — so the replay could not go into early data even if
+//! it tried. That is true of the connection this crate happens to have
+//! pooled, and it is an accident of it still being there. The mark is part
+//! of `crate::PoolKey`, so a marked replay asks for the early-data
+//! connection specifically; if that entry has been evicted, closed by the
+//! peer, or timed out in the meantime, the replay builds a **fresh**
+//! connection and `into_0rtt` puts it straight back into early data —
+//! against the very server that just said it would not risk one.
+//!
+//! Stripping the mark also routes the replay to a different pool key, and
+//! therefore to a connection that was never built to offer early data at
+//! all. That is the belt as well as the braces, and it is the reason the
+//! strip belongs at the `425` branch rather than here: this module cannot
+//! see that a response was a `425`.
 
 use http_ng_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RetryKind};
 

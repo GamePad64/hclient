@@ -285,18 +285,21 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_425_reaches_the_caller_untouched() {
-    // RFC 8470 §5.2's third failure path, and the one nothing in this
-    // workspace handles. The test exists to pin that it is NOT handled: a
-    // `425` arrives as an ordinary response rather than being retried, and
-    // the day someone implements the retry this test is what tells them
-    // they changed an observable behaviour.
+    // RFC 8470 §5.2's third failure path, and the one this layer does not
+    // own: the retry belongs to `Client`, which is the only thing that owns
+    // a retry loop. So this pins what the TRANSPORT does — pass a `425`
+    // through untouched — and stays true however the client-side retry
+    // evolves, rather than becoming stale the moment somebody writes one.
+    //
+    // A transport that retried here would be making a redirect-shaped
+    // decision behind the caller's back, on a response the caller can see.
     let s = server::start(Behaviour::TooEarly);
     let t = h3(&s.cert_der);
     let r = t.execute(get(s.addr, "/early")).await.expect("a response");
     assert_eq!(
         r.status(),
         http::StatusCode::TOO_EARLY,
-        "425 is not retried anywhere; it reaches the caller"
+        "the transport does not retry a 425; it reaches the caller"
     );
 }
 
