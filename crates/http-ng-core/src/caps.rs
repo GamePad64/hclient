@@ -405,6 +405,20 @@ pub enum EarlyDataSupport {
 /// that one has been evicted or closed since — would open a fresh one and
 /// go out in early data again, to the server that just refused to risk it.
 /// See `http_ng_h3::early`.
+///
+/// # The other boundary: an origin
+///
+/// The mark does not cross one, and `http-ng`'s redirect stage drops it on
+/// the same condition that drops `Cookie` and `Authorization` — the host or
+/// scheme changed.
+///
+/// The asymmetry is the point and the two halves are easy to conflate. This
+/// is a claim about what a request does **at a server**, so a caller who
+/// marked a request for origin A never judged origin B, and carrying it
+/// across would act on a judgement nobody made. A *method* change is the
+/// opposite case and the mark stays: a `303` rewriting `POST` to `GET`
+/// leaves a request strictly less consequential than the one already
+/// vouched for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllowEarlyData;
 
