@@ -694,17 +694,21 @@ comment is this project's owner's, dated 2026-08-08) and
 
 **Correction one: it is ten crates, not seven.** `AGENTS.md` says
 `http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API
-of seven crates here. `http` is a normal dependency of **ten**:
-`http-ng`, `-core`, `-cookie`, `-fetch`, `-h3`, `-mock`, `-native`,
-`-proto`, `-tower`, `-wasi`. Check: `grep -rn '^http *=' crates/*/Cargo.toml`.
+of seven crates here. `http` is a normal dependency of **ten**: `http-ng`,
+`-core`, `-cookie`, `-fetch`, `-h3`, `-mock`, `-native`, `-proto`, `-tower`,
+`-wasi`. Check: `grep -rn '^http *=' crates/*/Cargo.toml`. Whether all ten
+*expose* it is a narrower question and was not counted — it does not need to
+be, because the `no_std` obstacle follows from the dependency and not from
+the exposure.
 
 **Correction two: there is a second external blocker, and it is in worse
 shape.** `http-body` 1.1.0 is not `no_std` either — its `src/lib.rs` opens
 with `use std::convert::Infallible; use std::ops; use std::pin::Pin; use
 std::task::{Context, Poll};` and declares no `#![no_std]` — and it is a
 dependency of most of the same crates. Unlike `http`, it has **no open
-request at all**: `gh api repos/hyperium/http-body/issues` lists twenty open
-issues and not one about `no_std`. `AGENTS.md` does not mention it.
+request at all**: 25 open issues and pull requests, not one of them about
+`no_std`. Check: `gh api 'repos/hyperium/http-body/issues?state=open&per_page=100'`.
+`AGENTS.md` does not mention it.
 
 **Correction three, and it is the useful one: our own code is not the
 obstacle.** Measured on this tree:
