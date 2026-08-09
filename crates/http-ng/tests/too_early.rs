@@ -649,4 +649,57 @@ mod replayability {
             .map(|r| r.extensions.get::<http_ng_core::AllowEarlyData>().is_some())
             .collect()
     }
+
+    /// The mark does not cross an origin, for the same reason `Cookie` and
+    /// `Authorization` do not.
+    ///
+    /// `AllowEarlyData` says "replaying this is safe", and replay-safety is
+    /// a claim about what a request does **at a server**. A caller who
+    /// marked a request for origin A never judged origin B, so carrying it
+    /// across would inherit a judgement nobody made. A method change is the
+    /// opposite case and the mark stays: a `303` rewriting `POST` to `GET`
+    /// leaves a request strictly less consequential than the one already
+    /// vouched for — pinned by the same-origin test above.
+    #[test]
+    fn the_mark_does_not_survive_a_cross_origin_redirect() {
+        let m = MockTransport::new();
+        m.push_response(
+            http::Response::builder()
+                .status(302)
+                .header("location", "https://b/elsewhere")
+                .body("")
+                .unwrap(),
+        );
+        m.push_response(ok());
+
+        let c = Client::builder(m).build().expect("client");
+        let mut req = http::Request::builder()
+            .method("GET")
+            .uri("https://a/x")
+            .body(RequestBody::Empty)
+            .unwrap();
+        req.extensions_mut().insert(http_ng_core::AllowEarlyData);
+
+        let resp = futures_executor::block_on(c.execute(req)).expect("execute");
+        assert_eq!(resp.status(), 200);
+
+        let seen = c.transport().requests();
+        assert_eq!(seen.len(), 2, "the redirect was followed");
+        assert!(
+            seen[0]
+                .extensions
+                .get::<http_ng_core::AllowEarlyData>()
+                .is_some(),
+            "the caller's mark must reach the origin it was written for, or \
+             this test would pass against a client that never sends it"
+        );
+        assert!(
+            seen[1]
+                .extensions
+                .get::<http_ng_core::AllowEarlyData>()
+                .is_none(),
+            "the mark crossed to another origin — a replay-safety judgement \
+             the caller made about `a` was handed to `b`"
+        );
+    }
 }

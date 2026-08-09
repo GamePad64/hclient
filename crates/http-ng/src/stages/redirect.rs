@@ -55,10 +55,23 @@ pub(crate) fn next_hop(
     follow: &Follow,
 ) -> Option<(HopParts, RequestBody)> {
     let mut headers = prev.headers.clone();
+    let mut extensions = prev.extensions.clone();
     if follow.strip_sensitive {
         for h in SENSITIVE_HEADERS {
             headers.remove(&h);
         }
+        // `AllowEarlyData` is caller-scoped material of exactly the kind
+        // `SENSITIVE_HEADERS` exists to drop, so it goes on the same
+        // condition and for the same reason.
+        //
+        // The mark says "replaying this is safe", and replay-safety is a
+        // claim about what a request does **at a server**. A caller who
+        // marked a request for origin A never judged origin B, so carrying
+        // it across is inheriting a judgement nobody made. A method change
+        // is different and stays: a `303` rewriting `POST` to `GET` makes
+        // the request strictly less consequential than the one the caller
+        // already vouched for.
+        extensions.remove::<http_ng_core::AllowEarlyData>();
     }
     let body = if follow.drop_body {
         headers.remove(http::header::CONTENT_LENGTH);
@@ -73,7 +86,7 @@ pub(crate) fn next_hop(
             uri: follow.uri.clone(),
             headers,
             version: prev.version,
-            extensions: prev.extensions.clone(),
+            extensions,
         },
         body,
     ))
