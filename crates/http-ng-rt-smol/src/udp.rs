@@ -39,6 +39,19 @@
 //! the tokio version with a safety step dropped — there is no step to drop,
 //! and adding a `try_io`-shaped dance would be inventing state this runtime
 //! deliberately does not keep.
+//!
+//! It has a **visible consequence**, measured rather than reasoned about,
+//! by replacing the `WouldBlock` retry in
+//! `crates/http-ng-rt-pair-check/tests/udp_pair_property.rs` with a
+//! `panic!` and running both arms: **the tokio backend takes that path on
+//! its very first send and this one never does.** tokio's `try_io` refuses
+//! *before the syscall* when it holds no cached WRITABLE readiness, which
+//! is the state a freshly bound socket is in; here the `sendmsg` happens
+//! and a loopback socket with an empty send buffer accepts it. Both are
+//! within the seam's contract — `WouldBlock` is a permission to return it,
+//! not an obligation — and the asymmetry is written down in that test,
+//! because a caller written against this backend alone would have a bug
+//! only the other one finds.
 
 use http_ng_rt::{Datagrams, RecvMeta, UdpAdoptStd, UdpBind, UdpCaps, UdpDatagrams};
 use std::io;

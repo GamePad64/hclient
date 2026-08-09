@@ -18,8 +18,11 @@ carried forward on trust.
 | Cancelling one request does not disturb its neighbours | `dropping_one_request_does_not_disturb_the_others` — and on this transport the property is not vacuous, because there really are neighbours on the connection |
 | A request enters early data only if the caller marked it | `early_data_is_offered_only_to_a_request_the_caller_marked` plus three unit tests in `src/early.rs` covering every body kind. The two requests have the same body; the extension is the only difference |
 | 0-RTT is really taken, and a rejection is replayed rather than surfaced | `a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it` — two servers, one certificate, separate ticketers. It cannot pass unless `into_0rtt` took the shortcut, the rejection was detected and the replay went out; checked for vacuity by mutating the replay away, which turns it red |
-| The UDP seam's offloads are enforced, not merely published | `crates/http-ng-rt-tokio/tests/udp.rs` — a socket refuses a GSO batch one segment past what it declared and accepts one exactly at the limit |
-| A socket reports the ECN it can actually observe | same file — the claim is checked against a real loopback round trip, in both directions: a socket claiming ECN must deliver the codepoint, one not claiming it must report `None` |
+| 0-RTT is **accepted** end to end, and the data really left before the handshake | `crates/http-ng-h3/tests/zero_rtt.rs` (W1) — two observers, neither of them the client. On the wire, a UDP relay reading cleartext long headers counted 7 zero-RTT packets carrying 7003 bytes before the client's first Handshake packet; on the server, the request was resolved at 2.7 ms against a handshake completing at 151.5 ms, the separation forced by the relay holding the server's flight for 150 ms. The unmarked warm-up is the asserted negative control: no early data at all |
+| The UDP seam's offloads are enforced, not merely published | `crates/http-ng-rt-tokio/tests/udp.rs`, and since W1 `crates/http-ng-rt-pair-check/tests/udp_pair_property.rs` on **both** backends — a socket refuses a GSO batch one segment past what it declared, accepts one exactly at the limit, and a declared batch really arrives as that many datagrams |
+| A socket reports the ECN it can actually observe | same files — the claim is checked against a real loopback round trip, in both directions: a socket claiming ECN must deliver the codepoint, one not claiming it must report `None` |
+| The UDP seam is a seam and not a design | W1 — `UdpBind`/`UdpAdoptStd`/`UdpDatagrams` on `http_ng_rt_smol::Smol` behind a `udp` feature, and one generic body (`exercise_udp<R>`) run under both runtimes rather than two similar test files. `both_backends_report_the_same_kernel` makes each backend the other's oracle, which is the check neither runtime crate could make alone |
+| HTTP/3 runs on two runtimes, from one function | `crates/http-ng-h3/tests/two_runtimes.rs` (W1) — `fetch_once<R>` under `TokioHandle` in a real `tokio::runtime::Runtime` and under `Smol` on a bare `futures_executor::block_on`. Sensitive rather than merely green: adding `R::Instant: PartialEq<std::time::Instant>` breaks the tokio instantiation alone |
 | Neither seam carries a QUIC dependency | the `dependency-graph` job's *"the runtime and TLS seams contain no QUIC"*, plus its companion proving the ban is not vacuous |
 
 ## The seam changes, and one that turned out not to be needed
@@ -168,11 +171,25 @@ someone to "fix" an item whose absence is the decision.
 - **No timeouts.** All three `TimeoutSupport` fields are honestly `false`.
   `connect` is the cheapest to add and is not added, because a declaration
   and its enforcement belong in the same change.
-- **No smol UDP backend.** The seam is runtime-agnostic and `async_io::Async
-  <UdpSocket>` exposes the same descriptor `quinn-udp` needs — the research
-  measured `gso=64 gro=64` through it. Only tokio implements `UdpBind`
-  today, so `two_runtimes.rs`'s two-runtime acceptance has no h3 counterpart
-  and the seam's portability claim rests on one implementation here.
+- ~~**No smol UDP backend.**~~ **Done in W1**, and the two things the design
+  flagged as unverified are now measured. `Smol` satisfied every bound of
+  `H3Runtime` except the UDP triple with nothing else changed — compiled,
+  not read: `Timer` with `Sleep: Send + 'static`, `Spawn<QuinnTask>` and
+  `Clone + Send + Sync + 'static` all held, and the only error was the two
+  missing traits. And `async_io::Async::poll_writable(&self, cx) ->
+  Poll<io::Result<()>>` is the seam's separated shape argument for argument,
+  so the one place W1 could have become a seam change did not: `http-ng-rt`
+  is untouched.
+
+  One asymmetry between the backends came out of it, and it is written into
+  the shared test rather than left as folklore: **the `WouldBlock` retry is
+  load-bearing on tokio and never taken on smol.** Measured by replacing the
+  retry with a `panic!` — tokio panics on its very first send, smol never
+  does. tokio's `try_io(Interest::WRITABLE, ..)` refuses *before* the
+  syscall when it holds no cached readiness, which is exactly a freshly
+  bound socket; smol's `try_send` reaches `sendmsg`. Both are within the
+  seam's contract, and a caller written against smol alone would have a bug
+  only tokio finds.
 - **No reaper for dead pooled connections.** A connection the peer closed is
   dropped at the next checkout, not before. Same shape as W2's HTTP/1 pool
   and the same reason.
@@ -198,6 +215,16 @@ someone to "fix" an item whose absence is the decision.
   macOS and iOS as unable to set `IP_RECVTOS` on, so the mutant is killable
   there. Not yet observed being killed; what would settle it is one run of
   that test on `macos-latest` with the mutation applied.
+
+  **W1's second backend does not change this, as the design predicted, and
+  the reason is worth restating**: two runtimes on one kernel is still one
+  kernel, and the same mutation applied to `http-ng-rt-smol`'s twin of that
+  line survives for exactly the same reason. What W1 *did* add against it
+  is `both_backends_report_the_same_kernel` — which kills the mutation only
+  when applied to one backend and not the other, so it catches a divergence
+  and not a shared over-claim. A wholesale `caps: UdpCaps::NONE` in either
+  backend **is** killed, by the ECN half of `ecn_claim_matches_reality`: a
+  socket that claims no ECN and then delivers `Ect0` fails there.
 - **A ticket issued over TCP offered to a QUIC handshake.** rustls keys its
   session store by `ServerName` alone while a QUIC ticket also carries
   `quic_params`. `http-ng-tls-rustls`'s QUIC path uses a **separate** store,
@@ -213,11 +240,32 @@ someone to "fix" an item whose absence is the decision.
   was detected, and the replay went out. Checked for vacuity by mutation:
   replacing `if verdict.await` with `if true` (i.e. never replaying) turns
   that test red and leaves the other ten green.
-  What is NOT covered is the happy path — a server that *accepts* the early
-  data, with the response arriving before the verdict. It needs the timing
-  instrumentation the research spike had and this suite does not, and the
-  server here already sets `max_early_data_size = u32::MAX`, so the material
-  exists.
+
+  **The happy path is covered as of W1** — `tests/zero_rtt.rs`, the row in
+  the table above — and two things it turned up are worth keeping here.
+
+  *The obvious server-side signal does not exist*, and the test was written
+  against it first. `Connecting::into_0rtt` hands back a `ZeroRttAccepted`
+  future, which reads as "did I accept the peer's early data" and on a
+  server does not: `quinn_proto::Connection::accepted_0rtt` is assigned
+  inside a block guarded by `if self.side.is_client()`
+  (`quinn-proto-0.11.16/src/connection/mod.rs:2540`, with a
+  `debug_assert!(self.side.is_client())` inside it for good measure), so a
+  server always reports `false`. It read `0` on a connection whose 0-RTT
+  packets the relay had just counted going past.
+
+  *What replaced it is an ordering the relay makes causal.* The server
+  records when it resolved the request and when its own handshake
+  completed; the relay holds the server's flight for 150 ms, and a client's
+  handshake completes on processing that flight, so inside the window a
+  request cannot reach the server by any route but early data.
+
+  Still **not** asserted, deliberately: the response arriving before the
+  verdict, `docs/h3-research.md` §3.2's 8.58 ms against 8.63 ms. Both
+  events are inside the client and fifty microseconds apart, so an
+  assertion on that ordering would be measuring the scheduler. What stands
+  in for it is structural: `execute` returns the response without awaiting
+  the verdict at all, and reads it only on the error path.
 - **`two_requests_share_one_connection` failed once, under the full
   922-test workspace run, and has not been reproduced.** Not in twelve
   isolated runs of that test, not in five runs of the h3 crate alone, and

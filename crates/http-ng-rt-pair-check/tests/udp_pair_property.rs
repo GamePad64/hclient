@@ -51,11 +51,23 @@ use std::net::SocketAddr;
 /// `try_send` returning `WouldBlock` is a real answer and not a failure —
 /// it obliges the caller to `poll_writable` and try again, which is the
 /// split `UdpDatagrams` deliberately has and which quinn drives through its
-/// own `UdpPoller`. **On smol every first send takes this path**, because
-/// `async_io::Async::poll_writable` always registers on its first call
-/// rather than reporting a readiness it never cached; on tokio a freshly
-/// bound socket has no cached WRITABLE readiness either. So this loop is
-/// not defensive padding on either runtime: delete it and both tests fail.
+/// own `UdpPoller`.
+///
+/// **The two backends do not take this path equally, and the asymmetry is
+/// measured rather than assumed.** Replacing the retry with a `panic!` and
+/// running both arms: the tokio one panics on its very first send, the smol
+/// one never panics at all. The cause is where each backend's `WouldBlock`
+/// comes from — tokio's `try_io(Interest::WRITABLE, ..)` refuses *before
+/// the syscall* when tokio holds no cached WRITABLE readiness for the
+/// socket, which is exactly the state a freshly bound one is in; smol's
+/// `try_send` calls `sendmsg` and a loopback socket with an empty send
+/// buffer accepts it.
+///
+/// So this loop is load-bearing on tokio and, on this host, dead code on
+/// smol — which is the right way round for a caller: the contract is
+/// "handle `WouldBlock`", and a backend that never needs you to is still
+/// within it. A caller written against smol alone would have had a bug that
+/// only tokio finds, and that is the sort of thing a shared body is for.
 async fn send<S: UdpDatagrams>(sock: &S, d: &Datagrams<'_>) -> std::io::Result<()> {
     loop {
         match sock.try_send(d) {
