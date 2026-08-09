@@ -73,27 +73,162 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
     }
 }
 
-/// Replaces the original `duplex_support_is_probed_not_assumed`, which
-/// asserted `streaming_request_body == full_duplex` — true, but no longer
-/// meaningful: `probe()` now sets both fields to the SAME hardcoded literal
-/// (see `caps::probe`'s doc comment), so that equality would hold even if
-/// the literal were flipped to `true`, or if `probe()` forgot to set
-/// `full_duplex` at all and it fell back to `Capabilities::none()`'s
-/// default `false` by coincidence. This test pins the actual, current
-/// value instead, which is the claim that can actually go wrong: this
-/// crate does not send a streaming request body yet — `convert::
-/// resolve_body` rejects `RequestBody::Streaming` unconditionally — so
-/// reporting `true` here, on any browser, would be exactly the capability
-/// that lies this whole registry exists to prevent.
-/// `supports_duplex_reflects_the_prototype_not_a_hardcoded_constant` below
-/// is what still exercises the genuine, browser-varying fact
-/// (`supports_duplex()` itself); this test and that one are deliberately
-/// no longer the same test.
+/// Replaces `streaming_request_body_and_full_duplex_are_false_until_the_send_path_exists`,
+/// which pinned the hardcoded `false` that v0.2 W6 removed. The claim worth
+/// testing is no longer the value — that varies by browser, so any literal
+/// asserted here would be wrong in one of the two engines CI runs — but the
+/// *derivation*: `Capabilities::streaming_request_body` must be whatever
+/// `caps::supports_streaming_request_body()` answered, and that function
+/// must answer the browser rather than a constant.
+///
+/// Both halves are checked, because either alone is vacuous. Asserting only
+/// the equality would hold if both sides were frozen to the same literal —
+/// which is why the mutation test below exists; asserting only the probe
+/// would not notice `probe()` dropping the assignment and falling back to
+/// `Capabilities::none()`'s `false`.
 #[wasm_bindgen_test]
-fn streaming_request_body_and_full_duplex_are_false_until_the_send_path_exists() {
+fn streaming_request_body_is_the_behavioural_probes_answer_not_a_constant() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
-    assert!(!c.streaming_request_body);
-    assert!(!c.full_duplex);
+    assert_eq!(
+        c.streaming_request_body,
+        http_ng_fetch::testing::supports_streaming_request_body_for_test(),
+        "Capabilities::streaming_request_body must be the probe's answer, not a value that \
+         merely happens to match it in this browser"
+    );
+}
+
+/// The mutation test for the probe itself, and the reason it can run in
+/// **both** directions in **either** browser: `web_sys::Request::
+/// new_with_str_and_init` compiles to `new Request(..)` in wasm-bindgen's
+/// glue, where `Request` is a free variable resolved through the scope
+/// chain to `globalThis` at call time. Replacing `globalThis.Request` with
+/// a stand-in therefore changes what the probe actually constructs.
+///
+/// The two stand-ins are the two measured browsers, reduced to the
+/// behaviour the probe keys on (`docs/measurements/w6-request-streams/`):
+///
+/// - **Firefox 153** — never reads `duplex`, and stamps
+///   `Content-Type: text/plain;charset=UTF-8` because it stringified the
+///   stream to `[object ReadableStream]`. The probe must answer `false`.
+/// - **Chrome 151** — reads `duplex`, invents no `Content-Type`. The probe
+///   must answer `true`.
+///
+/// A probe hardcoded either way fails one of the two assertions. So does
+/// one that consulted only `duplex` presence (`supports_duplex`), which
+/// these stand-ins deliberately do not affect at all — they share the real
+/// `Request.prototype`, so the cheap check answers the same thing under
+/// both, and a crate wired to it would be blind to the whole difference.
+#[wasm_bindgen_test]
+fn the_probe_follows_the_browsers_behaviour_in_both_directions() {
+    use wasm_bindgen::JsCast;
+
+    // Returns the real constructor so each arm can restore it. Written as
+    // one `new Function` body rather than several `Reflect` calls because
+    // what is being installed IS a JS constructor.
+    let install = |body: &str| -> js_sys::Function {
+        js_sys::Function::new_no_args(body)
+            .call0(&wasm_bindgen::JsValue::NULL)
+            .expect("installing the stand-in constructor must not throw")
+            .unchecked_into::<js_sys::Function>()
+    };
+    let restore = |real: &js_sys::Function| {
+        js_sys::Reflect::set(
+            &js_sys::global(),
+            &wasm_bindgen::JsValue::from_str("Request"),
+            real,
+        )
+        .expect("restoring the real Request must not throw");
+    };
+
+    // --- the Firefox shape: stringifies, so it never looks at `duplex` ---
+    let real = install(
+        r#"
+        const real = globalThis.Request;
+        const fake = function (url, init) {
+            // Deliberately does NOT touch init.duplex — that is the point.
+            const r = new real(url, { method: (init && init.method) || 'GET' });
+            r.headers.set('Content-Type', 'text/plain;charset=UTF-8');
+            return r;
+        };
+        fake.prototype = real.prototype;
+        globalThis.Request = fake;
+        return real;
+        "#,
+    );
+    let saw_firefox = http_ng_fetch::testing::supports_streaming_request_body_for_test();
+    restore(&real);
+    assert!(
+        !saw_firefox,
+        "against a constructor that stringifies the stream and invents a Content-Type — the \
+         measured Firefox 153 behaviour — the probe must answer false; answering true here is \
+         what would put `[object ReadableStream]` on the wire in place of the caller's bytes"
+    );
+
+    // --- the Chrome shape: reads `duplex`, invents no Content-Type ---
+    let real = install(
+        r#"
+        const real = globalThis.Request;
+        const fake = function (url, init) {
+            if (init) { void init.duplex; }
+            const r = new real(url, { method: (init && init.method) || 'GET' });
+            r.headers.delete('Content-Type');
+            return r;
+        };
+        fake.prototype = real.prototype;
+        globalThis.Request = fake;
+        return real;
+        "#,
+    );
+    let saw_chrome = http_ng_fetch::testing::supports_streaming_request_body_for_test();
+    restore(&real);
+    assert!(
+        saw_chrome,
+        "against a constructor that reads `duplex` and invents no Content-Type — the measured \
+         Chrome 151 behaviour — the probe must answer true; answering false here would mean the \
+         probe is a hardcoded `false` and no browser could ever stream"
+    );
+}
+
+/// `full_duplex` is a separate field with a separate answer, and this test
+/// exists so the two cannot be collapsed back into one literal.
+///
+/// It is `false` on the merits, not for want of a probe. `duplex: "half"`
+/// is half duplex by name and by measurement: in the Chrome/h2 run the
+/// three body chunks went out at t = 294/594/894 ms and the `fetch` promise
+/// resolved only at 1206 ms — the response was not readable until the
+/// request body had finished. W3's floor rule applies to this field
+/// unchanged, and over-claiming it costs a caller a deadlock rather than a
+/// degradation.
+#[wasm_bindgen_test]
+fn full_duplex_stays_false_even_where_the_request_body_streams() {
+    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    assert!(
+        !c.full_duplex,
+        "streaming a request body is not duplex; `duplex: \"half\"` is in the name"
+    );
+}
+
+/// Pins the cheap check against the deciding one, which is the whole reason
+/// `supports_duplex` still exists (see its doc comment and
+/// whatwg/fetch#1470).
+///
+/// They agree in Chrome 151 (`true`/`true`) and Firefox 153
+/// (`false`/`false`), measured 2026-08-09. This test does not assert a
+/// direction — it asserts they have not diverged. The day it fails is the
+/// day a browser exposes `Request.prototype.duplex` and still refuses to
+/// send the stream (#1470's exact scenario), and on that day the right
+/// response is to update this test and the `caps.rs` comments that call the
+/// presence check "not currently wrong" — not to make the crate follow the
+/// cheap one.
+#[wasm_bindgen_test]
+fn the_cheap_presence_check_and_the_deciding_probe_still_agree() {
+    assert_eq!(
+        http_ng_fetch::testing::supports_duplex_for_test(),
+        http_ng_fetch::testing::supports_streaming_request_body_for_test(),
+        "`'duplex' in Request.prototype` and whatwg/fetch#1470's behavioural detection have \
+         diverged in this browser — the presence check has started lying, and `caps.rs`'s \
+         comments saying it is 'not currently wrong' need rewriting"
+    );
 }
 
 /// Not from the brief: `Capabilities` is `#[non_exhaustive]`, so this crate
