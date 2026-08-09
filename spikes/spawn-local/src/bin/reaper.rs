@@ -150,4 +150,21 @@ fn main() {
         println!("  pool now holds {} connection(s)", pool.len());
         report("D", &rx, swept.load(Ordering::SeqCst));
     }
+
+    // --- E. reaper on the SHIPPED Smol -------------------------------------
+    // `Smol::spawn` reaches a global executor on a *different* thread, so
+    // the reaper runs off-thread. That needs the pool to be `Sync`, not
+    // just `Send` — which the real `Pool`'s `Arc<Mutex<..>>` gives.
+    println!("\nE. reaper on `http_ng_rt_smol::Smol`, unmodified — off-thread executor, Send+Sync connection");
+    {
+        let (addr, rx) = server();
+        let swept = Arc::new(AtomicUsize::new(0));
+        let s = swept.clone();
+        let pool: Pool<std::net::TcpStream> = Pool::new();
+        pool.put("k", TcpStream::connect(addr).unwrap(), IDLE);
+        start_reaper(http_ng_rt_smol::Smol, pool.weak(), PERIOD, s);
+        futures_executor::block_on(async { async_io::Timer::after(OBSERVE).await });
+        println!("  pool now holds {} connection(s)", pool.len());
+        report("E", &rx, swept.load(Ordering::SeqCst));
+    }
 }
