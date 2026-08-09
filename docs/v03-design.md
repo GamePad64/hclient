@@ -507,3 +507,199 @@ gets wrong quietly.* A client MUST mask; an unmasked frame is a protocol
 error the server closes on, and it is invisible to a test that only checks
 that a message arrived. Whatever is built needs a server that rejects an
 unmasked frame, not one that tolerates it.
+
+---
+
+## W5 — The debts, decided one by one
+
+`docs/v02-acceptance.md` and `docs/v03-acceptance.md` between them record
+about two dozen things deliberately not done or not checked. A list like
+that decays into a backlog unless somebody says, per item, whether it is
+work. This section says so. Three verdicts: **promoted** (it became a work
+item above), **a commit** (small enough that it is not an item), and **a
+line** (not doing it, and the reason, so that nobody "fixes" an absence that
+is the decision).
+
+### Promoted
+
+| debt | where it went |
+|---|---|
+| No smol UDP backend, so h3 has no two-runtime acceptance | **W1** |
+| 0-RTT acceptance never observed end to end (rejection was) | **W1**, same suite |
+| No HTTPS/SVCB discovery | **W2**, minus the protocol choice, which has nowhere to live |
+| No ECH on the QUIC path | **W2** — but only the half that is dishonest. The QUIC refusal stays a refusal; what gets fixed is the rustls **TCP** path, which neither refuses nor honours |
+
+### A commit, not an item
+
+**`http-ng-h3`'s `connect` timeout.** All three `TimeoutSupport` fields are
+honestly `false`; `docs/v03-acceptance.md` calls `connect` "the cheapest to
+add and not added, because a declaration and its enforcement belong in the
+same change". That rule is v0.2 W4's, it is already written, and the change
+is one commit that moves both together.
+
+**WASI's `ReuseSupport::Supported` has an observer after all.**
+`docs/v02-acceptance.md` lists it as the one declaration no test stands
+behind, on the grounds that *"from inside the sandbox we cannot watch
+sockets"*. The observer does not have to be inside the sandbox, and in this
+suite it already is not: `crates/http-ng-wasi/tests/live_roundtrip.rs` runs
+the mock server as a plain `std::net::TcpListener` on a **host** thread and
+the guest as a wasmtime subprocess — that division is the file's whole
+design, and it is what made the cancellation measurement possible. Counting
+*accepted* connections across two guest requests is the same observer
+`crates/http-ng-native/tests/pool.rs` uses. The claim it yields is narrower
+than the capability ("this wasmtime host reuses"), and narrower than the
+capability is still infinitely more than nothing.
+
+**`http_ng_idn::testing::bundled` is called by nothing — and cannot be
+useful as written.** Zero callers: `crates/http-ng-idn/tests/differential.rs`
+uses `platform`, `platform_name`, `selected` and `policy_over`, and nothing
+else in the workspace names it. The reason is structural rather than an
+oversight. `build.rs` sets `idna_backend` only when the target has neither
+ICU nor Foundation (`crates/http-ng-idn/build.rs`, the last three `if`s),
+and `idna` is a dependency only under
+`cfg(not(any(windows, target_vendor = "apple")))` (`Cargo.toml:75-83`). So
+on every target where `testing::bundled` exists, it *is* the backend
+`domain_to_ascii` already uses — and the crate's own doc says what that
+makes a comparison worth (`src/lib.rs:776`: "on a target with the bundled
+backend that function *is* `idna::domain_to_ascii_cow`, so comparing it with
+`idna` compares `idna` with itself"). Two honest options: delete it, or make
+`idna` available alongside the platform backends — which costs the ICU
+tables back on Windows and macOS, i.e. exactly the saving the crate exists
+for. **Delete it.**
+
+### A line, and the reason
+
+- **No streaming request body and no full duplex on `http-ng-h3`.** HTTP/3
+  does both; `execute` writes the whole body and then reads the head, and
+  the capabilities describe the implementation. The technique for lifting it
+  without touching `Transport` is already written down twice — carry the
+  unfinished write future into `Self::Body` and poll it from `poll_frame`,
+  with the three costs `AGENTS.md`'s vertical-1 section enumerates. What
+  would move it up the list: a consumer that needs duplex, or a wish to give
+  the floor rule its first case where `full_duplex` is genuinely `true`
+  somewhere.
+- **No ECH implementation, on either path.** rustls builds ECH through a
+  different builder entry point, so it is a second construction path and a
+  third cache dimension. A typed refusal is the honest state, and after W2
+  it will be the state on all three backends rather than two.
+- **No reaper for dead pooled h3 connections.** Same shape and same reason
+  as v0.2 W2's HTTP/1 pool: a connection the peer closed is dropped at the
+  next checkout.
+- **`Native::with_reaper` after `pool()` watches a discarded pool.** Already
+  documented where the code is, as "Start it last"
+  (`crates/http-ng-native/src/lib.rs:341-348`): `pool()`/`without_pool()`
+  install a *new* pool, and a reaper started earlier holds a `Weak` to the
+  old one and ends quietly. The type-level fix is a typestate builder, which
+  is a large change to a constructor for a mis-ordering that has not
+  happened, and `with_reaper` already takes the `PoolConfig` itself so that
+  `pool()` need not be called beside it. Revisit if anyone hits it.
+- **GSO/GRO/ECN are unverified on macOS and Windows, and mutation M14
+  survives.** The tests assert the *relationship* between what a socket
+  claims and what it delivers, which holds on any kernel; asserting `64`
+  would be flaky by construction. M14 is killable on `macos-latest` and has
+  not been observed killed. One run of
+  `ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too` there, with
+  the mutation applied, settles it.
+- **A TLS ticket issued over TCP offered to a QUIC handshake.** Removed by
+  construction (a separate session store) rather than answered. What would
+  answer it is one server serving both with a shared ticketer.
+- **`two_requests_share_one_connection` failed once and was not
+  reproduced.** Kept in the record with the observed accept count printed,
+  so the next occurrence says whether the connection was replaced.
+- **The h3 idle A/B's timings are loose on purpose.** They would rather pass
+  on a loaded runner than measure anything precisely.
+- **`http-ng-fetch`'s `ReuseSupport::Supported` still has no observer**, and
+  unlike WASI's it cannot get one from inside the suite: every line of a
+  `wasm-bindgen-test` runs in the browser, so a listener cannot be started
+  by the test. What would settle it is a server started by CI outside the
+  browser, counting accepts — a job-shaped change, not a test-shaped one.
+- **Three `http-ng-idn` gaps stay open**: the ICU acceptance gate covers
+  *content* and not *presence* (killing that mutation needs a machine where
+  ICU is present but wrong); the Windows 1703 floor is checked by nothing;
+  and whether `CoInitializeEx` must precede `uidna_openUTS46` is unverified.
+  All three need a runner that no matrix currently has, or a deliberate
+  fault injection.
+- **The cookie gaps** — no `CookieJar<P>` through `ClientBuilder`, no
+  per-request control, `SameSite` parsed and not enforced — keep the reasons
+  `docs/v02-acceptance.md` gives. The third is not fixable at all outside a
+  browsing context.
+- **The concurrency limit bounds requests, not sockets.** Bounding sockets
+  needs a limiter that carries its permit into the response body — the shape
+  `http_ng::Deadline` and `http-ng-wasi`'s `Body` both use — owned by
+  `http-ng-tower` rather than borrowed from `tower`.
+- **`MockTransport` reports `Capabilities::none()`**, which is honest: its
+  `execute` completes synchronously and there is nothing to cancel.
+- **A `tower::buffer::Buffer` in the stack breaks the cancellation
+  contract**, and such a stack must declare `None`. Written down where the
+  stack is built.
+- **No per-request `total` override.** A per-handle bound costs one `Arc`
+  bump and covers most of the same ground; a per-request setter would need a
+  runtime flag existing only to be refused.
+- **Two `getaddrinfo` slots instead of one, and no RFC 6724 §6 sorting.**
+  The second is not deferred work but a missing capability: full destination
+  ordering needs Source Address Selection, i.e. the routing table, which no
+  trait here exposes. A partial implementation would look like compliance
+  without being it.
+
+---
+
+## W6 — `no_std`: the answer is still no, and the shape of the no is now measured
+
+**Why it is in this document at all.** `AGENTS.md` states the obstacle as
+one external `compile_error!` and moves on. That is a claim about someone
+else's crate, made once, and it is exactly the kind of premise this vertical
+learned to re-check. It was re-checked while writing, and three things came
+out of it — one of which says `AGENTS.md` is wrong today.
+
+**The blocker is unchanged.** `http` 1.5.0 is the newest release
+(`cargo info http`), and it still carries the commented-out
+`#![cfg_attr(not(feature = "std"), no_std)]` at `src/lib.rs:158` with
+`compile_error!("\`std\` feature currently required…")` on `:160`. Two pull
+requests are open and neither has been reviewed by a maintainer:
+[#749](https://github.com/hyperium/http/pull/749) (opened 2025-01-31, 517
+additions and 220 deletions across 22 files, currently conflicted — its only
+comment is this project's owner's, dated 2026-08-08) and
+[#740](https://github.com/hyperium/http/pull/740) (opened 2025-01-02, the
+`core::error` approach, MSRV 1.81 for the `no_std` path only). Check:
+`gh api repos/hyperium/http/pulls/749`.
+
+**Correction one: it is ten crates, not seven.** `AGENTS.md` says
+`http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API
+of seven crates here. `http` is a normal dependency of **ten**:
+`http-ng`, `-core`, `-cookie`, `-fetch`, `-h3`, `-mock`, `-native`,
+`-proto`, `-tower`, `-wasi`. Check: `grep -rn '^http *=' crates/*/Cargo.toml`.
+
+**Correction two: there is a second external blocker, and it is in worse
+shape.** `http-body` 1.1.0 is not `no_std` either — its `src/lib.rs` opens
+with `use std::convert::Infallible; use std::ops; use std::pin::Pin; use
+std::task::{Context, Poll};` and declares no `#![no_std]` — and it is a
+dependency of most of the same crates. Unlike `http`, it has **no open
+request at all**: `gh api repos/hyperium/http-body/issues` lists twenty open
+issues and not one about `no_std`. `AGENTS.md` does not mention it.
+
+**Correction three, and it is the useful one: our own code is not the
+obstacle.** Measured on this tree:
+
+- `http-ng-proto` — the sans-io crate, the one that would matter for a
+  microcontroller — uses exactly four `std::` paths outside its tests:
+  `collections::VecDeque`, `net::IpAddr`, `borrow::Cow` and (in a test only)
+  `time::Instant`. Three of those are `alloc`/`core` items with a stable
+  home (`core::net::IpAddr` since 1.77). Check:
+  `grep -rho 'std::[a-z_]*' crates/http-ng-proto/src`.
+- `http-ng-core` adds `error::Error` — stable in `core` since 1.81, which
+  this project's "latest stable" MSRV comfortably clears — plus `fmt`,
+  `task`, `pin`, `future` and `sync::Arc`.
+
+So the honest statement is not "we depend on `std`" but "**two crates in
+hyper's own family do, and until they stop, nothing downstream can**". That
+is worth having written down precisely, because it changes what the next
+person does: not an audit of this workspace, but one look at whether
+hyperium has merged #740 or #749.
+
+**Deliverable.** Not a feature, and not a flag — one would not build. Three
+corrections to `AGENTS.md`, the measurements above recorded once, and
+nothing in `crates/`. Everything else about constrained targets is already
+covered by what exists: `NoTls`, `IpLiteralOnly`,
+`crates/http-ng-native/examples/minimal.rs`, and — for parts that do have
+`std` — `http-ng-rt-embassy`, which is where the microcontroller story
+actually lives.
