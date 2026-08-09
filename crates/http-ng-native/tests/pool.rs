@@ -474,7 +474,9 @@ struct LateEof(Tokio, u8);
 
 impl http_ng_rt::Timer for LateEof {
     type Instant = <Tokio as http_ng_rt::Timer>::Instant;
-    fn sleep(&self, d: Duration) -> impl std::future::Future<Output = ()> {
+    /// Delegation stays exact: the wrapper's sleep IS the inner clock's.
+    type Sleep = <Tokio as http_ng_rt::Timer>::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         self.0.sleep(d)
     }
     fn now(&self) -> Self::Instant {

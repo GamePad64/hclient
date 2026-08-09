@@ -539,28 +539,50 @@ impl http_ng_rt::TcpConnect for NeverConnects {
 /// probe needs to observe that a REAL 50 ms deadline actually elapses in
 /// wall-clock time relative to a real `std::thread::sleep`-based watchdog,
 /// not just that the scheduler's arithmetic is internally consistent.
-impl http_ng_rt::Timer for NeverConnects {
-    type Instant = std::time::Instant;
-    async fn sleep(&self, d: Duration) {
-        // No tokio/smol reactor available in this plain #[test] — a
-        // dedicated thread plus a polled flag, the same shape `connect.rs`'s
-        // own `bounded_block_on` watchdog and `Native::testing::BlockingIo`
-        // use for "no reactor, but still real wall-clock time".
+/// A real wall-clock sleep with no reactor, as a **named** future.
+///
+/// Both clocks in this file need one and both used to write the same
+/// `async fn` body; `Timer::Sleep` needs a name, and needing a name is
+/// what merged the two copies. The construction is unchanged: a dedicated
+/// thread plus a polled flag, the same shape `connect.rs`'s own
+/// `bounded_block_on` watchdog and `Native::testing::BlockingIo` use for
+/// "no reactor, but still real wall-clock time".
+struct ThreadSleep {
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ThreadSleep {
+    fn new(d: Duration) -> Self {
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done2 = done.clone();
         std::thread::spawn(move || {
             std::thread::sleep(d);
             done2.store(true, std::sync::atomic::Ordering::SeqCst);
         });
-        std::future::poll_fn(move |cx| {
-            if done.load(std::sync::atomic::Ordering::SeqCst) {
-                std::task::Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
-        })
-        .await
+        Self { done }
+    }
+}
+
+impl std::future::Future for ThreadSleep {
+    type Output = ();
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if self.done.load(std::sync::atomic::Ordering::SeqCst) {
+            std::task::Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    }
+}
+
+impl http_ng_rt::Timer for NeverConnects {
+    type Instant = std::time::Instant;
+    type Sleep = ThreadSleep;
+    fn sleep(&self, d: Duration) -> ThreadSleep {
+        ThreadSleep::new(d)
     }
     fn now(&self) -> std::time::Instant {
         std::time::Instant::now()
@@ -681,24 +703,9 @@ impl http_ng_rt::TcpConnect for LoggingNeverConnects {
 }
 impl http_ng_rt::Timer for LoggingNeverConnects {
     type Instant = std::time::Instant;
-    async fn sleep(&self, d: Duration) {
-        // Real sleep on a helper thread, same construction as
-        // `NeverConnects::sleep` above — this file has no reactor.
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done2 = done.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(d);
-            done2.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-        std::future::poll_fn(move |cx| {
-            if done.load(std::sync::atomic::Ordering::SeqCst) {
-                std::task::Poll::Ready(())
-            } else {
-                cx.waker().wake_by_ref();
-                std::task::Poll::Pending
-            }
-        })
-        .await
+    type Sleep = ThreadSleep;
+    fn sleep(&self, d: Duration) -> ThreadSleep {
+        ThreadSleep::new(d)
     }
     fn now(&self) -> std::time::Instant {
         std::time::Instant::now()

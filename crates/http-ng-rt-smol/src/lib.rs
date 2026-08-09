@@ -6,7 +6,8 @@
 #![forbid(unsafe_code)]
 
 use http_ng_rt::{
-    Blocking, Cancelled, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
+    Blocking, Cancelled, Discard, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts,
+    TcpOptsSupport, Timer,
 };
 use std::future::Future;
 use std::net::SocketAddr;
@@ -17,11 +18,22 @@ pub struct Smol;
 
 impl Timer for Smol {
     type Instant = Instant;
-    // `async fn`, not `fn sleep(...) -> impl Future<Output = ()> { async move
-    // { ... } }`: that form triggers `clippy::manual_async_fn`, on by
-    // default under this workspace's `-D warnings`.
-    async fn sleep(&self, d: Duration) {
-        async_io::Timer::after(d).await;
+    /// **The adapter is not redundant, and it is not a mistake.**
+    /// `async_io::Timer` is a `Future` whose `Output` is the
+    /// `std::time::Instant` at which it fired, not `()`. While
+    /// `Timer::sleep` was an RPITIT this file wrote `async_io::Timer::
+    /// after(d).await;` inside an `async fn` and the instant was dropped
+    /// invisibly by the trailing semicolon. A named associated type has to
+    /// state the conversion, and [`Discard`] is where it is stated — once,
+    /// in `http-ng-core`, shared with `http-ng-fetch`, whose browser timer
+    /// resolves to a `Result<JsValue, JsValue>` for the same reason.
+    ///
+    /// Nothing about the timing changed; the previous `async fn` form was
+    /// chosen only to avoid `clippy::manual_async_fn`, which a plain
+    /// constructor does not trip.
+    type Sleep = Discard<async_io::Timer>;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
+        Discard(async_io::Timer::after(d))
     }
     fn now(&self) -> Instant {
         Instant::now()

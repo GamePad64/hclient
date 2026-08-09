@@ -5,3 +5,9 @@ Cargo.lock.bak
 
 # Playwright/MCP scratch, from browser measurements
 .playwright-mcp/
+/.spike-target
+
+# Spikes: throwaway crates that prove a shape before it is built.
+# Their findings live in docs/; the code itself is not carried, because
+# nothing builds it and an unbuilt crate rots into a lie.
+spikes/

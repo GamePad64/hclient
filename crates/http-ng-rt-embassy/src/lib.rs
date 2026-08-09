@@ -146,8 +146,12 @@ impl<const N: usize, const TX: usize, const RX: usize> Embassy<N, TX, RX> {
 impl<const N: usize, const TX: usize, const RX: usize> Timer for Embassy<N, TX, RX> {
     type Instant = embassy_time::Instant;
 
-    async fn sleep(&self, d: Duration) {
-        embassy_time::Timer::after(to_embassy(d)).await;
+    /// `embassy_time::Timer` already resolves to `()`, so unlike the smol
+    /// backend this needs no `Discard` adapter — the type names itself.
+    type Sleep = embassy_time::Timer;
+
+    fn sleep(&self, d: Duration) -> Self::Sleep {
+        embassy_time::Timer::after(to_embassy(d))
     }
 
     fn now(&self) -> Self::Instant {

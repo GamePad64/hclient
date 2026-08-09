@@ -44,7 +44,7 @@
 
 use crate::promise::SendJsFuture;
 use core::time::Duration;
-use http_ng_core::unversioned::Timer;
+use http_ng_core::unversioned::{Discard, Timer};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 
@@ -67,7 +67,27 @@ impl Timer for BrowserClock {
     // `js_sys::Date::now()`'s own unit.
     type Instant = f64;
 
-    fn sleep(&self, d: Duration) -> impl std::future::Future<Output = ()> {
+    /// **The adapter is not redundant.** [`SendJsFuture`] resolves to
+    /// `Result<JsValue, JsValue>`, not `()`, so a named `Timer::Sleep`
+    /// has to say what happens to that value. It used to be discarded
+    /// invisibly by the `let _ =` inside an `async` block; now the
+    /// discard is in the type, and the reasoning that justifies it — a
+    /// `setTimeout` promise structurally cannot reject — is the comment
+    /// on that `let _ =`, kept below on the constructor.
+    ///
+    /// `http-ng-rt-smol` needs the same adapter for the same reason
+    /// (`async_io::Timer` resolves to an `Instant`), which is why
+    /// `Discard` lives in `http-ng-core` rather than in either backend.
+    ///
+    /// Nothing in the old `async` block ran *after* the await, so moving
+    /// the promise construction out of it is a pure re-association: the
+    /// `setTimeout` call now happens when `sleep` is called rather than
+    /// on the first poll. For a timer that is the more correct of the
+    /// two — the delay starts when the caller asked for it, not whenever
+    /// somebody first polls.
+    type Sleep = Discard<SendJsFuture>;
+
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         // The previous version of this comment claimed the multiply
         // saturates to `f64::INFINITY` for a pathological `Duration` and
         // that the browser then clamps to a ~24.8-day maximum — both
@@ -86,36 +106,35 @@ impl Timer for BrowserClock {
         // `Duration::MAX` — but the comment shouldn't assert a precise
         // behavior nobody verified.
         let ms = d.as_secs_f64() * 1000.0;
-        async move {
-            let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-                // `js_sys::global()`, not `web_sys::window()`: this must
-                // also work from a dedicated Worker, which has no `window`
-                // — the same reasoning `Fetch::execute` already documents
-                // for finding `fetch` itself.
-                let global = js_sys::global();
-                let set_timeout = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
-                    .expect(
-                        "global scope exposes setTimeout — true of Window \
-                             and every WorkerGlobalScope",
-                    )
-                    .unchecked_into::<js_sys::Function>();
-                // Errors here mean the host lied about having `setTimeout`,
-                // which the `expect` above already ruled out — nothing left
-                // to recover from, and `call2`'s `Result` exists for
-                // exactly the case just excluded.
-                set_timeout
-                    .call2(&global, &resolve, &JsValue::from_f64(ms))
-                    .expect("setTimeout, once found, does not reject a numeric delay");
-            });
-            // A rejected timer promise isn't a real failure mode of
-            // `setTimeout` (it never rejects) — discarding the `Result`
-            // here isn't a silent no-op over a real error channel, it's
-            // acknowledging one that structurally cannot fire. `SendJsFuture`,
-            // not `wasm_bindgen_futures::JsFuture`: see the module doc
-            // comment on why this is what keeps this file free of a second
-            // `unsafe`.
-            let _ = SendJsFuture::new(promise).await;
-        }
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            // `js_sys::global()`, not `web_sys::window()`: this must
+            // also work from a dedicated Worker, which has no `window`
+            // — the same reasoning `Fetch::execute` already documents
+            // for finding `fetch` itself.
+            let global = js_sys::global();
+            let set_timeout = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+                .expect(
+                    "global scope exposes setTimeout — true of Window \
+                         and every WorkerGlobalScope",
+                )
+                .unchecked_into::<js_sys::Function>();
+            // Errors here mean the host lied about having `setTimeout`,
+            // which the `expect` above already ruled out — nothing left
+            // to recover from, and `call2`'s `Result` exists for
+            // exactly the case just excluded.
+            set_timeout
+                .call2(&global, &resolve, &JsValue::from_f64(ms))
+                .expect("setTimeout, once found, does not reject a numeric delay");
+        });
+        // A rejected timer promise isn't a real failure mode of
+        // `setTimeout` (it never rejects) — discarding the `Result` here
+        // isn't a silent no-op over a real error channel, it's
+        // acknowledging one that structurally cannot fire. That discard is
+        // now `Discard`, in the return type, rather than a `let _ =`
+        // buried in an async block. `SendJsFuture`, not
+        // `wasm_bindgen_futures::JsFuture`: see the module doc comment on
+        // why this is what keeps this file free of a second `unsafe`.
+        Discard(SendJsFuture::new(promise))
     }
 
     fn now(&self) -> Self::Instant {

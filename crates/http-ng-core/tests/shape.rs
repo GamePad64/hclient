@@ -289,8 +289,13 @@ struct Fake(std::cell::Cell<u64>);
 
 impl Timer for Fake {
     type Instant = u64;
+    /// The whole point of `type Sleep`: a name. `Ready<()>` is the
+    /// cheapest one that satisfies the trait.
+    type Sleep = std::future::Ready<()>;
 
-    async fn sleep(&self, _d: core::time::Duration) {}
+    fn sleep(&self, _d: core::time::Duration) -> Self::Sleep {
+        std::future::ready(())
+    }
 
     fn now(&self) -> Self::Instant {
         let v = self.0.get();

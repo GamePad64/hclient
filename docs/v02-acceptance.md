@@ -51,14 +51,30 @@ request.
 
 ## Three things that were found rather than designed
 
-**`Spawn` was never usable here, so the pool never had a choice.**
-`http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and the native IO is
-deliberately not `Send` — `connect.rs`'s `FakeStream` holds an `Rc<()>` for
-the sole purpose of proving it. So "a pool driven by a spawned background
-task" does not compile on this seam at all; the design doc's framing of it
-as a trade-off was wrong, and there was one option, not two. What exists
-instead is a poll at checkout plus a second look while the request is still
-ours.
+**`Spawn` was never usable here, so the pool never had a choice** — **and
+this, the origin of a sentence three later pieces of work built on, is
+wrong.** It read: "`http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and
+the native IO is deliberately not `Send` — `connect.rs`'s `FakeStream` holds
+an `Rc<()>` for the sole purpose of proving it. So 'a pool driven by a
+spawned background task' does not compile on this seam at all." Measured
+afterwards, both halves fail. `Spawn<F>` declares **no bounds**; `Send +
+'static` belongs to the `Tokio` and `Smol` impls. `FakeStream` is a test
+stub, and the inference ran from "the test does not require `Send`" to
+"production cannot have it" — a fixture built to prove an absence taken as
+evidence about a presence. A reaper over this pool (`Arc<Inner<I>>` around a
+`Mutex`) compiles and runs on the shipped `Tokio` and the shipped `Smol`,
+measured against a real socket with the server observing the close.
+
+What is true is narrower and was not noticed: `Spawn<F>` makes the future a
+type parameter of the *trait*, so a bound must name it, and an `async` block
+has no name. Generic library code cannot spawn a future it wrote itself,
+whatever the auto traits say — the same wall the h2 bullet below hits with
+hyper's private `H2ClientFuture`, not recognised there as a property of the
+trait. And the pool's conclusion survives on a different footing:
+`Native` is generic over `R`, not every `R` has a `Spawn` impl, so a reaper
+in `Native::new` would be a default stronger than the truth. Opt-in with a
+bound, not impossible. What exists today is still a poll at checkout plus a
+second look while the request is still ours.
 
 **A hang in hyper's dispatcher that would otherwise have shipped.** Reading
 it to implement retry turned up a window where a keep-alive connection
@@ -81,9 +97,19 @@ Recorded, not hidden — and each with the reason, because a bare list invites
 someone to "fix" an item whose absence is the decision.
 
 - **No reaper for idle sockets.** The idle timeout is a filter applied at
-  checkout, not a background task that closes what has gone stale. Without
-  `Spawn` — see above — there is nobody to run one. A client that goes quiet
-  for an hour holds its sockets until the next request or until `Drop`.
+  checkout, not a background task that closes what has gone stale. A client
+  that goes quiet for an hour holds its sockets until the next request or
+  until `Drop`.
+
+  Not "because `Spawn` cannot run one" — see the correction above, where
+  that claim was measured and withdrawn; a reaper compiles and runs on both
+  shipped runtimes. Because `Native` is generic over `R` and not every `R`
+  can spawn, so starting one in `Native::new` would be a default stronger
+  than the truth. The opt-in shape is a constructor bounded on
+  `R: Spawn<Reaper<R, I>>`, and one piece of it has since landed:
+  `http_ng_rt_tokio::TokioHandle`, whose `spawn` works off a runtime thread
+  where the ZST `Tokio`'s panics — which is where a client is usually
+  constructed. The constructor itself is still not written.
 - **No pool shared between clients.** Each `Native` owns its own, which is
   why the TLS configuration identity in `PoolKey` is a constant within any
   one pool today. The field is not decoration: it must be in the key before
@@ -93,13 +119,30 @@ someone to "fix" an item whose absence is the decision.
   our checkout poll and our write. Every HTTP/1 pool has this, hyper and
   reqwest included; the retry is what makes it recoverable rather than
   visible.
-- **`total` does not cut a body that goes completely silent after the head.**
-  `Timer::sleep` is an RPITIT, so its future cannot be stored in a struct
-  field, and boxing it would make *every* response body `!Send`. The body
-  wrapper therefore checks elapsed time on each `poll_frame`, which catches
-  a dribbling body on its next byte and never wakes for one that stops
-  entirely. That is `between_bytes`' job, and `between_bytes` is still
-  honestly declared `false`.
+- **`total` does not cut a body that goes completely silent after the head**
+  — **still true, but no longer for the reason given here, and no longer
+  permanent.** The body wrapper checks elapsed time on each `poll_frame`,
+  which catches a dribbling body on its next byte and never wakes for one
+  that stops entirely. That is `between_bytes`' job, and `between_bytes` is
+  still honestly declared `false`.
+
+  The reason this bullet used to give was: "`Timer::sleep` is an RPITIT, so
+  its future cannot be stored in a struct field, and boxing it would make
+  *every* response body `!Send`." The first half has since been fixed at
+  the source — `Timer` now carries an associated `Sleep` type, so the
+  future has a name and can be a field. The second half was right only
+  about `Pin<Box<dyn Future>>`; a box around a *concrete* `Tm::Sleep` is
+  transparent to auto traits, so `Send` survives. Measured with a counting
+  waker and no executor running at all: the elapsed-time wrapper registers
+  **zero** wakes after one `Pending` poll on a silent body and can
+  therefore never fire, while a wrapper holding the sleep registers one and
+  fires on its own deadline.
+
+  So this is now a **decision not to change behaviour in that work item**,
+  not a limitation of the seam. Racing a real sleep changes when a transfer
+  is cancelled and wants its own measurement and its own tests; see
+  `Deadline`'s doc comment, which carries the same correction next to the
+  code.
 - **The concurrency limit bounds requests, not sockets.** `tower` releases
   its permit when the `call` future completes — at the response head — so a
   streaming body holds its connection outside the limit. The design doc

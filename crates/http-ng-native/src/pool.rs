@@ -8,24 +8,62 @@
 //! either something polls it or nothing does — and this transport is
 //! deliberately built **without `Spawn`**, so nothing does.
 //!
-//! That is not a corner cut for simplicity. `http_ng_rt::Spawn<F>` requires
-//! `F: Send + 'static`, and this vertical's IO is deliberately not `Send`
-//! (`connect.rs`'s `FakeStream` holds an `Rc<()>` for the sole purpose of
-//! proving that no path here requires it). So "a pool driven by a spawned
-//! task" is not an option that was weighed and rejected — on this seam it
-//! does not compile at all. Making `Spawn` a requirement of `Native` would
-//! mean losing the property that `tests/h1.rs::
-//! works_on_a_bare_futures_executor_with_no_spawn` and
-//! `http-ng/tests/two_runtimes.rs` exist to hold.
+//! **Why there is no reaper, corrected.** This paragraph used to say that
+//! a pool driven by a spawned task "does not compile at all on this seam",
+//! because `http_ng_rt::Spawn<F>` requires `F: Send + 'static` and this
+//! vertical's IO is not `Send`. **That was measured and is false.**
+//! `http_ng_rt::Spawn<F>` requires nothing — the trait has zero bounds, and
+//! its own doc comment says why; `Send + 'static` is added by two *impls*.
+//! And a reaper over this pool is `Send` whenever the connection is,
+//! because [`Pool`] is an `Arc<Inner<I>>` around a `Mutex`, so it compiles
+//! on the shipped `Tokio` and the shipped `Smol` for the shipped
+//! connection type — measured against a real socket, with the server
+//! observing the close.
 //!
-//! What replaces it is a **check at checkout**: before a pooled connection
-//! is used, [`crate::h1::is_reusable`] polls its `Connection` exactly once
-//! and asks `SendRequest::poll_ready`. One poll is enough to see a server
-//! that closed the socket while it was idle, because a reactor's readiness
-//! is remembered rather than delivered: the `FIN` sits in the kernel and in
-//! the reactor's state until somebody reads it, and the first poll with a
-//! live waker does. On a bare executor with no reactor at all it is even
-//! more direct — the poll reads the socket.
+//! **How the mistake was made, because it is the reusable part.** The
+//! reasoning went from `connect.rs`'s `FakeStream` — a *test* stub holding
+//! an `Rc<()>` — to the shipped path. The stub holds that `Rc` precisely
+//! to prove that no path here *requires* `Send`; from "the test does not
+//! require it" was inferred "production cannot have it". A fixture built
+//! to prove an absence is not evidence about presence, and this project
+//! writes such things down where they happened.
+//!
+//! **The reason that does hold, and it is the project's own rule.**
+//! [`crate::Native`] is generic over `R`, and not every `R` has a `Spawn`
+//! impl at all — `connect.rs`'s own `FakeRt` has none, and W7's embassy
+//! survey expects none either. A reaper started by `Native::new` would
+//! therefore assume a capability the type parameter does not promise: **a
+//! default stronger than the truth**, which is the one thing this crate
+//! refuses everywhere else. So there is no reaper *by default*; the shape
+//! for opting in is a constructor bounded on `R: Spawn<Reaper<R, I>>`, so
+//! that a runtime which cannot spawn is a compile error where the caller
+//! wrote it rather than a reaper that never fires. Not implemented here
+//! yet — see `docs/v02-design.md` §W2.
+//!
+//! One piece of it has landed since: `http_ng_rt_tokio::TokioHandle`, which
+//! carries a `tokio::runtime::Handle` instead of reading one out of a
+//! thread-local, so its `Spawn` works off a runtime thread — which is where
+//! a client is usually constructed. The shipped ZST `Tokio` panics there.
+//! That would otherwise be a second default stronger than the truth,
+//! hidden inside the first.
+//!
+//! Two things the correction does *not* change. Making `Spawn` a
+//! *requirement* of `Native` would still lose the property that
+//! `tests/h1.rs::works_on_a_bare_futures_executor_with_no_spawn` and
+//! `http-ng/tests/two_runtimes.rs` exist to hold — hence opt-in rather
+//! than mandatory. And the checkout poll below is still what makes the
+//! pool correct; a reaper is a resource optimisation on top of it, not a
+//! replacement for it.
+//!
+//! What replaces it *by default* is a **check at checkout**: before a
+//! pooled connection is used, [`crate::h1::is_reusable`] polls its
+//! `Connection` exactly once and asks `SendRequest::poll_ready`. One poll
+//! is enough to see a server that closed the socket while it was idle,
+//! because a reactor's readiness is remembered rather than delivered: the
+//! `FIN` sits in the kernel and in the reactor's state until somebody
+//! reads it, and the first poll with a live waker does. On a bare executor
+//! with no reactor at all it is even more direct — the poll reads the
+//! socket.
 //!
 //! Three consequences, all real, all deliberate, none of them hidden:
 //!
@@ -39,7 +77,8 @@
 //!    out a connection older than this", not "close a connection older than
 //!    this": a client that goes quiet for an hour leaves its sockets open
 //!    until it makes another request or the `Native` is dropped. This is
-//!    the price of no-spawn, and it is named here rather than discovered.
+//!    the price of the default having no spawner — not, as this file used
+//!    to say, of a reaper being impossible.
 //! 3. **A race remains.** A server may close between our check and our
 //!    write. That window cannot be closed by any HTTP/1 pool — hyper's own
 //!    has it too — so it is handled rather than prevented: see the retry in
@@ -114,6 +153,11 @@
 //! slow consumer wedges unrelated requests. Not worth it here; a client
 //! that wants concurrency to the same origin gets a second connection,
 //! same as on h1.
+//!
+//! That argument survives the correction above unchanged, because it never
+//! rested on "no spawner can exist" — only on "the default has none". A
+//! build that opts into a spawner could multiplex; it would then owe W1's
+//! rule an implementation, which today it gets for free.
 //!
 //! Two things follow, and the second one has to be said out loud because
 //! it is a consequence of *this policy* rather than of the h2 code:

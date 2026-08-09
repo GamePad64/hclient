@@ -15,6 +15,11 @@ tokio      = { version = "1", features = ["net", "rt", "time", "sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `TokioHandle`'s tests drive tokio futures on an executor that is not
+# tokio: the claim is that a `Sleep` built through a carried handle is
+# afterwards pollable by anyone, and `#[tokio::test]` cannot check that
+# because it is itself the runtime.
+futures-executor = "0.3"
 
 [lints]
 workspace = true
