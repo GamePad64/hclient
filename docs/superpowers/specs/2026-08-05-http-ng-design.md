@@ -2157,3 +2157,38 @@ unmarked `unsafe` still fails; a non-exempt crate that drops
 `[lints] workspace = true` fails; and a non-exempt crate that writes `unsafe`
 is left to rustc, whose `forbid` refuses to compile it (checked separately —
 `error: usage of an unsafe block`, citing the workspace table).
+
+### C10. `http-ng-h3` declares `Send` because `quinn::Runtime` does
+
+The third class, and the first where the bound comes from **neither**
+erasure (C1/C2) **nor** a capability trait this project designed (C5).
+
+`http-ng-h3` implements `quinn::Runtime`, `quinn::AsyncTimer`,
+`quinn::AsyncUdpSocket` and `quinn::UdpPoller` from outside quinn — which
+is the whole reason HTTP/3 was reachable here at all, where hyper's sealed
+`Http2ClientConnExec` made the equivalent impossible for HTTP/2. quinn
+declares `Runtime: Send + Sync + Debug + 'static` (`quinn-0.11.11/src/
+runtime.rs:16`) and hands its driver over as
+`Pin<Box<dyn Future<Output = ()> + Send>>`. Those are quinn's conditions,
+not ours; a crate that implements the trait either satisfies them or does
+not implement it.
+
+**The bound is deliberately confined to this crate and does not reach a
+seam.** The design proposed putting `Send + Sync + 'static` on
+`UdpBind::Socket` itself; that was rejected, because one consumer's
+requirement would then tax every implementer — an embassy UDP backend can
+implement `UdpBind` honestly and report `UdpCaps::NONE` without a `Send` it
+cannot give. So every bound lives in `http_ng_h3::H3`'s where-clause, where
+the compile error lands on whoever asked for QUIC.
+
+The consequence is stated rather than hidden: **HTTP/3 requires
+`R: Spawn`**, and therefore a runtime that can carry a `Send` future. That
+excludes exactly the runtimes UDP had already excluded — quinn refuses a
+`!Send` runtime itself (measured: `E0277` on an `Rc<()>` inside the runtime
+type) — so it takes nothing from embassy that was still there to take.
+
+The marker is `send-bound-exception: amendment-C10`, and the sites are the
+where-clauses and type aliases in `crates/http-ng-h3/src/{lib,runtime}.rs`.
+It is cited nowhere else: a bound demanded by a *different* third-party
+trait would be a different amendment, because the argument is about which
+external contract is being satisfied and cannot be reused by gesture.

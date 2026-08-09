@@ -351,23 +351,30 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
 /// wants QUIC, rather than on [`UdpBind`] where every implementer would pay
 /// them. See `crate::runtime`'s module doc.
 pub trait H3Runtime:
-    Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static
+    Timer
+    + UdpBind
+    + UdpAdoptStd
+    + Spawn<QuinnTask>
+    + Clone
+    + Send // send-bound-exception: amendment-C10
+    + Sync // send-bound-exception: amendment-C10
+    + 'static
 {
 }
 
 impl<R> H3Runtime for R
 where
-    R: Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static,
-    R::Sleep: Send + 'static,
-    R::Socket: fmt::Debug + Send + Sync + 'static,
+    R: Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
 }
 
 impl<R, T, D> H3<R, T, D>
 where
     R: H3Runtime,
-    R::Sleep: Send + 'static,
-    R::Socket: fmt::Debug + Send + Sync + 'static,
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: http_ng_dns::Resolve,
 {
@@ -586,8 +593,8 @@ where
 impl<R, T, D> Transport for H3<R, T, D>
 where
     R: H3Runtime,
-    R::Sleep: Send + 'static,
-    R::Socket: fmt::Debug + Send + Sync + 'static,
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: http_ng_dns::Resolve,
 {

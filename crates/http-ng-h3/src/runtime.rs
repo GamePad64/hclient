@@ -63,7 +63,7 @@ use std::time::Instant;
 /// hand over an `async` block; it hands over exactly this type, which
 /// `impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio`
 /// accepts verbatim.
-pub type QuinnTask = Pin<Box<dyn Future<Output = ()> + Send>>;
+pub type QuinnTask = Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C10
 
 /// The runtime seam, dressed as a `quinn::Runtime`.
 pub struct SeamRuntime<R> {
@@ -87,9 +87,9 @@ impl<R> fmt::Debug for SeamRuntime<R> {
 
 impl<R> quinn::Runtime for SeamRuntime<R>
 where
-    R: Timer + UdpAdoptStd + http_ng_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static,
-    R::Sleep: Send + 'static,
-    R::Socket: fmt::Debug + Send + Sync + 'static,
+    R: Timer + UdpAdoptStd + http_ng_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
     fn new_timer(&self, i: Instant) -> Pin<Box<dyn quinn::AsyncTimer>> {
         Box::pin(SeamTimer::new(self.rt.clone(), i))
@@ -151,8 +151,8 @@ impl<R: Timer> fmt::Debug for SeamTimer<R> {
 
 impl<R> quinn::AsyncTimer for SeamTimer<R>
 where
-    R: Timer + Send + 'static,
-    R::Sleep: Send + 'static,
+    R: Timer + Send + 'static, // send-bound-exception: amendment-C10
+    R::Sleep: Send + 'static,  // send-bound-exception: amendment-C10
 {
     fn reset(self: Pin<&mut Self>, i: Instant) {
         let mut this = self.project();
@@ -255,7 +255,7 @@ impl<S: UdpDatagrams> SeamSocket<S> {
 
 impl<S> quinn::AsyncUdpSocket for SeamSocket<S>
 where
-    S: UdpDatagrams + fmt::Debug + Send + Sync + 'static,
+    S: UdpDatagrams + fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
     fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn quinn::UdpPoller>> {
         Box::pin(SeamPoller(self))
@@ -343,7 +343,7 @@ struct SeamPoller<S>(Arc<SeamSocket<S>>);
 
 impl<S> quinn::UdpPoller for SeamPoller<S>
 where
-    S: UdpDatagrams + fmt::Debug + Send + Sync + 'static,
+    S: UdpDatagrams + fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
     fn poll_writable(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.0.poll_writable_shared(cx)
@@ -362,9 +362,9 @@ where
 /// demands it.
 pub(crate) fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
 where
-    R: Timer + UdpAdoptStd + http_ng_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static,
-    R::Sleep: Send + 'static,
-    R::Socket: fmt::Debug + Send + Sync + 'static,
+    R: Timer + UdpAdoptStd + http_ng_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
 {
     let socket = Arc::new(SeamSocket::new(UdpBind::bind(rt, local)?));
     quinn::Endpoint::new_with_abstract_socket(
