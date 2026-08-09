@@ -123,6 +123,38 @@
 //!   wrapped in a watchdog with a ceiling (see `tests/h1.rs`), rather than
 //!   left as a bare `block_on`.
 //!
+//! # `101 Switching Protocols`: measured, and not a pool bug
+//!
+//! Recorded here because it is the kind of question that gets asked twice.
+//! This crate handles no upgrades and mentions `101` nowhere else, and the
+//! shape above invites the worry that a `101` — a response whose body ends
+//! at once — walks straight through [`H1Body::hand_back_to_pool`] and
+//! parks a socket that has stopped speaking HTTP. `docs/v03-design.md`
+//! §W4 listed that as the first thing to run before any WebSocket work.
+//! It was run, and the answer is **no**.
+//!
+//! hyper decodes a `101` as a zero-length body with `keep_alive = false`
+//! and `wants_upgrade` (`proto/h1/role.rs:1273` and `:1169-1177`), so its
+//! dispatcher is done as soon as the head is delivered: the same
+//! `Connection::poll` that produced the response reaches
+//! `Dispatched::Upgrade`, calls `pending.manual()` and returns
+//! `Ready(Ok(()))` (`client/conn/http1.rs:313-320`). [`exchange`]'s
+//! `poll_fn` polls the connection *before* the request future, and the
+//! request future can only resolve from inside that same poll — so
+//! `conn_done` is already `true` when the response appears, and the body
+//! is built with `conn: None, reuse: None`. Nothing that could reach the
+//! pool survives the function, and the socket closes when its locals drop.
+//! Pinned in two places: `a_101_is_never_offered_to_the_pool` below for
+//! the mechanism, and `tests/switching_protocols.rs` for the consequence,
+//! with the server's accept count and the upgraded socket as the observer.
+//!
+//! What is **not** settled by that is the upgrade itself. `pending.manual()`
+//! destroys it, and hyper reports the destruction as `Ready(Ok(()))` — so
+//! "the exchange finished" and "the upgrade was thrown away" are the same
+//! observation from here, and a WebSocket seam cannot be built on top of
+//! polling `Connection` as a `Future`. That is v0.3 W4's problem, and it
+//! is a feature that does not exist rather than a defect in what does.
+//!
 //! `exchange` returns a `Response<H1Body>`: `Connection` is not
 //! dropped when the function returns — it moves INTO THE BODY
 //! (`H1Body::conn`) and lives exactly as long as the body lives, or
@@ -771,6 +803,85 @@ mod tests {
             .header("host", "example.invalid")
             .body(OutgoingBody::from_request_body(RequestBody::Empty))
             .unwrap()
+    }
+
+    /// A `101` never reaches the pool, and the reason is not the pool's.
+    ///
+    /// `tests/switching_protocols.rs` measures the consequence from the
+    /// server's side of a real socket; this test measures the mechanism,
+    /// which is one poll's ordering and is otherwise invisible. hyper
+    /// finishes its dispatcher inside the very `Connection::poll` that
+    /// delivers a 101 head — zero-length body, `keep_alive = false`,
+    /// `Dispatched::Upgrade`, `Ready(Ok(()))` — and [`exchange`] polls the
+    /// connection before the request future, so `conn_done` is already
+    /// `true` when the response appears and the body is built with neither
+    /// a connection nor a check-in token.
+    ///
+    /// The two assertions are deliberately not the same one. The fields
+    /// say the connection was never *offered*; the empty pool says it was
+    /// never *accepted*. Only the first distinguishes this from the
+    /// second line of defence in [`H1Body::poll_frame`], which would clear
+    /// `reuse` on the next poll anyway — a redundancy worth knowing about,
+    /// since it means the outcome alone survives a mutation of either half
+    /// (`tests/pool.rs`'s
+    /// `a_connection_the_server_asked_to_close_is_not_reused` is what
+    /// stands behind the other half).
+    #[test]
+    fn a_101_is_never_offered_to_the_pool() {
+        let io = ScriptIo::new(
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: chat\r\nConnection: Upgrade\r\n\r\n",
+        );
+
+        let pool = crate::pool::Pool::new(Some(crate::PoolConfig::default()));
+        let key = crate::pool::PoolKey::new(
+            crate::pool::Security::Plaintext,
+            "example.invalid",
+            80,
+            crate::pool::Protocol::Http11,
+        );
+
+        let est = {
+            let fut = handshake(io);
+            let mut fut = std::pin::pin!(fut);
+            poll_to_completion(fut.as_mut()).expect("handshake must succeed")
+        };
+        let resp = {
+            let fut = exchange(
+                est,
+                get_request(),
+                Some(CheckIn::new(pool.clone(), key.clone(), Duration::MAX)),
+            );
+            let mut fut = std::pin::pin!(fut);
+            match poll_to_completion(fut.as_mut()) {
+                Ok(r) => r,
+                Err(e) => panic!("a 101 is a response, not a failure: {}", e.into_error()),
+            }
+        };
+        assert_eq!(resp.status(), 101);
+        assert!(
+            resp.body().conn.is_none() && resp.body().reuse.is_none(),
+            "the exchange must have seen the connection finish, so the body carries \
+             neither it nor a way to hand it back: {:?}",
+            resp.body()
+        );
+
+        // Drain it anyway: the check-in happens on a clean end of body,
+        // and this is the poll at which a connection that HAD been carried
+        // would arrive in the pool.
+        let mut body = std::pin::pin!(resp.into_body());
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        for _ in 0..64 {
+            if let Poll::Ready(None) = body.as_mut().poll_frame(&mut cx) {
+                break;
+            }
+        }
+
+        assert!(
+            pool.take(&key, Duration::ZERO).is_none(),
+            "the pool must be empty: a connection that has switched protocols is not an \
+             HTTP connection any more, and the next request would write a request head \
+             into whatever the two peers agreed to speak instead"
+        );
     }
 
     /// The residual race of connection reuse, and the one outcome it must
