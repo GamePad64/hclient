@@ -1,0 +1,153 @@
+id: no-discarded-wasi-setter-result
+language: rust
+severity: error
+files:
+  - crates/http-ng-wasi/src/**/*.rs
+
+message: >-
+  the Result of this wasi:http setter is discarded — every host refusal must
+  become a typed Error, see crates/http-ng-wasi/src/convert.rs
+note: >-
+  `wasi:http` setters return `result<_, _>` precisely so the host can refuse;
+  the predecessor library discarded seven of them with `let _ =`. The forms
+  this rule knows are the ones three rounds of review put into the python
+  scanner it replaces: `let _ = ..`, `let _ident = ..`, `let _: Type = ..`, a
+  bare `_ = ..`, `drop(..)`, `if let Err(_e) = .. {}` with a body holding
+  nothing but comments, and the terminal family `.ok()` / `.is_ok()` /
+  `.is_err()` / `.unwrap_or_default()` / `.unwrap_or(..)` / `.unwrap_or_else(..)`
+  / `.map_or(..)` at ANY position in a chain of combinators, not only directly
+  after the call. A `?` reached before the discard is propagation and excuses
+  all of them; a `?` reached after one does not, because `.ok()?` has already
+  lost the error by the time `?` sees it.
+
+utils:
+  # A terminal that loses `Err`. The list is the scanner's, unchanged.
+  terminal-discard-call:
+    kind: call_expression
+    has:
+      field: function
+      kind: field_expression
+      has:
+        field: field
+        regex: '^(ok|is_ok|is_err|unwrap_or_default|unwrap_or|unwrap_or_else|map_or)$'
+
+  # Walking OUT of a method chain is walking UP the tree: `a.set_x(y).ok()`
+  # parses as ok(set_x(a)). Only `field_expression`/`call_expression` links are
+  # crossed, so the walk stops at `?` (a `try_expression`) exactly where the
+  # scanner's `walk_chain` did, and never leaves the receiver chain into an
+  # argument list — an `arguments` node stops it too, so `foo(x.set_y(z))` is
+  # not read as a chain.
+  chain-link:
+    any:
+      - kind: field_expression
+      - kind: call_expression
+
+  # `..?` in that chain, reached before any terminal discard.
+  propagated-out-of-the-chain:
+    inside:
+      stopBy:
+        not:
+          matches: chain-link
+      kind: try_expression
+
+  # A block with nothing in it but comments. `if let Err(_e) = .. { }` is a
+  # discard and so is `{ /* ignored */ }`; `{ return Err(_e.into()); }` is
+  # honest propagation, `_e` is used. The scanner compared the block's
+  # comment-stripped text with ""; this regex says the same thing about the
+  # same text, and shares its one limitation — a nested `/* /* */ */` is
+  # understood by neither.
+  block-that-only-holds-comments:
+    kind: block
+    regex: '^\{(?s:\s|//[^\n]*|/\*.*?\*/)*\}$'
+
+  # ── the discarding forms ────────────────────────────────────────────────
+  # Each is "some ancestor of the setter call, reached without crossing a
+  # `{ }`, is <form>". The block boundary is what the scanner's `[^;{}]*`
+  # prefix window did: a setter inside a braced body belongs to that body's
+  # statement, not to the `let _` further out.
+
+  discarded-by-a-terminal-combinator:
+    inside:
+      stopBy:
+        not:
+          matches: chain-link
+      matches: terminal-discard-call
+
+  # `_` is an anonymous node in tree-sitter-rust, so a bare `let _` has no
+  # `pattern` field to match on; the regex reads the statement's own text,
+  # which is what the scanner's LET_UNDERSCORE did — including its optional
+  # type annotation, `let _: Result<(), E> = ..`.
+  discarded-by-a-let-underscore:
+    inside:
+      stopBy:
+        kind: block
+      kind: let_declaration
+      regex: '^let\s+_'
+
+  discarded-by-a-bare-assignment:
+    inside:
+      stopBy:
+        kind: block
+      kind: assignment_expression
+      has:
+        field: left
+        kind: identifier
+        regex: '^_$'
+
+  discarded-by-drop:
+    inside:
+      stopBy:
+        kind: block
+      kind: call_expression
+      has:
+        field: function
+        kind: identifier
+        regex: '^drop$'
+
+  # `if let Err(_e) = .. { }`, including inside a let-chain, where the
+  # `let_condition` sits under a `&&` rather than directly under the `if`.
+  discarded-by-an-empty-if-let-err:
+    inside:
+      stopBy:
+        kind: block
+      kind: let_condition
+      has:
+        field: pattern
+        kind: tuple_struct_pattern
+        regex: '^Err\s*\(\s*_'
+      inside:
+        stopBy:
+          kind: if_expression
+        kind: if_expression
+        has:
+          field: consequence
+          matches: block-that-only-holds-comments
+
+  # The whole verdict, stated about the setter's CALL. It is reached from the
+  # method name below rather than matched directly, so the diagnostic points
+  # at `set_x` instead of at a receiver three lines up.
+  a-discarded-setter-call:
+    kind: call_expression
+    any:
+      # A terminal discard is checked BEFORE propagation and is not excused by
+      # it, because the scanner checked it in that order: `.ok()?` loses the
+      # error before `?` ever sees one. A `?` reached FIRST still excuses
+      # everything after it — `set_x(y)?.ok()` ends the walk at the
+      # `try_expression`, so this branch does not match there.
+      - matches: discarded-by-a-terminal-combinator
+      - all:
+          - not:
+              matches: propagated-out-of-the-chain
+          - any:
+              - matches: discarded-by-a-let-underscore
+              - matches: discarded-by-a-bare-assignment
+              - matches: discarded-by-drop
+              - matches: discarded-by-an-empty-if-let-err
+
+rule:
+  kind: field_identifier
+  regex: '^set_[a-z_]+$'
+  inside:
+    kind: field_expression
+    inside:
+      matches: a-discarded-setter-call
