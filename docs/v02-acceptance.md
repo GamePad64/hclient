@@ -18,6 +18,9 @@ do.
 | An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
 | …including a body that goes **completely silent** after the head | the same file — a server that sends the head under a `Content-Length` of ten million and then nothing at all. Nothing will wake the body wrapper, so only the sleep it holds can end this; with the sleep never polled, the bound fires at 6 s instead of 400 ms, off a wake the test harness happened to supply, and the tightness assertion catches it. The observer is the server watching for the client's FIN |
 | Adding a bound does not change the client's type | `crates/http-ng/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
+| A cookie the server set comes back on the next request | `crates/http-ng/tests/cookies.rs` — a loopback server recording the `Cookie` header it was actually sent, never the jar's view of itself, plus the same server with no jar configured as the control. A jar that stores perfectly and attaches nothing passes every test in `http-ng-cookie` and fails this one |
+| Cookies are handled per redirect hop, not per operation | the same file, in both directions: a `Set-Cookie` on a 302 reaches the very next hop, and a cookie scoped `Path=/one` does **not** ride a same-origin 302 into `/two` — `next_hop` clones the previous hop's headers and `SENSITIVE_HEADERS` strips `Cookie` only across origins, so nothing but re-deriving it per hop gets this right |
+| A client-side jar against a jar-owning backend is refused, not ignored | the same file — `UnsupportedCapability { what: "cookie_jar" }` at `build()`, with both controls beside it: the same jar against a backend that keeps none builds, and a client that never mentioned cookies builds against one that does (which is the line `Client::new()` takes in a browser) |
 
 ## The rule this vertical kept applying
 
@@ -152,6 +155,33 @@ someone to "fix" an item whose absence is the decision.
   `Client::execute`'s entry. A body dripping a byte every 50 ms for an hour
   passes `between_bytes` and is cut by `total`; a transfer that legitimately
   takes an hour and stalls for ten minutes in the middle is the reverse.
+- **A `Client` cannot be given a jar over a caller-supplied public suffix
+  list.** `CookieJar<P>` is generic over the list — that is the seam
+  `http-ng-cookie` built so a caller can supply a fresher snapshot than
+  the compiled-in one — and `ClientBuilder::cookie_jar` takes
+  `CookieJar<BuiltinList>` only.
+
+  Not an oversight, and not cheap to fix either. The two ways through are
+  a type parameter on `Client` (rejected: "adding a bound does not change
+  the client's type" is a claim in the table above, and a jar is a far
+  smaller reason to grow the type than a timeout was), or a
+  `CookieJar<P> -> CookieJar<Box<dyn PublicSuffixList>>` conversion, which
+  has to be written in `http-ng-cookie` because the field is private —
+  and which would need a `Send + Sync` on the trait object that `http-ng`
+  is not allowed to declare (the crate's own no-declared-auto-traits
+  invariant). Reachable by taking `http-ng-cookie` directly and driving
+  the jar by hand; not reachable through this builder.
+- **No per-request cookie control**, and no `Client`-level way to turn the
+  jar off for one call. Same reasoning as the missing per-request `total`
+  one bullet up: there is no invalid state to reject and no caller
+  decision anyone has named. A caller who wants a request outside the jar
+  sets `Cookie` themselves, which the client then leaves entirely alone —
+  though note that "leave alone" covers the attaching half only, and the
+  jar still stores what comes back.
+- **`SameSite` is parsed, reported and not enforced** — inherited from
+  `http-ng-cookie`, which says so, and unchanged by the wiring: acting on
+  it needs an initiating browsing context that a non-browser client does
+  not have.
 - **The concurrency limit bounds requests, not sockets.** `tower` releases
   its permit when the `call` future completes — at the response head — so a
   streaming body holds its connection outside the limit. The design doc
@@ -169,6 +199,32 @@ someone to "fix" an item whose absence is the decision.
   contract**, because it spawns a worker and the request outlives the
   dropped future. Such a stack must declare `None` even when the transport
   underneath can cancel. Written down in `http-ng-tower`.
+
+## One decision taken against the brief, and why
+
+The cookie wiring was asked to take its `now` from the clock `Client`
+already carries — `Tm: Timer`, the same one the total timeout uses — and
+it does not. It calls `SystemTime::now()`.
+
+`Timer` cannot answer the question. `Timer::Instant` is `Copy +
+PartialOrd` and `elapsed_since` returns a `Duration`: a stopwatch with no
+epoch, which is all a timeout needs and is not a date. `Expires` is a
+date. The bridge would be an anchor — one `SystemTime::now()` kept
+alongside one `Tm::Instant`, advanced by `elapsed_since` — and that is
+where it fails rather than merely being roundabout: `NoClock::
+elapsed_since` returns `Duration::ZERO` for ever, so on a clockless client
+the jar's `now` would be frozen at the anchor. Every `Expires` in the
+future, every `Max-Age=0` deletion ignored, silently, for the whole life
+of the process — the exact silent no-op `NoClock`'s own doc comment exists
+to prevent, arriving through the back door. And a clockless client may
+perfectly well keep cookies: nothing about a jar needs a timer, so there
+is no type-level guard to lean on the way `total_timeout` has one.
+
+`SystemTime::now()` has one cost and it is written where the setter is:
+it panics on `wasm32-unknown-unknown`, where `std` has no clock. The
+combination that reaches it is a browser build driving a transport other
+than the browser's own — the browser's own is refused by the capability
+gate.
 
 ## What remains unverified
 

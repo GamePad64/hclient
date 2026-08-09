@@ -82,6 +82,11 @@ brotli = ["dep:brotli-decompressor"]
 # says so, and `check_cookies_supported` refuses a client-side jar against
 # `http-ng-fetch` at `build()`. A build that needs cookies says so.
 #
+# The graph cost, measured here rather than inherited from that crate's
+# own report: `cargo tree -p http-ng -e normal --no-default-features` is
+# **17 crates, and 19 with this feature** — `http-ng-cookie` and
+# `public-suffix`, and nothing else, because both are leaves.
+#
 # One switch, not one per piece: unlike `gzip`/`brotli`, whose weights
 # differ by an order of magnitude and which a caller genuinely picks
 # between, there is nothing here to pick — the parse, the storage model and

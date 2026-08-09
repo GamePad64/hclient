@@ -95,20 +95,25 @@ fn silent_server() -> std::net::SocketAddr {
     addr
 }
 
-/// Answers the head promptly under a `Content-Length` it will never
-/// satisfy, and then says **nothing at all**, for ever.
+/// Answers the head after `head_delay` under a `Content-Length` it will
+/// never satisfy, and then says **nothing at all**, for ever.
 ///
-/// The difference from `dribbling_server` is the whole point of the test
+/// The difference from `dribbling_server` is the whole point of the tests
 /// it serves. A dribbling body wakes the client every 20 ms, so an
 /// elapsed-time check gets a second look at the clock for free; this one
 /// never wakes it again, so only a sleep the client is holding itself can
 /// end the transfer.
 ///
+/// `head_delay` is what makes the *second* of those tests possible: with
+/// the head costing a measurable part of the budget, a body sleeping for
+/// the whole `total` rather than for what is left of it is a different
+/// number rather than a rounding difference.
+///
 /// The flag goes `true` when the client's FIN arrives — `read` returning
 /// `Ok(0)`. The observer is deliberately on the server's side of the wire
 /// for the same reason the rest of this file's are: the client's view of
 /// its own future proves nothing about the socket.
-fn head_then_silence_server() -> (std::net::SocketAddr, Arc<AtomicBool>) {
+fn head_then_silence_server(head_delay: Duration) -> (std::net::SocketAddr, Arc<AtomicBool>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = l.local_addr().expect("addr");
     let client_went_away = Arc::new(AtomicBool::new(false));
@@ -118,6 +123,7 @@ fn head_then_silence_server() -> (std::net::SocketAddr, Arc<AtomicBool>) {
             let Ok(mut s) = s else { continue };
             let mut b = [0u8; 2048];
             let _ = s.read(&mut b);
+            std::thread::sleep(head_delay);
             if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\n\r\n")
                 .is_err()
                 || s.flush().is_err()
@@ -302,7 +308,7 @@ fn a_body_that_dribbles_for_ever_is_cut_at_the_total_deadline() {
 /// asserted.
 #[test]
 fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline() {
-    let (addr, went_away) = head_then_silence_server();
+    let (addr, went_away) = head_then_silence_server(Duration::ZERO);
     let c = Client::builder(transport())
         .total_timeout(Tokio, TOTAL)
         .build()
@@ -359,6 +365,110 @@ fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline(
          exchange was left running"
     );
     drop(resp);
+}
+
+/// The body does **not** get a budget of its own: the sleep runs for what
+/// the head left over, not for the whole `total` a second time.
+///
+/// The head costs 600 ms of an 800 ms bound, and then the server goes
+/// silent. A correct client cuts at ≈800 ms from the start; one whose body
+/// sleeps for the full `total` cuts at ≈1400 ms, and both are "a bound
+/// that fired" to any assertion loose enough to accept the first. Hence
+/// the upper bound here is `TOTAL_SLOW + HEAD/2`, not the `TOTAL * 10` the
+/// other tests can afford — this is the one place where a fifteen-hundred-
+/// millisecond answer is wrong for a reason that has nothing to do with a
+/// loaded machine.
+#[test]
+fn the_body_races_what_is_left_of_the_bound_rather_than_a_second_copy_of_it() {
+    const HEAD: Duration = Duration::from_millis(600);
+    const TOTAL_SLOW: Duration = Duration::from_millis(800);
+
+    let (addr, _) = head_then_silence_server(HEAD);
+    let c = Client::builder(transport())
+        .total_timeout(Tokio, TOTAL_SLOW)
+        .build()
+        .expect("supported");
+
+    let started = Instant::now();
+    let (err, elapsed) = rt().block_on(guarded("a slow head then silence", async {
+        let mut resp = c
+            .get(&format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("the head arrives, late but inside the bound");
+        let err = loop {
+            match resp.chunk().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!("the body must not end cleanly"),
+            }
+        };
+        (err, started.elapsed())
+    }));
+
+    assert_eq!(*err.kind(), ErrorKind::Timeout(Phase::Total), "{err}");
+    assert!(
+        elapsed >= TOTAL_SLOW,
+        "cut before the deadline ({elapsed:?} < {TOTAL_SLOW:?})"
+    );
+    assert!(
+        elapsed < TOTAL_SLOW + HEAD / 2,
+        "the body was given a fresh {TOTAL_SLOW:?} of its own instead of \
+         what the head left of it ({elapsed:?})"
+    );
+}
+
+/// The other mechanism, in the one situation where it is the only one:
+/// a body that never answers `Pending` at all.
+///
+/// The sleep is polled from the `Pending` branch and nowhere else, which
+/// is correct — that is the branch that can be the last one — but it means
+/// a body handing back frame after frame with no wait in between never
+/// reaches it. An already-buffered response is exactly that shape, and
+/// `MockTransport`'s bodies are exactly that shape. Only the elapsed-time
+/// check before each poll can cut this one, and deleting that check makes
+/// the whole response arrive intact.
+///
+/// `TestTimer`'s clock is the sum of the sleeps asked of it, so
+/// `Client::execute`'s own `within` puts the virtual clock a full `total`
+/// past the start before the body is ever touched. That is what makes the
+/// deadline already expired here without a millisecond of real waiting —
+/// a property of the fake clock, used deliberately, not a claim about a
+/// real one.
+#[cfg(feature = "test-util")]
+#[test]
+fn a_body_that_never_yields_is_cut_by_the_elapsed_check_alone() {
+    use http_ng::mock::{MockTransport, TestTimer};
+
+    let m = MockTransport::new();
+    m.push_response_frames(
+        http::Response::builder()
+            .status(200)
+            .body(vec!["one", "two", "three"])
+            .unwrap(),
+    );
+    let c = Client::builder(m)
+        .total_timeout(TestTimer::new(), Duration::from_millis(1))
+        .build()
+        .expect("the mock supports this configuration");
+
+    let err = futures_executor::block_on(async {
+        let mut resp = c.get("https://a/x").send().await.expect("answered");
+        assert_eq!(resp.status(), 200);
+        loop {
+            match resp.chunk().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break Some(e),
+                None => break None,
+            }
+        }
+    });
+
+    let err = err.expect(
+        "an expired bound must cut a body that is already in memory too — \
+         nothing will ever poll a sleep on its behalf",
+    );
+    assert_eq!(*err.kind(), ErrorKind::Timeout(Phase::Total), "{err}");
 }
 
 /// The response body still crosses a `tokio::spawn`, which is the only

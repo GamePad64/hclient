@@ -268,11 +268,22 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
     /// The deadline has expired: drop what is holding the exchange open
     /// and produce the error the caller will see.
     ///
-    /// Dropping `inner` is the cancellation (see the type's last section).
-    /// Dropping `sleep` matters for a different reason: a future that has
-    /// returned `Ready` must not be polled again, and this is the only
-    /// place that guarantee is established — every later `poll_frame`
-    /// takes the "already fired" branch and never reaches it.
+    /// Dropping `inner` is the cancellation (see the type's last section),
+    /// and it is what every test in `tests/deadline.rs` that watches a
+    /// server sees.
+    ///
+    /// **`self.sleep = None` is not observable, and that is recorded
+    /// rather than hidden.** Deleting that line survives the whole suite —
+    /// one of fifteen mutations run over this change and the only
+    /// survivor. It survives for a structural reason, not for want of a
+    /// test: `inner` is `None` from here on, so every later `poll_frame`
+    /// returns in the "already fired" branch and the sleep is never
+    /// reached, whether or not it is still there. What the line actually
+    /// buys is releasing the runtime's timer registration at the moment
+    /// the deadline fires instead of whenever the caller drops the
+    /// response, plus the invariant that a `Ready` future is not kept
+    /// around to be polled again if this function's callers ever change.
+    /// Neither is something a black-box test can see.
     fn fire(&mut self, total: Duration) -> Error {
         self.inner = None;
         self.sleep = None;
