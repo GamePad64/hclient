@@ -350,7 +350,7 @@ async fn finish_closing(sock: &mut TcpSocket<'static>) {
     // waited for. The result is deliberately ignored: `ConnectionReset`
     // means the peer tore the connection down first, which is a perfectly
     // good way for a socket we are closing anyway to end up reusable.
-    let _ = sock.flush().await;
+    // MUTATION M7: do not wait for the FIN to go out
     // The peer never closed its own half (`FinWait2`) or never
     // acknowledged ours before `CLOSING_TIMEOUT`. Ours is done and the far
     // end has seen it; take the slot back rather than hold it hostage.
