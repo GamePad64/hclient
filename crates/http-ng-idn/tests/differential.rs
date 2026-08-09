@@ -287,7 +287,7 @@ fn the_platform_column_is_not_silently_empty() {
 /// hoped for. A `SystemIcu` over a library that is not there, or a
 /// `Bundled` while ICU is doing the work, is the "capability that lies"
 /// this project keeps catching.
-/// Both platform variants are here, and each asserts two things rather
+/// Both platform variants are here, and the arm asserts two things rather
 /// than one: that a backend was actually accepted at run time, and that
 /// the variant names the backend *this build compiled in*. The second is
 /// what makes the variant mean something — without it a `SystemFoundation`
@@ -306,25 +306,26 @@ fn the_reported_backend_is_the_one_that_answers() {
     let reported = testing::selected();
     let has_platform = testing::platform_name().is_some();
     match reported {
-        Backend::SystemIcu => {
-            assert!(
-                cfg!(icu_backend),
-                "reports SystemIcu in a build with no ICU backend compiled in — `backend()`'s \
-                 resolution and `build.rs`'s target predicate have drifted apart"
-            );
-            assert!(has_platform, "reports SystemIcu with no library accepted");
-        }
-        Backend::SystemFoundation => {
-            assert!(
-                cfg!(foundation_backend),
-                "reports SystemFoundation in a build with no Foundation backend compiled in — \
+        Backend::SystemIcu | Backend::SystemFoundation => {
+            // Which backend this build actually compiled in. The two cfgs
+            // are mutually exclusive — a target's tables in `Cargo.toml`
+            // supply one dependency or the other — so one `if` says it.
+            const COMPILED_IN: Backend = if cfg!(icu_backend) {
+                Backend::SystemIcu
+            } else {
+                Backend::SystemFoundation
+            };
+            assert_eq!(
+                reported, COMPILED_IN,
+                "reports {reported:?} in a build that compiled in {COMPILED_IN:?} — \
                  `backend()`'s resolution and `build.rs`'s target predicate have drifted apart"
             );
             assert!(
                 has_platform,
-                "reports SystemFoundation while nothing was accepted — on Apple the backend is \
-                 linked, so the only way to get here is the acceptance gate having refused \
-                 Foundation on `straße.de`, and then `None` is the honest answer"
+                "reports {reported:?} while nothing was accepted — on both platforms the backend \
+                 is linked rather than searched for, so the only way to get here is the \
+                 acceptance gate having refused it on `straße.de`, and then `None` is the honest \
+                 answer"
             );
         }
         Backend::None => assert!(
@@ -403,7 +404,8 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
         let oracle = idna_says(input);
         let ours = testing::platform(input)
             .expect("the backend was found a line ago")
-            .ok();
+            .ok()
+            .map(std::borrow::Cow::into_owned);
         println!("  {input:?} ({why}): `idna` {oracle:?}, {lib} {ours:?}");
         if ours.is_some() && ours != oracle {
             wrong.push(format!(

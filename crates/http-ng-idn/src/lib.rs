@@ -637,7 +637,7 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 
 /// The ICU path: the shared policy, with ICU as its conversion.
 ///
-/// ICU would answer every one of [`to_ascii_over`]'s five steps correctly
+/// ICU would answer every one of [`policy::to_ascii_over`]'s five steps correctly
 /// on its own — it is a UTS 46 implementation, and the corpus measured
 /// that on a real `windows-latest` runner before this policy existed. It
 /// goes through the policy anyway, because the alternative is two
@@ -653,7 +653,7 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// decoded label onward.
 #[cfg(icu_backend)]
 fn system_icu_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    to_ascii_over(icu::name_to_ascii, domain)
+    policy::to_ascii_over(icu::name_to_ascii, domain)
         .map(Cow::Owned)
         .ok_or_else(|| IdnError::NotAnIdn {
             domain: domain.to_owned(),
@@ -679,7 +679,7 @@ fn foundation_backend() -> Option<&'static foundation::Foundation> {
 /// conversion.
 ///
 /// Foundation reaches a UTS 46 implementation only for a host that is not
-/// ASCII — which is the one question [`to_ascii_over`] asks a backend, and
+/// ASCII — which is the one question [`policy::to_ascii_over`] asks a backend, and
 /// the reason the three rows that failed on `macos-latest` were all
 /// all-ASCII ones.
 #[cfg(foundation_backend)]
@@ -687,7 +687,7 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     let f = foundation_backend().ok_or_else(|| IdnError::NoImplementation {
         domain: domain.to_owned(),
     })?;
-    to_ascii_over(|unicode| foundation::convert(f, unicode), domain)
+    policy::to_ascii_over(|unicode| foundation::convert(f, unicode), domain)
         .map(Cow::Owned)
         .ok_or_else(|| IdnError::NotAnIdn {
             domain: domain.to_owned(),
