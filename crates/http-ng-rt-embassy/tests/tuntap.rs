@@ -184,6 +184,22 @@ fn a_slot_reclaimed_while_still_closing_waits_for_its_fin() {
     scenario("reclaim");
 }
 
+/// The observer's third verdict, and the only scenario that produces one.
+///
+/// `Eof` and `Reset` are worth keeping apart only if something can tell
+/// them apart. Every other scenario here ends in a FIN, so folding the
+/// `ConnectionReset` arm of [`observe`] into `Eof` — an instrument that
+/// accepts an RST wherever it is owed an orderly close — passed the whole
+/// crate suite, 16/16 (W7 mutation M16). This is the case that puts a real
+/// RST on the wire, and it is also case 2 of the research's `cancel2`
+/// spike, which until now lived only in an untracked directory:
+/// `abort()` with the stack given the one poll `TcpSocket::drop` denies
+/// it.
+#[test]
+fn an_abort_with_a_stack_poll_is_seen_as_a_reset() {
+    scenario("abort");
+}
+
 /// The measurement the whole design rests on: embassy's own teardown —
 /// `close()` immediately followed by dropping the `TcpSocket`, which is
 /// exactly what `embassy_net::tcp::client::TcpConnection::drop` does — is
@@ -263,6 +279,7 @@ fn test_fn_name(scenario: &str) -> &'static str {
         "cancel" => "dropping_the_execute_future_closes_the_connection_the_server_sees",
         "cancel-control" => "holding_the_execute_future_leaves_the_connection_open",
         "reclaim" => "a_slot_reclaimed_while_still_closing_waits_for_its_fin",
+        "abort" => "an_abort_with_a_stack_poll_is_seen_as_a_reset",
         "naive" => "embassys_own_socket_teardown_is_invisible_to_the_server",
         other => panic!("unknown scenario {other}"),
     }
@@ -334,6 +351,7 @@ async fn scenario_task(stack: Stack<'static>, name: String) {
         "cancel" => cancel(stack, true).await,
         "cancel-control" => cancel(stack, false).await,
         "reclaim" => reclaim(stack).await,
+        "abort" => abort(stack).await,
         "naive" => naive(stack).await,
         other => panic!("unknown scenario {other}"),
     }
@@ -715,6 +733,47 @@ async fn reclaim(stack: Stack<'static>) {
         ClientEnd::Eof,
         "a slot reclaimed before its FIN was dispatched must still deliver that FIN, not replace \
          it with an abort — see this scenario's doc comment"
+    );
+}
+
+/// `abort()`, then let the stack run, then drop: the far end sees an RST.
+///
+/// The sibling of `naive`, and deliberately its mirror image. Both end a
+/// connection without a FIN; the difference is the single `await` between
+/// the teardown and the drop, which is the whole of what
+/// `SocketPool`'s closing list buys and what a synchronous `Drop` cannot
+/// arrange. `naive` shows the packet never leaves; this one shows it does
+/// once the stack gets a turn — so "the server saw nothing" is a fact
+/// about the missing poll, not about the tap link swallowing packets.
+async fn abort(stack: Stack<'static>) {
+    let (addr, seen, verdict) = spawn_silent_server();
+    let rx: &'static mut [u8] = Box::leak(Box::new([0u8; 1536]));
+    let tx: &'static mut [u8] = Box::leak(Box::new([0u8; 1536]));
+    let mut sock = TcpSocket::new(stack, rx, tx);
+    let SocketAddr::V4(v4) = addr else {
+        panic!("the test server binds v4")
+    };
+    sock.connect(v4).await.expect("connect");
+    let head = format!("GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n");
+    let mut sent = 0;
+    while sent < head.len() {
+        sent += sock.write(&head.as_bytes()[sent..]).await.expect("write");
+    }
+    sock.flush().await.expect("flush");
+    recv_async(&seen, "the request head").await;
+    sock.abort();
+    // The one poll `naive` never gets. `Timer`, not a bare yield: the
+    // stack task has to be scheduled and run, and this is the same clock
+    // every other scenario waits on.
+    Timer::after_millis(20).await;
+    drop(sock);
+    let end = recv_async(&verdict, "the server's verdict").await;
+    println!("abort + a stack poll, server saw: {end:?}");
+    assert_eq!(
+        end,
+        ClientEnd::Reset,
+        "an abort that reached the wire must be visible as an RST, or `observe` cannot tell a \
+         reset connection from a closed one"
     );
 }
 
