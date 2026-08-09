@@ -1,0 +1,42 @@
+# Checked against `grep -rn "async fn" | grep -v <comment lines>`, the scan
+# this replaces. Both are silent on crates/http-ng-proto/src today. On the
+# adversarial file they agree on four of five: the rule also catches
+# `const async unsafe extern "C" fn`, where the two words are not adjacent
+# and the grep pattern therefore missed it. Stricter, in the direction the
+# check is about.
+id: no-async-fn-in-the-sans-io-crate
+
+valid:
+  - |
+    fn e() {
+        let _ = async { 1 };
+        let _ = async move { 1 };
+    }
+  - |
+    fn e() {
+        // async fn commented() {}
+    }
+  - |
+    /// mentions async fn in a doc comment, mid-line, which the grep's
+    /// leading-comment filter did not reach
+    fn f() {}
+  - |
+    fn g() {
+        let s = "async fn in a string";
+    }
+
+invalid:
+  - |
+    pub async fn a() {}
+  - |
+    async fn b() {}
+  - |
+    pub const async unsafe extern "C" fn c() {}
+  - |
+    trait T {
+        async fn d(&self);
+    }
+  - |
+    impl T for S {
+        async fn d(&self) {}
+    }

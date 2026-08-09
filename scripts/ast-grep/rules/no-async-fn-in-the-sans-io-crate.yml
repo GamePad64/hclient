@@ -1,0 +1,23 @@
+id: no-async-fn-in-the-sans-io-crate
+language: rust
+severity: error
+files:
+  - crates/http-ng-proto/src/**/*.rs
+
+message: the sans-io crate contains an `async fn`
+note: >-
+  `http-ng-proto` is the sans-io crate: it parses and decides, and the IO
+  belongs to whoever calls it. An `async fn` here is the seam leaking. This
+  replaces `grep -rn "async fn"` plus a filter for lines that begin with a
+  comment; the node it matches is the function's modifier list, so a mention
+  of "async fn" in prose or in a string is not a match at all rather than
+  something a second grep has to subtract — and one buried mid-line in a doc
+  comment, which that filter did not catch, is not a match either.
+
+rule:
+  kind: function_modifiers
+  regex: '\basync\b'
+  inside:
+    any:
+      - kind: function_item
+      - kind: function_signature_item
