@@ -171,6 +171,101 @@ fn caps_that_stream() -> http_ng_core::Capabilities {
     caps
 }
 
+/// Whether the browser running this suite genuinely sends a stream, per the
+/// crate's own probe.
+///
+/// **The test seam can force this crate's code path; it cannot force the
+/// browser to behave.** `to_web_request_with_caps` makes `to_web_request`
+/// take the streaming branch in any engine, and that is enough to test
+/// every decision this crate makes. It is not enough to test what comes out
+/// the far side, because the far side is the browser: hand Firefox 153 a
+/// `ReadableStream` and it stringifies it whatever we passed in `caps`.
+///
+/// Measured here, live, in both engines (the same two facts the server-side
+/// harness in `docs/measurements/w6-request-streams/` recorded from
+/// outside):
+///
+/// | | `Request.body` for a Full body | for a stream body | invented `Content-Type` |
+/// |---|---|---|---|
+/// | Chrome 151 | `Some` | `Some` | no |
+/// | Firefox 153 | `None` | `None` | `text/plain;charset=UTF-8` |
+///
+/// Note Firefox's first column: `Request.prototype.body` is simply absent
+/// there, for **any** body. So `body().is_none()` on Firefox is not evidence
+/// of the corruption — it is evidence of nothing — which is why the
+/// Firefox-side assertion below reads the invented `Content-Type` and the
+/// stringified text instead, and why the drain-based tests gate on this
+/// function rather than trying to assert something weaker everywhere.
+fn browser_streams() -> bool {
+    http_ng_fetch::Fetch::new()
+        .capabilities_for_test()
+        .streaming_request_body
+}
+
+/// The corruption itself, reproduced in whichever browser has it — the
+/// in-browser counterpart of the server-side measurement, and the reason
+/// `streaming_request_body` may not simply be hardcoded `true`.
+///
+/// Forces `caps.streaming_request_body = true` on a browser whose own probe
+/// says `false`, i.e. deliberately does the wrong thing, and shows what the
+/// wrong thing costs: the caller's `AAAA` never appears, the request carries
+/// the 23-byte string `[object ReadableStream]`, and the browser stamps
+/// `Content-Type: text/plain;charset=UTF-8` on it because that is now a text
+/// body. No error is raised anywhere — which is the whole problem.
+///
+/// This is the one place in the file that reads a body back with
+/// `Request::text()` rather than the raw stream, and it is the one place
+/// where that is the right instrument: the question is what the BROWSER did
+/// to the value, not what this crate's adapter produced. The bytes it
+/// reports match `results/report-firefox-h2.json`'s `bytesHex`
+/// (`5b6f626a656374205265616461626c6553747265616d5d`) recorded by a Node
+/// server on the other end of a real socket.
+///
+/// On a browser that streams, there is no corruption to demonstrate and the
+/// test returns early — its counterpart
+/// `the_callers_frames_reach_the_browser_as_separate_chunks` is what runs
+/// there instead. Exactly one of the two does real work in any given engine,
+/// by construction, and both count toward the `browser` job's minimum in
+/// either.
+#[wasm_bindgen_test]
+async fn a_browser_that_stringifies_replaces_the_body_with_no_error_at_all() {
+    if browser_streams() {
+        return;
+    }
+    let (body, _polls) = counted_body(vec![b"AAAA"]);
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("https://example.com/")
+        .body(body)
+        .unwrap();
+    // No error, in either the conversion or the browser — that is the point.
+    let (request, _controller) =
+        http_ng_fetch::testing::to_web_request_with_caps(req, &caps_that_stream()).unwrap();
+
+    assert_eq!(
+        request
+            .headers()
+            .get("Content-Type")
+            .ok()
+            .flatten()
+            .as_deref(),
+        Some("text/plain;charset=UTF-8"),
+        "a browser that stringifies the stream stamps the content type of the string it just \
+         invented — this is the fingerprint the probe keys on"
+    );
+    let text = http_ng_fetch::testing::send_js_future(request.text().unwrap())
+        .await
+        .expect("reading the body back must not reject")
+        .as_string()
+        .unwrap_or_default();
+    assert_eq!(
+        text, "[object ReadableStream]",
+        "the caller's bytes are gone and USVString conversion has taken their place; sending \
+         this would be a silently corrupted upload, which is why the capability must be false \
+         here"
+    );
+}
+
 /// Drains a built `web_sys::Request`'s body stream chunk by chunk.
 ///
 /// **Reads the raw `ReadableStream`, deliberately not `Request::text()`.**
@@ -239,6 +334,9 @@ fn streaming_body_is_rejected_when_the_browser_would_corrupt_it() {
 /// file's neighbours were written against.
 #[wasm_bindgen_test]
 fn streaming_body_is_built_when_the_browser_genuinely_streams() {
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
     let req = http::Request::builder()
         .method("POST")
         .uri("https://example.com/")
@@ -282,6 +380,9 @@ fn streaming_body_is_built_when_the_browser_genuinely_streams() {
 /// stayed.
 #[wasm_bindgen_test]
 fn a_streaming_body_is_not_drained_when_the_request_is_built() {
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
     let (body, polls) = counted_body(vec![b"AAAA", b"BBBB", b"CCCC"]);
     let req = http::Request::builder()
         .method("POST")
@@ -308,6 +409,9 @@ fn a_streaming_body_is_not_drained_when_the_request_is_built() {
 /// bytes and the framing.
 #[wasm_bindgen_test]
 async fn the_callers_frames_reach_the_browser_as_separate_chunks() {
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
     let (body, polls) = counted_body(vec![b"AAAA", b"BBBB", b"CCCC"]);
     let req = http::Request::builder()
         .method("POST")
@@ -340,6 +444,10 @@ async fn the_callers_frames_reach_the_browser_as_separate_chunks() {
 #[wasm_bindgen_test]
 async fn a_body_that_fails_mid_stream_errors_the_stream_instead_of_ending_it() {
     use futures_util::StreamExt;
+
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
 
     struct FailsAfterOne(bool);
     impl http_body::Body for FailsAfterOne {
@@ -404,6 +512,9 @@ async fn a_body_that_fails_mid_stream_errors_the_stream_instead_of_ending_it() {
 async fn trailers_error_the_stream_rather_than_being_silently_dropped() {
     use futures_util::StreamExt;
 
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
     let req = http::Request::builder()
         .method("POST")
         .uri("https://example.com/")
@@ -492,6 +603,9 @@ fn rewindable_wrapping_streaming_is_rejected_not_silently_emptied() {
 /// back distinguishes correct from silently-emptied here.
 #[wasm_bindgen_test]
 async fn a_rewindable_wrapping_streaming_is_unwrapped_all_the_way_to_the_stream() {
+    if !browser_streams() {
+        return; // see `browser_streams` — `Request.body` does not exist here
+    }
     let req = http::Request::builder()
         .method("POST")
         .uri("https://example.com/")
