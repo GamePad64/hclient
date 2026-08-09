@@ -278,6 +278,13 @@ box below:
 > (`runtime.rs:16`), so a single-threaded runtime type is refused by quinn
 > itself — h3 wants a handle-carrying `Tokio`, not a `!Send` one.
 >
+> **That handle-carrying type now exists**: `http_ng_rt_tokio::TokioHandle`,
+> `Send + Sync + Clone`, whose `Spawn` impl is `Handle::spawn` and therefore
+> total off a runtime thread where the ZST's `tokio::spawn` panics. Its
+> module doc has the measured table of what carrying the handle does and
+> does not buy; the row that matters to a quinn `Runtime` is the first one,
+> and it is the one that works.
+>
 > Way out 3 below is therefore **cheap in the type system**. Everything it
 > says after the semicolon still stands: making the h3 backend the first
 > consumer of `Spawn` makes `Spawn` mandatory for any runtime that wants

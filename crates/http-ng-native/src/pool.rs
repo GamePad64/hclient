@@ -40,6 +40,13 @@
 //! wrote it rather than a reaper that never fires. Not implemented here
 //! yet — see `docs/v02-design.md` §W2.
 //!
+//! One piece of it has landed since: `http_ng_rt_tokio::TokioHandle`, which
+//! carries a `tokio::runtime::Handle` instead of reading one out of a
+//! thread-local, so its `Spawn` works off a runtime thread — which is where
+//! a client is usually constructed. The shipped ZST `Tokio` panics there.
+//! That would otherwise be a second default stronger than the truth,
+//! hidden inside the first.
+//!
 //! Two things the correction does *not* change. Making `Spawn` a
 //! *requirement* of `Native` would still lose the property that
 //! `tests/h1.rs::works_on_a_bare_futures_executor_with_no_spawn` and

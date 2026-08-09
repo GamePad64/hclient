@@ -133,6 +133,17 @@ caller wrote it instead of a reaper that never fires. What the pool needed to
 be *correct* is still the poll at checkout, which needs no executor at all;
 a reaper is a resource optimisation on top of that.
 
+**One piece of that opt-in has since landed:
+`http_ng_rt_tokio::TokioHandle`.** The shipped `Tokio` is a ZST that reads
+the runtime out of a thread-local, so `Spawn::spawn` on it panics off a
+runtime thread — which is exactly where a `Native::new_with_reaper` might be
+called, since building a client is not usually done from inside `block_on`.
+`TokioHandle` carries a `tokio::runtime::Handle`, so the precondition is a
+`Result` at construction and `spawn` is total. Its module doc measures
+which capabilities that helps and which it does not — `TcpConnect` it
+cannot help, and says why. The reaper constructor itself is still not
+written.
+
 ---
 
 ## W3 — HTTP/2, and the question it forces
