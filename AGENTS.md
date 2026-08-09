@@ -103,6 +103,7 @@ was written under in vertical 1.
 | `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
 | `http-ng-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
+| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **57 crates** in total. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
 
 **Both middle rows are the same `hyper` fact, measured in two different places
 in the graph, not two independent observations.** `hyper` depends on `tokio`
@@ -163,6 +164,7 @@ browser's `fetch` (vertical 3).
 | target | transport | tokio in the graph |
 |---|---|---|
 | native | `http-ng-native` — TCP + HTTP/1, HTTP/2 behind the `http2` feature, TLS pluggable | yes, on the h1 path |
+| native | `http-ng-h3` — QUIC + HTTP/3, its own crate, TLS through a second seam | yes |
 | WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
 | browser | `http-ng-fetch` — `fetch` | **no** |
 
@@ -201,6 +203,22 @@ smartcard client certificates, a FIPS-validated provider. That is a fact
 about an environment, not a preference. It reports less back, and its own
 module doc says exactly what; in particular it cannot report the negotiated
 ALPN, so protocol selection driven by ALPN needs the rustls one.
+
+**A second TLS seam, for QUIC, and it is not a widening of the first.**
+`http-ng-tls-quic`'s `QuicTlsConnect` exists because the intersection of
+`TlsConnect`'s four methods with `quinn_proto::crypto::Session`'s eleven is
+**empty** — QUIC wants key schedules per encryption level and CRYPTO-frame
+payloads, `TlsConnect` can only hand back a wrapped byte stream — and the
+failure mode is worse than a compile error: an adapter between them
+type-checks *with an empty body*. `http-ng-tls-rustls` implements it behind
+a `quic` feature; `http-ng-tls-native-tls` implements nothing and using it
+for HTTP/3 is a compile error, which is honest rather than harsh, because
+`native-tls` binds no QUIC API at any level. It is a separate crate rather
+than a feature of `http-ng-tls` because Cargo unifies features: a feature
+would put `quinn-proto` in the graph of every build in which any crate
+wanted h3, including `NoTls` ones. `TlsConnect` and `QuicTlsConnect` share
+`TlsIdentity`, so a connector has one configuration identity rather than
+two.
 
 `NoTls` in `http-ng-tls` is the third choice: no TLS at all, for a build
 that has no room for a stack. `https://` then fails at connect with a typed
@@ -253,10 +271,56 @@ line, nearer to the native one than `fetch` is. Two things stand in the way:
 
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
-behind `http-ng-native`'s `http2` feature, off by default. HTTP/3 and
-WebSocket are still later — see
-[`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1 deliberately
-does not do, and what proves the four claims it does make.
+behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
+in v0.3**, in its own crate `http-ng-h3`, over QUIC. WebSocket is still
+later — see [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
+deliberately does not do, and
+[`docs/v03-acceptance.md`](docs/v03-acceptance.md) for what v0.3 does,
+does not, and has not checked.
+
+### HTTP/3: three things that are not obvious from the outside
+
+**It is its own crate, and could not have been a feature of
+`http-ng-native`.** The reason is the type system rather than the 57-crate
+QUIC stack: this transport is bounded on `R: UdpBind + Spawn<..>` and
+`T: QuicTlsConnect`, neither of which `Native<R, T, D>` has, and Cargo's
+features are additive — so a `http-ng-native/http3` feature would make both
+unconditional for every build in the graph.
+
+**It requires `R: Spawn`, and it shares connections.** An idle HTTP/1 socket
+needs nobody; the kernel holds it. **A QUIC connection that nobody polls is
+not idle, it is dying** — the PING that resets the peer's idle timer comes
+from the connection's driver. So the driver is spawned, and once it is,
+v0.2 W3's reason for handing out h2 connections *exclusively* has no
+subject: that argument was explicitly conditional on there being no
+background task, and a driver that is nobody's request future cannot be
+stalled by a caller that stops polling. Both halves are written next to
+their own policy — `http_ng_h3`'s module doc and `http-ng-native`'s
+`pool.rs` — so that changing one does not silently import the other's
+justification.
+
+A second half of that, found while building rather than while planning:
+**the spawned driver is necessary and not sufficient.** With a driver
+running and no keep-alive configured, a 1500 ms gap under a 1000 ms idle
+timeout still killed the connection — driving a connection is what lets it
+*send* a PING, not what makes it *decide* to, and quinn leaves
+`keep_alive_interval` unset. `H3` sets one (5 s), and the test is an A/B
+with the driver spawned in both arms.
+
+**0-RTT is admitted per request by the caller and by nothing else.**
+`AllowEarlyData` in the request's extensions is the gate.
+`RequestBody::retry_kind()` is checked beneath it as a **correctness**
+condition — a rejected 0-RTT request is replayed and a single-pass body
+cannot be — and deliberately not as a safety one: `POST /transfer` with a
+buffered body is `RetryKind::Free`, trivially replayable, and exactly the
+request that must never enter early data. "Can I resend this" and "may an
+attacker resend this" are different questions and only the caller can
+answer the second. The acceptance verdict is never a field: in QUIC it
+resolves *after* the response body (8.63 ms against 8.58 ms, measured), so
+it is a `Shared` future, and a rejection is replayed by the transport
+rather than surfaced. `425 Too Early` is the third failure path, is
+implemented nowhere, and has a test pinning that it reaches the caller
+untouched.
 
 **Response decompression landed in v0.2 (W5), inside `Client` and behind
 the `gzip` and `brotli` features** (off by default, `json`'s precedent: a
