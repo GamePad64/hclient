@@ -126,6 +126,48 @@ filterset, so a renamed test would already fail — but that is a default
 (`--no-tests` can change it), and "exactly one ran" is the stronger claim
 this job actually needs.
 
+### `embassy-tests-link-under-a-strict-linker`
+
+`cargo test -p http-ng-rt-embassy --no-run` and the same with
+`--all-features`, both under `RUSTFLAGS=-C link-arg=-Wl,--no-gc-sections`.
+
+Linkers disagree about a reference that only dead code makes. `ld
+--gc-sections` and macOS `ld64`'s dead-strip drop the section before
+anything has to resolve it; MSVC's `link.exe` resolves first and runs
+`/OPT:REF` afterwards. So an undefined symbol nothing calls is green twice
+and red once — which is exactly how `http-ng-rt-embassy`'s `lib test` came
+to fail on windows-latest alone with `LNK2019: unresolved external symbol
+__embassy_time_queue_item_from_waker`, while the Linux and macOS legs of
+`test` ran the whole suite.
+
+This job puts the strict rule on the cheap runner. It was broken on purpose
+first: with the `use embassy_executor as _` removed from
+`crates/http-ng-rt-embassy/src/lib.rs` it names that same symbol, out of
+the same `TimerQueueItem::from_embassy_waker` that Windows named.
+
+**Both feature sets, because the first version of this job ran
+`--all-features` alone and was green over a second defect of the same
+kind.** The default build had no `critical-section` implementation, so
+`_critical_section_1_0_acquire` was undefined there. Neither feature set
+supplied one — `cargo tree -e features -i critical-section` shows `default`
+alone either way — and the only difference was which archive members each
+link happened to need. A guard that covers one configuration of a crate
+whose other configuration CI also builds is worse than it looks: it reads
+as "this is settled". `idn-feature-is-real` runs
+`cargo nextest run -p http-ng-rt-embassy` with no features at all, because
+`an_address_family_left_out_of_the_build_is_a_typed_error` lives under
+`#[cfg(not(feature = "proto-ipv6"))]` and cannot compile with them on.
+
+All test targets rather than `--lib`: with the implementation supplied
+instead of discarded, `tests/tuntap.rs` links here too. Each run checks
+that both binaries were actually reported, so a renamed package or test
+file fails closed rather than quietly shrinking what is covered.
+
+Scoped to the one crate whose dependencies bind across crate boundaries by
+symbol name — `embassy-time-driver`, `embassy-executor-timer-queue` and
+`critical-section` are three separate `#[no_mangle]` contracts — because
+that arrangement is what produces this class of defect.
+
 ### `lint`
 
 `cargo fmt --all --check` and `cargo clippy --workspace --all-targets

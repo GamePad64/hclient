@@ -123,6 +123,76 @@ jobs:
             exit 1
           fi
 
+  # An undefined symbol reachable only from dead code is invisible on the
+  # Linux runner and on macOS: `ld --gc-sections` and `ld64`'s dead-strip
+  # both drop the reference before anything has to resolve it, while MSVC's
+  # `link.exe` resolves first and only then runs `/OPT:REF`. That asymmetry
+  # cost this repository a windows-only
+  # `LNK2019: unresolved external symbol __embassy_time_queue_item_from_waker`
+  # in `http-ng-rt-embassy`'s `lib test`, which no amount of green Linux and
+  # macOS could have found.
+  #
+  # `--no-gc-sections` puts the strict linker's rule on the cheap runner. It
+  # reproduced that exact symbol, named from the exact function Windows
+  # named, which is this job's "break it on purpose once" — revert the
+  # `use embassy_executor as _` in `crates/http-ng-rt-embassy/src/lib.rs`
+  # and it goes red here.
+  #
+  # **BOTH feature sets, and that is not symmetry for its own sake.** The
+  # first version of this job ran `--all-features` alone and passed while a
+  # second defect of the same kind sat next to it: the default build had no
+  # `critical-section` implementation either, and `_critical_section_1_0_
+  # acquire` was undefined there. Neither feature set supplied one — the
+  # difference was only which archive members the link happened to need, so
+  # `--all-features` alone was a green check over a red configuration. The
+  # default build is not hypothetical: `idn-feature-is-real` runs
+  # `cargo nextest run -p http-ng-rt-embassy` with no features, because
+  # `an_address_family_left_out_of_the_build_is_a_typed_error` lives under
+  # `#[cfg(not(feature = "proto-ipv6"))]` and cannot compile with them on.
+  #
+  # All test targets, not `--lib`: `tests/tuntap.rs` links here too now that
+  # the implementation is supplied rather than discarded.
+  #
+  # Scoped to this crate, deliberately: it is the one whose dependencies
+  # bind to symbols by name across crate boundaries (`embassy-time-driver`,
+  # `embassy-executor-timer-queue`, `critical-section` — three separate
+  # `#[no_mangle]` contracts), which is the arrangement that produces this
+  # class of defect at all.
+  embassy-tests-link-under-a-strict-linker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      - shell: bash
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,--no-gc-sections"
+        run: |
+          set -euo pipefail
+          # "" is the default build, and it is the one that was broken while
+          # the --all-features leg was green. Keep both.
+          for features in "" "--all-features"; do
+            rc=0
+            out="$(cargo test -p http-ng-rt-embassy $features --no-run \
+              --color never 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::http-ng-rt-embassy's tests do not link with --no-gc-sections for [${features:-default features}]. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/http-ng-rt-embassy/src/lib.rs and the critical-section note in its Cargo.toml. Do not silence this by dropping the flag or a feature set."
+              exit 1
+            fi
+            # Fail closed, per binary. A renamed package, a renamed test
+            # file, or a cargo that stopped building one of the targets
+            # would otherwise leave a job green forever while linking less
+            # than it claims.
+            for exe in 'Executable unittests src/lib.rs' 'Executable tests/tuntap.rs'; do
+              if ! printf '%s\n' "$out" | grep -qF "$exe"; then
+                echo "::error::cargo reported no '$exe' for [${features:-default features}] — this job linked less than it claims to check"
+                exit 1
+              fi
+            done
+          done
+
   wasip2:
     runs-on: ubuntu-latest
     steps:

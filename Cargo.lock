@@ -1293,6 +1293,7 @@ dependencies = [
 name = "http-ng-rt-embassy"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "embassy-executor",
  "embassy-net",
  "embassy-net-tuntap",
