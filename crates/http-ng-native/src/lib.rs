@@ -277,10 +277,43 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
     }
 
     /// Socket parameters for EVERY TCP attempt this transport makes (see
-    /// [`http_ng_rt::TcpOpts`]).
-    pub fn tcp_opts(mut self, opts: TcpOpts) -> Self {
+    /// [`http_ng_rt::TcpOpts`]) — **refused here, once, if the runtime
+    /// cannot apply them.**
+    ///
+    /// `Result`, not `Self`, and that is the whole point of the method.
+    /// W7 gave [`http_ng_rt::TcpConnect`] an `APPLIES` constant and
+    /// [`TcpOpts::reject_unsupported`], so a runtime that cannot apply an
+    /// option the caller set fails the connect rather than dropping it —
+    /// honest, but it fails once per `connect`, on a request that had
+    /// nothing to do with the mistake, and only if a request is ever made.
+    /// The set of options and the runtime's answer are both known at
+    /// construction, so the answer is given at construction: the same move
+    /// `ClientBuilder::build()` makes for an unsupported capability, for
+    /// the same reason — a configuration that can never work should not
+    /// need traffic to say so.
+    ///
+    /// **The error names the options**, not merely their number: the
+    /// source is a [`http_ng_rt::UnsupportedTcpOpts`], carried inside an
+    /// [`std::io::Error`] exactly as `reject_unsupported` builds it, and
+    /// [`UnsupportedTcpOpts::names`](http_ng_rt::UnsupportedTcpOpts::names)
+    /// lists every offending field rather than the first — a caller who
+    /// fixed the one option a message mentioned would otherwise meet a
+    /// second, identical-looking failure.
+    ///
+    /// This does not replace the per-`connect` refusal, and must not: the
+    /// `APPLIES` contract belongs to the runtime, `connect` is reachable
+    /// without ever going through this method (`connect::connect` takes a
+    /// `&TcpOpts`), and a check here would be a second place deciding a
+    /// question the trait already decides. What it does is move the moment
+    /// of the answer for the one caller that always goes through it.
+    ///
+    /// [`TcpOpts::default`] is all-off, so a transport that never calls
+    /// this method never has anything to refuse, whatever the runtime.
+    pub fn tcp_opts(mut self, opts: TcpOpts) -> Result<Self, Error> {
+        opts.reject_unsupported(<R as TcpConnect>::APPLIES)
+            .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         self.opts = opts;
-        self
+        Ok(self)
     }
 }
 
