@@ -159,6 +159,31 @@ fn holding_the_execute_future_leaves_the_connection_open() {
     scenario("cancel-control");
 }
 
+/// The closing list's **wait**, exercised in the only state where it does
+/// anything: a slot reclaimed while its FIN is still merely queued.
+///
+/// The pair above proves the socket is kept alive past the drop. Neither
+/// of them reaches `sockets::finish_closing` at all — measured, with an
+/// `eprintln!` at the top of that function: **zero** calls across all
+/// seven scenarios, because every one of them lets the stack run (an
+/// `await` on the server's verdict, a `Timer`) between releasing a socket
+/// and asking for the next, by which time `Inner::reclaim_finished` finds
+/// it already `Closed` and the closing list is never popped. So deleting
+/// `finish_closing`'s `sock.flush().await` — which leaves it aborting a
+/// FIN that has not been transmitted, exactly the failure the closing list
+/// exists to prevent — passed the whole crate suite, 15/15 (W7 mutation
+/// M7).
+///
+/// This scenario is what makes that mutation fail. `N = 1`, so the second
+/// request cannot get a slot of its own; and the release and the next
+/// `acquire` happen in **one executor turn**, with nothing in between for
+/// the stack task to run in, so the socket really is still closing when
+/// `finish_closing` gets it.
+#[test]
+fn a_slot_reclaimed_while_still_closing_waits_for_its_fin() {
+    scenario("reclaim");
+}
+
 /// The measurement the whole design rests on: embassy's own teardown —
 /// `close()` immediately followed by dropping the `TcpSocket`, which is
 /// exactly what `embassy_net::tcp::client::TcpConnection::drop` does — is
@@ -237,6 +262,7 @@ fn test_fn_name(scenario: &str) -> &'static str {
         "refuse-opts" => "options_this_runtime_cannot_apply_are_refused_by_connect_itself",
         "cancel" => "dropping_the_execute_future_closes_the_connection_the_server_sees",
         "cancel-control" => "holding_the_execute_future_leaves_the_connection_open",
+        "reclaim" => "a_slot_reclaimed_while_still_closing_waits_for_its_fin",
         "naive" => "embassys_own_socket_teardown_is_invisible_to_the_server",
         other => panic!("unknown scenario {other}"),
     }
@@ -307,6 +333,7 @@ async fn scenario_task(stack: Stack<'static>, name: String) {
         "refuse-opts" => refuse_opts(stack).await,
         "cancel" => cancel(stack, true).await,
         "cancel-control" => cancel(stack, false).await,
+        "reclaim" => reclaim(stack).await,
         "naive" => naive(stack).await,
         other => panic!("unknown scenario {other}"),
     }
@@ -355,7 +382,7 @@ async fn request(stack: Stack<'static>) {
     // The verdict is not read here: this client keeps its connection in
     // `Native`'s pool, so the far end correctly sees it stay open.
     let (addr, _ends) = spawn_http_server(1);
-    let client = client(stack, true);
+    let client = client::<2>(stack, true);
     let started = embassy_time::Instant::now();
     let text = client
         .get(&format!("http://{addr}/"))
@@ -381,7 +408,7 @@ async fn slots(stack: Stack<'static>) {
     // to 6 would travel over the connection request 1 opened and the
     // socket pool would never be asked for a second slot — i.e. the test
     // would pass without checking anything about slots.
-    let client = client(stack, false);
+    let client = client::<2>(stack, false);
     for i in 1..=REQUESTS {
         let text = client
             .get(&format!("http://{addr}/"))
@@ -568,7 +595,7 @@ async fn refuse_opts(stack: Stack<'static>) {
 
 async fn cancel(stack: Stack<'static>, drop_it: bool) {
     let (addr, seen, verdict) = spawn_silent_server();
-    let client = client(stack, true);
+    let client = client::<2>(stack, true);
     // Owned, not `pin!`: dropping a `Pin<&mut F>` would drop the borrow
     // and leave the future itself alive on the stack, which is the one
     // thing this test must not do.
@@ -624,6 +651,73 @@ async fn cancel(stack: Stack<'static>, drop_it: bool) {
     assert_eq!(end, expected);
 }
 
+/// Cancel a request on a one-slot pool, then immediately make another:
+/// the second request has to take the socket the first one is still
+/// closing, and the first connection must *still* end with an orderly FIN.
+///
+/// The timing is the whole test, so it is arranged rather than hoped for.
+/// `drop(fut.take())` releases the socket — `PooledSocket::drop` queues a FIN
+/// and wakes the stack task, but waking is not running — and the very next
+/// statement starts a request whose first act, on the same poll of this
+/// same task, is `SocketPool::acquire`. Nothing between them awaits, so
+/// the stack task has not had a turn and the FIN is still in smoltcp's
+/// send queue. `finish_closing` therefore gets a socket that has not
+/// finished closing, which is the one case in which its `flush()` is
+/// load-bearing: without it the next line is `abort()`, and an abort
+/// before the FIN is dispatched replaces it, so the far end learns nothing
+/// — the same silent teardown as `naive`, arrived at from the other
+/// direction.
+async fn reclaim(stack: Stack<'static>) {
+    let (silent, seen, verdict) = spawn_silent_server();
+    let (answering, _ends) = spawn_http_server(1);
+    // `N = 1` is not a tuning choice: with two slots the second request
+    // takes the free one and never looks at the closing list.
+    let client = client::<1>(stack, false);
+
+    let mut fut = Some(Box::pin(client.get(&format!("http://{silent}/")).send()));
+    // Same shape as `cancel`: drop once the server has the whole head, so
+    // there is something on the wire to cancel.
+    loop {
+        if seen.try_recv().is_ok() {
+            break;
+        }
+        let f = fut.as_mut().expect("still held");
+        if let std::task::Poll::Ready(r) =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(f.as_mut().poll(cx))).await
+        {
+            panic!(
+                "the silent server never answers, so `send` must not complete: ok={}",
+                r.is_ok()
+            );
+        }
+        Timer::after_millis(1).await;
+    }
+
+    // --- the two statements that must share one executor turn ---
+    drop(fut.take());
+    let text = client
+        .get(&format!("http://{answering}/"))
+        .send()
+        .await
+        .expect("the second request must get the one slot back")
+        .collect()
+        .await
+        .expect("collect")
+        .text()
+        .expect("text");
+    // ------------------------------------------------------------
+    assert_eq!(text, BODY, "the reclaimed socket carries a real exchange");
+
+    let end = recv_async(&verdict, "the cancelled connection's verdict").await;
+    println!("slot reclaimed while closing, the cancelled connection ended as {end:?}");
+    assert_eq!(
+        end,
+        ClientEnd::Eof,
+        "a slot reclaimed before its FIN was dispatched must still deliver that FIN, not replace \
+         it with an abort — see this scenario's doc comment"
+    );
+}
+
 async fn naive(stack: Stack<'static>) {
     let (addr, seen, verdict) = spawn_silent_server();
     // Buffers leaked once for this one socket: the point of the scenario
@@ -659,13 +753,18 @@ async fn naive(stack: Stack<'static>) {
 
 // -------------------------------------------------------------- helpers
 
-/// `Native` over the embassy runtime, with a two-slot socket pool.
-fn client(
+/// `Native` over the embassy runtime, with an `N`-slot socket pool.
+///
+/// `N` is a parameter because the scenarios need two different kinds of
+/// pressure: `2` is enough to prove slots are recycled at all, and only
+/// `1` forces a request to reclaim a socket that is *still closing*, which
+/// is the state `finish_closing` exists for.
+fn client<const N: usize>(
     stack: Stack<'static>,
     reuse: bool,
-) -> Client<Native<Embassy<2, 1536, 1536>, NoTls, IpLiteralOnly>> {
-    let pool = SocketPool::<2, 1536, 1536>::leak(stack);
-    let rt = Embassy::new(stack, pool);
+) -> Client<Native<Embassy<N, 1536, 1536>, NoTls, IpLiteralOnly>> {
+    let pool = SocketPool::<N, 1536, 1536>::leak(stack);
+    let rt = Embassy::<N, 1536, 1536>::new(stack, pool);
     let transport = Native::new(rt, NoTls, IpLiteralOnly);
     let transport = if reuse {
         transport
