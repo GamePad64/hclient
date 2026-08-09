@@ -175,6 +175,26 @@ fails closed if the invocation itself breaks or returns nothing. Measured
 while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
 graph, four in the native one.
 
+**Nothing here is published, and the version numbers are nominal.** Every
+crate says `0.1.0` while `main` carries all of v0.2 and the start of v0.3.
+That is deliberate, not drift: publishing is a promise not to break, and
+this workspace is not ready to make it — `TlsConnect` changed three times in
+one session (`reports_alpn`, the `TlsIdentity` extraction, the 0-RTT slots),
+`Timer` gained `type Sleep`, `TcpConnect` gained `APPLIES`, and `UdpBind`
+arrived from nothing.
+
+So: **do not bump versions, do not add a CHANGELOG, do not configure
+`publish`** as tidying-up work. The trigger is the owner's, and it is
+"full-featured" rather than a date — what is still missing is enumerated at
+the end of `docs/v01-acceptance.md`, `docs/v02-acceptance.md` and
+`docs/v03-acceptance.md`, which is where to look before asking whether it
+is time.
+
+The freedom this buys is worth naming, because it is why the seams could
+move as often as they did: a change to a public trait costs a rebase here
+and nothing at all outside, so the right shape can be chosen on its merits
+rather than on what is already promised.
+
 **Minimum supported Rust: the latest stable release** — currently **1.97**,
 declared once in the workspace manifest and shared by every crate. That is the
 support policy, not a snapshot: the floor moves with stable, and a release that
