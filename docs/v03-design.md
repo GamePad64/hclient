@@ -326,3 +326,184 @@ build could ever have. Whether that is useful, given that `fetch` resolves
 names itself, is a design question this document does not answer: it would
 matter for a wasm build that wants an HTTPS record's `alpn` or ECH, and
 `fetch` gives access to neither.
+
+---
+
+## W4 — WebSocket, and the seam it is actually asking for
+
+**Why last.** It is the largest item here, it is the only one that adds a
+seam to the public surface, and nothing else in this document depends on it
+— so if the vertical runs short, this is the item whose slipping costs
+least. It is also the one the original spec called "what nobody else has"
+(`docs/superpowers/specs/2026-08-05-http-ng-design.md`, v0.3 roadmap), and
+the one whose central decision that spec asked to be taken *before the pool
+architecture is frozen*. The pool froze in v0.2 W2 without it. The cost of
+that is measurable rather than hypothetical, and it is written below.
+
+`Capabilities::upgrade` exists (`crates/http-ng-core/src/caps.rs:277`, field
+at `:478`) and is `UpgradeSupport::None` in every backend and in the default
+(`caps.rs:508`, `http-ng-native/src/lib.rs:259`, `http-ng-wasi/src/lib.rs:194`,
+`http-ng-fetch/src/caps.rs:407`, `http-ng-h3/src/lib.rs:342`). Four variants,
+zero uses: exactly the shape v0.2's rule was written against.
+
+### The finding that decides the seam
+
+**The browser cannot implement "upgrade" at all, and can implement
+"WebSocket" perfectly well.** `http-ng-fetch` says so where it sets the
+capability: *"`WebSocket` in the browser is a wholly separate global,
+unreachable from a `fetch`-shaped `Transport`"* (`crates/http-ng-fetch/src/caps.rs:405-406`).
+On Apple platforms the same is true one level down —
+`NSURLSessionWebSocketTask` is **message-framed** and hands back no byte
+stream. `wasi:http` has no upgrade either: the protocol has an
+`HTTP-upgrade-failed` error code and no mechanism.
+
+So a seam shaped as "give me back the socket" is implementable by exactly
+one of the four backends here, and the one it excludes is the one this
+project exists for. **The seam to add is a WebSocket seam — message
+oriented, `Stream<Item = Result<Message>> + Sink<Message>` — and h1 upgrade
+is an implementation detail underneath it on native.** That is the spec's
+§5.7 conclusion, and it is worth restating because `UpgradeSupport`'s
+existence makes the other shape look like the intended one.
+
+Two consequences follow immediately, and both are decisions rather than
+code:
+
+- **The seam expresses itself by being implemented, not by a capability
+  field.** This project already has that pattern and wrote it down for
+  `TcpAdoptStd`: *"a backend that cannot adopt a `std::net::TcpStream`
+  should say so by not implementing the trait, which is already how the seam
+  expresses it"* (`docs/w7-embassy-research.md` §1.4). A separate trait, as
+  `QuicTlsConnect` is separate from `TlsConnect`, for the same reason given
+  there: when the method intersection with the existing trait is empty, an
+  adapter between them type-checks with an empty body, which is worse than a
+  compile error.
+- **`UpgradeSupport` must then justify itself or go.** If WebSocket is a
+  trait, no caller decision turns on the field, and v0.2's rule says a
+  variant exists only if one does. Either it becomes real for a *different*
+  reason — a raw h1 upgrade or `CONNECT` tunnel exposed to callers, which is
+  a proxy feature nobody has asked for — or it is deleted. Deciding that is
+  in scope for this item; leaving four unused variants in the capability
+  registry is not.
+
+### What native needs from hyper, and the trap in it
+
+hyper gives exactly what is required, without a `Send` bound:
+`Connection::poll_without_shutdown` and `into_parts`, returning
+`Parts { io, read_buf }`, are bounded by `T: Read + Write + Unpin`, `B: Body`
+alone (`hyper-1.11.0/src/client/conn/http1.rs:68-113`; `Parts` is
+`#[non_exhaustive]` at `:32-45`).
+
+What must **not** be used is `hyper::upgrade::{on, Upgraded}`: `Upgraded`
+holds `Rewind<Box<dyn Io + Send>>` (`hyper-1.11.0/src/upgrade.rs:66-67`), so
+it puts a `Send` bound on this crate's IO — "single-threaded runtimes shut
+out", the thing the crate exists to avoid, and the same objection that
+disqualified `hyper/http2` in v0.2 W3.
+
+**The trap, in hyper's own source.** Polling a plain `Connection` as a
+`Future` to completion after a 101 returns `Poll::Ready(Ok(()))` and throws
+the upgrade away:
+
+```rust
+// hyper-1.11.0/src/client/conn/http1.rs:311-321
+proto::Dispatched::Upgrade(pending) => {
+    // With no `Send` bound on `I`, we can't try to do upgrades here.
+    pending.manual();
+    Poll::Ready(Ok(()))
+}
+```
+
+"The exchange completed successfully" and "the upgrade was destroyed" are
+therefore the *same observation*, and `crates/http-ng-native/src/h1.rs`
+polls `Connection` as a `Future` precisely this way (its module doc,
+"What happens when `Connection` finishes first, or fails"). A 101 must be
+detected by **status**, before the connection is polled to completion.
+
+### The check to run before any code is written
+
+Nothing in `http-ng-native` mentions 101 or Switching Protocols — grep the
+crate. So today, a server that answers `101` to an ordinary request produces
+a response with a body that ends immediately, and `checkin_for`
+(`crates/http-ng-native/src/lib.rs:527`) hands the connection back to the
+pool when the body ends cleanly. **If that is what happens, the pool is
+being poisoned with a connection that is no longer speaking HTTP, and that
+is a bug today rather than a WebSocket feature.** It is two dozen lines to
+find out: a loopback server that answers `101 Switching Protocols`, two
+requests, and the server's own accept count as the observer — the same
+observer `crates/http-ng-native/tests/pool.rs` already uses. Run it first;
+its answer changes whether this item starts with a fix or with a feature.
+
+### WebSocket over HTTP/2, and why it is out of scope
+
+RFC 8441 extended CONNECT is reachable from where this crate already
+stands, and *more* reachable than the original spec thought:
+
+- the `:protocol` pseudo-header is `h2::ext::Protocol` in the request's
+  extensions (`h2-0.4.15/src/proto/streams/streams.rs:227`);
+- the gating setting is readable from **`SendRequest`**, not only from
+  `Connection` — `is_extended_connect_protocol_enabled()` at
+  `h2-0.4.15/src/client.rs:547`, in the `impl<B> SendRequest<B>` block at
+  `:353`. The spec's first trap ("the flag lives only on `Connection`, and
+  hyper-util spawns it into a task and loses it") was a fact about
+  hyper-util's architecture, and does not apply to a crate that holds
+  `SendRequest` in its own pool;
+- and the check is genuinely ours to make: `send_request` removes the
+  `Protocol` from the extensions and sends it **without consulting the
+  setting** (same file, `:227` onwards), while RFC 8441 §3 forbids sending
+  `:protocol` unless the setting was received.
+
+And yet it buys nothing here, for a reason that belongs to the pool rather
+than to h2: **an h2 connection is checked out exclusively, one stream at a
+time** (`crates/http-ng-native/src/pool.rs:155-172`, which states the policy
+and the `Spawn` argument behind it). A WebSocket over h2 would therefore
+occupy an entire connection for its lifetime — exactly what it does over
+h1, plus framing overhead. RFC 8441 exists to put a tunnel *alongside*
+ordinary requests; with exclusive checkout there is no alongside.
+
+Lifting the exclusivity needs a connection driven by somebody who is not a
+request future, which is the decision `http-ng-h3` already took and wrote
+down (`docs/v03-acceptance.md`, "HTTP/3 requires `R: Spawn`, and connections
+are shared"). So: **WebSocket over h1 in v0.3; WebSocket over h2 only
+together with a multiplexing pool**, which is its own work item and carries
+W1-of-v0.2's cancellation rule with it, because the pool policy is what
+currently discharges that rule for free.
+
+This is what the spec's "decide this before the pool architecture is frozen"
+was for. The decision was not taken, the pool froze, and the price is one
+deferred feature rather than a rewrite — worth recording as the actual size
+of that miss.
+
+**Premises.**
+
+| claim | how to refute it | status |
+|---|---|---|
+| hyper hands back the IO without a `Send` bound | `into_parts`/`poll_without_shutdown` bounds at `hyper-1.11.0/src/client/conn/http1.rs:68-113` | measured here |
+| `hyper::upgrade::Upgraded` cannot be used | It is `Rewind<Box<dyn Io + Send>>` (`src/upgrade.rs:66-67`) | measured here |
+| Polling `Connection` to completion destroys an upgrade | `src/client/conn/http1.rs:311-321` | measured here |
+| A 101 today poisons the pool | The loopback experiment above | **unverified**, and it is the first thing to run |
+| RFC 8441 is reachable through the `h2` crate we already drive | `h2-0.4.15/src/client.rs:547`, `proto/streams/streams.rs:227` | measured here by reading; no request has been sent |
+| WS-over-h2 is worth having under the current pool | It is not, and the reason is `pool.rs:155-172`, not h2 | argued here |
+| A framing library exists that does not force a runtime | `tungstenite` 0.30's `WebSocketContext::read/write` take the stream per call (`tungstenite-0.30.0/src/protocol/mod.rs:449,491`) — a state machine separate from the socket, but typed against `std::io::{Read, Write}`. `async-tungstenite` 0.35 bridges it with `AllowStd` + `AtomicWaker` over `futures_io`, and its only `unsafe` is in `gio.rs` | measured here |
+| That bridge can be built here without `unsafe` | `crates/http-ng-rt/src/futures_io.rs` already bridges `futures_io -> hyper::rt` unsafe-free, through a scratch buffer, and documents the one-copy cost. WebSocket needs the **reverse** direction, which that file does not have | **unverified**; writing it under `#![forbid(unsafe_code)]` is the check |
+| The handshake needs a dependency | `Sec-WebSocket-Accept` is SHA-1 of the key plus a fixed GUID, base64. `tungstenite`'s `generate_key`/`derive_accept_key` sit behind its `handshake` feature, which pulls `http`, `httparse`, `sha1` and `data-encoding` | measured here; which way to go is a decision, not a fact |
+
+**Watch for.** Four.
+
+*The capability trap, for the fifth time.* "The browser has WebSocket" is a
+fact about the environment. What may be declared is what **this transport**
+does. v0.1 caught this four times and v0.2 once more.
+
+*No foreign type in the public API.* `Message` must be ours — the spec lists
+this as risk 7, with `Upgraded` and `h3::quic::*` as the examples. A
+`tungstenite::Message` in the seam would put a framing library in every
+downstream crate's public surface, and would be unimplementable by the
+browser backend, which has its own message type.
+
+*Reconnection is not this seam's job.* `SseStream` and
+`ReconnectingSseStream` are the precedent: a stream, and a separate type
+that opens a fresh one (`crates/http-ng/src/sse.rs`).
+
+*Masking, and the `Close` handshake, are the parts a naive implementation
+gets wrong quietly.* A client MUST mask; an unmasked frame is a protocol
+error the server closes on, and it is invisible to a test that only checks
+that a message arrived. Whatever is built needs a server that rejects an
+unmasked frame, not one that tolerates it.
