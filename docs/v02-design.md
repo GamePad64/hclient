@@ -133,16 +133,36 @@ caller wrote it instead of a reaper that never fires. What the pool needed to
 be *correct* is still the poll at checkout, which needs no executor at all;
 a reaper is a resource optimisation on top of that.
 
-**One piece of that opt-in has since landed:
+**One piece of that opt-in landed first:
 `http_ng_rt_tokio::TokioHandle`.** The shipped `Tokio` is a ZST that reads
 the runtime out of a thread-local, so `Spawn::spawn` on it panics off a
-runtime thread — which is exactly where a `Native::new_with_reaper` might be
+runtime thread — which is exactly where a reaper constructor might be
 called, since building a client is not usually done from inside `block_on`.
 `TokioHandle` carries a `tokio::runtime::Handle`, so the precondition is a
 `Result` at construction and `spawn` is total. Its module doc measures
 which capabilities that helps and which it does not — `TcpConnect` it
-cannot help, and says why. The reaper constructor itself is still not
-written.
+cannot help, and says why.
+
+**LANDED: `Native::with_reaper(PoolConfig)`**, exactly that shape —
+`R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>`, so a runtime that cannot
+spawn is a compile error at the call site. It takes the `PoolConfig` itself
+rather than sitting next to `pool()`, because `pool()`/`without_pool()`
+install a *new* pool and would leave a reaper started earlier watching the
+old one. `Reaper<R, I>` is a hand-written struct because `Spawn<F>` makes
+the future a type parameter of the trait and an `async` block has no name;
+it holds a `Weak` to the pool, so it does not keep sockets alive past the
+transport and its failed upgrade is what ends the task, and it sleeps until
+the pool's *earliest* deadline (`Pool::reap` returns it) rather than on a
+fixed interval. Measured from outside the client, the server watching its
+own end of the socket under a 300 ms idle timeout: closed 299.7 ms after
+the response on `Tokio`, 300.6 ms on `Smol`, against a control differing in
+that one call that still held the socket 1200 ms later
+(`crates/http-ng-native/tests/reaper.rs`).
+
+One thing no bound can catch, recorded where the code is as well as here:
+**`Spawn::spawn` returns `()`**, so a spawner whose executor nobody drives
+accepts the task, drops it, and cannot say so. A reaper is at most as good
+as the executor under it.
 
 ---
 

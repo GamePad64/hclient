@@ -34,18 +34,27 @@
 //! survey expects none either. A reaper started by `Native::new` would
 //! therefore assume a capability the type parameter does not promise: **a
 //! default stronger than the truth**, which is the one thing this crate
-//! refuses everywhere else. So there is no reaper *by default*; the shape
-//! for opting in is a constructor bounded on `R: Spawn<Reaper<R, I>>`, so
-//! that a runtime which cannot spawn is a compile error where the caller
-//! wrote it rather than a reaper that never fires. Not implemented here
-//! yet — see `docs/v02-design.md` §W2.
+//! refuses everywhere else. So there is no reaper *by default* — and there
+//! is one on request: [`crate::Native::with_reaper`], bounded on
+//! `R: Spawn<Reaper<R, I>>`, so that a runtime which cannot spawn is a
+//! compile error where the caller wrote it rather than a reaper that never
+//! fires.
 //!
-//! One piece of it has landed since: `http_ng_rt_tokio::TokioHandle`, which
-//! carries a `tokio::runtime::Handle` instead of reading one out of a
-//! thread-local, so its `Spawn` works off a runtime thread — which is where
-//! a client is usually constructed. The shipped ZST `Tokio` panics there.
-//! That would otherwise be a second default stronger than the truth,
-//! hidden inside the first.
+//! One piece of it landed before the reaper itself:
+//! `http_ng_rt_tokio::TokioHandle`, which carries a
+//! `tokio::runtime::Handle` instead of reading one out of a thread-local,
+//! so its `Spawn` works off a runtime thread — which is where a client is
+//! usually constructed. The shipped ZST `Tokio` panics there. That would
+//! otherwise be a second default stronger than the truth, hidden inside
+//! the first.
+//!
+//! **And a third one, which no bound can catch: a spawner nobody drives.**
+//! `Spawn::spawn` returns `()`. An executor that is never `run` accepts
+//! this task, drops it, and cannot report that it did; the sockets then sit
+//! open exactly as they would with no reaper, and the type system is happy
+//! throughout. **A reaper is at most as good as the executor under it** —
+//! written down here and on [`Reaper`] rather than left to be rediscovered
+//! from a socket count.
 //!
 //! Two things the correction does *not* change. Making `Spawn` a
 //! *requirement* of `Native` would still lose the property that
@@ -71,14 +80,21 @@
 //!    neither a `FIN` nor anything a server might send unbidden. For an
 //!    idle HTTP/1 connection the former is the only thing that happens, and
 //!    checkout catches it.
-//! 2. **The idle timeout is a filter, not a reaper.** With nothing polling
-//!    in the background, there is nobody to close a connection when its
-//!    time is up. [`PoolConfig::idle_timeout`] therefore means "do not hand
-//!    out a connection older than this", not "close a connection older than
-//!    this": a client that goes quiet for an hour leaves its sockets open
-//!    until it makes another request or the `Native` is dropped. This is
-//!    the price of the default having no spawner — not, as this file used
-//!    to say, of a reaper being impossible.
+//! 2. **By default the idle timeout is a filter, not a reaper.** With
+//!    nothing polling in the background, there is nobody to close a
+//!    connection when its time is up. [`PoolConfig::idle_timeout`]
+//!    therefore means "do not hand out a connection older than this", not
+//!    "close a connection older than this": a client that goes quiet for
+//!    an hour leaves its sockets open until it makes another request or
+//!    the `Native` is dropped. This is the price of the default having no
+//!    spawner — not, as this file used to say, of a reaper being
+//!    impossible — and [`crate::Native::with_reaper`] is what buys the
+//!    second meaning back for a runtime that can spawn. Measured on a real
+//!    socket with the server watching its own end close, under a **300 ms**
+//!    idle timeout: **299.7 ms** after the response on the shipped `Tokio`
+//!    and **300.6 ms** on the shipped `Smol`, against a control differing
+//!    in that one call which still held the socket 1200 ms later
+//!    (`tests/reaper.rs`).
 //! 3. **A race remains.** A server may close between our check and our
 //!    write. That window cannot be closed by any HTTP/1 pool — hyper's own
 //!    has it too — so it is handled rather than prevented: see the retry in
@@ -172,10 +188,14 @@
 //!   `crate::http2`'s module doc, which says the same thing from the other
 //!   end.
 use crate::established::Established;
+use http_ng_core::unversioned::Timer;
 use http_ng_tls::TlsConfigId;
 use hyper::rt::{Read, Write};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// How this transport reuses connections.
@@ -423,6 +443,46 @@ where
         self.inner.config
     }
 
+    /// A handle to this pool that does not keep it alive — see
+    /// [`WeakPool`].
+    pub(crate) fn downgrade(&self) -> WeakPool<I> {
+        WeakPool {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    /// Drops every connection whose deadline has passed, and reports when
+    /// the earliest surviving one falls due — `None` when nothing is left.
+    ///
+    /// This is the **only** function in this file that closes a connection
+    /// nobody asked for; [`Pool::take`] drops expired entries too, but only
+    /// the ones it walks past on its way to a live one, and only when a
+    /// request is being made. It exists for [`Reaper`], and it takes `now`
+    /// from the caller for the same reason `take` does: `http_ng_core::
+    /// Timer` is the seam through which time enters this crate.
+    ///
+    /// Returning the next deadline is what lets the reaper sleep exactly
+    /// as long as it must instead of polling on a fixed interval — the
+    /// difference between closing a connection at its deadline and closing
+    /// it up to one interval late.
+    pub(crate) fn reap(&self, now: Duration) -> Option<Duration> {
+        let mut idle = self.inner.idle.lock().expect("connection pool poisoned");
+        let mut next: Option<Duration> = None;
+        idle.retain(|_, bucket| {
+            // Dropped here, holding the lock, exactly as in `take`:
+            // dropping a connection closes a socket, which does not block.
+            bucket.retain(|e| e.expires_at > now);
+            for e in bucket.iter() {
+                next = Some(match next {
+                    Some(n) => n.min(e.expires_at),
+                    None => e.expires_at,
+                });
+            }
+            !bucket.is_empty()
+        });
+        next
+    }
+
     /// The freshest connection for `key` that has not passed its deadline,
     /// or `None`.
     ///
@@ -474,6 +534,193 @@ where
         // exactly one, so it can be over the bound by at most one.
         if bucket.len() > cfg.max_idle_per_key {
             bucket.remove(0);
+        }
+    }
+}
+
+/// A [`Pool`] the holder does not keep alive.
+///
+/// The reaper below must not be the reason a pool outlives its
+/// [`crate::Native`]: a spawned task holding a `Pool` (an `Arc`) would keep
+/// every idle socket open for the life of the process, which is the exact
+/// opposite of what a reaper is for. It holds this instead, and the failed
+/// upgrade is how it learns that the transport is gone and that it should
+/// end.
+pub(crate) struct WeakPool<I>
+where
+    I: Read + Write + Unpin,
+{
+    inner: std::sync::Weak<Inner<I>>,
+}
+
+impl<I> WeakPool<I>
+where
+    I: Read + Write + Unpin,
+{
+    fn upgrade(&self) -> Option<Pool<I>> {
+        self.inner.upgrade().map(|inner| Pool { inner })
+    }
+}
+
+/// The background task that closes idle connections when their deadline
+/// passes — [`crate::Native::with_reaper`], and nothing else, starts one.
+///
+/// # Why this is a hand-written struct and not an `async` block
+///
+/// [`http_ng_rt::Spawn<F>`](http_ng_rt::Spawn) is hyper's `Executor<Fut>`
+/// shape: the future is a type parameter **of the trait**, so a bound has
+/// to name it — and an `async` block has no name (`E0308: expected type
+/// parameter F, found async block`). That, and not `Send`, is what stood
+/// behind the withdrawn claim that a spawned pool task "does not compile
+/// on this seam"; see the module doc. Naming the future means writing it
+/// out, and writing it out means the sleep has to be a field, which is why
+/// [`http_ng_core::unversioned::Timer`] carries an associated `Sleep` type.
+///
+/// # Why the state is behind a `Box`, and the sleep behind a second one
+///
+/// This workspace forbids `unsafe`, so there is no pin projection to be
+/// had: the only way to poll a `!Unpin` field is to own it behind a
+/// pointer, and the only way to take `&mut` at a field at all is for the
+/// whole future to be `Unpin`. `tokio::time::Sleep` is `!Unpin` (smol's
+/// is not, which is exactly why one of the two runtimes must not be
+/// allowed to decide the shape), hence `Pin<Box<R::Sleep>>`; and
+/// `R::Instant` could be anything at all, hence the outer box, which makes
+/// `Reaper` `Unpin` for **every** `R` rather than for those whose private
+/// types happen to be. The alternative was `R: Unpin, R::Instant: Unpin`
+/// on a public constructor — a promise a caller cannot read off their own
+/// runtime's documentation, to buy back one allocation per transport.
+///
+/// Both boxes hold **concrete** types, so nothing is erased and the auto
+/// traits still pass through — the property `h1.rs`'s module doc is about.
+///
+/// # A reaper is at most as good as the executor under it
+///
+/// [`Spawn::spawn`](http_ng_rt::Spawn::spawn) returns `()`. A spawner
+/// whose executor nobody drives — an `async_executor::Executor` with no
+/// `run` — accepts this task, drops it on the floor, and has no way of
+/// saying so; the connections then sit open exactly as they would with no
+/// reaper at all, and nothing anywhere reports it. That is a property of
+/// the seam, not something this type can check, and it is written down
+/// here because the alternative is someone discovering it from a socket
+/// count in production.
+pub struct Reaper<R, I>(Box<ReaperState<R, I>>)
+where
+    R: Timer,
+    I: Read + Write + Unpin;
+
+/// [`Reaper`]'s fields, boxed — see its doc comment for why they are not
+/// simply its fields.
+struct ReaperState<R, I>
+where
+    R: Timer,
+    I: Read + Write + Unpin,
+{
+    rt: R,
+    pool: WeakPool<I>,
+    /// The same origin every [`Idle::expires_at`] is measured from — the
+    /// owning transport's `epoch`. Passed in rather than read here: a
+    /// second origin would make this task's arithmetic disagree with the
+    /// pool's by however long the two constructions were apart.
+    epoch: R::Instant,
+    /// How long to wait when there is nothing in the pool to wait *for*.
+    idle_timeout: Duration,
+    /// `None` until the first poll. Nothing about this task touches the
+    /// runtime before it is polled, which matters for the ZST
+    /// `http_ng_rt_tokio::Tokio`: its `sleep` reads the ambient runtime out
+    /// of a thread-local and panics off a runtime thread, and a client is
+    /// usually built off one. Constructing the sleep at first poll puts
+    /// that call on whichever thread the executor polls from, which is a
+    /// runtime thread by construction.
+    sleep: Option<Pin<Box<R::Sleep>>>,
+}
+
+/// The shortest interval the reaper will ever wake at.
+///
+/// Without a floor, `PoolConfig { idle_timeout: Duration::ZERO, .. }` —
+/// a legal way to say "never reuse anything" — would give an empty pool a
+/// zero-length sleep, and this task would spin a core rather than reap
+/// anything. One millisecond is far below any deadline worth reaping and
+/// far above any wake rate worth worrying about.
+const MIN_REAP_INTERVAL: Duration = Duration::from_millis(1);
+
+impl<R, I> Reaper<R, I>
+where
+    R: Timer,
+    I: Read + Write + Unpin,
+{
+    pub(crate) fn new(rt: R, pool: WeakPool<I>, epoch: R::Instant, idle_timeout: Duration) -> Self {
+        Self(Box::new(ReaperState {
+            rt,
+            pool,
+            epoch,
+            idle_timeout,
+            sleep: None,
+        }))
+    }
+}
+
+impl<R, I> std::fmt::Debug for Reaper<R, I>
+where
+    R: Timer,
+    I: Read + Write + Unpin,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reaper")
+            .field("idle_timeout", &self.0.idle_timeout)
+            .field("pool_alive", &self.0.pool.upgrade().is_some())
+            .finish()
+    }
+}
+
+impl<R, I> Future for Reaper<R, I>
+where
+    R: Timer,
+    I: Read + Write + Unpin,
+{
+    /// `()`, and it is reached exactly once: when the pool this watches is
+    /// dropped. A reaper does not fail — there is nothing here that can go
+    /// wrong that dropping a socket does not already answer — and it does
+    /// not stop for any other reason, so the end of this future is the end
+    /// of the transport.
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = &mut *self.get_mut().0;
+        loop {
+            if this.sleep.is_none() {
+                this.sleep = Some(Box::pin(this.rt.sleep(this.idle_timeout)));
+            }
+            let sleep = this.sleep.as_mut().expect("just set");
+            std::task::ready!(sleep.as_mut().poll(cx));
+
+            // The transport is gone, and with it the last strong reference
+            // to the pool: whatever was in it has already been dropped, so
+            // there is nothing left to reap and nobody left to reap for.
+            let Some(pool) = this.pool.upgrade() else {
+                return Poll::Ready(());
+            };
+            let now = this.rt.elapsed_since(this.epoch);
+            // Two answers in one call, deliberately: a separate "when is
+            // the next deadline" query would read the pool a second time,
+            // under a second lock, and could disagree with what the first
+            // one had just removed.
+            let wake = match pool.reap(now) {
+                // Everything left expires later than `now`, so this is
+                // positive; the floor is for the branch below.
+                Some(next) => next.saturating_sub(now),
+                // Nothing to wait for. `idle_timeout` is the soonest
+                // anything checked in from here on could expire — near
+                // enough: a connection is stamped when it is handed OUT,
+                // so an exchange lasting `d` makes its deadline `d`
+                // earlier than that, and the reap that follows this sleep
+                // is late by at most one exchange.
+                None => this.idle_timeout,
+            };
+            // Dropped before the next sleep so that this task holds no
+            // strong reference to the pool while it waits — otherwise
+            // "the transport was dropped" could never be observed.
+            drop(pool);
+            this.sleep = Some(Box::pin(this.rt.sleep(wake.max(MIN_REAP_INTERVAL))));
         }
     }
 }
@@ -533,5 +780,310 @@ mod tests {
             PoolKey::new(Security::Plaintext, "h", 443, Protocol::Http11),
             PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11),
         );
+    }
+
+    // ── the reaper ──────────────────────────────────────────────────────
+    //
+    // What lives here is what a network cannot show: that the task ends
+    // when its pool is gone, that an empty pool does not make it spin, and
+    // that `reap` reports the deadline it will next be woken by. The thing
+    // a network CAN show — a real socket closed at its deadline, seen by
+    // the server rather than by us — is `tests/reaper.rs`, and it is the
+    // reason to believe any of this.
+
+    use std::cell::{Cell, RefCell};
+    use std::io;
+    use std::rc::Rc;
+    use std::task::Waker;
+
+    /// IO that never does anything. Every test below either keeps the pool
+    /// empty or parks connections it never speaks on, so a stream that
+    /// answers `Pending` to everything is the honest stub: anything it
+    /// *did* would be a fact about hyper, not about this file.
+    struct NeverIo;
+
+    impl Read for NeverIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl Write for NeverIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// A clock that records what it was asked to sleep for and hands out a
+    /// sleep that is ready only for the first `ready` requests.
+    ///
+    /// Recording the *requests* is what makes the reaper's arithmetic
+    /// checkable at all: how long it decides to wait is the whole of its
+    /// behaviour between two reaps, and it is invisible to a test that only
+    /// watches the pool. Rationing readiness is what stops the poll loop —
+    /// a sleep that is always ready and a pool that is always there is an
+    /// infinite loop by construction, which is exactly the shape the
+    /// `MIN_REAP_INTERVAL` test is about.
+    #[derive(Clone, Default)]
+    struct FakeClock {
+        asked: Rc<RefCell<Vec<Duration>>>,
+        ready: Rc<Cell<usize>>,
+        elapsed: Rc<Cell<Duration>>,
+    }
+
+    /// Readiness is decided at **poll** time, out of the shared budget,
+    /// not at construction. The reaper's poll is a loop — a sleep that
+    /// resolved, a reap, a new sleep — so a budget spent when the sleep is
+    /// built is entirely consumed by the first `poll_once`, and a test
+    /// could never hand the task a second turn. Deciding on poll lets a
+    /// test top the budget up between polls, which is what
+    /// `the_reaper_stays_alive_while_the_pool_does` needs in order to be
+    /// about the pool at all.
+    struct FakeSleep {
+        budget: Rc<Cell<usize>>,
+    }
+
+    impl Future for FakeSleep {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            let left = self.budget.get();
+            self.budget.set(left.saturating_sub(1));
+            if left > 0 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl Timer for FakeClock {
+        /// `()`: this clock's "instants" are all the same one, and the
+        /// elapsed time is set by the test instead. A reaper never compares
+        /// two instants — it subtracts elapsed durations from the epoch it
+        /// was handed — so there is nothing here for a richer instant to
+        /// do.
+        type Instant = ();
+        type Sleep = FakeSleep;
+        fn sleep(&self, d: Duration) -> FakeSleep {
+            self.asked.borrow_mut().push(d);
+            FakeSleep {
+                budget: Rc::clone(&self.ready),
+            }
+        }
+        fn now(&self) {}
+        fn elapsed_since(&self, _earlier: ()) -> Duration {
+            self.elapsed.get()
+        }
+    }
+
+    impl FakeClock {
+        fn ready_for(n: usize) -> Self {
+            let c = Self::default();
+            c.ready.set(n);
+            c
+        }
+        fn asked(&self) -> Vec<Duration> {
+            self.asked.borrow().clone()
+        }
+    }
+
+    fn poll_once<F: Future + Unpin>(f: &mut F) -> Poll<F::Output> {
+        Pin::new(f).poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    /// A handshaken connection over IO that will never answer anything.
+    ///
+    /// `http1::handshake` finishes without touching the socket — it builds
+    /// the sender/connection pair and nothing more — so one poll is enough
+    /// and `Pending` here would mean a broken assumption rather than "wait
+    /// a little longer", which is why it panics instead of looping.
+    fn parked() -> Established<NeverIo> {
+        let mut h = Box::pin(crate::h1::handshake(NeverIo));
+        match poll_once(&mut h) {
+            Poll::Ready(Ok(est)) => Established::H1(est),
+            Poll::Ready(Err(e)) => panic!("handshake over inert IO must not fail: {e}"),
+            Poll::Pending => panic!("http1::handshake must not touch the socket"),
+        }
+    }
+
+    fn pool_of(entries: &[u64]) -> Pool<NeverIo> {
+        let pool = Pool::new(Some(PoolConfig::default()));
+        for ms in entries {
+            pool.put(key("h"), parked(), Duration::from_millis(*ms));
+        }
+        pool
+    }
+
+    /// `reap` is the only thing in this file that closes a connection
+    /// nobody asked about, and the deadline it reports is what the reaper
+    /// sleeps on. Both halves are checked here, because a `reap` that
+    /// removed the right entries and reported the wrong deadline would be
+    /// invisible from outside until a socket stayed open for an extra
+    /// interval.
+    #[test]
+    fn reap_drops_what_is_past_its_deadline_and_reports_the_next_one() {
+        let pool = pool_of(&[100, 200, 300]);
+
+        assert_eq!(
+            pool.reap(Duration::from_millis(150)),
+            Some(Duration::from_millis(200)),
+            "the 100ms entry is gone and 200ms is what to wake for next"
+        );
+        assert_eq!(
+            pool.reap(Duration::from_millis(150)),
+            Some(Duration::from_millis(200)),
+            "reaping twice at the same instant must change nothing"
+        );
+        assert_eq!(
+            pool.reap(Duration::from_millis(250)),
+            Some(Duration::from_millis(300)),
+        );
+        assert_eq!(
+            pool.reap(Duration::from_millis(350)),
+            None,
+            "everything is past its deadline, so there is nothing to wake for"
+        );
+    }
+
+    /// An entry exactly at its deadline is expired, which is the same
+    /// boundary [`Pool::take`] draws (`expires_at > now` is what it keeps).
+    /// Two places reading one rule the opposite way round would put the
+    /// reaper and checkout into a disagreement nobody would see until a
+    /// connection was handed out one instant after it was closed.
+    #[test]
+    fn the_deadline_itself_counts_as_expired_for_reap_as_it_does_for_take() {
+        let pool = pool_of(&[100]);
+        assert_eq!(pool.reap(Duration::from_millis(100)), None);
+
+        let pool = pool_of(&[100]);
+        assert!(pool.take(&key("h"), Duration::from_millis(100)).is_none());
+    }
+
+    /// An empty pool has no deadline to wait for, so the reaper waits the
+    /// idle timeout — the soonest anything checked in from now on could
+    /// fall due.
+    #[test]
+    fn an_empty_pool_makes_the_reaper_wait_the_idle_timeout() {
+        let clock = FakeClock::ready_for(1);
+        let pool: Pool<NeverIo> = Pool::new(Some(PoolConfig::default()));
+        let mut reaper = Reaper::new(
+            clock.clone(),
+            pool.downgrade(),
+            (),
+            Duration::from_millis(300),
+        );
+
+        assert!(poll_once(&mut reaper).is_pending());
+        assert_eq!(
+            clock.asked(),
+            vec![Duration::from_millis(300), Duration::from_millis(300)],
+            "one sleep before the first reap and one after it, both the idle timeout"
+        );
+    }
+
+    /// The reaper wakes for the earliest deadline rather than on a fixed
+    /// interval — which is the difference between closing a connection at
+    /// its deadline and closing it up to one interval late.
+    #[test]
+    fn the_reaper_waits_exactly_until_the_earliest_deadline() {
+        let clock = FakeClock::ready_for(1);
+        clock.elapsed.set(Duration::from_millis(150));
+        let pool = pool_of(&[100, 400]);
+        let mut reaper = Reaper::new(
+            clock.clone(),
+            pool.downgrade(),
+            (),
+            Duration::from_millis(300),
+        );
+
+        assert!(poll_once(&mut reaper).is_pending());
+        assert_eq!(
+            clock.asked(),
+            vec![Duration::from_millis(300), Duration::from_millis(250)],
+            "the 100ms entry was reaped at 150ms, and 400ms is 250ms away"
+        );
+    }
+
+    /// `PoolConfig { idle_timeout: Duration::ZERO, .. }` is a legal way to
+    /// say "never hand anything out again". Without a floor it would also
+    /// be a way to make this task spin a core: an empty pool, a
+    /// zero-length sleep, and a loop with nothing to wait for.
+    #[test]
+    fn a_zero_idle_timeout_does_not_turn_the_reaper_into_a_spin() {
+        let clock = FakeClock::ready_for(3);
+        let pool: Pool<NeverIo> = Pool::new(Some(PoolConfig::default()));
+        let mut reaper = Reaper::new(clock.clone(), pool.downgrade(), (), Duration::ZERO);
+
+        assert!(poll_once(&mut reaper).is_pending());
+        let asked = clock.asked();
+        assert_eq!(
+            asked.len(),
+            4,
+            "three ready sleeps and the pending one that ends the poll: {asked:?}"
+        );
+        for d in &asked[1..] {
+            assert!(
+                *d >= MIN_REAP_INTERVAL,
+                "every wait after the first must be floored: {asked:?}"
+            );
+        }
+    }
+
+    /// The reaper must not be the reason a pool outlives its transport,
+    /// and the way it is not is that it holds a `Weak`. When the upgrade
+    /// fails the task is over — this is the only thing that ends it.
+    #[test]
+    fn the_reaper_ends_when_the_pool_it_watches_is_dropped() {
+        let clock = FakeClock::ready_for(1);
+        let pool: Pool<NeverIo> = Pool::new(Some(PoolConfig::default()));
+        let weak = pool.downgrade();
+        drop(pool);
+
+        let mut reaper = Reaper::new(clock.clone(), weak, (), Duration::from_millis(300));
+        assert_eq!(poll_once(&mut reaper), Poll::Ready(()));
+        assert_eq!(
+            clock.asked(),
+            vec![Duration::from_millis(300)],
+            "it must not ask for a second sleep after finding the pool gone"
+        );
+    }
+
+    /// And it does not end early: a pool that is still there keeps the
+    /// task alive across a reap. Without this, the test above would also
+    /// pass for a reaper that ended on its first poll whatever it found.
+    #[test]
+    fn the_reaper_stays_alive_while_the_pool_does() {
+        let clock = FakeClock::ready_for(1);
+        let pool: Pool<NeverIo> = Pool::new(Some(PoolConfig::default()));
+        let mut reaper = Reaper::new(
+            clock.clone(),
+            pool.downgrade(),
+            (),
+            Duration::from_millis(300),
+        );
+
+        // One reap happened (two sleeps asked for), and the task is still
+        // waiting rather than finished.
+        assert!(poll_once(&mut reaper).is_pending());
+        assert_eq!(clock.asked().len(), 2);
+
+        // The same reaper, the same everything — only the pool is gone.
+        drop(pool);
+        clock.ready.set(1);
+        assert_eq!(poll_once(&mut reaper), Poll::Ready(()));
     }
 }

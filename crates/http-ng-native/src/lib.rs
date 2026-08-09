@@ -47,7 +47,7 @@ mod http2;
 mod pool;
 
 pub use connect::Conn;
-pub use pool::PoolConfig;
+pub use pool::{PoolConfig, Reaper};
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
@@ -55,7 +55,7 @@ use http_ng_core::{
     ReuseSupport, TimeoutSupport, Timeouts, UpgradeSupport,
 };
 use http_ng_dns::Resolve;
-use http_ng_rt::{TcpConnect, TcpOpts, Timer};
+use http_ng_rt::{Spawn, TcpConnect, TcpOpts, Timer};
 use http_ng_tls::TlsConnect;
 use pool::{CheckIn, Pool, PoolKey, Protocol, Security};
 use std::future::Future;
@@ -273,6 +273,87 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
     pub fn without_pool(mut self) -> Self {
         self.pool = Pool::new(None);
         self.caps.connection_reuse = reuse_of(&self.pool);
+        self
+    }
+
+    /// Connection reuse **with a background task that actually closes idle
+    /// connections** when their deadline passes, instead of only refusing
+    /// to hand them out.
+    ///
+    /// Sets the pool exactly as [`Native::pool`] does and additionally
+    /// spawns a [`Reaper`] on `R`. Read [`crate::pool`]'s module doc first:
+    /// without one, [`PoolConfig::idle_timeout`] is a filter applied at
+    /// checkout, so a client that goes quiet holds its sockets until its
+    /// next request or until `Drop`. Measured with the server watching its
+    /// own end of the socket, under a 300 ms idle timeout: closed **299.7
+    /// ms** after the response on the shipped `Tokio` and **300.6 ms** on
+    /// the shipped `Smol`, where the same client with `pool` in place of
+    /// this call still held the connection 1200 ms later
+    /// (`tests/reaper.rs`).
+    ///
+    /// # Why this is not what [`Native::new`] does
+    ///
+    /// Because `Native` is generic over `R`, and **not every `R` has a
+    /// `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has none, and
+    /// W7's embassy backend expects none. A reaper started by `new` would
+    /// assume a capability the type parameter does not promise: a default
+    /// stronger than the truth, which is the one thing this crate refuses
+    /// everywhere else.
+    ///
+    /// This is *not* the reason that used to be recorded here and in two
+    /// documents — "a pool driven by a spawned task does not compile on
+    /// this seam, because `Spawn<F>` requires `F: Send + 'static` and this
+    /// vertical's IO is not `Send`". That was measured and withdrawn:
+    /// `Spawn<F>` declares no bounds whatsoever, and the pool is an
+    /// `Arc<..<Mutex<..>>>`, so a reaper over it is `Send` whenever the
+    /// connection is. See `pool.rs`'s module doc for how the mistake was
+    /// made, which is the reusable part of it.
+    ///
+    /// # The bound is on this constructor, and that is the point
+    ///
+    /// `R: Spawn<Reaper<R, NativeIo<R, T>>>` is a compile error at the
+    /// call site for a runtime that cannot spawn — not a reaper that is
+    /// silently never started. `Spawn<F>` makes the future a type
+    /// parameter of the *trait*, so the bound has to name it, which is why
+    /// [`Reaper`] is a hand-written struct rather than an `async` block.
+    ///
+    /// # Three things it cannot promise
+    ///
+    /// - **A spawner nobody drives.** `Spawn::spawn` returns `()`: an
+    ///   executor that is never run accepts the task, drops it, and has no
+    ///   way to say so. A reaper is at most as good as the executor under
+    ///   it.
+    /// - **Start it last.** [`Native::pool`] and [`Native::without_pool`]
+    ///   install a *new* pool; a reaper started before one of those calls
+    ///   is left holding a weak reference to the old pool, and ends
+    ///   (quietly, and having reaped nothing, because that pool is empty
+    ///   and dropped). This method sets the configuration itself precisely
+    ///   so that `pool()` need not be called alongside it.
+    /// - **Reuse has to be on.** There is nothing to reap in a transport
+    ///   that never keeps a connection, so `PoolConfig` is taken here
+    ///   rather than left to be `None` — `without_pool()` afterwards turns
+    ///   both off together.
+    ///
+    /// `R: Clone` because the task needs its own clock; both shipped
+    /// runtimes are ZSTs and `TokioHandle` is an `Arc`-shaped handle.
+    /// Nothing here touches the runtime before the task is first polled —
+    /// the sleep is built on the executor's thread — so a `Tokio` whose
+    /// ambient runtime is elsewhere fails in `spawn`, where it would
+    /// anyway, rather than half-way through this call. See
+    /// `http_ng_rt_tokio::TokioHandle` for the way round that.
+    pub fn with_reaper(mut self, config: PoolConfig) -> Self
+    where
+        R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>,
+    {
+        self.pool = Pool::new(Some(config));
+        self.caps.connection_reuse = reuse_of(&self.pool);
+        let reaper = Reaper::new(
+            self.rt.clone(),
+            self.pool.downgrade(),
+            self.epoch,
+            config.idle_timeout,
+        );
+        self.rt.spawn(reaper);
         self
     }
 
