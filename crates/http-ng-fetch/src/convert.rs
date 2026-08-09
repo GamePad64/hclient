@@ -28,34 +28,49 @@
 //!    only understands `Full` and drops everything else (that was the exact
 //!    review-caught defect in vertical 2's native `body.rs`: a `Rewindable`
 //!    wrapping anything but a non-empty `Full` collapsed to nothing sent).
-//!    `Streaming` is the one variant this task genuinely cannot forward —
-//!    see its doc comment — and that is a typed [`ErrorKind::Unsupported`],
-//!    never a silent empty body.
+//!    Since v0.2 W6 `Streaming` is forwarded rather than refused, where the
+//!    browser will genuinely send it; where it will not, it is still a
+//!    typed [`ErrorKind::Unsupported`], never a silent empty body and never
+//!    a silently REPLACED one.
 //!
-//! 3. **A capability that's probably right doesn't get trusted blindly.**
-//!    `Capabilities::streaming_request_body` (Task 2's `supports_duplex`) is
-//!    a presence check, not a behavioral one — whatwg/fetch#1470 records a
-//!    browser could in principle expose the `duplex` getter without
-//!    honoring it. This file sidesteps the question entirely rather than
-//!    answering it wrong: `RequestBody::Streaming` is rejected
-//!    UNCONDITIONALLY, regardless of what `caps.streaming_request_body`
-//!    says, because nothing in THIS file builds the `ReadableStream` +
-//!    `duplex: "half"` a streamed send needs — `wasm-streams` became a real
-//!    dependency in Task 4 (`body.rs`, the RESPONSE direction), but no code
-//!    here consumes it for a REQUEST body (an earlier version of this
-//!    paragraph said this crate didn't depend on `wasm-streams` at all —
-//!    true when Task 3 wrote it, stale since Task 4; fixed when this task
-//!    was reopened over an unrelated finding in the same neighborhood, see
-//!    `caps.rs`'s own doc comments). A wrong-in-the-optimistic-direction
-//!    probe therefore can't turn into a silently truncated body: there is
-//!    no code path here that ever attempts to send a streaming body at
-//!    all — true regardless of what `caps.streaming_request_body` says, and
-//!    doubly true now that `caps::probe()` (Task 2, reopened) reports it as
-//!    a hardcoded `false` rather than deriving it from the browser, for
-//!    exactly the reason this paragraph gives: this file couldn't act on
-//!    `true` even if the probe still produced it.
+//! 3. **The capability this file acts on is the one the browser was
+//!    measured on.** Until v0.2 W6 `RequestBody::Streaming` was rejected
+//!    unconditionally here, deliberately ignoring
+//!    `caps.streaming_request_body`, because that field was fed by
+//!    `caps::supports_duplex` — `'duplex' in Request.prototype`, a presence
+//!    check whatwg/fetch#1470 records as insufficient. W6 replaced the
+//!    deciding probe with #1470's behavioural one
+//!    (`caps::supports_streaming_request_body`), measured against real
+//!    servers in `docs/measurements/w6-request-streams/`, so this file now
+//!    branches on `caps.streaming_request_body` instead of second-guessing
+//!    it. That is not "trusting a capability blindly": it is the same
+//!    stored answer, probed once in `Fetch::new()`, that
+//!    `Transport::capabilities()` hands the caller — one fact with two
+//!    readers rather than two claims that have to be kept in agreement.
+//!
+//!    The failure this guards against is not a rejection. Firefox 153
+//!    accepts a `ReadableStream` body, answers `200`, and sends the 23-byte
+//!    string `[object ReadableStream]` instead of the caller's bytes. There
+//!    is no error to map and nothing inside the page notices, which is why
+//!    the decision has to be made here, before `fetch` is called, and why
+//!    "attempt it and report what went wrong" is not an option.
+//!
+//! 4. **What is lost once the stream is handed over, said plainly.** After
+//!    `to_web_request` returns, the caller's `http_body::Body` is being
+//!    polled by the browser through a `ReadableStream`, and the only
+//!    channel back is `controller.error(value)`. A body that fails
+//!    mid-stream, or that emits the request trailers this backend declares
+//!    it cannot send (`Capabilities::request_trailers == false`), errors
+//!    that stream with a message naming the cause — but the browser
+//!    collapses ANY request-body stream failure into `fetch`'s own opaque
+//!    `TypeError`, so what reaches the caller is
+//!    [`crate::Fetch`]'s `ErrorKind::Connect`, not the typed cause. That is
+//!    a real limit of the Fetch API rather than a shortcut taken here; the
+//!    message survives where a human can read it (DevTools), and
+//!    `tests/convert.rs` drains the built `Request`'s own stream to pin the
+//!    policy at the layer that still has it.
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 // ---------------------------------------------------------------------
 // Typed failure causes. Each is a distinct type, not a formatted string,
@@ -131,6 +146,50 @@ pub(crate) struct RewindTooDeep;
 #[derive(Debug, thiserror::Error)]
 #[error("javascript error: {0}")]
 pub(crate) struct JsError(pub(crate) String);
+
+/// A `fetch` carrying a `ReadableStream` request body failed, and the
+/// browser said only `TypeError: Failed to fetch`.
+///
+/// Wrapped around the underlying [`JsError`] rather than replacing it: the
+/// browser's own text stays readable, and this adds the one cause the
+/// browser structurally cannot report. Measured 2026-08-09 (Chrome 151,
+/// `docs/measurements/w6-request-streams/`): a stream body over an HTTP/1.1
+/// origin fails in ~3 ms with exactly that `TypeError`, before the stream is
+/// pulled and with nothing reaching the server — and the same value is what
+/// the Fetch Standard produces for a refused connection, with no `name`,
+/// `message` or property separating the two. A caller who reads this cannot
+/// tell which happened either; what changes is that the possibility is
+/// named at all.
+///
+/// Only attached where it is relevant — a request whose body actually was a
+/// stream (`Converted::streamed`). A failed `GET` does not get this text.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{0} — this request carried a streaming body, which a browser will only send over HTTP/2; \
+     measured in Chrome, an HTTP/1.1 origin fails in milliseconds with exactly this error and \
+     nothing on the wire, and the browser reports a genuine network failure identically"
+)]
+pub(crate) struct StreamingBodyFetchFailed(#[source] pub(crate) Error);
+
+/// The caller's streaming request body produced a trailers frame.
+///
+/// `Capabilities::request_trailers` is `false` for this backend — fetch has
+/// no request trailers in any form (whatwg/fetch#772 proposes removing the
+/// response-side API too) — so there is nowhere to put them. Dropping them
+/// and sending the rest is the silent no-op this project forbids; the
+/// stream is errored instead, which fails the request.
+///
+/// Unlike every other cause in this file, this one cannot be raised before
+/// `to_web_request` returns: trailer frames arrive after the last data
+/// frame, by which point the browser owns the stream. The same shape, and
+/// the same reasoning, as the trailers guard `http-ng-wasi` moved into its
+/// `Body` (see that crate's notes on duplex request bodies).
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the streaming request body produced trailers, which fetch cannot send (this backend \
+     declares `request_trailers = false`)"
+)]
+pub(crate) struct RequestTrailersUnsupported;
 
 /// Turns a rejected JS promise/thrown value into our `Error`. This is the
 /// generic, honest fallback for a JS failure this file cannot classify any
@@ -223,12 +282,86 @@ fn build_headers(h: &http::HeaderMap) -> Result<web_sys::Headers, Error> {
 }
 
 /// A `RequestBody`, resolved down to what fetch can actually be handed:
-/// nothing, a byte buffer, or "this was a stream and this task can't send
-/// one" — see the module doc comment, point 2 and 3.
+/// nothing, a byte buffer, or a single-pass body still to be wrapped in a
+/// `ReadableStream` — see the module doc comment, points 2 and 3.
+///
+/// The `Streaming` arm carries the body rather than discarding it (which is
+/// what it did before v0.2 W6, when the only thing left to do with it was
+/// name it in an error). It is deliberately NOT converted to a
+/// `ReadableStream` inside [`resolve_body`]: whether that conversion may
+/// happen at all is `caps.streaming_request_body`'s decision, and
+/// [`resolve_body`] has no `Capabilities`. Building the stream here would
+/// also mean building it for a `GET`, only to throw it away one check
+/// later.
 enum ResolvedBody {
     None,
     Full(js_sys::Uint8Array),
-    Streaming,
+    Streaming(Box<dyn http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin + Send>), // send-bound-exception: amendment-C2
+}
+
+/// Adapts the `http_body::Body` inside a [`RequestBody::Streaming`] to the
+/// `Stream<Item = Result<JsValue, JsValue>>` `wasm_streams::ReadableStream::
+/// from_stream` consumes — the request-direction mirror of `body.rs`, which
+/// runs the same bridge the other way for responses.
+///
+/// The two ends of the bridge are not symmetric, and the difference is who
+/// pulls. `body.rs` is polled by this crate; this type is polled by the
+/// browser, through the underlying source `wasm-streams` installs, at
+/// whatever rate the connection drains. `from_stream` sets the queuing
+/// strategy's high-water mark to 0, so nothing is buffered ahead: the
+/// caller's body is polled when the browser asks for a chunk and not
+/// before. That is what makes this a stream rather than a copy, and
+/// `tests/convert.rs`'s `a_streaming_body_is_not_drained_when_the_request_is_built`
+/// pins the "and not before" half — the half a `Content-Length` or a
+/// green build would not notice.
+struct BodyStream(Box<dyn http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin + Send>); // send-bound-exception: amendment-C2
+
+/// A JS `Error` carrying `text`, for `controller.error()`. Not
+/// `JsValue::from_str`: a thrown string loses its message in some console
+/// formatters and cannot carry a stack, and this value is the only thing a
+/// human debugging a failed streamed upload will have to go on (see the
+/// module doc comment, point 4).
+fn js_error_value(text: &str) -> JsValue {
+    js_sys::Error::new(text).into()
+}
+
+impl futures_core::Stream for BodyStream {
+    type Item = Result<JsValue, JsValue>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use http_body::Body as _;
+        use std::task::Poll;
+        // `Box<dyn ..>` is `Unpin` whatever it holds, and the trait object
+        // is additionally bounded `+ Unpin` by `RequestBody::Streaming`
+        // itself, so this needs no projection machinery.
+        let body = &mut self.get_mut().0;
+        match std::pin::Pin::new(body).poll_frame(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => Poll::Ready(None),
+            // The caller's own error. It cannot be handed across as a typed
+            // Rust value — the far side of this bridge is JavaScript — so it
+            // crosses as its `Display` text and is lost as a category; see
+            // the module doc comment, point 4.
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(js_error_value(&e.to_string())))),
+            Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                // Zero-length data frames are forwarded rather than skipped.
+                // Skipping would need a loop, and a body that yields empty
+                // frames forever would then spin inside a single `poll_next`
+                // instead of merely making no progress; an empty chunk is a
+                // legal `BufferSource` and costs the stream nothing.
+                Ok(data) => Poll::Ready(Some(Ok(js_sys::Uint8Array::from(&data[..]).into()))),
+                // `into_data` fails only for a trailers frame — see
+                // [`RequestTrailersUnsupported`] for why this is an error
+                // and not a silent drop.
+                Err(_trailers) => Poll::Ready(Some(Err(js_error_value(
+                    &RequestTrailersUnsupported.to_string(),
+                )))),
+            },
+        }
+    }
 }
 
 /// Resolves `RequestBody` to [`ResolvedBody`]. `Rewindable` is unwrapped by
@@ -254,9 +387,11 @@ fn resolve_body(body: RequestBody) -> Result<ResolvedBody, Error> {
                 return Ok(ResolvedBody::Full(js_sys::Uint8Array::from(&b[..])));
             }
             RequestBody::Rewindable(f) => body = f(),
-            // Not resolved further here — matched, not silently dropped;
-            // the caller decides how to fail (module doc comment, point 3).
-            RequestBody::Streaming(_) => return Ok(ResolvedBody::Streaming),
+            // Carried out whole — matched, not silently dropped; the caller
+            // decides whether it can be sent (module doc comment, point 3).
+            // A `Rewindable` wrapping a `Streaming` reaches this arm through
+            // the loop above, exactly like any other terminal variant.
+            RequestBody::Streaming(b) => return Ok(ResolvedBody::Streaming(b)),
         }
     }
     Err(Error::new(ErrorKind::Other, RewindTooDeep))
@@ -318,16 +453,17 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
 pub(crate) fn to_web_request(
     req: http::Request<RequestBody>,
     caps: &Capabilities,
-) -> Result<(web_sys::Request, Option<web_sys::AbortController>), Error> {
+) -> Result<Converted, Error> {
     let (parts, body) = req.into_parts();
     check_headers(&parts.headers, caps)?;
     let url = checked_url(&parts.uri)?;
     let resolved = resolve_body(body)?;
 
-    if let ResolvedBody::Streaming = resolved {
-        // Unconditional: see the module doc comment, point 3. Even a
-        // browser whose `duplex` probe is a false positive can't cause a
-        // truncated send here, because this arm never attempts one.
+    if matches!(resolved, ResolvedBody::Streaming(_)) && !caps.streaming_request_body {
+        // The probe behind this field is behavioural and measured — see the
+        // module doc comment, point 3, and `caps::supports_streaming_request_body`.
+        // A browser that would stringify the stream instead of sending it
+        // never reaches the construction below.
         return Err(Error::new(
             ErrorKind::Unsupported,
             UnsupportedCapability {
@@ -336,7 +472,12 @@ pub(crate) fn to_web_request(
             },
         ));
     }
-    if matches!(resolved, ResolvedBody::Full(_))
+    // Both body-carrying arms, not just `Full`. Fetch throws on a body with
+    // `GET`/`HEAD` regardless of how that body is expressed, and a
+    // `RequestBody::Streaming` that happens to yield no frames is still a
+    // body as far as the `Request` constructor is concerned — the length is
+    // unknown until the stream ends, which is long after construction.
+    if !matches!(resolved, ResolvedBody::None)
         && (parts.method == http::Method::GET || parts.method == http::Method::HEAD)
     {
         return Err(Error::new(
@@ -351,8 +492,33 @@ pub(crate) fn to_web_request(
     let headers = build_headers(&parts.headers)?;
     init.set_headers(&headers);
 
-    if let ResolvedBody::Full(arr) = &resolved {
-        init.set_body_opt_u8_array(Some(arr));
+    let streamed = matches!(resolved, ResolvedBody::Streaming(_));
+    match resolved {
+        ResolvedBody::None => {}
+        ResolvedBody::Full(arr) => init.set_body_opt_u8_array(Some(&arr)),
+        ResolvedBody::Streaming(body) => {
+            let stream = wasm_streams::ReadableStream::from_stream(BodyStream(body));
+            init.set_body_opt_readable_stream(Some(&stream.into_raw()));
+            // `duplex: "half"` — required, and required BEFORE the fact.
+            // Chrome refuses to construct a `Request` with a stream body
+            // without it ("Failed to construct 'Request': The `duplex`
+            // member must be specified for a request with a streaming
+            // body", measured), so this is not a hint the browser may
+            // ignore. Set through `Reflect` because web-sys 0.3.103's
+            // `RequestInit` has no `duplex` binding at all — the same
+            // reason `caps::supports_streaming_request_body` builds its
+            // probe dictionary by hand.
+            //
+            // "half", never "full": the response is not readable until the
+            // request body has finished, which is why
+            // `Capabilities::full_duplex` stays `false` (see `caps::probe`).
+            js_sys::Reflect::set(
+                init.unchecked_ref::<js_sys::Object>(),
+                &JsValue::from_str("duplex"),
+                &JsValue::from_str("half"),
+            )
+            .map_err(js_err)?;
+        }
     }
 
     let controller = web_sys::AbortController::new().ok();
@@ -364,5 +530,28 @@ pub(crate) fn to_web_request(
 
     verify_headers_survived(&parts.headers, &request)?;
 
-    Ok((request, controller))
+    Ok(Converted {
+        request,
+        abort: controller,
+        streamed,
+    })
+}
+
+/// What [`to_web_request`] hands back.
+///
+/// A struct rather than the `(Request, Option<AbortController>)` tuple it
+/// used to be, for one field: `streamed`. `execute` needs it to name the
+/// cause the browser hides (see [`StreamingBodyFetchFailed`]), and it
+/// cannot recompute it from the original `http::Request` — that has been
+/// consumed, and a `RequestBody::Rewindable` whose factory returns a
+/// `Streaming` looks like neither from the outside. Reading it back off the
+/// built `web_sys::Request` does not work either: a `Full` body is exposed
+/// as a `ReadableStream` there too.
+pub(crate) struct Converted {
+    pub(crate) request: web_sys::Request,
+    pub(crate) abort: Option<web_sys::AbortController>,
+    /// Whether the body handed to the browser is a `ReadableStream` built
+    /// from a [`RequestBody::Streaming`] — not merely whether the request
+    /// has a body.
+    pub(crate) streamed: bool,
 }

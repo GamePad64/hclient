@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>w6 streaming request body probe</title>
+<pre id="out">running…</pre>
+<script>
+  const label = new URLSearchParams(location.search).get('label') || 'unknown';
+  const results = { label, origin: location.origin, ua: navigator.userAgent };
+
+  function slowStream() {
+    // Three 4-byte chunks, 300 ms apart. Expected bytes: "AAAABBBBCCCC".
+    let i = 0;
+    const parts = ['AAAA', 'BBBB', 'CCCC'];
+    return new ReadableStream({
+      pull(c) {
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            if (i < parts.length) {
+              c.enqueue(new TextEncoder().encode(parts[i++]));
+            } else {
+              c.close();
+            }
+            resolve();
+          }, 300);
+        });
+      },
+    });
+  }
+
+  // whatwg/fetch#1470's behavioural detection: a browser that does not
+  // support a stream body stringifies it to "[object ReadableStream]" and
+  // therefore sets Content-Type: text/plain;charset=UTF-8.
+  function behaviouralProbe() {
+    let duplexAccessed = false;
+    let hasContentType = null;
+    let threw = null;
+    try {
+      const r = new Request('https://example.com/', {
+        method: 'POST',
+        body: new ReadableStream(),
+        get duplex() {
+          duplexAccessed = true;
+          return 'half';
+        },
+      });
+      hasContentType = r.headers.has('Content-Type');
+    } catch (e) {
+      threw = String(e);
+    }
+    return {
+      duplexAccessed,
+      hasContentType,
+      threw,
+      prototypeHasDuplex: 'duplex' in Request.prototype,
+      supported: duplexAccessed && hasContentType === false && threw === null,
+    };
+  }
+
+  // What does the browser actually hold as the body of a Request built from
+  // a stream? Reads the constructed Request back — one level below our code
+  // and above the network.
+  async function requestReadback(withDuplex) {
+    try {
+      const init = { method: 'POST', body: slowStream() };
+      if (withDuplex) init.duplex = 'half';
+      const r = new Request('https://example.com/', init);
+      const txt = await r.text();
+      return { ok: true, contentType: r.headers.get('Content-Type'), text: txt, len: txt.length };
+    } catch (e) {
+      return { ok: false, error: String(e), name: e && e.name };
+    }
+  }
+
+  async function liveUpload(withDuplex) {
+    const started = Date.now();
+    try {
+      const init = { method: 'POST', body: slowStream() };
+      if (withDuplex) init.duplex = 'half';
+      const res = await fetch('/upload', init);
+      const server = await res.json();
+      return { ok: true, elapsed: Date.now() - started, server };
+    } catch (e) {
+      return { ok: false, elapsed: Date.now() - started, error: String(e), name: e && e.name };
+    }
+  }
+
+  // Control: the same bytes, sent as a plain buffer.
+  async function liveBuffered() {
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: 'AAAABBBBCCCC' });
+      return { ok: true, server: await res.json() };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  (async () => {
+    try {
+      results.probe = behaviouralProbe();
+      results.readbackWithDuplex = await requestReadback(true);
+      results.readbackNoDuplex = await requestReadback(false);
+      results.liveWithDuplex = await liveUpload(true);
+      results.liveNoDuplex = await liveUpload(false);
+      results.liveBuffered = await liveBuffered();
+    } catch (e) {
+      results.fatal = String(e);
+    }
+    document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+    await fetch('/report', {
+      method: 'POST',
+      headers: { 'x-label': label },
+      body: JSON.stringify(results, null, 2),
+    });
+    document.title = 'DONE';
+  })();
+</script>

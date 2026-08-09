@@ -166,14 +166,13 @@ fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
 // the ACTUAL `Transport` impl, the REAL probed `Capabilities`, and a REAL
 // `Client`: probe -> declaration -> behavior, nothing stood in.
 //
-// (`caps.streaming_request_body` no longer varies by browser at all — see
-// `caps::probe`'s doc comment, and the task report's "reopened" section for
-// why: this comment used to say it "probes `true`" in headless Chrome
-// specifically, which was true when Task 5 wrote it and stopped being true
-// once the field became a hardcoded `false` everywhere. The test below
-// still earns its place regardless of that value: it proves the rejection
-// through the real `Transport`/`Client` path, not just that a particular
-// probe result happens to agree with `convert.rs`'s own unit test.)
+// (`caps.streaming_request_body` varies by browser again as of v0.2 W6 —
+// Chrome 151 probes `true`, Firefox 153 `false`. This comment has now said
+// three different things across three tasks: Task 5 wrote "probes `true` in
+// headless Chrome", the reopening made it a hardcoded `false` everywhere,
+// and W6 made it the browser's own answer. The test below is written so
+// that it needs no fourth revision: it asserts BOTH outcomes and picks by
+// the probe, rather than encoding whichever one is true this month.)
 // ---------------------------------------------------------------------
 
 struct NeverPolled;
@@ -188,27 +187,66 @@ impl http_body::Body for NeverPolled {
     }
 }
 
+/// The whole W6 story through the real `Transport`, the real probed
+/// `Capabilities` and a real `Client` — probe -> declaration -> behaviour,
+/// nothing stood in. Both outcomes are asserted, because both are correct:
+/// which one you get is the browser's answer, not ours.
+///
+/// **Where the probe says the browser would corrupt the body** (Firefox
+/// 153): a typed `Unsupported` naming the capability, raised before
+/// anything is sent. That is the outcome the whole capability exists to
+/// produce.
+///
+/// **Where the probe says the browser streams** (Chrome 151): the request
+/// is attempted — and here it must fail anyway, for the *other* reason W6
+/// measured. The URL is the harness's own already-loaded page, so this is
+/// same-origin (no CORS in the way) and, decisively, **HTTP/1.1** —
+/// wasm-bindgen's test server speaks nothing else. A `ReadableStream`
+/// request body needs HTTP/2, so Chrome refuses it in milliseconds with a
+/// bare `TypeError: Failed to fetch`, before pulling the stream and with
+/// nothing reaching the server.
+///
+/// So this test is also the live, in-CI confirmation of the measured
+/// HTTP/1.1 finding, and of the one thing this crate adds on top of it: the
+/// browser's `TypeError` is indistinguishable from a refused connection,
+/// and `convert::StreamingBodyFetchFailed` is what names the cause the
+/// browser structurally cannot report. `ErrorKind` stays `Connect` — that
+/// is still what happened — so the assertion is on the text, which is where
+/// the added information lives.
 #[wasm_bindgen_test]
-async fn streaming_request_body_is_rejected_through_the_real_client_and_real_probe() {
+async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured_reason() {
     let f = Fetch::new();
-    // Not gated on the probe's value (unlike `tests/convert.rs`'s
-    // `streaming_body_is_rejected_where_duplex_is_absent`, which mirrors
-    // the brief's guard): the rejection must hold regardless of what the
-    // real probe says — and today it says `false` unconditionally (see
-    // `caps::probe`'s doc comment), so a probe-gated test wouldn't even
-    // have anything left to skip in this environment or any other. Kept
-    // unconditional anyway: the property under test — the real `Transport`/
-    // `Client` path rejects a streaming body — shouldn't depend on which
-    // way a capability probe happens to read today.
+    let streams = f.capabilities_for_test().streaming_request_body;
+    let url = web_sys::window()
+        .expect("wasm_bindgen_test_configure!(run_in_browser) guarantees a window")
+        .location()
+        .href()
+        .expect("the currently loaded page always has an href");
     let c = Client::builder(f).build().unwrap();
     let err = c
-        .post("https://example.com/")
+        .post(&url)
         .body(http_ng_core::RequestBody::Streaming(Box::new(NeverPolled)))
         .send()
         .await
         .unwrap_err();
-    assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
-    assert!(err.to_string().contains("streaming_request_body"), "{err}");
+
+    if streams {
+        assert_eq!(
+            *err.kind(),
+            ErrorKind::Connect,
+            "a browser that streams gets as far as the network, where this HTTP/1.1 test \
+             server refuses the stream body: {err}"
+        );
+        assert!(
+            err.to_string().contains("HTTP/2"),
+            "the opaque `TypeError: Failed to fetch` must be labelled with the cause the \
+             browser cannot report — otherwise it is indistinguishable from a refused \
+             connection: {err}"
+        );
+    } else {
+        assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
+        assert!(err.to_string().contains("streaming_request_body"), "{err}");
+    }
 }
 
 // ---------------------------------------------------------------------

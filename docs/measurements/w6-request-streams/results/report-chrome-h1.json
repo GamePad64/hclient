@@ -1,0 +1,53 @@
+{
+  "label": "chrome-h1",
+  "origin": "http://127.0.0.1:8801",
+  "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+  "probe": {
+    "duplexAccessed": true,
+    "hasContentType": false,
+    "threw": null,
+    "prototypeHasDuplex": true,
+    "supported": true
+  },
+  "readbackWithDuplex": {
+    "ok": true,
+    "contentType": null,
+    "text": "AAAABBBBCCCC",
+    "len": 12
+  },
+  "readbackNoDuplex": {
+    "ok": false,
+    "error": "TypeError: Failed to construct 'Request': The `duplex` member must be specified for a request with a streaming body",
+    "name": "TypeError"
+  },
+  "liveWithDuplex": {
+    "ok": false,
+    "elapsed": 3,
+    "error": "TypeError: Failed to fetch",
+    "name": "TypeError"
+  },
+  "liveNoDuplex": {
+    "ok": false,
+    "elapsed": 1,
+    "error": "TypeError: Failed to execute 'fetch' on 'Window': The `duplex` member must be specified for a request with a streaming body",
+    "name": "TypeError"
+  },
+  "liveBuffered": {
+    "ok": true,
+    "server": {
+      "protocol": "http/1.1",
+      "contentType": "text/plain;charset=UTF-8",
+      "contentLength": "12",
+      "transferEncoding": null,
+      "bytesLen": 12,
+      "bytesUtf8": "AAAABBBBCCCC",
+      "bytesHex": "414141414242424243434343",
+      "chunks": [
+        {
+          "t": 1,
+          "len": 12
+        }
+      ]
+    }
+  }
+}
