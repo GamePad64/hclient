@@ -112,9 +112,31 @@ struct PoolKey {
 
 type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
 
+/// The 0-RTT acceptance verdict, shared by every request on the connection
+/// that offered early data.
+///
+/// **A future, not a field, and that is the finding rather than a style
+/// choice.** W3 reserved `TlsInfo::early_data_accepted: Option<bool>`, which
+/// is the right shape for TLS 1.3 over TCP where the answer is known when
+/// the handshake completes. Over QUIC it is not: measured in
+/// `docs/h3-research.md` §3.2, `into_0rtt()` returns at 1.27 ms, the
+/// response arrives at 8.58 ms, and the verdict resolves at **8.63 ms** —
+/// after the response body. A field could only hold it by waiting for the
+/// handshake, which is the round trip 0-RTT exists to skip.
+///
+/// `Shared` because the connection is pooled and multiplexed: several
+/// requests may need the same one-shot answer, and the *second* request on
+/// a 0-RTT connection has as much right to know as the first.
+type ZeroRtt = futures_util::future::Shared<quinn::ZeroRttAccepted>;
+
 struct Pooled {
     send: SendRequest,
     conn: quinn::Connection,
+    /// `Some` only if this connection actually went out with early data —
+    /// `None` covers both "the caller did not ask" and "there was no usable
+    /// ticket", which are the same thing to everyone downstream: nothing
+    /// was risked, so there is nothing to replay.
+    zero_rtt: Option<ZeroRtt>,
 }
 
 struct Shared {
@@ -384,7 +406,11 @@ where
     /// handed one out would fail the request it was reused for. This is the
     /// same "poll at checkout" W2's HTTP/1 pool does, in the form this
     /// stack offers it.
-    async fn checkout(&self, key: &PoolKey, addr: SocketAddr) -> Result<SendRequest, Error> {
+    async fn checkout(
+        &self,
+        key: &PoolKey,
+        addr: SocketAddr,
+    ) -> Result<(SendRequest, Option<ZeroRtt>), Error> {
         if let Some(p) = self
             .shared
             .conns
@@ -398,9 +424,9 @@ where
             // the multiplexing this transport exists for. Contrast
             // `http-ng-native`'s h2, which takes the connection OUT of the
             // pool for the duration of one exchange.
-            return Ok(p.send.clone());
+            return Ok((p.send.clone(), p.zero_rtt.clone()));
         }
-        let (send, conn) = self.connect(key, addr).await?;
+        let (send, conn, zero_rtt) = self.connect(key, addr).await?;
         self.shared
             .conns
             .lock()
@@ -410,16 +436,17 @@ where
                 Pooled {
                     send: send.clone(),
                     conn,
+                    zero_rtt: zero_rtt.clone(),
                 },
             );
-        Ok(send)
+        Ok((send, zero_rtt))
     }
 
     async fn connect(
         &self,
         key: &PoolKey,
         addr: SocketAddr,
-    ) -> Result<(SendRequest, quinn::Connection), Error> {
+    ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>), Error> {
         let crypto = self.tls.quic_client_config(QuicTlsRequest {
             alpn: &[ALPN_H3],
             ech: None,
@@ -432,11 +459,39 @@ where
             transport.keep_alive_interval(Some(d));
             cfg.transport_config(Arc::new(transport));
         }
-        let conn = endpoint
+        let connecting = endpoint
             .connect_with(cfg, addr, &key.host)
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?
-            .await
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+
+        // The round trip 0-RTT exists to skip, actually skipped.
+        //
+        // `into_0rtt` hands back a usable `Connection` *before the
+        // handshake completes* when a remembered ticket supplies key
+        // material, and hands the `Connecting` back untouched when it does
+        // not. The second case is the first of the three failure paths and
+        // the only free one: nothing was sent, so falling through to a full
+        // handshake risks nothing and tells the caller nothing.
+        //
+        // It is reached only when `key.early_data` is set, which is only
+        // when the caller marked this request — see `crate::early`.
+        let (conn, zero_rtt) = if key.early_data {
+            match connecting.into_0rtt() {
+                Ok((conn, accepted)) => (conn, Some(futures_util::FutureExt::shared(accepted))),
+                Err(connecting) => (
+                    connecting
+                        .await
+                        .map_err(|e| Error::new(ErrorKind::Connect, e))?,
+                    None,
+                ),
+            }
+        } else {
+            (
+                connecting
+                    .await
+                    .map_err(|e| Error::new(ErrorKind::Connect, e))?,
+                None,
+            )
+        };
 
         let (mut driver, send) = h3::client::builder()
             .build(h3_quinn::Connection::new(conn.clone()))
@@ -456,7 +511,47 @@ where
             let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         }) as QuinnTask);
 
-        Ok((send, conn))
+        Ok((send, conn, zero_rtt))
+    }
+
+    /// Open a stream, write the whole request body, and read the head.
+    ///
+    /// Separate from `execute` because it is the unit a rejected 0-RTT
+    /// request is replayed as — see there.
+    async fn one_attempt(
+        send: &mut SendRequest,
+        head: http::Request<()>,
+        body: RequestBody,
+    ) -> Result<http::Response<H3Body>, Error> {
+        let mut stream = send.send_request(head).await.map_err(body::stream_error)?;
+        match body {
+            RequestBody::Empty => {}
+            RequestBody::Full(b) => {
+                if !b.is_empty() {
+                    stream.send_data(b).await.map_err(body::stream_error)?;
+                }
+            }
+            RequestBody::Rewindable(f) => {
+                if let RequestBody::Full(b) = f()
+                    && !b.is_empty()
+                {
+                    stream.send_data(b).await.map_err(body::stream_error)?;
+                }
+            }
+            RequestBody::Streaming(_) => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    std::io::Error::other(
+                        "http-ng-h3 does not stream request bodies yet; \
+                         Capabilities::streaming_request_body reports false",
+                    ),
+                ));
+            }
+        }
+        stream.finish().await.map_err(body::stream_error)?;
+        let resp = stream.recv_response().await.map_err(body::stream_error)?;
+        let (parts, ()) = resp.into_parts();
+        Ok(http::Response::from_parts(parts, H3Body::new(stream)))
     }
 
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, Error> {
@@ -541,44 +636,65 @@ where
             tls: self.tls.config_id(),
             early_data: wants_early,
         };
-        let mut send = self.checkout(&key, addr).await?;
+        let (mut send, zero_rtt) = self.checkout(&key, addr).await?;
 
         let (parts, body) = req.into_parts();
-        let head = http::Request::from_parts(parts, ());
-        let mut stream = send.send_request(head).await.map_err(body::stream_error)?;
+        // Taken before the first attempt, because after it the body is
+        // gone — but **only when there is something a replay could be
+        // needed for**. `rewind` on a `Rewindable` calls the caller's
+        // factory, and calling it on every request to hold a spare that
+        // almost never gets used would make every `Rewindable` body cost
+        // twice what it should.
+        //
+        // `zero_rtt.is_some()` is exactly the condition: it is `Some` only
+        // when this connection really went out with early data, which is
+        // the only way a request can be rejected in a way replaying fixes.
+        let spare = if zero_rtt.is_some() {
+            body.rewind()
+        } else {
+            None
+        };
+        let head = http::Request::from_parts(parts.clone(), ());
+        let first = Self::one_attempt(&mut send, head, body).await;
 
-        // The whole request body, then the head. `full_duplex` and
-        // `streaming_request_body` are declared `false` because of exactly
-        // this, and the declaration moves when the code does.
-        match body {
-            RequestBody::Empty => {}
-            RequestBody::Full(b) => {
-                if !b.is_empty() {
-                    stream.send_data(b).await.map_err(body::stream_error)?;
-                }
-            }
-            RequestBody::Rewindable(f) => {
-                if let RequestBody::Full(b) = f()
-                    && !b.is_empty()
-                {
-                    stream.send_data(b).await.map_err(body::stream_error)?;
-                }
-            }
-            RequestBody::Streaming(_) => {
-                return Err(Error::new(
-                    ErrorKind::Unsupported,
-                    std::io::Error::other(
-                        "http-ng-h3 does not stream request bodies yet; \
-                         Capabilities::streaming_request_body reports false",
-                    ),
-                ));
-            }
+        // The second of the three 0-RTT failure paths (`crate::early` has
+        // the table). If the server refused the early keys, the streams
+        // opened before the handshake completed are reset with
+        // `ZeroRttRejected` while the connection itself is fine — quinn
+        // documents exactly this. The request must be replayed on that same
+        // connection, and **the caller must never see `ZeroRttRejected`**:
+        // from outside, offering early data and having it refused is not an
+        // outcome, it is a detail of how the response was obtained.
+        //
+        // The rejection is detected by AWAITING THE VERDICT, not by
+        // matching on an error string. Two reasons, and the second is the
+        // one that makes it correct rather than merely tidy: h3 surfaces
+        // the QUIC error as an opaque `Undefined(..)` whose `Display` is
+        // not a stable interface, and the verdict future is the authority
+        // on the question anyway — it is what `into_0rtt` handed back for
+        // this purpose. By the time a stream has failed this way the
+        // handshake has completed, so the await does not stall.
+        let Err(e) = first else {
+            return first;
+        };
+        let Some(verdict) = zero_rtt else {
+            // Nothing went into early data, so this error is the caller's.
+            return Err(e);
+        };
+        if verdict.await {
+            // Early data was accepted; the failure is a real one.
+            return Err(e);
         }
-        stream.finish().await.map_err(body::stream_error)?;
-
-        let resp = stream.recv_response().await.map_err(body::stream_error)?;
-        let (parts, ()) = resp.into_parts();
-        Ok(http::Response::from_parts(parts, H3Body::new(stream)))
+        let Some(body) = spare else {
+            // Unreachable through `execute`: `admits_early_data` refuses a
+            // `RetryKind::Impossible` body, which is the only kind `rewind`
+            // returns `None` for. Kept as a typed error rather than an
+            // `unwrap`, because the two checks live in different files and
+            // the invariant between them is not one the compiler holds.
+            return Err(e);
+        };
+        let head = http::Request::from_parts(parts, ());
+        Self::one_attempt(&mut send, head, body).await
     }
 
     fn capabilities(&self) -> &Capabilities {

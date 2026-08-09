@@ -240,6 +240,50 @@ async fn early_data_is_offered_only_to_a_request_the_caller_marked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
+    // The second of the three failure paths, and the only one this
+    // transport can do anything about. Two servers present the SAME
+    // certificate with DIFFERENT ticketers, so a ticket issued by the first
+    // is offered to the second and refused — the research's scenario 3,
+    // where the response came back `Err(Undefined(ZeroRttRejected))`.
+    //
+    // This test asserts the caller gets a `200` instead. Which means it
+    // asserts three things at once, and could not pass without any of them:
+    // that `into_0rtt` actually took the shortcut (otherwise there is
+    // nothing to reject), that the rejection was detected (by awaiting the
+    // verdict, not by matching an error string), and that the replay went
+    // out on the same connection.
+    let (a, b) = server::start_two_sharing_a_certificate(Behaviour::Echo);
+    // ONE `Rustls`, therefore one QUIC ticket store — which is what makes
+    // a ticket from `a` reachable when connecting to `b`. Both servers are
+    // `127.0.0.1`, and rustls keys its store by server name.
+    let tls = server::client_tls(&a.cert_der);
+    let t = H3::new(TokioHandle::current().unwrap(), tls, IpLiteralOnly).unwrap();
+
+    // A first, ordinary visit, to be issued a ticket.
+    let _ = body_of(t.execute(get(a.addr, "/ticket")).await.unwrap()).await;
+    // NewSessionTicket arrives after the handshake, on its own schedule.
+    // Without this the second connection has nothing to resume from and the
+    // test would pass vacuously through the `into_0rtt` refusal path.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut marked = get(b.addr, "/replayed");
+    marked.extensions_mut().insert(AllowEarlyData);
+    let r = t
+        .execute(marked)
+        .await
+        .expect("a rejected 0-RTT request is replayed, not surfaced");
+    assert_eq!(r.status(), 200);
+    assert_eq!(body_of(r).await, "hello over h3");
+    assert_eq!(
+        b.requests(),
+        1,
+        "the replay is a second STREAM, not a second request the server sees \
+         answered twice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_425_reaches_the_caller_untouched() {
     // RFC 8470 §5.2's third failure path, and the one nothing in this
     // workspace handles. The test exists to pin that it is NOT handled: a

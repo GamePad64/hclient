@@ -62,15 +62,56 @@ pub fn start(behaviour: Behaviour) -> Server {
     start_with_idle_timeout(behaviour, None)
 }
 
-pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
+/// A certificate and key, so that two servers can present one identity.
+#[derive(Debug)]
+pub struct Identity {
+    pub cert_der: rustls::pki_types::CertificateDer<'static>,
+    key_der: rustls::pki_types::PrivateKeyDer<'static>,
+}
+
+impl Clone for Identity {
+    fn clone(&self) -> Self {
+        Self {
+            cert_der: self.cert_der.clone(),
+            key_der: self.key_der.clone_key(),
+        }
+    }
+}
+
+pub fn identity() -> Identity {
     // Both names: the tests dial the literal `127.0.0.1` (so the resolver
     // is not a second thing under test), and rcgen turns an IP-shaped SAN
     // into an IP SAN, which is what rustls checks a literal against.
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
         .expect("rcgen can always make a self-signed cert");
-    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der =
-        rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der()).unwrap();
+    Identity {
+        cert_der: rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec()),
+        key_der: rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der())
+            .unwrap(),
+    }
+}
+
+/// Two servers presenting the same certificate, each with **its own
+/// ticketer** — which is what makes the second reject a ticket the first
+/// issued, with nothing else about the exchange differing.
+///
+/// This needs no plumbing: the ticketer is per `rustls::ServerConfig` and
+/// each builds its own. It is also what happens in the real world behind a
+/// load balancer that does not share ticket keys.
+pub fn start_two_sharing_a_certificate(behaviour: Behaviour) -> (Server, Server) {
+    let id = identity();
+    (
+        start_full(behaviour, None, id.clone()),
+        start_full(behaviour, None, id),
+    )
+}
+
+pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
+    start_full(behaviour, idle, identity())
+}
+
+pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
+    let Identity { cert_der, key_der } = id;
 
     let mut tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
