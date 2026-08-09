@@ -602,11 +602,42 @@ and the C0 controls — which is exactly what `is_forbidden_domain_byte` /
 `AsciiDenyList::URL` rejects. Run that check **before** `new URL()` and the
 family disappears; reject empty input and the `""` row goes too.
 
-That leaves one genuine, **non-fixable** divergence: invalid punycode
-labels — Chrome accepts, `idna` rejects. That is UTS 46's
-`IgnoreInvalidPunycode`, which `idna` fixes at `false` and the browser
-evidently treats as true. It needs a corpus row and a decision, not a
-workaround.
+That leaves one genuine divergence: invalid punycode labels — Chrome
+accepts, `idna` rejects. That is UTS 46's `IgnoreInvalidPunycode`, which
+`idna` fixes at `false` and the browser evidently treats as true. It needs
+a corpus row and a decision, not a workaround.
+
+#### Update: it was called non-fixable, it was measured on Apple, and it is fixed
+
+This whole family — the invalid punycode row, the `""` row, and one this
+section did not predict, upper-case ASCII surviving unchanged — turned out
+not to be about browsers at all. It is what **any URL parser** does, and it
+is what `macos-latest` measured on Apple's Foundation the first time
+`http-ng-idn`'s corpus ran there: three rows of 32, `EXAMPLE.COM`, `""` and
+`xn--zzzz.test`, exactly the shapes above.
+
+The cause is one sentence, and `swiftlang/swift-foundation` states it in
+code: the IDNA hook runs **only when the host is not ASCII**.
+`URLParser.swift` copies a host that passes RFC 3986 `reg_name` validation
+into the URL verbatim (`finalURLString += host`), so an ASCII host is never
+lower-cased, never has its `xn--` labels decoded, and never gets an error
+word. Chrome's `new URL()` behaves the same way for the same reason.
+
+`crates/http-ng-idn/src/policy.rs` closes it, for every backend rather than
+per platform: an all-ASCII name never reaches the platform at all, ACE
+labels are decoded there (RFC 3492 needs no Unicode data), and the answer
+is the platform's only for the labels that actually need Unicode. **The
+decision on `IgnoreInvalidPunycode` is `false`, i.e. `idna`'s**, and the
+reason is in `policy.rs`: an A-label this crate could not decode is a host
+it could not check, and accepting it would mean a request going to a name
+nobody validated — while refusing it costs a caller who really does own
+`xn--a.de` nothing but spelling the name some other way. It would also make
+the same program resolve differently on macOS and on Windows, which is the
+defect class the whole crate exists to prevent.
+
+So a browser backend, when it is built, inherits the fix rather than
+needing it: it would go through the same `to_ascii_over`, and `new
+URL()` would only ever be asked about a host with non-ASCII in it.
 
 ### Cost, and what is unknown
 

@@ -319,6 +319,14 @@ jobs:
           # `domain_to_ascii` *is* `idna::domain_to_ascii_cow`, so that
           # comparison could not fail. See the target's own docs.
           (cd ../../http-ng-idn/fuzz && cargo fuzz run --target "$host" idn_policy -- -max_total_time=45 -max_len=512)
+          # The same layer, and this one IS differential — because
+          # `testing::policy_over` takes the backend as an argument, so
+          # handing it `idna` cancels `idna` out of both sides and leaves
+          # only this crate's code. It exists for the hand-written RFC 3492
+          # decoder `src/policy.rs` added: sixty lines of arithmetic in the
+          # path that decides which host is contacted, where a wrong answer
+          # is a different domain rather than a crash.
+          (cd ../../http-ng-idn/fuzz && cargo fuzz run --target "$host" idn_policy_vs_idna -- -max_total_time=45 -max_len=512)
 
   idn-feature-is-real:
     runs-on: ubuntu-latest

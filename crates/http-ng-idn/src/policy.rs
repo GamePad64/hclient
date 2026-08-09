@@ -79,14 +79,18 @@ const INITIAL_BIAS: u32 = 72;
 /// contain no ASCII the input did not already contain rests on it.
 const INITIAL_N: u32 = 128;
 
-/// RFC 3492 §5's digit values. Both cases, because the RFC requires a
-/// decoder to accept both — even though [`to_ascii_over`] case-folds
-/// before it gets here, so only the lower half is ever reached from
-/// there.
+/// RFC 3492 §5's digit values — **lower case and digits only**, where the
+/// RFC says a general decoder must accept both cases.
+///
+/// This is not a general decoder. The only caller is [`to_ascii_over`],
+/// which has already ASCII case-folded, so an upper-case digit reaching
+/// here would mean the case folding did not happen — and accepting it
+/// would hide that. A first draft did accept both cases and three of its
+/// mutants survived, which is the same statement made by measurement:
+/// nothing could reach that arm.
 const fn decode_digit(b: u8) -> Option<u32> {
     match b {
         b'a'..=b'z' => Some((b - b'a') as u32),
-        b'A'..=b'Z' => Some((b - b'A') as u32),
         b'0'..=b'9' => Some((b - b'0') as u32 + 26),
         _ => None,
     }
@@ -165,11 +169,16 @@ fn decode_punycode(payload: &str) -> Option<String> {
         }
         let len = u32::try_from(out.len()).ok()?.checked_add(1)?;
         bias = adapt(i - old_i, len, old_i == 0);
+        // RFC 3492's "if n is a basic code point then fail" is not written
+        // out here, and its absence is deliberate rather than an
+        // oversight: `n` starts at INITIAL_N and every step adds an
+        // unsigned quantity through `checked_add`, so it can only grow. A
+        // test that killed such a check would need `n` to DECREASE, which
+        // no input can cause — measured, as two surviving mutants, before
+        // the check was removed. The property it would have guarded is
+        // pinned instead by `decoding_never_invents_an_ascii_character`.
         n = n.checked_add(i / len)?;
         i %= len;
-        if n < INITIAL_N {
-            return None;
-        }
         out.insert(usize::try_from(i).ok()?, char::from_u32(n)?);
         i = i.checked_add(1)?;
     }
@@ -617,6 +626,33 @@ mod tests {
                 "{ace:?} did not decode back to {label:?}"
             );
         }
+    }
+
+    /// RFC 3492 §6.1's loop guard is `>`, not `>=`, and one step of that
+    /// loop divides `delta` by 35 and adds 36 to the answer — so the
+    /// difference between the two is a different bias, a different `t` on
+    /// the next digit, and eventually a different label.
+    ///
+    /// No name in this file's corpora lands `delta` on the boundary
+    /// exactly (`((base - tmin) * tmax) / 2`, which is 455), so the
+    /// boundary is pinned here directly. `adapt(910, 456, false)` halves
+    /// 910 to 455 and then adds `455 / 456`, i.e. nothing — landing on it.
+    #[test]
+    fn the_bias_adaptations_loop_boundary_is_exclusive() {
+        assert_eq!(((BASE - TMIN) * TMAX) / 2, 455);
+        let on_it = adapt(910, 456, false);
+        let just_past = adapt(912, 456, false);
+        assert!(
+            on_it < BASE,
+            "at exactly 455 the loop must not run, so the answer is below one `k` step: {on_it}"
+        );
+        assert!(
+            just_past >= BASE,
+            "one past it the loop must run once, so the answer is at least one `k` step: \
+             {just_past}"
+        );
+        // And the two halves of `first`, which pick DAMP over 2.
+        assert_eq!(adapt(700, 1, true), adapt(2, 1, false));
     }
 
     /// The measured payloads as literals, so the decoder is pinned by more

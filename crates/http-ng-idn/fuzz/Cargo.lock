@@ -75,6 +75,7 @@ name = "http-ng-idn-fuzz"
 version = "0.0.0"
 dependencies = [
  "http-ng-idn",
+ "idna",
  "libfuzzer-sys",
 ]
 

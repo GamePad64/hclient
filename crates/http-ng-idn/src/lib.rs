@@ -52,7 +52,13 @@
 //! - **one seam and one policy point.** The option word, the error mask
 //!   and the deny list are decided once, here, instead of at each call
 //!   site — and they are the three things the *Contract* section below
-//!   shows are easy to get individually wrong.
+//!   shows are easy to get individually wrong. `policy.rs` is the rest of
+//!   it, and it earned its own file the hard way: the two platform
+//!   backends turn out to answer a *different question* — Windows' ICU is
+//!   a UTS 46 implementation, Apple's Foundation is a URL parser that
+//!   calls one, and only for a host that is not ASCII. Everything
+//!   decidable from ASCII alone is decided there, once, rather than
+//!   repaired per platform.
 //! - **the corpus.** `tests/differential.rs` pins both implementations'
 //!   answers on 40 rows; that is what makes "the platform agrees" a
 //!   measurement rather than a hope, and it is shared by every target.
@@ -165,6 +171,14 @@
 //!   hoped away; see `foundation.rs`. `libicucore.dylib`, Apple's own ICU,
 //!   stays out of reach: no headers, symbols documented as not for
 //!   third-party linking, and since Big Sur not on disk to `dlopen`.
+//!
+//!   **A fifth cost, and it is the one the first live run found: the hook
+//!   only runs when the host is not ASCII.** An ASCII host passes RFC 3986
+//!   `reg_name` validation and is copied into the URL verbatim, so nothing
+//!   lower-cases it, nothing decodes an `xn--` label in it, and an empty
+//!   host is a parse failure rather than the empty name. `policy.rs` takes
+//!   all of that over, for both backends rather than for this one; see its
+//!   module docs for the three corpus rows that measured it.
 //! - **wasm** — no dynamic loader and no system ICU, so the bundled path
 //!   today. But **the browser is a platform IDN implementation**, and on
 //!   the evidence it is the best one of the lot: `new URL(…).hostname` in
@@ -276,23 +290,15 @@ mod icu;
 #[cfg(foundation_backend)]
 mod foundation;
 
-/// This crate's own layer, shared by every backend and reached by all of
-/// them — see the module docs for what it takes over and why.
+/// This crate's own layer, shared by every backend and reached through
+/// all of them — see the module docs for what it takes over and why.
 ///
 /// Compiled on every target, including the ones with no platform backend
-/// at all, and the `allow` below says why that is deliberate. Its entire
-/// content is decided against `idna`, which is a dev-dependency
-/// everywhere, so the tests that pin it run where CI runs most — and
-/// gating the module away on Linux would take those tests with it, which
-/// is the same argument [`accepts`] already carries one level down.
-#[cfg_attr(
-    not(any(icu_backend, foundation_backend)),
-    allow(
-        dead_code,
-        reason = "only a platform backend calls this layer, but the layer is \
-                  platform-independent and so are its tests"
-    )
-)]
+/// at all, and reachable there through [`testing::policy_over`]: the
+/// layer is platform-independent, everything in it is decided against
+/// `idna` (a dev-dependency everywhere), and gating it away on Linux
+/// would take its tests and its fuzz target with it — on the one runner
+/// this project exercises most.
 mod policy;
 
 #[cfg(not(any(idna_backend, icu_backend, foundation_backend)))]
@@ -428,9 +434,19 @@ pub const UIDNA_CHECK_CONTEXTO: u32 = 0x0040;
 /// by people with no connection to this one.
 ///
 /// They then diverge from us on the *errors*, which is exactly why
-/// [`IGNORED_ERRORS`] is a separate decision and not a footnote: Apple
-/// allows none of them, so its `URL` rejects `a..b` and `ab--cd.com`
-/// where `idna` — and therefore this crate — accepts both.
+/// [`IGNORED_ERRORS`] is a separate decision and not a footnote:
+/// `shouldAllow(_:encodeToASCII: true)` sets `allowedErrors = 0`, so
+/// Apple's `URL` refuses a name on any bit at all, the six this crate
+/// masks included.
+///
+/// **An earlier version of this paragraph gave `a..b` and `ab--cd.com` as
+/// the examples, and `macos-latest` measured both as accepted.** The
+/// reason is one level up and is the whole of `foundation.rs`'s first
+/// section: those two are all-ASCII, so Foundation's IDNA hook never runs
+/// on them and there is no `errors` word to be strict about. The
+/// divergence is real, but its inputs are names with a non-ASCII label
+/// *and* one of those defects — `-münchen.de`, `münchen..de`,
+/// `ab--cd.münchen`.
 pub const OPTIONS: u32 = UIDNA_NONTRANSITIONAL_TO_ASCII
     | UIDNA_NONTRANSITIONAL_TO_UNICODE
     | UIDNA_CHECK_BIDI
@@ -745,6 +761,24 @@ pub mod testing {
     #[must_use]
     pub fn selected() -> Backend {
         super::backend()
+    }
+
+    /// The crate's own layer, over a conversion the caller supplies.
+    ///
+    /// This is what makes the layer fuzzable **differentially**, which
+    /// `domain_to_ascii` is not: on a target with the bundled backend that
+    /// function *is* `idna::domain_to_ascii_cow`, so comparing it with
+    /// `idna` compares `idna` with itself. Hand `idna` in here as the
+    /// backend instead and the only thing left in the comparison is this
+    /// crate's own code — the deny list, the case folding, the ASCII
+    /// short-circuit and a hand-written RFC 3492 decoder, which is the
+    /// riskiest thing in the crate because it sits in the path that
+    /// decides which host is contacted.
+    ///
+    /// See `fuzz/fuzz_targets/idn_policy_vs_idna.rs`.
+    #[must_use]
+    pub fn policy_over(convert: impl Fn(&str) -> Option<String>, domain: &str) -> Option<String> {
+        super::policy::to_ascii_over(convert, domain)
     }
 }
 
