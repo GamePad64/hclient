@@ -1,0 +1,77 @@
+id: no-cfg-in-the-portable-example
+snapshots:
+  ? |
+    #![cfg_attr(docsrs, feature(doc_cfg))]
+  : labels:
+    - source: cfg_attr
+      style: primary
+      start: 3
+      end: 11
+    - source: cfg_attr(docsrs, feature(doc_cfg))
+      style: secondary
+      start: 3
+      end: 37
+  ? |
+    #[cfg(unix)]
+    fn a() {}
+  : labels:
+    - source: cfg
+      style: primary
+      start: 2
+      end: 5
+    - source: cfg(unix)
+      style: secondary
+      start: 2
+      end: 11
+  ? |
+    #[cfg_attr(test, allow(dead_code))]
+    fn b() {}
+  : labels:
+    - source: cfg_attr
+      style: primary
+      start: 2
+      end: 10
+    - source: cfg_attr(test, allow(dead_code))
+      style: secondary
+      start: 2
+      end: 34
+  ? |
+    fn c() {
+        #[cfg(feature = "x")]
+        let y = 1;
+    }
+  : labels:
+    - source: cfg
+      style: primary
+      start: 15
+      end: 18
+    - source: cfg(feature = "x")
+      style: secondary
+      start: 15
+      end: 33
+  ? |
+    fn c() {
+        assert!(cfg!(unix));
+    }
+  : labels:
+    - source: cfg
+      style: primary
+      start: 21
+      end: 24
+    - source: (cfg!(unix))
+      style: secondary
+      start: 20
+      end: 32
+  ? |
+    fn c() {
+        if cfg!(target_family = "wasm") {}
+    }
+  : labels:
+    - source: cfg!(target_family = "wasm")
+      style: primary
+      start: 16
+      end: 44
+    - source: cfg
+      style: secondary
+      start: 16
+      end: 19
