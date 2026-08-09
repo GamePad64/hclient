@@ -95,6 +95,54 @@ fn silent_server() -> std::net::SocketAddr {
     addr
 }
 
+/// Answers the head promptly under a `Content-Length` it will never
+/// satisfy, and then says **nothing at all**, for ever.
+///
+/// The difference from `dribbling_server` is the whole point of the test
+/// it serves. A dribbling body wakes the client every 20 ms, so an
+/// elapsed-time check gets a second look at the clock for free; this one
+/// never wakes it again, so only a sleep the client is holding itself can
+/// end the transfer.
+///
+/// The flag goes `true` when the client's FIN arrives — `read` returning
+/// `Ok(0)`. The observer is deliberately on the server's side of the wire
+/// for the same reason the rest of this file's are: the client's view of
+/// its own future proves nothing about the socket.
+fn head_then_silence_server() -> (std::net::SocketAddr, Arc<AtomicBool>) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = l.local_addr().expect("addr");
+    let client_went_away = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&client_went_away);
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            let mut b = [0u8; 2048];
+            let _ = s.read(&mut b);
+            if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10000000\r\n\r\n")
+                .is_err()
+                || s.flush().is_err()
+            {
+                flag.store(true, Ordering::SeqCst);
+                continue;
+            }
+            // Not a `sleep` loop: blocking in `read` is what keeps the
+            // socket open without sending a byte, and it is also how this
+            // thread learns that the client hung up.
+            let mut sink = [0u8; 64];
+            loop {
+                match s.read(&mut sink) {
+                    Ok(0) | Err(_) => {
+                        flag.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    Ok(_) => continue,
+                }
+            }
+        }
+    });
+    (addr, client_went_away)
+}
+
 /// Redirects every request to itself after `per_hop`, for ever. The
 /// counter is how many hops actually happened.
 fn redirect_chain_server(per_hop: Duration) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
@@ -234,6 +282,124 @@ fn a_body_that_dribbles_for_ever_is_cut_at_the_total_deadline() {
         elapsed < TOTAL * 10,
         "the bound is supposed to be tight, not eventual ({elapsed:?})"
     );
+}
+
+/// The half of the bound that did not exist before the `Deadline` wrapper
+/// held a sleep of its own, and the reason this file grew a fourth server.
+///
+/// The head arrives in milliseconds, and then the server sends **nothing,
+/// ever**, under a `Content-Length` of ten million. Nothing will wake the
+/// body wrapper again, so an implementation that only checks elapsed time
+/// on each `poll_frame` has no second chance to look at the clock: it
+/// waits for a frame that never comes, and `GUARD` fires at six seconds
+/// with the message that says so. Only a sleep the wrapper is holding —
+/// registered on the caller's own waker while the body answers `Pending` —
+/// can end this.
+///
+/// `docs/v02-acceptance.md` used to list this case under "deliberately not
+/// done", first as impossible and then as merely undecided. It is neither
+/// now, and this test is what makes the difference observable rather than
+/// asserted.
+#[test]
+fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline() {
+    let (addr, went_away) = head_then_silence_server();
+    let c = Client::builder(transport())
+        .total_timeout(Tokio, TOTAL)
+        .build()
+        .expect("the native transport supports this configuration");
+
+    let started = Instant::now();
+    let (resp, err, elapsed) = rt().block_on(guarded("a body that goes silent for ever", async {
+        let mut resp = c
+            .get(&format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("the head arrives promptly — this is not a stalled server");
+        assert_eq!(resp.status(), 200);
+
+        let err = loop {
+            match resp.chunk().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!(
+                    "a body under a Content-Length of ten million must not end \
+                     cleanly after zero bytes"
+                ),
+            }
+        };
+        (resp, err, started.elapsed())
+    }));
+
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Timeout(Phase::Total),
+        "the failure must be typed as a total-timeout: {err}"
+    );
+    assert!(
+        err.source()
+            .and_then(|s| s.downcast_ref::<TotalTimeoutElapsed>())
+            .is_some(),
+        "the source must name the bound that was in force: {err}"
+    );
+    assert!(
+        elapsed >= TOTAL,
+        "cut before the deadline it was given ({elapsed:?} < {TOTAL:?})"
+    );
+    assert!(
+        elapsed < TOTAL * 10,
+        "a bound that fires only because something else woke the body is not \
+         a bound ({elapsed:?})"
+    );
+    // The `Response` is still alive here on purpose, exactly as in the
+    // test below: what closed the socket can then only be the wrapper
+    // dropping the transport's body when its sleep fired.
+    assert!(
+        wait_for(&went_away, Duration::from_secs(10)),
+        "the server never saw the connection close, so the timed-out \
+         exchange was left running"
+    );
+    drop(resp);
+}
+
+/// The response body still crosses a `tokio::spawn`, which is the only
+/// check that matters for the field added above.
+///
+/// `Deadline` now holds a `Pin<Box<Tm::Sleep>>`, and the whole argument
+/// for it over `Pin<Box<dyn Future>>` is that auto traits pass through a
+/// box around a *concrete* type. If that were wrong — or if some later
+/// field were `!Send` — **every** response body this client produces would
+/// stop being spawnable, and `tokio::spawn` would refuse to compile here.
+/// A `Send` bound is never declared anywhere in `http-ng` (the crate's own
+/// invariant), so a test that instantiates it is the only place the
+/// property can be stated at all.
+///
+/// It also runs: the `total_timeout` is set, so the body being moved
+/// really is one carrying a live sleep, not the inert `total: None` shape.
+#[test]
+fn a_bounded_response_body_still_crosses_a_tokio_spawn() {
+    let addr = prompt_server();
+    let c = Client::builder(transport())
+        .total_timeout(Tokio, TOTAL)
+        .build()
+        .expect("supported");
+
+    let body = rt().block_on(async {
+        let resp = c
+            .get(&format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("responds");
+        tokio::spawn(async move {
+            resp.collect()
+                .await
+                .expect("body collects inside the bound")
+                .text()
+                .expect("utf-8")
+        })
+        .await
+        .expect("the spawned task neither panicked nor was cancelled")
+    });
+    assert_eq!(body, "done");
 }
 
 /// Firing does not merely report: it drops the body, and dropping a body

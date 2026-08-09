@@ -123,58 +123,71 @@ where
 /// request-body write, here the deadline. Nothing in the `Transport` seam
 /// changes for it.
 ///
-/// # What this bounds, and what it does not
+/// # What this bounds
 ///
-/// The deadline is checked on every poll, against `Timer::now`/
-/// `Timer::elapsed_since` — it does **not** hold a sleep of its own.
+/// The deadline is **raced against the body**, by two mechanisms that
+/// answer two different questions:
 ///
-/// So, precisely:
+/// - An elapsed-time check (`Timer::now`/`Timer::elapsed_since`) before
+///   every poll of the wrapped body. This is what cuts a body that keeps
+///   producing data past the deadline — the dribbling body the acceptance
+///   names — at its first frame after the deadline.
+/// - A **real sleep**, held in the `sleep` field below and polled whenever
+///   the wrapped body answers `Pending`. This is what cuts a body that
+///   goes **completely silent** after the head: no frame will ever arrive
+///   to be checked on, so without a sleep registering the caller's waker
+///   nothing would ever poll this wrapper again and the elapsed-time
+///   check would never run a second time.
 ///
-/// - A body that keeps producing data past the deadline — the dribbling
-///   body the acceptance names — is cut at its first frame after the
-///   deadline. The response head, and every redirect hop before it, is
-///   bounded by a real sleep in `Client::execute`, so a server that
-///   answers nothing at all is cut too.
-/// - A body that goes **completely silent** after the head is not cut:
-///   nothing polls this wrapper again, and there is nobody to wake it.
-///   That is `between_bytes`'s job — declared `false` by `http-ng-native`
-///   today (v0.2 W4's middle bullet), so a caller who needs it should read
-///   `Capabilities::timeouts` rather than assume `total` covers it.
+/// The response head, and every redirect hop before it, is bounded
+/// separately by [`within`] in `Client::execute`, so a server that answers
+/// nothing at all is cut before this type exists.
 ///
-/// Claiming "we bound the operation as a whole" without that second
-/// bullet would be stronger than the truth.
+/// **This is still not `between_bytes`**, which stays declared `false` by
+/// `http-ng-native` (v0.2 W4's middle bullet), and the difference is not a
+/// technicality: `between_bytes` bounds the GAP between two frames and
+/// restarts on each one, so it cuts a stall at any point in an
+/// arbitrarily long transfer. What is here bounds the operation once, from
+/// `Client::execute`'s entry; a body that produces a byte every 50 ms for
+/// an hour is fine by `between_bytes` and cut by this. A caller who needs
+/// the other one should read `Capabilities::timeouts` rather than assume
+/// `total` covers it.
 ///
-/// ## The second bullet is now **liftable**, and this says how
+/// ## Why the sleep is here now, when it once could not be
 ///
-/// This section used to give a reason as well as a description, and the
-/// reason has since stopped being true. It read: "That is forced by the
-/// shape of [`Timer`]: `sleep` returns `impl Future`, an RPITIT whose type
-/// cannot be named and therefore cannot be a field of this struct. The
-/// only way to store it is `Pin<Box<dyn Future>>`, which is `!Send` …
+/// This section used to describe the second bullet as a limitation, under
+/// a reason that has since stopped being true. It read: "That is forced by
+/// the shape of [`Timer`]: `sleep` returns `impl Future`, an RPITIT whose
+/// type cannot be named and therefore cannot be a field of this struct.
+/// The only way to store it is `Pin<Box<dyn Future>>`, which is `!Send` …
 /// and that would make **every** response body `!Send`."
 ///
 /// Both halves were right about the shape available at the time and wrong
 /// as a permanent conclusion. [`Timer`] now has an associated
-/// [`Timer::Sleep`], so the sleep **can** be a field: `Pin<Box<Tm::Sleep>>`
-/// (or `Tm::Sleep` directly where it is `Unpin`) is a box around a
-/// *concrete* type, and auto traits pass straight through it — `Send` is
-/// then inferred exactly as it is for `H1Body<I>`, rather than lost as it
-/// would be through `dyn`. The `Pin<Box<dyn Future>>` half of the old
-/// reasoning was checked and is correct; it simply was never the only
-/// option once the type had a name.
+/// [`Timer::Sleep`], so the sleep **is** a field: `Pin<Box<Tm::Sleep>>` is
+/// a box around a *concrete* type, and auto traits pass straight through
+/// it — `Send` is inferred exactly as it is for `H1Body<I>`, rather than
+/// lost as it would be through `dyn`. The `Pin<Box<dyn Future>>` half of
+/// the old reasoning was checked and is correct; it simply was never the
+/// only option once the type had a name. That `Send` survives is not left
+/// to the eye: `tests/deadline.rs` moves a whole response body across a
+/// `tokio::spawn`, which does not compile for a `!Send` body.
 ///
-/// Measured, so the next reader does not have to re-derive it: with a
-/// counting waker and no executor running at all, the elapsed-time wrapper
-/// registers **zero** wakes after one `Pending` poll on a silent body —
-/// nothing will ever poll it again, so the deadline can never fire — while
-/// a wrapper holding the sleep registers one and fires on its own deadline
-/// (302 ms against a 300 ms bound, versus 1202 ms only because the harness
-/// happened to wake it).
+/// `Pin<Box<..>>` rather than a bare `Tm::Sleep` field, even though
+/// `tokio::time::Sleep` and `async_io::Timer` both happen to be `Unpin`:
+/// [`Timer::Sleep`] requires no such thing, and pinning an un-boxed field
+/// in place needs either that bound (which would narrow the seam for every
+/// runtime) or `unsafe` (which this crate forbids). One allocation per
+/// bounded response is the price, and only for a response that asked for
+/// a bound — `total: None` builds no sleep at all.
 ///
-/// **Deliberately not done here.** Racing a real sleep changes when this
-/// type cancels a transfer, which is a behavioural change in `Client`'s
-/// contract and wants its own measurement and its own tests. What changed
-/// is that it is now a decision rather than an impossibility.
+/// Measured before it was written, so the next reader does not have to
+/// re-derive it: with a counting waker and no executor running at all, the
+/// elapsed-time wrapper alone registers **zero** wakes after one `Pending`
+/// poll on a silent body — nothing will ever poll it again, so the
+/// deadline can never fire — while a wrapper holding the sleep registers
+/// one and fires on its own deadline (302 ms against a 300 ms bound,
+/// versus 1202 ms only because the harness happened to wake it).
 ///
 /// # Firing drops the inner body
 ///
@@ -194,15 +207,45 @@ pub struct Deadline<B, Tm: Timer> {
     /// in the type, because a type cannot appear and disappear with a
     /// runtime value; the cost is one `Option` test per frame.
     total: Option<Duration>,
+    /// The sleep that wakes a silent body, or `None`.
+    ///
+    /// `None` in exactly two situations, and they are not the same one:
+    /// no bound was asked for (`total` is `None` too, and constructing a
+    /// sleep would be a `tokio::time::sleep` outside a runtime for a
+    /// client that never asked for a clock — see [`within`]); or the
+    /// deadline has already fired, where it is dropped alongside `inner`
+    /// so that a completed future is never polled again.
+    sleep: Option<Pin<Box<Tm::Sleep>>>,
 }
 
 impl<B, Tm: Timer> Deadline<B, Tm> {
+    /// Builds the wrapper, and with it the sleep that will cut a silent
+    /// body.
+    ///
+    /// The sleep is created **here**, not lazily on the first poll, and
+    /// for the remaining budget rather than for the whole `total`: the
+    /// head has already cost some of it, and a sleep of the full `total`
+    /// would hand the body a second budget of its own. `saturating_sub`
+    /// because the two clock reads are not atomic — an operation that
+    /// spent its whole budget on the head gets a zero-length sleep, which
+    /// fires at once, rather than an underflow.
+    ///
+    /// Creating it here is also what keeps a clockless client out of
+    /// `tokio::time::sleep`'s panic: this is called from
+    /// `Client::execute`, inside the runtime that is already polling it,
+    /// and only ever with `total: Some(..)` for a client that named a
+    /// clock in the same call that set the bound (see [`NoClock`]).
     pub(crate) fn new(inner: B, timer: Tm, started: Tm::Instant, total: Option<Duration>) -> Self {
+        let sleep = total.map(|t| {
+            let left = t.saturating_sub(timer.elapsed_since(started));
+            Box::pin(timer.sleep(left))
+        });
         Self {
             inner: Some(inner),
             timer,
             started,
             total,
+            sleep,
         }
     }
 
@@ -220,6 +263,20 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
     fn overrun(&self) -> Option<Duration> {
         let total = self.total?;
         (self.timer.elapsed_since(self.started) >= total).then_some(total)
+    }
+
+    /// The deadline has expired: drop what is holding the exchange open
+    /// and produce the error the caller will see.
+    ///
+    /// Dropping `inner` is the cancellation (see the type's last section).
+    /// Dropping `sleep` matters for a different reason: a future that has
+    /// returned `Ready` must not be polled again, and this is the only
+    /// place that guarantee is established — every later `poll_frame`
+    /// takes the "already fired" branch and never reaches it.
+    fn fire(&mut self, total: Duration) -> Error {
+        self.inner = None;
+        self.sleep = None;
+        Error::new(ErrorKind::Timeout(Phase::Total), TotalTimeoutElapsed(total))
     }
 }
 
@@ -278,11 +335,7 @@ where
             // Dropping the inner body is the cancellation; doing it before
             // returning means the exchange is already stopping when the
             // caller sees the error.
-            this.inner = None;
-            return Poll::Ready(Some(Err(Error::new(
-                ErrorKind::Timeout(Phase::Total),
-                TotalTimeoutElapsed(total),
-            ))));
+            return Poll::Ready(Some(Err(this.fire(total))));
         }
         let Some(inner) = this.inner.as_mut() else {
             // Already fired. The deadline has not become un-expired, so
@@ -294,9 +347,33 @@ where
                 TotalTimeoutElapsed(total),
             ))));
         };
-        Pin::new(inner)
-            .poll_frame(cx)
-            .map(|o| o.map(|r| r.map_err(classify_body_error)))
+        // The body is polled BEFORE the sleep, the same order `within`
+        // keeps one level up and for the same reason: a frame that arrived
+        // in the very wake that expired the deadline is data, not a
+        // timeout.
+        match Pin::new(inner).poll_frame(cx) {
+            Poll::Ready(o) => Poll::Ready(o.map(|r| r.map_err(classify_body_error))),
+            // The body has nothing yet and has registered `cx`'s waker for
+            // whenever it does. This is the only branch that can be the
+            // last one ever taken — a body that never speaks again never
+            // wakes anybody — so the sleep is polled here, on the same
+            // waker, and that is what makes the deadline able to fire on
+            // its own rather than only on the next frame.
+            Poll::Pending => {
+                if let Some(sleep) = this.sleep.as_mut()
+                    && sleep.as_mut().poll(cx).is_ready()
+                {
+                    // Not `this.overrun()`: the sleep and the elapsed-time
+                    // check are two readings of the same clock and need not
+                    // agree to the nanosecond. The sleep firing IS the
+                    // deadline, and reporting `total` is reporting the
+                    // bound that was in force, not a measurement.
+                    let total = this.total.unwrap_or_default();
+                    return Poll::Ready(Some(Err(this.fire(total))));
+                }
+                Poll::Pending
+            }
+        }
     }
 
     fn is_end_stream(&self) -> bool {

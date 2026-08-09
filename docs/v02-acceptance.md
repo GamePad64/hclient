@@ -16,6 +16,7 @@ do.
 | Connections are reused | `crates/http-ng-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
 | Two clients with different trust cannot share a socket | `crates/http-ng-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
 | An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
+| …including a body that goes **completely silent** after the head | the same file — a server that sends the head under a `Content-Length` of ten million and then nothing at all. Nothing will wake the body wrapper, so only the sleep it holds can end this; with the sleep never polled, the bound fires at 6 s instead of 400 ms, off a wake the test harness happened to supply, and the tightness assertion catches it. The observer is the server watching for the client's FIN |
 | Adding a bound does not change the client's type | `crates/http-ng/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
 
 ## The rule this vertical kept applying
@@ -119,30 +120,38 @@ someone to "fix" an item whose absence is the decision.
   our checkout poll and our write. Every HTTP/1 pool has this, hyper and
   reqwest included; the retry is what makes it recoverable rather than
   visible.
-- **`total` does not cut a body that goes completely silent after the head**
-  — **still true, but no longer for the reason given here, and no longer
-  permanent.** The body wrapper checks elapsed time on each `poll_frame`,
-  which catches a dribbling body on its next byte and never wakes for one
-  that stops entirely. That is `between_bytes`' job, and `between_bytes` is
-  still honestly declared `false`.
+- ~~**`total` does not cut a body that goes completely silent after the
+  head.**~~ **Done. It cuts it now**, and the row is in the claims table
+  above. The bullet is kept rather than deleted because it was wrong twice
+  in two different ways, and both are worth not repeating.
 
-  The reason this bullet used to give was: "`Timer::sleep` is an RPITIT, so
-  its future cannot be stored in a struct field, and boxing it would make
-  *every* response body `!Send`." The first half has since been fixed at
-  the source — `Timer` now carries an associated `Sleep` type, so the
-  future has a name and can be a field. The second half was right only
-  about `Pin<Box<dyn Future>>`; a box around a *concrete* `Tm::Sleep` is
-  transparent to auto traits, so `Send` survives. Measured with a counting
-  waker and no executor running at all: the elapsed-time wrapper registers
-  **zero** wakes after one `Pending` poll on a silent body and can
-  therefore never fire, while a wrapper holding the sleep registers one and
-  fires on its own deadline.
+  It first read: "`Timer::sleep` is an RPITIT, so its future cannot be
+  stored in a struct field, and boxing it would make *every* response body
+  `!Send`." The first half was fixed at the source — `Timer` carries an
+  associated `Sleep` type, so the future has a name and can be a field. The
+  second half was right only about `Pin<Box<dyn Future>>`; a box around a
+  *concrete* `Tm::Sleep` is transparent to auto traits, so `Send` survives.
+  That is not left to the eye either: `tests/deadline.rs` moves a whole
+  bounded response body across a `tokio::spawn`, which does not compile for
+  a `!Send` body.
 
-  So this is now a **decision not to change behaviour in that work item**,
-  not a limitation of the seam. Racing a real sleep changes when a transfer
-  is cancelled and wants its own measurement and its own tests; see
-  `Deadline`'s doc comment, which carries the same correction next to the
-  code.
+  It then read "a decision not to change behaviour in that work item" —
+  i.e. possible but deferred for wanting its own measurement and its own
+  tests. It has them now: `Deadline` holds `Pin<Box<Tm::Sleep>>`, built in
+  `Deadline::new` for the budget the head left over and polled whenever the
+  wrapped body answers `Pending`. Measured before the change, with a
+  counting waker and no executor running at all: the elapsed-time wrapper
+  registers **zero** wakes after one `Pending` poll on a silent body and
+  can therefore never fire, while a wrapper holding the sleep registers
+  one.
+
+  **`between_bytes` is still `false` and is still a different thing**, so
+  nothing about that declaration changed: it bounds the GAP between two
+  frames and restarts on each one, catching a stall anywhere in an
+  arbitrarily long transfer, where `total` bounds the operation once from
+  `Client::execute`'s entry. A body dripping a byte every 50 ms for an hour
+  passes `between_bytes` and is cut by `total`; a transfer that legitimately
+  takes an hour and stalls for ten minutes in the middle is the reverse.
 - **The concurrency limit bounds requests, not sockets.** `tower` releases
   its permit when the `call` future completes — at the response head — so a
   streaming body holds its connection outside the limit. The design doc
