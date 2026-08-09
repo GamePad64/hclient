@@ -149,12 +149,12 @@ async fn capabilities_are_honest_about_v01_limits() {
     );
     assert!(caps.timeouts.connect);
     assert!(
-        !caps.timeouts.first_byte,
-        "there is no response timer — can't be claimed"
+        caps.timeouts.first_byte,
+        "enforced since v0.2 W4's middle bullet — see tests/timeouts.rs,          where a server sends a head and then nothing"
     );
     assert!(
-        !caps.timeouts.between_bytes,
-        "there's no response timer — can't be claimed"
+        caps.timeouts.between_bytes,
+        "enforced since v0.2 W4's middle bullet — see tests/timeouts.rs,          where a server stalls mid-body"
     );
     assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
@@ -319,17 +319,29 @@ async fn resolver_cancelled_error_reaches_the_caller_through_execute_not_flatten
     );
 }
 
+/// This test used to assert the opposite — that `between_bytes` was
+/// refused at `build()` — and it was right for as long as this transport
+/// honestly declared `TimeoutSupport::between_bytes = false`. Both halves
+/// moved together (the rule v0.2 W4's middle bullet was written under), so
+/// the assertion moved with them: all three phases are now settable here,
+/// and each one is enforced against a server in `tests/timeouts.rs`.
+///
+/// The refusal itself has not gone anywhere and is not this crate's to
+/// check: `check_supported` lives in `http-ng`, and `http-ng/src/config.rs`
+/// has a case per phase against capabilities that declare them `false`,
+/// including that the error names the RIGHT phase. What would be lost is a
+/// test asserting a refusal that this transport can no longer produce.
 #[tokio::test]
-async fn unsupported_timeout_is_rejected_at_build_time() {
+async fn every_timeout_phase_is_accepted_at_build_time_now_that_each_is_enforced() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
-    let err = Client::builder(t)
+    Client::builder(t)
         .timeouts(http_ng::Timeouts {
+            connect: Some(Duration::from_secs(1)),
+            first_byte: Some(Duration::from_secs(1)),
             between_bytes: Some(Duration::from_secs(1)),
-            ..Default::default()
         })
         .build()
-        .unwrap_err();
-    assert_eq!(err.what, "between_bytes_timeout");
+        .expect("all three phases are declared and enforced");
 }
 
 /// A TLS handshake that fails (the server accepted the TCP connection and
@@ -493,6 +505,11 @@ fn poll_bounded<F: Future>(fut: F, bound: Duration) -> Option<F::Output> {
 
 /// `TcpConnect` whose `connect` future never resolves — the timer is the
 /// only thing that can end this race.
+///
+/// `Clone` because `Native`'s `Transport` impl asks it of every runtime:
+/// the response body carries a clock of its own to enforce
+/// `between_bytes`, and a clock that cannot be cloned cannot be carried.
+#[derive(Clone)]
 struct NeverConnects;
 struct NeverStream;
 impl hyper::rt::Read for NeverStream {

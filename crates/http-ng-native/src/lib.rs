@@ -44,9 +44,11 @@ mod established;
 mod h1;
 #[cfg(feature = "http2")]
 mod http2;
+mod idle;
 mod pool;
 
 pub use connect::Conn;
+pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 
 use http_ng_core::unversioned::Transport;
@@ -231,13 +233,28 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             // Happy Eyeballs attempts two different deadlines let through,
             // not merely that a timeout fires.
             connect: true,
-            // There is no response timer here — claiming these phases
-            // would be a capability that lies about its own state. (The
-            // pool arrived in v0.2 W2; these two did not arrive with it,
-            // and `first_byte` in particular is not the pool's idle
-            // timeout wearing a different name.)
-            first_byte: false,
-            between_bytes: false,
+            // Both enforced as of v0.2 W4's middle bullet, and declared
+            // in the same commit that enforced them — the rule that item
+            // was written under. Neither is the pool's idle timeout
+            // wearing a different name: that one bounds a connection
+            // between two exchanges and lives on `PoolConfig`, these two
+            // bound one exchange and travel with the request.
+            //
+            // `first_byte` wraps `established::exchange` — from the
+            // request being handed to a connection until the response head
+            // is in hand — and expires as `Timeout(Phase::FirstByte)`.
+            // `between_bytes` wraps the response body and expires as
+            // `Timeout(Phase::BetweenBytes)`; it races a real sleep rather
+            // than reading a clock on each frame, which is the only shape
+            // that can cut a body that has gone completely silent (see
+            // `idle.rs`'s module doc for the measurement, and
+            // `http_ng::Deadline`'s for the same fact from the other end).
+            //
+            // Both are checked from outside the client, by servers that
+            // send a head and then nothing and that stop mid-body:
+            // `tests/timeouts.rs`.
+            first_byte: true,
+            between_bytes: true,
         };
         caps.upgrade = UpgradeSupport::None;
         Self {
@@ -423,7 +440,7 @@ where
 /// builder methods above don't inherit them.
 impl<R, T, D> Native<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
@@ -517,6 +534,89 @@ where
             // a panic on overflow would be a strange way to answer it.
             now.saturating_add(cfg.idle_timeout),
         ))
+    }
+
+    /// Runs one exchange under `Timeouts::first_byte`, or unchanged when
+    /// no bound was set.
+    ///
+    /// # What the bound covers
+    ///
+    /// From the request being handed to a connection to the response
+    /// **head** being in hand — writing the request included. `Timeouts`'
+    /// own doc calls this phase "response-wait", and the head is the
+    /// earliest moment this transport can observe: hyper reports a
+    /// response when it has parsed the status line and the headers, and on
+    /// a real socket those arrive with the first bytes.
+    ///
+    /// # Per attempt, not per `execute`, and that is not a loophole
+    ///
+    /// `execute` may make more than one attempt with the same request
+    /// object, and each gets the whole bound. That is honest rather than
+    /// generous: an attempt is retried **only** when hyper hands the
+    /// request back untouched (`Failed::NotSent` — not a byte of it
+    /// reached the wire), so no response was ever waited for on it. A
+    /// budget shared across attempts would be counting a wait that did not
+    /// happen. Contrast `Timeouts::connect`, which deliberately is one
+    /// budget for the whole Happy Eyeballs race, because there every
+    /// attempt really is spending the caller's time.
+    ///
+    /// # `Failed::Sent`, deliberately
+    ///
+    /// A timeout here means the request went out and nothing came back, so
+    /// the retry above must not fire: resending would not be a retry but a
+    /// second request, with whatever the server has already done to the
+    /// first one still standing. `Failed::Sent` is how that is said, and
+    /// it is the same verdict the enum carries everywhere else.
+    ///
+    /// Expiry drops the exchange future, which drops the connection, which
+    /// closes the socket — `Capabilities::cancel_on_drop` is `Supported`
+    /// on this transport and this is one of the places that relies on it.
+    async fn within_first_byte<F, V>(
+        &self,
+        d: Option<Duration>,
+        fut: F,
+    ) -> Result<V, established::Failed>
+    where
+        F: Future<Output = Result<V, established::Failed>>,
+    {
+        let Some(d) = d else {
+            return fut.await;
+        };
+        let mut fut = std::pin::pin!(fut);
+        // Built only on this branch: `Tokio::sleep` panics outside a
+        // runtime, and a request that asked for nothing must not need one.
+        let mut sleep_fut = std::pin::pin!(self.rt.sleep(d));
+        std::future::poll_fn(|cx| {
+            // The exchange first, so a head that arrived in the same wake
+            // as the deadline expiring is a response rather than a
+            // timeout — the same ordering rule as `with_connect_timeout`
+            // below and `http_ng::within`.
+            if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+                return Poll::Ready(r);
+            }
+            if sleep_fut.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(established::Failed::Sent(Error::new(
+                    ErrorKind::Timeout(Phase::FirstByte),
+                    FirstByteTimedOut(d),
+                ))));
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Puts the `between_bytes` bound round a response body.
+    ///
+    /// One place, called from both attempt paths, because a body that
+    /// escaped it would be a silent hole in a declared capability — and
+    /// `Transport::Body` names the wrapper, so the compiler is what stops
+    /// a third path forgetting.
+    fn bound_body(
+        &self,
+        resp: http::Response<established::NativeBody<NativeIo<R, T>>>,
+        every: Option<Duration>,
+    ) -> http::Response<IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>> {
+        resp.map(|b| IdleTimeout::new(b, self.rt.clone(), every))
     }
 
     /// A pooled connection that is still worth a request, or `None`.
@@ -643,15 +743,30 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
     }
 }
 
+/// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
+/// is the one bound this impl gained for it. `between_bytes` is enforced
+/// by a sleep held **inside the response body**, which outlives `execute`
+/// and therefore cannot borrow this transport's clock — it needs one of
+/// its own. Every runtime in this workspace was already `Clone` (both
+/// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
+/// pointers and says in its own doc that `Native` wants to clone it), so
+/// this pins down a fact rather than adding a restriction.
 impl<R, T, D> Transport for Native<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type Body = established::NativeBody<NativeIo<R, T>>;
+    /// The pooled body, with the `between_bytes` bound wrapped round it.
+    ///
+    /// The order matters and is the mirror of `http_ng::ClientBody`'s: the
+    /// idle bound is the **innermost** wrapper, next to the socket, so it
+    /// measures the gap between reads on the wire. Outside it the client
+    /// may add its own `Deadline` and decompression, neither of which can
+    /// hide a silent peer from this one.
+    type Body = IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>;
     type Error = Error;
 
     async fn execute(
@@ -720,8 +835,9 @@ where
                 continue;
             };
             let checkin = self.checkin_for(&key, now);
-            match established::exchange(est, req, checkin, &uri).await {
-                Ok(resp) => return Ok(resp),
+            let attempt = established::exchange(est, req, checkin, &uri);
+            match self.within_first_byte(timeouts.first_byte, attempt).await {
+                Ok(resp) => return Ok(self.bound_body(resp, timeouts.between_bytes)),
                 // The one retry, and the reason it exists: a pool turns
                 // "the server closed this connection while it was idle"
                 // from something that could not happen into something
@@ -783,8 +899,10 @@ where
         };
 
         let est = handshake_for(conn, protocol).await?;
-        established::exchange(est, req, checkin, &uri)
+        let attempt = established::exchange(est, req, checkin, &uri);
+        self.within_first_byte(timeouts.first_byte, attempt)
             .await
+            .map(|resp| self.bound_body(resp, timeouts.between_bytes))
             .map_err(established::Failed::into_error)
     }
 
@@ -805,6 +923,17 @@ where
         &self.caps
     }
 }
+
+/// The failure [`Native::within_first_byte`] ends in when the timer wins
+/// the race against the exchange.
+///
+/// A named type rather than a string, for the same reason
+/// [`ConnectTimedOut`] is one: a caller must be able to tell the phases
+/// apart with `Error::source().downcast_ref()`, and to read the bound
+/// that was actually in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no response head within the first_byte timeout of {0:?}")]
+pub struct FirstByteTimedOut(pub Duration);
 
 /// The failure [`with_connect_timeout`] ends in when the timer wins the
 /// race against `connect::connect`.
