@@ -5,3 +5,4 @@ Cargo.lock.bak
 
 # Playwright/MCP scratch, from browser measurements
 .playwright-mcp/
+/.spike-target

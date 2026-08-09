@@ -1,0 +1,30 @@
+# Spike for the `Spawn` question (v0.2). Its own workspace on purpose:
+# `members = ["crates/*"]` at the repo root does not match `spikes/`, and
+# nothing under `crates/` is modified by this crate.
+[package]
+name    = "spawn-local-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+http-ng-rt         = { path = "../../crates/http-ng-rt" }
+http-ng-rt-tokio   = { path = "../../crates/http-ng-rt-tokio" }
+http-ng-rt-smol    = { path = "../../crates/http-ng-rt-smol" }
+http-ng-native     = { path = "../../crates/http-ng-native" }
+http-ng-tls        = { path = "../../crates/http-ng-tls" }
+http-ng-dns        = { path = "../../crates/http-ng-dns" }
+hyper              = { version = "1.11", default-features = false, features = ["client", "http1"] }
+http               = "1.5"
+http-body-util     = "0.1"
+bytes              = "1.12"
+tokio              = { version = "1", features = ["rt", "net", "time", "macros", "io-util", "sync"] }
+async-executor     = "1"
+futures-lite       = "2"
+futures-executor   = "0.3"
+
+[features]
+# Turn on to reproduce the coherence error quoted in the report.
+overlap = []
