@@ -126,6 +126,36 @@ filterset, so a renamed test would already fail — but that is a default
 (`--no-tests` can change it), and "exactly one ran" is the stronger claim
 this job actually needs.
 
+### `embassy-lib-test-links-under-a-strict-linker`
+
+`cargo test -p http-ng-rt-embassy --all-features --lib --no-run` with
+`RUSTFLAGS=-C link-arg=-Wl,--no-gc-sections`.
+
+Linkers disagree about a reference that only dead code makes. `ld
+--gc-sections` and macOS `ld64`'s dead-strip drop the section before
+anything has to resolve it; MSVC's `link.exe` resolves first and runs
+`/OPT:REF` afterwards. So an undefined symbol nothing calls is green twice
+and red once — which is exactly how `http-ng-rt-embassy`'s `lib test` came
+to fail on windows-latest alone with `LNK2019: unresolved external symbol
+__embassy_time_queue_item_from_waker`, while the Linux and macOS legs of
+`test` ran the whole suite.
+
+This job puts the strict rule on the cheap runner. It was broken on purpose
+first: with the `use embassy_executor as _` removed from
+`crates/http-ng-rt-embassy/src/lib.rs` it names that same symbol, out of
+the same `TimerQueueItem::from_embassy_waker` that Windows named.
+
+`--lib`, not `--all-targets`. `tests/tuntap.rs` carries
+`#![cfg(target_os = "linux")]` and compiles to an empty binary anywhere
+else, so linking it says nothing about another platform — and under
+`--no-gc-sections` it turns up `_critical_section_1_0_acquire`, unreached
+`embassy-sync` code that no build of this crate calls. A guard that failed
+on it would be reporting a defect that does not exist.
+
+Scoped to the one crate whose dependencies bind across crate boundaries by
+symbol name (`embassy-time-driver` and `embassy-executor-timer-queue` both
+do), because that arrangement is what produces this class of defect.
+
 ### `lint`
 
 `cargo fmt --all --check` and `cargo clippy --workspace --all-targets

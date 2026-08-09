@@ -123,6 +123,60 @@ jobs:
             exit 1
           fi
 
+  # An undefined symbol reachable only from dead code is invisible on the
+  # Linux runner and on macOS: `ld --gc-sections` and `ld64`'s dead-strip
+  # both drop the reference before anything has to resolve it, while MSVC's
+  # `link.exe` resolves first and only then runs `/OPT:REF`. That asymmetry
+  # cost this repository a windows-only
+  # `LNK2019: unresolved external symbol __embassy_time_queue_item_from_waker`
+  # in `http-ng-rt-embassy`'s `lib test`, which no amount of green Linux and
+  # macOS could have found.
+  #
+  # `--no-gc-sections` puts the strict linker's rule on the cheap runner. It
+  # reproduced that exact symbol, named from the exact function Windows
+  # named, which is this job's "break it on purpose once" — revert the
+  # `use embassy_executor as _` in `crates/http-ng-rt-embassy/src/lib.rs`
+  # and it goes red here.
+  #
+  # `--lib`, deliberately, and not `--all-targets`: `tests/tuntap.rs` is
+  # `#![cfg(target_os = "linux")]` and compiles to an empty binary
+  # everywhere else, so its link is not a claim about any other platform —
+  # and under `--no-gc-sections` it surfaces `_critical_section_1_0_acquire`,
+  # unreached code in `embassy-sync` that no build of this crate calls.
+  # Guarding it would report a defect that does not exist.
+  #
+  # Scoped to this crate, also deliberately: it is the one whose
+  # dependencies bind to symbols by name across crate boundaries
+  # (`embassy-time-driver`, `embassy-executor-timer-queue`), which is the
+  # arrangement that produces this class of defect at all.
+  embassy-lib-test-links-under-a-strict-linker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+      - shell: bash
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,--no-gc-sections"
+        run: |
+          set -euo pipefail
+          rc=0
+          out="$(cargo test -p http-ng-rt-embassy --all-features --lib --no-run \
+            --color never 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the http-ng-rt-embassy lib test does not link with --no-gc-sections. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/http-ng-rt-embassy/src/lib.rs. Do not silence this by dropping the flag."
+            exit 1
+          fi
+          # Fail closed. A renamed package or a cargo that stopped building
+          # the target would otherwise leave a job that is green forever
+          # while linking nothing.
+          if ! printf '%s\n' "$out" | grep -q 'Executable unittests src/lib.rs'; then
+            echo "::error::cargo reported no lib test binary for http-ng-rt-embassy — this job linked nothing"
+            exit 1
+          fi
+
   wasip2:
     runs-on: ubuntu-latest
     steps:
