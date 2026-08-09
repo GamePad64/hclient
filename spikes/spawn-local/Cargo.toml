@@ -18,6 +18,7 @@ http-ng-tls        = { path = "../../crates/http-ng-tls" }
 http-ng-dns        = { path = "../../crates/http-ng-dns" }
 hyper              = { version = "1.11", default-features = false, features = ["client", "http1"] }
 http               = "1.5"
+http-body          = "1.1"
 http-body-util     = "0.1"
 bytes              = "1.12"
 tokio              = { version = "1", features = ["rt", "net", "time", "macros", "io-util", "sync"] }
@@ -47,4 +48,8 @@ required-features = ["must-fail"]
 
 [[bin]]
 name              = "reaper_refused"
+required-features = ["must-fail"]
+
+[[bin]]
+name              = "deadline_dyn"
 required-features = ["must-fail"]

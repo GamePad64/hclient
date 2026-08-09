@@ -502,6 +502,7 @@ dependencies = [
  "futures-executor",
  "futures-lite",
  "http",
+ "http-body",
  "http-body-util",
  "http-ng-dns",
  "http-ng-native",
