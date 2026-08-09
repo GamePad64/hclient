@@ -391,7 +391,7 @@ fuzz-smoke:
     export RUSTUP_TOOLCHAIN=nightly
     if ! rustc --version 2>/dev/null | grep -q nightly || ! cargo fuzz --version >/dev/null 2>&1; then
       if [ -n "${HTTP_NG_REQUIRE_NIGHTLY:-}" ]; then
-        echo "::error::cargo fuzz is about to run on a non-nightly toolchain, or cargo-fuzz is missing — RUSTUP_TOOLCHAIN did not take effect, or `bins:` did not install it"
+        echo "::error::cargo fuzz is about to run on a non-nightly toolchain, or cargo-fuzz is missing — RUSTUP_TOOLCHAIN did not take effect, or \`bins:\` did not install it"
         exit 1
       fi
       echo "NOTICE: no nightly toolchain or no cargo-fuzz — skipping fuzz-smoke."
@@ -434,8 +434,21 @@ no-send-or-sync:
 unsafe-policy:
     ./scripts/unsafe-code-policy.sh
 
+# The guard reads the workflow with a real YAML parser rather than by
+# indentation, because it has to find every `run:` and missing one is a
+# silent hole. `pyyaml` is preinstalled on the GitHub runner images and on
+# most distributions; the fallback is the same three lines ci.yml carried
+# before this moved, kept because "the check could not run" must not read as
+# "the check passed".
+
 # every `run:` in ci.yml is a call to a recipe in this file
 ci-mirrors-just:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    python3 -c "import yaml" 2>/dev/null \
+      || python3 -m pip install --quiet --break-system-packages pyyaml \
+      || python3 -m pip install --quiet pyyaml \
+      || { echo "::error::pyyaml is missing and could not be installed, so scripts/ci-mirrors-just.py cannot run — a check that cannot run must not pass"; exit 1; }
     python3 scripts/ci-mirrors-just.py
 
 # ── dependency facts this project makes claims about ────────────────────
