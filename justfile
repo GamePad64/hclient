@@ -425,8 +425,11 @@ invariants: ast-grep no-send-or-sync unsafe-policy ci-mirrors-just
 ast-grep:
     ./scripts/ast-grep-scan.sh
 
-# no Send/Sync bounds declared in the core surface — see the script's header
-# for why this one is NOT an ast-grep rule
+# The script's header says why this one is NOT an ast-grep rule: the
+# exception marker is a trailing comment on the same line, and ast-grep's
+# relational operators know the tree and not the line.
+
+# no Send/Sync bounds declared in the core surface
 no-send-or-sync:
     ./scripts/no-send-or-sync-in-the-core-surface.sh
 
