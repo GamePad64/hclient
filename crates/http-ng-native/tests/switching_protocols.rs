@@ -11,7 +11,7 @@
 //! WebSocket feature. `docs/v03-design.md` §W4 wrote it down as the first
 //! thing to run, and this file is that run.
 //!
-//! # The answer: no, and the reason is one poll's ordering
+//! # The answer: no — and what happens first is one poll's ordering
 //!
 //! hyper marks a 101 as `wants_upgrade` with a zero-length body and
 //! `keep_alive = false` (`proto/h1/role.rs:1273`, `:1169-1177`), so its
@@ -26,7 +26,9 @@
 //! token. There is nothing left that could reach the pool, and the socket
 //! is dropped when `exchange` returns. `h1.rs`'s own
 //! `a_101_is_never_offered_to_the_pool` pins that mechanism from inside;
-//! the tests here pin the consequence from outside.
+//! the tests here pin the consequence from outside. It is what happens
+//! first rather than the whole reason the outcome is safe — see the
+//! section after next, which is the more useful half of the answer.
 //!
 //! Note what this does *not* say. The upgrade is destroyed — that is what
 //! `pending.manual()` means — and "the exchange succeeded" and "the
