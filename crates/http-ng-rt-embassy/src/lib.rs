@@ -353,6 +353,13 @@ fn no_family(family: &str, feature: &str) -> std::io::Error {
 // acceptance — or have to be gated on `cfg(not(target_os = "linux"))`,
 // which leaves the Linux build resting on the linker discarding a
 // reference that nothing in it defines.
+//
+// This is not the only `#[no_mangle]` contract in this graph: see the
+// `critical-section` note in `Cargo.toml`, a second one that was undefined
+// in the DEFAULT feature set while `--all-features` linked. That one needs
+// no `use` — it is already on every link line through a normal dependency
+// — but it is the same defect, and the CI job covers both feature sets
+// because of it.
 #[cfg(test)]
 use embassy_executor as _;
 

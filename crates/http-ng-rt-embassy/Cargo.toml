@@ -60,6 +60,26 @@ embassy-executor = { version = "0.9", features = ["arch-std", "executor-thread"]
 # `_embassy_time_now` and `_embassy_time_schedule_wake` are unresolved —
 # measured, by taking this line out and linking with `--no-gc-sections`.
 embassy-time = { version = "0.5", features = ["std"] }
+# `critical-section` is a `#[no_mangle]` contract of exactly the same shape:
+# `embassy-sync` — a mandatory dependency of `embassy-net` — calls
+# `critical_section::acquire`/`release`, and the implementation is the
+# APPLICATION's to choose, because on a device it is an interrupt mask and
+# nothing below can know which one. For a test binary on a host the answer
+# is this crate's own `std` implementation, a reentrant global mutex.
+#
+# Nothing in these tests reaches `CriticalSectionRawMutex`, so the calls are
+# dead code — which is exactly why this went unnoticed. NEITHER feature set
+# supplied an implementation (`cargo tree -e features -i critical-section`
+# shows `default` alone with and without `--all-features`); `--all-features`
+# merely happened not to pull the referring archive members into the link,
+# while the default build does. Both configurations now define the symbols
+# instead of resting on which member a particular linker happens to need.
+#
+# No `use critical_section as _` beside the one in `src/lib.rs`: unlike
+# `embassy-executor`, this crate is already on every link line as a
+# transitive dependency of a NORMAL dependency, so the feature was the only
+# thing missing. The strict-linker CI job checks that in both feature sets.
+critical-section = { version = "1.2", features = ["std"] }
 embassy-net  = { version = "0.9", features = ["tcp", "proto-ipv4", "medium-ethernet", "std", "log"] }
 # The Linux TAP driver for embassy-net: an ordinary `embassy_net::driver::
 # Driver` over `/dev/net/tun`, which is what lets the acceptance run a real

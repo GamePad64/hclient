@@ -138,18 +138,27 @@ jobs:
   # `use embassy_executor as _` in `crates/http-ng-rt-embassy/src/lib.rs`
   # and it goes red here.
   #
-  # `--lib`, deliberately, and not `--all-targets`: `tests/tuntap.rs` is
-  # `#![cfg(target_os = "linux")]` and compiles to an empty binary
-  # everywhere else, so its link is not a claim about any other platform —
-  # and under `--no-gc-sections` it surfaces `_critical_section_1_0_acquire`,
-  # unreached code in `embassy-sync` that no build of this crate calls.
-  # Guarding it would report a defect that does not exist.
+  # **BOTH feature sets, and that is not symmetry for its own sake.** The
+  # first version of this job ran `--all-features` alone and passed while a
+  # second defect of the same kind sat next to it: the default build had no
+  # `critical-section` implementation either, and `_critical_section_1_0_
+  # acquire` was undefined there. Neither feature set supplied one — the
+  # difference was only which archive members the link happened to need, so
+  # `--all-features` alone was a green check over a red configuration. The
+  # default build is not hypothetical: `idn-feature-is-real` runs
+  # `cargo nextest run -p http-ng-rt-embassy` with no features, because
+  # `an_address_family_left_out_of_the_build_is_a_typed_error` lives under
+  # `#[cfg(not(feature = "proto-ipv6"))]` and cannot compile with them on.
   #
-  # Scoped to this crate, also deliberately: it is the one whose
-  # dependencies bind to symbols by name across crate boundaries
-  # (`embassy-time-driver`, `embassy-executor-timer-queue`), which is the
-  # arrangement that produces this class of defect at all.
-  embassy-lib-test-links-under-a-strict-linker:
+  # All test targets, not `--lib`: `tests/tuntap.rs` links here too now that
+  # the implementation is supplied rather than discarded.
+  #
+  # Scoped to this crate, deliberately: it is the one whose dependencies
+  # bind to symbols by name across crate boundaries (`embassy-time-driver`,
+  # `embassy-executor-timer-queue`, `critical-section` — three separate
+  # `#[no_mangle]` contracts), which is the arrangement that produces this
+  # class of defect at all.
+  embassy-tests-link-under-a-strict-linker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -161,21 +170,28 @@ jobs:
           RUSTFLAGS: "-C link-arg=-Wl,--no-gc-sections"
         run: |
           set -euo pipefail
-          rc=0
-          out="$(cargo test -p http-ng-rt-embassy --all-features --lib --no-run \
-            --color never 2>&1)" || rc=$?
-          printf '%s\n' "$out"
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::the http-ng-rt-embassy lib test does not link with --no-gc-sections. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/http-ng-rt-embassy/src/lib.rs. Do not silence this by dropping the flag."
-            exit 1
-          fi
-          # Fail closed. A renamed package or a cargo that stopped building
-          # the target would otherwise leave a job that is green forever
-          # while linking nothing.
-          if ! printf '%s\n' "$out" | grep -q 'Executable unittests src/lib.rs'; then
-            echo "::error::cargo reported no lib test binary for http-ng-rt-embassy — this job linked nothing"
-            exit 1
-          fi
+          # "" is the default build, and it is the one that was broken while
+          # the --all-features leg was green. Keep both.
+          for features in "" "--all-features"; do
+            rc=0
+            out="$(cargo test -p http-ng-rt-embassy $features --no-run \
+              --color never 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::http-ng-rt-embassy's tests do not link with --no-gc-sections for [${features:-default features}]. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/http-ng-rt-embassy/src/lib.rs and the critical-section note in its Cargo.toml. Do not silence this by dropping the flag or a feature set."
+              exit 1
+            fi
+            # Fail closed, per binary. A renamed package, a renamed test
+            # file, or a cargo that stopped building one of the targets
+            # would otherwise leave a job green forever while linking less
+            # than it claims.
+            for exe in 'Executable unittests src/lib.rs' 'Executable tests/tuntap.rs'; do
+              if ! printf '%s\n' "$out" | grep -qF "$exe"; then
+                echo "::error::cargo reported no '$exe' for [${features:-default features}] — this job linked less than it claims to check"
+                exit 1
+              fi
+            done
+          done
 
   wasip2:
     runs-on: ubuntu-latest
