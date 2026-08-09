@@ -423,6 +423,91 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
     );
 }
 
+/// **The crate's one public function, over the whole corpus.**
+///
+/// The two columns above are per-implementation; this is the answer a
+/// *caller* gets, which is neither column by name but whichever one
+/// [`backend`](http_ng_idn::backend) selected — so it is chosen by the
+/// same cfg the resolution uses rather than assumed to be the same value.
+///
+/// It needs its own test because nothing else here pins it on a target
+/// with no platform backend, which is the one CI exercises most: the
+/// platform-column tests are compiled away, the oracle test calls `idna`
+/// directly, and the idempotence test below is satisfied by any function
+/// that is constant. Measured rather than suspected — `cargo mutants`
+/// replaced `domain_to_ascii`'s whole body with `Ok(Cow::Borrowed(""))`
+/// and the file stayed green.
+#[test]
+fn the_public_entry_point_answers_the_corpus() {
+    if http_ng_idn::backend() == http_ng_idn::Backend::None {
+        println!("no implementation in this build on this machine — nothing to answer with");
+        return;
+    }
+    let mut wrong = Vec::new();
+    for case in CORPUS {
+        let want = if cfg!(any(icu_backend, foundation_backend)) {
+            case.icu_says
+        } else {
+            case.idna_says
+        };
+        let got = http_ng_idn::domain_to_ascii(case.input)
+            .ok()
+            .map(std::borrow::Cow::into_owned);
+        if got.as_deref() != want {
+            wrong.push(format!(
+                "  {}: expected {:?}, `domain_to_ascii` said {:?}",
+                label(case),
+                want,
+                got
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} corpus rows came back differently from the public entry point:\n{}",
+        wrong.len(),
+        CORPUS.len(),
+        wrong.join("\n")
+    );
+}
+
+/// **The seam the fuzzer goes through is the layer itself, not a
+/// lookalike.**
+///
+/// `testing::policy_over` exists so that `fuzz/fuzz_targets/
+/// idn_policy_vs_idna.rs` can hand the layer a backend and compare the
+/// result with `idna` — and `cargo nextest` does not run fuzz targets, so
+/// without this test replacing that function's body with `None` would be
+/// invisible to every test in the workspace, and the fuzzer would be
+/// fuzzing nothing while still passing. (Three surviving mutants said so.)
+///
+/// What it asserts is the same claim `src/policy.rs` makes on its own
+/// names — over `idna` as the backend the layer must be transparent —
+/// made once more through the public seam rather than the private
+/// function.
+#[test]
+fn the_seam_the_fuzzer_uses_is_the_same_layer_the_backends_use() {
+    let mut wrong = Vec::new();
+    for case in CORPUS {
+        let got = http_ng_idn::testing::policy_over(idna_says, case.input);
+        if got.as_deref() != case.idna_says {
+            wrong.push(format!(
+                "  {}: over `idna` the layer said {:?}, `idna` alone says {:?}",
+                label(case),
+                got,
+                case.idna_says
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} rows changed when the policy layer was put in front of `idna` itself:\n{}",
+        wrong.len(),
+        CORPUS.len(),
+        wrong.join("\n")
+    );
+}
+
 /// Idempotence, the property `http-ng-proto` depends on: `uri::parse` is
 /// applied again to its own output on every redirect hop, and `sse::open`
 /// resolves a URL that `Client::execute` then resolves again. An A-label

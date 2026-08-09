@@ -211,7 +211,8 @@ fn decode_punycode(payload: &str) -> Option<String> {
 ///    _VerifyDnsLength=false_ — the three columns of this crate's contract
 ///    table — UTS 46 does nothing to an ASCII name but lower-case it. That
 ///    is a claim about `idna`, so it is measured against `idna` rather
-///    than argued: `every_ascii_name_is_its_own_answer` checks all 16 384
+///    than argued: `every_ascii_name_is_its_own_answer_unless_it_has_an_ace_label`
+///    checks all 16 384
 ///    two-byte ASCII strings and 537 824 more from an alphabet chosen to
 ///    be all hyphens, dots, `xn`-prefixes and case.
 /// 5. **Every ASCII label must come back exactly as it went in.** The
