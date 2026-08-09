@@ -6,7 +6,7 @@ use http_ng_core::{Error, ErrorKind, RequestBody};
 use http_ng_proto::redirect::RedirectPolicy;
 
 /// `Tm` is the CLIENT's clock, carried along so that `send`'s response
-/// body can hold the operation's deadline (see [`Deadline`]). It has the
+/// body can hold the operation's deadline (see [`crate::Deadline`]). It has the
 /// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
 /// keeps naming what it always named.
 #[derive(Debug)]
@@ -169,7 +169,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
 
     /// Sends the request.
     ///
-    /// The body comes back wrapped in [`Deadline`], which carries the
+    /// The body comes back wrapped in [`crate::Deadline`], which carries the
     /// client's whole-operation bound past the response head — inert, and
     /// costing one `Option` test per frame, for a client that never set
     /// one.

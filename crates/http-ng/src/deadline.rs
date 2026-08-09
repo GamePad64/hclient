@@ -140,7 +140,7 @@ where
 ///   check would never run a second time.
 ///
 /// The response head, and every redirect hop before it, is bounded
-/// separately by [`within`] in `Client::execute`, so a server that answers
+/// separately by `within` in `Client::execute`, so a server that answers
 /// nothing at all is cut before this type exists.
 ///
 /// **This is still not `between_bytes`**, which stays declared `false` by
@@ -212,7 +212,7 @@ pub struct Deadline<B, Tm: Timer> {
     /// `None` in exactly two situations, and they are not the same one:
     /// no bound was asked for (`total` is `None` too, and constructing a
     /// sleep would be a `tokio::time::sleep` outside a runtime for a
-    /// client that never asked for a clock — see [`within`]); or the
+    /// client that never asked for a clock — see `within`); or the
     /// deadline has already fired, where it is dropped alongside `inner`
     /// so that a completed future is never polled again.
     sleep: Option<Pin<Box<Tm::Sleep>>>,
