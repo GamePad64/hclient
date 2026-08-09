@@ -763,7 +763,26 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             if resp.status() == http::StatusCode::TOO_EARLY
                 && let Some(again) = replay_for_too_early(replay.as_ref())
             {
-                resp = self.send_hop(&hp, again).await?;
+                // RFC 8470 §5.2: the retry MUST NOT itself be sent in early
+                // data. Owed vacuously when this branch was written — no
+                // transport could offer it — and owed for real since
+                // `http-ng-h3` landed, which is why the strip is here and
+                // not left as a comment.
+                //
+                // It is not enough that the handshake completed long ago.
+                // `AllowEarlyData` is part of h3's connection-pool key, so
+                // a marked retry asks for the early-data connection
+                // *specifically*; if that entry has been evicted or closed
+                // by the peer since, the retry opens a fresh connection and
+                // goes into early data again — against the very server that
+                // just refused to risk one. The connection that happens to
+                // still be pooled is an accident, not a guarantee.
+                //
+                // Stripped on a clone: the next hop is a different request
+                // and keeps whatever the caller asked for.
+                let mut retry = hp.clone();
+                retry.extensions.remove::<http_ng_core::AllowEarlyData>();
+                resp = self.send_hop(&retry, again).await?;
             }
 
             let location = resp

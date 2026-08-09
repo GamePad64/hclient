@@ -509,4 +509,54 @@ mod replayability {
             ]
         );
     }
+
+    /// RFC 8470 §5.2: the retry MUST NOT itself be sent in early data.
+    ///
+    /// The duty was owed vacuously when the replay was written — no
+    /// transport here could offer early data — and stopped being vacuous
+    /// the moment `http-ng-h3` landed. The tempting argument that it is
+    /// still vacuous ("the handshake finished long ago, so later streams
+    /// are 1-RTT anyway") holds only of the connection that happens to
+    /// still be pooled: `AllowEarlyData` is part of h3's pool key, so a
+    /// marked replay asks for the early-data connection *specifically*,
+    /// and a fresh one goes into early data again.
+    ///
+    /// The observer is what the transport was handed, not what the client
+    /// believes it sent.
+    #[test]
+    fn the_replay_is_not_marked_for_early_data_even_though_the_first_attempt_was() {
+        let m = MockTransport::new();
+        m.push_response(too_early());
+        m.push_response(ok());
+
+        let c = Client::builder(m).build().expect("client");
+        let mut req = http::Request::builder()
+            .method("POST")
+            .uri("https://a/x")
+            .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
+            .unwrap();
+        req.extensions_mut().insert(http_ng_core::AllowEarlyData);
+
+        let resp = futures_executor::block_on(c.execute(req)).expect("execute");
+        assert_eq!(resp.status(), 200);
+
+        let seen = c.transport().requests();
+        assert_eq!(seen.len(), 2, "the replay went out");
+        assert!(
+            seen[0]
+                .extensions
+                .get::<http_ng_core::AllowEarlyData>()
+                .is_some(),
+            "the caller's mark must survive to the first attempt, or this test \
+             would pass against a client that strips it everywhere"
+        );
+        assert!(
+            seen[1]
+                .extensions
+                .get::<http_ng_core::AllowEarlyData>()
+                .is_none(),
+            "the 425 replay went out still marked for early data — against the \
+             very server that just refused to risk one"
+        );
+    }
 }
