@@ -28,3 +28,18 @@ futures-executor   = "0.3"
 [features]
 # Turn on to reproduce the coherence error quoted in the report.
 overlap = []
+# Gate for the bins that are SUPPOSED to fail to compile. Without it a
+# plain `cargo build` stays green.
+must-fail = []
+
+[[bin]]
+name              = "not_send"
+required-features = ["must-fail"]
+
+[[bin]]
+name              = "transport_send"
+required-features = ["must-fail"]
+
+[[bin]]
+name              = "unnameable"
+required-features = ["must-fail"]
