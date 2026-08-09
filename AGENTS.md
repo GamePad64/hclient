@@ -250,7 +250,7 @@ forbids `no_std` outright — `src/lib.rs` carries a commented-out
 `#![cfg_attr(not(feature = "std"), no_std)]` next to
 `compile_error!("`std` feature currently required, support for `no_std` may
 be added later")` — and `http::{Request, Response, HeaderMap, Uri, Method}`
-appear in the public API of seven crates here, including the sans-io
+appear in the public API of ten crates here, including the sans-io
 `http-ng-proto`. `bytes` is a genuine `no_std` + `alloc` crate, and `url` is
 gone from the graph entirely (see below), so the remaining obstacle is
 `http` itself; a feature flag that claimed otherwise would not build.

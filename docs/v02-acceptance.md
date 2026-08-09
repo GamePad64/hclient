@@ -242,12 +242,18 @@ gate.
 
 ## What remains unverified
 
-- **fetch and WASI declare `ReuseSupport::Supported` with no external
-  observer.** Browsers and `wasi:http` hosts do keep connections alive, and
-  declaring `None` would be a lie in the other direction — but from inside
-  the sandbox we cannot watch sockets, and CI does not check it. This is the
-  one declaration in the set that no test stands behind, and it says so
-  where the value is set.
+- **`http-ng-fetch` declares `ReuseSupport::Supported` with no external
+  observer.** Browsers do keep connections alive and declaring `None` would
+  be a lie in the other direction — but from inside the browser we cannot
+  watch sockets, and CI does not check it. This is the one declaration in
+  the set that no test stands behind, and it says so where the value is set.
+
+  **Not WASI, which was wrongly included here.** `http-ng-wasi`'s live suite
+  already runs a real `TcpListener` on a host thread — the guest is the
+  thing under test, the server is not — so an accept-counting observer is
+  available there on the same terms as the native pool's. It is missing, not
+  impossible; `docs/v03-design.md` promotes it to work rather than leaving
+  it in this list.
 - **Cancellation on a naive embassy backend does not work**, measured: the
   server sees nothing for two seconds, because `TcpSocket::drop` removes the
   socket from smoltcp before the queued FIN can become a packet. W7 must
