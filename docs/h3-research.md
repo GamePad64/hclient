@@ -1015,8 +1015,17 @@ over-claiming this one costs replay exposure rather than a buffered copy.
 that is not currently serving a request. Measured, with its control: same
 gap, same keep-alive, unpolled connection dead, driven connection fine.
 Everything h3 is *for* — multiplexing, no head-of-line blocking, 0-RTT on
-the second visit — pays off across requests, and this seam has no `Spawn`
-that compiles and no reaper for the pool it already has. If the answer is
+the second visit — pays off across requests, and this seam had no `Spawn`
+that compiles and no reaper for the pool it already has. **Both halves of
+that last clause have since changed**, and §1.5's correction box above is
+where the first one is argued: `Spawn` does compile here, and
+`http_ng_native::Native::with_reaper` is a real background task on it —
+opt-in, bounded on `R: Spawn<Reaper<R, I>>`, measured closing an idle
+socket at its deadline on both shipped runtimes
+(`crates/http-ng-native/tests/reaper.rs`). What that does *not* settle is
+the question this paragraph is actually about: a reaper closes idle
+connections, it does not *drive* one, and an h3 connection needs driving
+between requests, not reaping. If the answer is
 "one connection per request", h3 buys a handshake it did not need and the
 crate is not worth building; if the answer is "the caller polls a driver
 handle", that is a change to what `Client` means, and it belongs in the

@@ -281,8 +281,17 @@ cannot reach, since nothing will ever poll the wrapper again. That was
 written down as impossible (`Timer::sleep` was an RPITIT), then as
 possible-but-deferred, and is now done; `crates/http-ng/tests/deadline.rs`
 carries the server that sends a head and then nothing, for ever.
-`between_bytes` is unaffected and still `false`: it bounds the gap between
-two frames and restarts on each, which is a different promise.
+`between_bytes` is a different promise — it bounds the gap between two
+frames and restarts on each — and it landed in the same week, on
+`http-ng-native`: `Native` declares and enforces `first_byte` and
+`between_bytes`, the latter through `IdleTimeout<B, Tm>`, a body wrapper
+holding a sleep of its own. Neither bound implies the other, and a caller
+that sets only one has bounded only one shape: a body dripping a byte
+every 50 ms for an hour passes `between_bytes` and is cut by `total`; a
+transfer that legitimately takes an hour and stalls for ten minutes in the
+middle is the reverse. Measured from outside the client against three
+misbehaving servers, each with a control that must hang with the bound
+unset — `crates/http-ng-native/tests/timeouts.rs`.
 
 **A cookie jar landed in `Client`, behind the `cookies` feature** (off by
 default — `http-ng-cookie`'s compiled-in public suffix list is +77 KiB, and
@@ -399,7 +408,10 @@ reconnection; `act` acceptance.
 pools by default; `Native::without_pool()` restores this v0.1 behaviour);
 streaming request bodies; `first_byte`/
 `between_bytes` timeouts (declared unsupported via `Capabilities`, rather than
-silently unimplemented); a single `getaddrinfo` call for both address families
+silently unimplemented — **since done in v0.2 W4**, declared and enforced in
+one commit, and measured against servers that answer never, fall silent after
+the head, and stall mid-body: `crates/http-ng-native/tests/timeouts.rs`); a
+single `getaddrinfo` call for both address families
 instead of separate v4/v6 slots; h1 upgrade.
 
 ### Vertical 1 (WASI): what's proven

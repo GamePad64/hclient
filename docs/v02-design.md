@@ -133,16 +133,36 @@ caller wrote it instead of a reaper that never fires. What the pool needed to
 be *correct* is still the poll at checkout, which needs no executor at all;
 a reaper is a resource optimisation on top of that.
 
-**One piece of that opt-in has since landed:
+**One piece of that opt-in landed first:
 `http_ng_rt_tokio::TokioHandle`.** The shipped `Tokio` is a ZST that reads
 the runtime out of a thread-local, so `Spawn::spawn` on it panics off a
-runtime thread — which is exactly where a `Native::new_with_reaper` might be
+runtime thread — which is exactly where a reaper constructor might be
 called, since building a client is not usually done from inside `block_on`.
 `TokioHandle` carries a `tokio::runtime::Handle`, so the precondition is a
 `Result` at construction and `spawn` is total. Its module doc measures
 which capabilities that helps and which it does not — `TcpConnect` it
-cannot help, and says why. The reaper constructor itself is still not
-written.
+cannot help, and says why.
+
+**LANDED: `Native::with_reaper(PoolConfig)`**, exactly that shape —
+`R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>`, so a runtime that cannot
+spawn is a compile error at the call site. It takes the `PoolConfig` itself
+rather than sitting next to `pool()`, because `pool()`/`without_pool()`
+install a *new* pool and would leave a reaper started earlier watching the
+old one. `Reaper<R, I>` is a hand-written struct because `Spawn<F>` makes
+the future a type parameter of the trait and an `async` block has no name;
+it holds a `Weak` to the pool, so it does not keep sockets alive past the
+transport and its failed upgrade is what ends the task, and it sleeps until
+the pool's *earliest* deadline (`Pool::reap` returns it) rather than on a
+fixed interval. Measured from outside the client, the server watching its
+own end of the socket under a 300 ms idle timeout: closed 299.7 ms after
+the response on `Tokio`, 300.6 ms on `Smol`, against a control differing in
+that one call that still held the socket 1200 ms later
+(`crates/http-ng-native/tests/reaper.rs`).
+
+One thing no bound can catch, recorded where the code is as well as here:
+**`Spawn::spawn` returns `()`**, so a spawner whose executor nobody drives
+accepts the task, drops it, and cannot say so. A reaper is at most as good
+as the executor under it.
 
 ---
 
@@ -324,7 +344,18 @@ happens.
   error, which would bypass the `ErrorKind` taxonomy entirely.
 - **`first_byte` and `between_bytes` on native.** Declared `false` today,
   honestly. Making them true means enforcing them, and the declaration and
-  the enforcement move in the same commit.
+  the enforcement move in the same commit. **LANDED, and they did.**
+  `first_byte` races the whole of `established::exchange` — the request
+  written and the response head in hand — and is per *attempt*, because an
+  attempt is retried only when hyper hands the request back untouched, so
+  no response was ever waited for on the one that failed; it expires as
+  `Failed::Sent`, which is what stops the retry firing on a request that did
+  go out. `between_bytes` is a body wrapper (`IdleTimeout<B, Tm>`) holding a
+  real `Tm::Sleep`, restarted on every frame — the only shape that can cut a
+  body which has gone *completely* silent, since an elapsed-time wrapper is
+  never polled again once the peer stops. `Transport for Native` gained
+  `R: Clone` for it: the body outlives `execute` and cannot borrow the
+  transport's clock.
 - **A concurrency limit.** Needed the moment a pool exists, and useful
   before it: without one, in-flight requests are unbounded and so are
   sockets. `tower::limit::concurrency` fits, and reserves its permit in
@@ -343,7 +374,7 @@ happens.
   from `tower`. Not written; it matters most to W2, which is where a
   connection count becomes a real resource rather than an incidental one.
 
-**Status: the first and third bullets are done; the middle one is not.**
+**Status: all three bullets are done — the middle one last.**
 `Timeouts.total` shipped as a bound in `Client` — `ClientBuilder::
 total_timeout(clock, d)` for any transport, `Client::total_timeout(d)` for
 a client already carrying the target's default clock — expiring as
@@ -357,13 +388,24 @@ in the type system (`http_ng::NoClock`), not by a runtime refusal. See
 `crates/http-ng/src/deadline.rs`, and `tests/deadline.rs` for the server
 that dribbles for ever.
 
-Two limits of it, both stated in the code rather than only here: a body
-that goes **completely silent** after the head is not cut (nothing polls
-the wrapper again, and the deadline holds no sleep of its own — see
-`Deadline`'s doc comment for why it cannot without making every response
-body `!Send`), which is `between_bytes`'s job, i.e. the middle bullet; and
-there is no per-request override yet, only per-client — a `Client` handle
-with a different bound costs one `Arc` bump, which covers most of the same
+This paragraph used to list two limits of it, and **the first has since
+been lifted twice over, by two different pieces of work in the same
+week**. It read: a body that goes **completely silent** after the head is
+not cut, because nothing polls the wrapper again and the deadline holds no
+sleep of its own — `Deadline`'s doc comment then explained why it could
+not have one without making every response body `!Send`. Both halves are
+gone. `Timer` gained an associated `Sleep` type, so `Deadline` now holds a
+`Pin<Box<Tm::Sleep>>` — a box around a *concrete* type, transparent to
+auto traits — and cuts the silent body itself; and `between_bytes` landed
+in `http-ng-native` (the middle bullet), which cuts the same shape one
+layer down and, unlike `total`, restarts on every frame. Neither makes the
+other redundant: `total` bounds the operation once, `between_bytes` bounds
+each gap, and a transfer that legitimately runs for an hour needs the
+second and not the first.
+
+What is left of the paragraph is the second limit, unchanged: there is no
+per-request override yet, only per-client — a `Client` handle with a
+different bound costs one `Arc` bump, which covers most of the same
 ground.
 
 ---

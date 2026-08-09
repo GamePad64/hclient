@@ -44,10 +44,12 @@ mod established;
 mod h1;
 #[cfg(feature = "http2")]
 mod http2;
+mod idle;
 mod pool;
 
 pub use connect::Conn;
-pub use pool::PoolConfig;
+pub use idle::{BetweenBytesElapsed, IdleTimeout};
+pub use pool::{PoolConfig, Reaper};
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
@@ -55,7 +57,7 @@ use http_ng_core::{
     ReuseSupport, TimeoutSupport, Timeouts, UpgradeSupport,
 };
 use http_ng_dns::Resolve;
-use http_ng_rt::{TcpConnect, TcpOpts, Timer};
+use http_ng_rt::{Spawn, TcpConnect, TcpOpts, Timer};
 use http_ng_tls::TlsConnect;
 use pool::{CheckIn, Pool, PoolKey, Protocol, Security};
 use std::future::Future;
@@ -231,13 +233,28 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             // Happy Eyeballs attempts two different deadlines let through,
             // not merely that a timeout fires.
             connect: true,
-            // There is no response timer here — claiming these phases
-            // would be a capability that lies about its own state. (The
-            // pool arrived in v0.2 W2; these two did not arrive with it,
-            // and `first_byte` in particular is not the pool's idle
-            // timeout wearing a different name.)
-            first_byte: false,
-            between_bytes: false,
+            // Both enforced as of v0.2 W4's middle bullet, and declared
+            // in the same commit that enforced them — the rule that item
+            // was written under. Neither is the pool's idle timeout
+            // wearing a different name: that one bounds a connection
+            // between two exchanges and lives on `PoolConfig`, these two
+            // bound one exchange and travel with the request.
+            //
+            // `first_byte` wraps `established::exchange` — from the
+            // request being handed to a connection until the response head
+            // is in hand — and expires as `Timeout(Phase::FirstByte)`.
+            // `between_bytes` wraps the response body and expires as
+            // `Timeout(Phase::BetweenBytes)`; it races a real sleep rather
+            // than reading a clock on each frame, which is the only shape
+            // that can cut a body that has gone completely silent (see
+            // `idle.rs`'s module doc for the measurement, and
+            // `http_ng::Deadline`'s for the same fact from the other end).
+            //
+            // Both are checked from outside the client, by servers that
+            // send a head and then nothing and that stop mid-body:
+            // `tests/timeouts.rs`.
+            first_byte: true,
+            between_bytes: true,
         };
         caps.upgrade = UpgradeSupport::None;
         Self {
@@ -276,11 +293,125 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         self
     }
 
-    /// Socket parameters for EVERY TCP attempt this transport makes (see
-    /// [`http_ng_rt::TcpOpts`]).
-    pub fn tcp_opts(mut self, opts: TcpOpts) -> Self {
-        self.opts = opts;
+    /// Connection reuse **with a background task that actually closes idle
+    /// connections** when their deadline passes, instead of only refusing
+    /// to hand them out.
+    ///
+    /// Sets the pool exactly as [`Native::pool`] does and additionally
+    /// spawns a [`Reaper`] on `R`. Read [`crate::pool`]'s module doc first:
+    /// without one, [`PoolConfig::idle_timeout`] is a filter applied at
+    /// checkout, so a client that goes quiet holds its sockets until its
+    /// next request or until `Drop`. Measured with the server watching its
+    /// own end of the socket, under a 300 ms idle timeout: closed **299.7
+    /// ms** after the response on the shipped `Tokio` and **300.6 ms** on
+    /// the shipped `Smol`, where the same client with `pool` in place of
+    /// this call still held the connection 1200 ms later
+    /// (`tests/reaper.rs`).
+    ///
+    /// # Why this is not what [`Native::new`] does
+    ///
+    /// Because `Native` is generic over `R`, and **not every `R` has a
+    /// `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has none, and
+    /// W7's embassy backend expects none. A reaper started by `new` would
+    /// assume a capability the type parameter does not promise: a default
+    /// stronger than the truth, which is the one thing this crate refuses
+    /// everywhere else.
+    ///
+    /// This is *not* the reason that used to be recorded here and in two
+    /// documents — "a pool driven by a spawned task does not compile on
+    /// this seam, because `Spawn<F>` requires `F: Send + 'static` and this
+    /// vertical's IO is not `Send`". That was measured and withdrawn:
+    /// `Spawn<F>` declares no bounds whatsoever, and the pool is an
+    /// `Arc<..<Mutex<..>>>`, so a reaper over it is `Send` whenever the
+    /// connection is. See `pool.rs`'s module doc for how the mistake was
+    /// made, which is the reusable part of it.
+    ///
+    /// # The bound is on this constructor, and that is the point
+    ///
+    /// `R: Spawn<Reaper<R, NativeIo<R, T>>>` is a compile error at the
+    /// call site for a runtime that cannot spawn — not a reaper that is
+    /// silently never started. `Spawn<F>` makes the future a type
+    /// parameter of the *trait*, so the bound has to name it, which is why
+    /// [`Reaper`] is a hand-written struct rather than an `async` block.
+    ///
+    /// # Three things it cannot promise
+    ///
+    /// - **A spawner nobody drives.** `Spawn::spawn` returns `()`: an
+    ///   executor that is never run accepts the task, drops it, and has no
+    ///   way to say so. A reaper is at most as good as the executor under
+    ///   it.
+    /// - **Start it last.** [`Native::pool`] and [`Native::without_pool`]
+    ///   install a *new* pool; a reaper started before one of those calls
+    ///   is left holding a weak reference to the old pool, and ends
+    ///   (quietly, and having reaped nothing, because that pool is empty
+    ///   and dropped). This method sets the configuration itself precisely
+    ///   so that `pool()` need not be called alongside it.
+    /// - **Reuse has to be on.** There is nothing to reap in a transport
+    ///   that never keeps a connection, so `PoolConfig` is taken here
+    ///   rather than left to be `None` — `without_pool()` afterwards turns
+    ///   both off together.
+    ///
+    /// `R: Clone` because the task needs its own clock; both shipped
+    /// runtimes are ZSTs and `TokioHandle` is an `Arc`-shaped handle.
+    /// Nothing here touches the runtime before the task is first polled —
+    /// the sleep is built on the executor's thread — so a `Tokio` whose
+    /// ambient runtime is elsewhere fails in `spawn`, where it would
+    /// anyway, rather than half-way through this call. See
+    /// `http_ng_rt_tokio::TokioHandle` for the way round that.
+    pub fn with_reaper(mut self, config: PoolConfig) -> Self
+    where
+        R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>,
+    {
+        self.pool = Pool::new(Some(config));
+        self.caps.connection_reuse = reuse_of(&self.pool);
+        let reaper = Reaper::new(
+            self.rt.clone(),
+            self.pool.downgrade(),
+            self.epoch,
+            config.idle_timeout,
+        );
+        self.rt.spawn(reaper);
         self
+    }
+
+    /// Socket parameters for EVERY TCP attempt this transport makes (see
+    /// [`http_ng_rt::TcpOpts`]) — **refused here, once, if the runtime
+    /// cannot apply them.**
+    ///
+    /// `Result`, not `Self`, and that is the whole point of the method.
+    /// W7 gave [`http_ng_rt::TcpConnect`] an `APPLIES` constant and
+    /// [`TcpOpts::reject_unsupported`], so a runtime that cannot apply an
+    /// option the caller set fails the connect rather than dropping it —
+    /// honest, but it fails once per `connect`, on a request that had
+    /// nothing to do with the mistake, and only if a request is ever made.
+    /// The set of options and the runtime's answer are both known at
+    /// construction, so the answer is given at construction: the same move
+    /// `ClientBuilder::build()` makes for an unsupported capability, for
+    /// the same reason — a configuration that can never work should not
+    /// need traffic to say so.
+    ///
+    /// **The error names the options**, not merely their number: the
+    /// source is a [`http_ng_rt::UnsupportedTcpOpts`], carried inside an
+    /// [`std::io::Error`] exactly as `reject_unsupported` builds it, and
+    /// [`UnsupportedTcpOpts::names`](http_ng_rt::UnsupportedTcpOpts::names)
+    /// lists every offending field rather than the first — a caller who
+    /// fixed the one option a message mentioned would otherwise meet a
+    /// second, identical-looking failure.
+    ///
+    /// This does not replace the per-`connect` refusal, and must not: the
+    /// `APPLIES` contract belongs to the runtime, `connect` is reachable
+    /// without ever going through this method (`connect::connect` takes a
+    /// `&TcpOpts`), and a check here would be a second place deciding a
+    /// question the trait already decides. What it does is move the moment
+    /// of the answer for the one caller that always goes through it.
+    ///
+    /// [`TcpOpts::default`] is all-off, so a transport that never calls
+    /// this method never has anything to refuse, whatever the runtime.
+    pub fn tcp_opts(mut self, opts: TcpOpts) -> Result<Self, Error> {
+        opts.reject_unsupported(<R as TcpConnect>::APPLIES)
+            .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
+        self.opts = opts;
+        Ok(self)
     }
 }
 
@@ -309,7 +440,7 @@ where
 /// builder methods above don't inherit them.
 impl<R, T, D> Native<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
@@ -403,6 +534,89 @@ where
             // a panic on overflow would be a strange way to answer it.
             now.saturating_add(cfg.idle_timeout),
         ))
+    }
+
+    /// Runs one exchange under `Timeouts::first_byte`, or unchanged when
+    /// no bound was set.
+    ///
+    /// # What the bound covers
+    ///
+    /// From the request being handed to a connection to the response
+    /// **head** being in hand — writing the request included. `Timeouts`'
+    /// own doc calls this phase "response-wait", and the head is the
+    /// earliest moment this transport can observe: hyper reports a
+    /// response when it has parsed the status line and the headers, and on
+    /// a real socket those arrive with the first bytes.
+    ///
+    /// # Per attempt, not per `execute`, and that is not a loophole
+    ///
+    /// `execute` may make more than one attempt with the same request
+    /// object, and each gets the whole bound. That is honest rather than
+    /// generous: an attempt is retried **only** when hyper hands the
+    /// request back untouched (`Failed::NotSent` — not a byte of it
+    /// reached the wire), so no response was ever waited for on it. A
+    /// budget shared across attempts would be counting a wait that did not
+    /// happen. Contrast `Timeouts::connect`, which deliberately is one
+    /// budget for the whole Happy Eyeballs race, because there every
+    /// attempt really is spending the caller's time.
+    ///
+    /// # `Failed::Sent`, deliberately
+    ///
+    /// A timeout here means the request went out and nothing came back, so
+    /// the retry above must not fire: resending would not be a retry but a
+    /// second request, with whatever the server has already done to the
+    /// first one still standing. `Failed::Sent` is how that is said, and
+    /// it is the same verdict the enum carries everywhere else.
+    ///
+    /// Expiry drops the exchange future, which drops the connection, which
+    /// closes the socket — `Capabilities::cancel_on_drop` is `Supported`
+    /// on this transport and this is one of the places that relies on it.
+    async fn within_first_byte<F, V>(
+        &self,
+        d: Option<Duration>,
+        fut: F,
+    ) -> Result<V, established::Failed>
+    where
+        F: Future<Output = Result<V, established::Failed>>,
+    {
+        let Some(d) = d else {
+            return fut.await;
+        };
+        let mut fut = std::pin::pin!(fut);
+        // Built only on this branch: `Tokio::sleep` panics outside a
+        // runtime, and a request that asked for nothing must not need one.
+        let mut sleep_fut = std::pin::pin!(self.rt.sleep(d));
+        std::future::poll_fn(|cx| {
+            // The exchange first, so a head that arrived in the same wake
+            // as the deadline expiring is a response rather than a
+            // timeout — the same ordering rule as `with_connect_timeout`
+            // below and `http_ng::within`.
+            if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+                return Poll::Ready(r);
+            }
+            if sleep_fut.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(established::Failed::Sent(Error::new(
+                    ErrorKind::Timeout(Phase::FirstByte),
+                    FirstByteTimedOut(d),
+                ))));
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Puts the `between_bytes` bound round a response body.
+    ///
+    /// One place, called from both attempt paths, because a body that
+    /// escaped it would be a silent hole in a declared capability — and
+    /// `Transport::Body` names the wrapper, so the compiler is what stops
+    /// a third path forgetting.
+    fn bound_body(
+        &self,
+        resp: http::Response<established::NativeBody<NativeIo<R, T>>>,
+        every: Option<Duration>,
+    ) -> http::Response<IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>> {
+        resp.map(|b| IdleTimeout::new(b, self.rt.clone(), every))
     }
 
     /// A pooled connection that is still worth a request, or `None`.
@@ -529,15 +743,30 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
     }
 }
 
+/// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
+/// is the one bound this impl gained for it. `between_bytes` is enforced
+/// by a sleep held **inside the response body**, which outlives `execute`
+/// and therefore cannot borrow this transport's clock — it needs one of
+/// its own. Every runtime in this workspace was already `Clone` (both
+/// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
+/// pointers and says in its own doc that `Native` wants to clone it), so
+/// this pins down a fact rather than adding a restriction.
 impl<R, T, D> Transport for Native<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type Body = established::NativeBody<NativeIo<R, T>>;
+    /// The pooled body, with the `between_bytes` bound wrapped round it.
+    ///
+    /// The order matters and is the mirror of `http_ng::ClientBody`'s: the
+    /// idle bound is the **innermost** wrapper, next to the socket, so it
+    /// measures the gap between reads on the wire. Outside it the client
+    /// may add its own `Deadline` and decompression, neither of which can
+    /// hide a silent peer from this one.
+    type Body = IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>;
     type Error = Error;
 
     async fn execute(
@@ -606,8 +835,9 @@ where
                 continue;
             };
             let checkin = self.checkin_for(&key, now);
-            match established::exchange(est, req, checkin, &uri).await {
-                Ok(resp) => return Ok(resp),
+            let attempt = established::exchange(est, req, checkin, &uri);
+            match self.within_first_byte(timeouts.first_byte, attempt).await {
+                Ok(resp) => return Ok(self.bound_body(resp, timeouts.between_bytes)),
                 // The one retry, and the reason it exists: a pool turns
                 // "the server closed this connection while it was idle"
                 // from something that could not happen into something
@@ -669,8 +899,10 @@ where
         };
 
         let est = handshake_for(conn, protocol).await?;
-        established::exchange(est, req, checkin, &uri)
+        let attempt = established::exchange(est, req, checkin, &uri);
+        self.within_first_byte(timeouts.first_byte, attempt)
             .await
+            .map(|resp| self.bound_body(resp, timeouts.between_bytes))
             .map_err(established::Failed::into_error)
     }
 
@@ -691,6 +923,17 @@ where
         &self.caps
     }
 }
+
+/// The failure [`Native::within_first_byte`] ends in when the timer wins
+/// the race against the exchange.
+///
+/// A named type rather than a string, for the same reason
+/// [`ConnectTimedOut`] is one: a caller must be able to tell the phases
+/// apart with `Error::source().downcast_ref()`, and to read the bound
+/// that was actually in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no response head within the first_byte timeout of {0:?}")]
+pub struct FirstByteTimedOut(pub Duration);
 
 /// The failure [`with_connect_timeout`] ends in when the timer wins the
 /// race against `connect::connect`.

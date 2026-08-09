@@ -15,8 +15,10 @@ do.
 | Dropping an in-flight request stops the exchange | `crates/http-ng-native/tests/cancel.rs`, `crates/http-ng-wasi/tests/live_roundtrip.rs`, `crates/http-ng-fetch/tests/transport.rs` — one per backend, and in every case the **observer is outside the client**: a server reporting the socket closed, a wasmtime guest that outlives its own drop, and the browser rejecting its own promise with `AbortError`, which our side cannot synthesise |
 | Connections are reused | `crates/http-ng-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
 | Two clients with different trust cannot share a socket | `crates/http-ng-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
+| A response that never starts, or a body that goes silent, is cut | `crates/http-ng-native/tests/timeouts.rs` — three misbehaving servers (answers never; head then silence; stalls mid-body), each paired with a control that must **hang** with the bound unset, plus a dribbling server that takes twice the bound in total and must not be cut. `first_byte` and `between_bytes` were declared `true` in the same commit that enforced them, which is the rule v0.2 W4's middle bullet was written under |
 | An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
 | …including a body that goes **completely silent** after the head | the same file — a server that sends the head under a `Content-Length` of ten million and then nothing at all. Nothing will wake the body wrapper, so only the sleep it holds can end this; with the sleep never polled, the bound fires at 6 s instead of 400 ms, off a wake the test harness happened to supply, and the tightness assertion catches it. The observer is the server watching for the client's FIN |
+| Idle connections are closed, not merely refused | `crates/http-ng-native/tests/reaper.rs` — the server watches its own end of the socket and reports when the client's `FIN` arrives: 299.7 ms (`Tokio`) and 300.6 ms (`Smol`) after the response, under a 300 ms idle timeout. Its control differs in one call (`pool` where the claim has `with_reaper`) and requires the socket still be open 1200 ms later |
 | Adding a bound does not change the client's type | `crates/http-ng/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
 | A cookie the server set comes back on the next request | `crates/http-ng/tests/cookies.rs` — a loopback server recording the `Cookie` header it was actually sent, never the jar's view of itself, plus the same server with no jar configured as the control. A jar that stores perfectly and attaches nothing passes every test in `http-ng-cookie` and fails this one |
 | Cookies are handled per redirect hop, not per operation | the same file, in both directions: a `Set-Cookie` on a 302 reaches the very next hop, and a cookie scoped `Path=/one` does **not** ride a same-origin 302 into `/two` — `next_hop` clones the previous hop's headers and `SENSITIVE_HEADERS` strips `Cookie` only across origins, so nothing but re-deriving it per hop gets this right |
@@ -100,20 +102,28 @@ option; it was not an option.
 Recorded, not hidden — and each with the reason, because a bare list invites
 someone to "fix" an item whose absence is the decision.
 
-- **No reaper for idle sockets.** The idle timeout is a filter applied at
-  checkout, not a background task that closes what has gone stale. A client
-  that goes quiet for an hour holds its sockets until the next request or
-  until `Drop`.
+- **No reaper for idle sockets *by default*** — and one on request since
+  this section was written. Without it the idle timeout is a filter applied
+  at checkout, not a background task that closes what has gone stale, and a
+  client that goes quiet for an hour holds its sockets until its next
+  request or until `Drop`.
 
   Not "because `Spawn` cannot run one" — see the correction above, where
-  that claim was measured and withdrawn; a reaper compiles and runs on both
-  shipped runtimes. Because `Native` is generic over `R` and not every `R`
-  can spawn, so starting one in `Native::new` would be a default stronger
-  than the truth. The opt-in shape is a constructor bounded on
-  `R: Spawn<Reaper<R, I>>`, and one piece of it has since landed:
-  `http_ng_rt_tokio::TokioHandle`, whose `spawn` works off a runtime thread
-  where the ZST `Tokio`'s panics — which is where a client is usually
-  constructed. The constructor itself is still not written.
+  that claim was measured and withdrawn. Because `Native` is generic over
+  `R` and not every `R` can spawn, so starting one in `Native::new` would be
+  a default stronger than the truth. `Native::with_reaper(PoolConfig)` is
+  the opt-in, bounded on `R: Clone + Spawn<Reaper<R, NativeIo<R, T>>>` so
+  that a runtime which cannot spawn is a compile error where the caller
+  wrote it. Proven from outside the client — the server watching its own end
+  of the socket, under a 300 ms idle timeout: closed 299.7 ms after the
+  response on `Tokio` and 300.6 ms on `Smol`, against a control differing in
+  that one call which still held the socket 1200 ms later
+  (`crates/http-ng-native/tests/reaper.rs`).
+
+  What it still cannot promise, because no bound can: `Spawn::spawn`
+  returns `()`, so an executor nobody drives accepts the task, drops it, and
+  has no way to report it. A reaper is at most as good as the executor under
+  it.
 - **No pool shared between clients.** Each `Native` owns its own, which is
   why the TLS configuration identity in `PoolKey` is a constant within any
   one pool today. The field is not decoration: it must be in the key before
@@ -148,13 +158,17 @@ someone to "fix" an item whose absence is the decision.
   can therefore never fire, while a wrapper holding the sleep registers
   one.
 
-  **`between_bytes` is still `false` and is still a different thing**, so
-  nothing about that declaration changed: it bounds the GAP between two
-  frames and restarts on each one, catching a stall anywhere in an
-  arbitrarily long transfer, where `total` bounds the operation once from
-  `Client::execute`'s entry. A body dripping a byte every 50 ms for an hour
-  passes `between_bytes` and is cut by `total`; a transfer that legitimately
-  takes an hour and stalls for ten minutes in the middle is the reverse.
+  **`between_bytes` is still a different thing**, and that has not changed
+  either — only its declaration has, in the same week and by a different
+  route (see the row above): it bounds the GAP between two frames and
+  restarts on each one, catching a stall anywhere in an arbitrarily long
+  transfer, where `total` bounds the operation once from `Client::execute`'s
+  entry. A body dripping a byte every 50 ms for an hour passes
+  `between_bytes` and is cut by `total`; a transfer that legitimately takes
+  an hour and stalls for ten minutes in the middle is the reverse. Both are
+  now reachable on `http-ng-native`, and neither replaces the other: a
+  caller that sets only one of them has bounded only one of those two
+  shapes.
 - **A `Client` cannot be given a jar over a caller-supplied public suffix
   list.** `CookieJar<P>` is generic over the list — that is the seam
   `http-ng-cookie` built so a caller can supply a fresher snapshot than
