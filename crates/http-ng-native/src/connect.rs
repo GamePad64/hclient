@@ -701,16 +701,26 @@ mod tests {
     /// called.** The `async fn` this replaces did that for free: an
     /// `async fn` body runs on first poll, not at the call. Happy Eyeballs
     /// creates several of these and polls them selectively, so advancing at
-    /// construction moves the clock for a sleep that is never awaited — five
-    /// `connect::tests` caught exactly that during this change
-    /// (`attempt_staggering_delay_is_respected_through_the_connector` and
-    /// four neighbours). Real clocks are the opposite: `tokio::time::sleep`,
-    /// `async_io::Timer::after` and `setTimeout` all fix their deadline at
-    /// the call, and for them the RPITIT's laziness was the accident.
+    /// construction moves the clock for a sleep that is never awaited.
+    /// Re-measured by mutation rather than left as a recollection —
+    /// advancing eagerly in `sleep` is caught by exactly six tests in this
+    /// module: `attempt_staggering_delay_is_respected_through_the_
+    /// connector`, `connect_returns_success_via_the_wait_branch_not_only_
+    /// via_exhausted`, `families_interleave_through_the_connector`,
+    /// `race_connect_never_requires_send_even_through_the_wait_path`,
+    /// `resolution_delay_is_honored_when_ipv6_is_still_pending`, and
+    /// `a_repolled_fake_sleep_advances_the_clock_once` below. Real clocks
+    /// are the opposite: `tokio::time::sleep`, `async_io::Timer::after` and
+    /// `setTimeout` all fix their deadline at the call, and for them the
+    /// RPITIT's laziness was the accident.
     struct FakeSleep {
         clock: Rc<RefCell<Duration>>,
         /// `Some` until the advance has been applied; `take`n on first
-        /// poll so a re-poll cannot double-count.
+        /// poll so a re-poll cannot double-count. Defensive — nothing in
+        /// the connector re-polls a completed sleep — and therefore held
+        /// by a test of its own (`a_repolled_fake_sleep_advances_the_clock
+        /// _once`), because a mutant replacing the `take` with a peek
+        /// survived the whole suite otherwise.
         d: Option<Duration>,
     }
 
@@ -740,6 +750,50 @@ mod tests {
         fn elapsed_since(&self, earlier: Duration) -> Duration {
             *self.clock.borrow() - earlier
         }
+    }
+
+    /// Two properties of [`FakeSleep`] in one test, because they are two
+    /// halves of the same decision and a mutation of either must fail
+    /// somewhere:
+    ///
+    /// 1. Constructing the sleep must NOT move the clock. Ten tests in
+    ///    this module already fail if it does, but they fail for reasons
+    ///    about Happy Eyeballs; this one fails for the reason itself.
+    /// 2. A second poll must not advance it again. Nothing in the
+    ///    connector re-polls a finished sleep, so no other test covers
+    ///    this — verified by mutation: replacing `me.d.take()` with a
+    ///    non-consuming read survived the entire workspace suite before
+    ///    this test existed.
+    #[test]
+    fn a_repolled_fake_sleep_advances_the_clock_once() {
+        let rt = FakeRt::new([]);
+        let clock = Rc::clone(&rt.clock);
+
+        let mut s = rt.sleep(Duration::from_millis(250));
+        assert_eq!(
+            *clock.borrow(),
+            Duration::ZERO,
+            "constructing the sleep moved the virtual clock; it must only \
+             move when the sleep is actually polled"
+        );
+
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert_eq!(Pin::new(&mut s).poll(&mut cx), Poll::Ready(()));
+        assert_eq!(
+            *clock.borrow(),
+            Duration::from_millis(250),
+            "the first poll did not advance the virtual clock"
+        );
+
+        // Polling a completed future is a contract violation in general;
+        // this one documents that it tolerates it, so that is what is
+        // checked.
+        assert_eq!(Pin::new(&mut s).poll(&mut cx), Poll::Ready(()));
+        assert_eq!(
+            *clock.borrow(),
+            Duration::from_millis(250),
+            "a second poll advanced the virtual clock again"
+        );
     }
 
     impl TcpConnect for FakeRt {
