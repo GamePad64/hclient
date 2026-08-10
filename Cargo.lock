@@ -1207,15 +1207,18 @@ dependencies = [
  "bytes",
  "dns-message-parser",
  "futures-core",
- "futures-executor",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
  "http-ng-core",
  "http-ng-dns",
+ "http-ng-native",
+ "http-ng-rt-tokio",
+ "http-ng-tls",
  "rstest",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
