@@ -380,3 +380,249 @@ someone to "fix" an item whose absence is the decision.
   wide margins, and the multiplexing test's 450 ms threshold against two
   300 ms requests has wider ones. Neither is a benchmark; both would rather
   pass on a loaded runner than measure anything precisely.
+
+---
+
+# v0.3 W3 — DNS over HTTPS
+
+Written as W3 landed, on the same terms as everything above it: what is
+claimed, what proves it, and — at the same length — what is deliberately
+absent and what nobody has checked.
+
+`crates/http-ng-dns-doh`, a `Resolve` over any `Transport`. 22 crates in
+`cargo tree -e normal`, **no `tokio`, no `hyper`, no `h2`** — measured;
+the runtime and the HTTP stack arrive with whatever `C` the caller supplies,
+which for the tests here is `Native<Tokio, NoTls, IpLiteralOnly>` and for a
+browser build could be `Fetch`.
+
+## The bootstrap, which is the section's own warning
+
+§W3's title says the bootstrap is the actual problem, and the four shapes it
+lists are answered by **which constructor compiles**, not by prose:
+
+| §W3 shape | how this crate says it |
+|---|---|
+| 1. an IP-literal endpoint | `Doh::pinned(transport, uri)` — checks the host is a literal, refuses a name, and names the other constructor in the error |
+| 2. the system resolver, once, for the DoH host | `Doh::bootstrapped(transport, uri)` over a transport carrying `SystemDns` |
+| 3. caller-supplied bootstrap addresses | the same constructor, over a transport carrying a resolver that holds them. This crate cannot tell 2 from 3 and does not need to: both are "the inner transport knows how" |
+| 4. RFC 9461 `dohpath` | **not done.** Circular for the first lookup. `http_ng_dns::svcb::RECOGNISED_KEYS` still excludes key 7, and a record making it mandatory is still one this client refuses to use — `a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept` |
+
+The two constructors **partition** the space — `pinned` refuses a name,
+`bootstrapped` refuses a literal — so which one compiles is a statement
+about the URI rather than a name someone chose. A URI change that quietly
+turns a bootstrap-free deployment into a bootstrapped one is an error at
+construction.
+
+**The cost of pinning is real and this crate cannot mitigate it**, and that
+is written on `Doh::pinned` rather than here: a pinned address that stops
+answering leaves the resolver with nothing to ask, and there is no discovery
+to route around it. Pair it with a fallback, or expect to ship a new
+address.
+
+## What resolves the DoH server's name, and what makes the request
+
+**`C` is a `Transport`, never an `http_ng::Client`, and that is the whole
+answer to §W3's *"a resolver's client is not the user's client"*.** A cookie
+jar, a redirect policy and an `Authorization` header are all things `Client`
+owns and `Transport` has never heard of. So the first bug report §W3
+predicted — a cookie sent to a DNS provider — is not merely made awkward
+here; it does not typecheck. The costs of the choice, both stated where they
+bite: there is no `total` timeout (that is `Client`'s, and `Timeouts` has no
+such field), and no redirect following (which DoH does not need).
+
+## The cycle: §W3's unverified type-level claim, now measured
+
+§W3 predicted a compile error and asked for the error to be read.
+`crates/http-ng-dns-doh/tests/no_cycle.rs` carries four transcripts, each
+produced by putting the definition in a file and building:
+
+| written | rustc |
+|---|---|
+| `type Cycle = Native<Tokio, NoTls, Doh<Cycle>>;` | **E0391** cycle detected when expanding type alias |
+| `struct Cycle(Native<Tokio, NoTls, Doh<Cycle>>);` | **E0072** recursive type has infinite size, *"recursive without indirection"* |
+| the `Box` rustc's own `help` then suggests | **E0277** `Box<Cycle>: Transport` is not satisfied — *"required for `Doh<Box<Cycle>>` to implement `Resolve`"*. The recursive type becomes definable and stops being a resolver |
+| `Arc<dyn Resolve>`, the hatch §W3 named | **E0038** not dyn compatible, because `lookup_ipv4` returns an `impl Trait`. Same for `dyn Transport`, for the same reason on `execute` |
+
+So the claim holds, in every spelling, at compile time. **The last row is an
+accident rather than a promise**, and the file says so: `impl Stream` was
+chosen for RFC 8305, not to shut this door. Two ordinary changes *elsewhere*
+would reopen it — an object-safe `Resolve` with boxed streams, or a blanket
+`impl<T: Transport> Transport for Box<T>` — and neither is a change to this
+crate, which is why the note lives where someone might read it.
+
+The finite composition is not forbidden and is checked by running:
+`Native<Tokio, NoTls, Doh<Native<Tokio, NoTls, IpLiteralOnly>>>` resolves a
+name over a loopback DoH server, and three levels compose too, which is the
+real shape of "DoH bootstrapped through a second, pinned DoH endpoint".
+
+## Fail closed, or fail open — in the type
+
+`Doh<C>` is `Doh<C, NoFallback>` and **fails closed**.
+`Doh::with_fallback(r)` gives `Doh<C, F>`, and that type is written into
+every transport holding it: `Native<R, T, Doh<C, SystemDns<R>>>` says on its
+face that this client resolves through the system when its DoH server is
+down.
+
+Neither is a good default for everyone, which is why neither is silent.
+Failing closed leaves a working network unusable. Failing open is a
+downgrade an attacker mounts for the price of one dropped connection — deny
+the DoH endpoint, and every subsequent lookup moves to the plaintext
+resolver the caller was avoiding.
+
+The rule, and the half that is easy to get wrong: a **successful** DoH
+answer is never second-guessed. NXDOMAIN and an empty answer section are
+answers, and asking a fallback for a second opinion on them would be that
+same downgrade on every lookup rather than only under attack. Two tests
+assert it, and the stub fallback counts its own calls so that "did not
+consult" is observed rather than inferred.
+
+## Claims and proofs
+
+Every test named below observes from **outside**: a loopback HTTP server
+that knows nothing about this crate, building DNS wire format by hand, and
+recording what arrived on the socket. Nothing reads a field of `Doh`.
+
+| claim | proof |
+|---|---|
+| `dns-message-parser` can **encode** a query, not only decode a response (§W3's unverified codec premise) | `tests/query_bytes.rs` — the expected bytes are written out by hand from RFC 1035 §4.1 and compared against what the server received. Not produced by the library under test |
+| The DNS ID is zero (RFC 8484 §4.1) | `two_identical_lookups_produce_byte_identical_queries` — two identical lookups must be byte-identical, which a randomised ID would take away |
+| POST, to the endpoint's own path, with both media types | `the_request_is_a_post_to_the_endpoints_own_path_with_both_media_types` — the path matters: dropping it works against most public endpoints and fails against `https://dns.example/prefix/dns-query` |
+| "Asked and found nothing" stays apart from "could not ask" | `tests/lookup.rs` — no records of the type and NXDOMAIN are **empty streams**; SERVFAIL, `TC`, a clear `QR`, a mismatched question, a non-200, a wrong content-type and an undecodable body are **errors** |
+| The TTL is the record's own, per record | `each_address_carries_the_ttl_that_came_with_its_own_record` — two records with **different** TTLs, so an implementation taking the RRset minimum or the first record's value fails it. This is the first consumer of `ResolvedAddr::ttl` §W3 asked for |
+| A CNAME chain does not break an aliased host | `addresses_behind_a_cname_are_returned_and_the_cname_is_stepped_over` — the owner name is deliberately not compared, and this test is what stops the check that would look like hardening and break every CDN-hosted origin |
+| **`supports_svcb()` is `true`, and the capability is real** | `tests/svcb.rs` — the flag is never asserted on its own. A ServiceMode record round-trips all six fields `SvcbEndpoint` holds, including the ECHConfigList **with RFC 9460 §7.3's redundant length prefix intact**, which is the form rustls parses |
+| RFC 9460 §8 is applied, both halves | `a_record_making_dohpath_mandatory_is_ignored_and_the_usable_one_is_kept` (ignore one record, keep the RRSet) and `a_mandatory_key_the_record_does_not_carry_is_an_error` |
+| An IP-literal URL still connects | `tests/bounds.rs` — `http_ng_native::connect` hands `Uri::host()` to the resolver unconditionally, so `192.0.2.1` arrives here as a *name*. The assertion is that **no request reached the server**. See the defect below |
+| A server does not get to choose how long we wait | `a_first_byte_bound_ends_a_lookup_a_silent_server_would_not`, with the control that the same silent server **hangs** with every bound unset, and a third test that the default is finite |
+| A server does not get to choose how many bytes we read | `a_response_larger_than_a_dns_message_can_be_is_refused` — `MAX_RESPONSE_BYTES` is the largest a DNS message can be, so the cut can only fall on a body that was never an answer |
+
+## One defect found by asking what the mutations were not covering
+
+**An IP literal was being sent to the DoH server as a name**, which made
+`client.get("https://192.0.2.1/")` fail to connect at all.
+
+Found by reading `http_ng_native::connect` rather than by a bug report: it
+calls `dns.lookup_ipv4(host)` on whatever `Uri::host()` returned, with no
+literal shortcut above the `Resolve` seam — which is exactly why
+`IpLiteralOnly` exists as a *resolver* rather than as a branch in the
+connector. A DoH resolver that queried for the "name" `192.0.2.1` gets
+NXDOMAIN from any honest server.
+
+`Doh` now answers a literal from the string, on `IpLiteralOnly`'s rule: the
+literal goes to its own family's stream, the other family gets an empty one.
+The bracket stripping that had been in `encode_query` went with it — a
+literal no longer reaches that function, so all the rule could still do was
+turn `[foo]` into a query for `foo`.
+
+## The RFC 9460 client semantics moved crates
+
+`RawBinding`, `RawParam` and `endpoint_from_binding` were `pub(crate)` in
+`http-ng-dns-system/src/svcb.rs`. That file's own doc had already given the
+reason they could not stay: the rules are identical on every platform and
+are the part most likely to be got subtly wrong. It made that argument about
+two backends inside one crate; `http-ng-dns-doh` is a third, in another
+crate, decoding the same wire format. They are now `http_ng_dns::svcb`,
+behind a **`codec` feature** so that a build using only `IpLiteralOnly`
+still links no DNS decoder — measured, `cargo tree -e normal` for
+`http-ng-dns`: **13 crates without it, 16 with**. `http-ng-dns-system`'s
+126 tests are untouched and green; its `SvcbLookupError::MandatoryKeyAbsent`
+survives as a mapping at the call site, so nothing outside that crate can
+tell the move happened.
+
+## Mutation testing
+
+37 hand-applied mutations, anchor counts checked before each run so that one
+matching zero or several places is reported rather than scored — the
+convention W1's h3 work established. The script is
+`crates/http-ng-dns-doh/mutations.py`; it reverts each edit whether the run
+passes or fails.
+
+**Three survived, and none of them was answered by adjusting a fixture.**
+
+- **M33, the echoed question's CLASS is not checked — SURVIVED.** Every
+  fixture sent `IN`, so nothing could tell whether the field was read.
+  `an_answer_in_a_different_class_is_refused` sends `CH`; it needed a
+  message builder that lets the class be chosen, which the fixtures did not
+  have.
+- **M35, the trailing dot on the asked-for name is not stripped before
+  comparison — SURVIVED.** No test passed a fully-qualified name.
+  `https://example.com./` is a legal URL and `Uri::host()` hands the dot
+  through, so without the strip every fully-qualified host became a
+  `QuestionMismatch`.
+  `a_fully_qualified_name_with_a_trailing_dot_resolves` is the test.
+- **M37, `recover`'s `Https` arm — SURVIVED, and could not have done
+  otherwise.** `lookup_svcb` deliberately does not go through `recover`, so
+  that arm was unreachable, and an unreachable arm cannot be killed by any
+  test. Answered by **deleting** it: `recover` and `addrs` now take a
+  `Family` (V4/V6) rather than a `Query`, which is what both callers always
+  meant. The replacement mutation — V6 consulting the fallback's V4 stream —
+  is killed.
+
+The four §W3 named as the minimum, and what killed each:
+
+| mutation | verdict | killed by |
+|---|---|---|
+| the response is parsed but the answer ignored | KILLED | `every_a_record_in_the_answer_reaches_the_caller` and eleven others |
+| the TTL is ignored (`ttl: None`) | KILLED | `each_address_carries_the_ttl_that_came_with_its_own_record` |
+| an error RCODE is treated as an empty answer | KILLED | `servfail_is_an_error_and_not_an_empty_stream`, `a_servfail_also_reaches_the_fallback` |
+| `supports_svcb` flipped to `false` | KILLED | `a_service_mode_record_round_trips_every_field_svcbendpoint_holds`, `a_name_with_no_https_record_is_an_empty_stream_not_an_error` |
+
+## Deliberately not done
+
+- **No cache.** Every `lookup_*` is an HTTP request. Filling
+  `ResolvedAddr::ttl` is this crate's job; deciding what to keep and for how
+  long is a caller's, and a cache built in here would be one no caller could
+  turn off. §W3 warns that DoH is the first place a stale-address bug could
+  be ours; not caching is how that stays true of a later, explicit cache
+  rather than of this one.
+- **No GET.** RFC 8484 §4.1 defines both and a server must support both.
+  GET's base64url `?dns=` makes a query cacheable by intermediaries, and
+  needs a base64 encoder this workspace does not have; an intermediary cache
+  is not obviously what a DNS-over-HTTPS deployment wants anyway.
+- **No RFC 9461 `dohpath` discovery** — see the bootstrap table.
+- **No `Client`, and therefore no `total` timeout** — see above.
+- **No wasm build of this crate has been attempted.** §W3 calls the wasm
+  case "the one that would justify the whole crate, and the one nobody can
+  test cheaply", and nothing here changes that. There is no `#[cfg]` in the
+  crate and its dependencies are all wasm-capable, so it is *expected* to
+  build against `http_ng_fetch::Fetch` — expected, not measured.
+
+## What W3 leaves unverified
+
+- **No live DoH endpoint has been queried.** Every test is against a
+  loopback fixture. What that leaves untested is exactly §W3's own
+  unverified row: **whether a certificate with an IP SAN validates through
+  `rustls-platform-verifier`** on Linux, macOS and Windows. Nothing in this
+  crate performs a handshake, so nothing in it can settle that; it belongs to
+  whichever `TlsConnect` the transport carries, and the check is one live
+  request per platform. Until then `Doh::pinned` against a public resolver
+  is unproven on all three.
+- **The `https` requirement is enforced with one exception, and only one
+  half of it is exercised by a live request.** Cleartext is refused unless
+  the host is a loopback literal — the local-DoH-proxy shape, and what makes
+  these tests cheap. Every test therefore runs over `http://127.0.0.1`, so
+  the crate has never actually spoken to a TLS DoH endpoint in CI.
+- **No total bound on one query.** `Doh::timeouts` sets `connect`,
+  `first_byte` and `between_bytes` — everything `Timeouts` can express. A
+  server that answers the head promptly and then dribbles the body one byte
+  per `between_bytes` interval is bounded only by `MAX_RESPONSE_BYTES` times
+  that interval. Closing it needs a `Timer` in this crate, which `Resolve`
+  has no seam for; recorded rather than hidden, and written on the crate's
+  module doc as well as here.
+- **The DoH transport's `Capabilities` are not consulted.** `Doh` sets
+  `Timeouts` in the request's extensions and a transport that reports
+  `TimeoutSupport::None` will ignore them silently. A `build()`-time refusal,
+  on the shape `ClientBuilder` already uses for `owns_cookie_jar`, would be
+  the honest version; it is not written.
+- **A DoH answer's own TTL is not used for anything, by anyone.**
+  `ResolvedAddr::ttl` is now filled by a second backend and still read by
+  nothing in this workspace. That is one step better than v0.2's position —
+  the value is checked to be the server's, per record — and no better.
+- **`SvcbEndpoint` still carries no TTL and no `no-default-alpn`.** Both
+  were asked for by the W2 consumer while this work was in flight, and both
+  are visible from here (the record's TTL is decoded, and `RawParam::
+  NoDefaultAlpn` reaches `endpoint_from_binding` and is dropped). Not added,
+  because it is a public struct that three backends construct and one
+  read-only-to-this-task crate consumes, and doing it half-way — filled by
+  DoH, `None` from hickory and the system — would be exactly the capability
+  lie this project has caught four times.

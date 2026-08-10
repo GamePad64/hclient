@@ -169,9 +169,9 @@ const DNS_MESSAGE: &str = "application/dns-message";
 /// not silently become the slowest thing in a connection attempt. Override
 /// with [`Doh::timeouts`].
 const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
-    connect: Some(Duration::from_secs(2)),
-    first_byte: Some(Duration::from_secs(5)),
-    between_bytes: Some(Duration::from_secs(5)),
+    connect: Some(Duration::from_secs(120)),
+    first_byte: Some(Duration::from_secs(120)),
+    between_bytes: Some(Duration::from_secs(120)),
 };
 
 /// The absence of a fallback resolver, as a type.
@@ -426,10 +426,7 @@ where
         let mut req = http::Request::new(RequestBody::Full(body));
         *req.method_mut() = http::Method::POST;
         *req.uri_mut() = self.endpoint.clone();
-        req.headers_mut().insert(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static(DNS_MESSAGE),
-        );
+
         // RFC 8484 §4.1: a client SHOULD say what it can read back. A
         // server that answers with anything else is refused below rather
         // than parsed hopefully.
