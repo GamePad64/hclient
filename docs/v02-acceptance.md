@@ -225,6 +225,85 @@ runs. It has nothing to do with h2 (`http2.rs` is only reachable when ALPN
 selects `h2`, and this test speaks `http://`), but anyone doing mutation
 work in this crate will meet it and should not read it as a kill.
 
+## The flake above, run down: the fixture, and one sentence of ours it caught
+
+**It was the fixture, and the pool is not at fault — but the argument had
+to be made from a captured failure, not from reading the code.** Both were
+done, in that order.
+
+*Captured.* 150 runs of the test on its own, with no load added, produced
+nothing; the same loop with the machine deliberately busy (40 spinners on
+28 cores) failed on run **103**, at `tests/pool.rs`'s `get_ok`:
+`Error { kind: Connect, source: hyper::Error(Io, Os { code: 104, kind:
+ConnectionReset }) }`, the whole test process gone in **0.564 s** against
+a nominal 0.71 s — so the fourth request failed the instant it was issued
+rather than waiting for an answer.
+
+*The state at that instant, measured rather than assumed.* An instrumented
+copy of the test read `/proc/net/tcp` during the wait: on a healthy run the
+exhausted connection sits in **CLOSE_WAIT** — the client is holding a
+socket whose peer has closed — while the live one is ESTABLISHED. That is
+the state the test is named for, and it confirms the walk is real: the
+pool does hold a dead entry and does reach the live one behind it. (That
+copy never failed in 300 loaded runs of its own; reading `/proc` before
+the request is exactly the kind of delay that hides this race, which is
+itself a hint about the cause.)
+
+*The cause.* `serve` writes the response that exhausts the connection and
+drops the socket a few instructions later — two operations by a thread the
+OS may deschedule between them. The test waited a wall-clock 100 ms for
+the second one. Under load that is not always enough, and a checkout
+landing in the gap finds a connection which is **not yet closed** — which
+no poll can distinguish from a live one, because there is nothing to see.
+The request then goes out on it; the server closes with those bytes still
+unread; its kernel answers `RST`; and hyper reports the failure with the
+request already on the wire.
+
+*Proved deterministically before anything was changed.* A copy of the
+fixture with a 150 ms delay between the last response and the close
+produces that error to the byte, **five runs out of five**, in 0.564 s —
+the captured failure's own duration — against a control differing only in
+that delay being zero, which passes.
+
+**The fix is a barrier, not a longer sleep.** `Behaviour` gains `closes`,
+an observer the server bumps *after* dropping the socket, and the test
+waits on it before the 100 ms sleep, which is now slack after a fact
+rather than a guess at one. `Behaviour::close_delay` keeps that honest:
+this test's server now closes **300 ms late on purpose**, so deleting the
+barrier fails it **8 runs out of 8** instead of one in forty. The same
+barrier is on the two neighbours with the identical race
+(`a_connection_the_server_closed_while_idle_is_not_handed_out`,
+`a_request_that_loses_the_race_is_retried_on_a_fresh_connection`), where
+it is not separately measured and the code says so.
+
+Three mutations, against an anchor of **124 tests** in `cargo nextest run
+-p http-ng-native --all-features`, all 124 green before each:
+
+| mutation | verdict | killed by |
+|---|---|---|
+| `Native::checkout` stops walking — one candidate, then `None` | killed | `checkout_walks_past_a_dead_connection_to_a_live_one` alone, on the count: `left: 3, right: 2` |
+| `Native::checkout` drops the liveness check — `self.pool.take(key, now)` | killed | the same test the same way, **and** `a_request_that_loses_the_race_is_retried_on_a_fresh_connection` |
+| the new barrier deleted from the walking test | killed | itself, 8 runs out of 8, with the flake's own `ConnectionReset` |
+
+The second mutation is the one that says the fixture change did not cost
+the test its subject: with the barrier in place it is still the walk, and
+still the count, that fails. `a_connection_the_server_closed_while_idle_is_not_handed_out`
+survives that mutation, which is not a gap — its pool holds one
+connection, so being handed the dead one and retrying reaches the same
+two accepts, exactly as `pool.rs`'s doc comment says.
+
+**And the sentence it caught.** `pool.rs`'s module doc said the retry is
+"the reason this pool does not make previously reliable requests fail
+intermittently", and the bullet below says the race is "recoverable rather
+than visible". Both are true of the window the retry covers and false of
+the one beyond it: the retry fires on `Failed::NotSent`, which is hyper
+handing the request back because not a byte of it reached the wire. Once
+the bytes are out, a reset is `Failed::Sent` and the caller sees it — and
+that is a **deliberate** at-most-once choice, not an oversight, because
+resending a request a server may already have acted on needs a notion of
+method safety this codebase does not have (the same notion `docs/h3-research.md`
+§3.5 declines for 0-RTT). What is corrected is the claim, not the code.
+
 ## Deliberately not done in v0.2
 
 Recorded, not hidden — and each with the reason, because a bare list invites
@@ -260,7 +339,16 @@ someone to "fix" an item whose absence is the decision.
 - **A nanosecond race survives.** A server can close a connection between
   our checkout poll and our write. Every HTTP/1 pool has this, hyper and
   reqwest included; the retry is what makes it recoverable rather than
-  visible.
+  visible — **for as long as hyper can still hand the request back**, which
+  is the correction the flake above forced. `Failed::NotSent` is that
+  window: not a byte on the wire, so the request is resent because it is
+  the same request, not a second one. Past it, a reset is `Failed::Sent`
+  and the caller sees the error. That is at-most-once on purpose — resending
+  bytes a server may have acted on is a promise this client does not make,
+  and it has no notion of method safety with which to make it selectively.
+  Measured, not reasoned: a fixture whose server closes 150 ms after its
+  last response fails the request with
+  `Connect / hyper::Error(Io, ConnectionReset)`, five runs out of five.
 - ~~**`total` does not cut a body that goes completely silent after the
   head.**~~ **Done. It cuts it now**, and the row is in the claims table
   above. The bullet is kept rather than deleted because it was wrong twice
@@ -391,8 +479,19 @@ gate.
   discard: deleting both of `http2::exchange`'s pre-head `Failed::NotSent`
   returns leaves all 124 tests in `http-ng-native` green. The HTTP/1
   equivalent is pinned (`pool.rs`'s
-  `checkout_walks_past_a_dead_connection_to_a_live_one`, itself flaky — see
-  the section above); h2 has no counterpart.
+  `checkout_walks_past_a_dead_connection_to_a_live_one`, ~~itself flaky~~ —
+  the flake was its fixture and is fixed, see the section above); h2 has no
+  counterpart.
+
+  **The h1 work makes the h2 counterpart cheap, and it is deliberately not
+  built here.** `Behaviour::closes` is the piece that was missing — an h2
+  version needs the same "the server has closed, not `sleep` and hope"
+  barrier or it inherits exactly the flake just run down — and the rest is
+  `tests/http2.rs`'s existing `h2::server` fixture doing what
+  `responses_before_close: Some(2)` does here, on a `GOAWAY`-then-close
+  instead of a bare `FIN`. Named rather than done, because it is new
+  coverage for the h2 pool and belongs with whoever owns that, not smuggled
+  into a fixture fix.
 - **Cancellation on a naive embassy backend does not work**, measured: the
   server sees nothing for two seconds, because `TcpSocket::drop` removes the
   socket from smoltcp before the queued FIN can become a packet. W7 must

@@ -39,7 +39,7 @@ use std::time::Duration;
 const BOUND: Duration = Duration::from_secs(30);
 
 /// What the fixture server does, beyond answering.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Behaviour {
     /// Close the connection once it has served this many responses, the
     /// way a server whose keep-alive budget has run out does. Note this is
@@ -55,6 +55,29 @@ struct Behaviour {
     /// `Connection` future completes rather than the socket simply going
     /// quiet.
     connection_close_header: bool,
+    /// Wait this long between the last response and dropping the socket.
+    ///
+    /// A scheduler delay, made explicit. `responses_before_close` writes a
+    /// response and closes in the next few instructions, and on an idle
+    /// machine the `FIN` therefore follows the response by microseconds —
+    /// which is what let every test below wait for the close with a
+    /// `sleep` and get away with it. It is not a guarantee: the two are
+    /// separate operations by a thread the OS may deschedule between them,
+    /// and under load it does. See [`closes`](Behaviour::closes).
+    close_delay: Duration,
+    /// The second observer: bumped once per socket **after** it has been
+    /// dropped.
+    ///
+    /// An observer rather than a behaviour, and it lives in this struct
+    /// only because this struct is what already reaches [`serve`].
+    /// `accepted` says how many connections the server took; this says how
+    /// many it has finished with, which is the fact a test needs before it
+    /// may call a pooled connection dead. Waiting on it is the difference
+    /// between "the server has probably closed by now" and "the server has
+    /// closed" — and the first of those is a race the client loses as a
+    /// `ConnectionReset`, see
+    /// [`checkout_walks_past_a_dead_connection_to_a_live_one`].
+    closes: Option<Arc<AtomicUsize>>,
 }
 
 /// The observer: a server that counts the connections it accepts and can
@@ -71,6 +94,7 @@ fn counting_server(behaviour: Behaviour) -> (SocketAddr, Arc<AtomicUsize>) {
         for sock in listener.incoming() {
             let Ok(sock) = sock else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
+            let behaviour = behaviour.clone();
             std::thread::spawn(move || serve(sock, behaviour));
         }
     });
@@ -112,9 +136,32 @@ fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
         }
         served += 1;
         if Some(served) == behaviour.responses_before_close {
+            std::thread::sleep(behaviour.close_delay);
+            // Dropped explicitly, and the counter bumped only afterwards,
+            // so a test that has seen the bump has seen a socket that is
+            // shut — not one that is about to be.
+            drop(sock);
+            if let Some(closes) = &behaviour.closes {
+                closes.fetch_add(1, Ordering::SeqCst);
+            }
             return;
         }
     }
+}
+
+/// Waits for the server to report `n` closed sockets.
+///
+/// The counterpart to [`Behaviour::closes`]. Bounded, and the bound is a
+/// failure rather than a `return`: a test whose premise never arrived has
+/// not passed.
+async fn server_has_closed(closes: &AtomicUsize, n: usize) {
+    tokio::time::timeout(BOUND, async {
+        while closes.load(Ordering::SeqCst) < n {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the server never closed {n} connection(s)"));
 }
 
 fn native() -> Native<Tokio, Rustls, SystemDns<Tokio>> {
@@ -224,13 +271,22 @@ async fn a_connection_past_its_idle_timeout_is_not_reused() {
 /// request would be written onto a socket the server has already closed.
 #[tokio::test]
 async fn a_connection_the_server_closed_while_idle_is_not_handed_out() {
+    let closes = Arc::new(AtomicUsize::new(0));
     let (addr, accepted) = counting_server(Behaviour {
         responses_before_close: Some(1),
+        closes: Some(Arc::clone(&closes)),
         ..Behaviour::default()
     });
     let client = Client::builder(native()).build().unwrap();
 
     get_ok(&client, addr).await;
+    // The same barrier as
+    // `checkout_walks_past_a_dead_connection_to_a_live_one`, and for the
+    // same reason: this test's premise is a socket the server has closed,
+    // and "the response arrived" does not imply it. Not separately
+    // measured here — this test has never been seen to fail — but the race
+    // is the identical one and costs nothing to remove.
+    server_has_closed(&closes, 1).await;
     // The `FIN` is on its way; nothing polls the connection, so nobody has
     // read it yet. Long enough that it has certainly arrived at the kernel,
     // which is what makes the checkout poll's job the deterministic one.
@@ -260,14 +316,44 @@ async fn a_connection_the_server_closed_while_idle_is_not_handed_out() {
 /// accepts a third connection. Without the checkout poll the dead one is
 /// handed the request, hands it back, and a third connection is opened
 /// while the live one stays parked, unused.
+///
+/// # The dead one has to be dead, and waiting is not the same as knowing
+///
+/// This test was flaky on `main` — roughly one run in forty under load,
+/// always `Connect / hyper::Error(Io, ConnectionReset)` — and the cause
+/// was in this fixture rather than in the pool. "Already closed by the
+/// server" used to be arranged by sleeping 100 ms after the response that
+/// exhausts the connection, on the reasoning that a `FIN` follows its
+/// response by microseconds. It does, on an idle machine. Writing the
+/// response and dropping the socket are two operations by a thread the OS
+/// may deschedule between them, though, and under load it does — and a
+/// checkout that lands in that gap finds a connection which is *not yet*
+/// closed, which no poll can tell from a live one. The request then goes
+/// out on it, the server closes with those bytes still unread, its kernel
+/// answers `RST`, and hyper reports the failure with the request already
+/// on the wire: `Failed::Sent`, which the pool's retry deliberately does
+/// not cover, because resending bytes a server may have acted on is a
+/// different promise. Reproduced deterministically by giving the server's
+/// close a 150 ms delay: the same error, five runs out of five, against a
+/// control with the close prompt that passes.
+///
+/// So the wait below is on [`Behaviour::closes`] — the server saying it
+/// has dropped the socket — and only then on the clock, for the `FIN` to
+/// be visible to the runtime. [`Behaviour::close_delay`] is what keeps
+/// that honest: the server here closes 300 ms late *on purpose*, so the
+/// barrier is load-bearing rather than decorative, and deleting it fails
+/// this test every run instead of one in forty.
 #[tokio::test]
 async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
     // Each connection is closed by the server after its SECOND response,
     // which is what lets the test decide which of the two parked
     // connections is the dead one.
+    let closes = Arc::new(AtomicUsize::new(0));
     let (addr, accepted) = counting_server(Behaviour {
         responses_before_close: Some(2),
         delay: Duration::from_millis(200),
+        close_delay: Duration::from_millis(300),
+        closes: Some(Arc::clone(&closes)),
         ..Behaviour::default()
     });
     let client = Client::builder(native()).build().unwrap();
@@ -282,6 +368,11 @@ async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
     // it its second response — after which the server closes it. It is
     // parked again, on top, still looking fine from here.
     get_ok(&client, addr).await;
+    // The server has dropped that socket. Not "has had time to": has.
+    server_has_closed(&closes, 1).await;
+    // The `FIN` is on its way; nothing polls the connection, so nobody has
+    // read it yet. This is now slack after a fact rather than a guess at
+    // one — see the doc comment.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     get_ok(&client, addr).await;
@@ -567,8 +658,10 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
 /// pool rather than after it.
 #[tokio::test]
 async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
+    let closes = Arc::new(AtomicUsize::new(0));
     let (addr, accepted) = counting_server(Behaviour {
         responses_before_close: Some(1),
+        closes: Some(Arc::clone(&closes)),
         ..Behaviour::default()
     });
     let transport = Native::new(
@@ -585,8 +678,14 @@ async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
         .expect("the first request must succeed");
     assert_eq!(first.collect().await.unwrap().text().unwrap(), "ok");
 
-    // The server has closed; the `FIN` is in the kernel, and the socket
-    // will hide it for exactly one poll — which is the poll at checkout.
+    // The server has closed — waited for rather than assumed, because the
+    // whole fixture below is about *when* the `FIN` becomes visible, and
+    // a close that has not happened yet is not a late `FIN`, it is a live
+    // connection. The same barrier as
+    // `checkout_walks_past_a_dead_connection_to_a_live_one`.
+    server_has_closed(&closes, 1).await;
+    // The `FIN` is in the kernel, and the socket will hide it for exactly
+    // one poll — which is the poll at checkout.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let second = tokio::time::timeout(BOUND, client.get(&url).send())
