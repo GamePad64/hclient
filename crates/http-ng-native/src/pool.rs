@@ -98,8 +98,27 @@
 //! 3. **A race remains.** A server may close between our check and our
 //!    write. That window cannot be closed by any HTTP/1 pool — hyper's own
 //!    has it too — so it is handled rather than prevented: see the retry in
-//!    `Native::execute`, which is the reason this pool does not make
-//!    previously reliable requests fail intermittently.
+//!    `Native::execute`.
+//!
+//!    **How far the retry reaches, corrected.** This paragraph used to end
+//!    "which is the reason this pool does not make previously reliable
+//!    requests fail intermittently", and that is true of the window the
+//!    retry covers and false past it. The retry fires on
+//!    [`crate::established::Failed::NotSent`] — hyper handing the request
+//!    back because not a byte of it reached the wire. If the server's close
+//!    lands *after* the request goes out, its kernel answers `RST`, hyper
+//!    reports the failure with the request already sent, and the caller
+//!    gets an error a client without a pool would not have had. That is
+//!    deliberate rather than missing: repeating a request a server may have
+//!    acted on is at-least-once, and choosing it selectively would need a
+//!    notion of method safety this codebase does not have (see
+//!    `docs/h3-research.md` §3.5, which declines the same notion for
+//!    0-RTT). Measured, because the correction came from a real failure —
+//!    a fixture whose server closes 150 ms after its last response fails
+//!    the next request with `Connect / hyper::Error(Io, ConnectionReset)`,
+//!    five runs out of five; `docs/v02-acceptance.md` has the whole
+//!    run-down, including why `tests/pool.rs` now waits for the server to
+//!    say it has closed instead of sleeping and hoping.
 //!
 //! # What is in the key, and why each part is there
 //!
