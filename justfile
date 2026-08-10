@@ -373,10 +373,28 @@ test-autobahn: autobahn-parser-selftest
         time.sleep(0.1)
     sys.exit(1)
     PY
-    ./target/debug/examples/autobahn ws://127.0.0.1:9001 "$agent" || {
-      echo "::error::the Autobahn driver could not complete the run — the report below, if any, covers only part of the suite"
+    # A bound on the whole run, and it is not decoration. Measured, by
+    # mutating `Shim::write` to claim `buf.len()` on a partial write —
+    # exactly the defect that function's doc comment is about: the suite
+    # has no timeout for a client that stops mid-message, so the driver
+    # sat for ever on case 1 and the job would have been killed by the
+    # runner with no verdict at all. 900s against a 16s run.
+    secs=900
+    if command -v timeout >/dev/null 2>&1; then
+      bound=(timeout "$secs")
+    elif command -v gtimeout >/dev/null 2>&1; then
+      bound=(gtimeout "$secs")
+    else
+      echo "::error::neither timeout nor gtimeout is on PATH, so the Autobahn run would be unbounded — and a defect that hangs the driver then produces no verdict rather than a red one"
       exit 1
-    }
+    fi
+    "${bound[@]}" ./target/debug/examples/autobahn ws://127.0.0.1:9001 "$agent"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" -eq 124 ] && echo "::error::the Autobahn driver hung and was killed at ${secs}s — a case it cannot finish is a defect, not a slow machine; the last 'case N:' line above names it"
+      echo "::error::the Autobahn driver could not complete the run (exit $rc) — the report, if any, covers only part of the suite"
+      exit 1
+    fi
     python3 scripts/autobahn-report.py "$reports" "$agent"
 
 # ── the paths --all-features cannot reach ───────────────────────────────
