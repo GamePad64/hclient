@@ -70,7 +70,7 @@ pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
 // `.kind()` can be compared to anything at all. `RetryKind` is the
 // invariant of `RequestBody::retry_kind()` and the field
 // `mock::RecordedRequest::retry_kind`. `RedirectSupport`/`TlsSupport`/
-// `TimeoutSupport`/`UpgradeSupport` are `Capabilities` fields that need
+// `TimeoutSupport`/`EarlyDataSupport` are `Capabilities` fields that need
 // naming to hand-assemble your own `Capabilities` for
 // `MockTransport::with_capabilities` (available even without
 // `unversioned::Transport` — `with_capabilities` is an ordinary tooling
@@ -93,13 +93,21 @@ pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
 // every other capability type is, and one of their own: `AllowEarlyData` is
 // a value the CALLER puts on a request — it is the only thing that can
 // admit a request to 0-RTT, and `Client::run`'s `425` branch is what takes
-// it back off a replay — so a facade that names `TimeoutSupport` and
-// `UpgradeSupport` while making callers reach past it into `http-ng-core`
-// for this one would be arbitrary.
+// it back off a replay — so a facade that names `TimeoutSupport` while
+// making callers reach past it into `http-ng-core` for this one would be
+// arbitrary.
+//
+// `UpgradeSupport` used to be on this list and is gone from the workspace
+// (v0.3 W4 step 4): four variants, every backend answering `None`, and no
+// caller decision turning on it. WebSocket is a trait a backend implements
+// (`http_ng_core::unversioned::WebSocketConnect`) rather than a capability
+// anyone reads, so there is nothing to re-export in its place — see
+// `docs/w4-upgrade-seam.md` §3. `tests/facade.rs`'s plumbing check moved
+// to `EarlyDataSupport`, and that file says why it and not another.
 pub use http_ng_core::{
     AllowEarlyData, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, RetryKind, RewindFactory, TimeoutSupport, TlsSupport,
-    UnsupportedCapability, UpgradeSupport,
+    UnsupportedCapability,
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;

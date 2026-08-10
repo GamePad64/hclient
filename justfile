@@ -218,9 +218,11 @@ test-wasi:
 # The minimum count is the check: a suite that silently stops running tests
 # is the failure mode, not one that fails. 65 -> 68 in v0.2 W1 (three tests
 # for `Transport::execute`'s drop-cancellation contract), 68 -> 78 in W6 (ten
-# for the streaming request body and its probe). Measured by running both
-# engines, not inferred from the attribute count: several
-# `#[wasm_bindgen_test]`s are cfg-gated, so the two numbers do not agree.
+# for the streaming request body and its probe), 78 -> 99 in v0.3 W4 step 3
+# (twenty-one for the browser's WebSocket behind `WebSocketConnect`).
+# Measured by running both engines, not inferred from the attribute count:
+# several `#[wasm_bindgen_test]`s are cfg-gated, so the two numbers do not
+# agree.
 
 # one browser suite: `just test-browser firefox`
 test-browser BROWSER="chrome":
@@ -250,7 +252,7 @@ test-browser BROWSER="chrome":
       fi
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
-    run_browser_suite crates/http-ng-fetch 78
+    run_browser_suite crates/http-ng-fetch 99
     run_browser_suite crates/http-ng 6 --features default-transport,test-util
 
 # both browser suites, on both engines — CI runs one engine per matrix leg

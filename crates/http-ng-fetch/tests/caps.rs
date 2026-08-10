@@ -19,8 +19,6 @@ fn declares_what_fetch_genuinely_cannot_do() {
     // Cookies and cache are ambient, owned by the browser.
     assert!(c.owns_cookie_jar);
     assert!(c.owns_cache);
-    // Upgrade is unreachable: WebSocket in the browser is a separate global.
-    assert_eq!(c.upgrade, http_ng_core::UpgradeSupport::None);
 }
 
 /// Not from the brief: added when this task was reopened over a finding in

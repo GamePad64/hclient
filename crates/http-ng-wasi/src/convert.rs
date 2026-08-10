@@ -615,7 +615,6 @@ mod tests {
             http_ng_core::Capabilities::none().redirects,
             "a declared capability must differ from \"the field was never filled in\""
         );
-        assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
         assert_eq!(caps.tls_config, http_ng_core::TlsSupport::None);
         assert!(!caps.proxy);
         // Review resolution, finding B-6: five headers the host actually
