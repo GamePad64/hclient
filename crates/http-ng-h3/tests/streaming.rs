@@ -313,12 +313,19 @@ async fn dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connec
     // the request a caller changes its mind about. Three claims, and the
     // first two are the server's.
     //
-    // The server reads the body and answers only at its end, so the
-    // `execute` future is still pending when it is dropped — mid-upload by
-    // construction rather than by timing.
-    let s = server::start(Behaviour::CountBody);
+    // Mid-upload is a construction and not a window. The server answers
+    // only at the end of the body, so the `execute` future is certainly
+    // still pending; and it reads at 40 ms a frame, so the peer's
+    // flow-control window stays full and 64 MiB cannot have been written by
+    // the time the drop happens. The 150 ms alone was NOT enough — measured:
+    // one run in twenty-four of six concurrent suites got the whole body
+    // through and recorded a clean end, which read as "the reset never
+    // happened" and was really "there was nothing left to reset".
+    const FRAMES: usize = 4096;
+
+    let s = server::start(Behaviour::ReadSlowly(Duration::from_millis(40)));
     let t = h3(&s.cert_der);
-    let (body, pulled) = repeat(4096, 16 * 1024);
+    let (body, pulled) = repeat(FRAMES, 16 * 1024);
 
     // `Box::pin`, not `tokio::pin!`: the latter gives a `Pin<&mut F>`, and
     // dropping THAT drops a borrow rather than the future. Same trap
@@ -332,6 +339,10 @@ async fn dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connec
     assert!(
         pulled_at_drop > 0,
         "the upload had not started, so nothing was cancelled mid-way"
+    );
+    assert!(
+        pulled_at_drop < FRAMES,
+        "the upload had already finished, so there was nothing to cancel"
     );
     drop(doomed);
 
@@ -364,10 +375,18 @@ async fn dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connec
 
     // 3. The connection is untouched, which on this transport has a subject:
     // requests share it.
-    let r = t
-        .execute(post(s.addr, "/after", RequestBody::Empty))
-        .await
-        .expect("cancelling one stream must not tear down the connection");
+    // Bounded, and not for the usual reason: under the mutation that
+    // removes the reset guard this request does not fail, it HANGS — the
+    // server killed the connection and the client is opening a fresh one
+    // into a fixture that has moved on. A mutation run should cost a red
+    // line, not fifteen minutes.
+    let r = tokio::time::timeout(
+        Duration::from_secs(10),
+        t.execute(post(s.addr, "/after", RequestBody::Empty)),
+    )
+    .await
+    .expect("a request on a healthy shared connection answers promptly")
+    .expect("cancelling one stream must not tear down the connection");
     assert_eq!(r.status(), 200);
     assert_eq!(text(r).await, "0 bytes");
     assert_eq!(s.accepted(), 1, "and it was the same connection throughout");
@@ -409,10 +428,13 @@ async fn dropping_a_buffered_upload_mid_write_leaves_the_connection_too() {
     assert!(!report.complete, "reset, not finished: {report:?}");
     assert!(report.bytes < BODY, "it was mid-write: {report:?}");
 
-    let r = t
-        .execute(post(s.addr, "/after", RequestBody::Empty))
-        .await
-        .expect("a truncated frame on a cleanly-closed stream would have killed this");
+    let r = tokio::time::timeout(
+        Duration::from_secs(10),
+        t.execute(post(s.addr, "/after", RequestBody::Empty)),
+    )
+    .await
+    .expect("a request on a healthy shared connection answers promptly")
+    .expect("a truncated frame on a cleanly-closed stream would have killed this");
     assert_eq!(text(r).await, "0 bytes");
     assert_eq!(s.accepted(), 1, "still one connection");
 }
@@ -499,10 +521,13 @@ async fn a_request_body_that_yields_trailers_is_refused_by_name() {
 
     // And the refusal costs the connection nothing, which is the half worth
     // pinning: requests share one here.
-    let after = t
-        .execute(post(s.addr, "/after", RequestBody::Empty))
-        .await
-        .expect("a refused request must not poison a shared connection");
+    let after = tokio::time::timeout(
+        Duration::from_secs(10),
+        t.execute(post(s.addr, "/after", RequestBody::Empty)),
+    )
+    .await
+    .expect("a request on a healthy shared connection answers promptly")
+    .expect("a refused request must not poison a shared connection");
     assert_eq!(text(after).await, "0 bytes");
     assert_eq!(s.accepted(), 1);
 

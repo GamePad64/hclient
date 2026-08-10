@@ -83,7 +83,23 @@ pub struct Wire {
     pub addr: SocketAddr,
     seen: Arc<Mutex<Vec<Packet>>>,
     hold_until: Arc<Mutex<Option<Instant>>>,
+    held: Arc<Mutex<Held>>,
     _thread: std::thread::JoinHandle<()>,
+}
+
+/// What the current hold actually did, **on the relay's own clock**.
+///
+/// The relay is the only party that can say whether a datagram waited, and
+/// it is the only one whose clock the answer belongs to. A test that asked
+/// the *server* how long the handshake took and compared that against the
+/// hold would be subtracting two durations with different origins — see
+/// `zero_rtt.rs`, where exactly that was a flake.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Held {
+    /// How many server-to-client datagrams this hold actually delayed.
+    pub datagrams: usize,
+    /// The longest single wait it imposed.
+    pub longest: Duration,
 }
 
 impl std::fmt::Debug for Wire {
@@ -100,7 +116,8 @@ impl Wire {
         let addr = sock.local_addr().unwrap();
         let seen: Arc<Mutex<Vec<Packet>>> = Arc::new(Mutex::new(Vec::new()));
         let hold_until: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
-        let (log, hold) = (seen.clone(), hold_until.clone());
+        let held: Arc<Mutex<Held>> = Arc::new(Mutex::new(Held::default()));
+        let (log, hold, holds) = (seen.clone(), hold_until.clone(), held.clone());
 
         // A plain blocking thread, deliberately: this is the observer, and
         // it must not share an executor with either endpoint under test.
@@ -121,7 +138,11 @@ impl Wire {
                     if let Some(t) = until {
                         let now = Instant::now();
                         if now < t {
-                            std::thread::sleep(t - now);
+                            let waited = t - now;
+                            std::thread::sleep(waited);
+                            let mut h = holds.lock().unwrap();
+                            h.datagrams += 1;
+                            h.longest = h.longest.max(waited);
                         }
                     }
                     let _ = sock.send_to(&buf[..n], c);
@@ -137,6 +158,7 @@ impl Wire {
             addr,
             seen,
             hold_until,
+            held,
             _thread: thread,
         }
     }
@@ -155,7 +177,20 @@ impl Wire {
     /// a second, from a 333 ms assumed initial RTT) or the endpoints start
     /// retransmitting and the log fills with duplicates.
     pub fn hold_server_flight(&self, d: Duration) {
+        *self.held.lock().unwrap() = Held::default();
         *self.hold_until.lock().unwrap() = Some(Instant::now() + d);
+    }
+
+    /// What the current hold actually did — see [`Held`].
+    ///
+    /// This exists because "the hold happened" has to be checkable, and the
+    /// only honest checker is the relay. A test cannot infer it from a
+    /// duration either endpoint reports: those are measured from when that
+    /// endpoint entered the exchange, which is after
+    /// [`Wire::hold_server_flight`] armed the deadline, so the endpoint's
+    /// number is smaller than the hold by an amount nobody bounded.
+    pub fn held(&self) -> Held {
+        *self.held.lock().unwrap()
     }
 
     /// Everything the client has sent since the last [`Wire::forget`], in

@@ -215,12 +215,38 @@ async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handsha
         .first_request()
         .expect("the server answered, so it resolved a request");
     println!("server: request at {request:?}, handshake completed at {handshake:?}");
-    assert!(
-        handshake >= HOLD,
-        "the relay was supposed to hold the server's flight for {HOLD:?}, so \
-         no handshake can have completed before then; {handshake:?} means the \
-         hold did not happen and the separation below proves nothing"
+
+    // The fixture check — "the hold was not a no-op" — asked from the
+    // relay, which is the only party that knows, and answered on the
+    // relay's own clock.
+    //
+    // It used to read `handshake >= HOLD`, and that was **wrong by
+    // construction rather than by margin**: `handshake` is measured from
+    // the moment the SERVER accepted the connection, while `HOLD` runs from
+    // the moment this test armed the relay — and between those two lie the
+    // request being built, `execute` resolving and checking out, quinn
+    // emitting an Initial, the datagram crossing the relay, and the
+    // server's task starting. So the two numbers have different origins and
+    // the recorded one is always the smaller, by an amount nobody bounded.
+    // It failed about one run in three under load, at 146-150 ms against
+    // 150. Widening the window would have been the wrong repair twice over:
+    // it would have kept a comparison that cannot be right, and every
+    // millisecond of tolerance is a millisecond in which a post-handshake
+    // packet could start to count.
+    let held = wire.held();
+    println!(
+        "relay: held {} server datagram(s), longest wait {:?}",
+        held.datagrams, held.longest
     );
+    assert!(
+        held.datagrams > 0,
+        "the relay forwarded every server datagram without waiting, so the \
+         client's handshake was never held back and the separation below \
+         would be a race rather than a guarantee"
+    );
+
+    // And the claim itself, which never had a margin to lose: both of these
+    // are measured from the same origin, by the same party, with one clock.
     assert!(
         request < handshake,
         "the server resolved the request at {request:?} and completed its \
