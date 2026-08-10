@@ -7,10 +7,35 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# The `ServiceBinding` -> `RawBinding` conversion in `svcb.rs`, and with it
+# the `dns-message-parser` dependency.
+#
+# OFF by default, and that is the whole point of the flag: this crate's
+# reason to exist is the `Resolve` trait, and a build that resolves through
+# `IpLiteralOnly`, `getaddrinfo` or `wasi:http` never sees a DNS message and
+# must not link a DNS codec to get at `Resolve`. The two backends that DO
+# decode wire-format DNS with this crate's decoder — `http-ng-dns-system`'s
+# `res_query` path and `http-ng-dns-doh` — turn it on, and Cargo unifies it
+# for them, so the conversion has exactly one home rather than one copy per
+# backend. See `svcb.rs`'s module doc for why sharing it is not a
+# convenience.
+codec = ["dep:dns-message-parser"]
+
 [dependencies]
 bytes        = { workspace = true }
+# Only under `codec` above. Same version as `http-ng-dns-system`'s, which is
+# not a coincidence to be tidied away later: the two must agree, or a build
+# that enables `codec` for one of them gets two copies of the decoder and
+# two `ServiceBinding` types that do not convert into each other.
+dns-message-parser = { version = "0.9", optional = true }
 futures-core = { workspace = true }
 http-ng-core = { workspace = true }
+# Not a new crate in anyone's graph: `http-ng-core` already depends on it,
+# so this line adds a name, not a node. `svcb::SvcbRecordError` is the one
+# error this crate owns.
+thiserror    = { workspace = true }
 
 [dev-dependencies]
 # Tests only (`tests/`): `stream::iter`/`stream::empty`/`StreamExt`, not in

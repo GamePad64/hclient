@@ -30,9 +30,7 @@
 #![forbid(unsafe_code)]
 
 use crate::sys::SvcbLookupError;
-use bytes::Bytes;
 use http_ng_dns::SvcbEndpoint;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[allow(
     unused_imports,
@@ -40,172 +38,40 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 )]
 pub(crate) use wire::endpoints_from_answer;
 
-/// The SvcParamKeys this client understands well enough to honour a
-/// `mandatory` requirement for (RFC 9460 §8).
+/// The RFC 9460 client semantics, and this crate's thin wrapper over them.
 ///
-/// "Understood" is deliberately not the same as "has a field in
-/// `SvcbEndpoint`". `no-default-alpn` (2) has no field — it modifies how
-/// `alpn` is read, and a client that only ever offers protocols it found
-/// in `alpn` behaves correctly either way — but it IS understood, so a
-/// record naming it as mandatory stays usable. Everything outside this
-/// list is the opposite case: `dohpath` (7, RFC 9461) is real and
-/// registered, nothing here acts on it, so a record that makes it
-/// mandatory is one this client must not use.
-const RECOGNISED_KEYS: &[u16] = &[0, 1, 2, 3, 4, 5, 6];
+/// `RawBinding`, `RawParam` and the decision procedure over them used to
+/// live in this file. They moved to `http_ng_dns::svcb` when
+/// `http-ng-dns-doh` became a third backend that has to apply exactly the
+/// same rules to exactly the same decoded record — the drift this file's
+/// own doc comment warned about, one crate further out. Nothing about the
+/// rules changed in the move; what stayed here is the mapping from the
+/// shared error into this crate's own taxonomy, so that a caller of
+/// `http-ng-dns-system` still sees a single `SvcbLookupError`.
+#[allow(
+    unused_imports,
+    reason = "`RawParam` is built by the Windows backend and by this file's tests; a Unix build compiles neither, exactly as for `endpoints_from_answer` just above"
+)]
+pub(crate) use http_ng_dns::svcb::{RawBinding, RawParam};
 
-/// One HTTPS record, in terms both backends can produce.
+/// [`http_ng_dns::svcb::endpoint_from_binding`], with its error mapped into
+/// this crate's enum.
 ///
-/// **Why an intermediate type rather than each backend building a
-/// `SvcbEndpoint` itself.** The RFC 9460 rules that decide whether a record
-/// is usable at all — AliasMode versus ServiceMode (§2.4), a root
-/// TargetName meaning the owner name (§2.5), `mandatory` semantics (§8) —
-/// are the part of this crate most likely to be got subtly wrong, and they
-/// are identical on every platform. Writing them once, over a type that
-/// holds no borrowed memory and no platform detail, means the Windows path
-/// cannot drift from the Unix one: `windows.rs` fills this in from an
-/// OS-parsed `DNS_SVCB_DATA`, `endpoints_from_answer` fills it in from a
-/// `dns-message-parser` `ServiceBinding`, and both then go through
-/// `endpoint_from_binding` below.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RawBinding {
-    pub(crate) priority: u16,
-    /// The record's owner name, without a trailing dot.
-    pub(crate) owner: String,
-    /// The TargetName, without a trailing dot. **Empty means the root**
-    /// (`.` on the wire), which is what §2.4.2 and §2.5 give their special
-    /// meanings to.
-    pub(crate) target: String,
-    pub(crate) params: Vec<RawParam>,
-}
-
-/// One SvcParam, reduced to what `SvcbEndpoint` can hold plus the key
-/// number of everything it cannot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RawParam {
-    Mandatory(Vec<u16>),
-    Alpn(Vec<Vec<u8>>),
-    NoDefaultAlpn,
-    Port(u16),
-    Ipv4Hint(Vec<Ipv4Addr>),
-    Ipv6Hint(Vec<Ipv6Addr>),
-    /// The ECHConfigList **including RFC 9460 §7.3's redundant length
-    /// prefix**, which is the form rustls parses. Backends are responsible
-    /// for handing it over in that form; see each one's note, because they
-    /// differ in whether the prefix survives their decoder.
-    Ech(Vec<u8>),
-    /// A parameter this crate does not model, carried as its key number
-    /// only — enough for the `mandatory` check below, and nothing else.
-    Other(u16),
-}
-
-impl RawParam {
-    /// The SvcParamKey this parameter came from (RFC 9460 §14.3.2).
-    ///
-    /// Total and closed over the enum on purpose — no `_ =>` arm — so a new
-    /// variant becomes a compile error here rather than a key that silently
-    /// reports as something else and quietly satisfies a `mandatory` entry
-    /// it should not.
-    fn key(&self) -> u16 {
-        match self {
-            Self::Mandatory(_) => 0,
-            Self::Alpn(_) => 1,
-            Self::NoDefaultAlpn => 2,
-            Self::Port(_) => 3,
-            Self::Ipv4Hint(_) => 4,
-            Self::Ech(_) => 5,
-            Self::Ipv6Hint(_) => 6,
-            Self::Other(key) => *key,
-        }
-    }
-}
-
-/// One record, as an endpoint this client may act on.
-///
-/// `Ok(None)` means "well-formed but must not be used" — the two cases RFC
-/// 9460 gives for that are an unsupported `mandatory` key (§8) and an
-/// AliasMode record whose target is the root (§2.4.2, "the service is not
-/// available"). `Err` is reserved for the one client-side check RFC 9460
-/// calls malformed and no decoder makes: a `mandatory` list naming a key
-/// the record does not carry.
+/// A wrapper rather than a re-export: `SvcbLookupError` describes how a
+/// *platform resolver* can fail, and its `MandatoryKeyAbsent` variant is
+/// the one member of that enum that is a statement about a record instead.
+/// Keeping the variant means the move is invisible from outside this
+/// crate — including to the tests at the bottom of this file, which are
+/// the tests the rules were accepted against and which have not been
+/// touched.
 pub(crate) fn endpoint_from_binding(
     binding: &RawBinding,
 ) -> Result<Option<SvcbEndpoint>, SvcbLookupError> {
-    // RFC 9460 §2.4.1: "In AliasMode, ... recipients MUST ignore any
-    // SvcParams that are present", so none of them reach the endpoint.
-    if binding.priority == 0 {
-        // §2.4.2: an AliasMode target of "." means the service does not
-        // exist. Emitting it would hand the caller an endpoint pointing at
-        // the name it just asked about — a resolution loop dressed up as
-        // an answer.
-        if binding.target.is_empty() {
-            return Ok(None);
+    http_ng_dns::svcb::endpoint_from_binding(binding).map_err(|e| match e {
+        http_ng_dns::svcb::SvcbRecordError::MandatoryKeyAbsent { key } => {
+            SvcbLookupError::MandatoryKeyAbsent { key }
         }
-        return Ok(Some(SvcbEndpoint {
-            priority: 0,
-            target: binding.target.clone(),
-            alpn: Vec::new(),
-            port: None,
-            ipv4hint: Vec::new(),
-            ipv6hint: Vec::new(),
-            ech_config_list: None,
-        }));
-    }
-
-    let mut endpoint = SvcbEndpoint {
-        priority: binding.priority,
-        // RFC 9460 §2.5: in ServiceMode a TargetName of "." means the
-        // record's own owner name. Substituting it here means every
-        // `SvcbEndpoint` this crate emits carries a name that can be
-        // connected to, so no consumer has to know the "." convention.
-        target: if binding.target.is_empty() {
-            binding.owner.clone()
-        } else {
-            binding.target.clone()
-        },
-        alpn: Vec::new(),
-        port: None,
-        ipv4hint: Vec::new(),
-        ipv6hint: Vec::new(),
-        ech_config_list: None,
-    };
-
-    let mut mandatory: &[u16] = &[];
-    for parameter in &binding.params {
-        match parameter {
-            RawParam::Mandatory(key_ids) => mandatory = key_ids,
-            RawParam::Alpn(ids) => endpoint.alpn = ids.clone(),
-            RawParam::Port(port) => endpoint.port = Some(*port),
-            RawParam::Ipv4Hint(hints) => endpoint.ipv4hint = hints.clone(),
-            RawParam::Ipv6Hint(hints) => endpoint.ipv6hint = hints.clone(),
-            RawParam::Ech(config_list) => {
-                endpoint.ech_config_list = Some(Bytes::from(config_list.clone()));
-            }
-            // Understood, but with nothing in `SvcbEndpoint` to hold it —
-            // see `RECOGNISED_KEYS`. Dropped rather than given an invented
-            // field.
-            RawParam::NoDefaultAlpn => {}
-            // Not modelled; kept out of the endpoint, but still visible to
-            // the `mandatory` check below through its key number.
-            RawParam::Other(_) => {}
-        }
-    }
-
-    for key in mandatory {
-        if !binding.params.iter().any(|p| p.key() == *key) {
-            // RFC 9460 §8 — a key declared mandatory has to be present.
-            // No decoder checks this: it is a statement about the record as
-            // a whole, not about any one parameter's encoding.
-            return Err(SvcbLookupError::MandatoryKeyAbsent { key: *key });
-        }
-        // RFC 9460 §8: "If the client is unable to comply [with a
-        // mandatory key], the client MUST ignore this SVCB RR." Ignoring
-        // one record is not rejecting the RRSet — see this function's doc.
-        if !RECOGNISED_KEYS.contains(key) {
-            return Ok(None);
-        }
-    }
-
-    Ok(Some(endpoint))
+    })
 }
 
 /// The raw-wire path: everything that turns a DNS response **message**
@@ -226,12 +92,13 @@ pub(crate) fn endpoint_from_binding(
     reason = "only the res_query backend feeds a raw DNS message through this; a build compiles exactly one backend, and repeating sys's target list here would reintroduce the drift its single #[cfg] pair exists to prevent"
 )]
 mod wire {
-    use super::{RawBinding, RawParam, endpoint_from_binding};
+    use super::endpoint_from_binding;
     use crate::sys::{RawAnswer, SvcbLookupError};
     use bytes::Bytes;
     use dns_message_parser::Dns;
-    use dns_message_parser::rr::{RR, ServiceBinding, ServiceParameter};
+    use dns_message_parser::rr::RR;
     use http_ng_dns::SvcbEndpoint;
+    use http_ng_dns::svcb::binding_from_decoded;
 
     /// RFC 1035 §4.1.1 — `ID`, flags, and the four section counts.
     const HEADER_LEN: usize = 12;
@@ -349,84 +216,6 @@ mod wire {
         }
         Ok(found)
     }
-
-    /// A `dns-message-parser` record, reduced to the backend-neutral form.
-    ///
-    /// This is the Unix path's half of the split described on `RawBinding`;
-    /// `windows.rs` has the other half, over an OS-parsed struct.
-    fn binding_from_decoded(binding: &ServiceBinding) -> RawBinding {
-        let params = binding
-            .parameters
-            .iter()
-            .map(|parameter| match parameter {
-                ServiceParameter::MANDATORY { key_ids } => RawParam::Mandatory(key_ids.clone()),
-                // `alpn_ids` are `String` because the decoder reads them as
-                // UTF-8; ALPN is a byte protocol, so they go back to bytes. The
-                // conversion is lossless in this direction — a non-UTF-8 ALPN
-                // id would have failed to decode upstream.
-                ServiceParameter::ALPN { alpn_ids } => {
-                    RawParam::Alpn(alpn_ids.iter().map(|id| id.as_bytes().to_vec()).collect())
-                }
-                ServiceParameter::NO_DEFAULT_ALPN => RawParam::NoDefaultAlpn,
-                ServiceParameter::PORT { port } => RawParam::Port(*port),
-                ServiceParameter::IPV4_HINT { hints } => RawParam::Ipv4Hint(hints.clone()),
-                ServiceParameter::IPV6_HINT { hints } => RawParam::Ipv6Hint(hints.clone()),
-                // **The two-byte length prefix is put back on, and that is not
-                // cosmetic.** RFC 9460 §7.3 defines the `ech` SvcParamValue as
-                // an ECHConfigList "including the redundant length prefix", and
-                // that prefixed form is what rustls parses — an ECHConfigList
-                // is a TLS vector, so its codec reads a `u16` length first.
-                // This decoder validates the prefix and then returns the
-                // payload WITHOUT it (`decode/rr/draft_ietf_dnsop_svcb_https
-                // .rs`, key 5, measured — the round-trip test is what caught
-                // it). Windows does not do this: `DnsQuery_UTF8` hands back the
-                // SvcParamValue verbatim, prefix included, so `windows.rs` adds
-                // nothing. Storing the stripped form would leave
-                // `SvcbEndpoint::ech_config_list`, whose stated purpose is to
-                // feed `rustls::EchConfig` directly, holding something rustls
-                // cannot parse — a field that looks populated and fails far
-                // from here.
-                ServiceParameter::ECH { config_list } => {
-                    let len = u16::try_from(config_list.len()).expect(
-                        "the decoder read this list out of a u16-length SvcParam and compared \
-                         the two, so it cannot exceed u16::MAX",
-                    );
-                    let mut prefixed = Vec::with_capacity(config_list.len() + 2);
-                    prefixed.extend_from_slice(&len.to_be_bytes());
-                    prefixed.extend_from_slice(config_list);
-                    RawParam::Ech(prefixed)
-                }
-                ServiceParameter::PRIVATE { number, .. } => RawParam::Other(*number),
-                ServiceParameter::KEY_65535 => RawParam::Other(65535),
-            })
-            .collect();
-
-        RawBinding {
-            priority: binding.priority,
-            owner: name_to_string(&binding.name),
-            target: name_to_string(&binding.target_name),
-            params,
-        }
-    }
-
-    /// A decoded name as a host name, without the trailing dot.
-    ///
-    /// `DomainName`'s own `Display` emits `cloudflare.com.`, and `.` for the
-    /// root — which `RawBinding::target` represents as the empty string, so the
-    /// root maps to `""` here rather than to `"."`. `SvcbEndpoint::target`
-    /// feeds a connector, and every other name on that path is written without
-    /// the root dot.
-    fn name_to_string(name: &dns_message_parser::DomainName) -> String {
-        // The root needs no special case: `DomainName`'s `Display` writes
-        // it as `.`, and stripping the trailing dot from that leaves the
-        // empty string, which is exactly how `RawBinding::target` spells
-        // the root. An explicit `is_root()` branch was here and was removed
-        // — mutation testing found it equivalent to the code below, i.e.
-        // unreachable-in-effect and therefore untestable, which is the kind
-        // of line that reads as load-bearing while proving nothing.
-        let text = name.to_string();
-        text.strip_suffix('.').unwrap_or(&text).to_owned()
-    }
 }
 
 #[cfg(test)]
@@ -437,6 +226,10 @@ mod tests {
     use assert_matches::assert_matches;
     use dns_message_parser::rr::ServiceParameter;
     use rstest::rstest;
+    // Named here rather than at the top of the file since the RFC 9460
+    // client semantics moved to `http_ng_dns::svcb`: nothing outside these
+    // tests builds a `RawParam` on this platform any more.
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     /// RR type 65, RFC 9460 §14.1.
     const TYPE_HTTPS: u16 = 65;

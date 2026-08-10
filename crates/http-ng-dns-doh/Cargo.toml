@@ -1,0 +1,32 @@
+[package]
+name = "http-ng-dns-doh"
+version = "0.1.0"
+description = "DNS-over-HTTPS (RFC 8484) resolver for http-ng, over any Transport"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes          = { workspace = true }
+dns-message-parser = "0.9"
+futures-core   = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http           = { workspace = true }
+http-body      = { workspace = true }
+http-body-util = { workspace = true }
+http-ng-core   = { workspace = true }
+# `codec`: the RFC 9460 client semantics and the `ServiceBinding` ->
+# `RawBinding` conversion, shared with `http-ng-dns-system` rather than
+# copied — see `http_ng_dns::svcb`'s module doc for why a second copy of
+# those rules was not an option.
+http-ng-dns    = { path = "../http-ng-dns", version = "0.1.0", features = ["codec"] }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+assert_matches   = { workspace = true }
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+rstest           = { workspace = true }
+
+[lints]
+workspace = true
