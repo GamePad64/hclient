@@ -45,8 +45,18 @@ wasm_bindgen_test_configure!(run_in_browser);
 // The stand-in for the browser's own `WebSocket`.
 // ---------------------------------------------------------------------
 
-/// Installs a stand-in `globalThis.WebSocket` and returns the real
-/// constructor, so each test can put it back.
+/// Installs a stand-in `globalThis.WebSocket`; [`restore`] puts the real
+/// one back.
+///
+/// The real constructor is stashed once, in `globalThis.__ws_real`, rather
+/// than handed back to each caller — so a test that fails *before* its own
+/// `restore` cannot leave the stand-in installed for every test after it.
+/// That is not hypothetical tidiness: it is what the first mutation run
+/// against this file produced — three failures where the mutation explains
+/// two — and a mutation report is worth nothing if a killed test can take
+/// an unrelated one down with it. A `Drop` guard would be the usual answer
+/// and is not available here: `wasm32-unknown-unknown` does not unwind, so
+/// a panicking `#[wasm_bindgen_test]` runs no destructor.
 ///
 /// `plan` is a JS array literal of steps the stand-in plays back one
 /// microtask after construction — which is when a real socket's `open`
@@ -78,10 +88,12 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// storing it: wasm-bindgen passes a `&[u8]` as a *view into wasm memory*,
 /// which a real browser copies synchronously inside `send()` and a log
 /// that kept the view would be reading whatever wasm put there next.
-fn install(plan: &str) -> js_sys::Function {
+fn install(plan: &str) {
     let body = format!(
         r#"
-        const real = globalThis.WebSocket;
+        if (globalThis.__ws_real === undefined) {{
+            globalThis.__ws_real = globalThis.WebSocket;
+        }}
         const log = {{
             constructed: 0,
             urls: [],
@@ -146,18 +158,23 @@ fn install(plan: &str) -> js_sys::Function {
         globalThis.WebSocket = fake;
         globalThis.__ws_log = log;
         globalThis.__ws_fire = function (step) {{ fire(log.last, step); }};
-        return real;
         "#
     );
     js_sys::Function::new_no_args(&body)
         .call0(&JsValue::NULL)
-        .expect("installing the stand-in constructor must not throw")
-        .unchecked_into::<js_sys::Function>()
+        .expect("installing the stand-in constructor must not throw");
 }
 
-fn restore(real: &js_sys::Function) {
-    js_sys::Reflect::set(&js_sys::global(), &JsValue::from_str("WebSocket"), real)
-        .expect("restoring the real WebSocket must not throw");
+/// Puts the real constructor back, whoever installed the stand-in. Called
+/// at the *start* of the one test that needs the real global as well as at
+/// the end of every test that replaced it, so a leak from a failing test
+/// cannot reach it.
+fn restore() {
+    js_sys::Function::new_no_args(
+        "if (globalThis.__ws_real !== undefined) { globalThis.WebSocket = globalThis.__ws_real; }",
+    )
+    .call0(&JsValue::NULL)
+    .expect("restoring the real WebSocket must not throw");
     for name in ["__ws_log", "__ws_fire"] {
         let _ = js_sys::Reflect::delete_property(&js_sys::global(), &JsValue::from_str(name));
     }
@@ -217,7 +234,7 @@ const ANY: &str = "wss://example.invalid/socket";
 /// cannot produce.
 #[wasm_bindgen_test]
 async fn a_header_the_browser_cannot_send_is_refused_and_nothing_is_opened() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let err = Fetch::new()
         .websocket(
             http::Request::builder()
@@ -229,7 +246,7 @@ async fn a_header_the_browser_cannot_send_is_refused_and_nothing_is_opened() {
         .await
         .expect_err("a header the browser cannot send must fail the call");
     let constructed = log_field("constructed").as_f64().unwrap_or(-1.0);
-    restore(&real);
+    restore();
 
     assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
     assert!(
@@ -250,7 +267,7 @@ async fn a_header_the_browser_cannot_send_is_refused_and_nothing_is_opened() {
 /// test says so rather than letting the two files look like they disagree.
 #[wasm_bindgen_test]
 async fn every_other_header_is_refused_too_including_the_handshakes_own() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let mut seen = Vec::new();
     for name in [
         "host",
@@ -274,7 +291,7 @@ async fn every_other_header_is_refused_too_including_the_handshakes_own() {
         seen.push((name, err.kind().clone(), err.to_string()));
     }
     let constructed = log_field("constructed").as_f64().unwrap_or(-1.0);
-    restore(&real);
+    restore();
 
     for (name, kind, text) in &seen {
         assert_eq!(*kind, ErrorKind::Unsupported, "{name}: {text}");
@@ -294,7 +311,7 @@ async fn every_other_header_is_refused_too_including_the_handshakes_own() {
 /// accepted the header and then dropped it fails here.
 #[wasm_bindgen_test]
 async fn a_subprotocol_reaches_the_constructor() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let ws = Fetch::new()
         .websocket(
             http::Request::builder()
@@ -308,7 +325,7 @@ async fn a_subprotocol_reaches_the_constructor() {
         .expect("a subprotocol is the one thing the browser can carry");
     let protocols = log_array("protocols").get(0);
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(
         strings(&protocols),
@@ -323,11 +340,11 @@ async fn a_subprotocol_reaches_the_constructor() {
 /// subprotocol asks for.
 #[wasm_bindgen_test]
 async fn no_subprotocol_means_the_one_argument_constructor() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let ws = open(ANY).await;
     let protocols = log_array("protocols").get(0);
     drop(ws);
-    restore(&real);
+    restore();
 
     assert!(
         protocols.is_null(),
@@ -345,7 +362,7 @@ async fn no_subprotocol_means_the_one_argument_constructor() {
 /// URL that reaches the constructor is the rewritten one.
 #[wasm_bindgen_test]
 async fn http_and_https_are_opened_as_ws_and_wss() {
-    let real = install("[['open']]");
+    install("[['open']]");
     for uri in [
         "http://example.invalid/one",
         "https://example.invalid/two?x=1",
@@ -355,7 +372,7 @@ async fn http_and_https_are_opened_as_ws_and_wss() {
         drop(open(uri).await);
     }
     let urls = strings(&log_field("urls"));
-    restore(&real);
+    restore();
 
     assert_eq!(
         urls,
@@ -370,13 +387,13 @@ async fn http_and_https_are_opened_as_ws_and_wss() {
 
 #[wasm_bindgen_test]
 async fn a_scheme_that_is_not_a_websocket_scheme_is_refused() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let err = Fetch::new()
         .websocket(req("ftp://example.invalid/socket"))
         .await
         .expect_err("ftp is not a WebSocket scheme");
     let constructed = log_field("constructed").as_f64().unwrap_or(-1.0);
-    restore(&real);
+    restore();
 
     assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
     assert_eq!(constructed, 0.0, "nothing may be constructed for it");
@@ -395,12 +412,12 @@ async fn a_scheme_that_is_not_a_websocket_scheme_is_refused() {
 /// exists to kill.
 #[wasm_bindgen_test]
 async fn two_messages_that_arrive_before_the_first_poll_are_both_kept() {
-    let real = install("[['open'],['text','first'],['text','second']]");
+    install("[['open'],['text','first'],['text','second']]");
     let mut ws = open(ANY).await;
     let a = ws.next().await;
     let b = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(
         a.expect("a first message").expect("not an error"),
@@ -417,11 +434,11 @@ async fn two_messages_that_arrive_before_the_first_poll_are_both_kept() {
 /// the next test for why that is asserted separately.
 #[wasm_bindgen_test]
 async fn a_binary_message_arrives_as_bytes() {
-    let real = install("[['open'],['binary',[1,2,255]]]");
+    install("[['open'],['binary',[1,2,255]]]");
     let mut ws = open(ANY).await;
     let got = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(
         got.expect("a message").expect("not an error"),
@@ -437,13 +454,13 @@ async fn a_binary_message_arrives_as_bytes() {
 /// `Decode` error, and no test that only sends text would notice.
 #[wasm_bindgen_test]
 async fn binary_type_is_set_to_arraybuffer_before_anything_can_arrive() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let ws = open(ANY).await;
     let last = log_field("last");
     let binary_type = js_sys::Reflect::get(&last, &JsValue::from_str("binaryType"))
         .expect("the stand-in has the property");
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(binary_type.as_string().as_deref(), Some("arraybuffer"));
 }
@@ -454,11 +471,11 @@ async fn binary_type_is_set_to_arraybuffer_before_anything_can_arrive() {
 /// and reachable only from a stand-in.
 #[wasm_bindgen_test]
 async fn a_message_that_is_neither_text_nor_bytes_is_a_decode_error() {
-    let real = install("[['open'],['raw',7]]");
+    install("[['open'],['raw',7]]");
     let mut ws = open(ANY).await;
     let got = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     let err = got
         .expect("an item")
@@ -475,12 +492,12 @@ async fn a_message_that_is_neither_text_nor_bytes_is_a_decode_error() {
 /// would pass every other test in this file.
 #[wasm_bindgen_test]
 async fn the_close_code_and_reason_are_reported() {
-    let real = install("[['open'],['close',4001,'so long',true]]");
+    install("[['open'],['close',4001,'so long',true]]");
     let mut ws = open(ANY).await;
     let got = ws.next().await;
     let after = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(
         got.expect("a close message")
@@ -499,11 +516,11 @@ async fn the_close_code_and_reason_are_reported() {
 /// `Close(Some(1005))` would invent a code the peer did not send.
 #[wasm_bindgen_test]
 async fn a_close_with_no_status_is_reported_as_no_frame_at_all() {
-    let real = install("[['open'],['close',1005,'',true]]");
+    install("[['open'],['close',1005,'',true]]");
     let mut ws = open(ANY).await;
     let got = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(
         got.expect("a close message").expect("not an error"),
@@ -518,12 +535,12 @@ async fn a_close_with_no_status_is_reported_as_no_frame_at_all() {
 /// still ends.
 #[wasm_bindgen_test]
 async fn a_connection_that_broke_is_an_error_and_not_a_close_message() {
-    let real = install("[['open'],['close',1006,'',false]]");
+    install("[['open'],['close',1006,'',false]]");
     let mut ws = open(ANY).await;
     let got = ws.next().await;
     let after = ws.next().await;
     drop(ws);
-    restore(&real);
+    restore();
 
     let err = got
         .expect("an item")
@@ -536,12 +553,12 @@ async fn a_connection_that_broke_is_an_error_and_not_a_close_message() {
 /// The seam's own contract: "a `Stream` that has ended stays ended."
 #[wasm_bindgen_test]
 async fn the_stream_stays_ended() {
-    let real = install("[['open'],['close',1000,'bye',true]]");
+    install("[['open'],['close',1000,'bye',true]]");
     let mut ws = open(ANY).await;
     let _close = ws.next().await;
     let ends = [ws.next().await, ws.next().await, ws.next().await];
     drop(ws);
-    restore(&real);
+    restore();
 
     assert!(ends.iter().all(Option::is_none), "{ends:?}");
 }
@@ -558,7 +575,7 @@ async fn the_stream_stays_ended() {
 /// reason `caps::supports_streaming_request_body` exists.
 #[wasm_bindgen_test]
 async fn text_and_binary_go_out_as_the_two_things_they_are() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let mut ws = open(ANY).await;
     ws.send(Message::Text("hello".into())).await.expect("text");
     ws.send(Message::Binary(bytes::Bytes::from_static(&[7, 8])))
@@ -568,7 +585,7 @@ async fn text_and_binary_go_out_as_the_two_things_they_are() {
     let first = sent.get(0);
     let second = sent.get(1);
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(first.as_string().as_deref(), Some("hello"));
     assert!(
@@ -587,7 +604,7 @@ async fn text_and_binary_go_out_as_the_two_things_they_are() {
 /// carry a code.
 #[wasm_bindgen_test]
 async fn closing_the_sink_closes_the_socket_with_the_callers_code() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let mut ws = open(ANY).await;
     ws.send(Message::Close(Some(CloseFrame {
         code: 4002,
@@ -599,7 +616,7 @@ async fn closing_the_sink_closes_the_socket_with_the_callers_code() {
     let count = closes.length();
     let first = js_sys::Array::from(&closes.get(0));
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(count, 1, "exactly one close(..) call");
     assert_eq!(first.get(0).as_f64(), Some(4002.0));
@@ -611,13 +628,13 @@ async fn closing_the_sink_closes_the_socket_with_the_callers_code() {
 /// stands for, and the one the seam's `None` means.
 #[wasm_bindgen_test]
 async fn closing_with_no_frame_calls_close_with_no_arguments() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let mut ws = open(ANY).await;
     ws.send(Message::Close(None)).await.expect("close");
     let first = js_sys::Array::from(&log_array("closes").get(0));
     let (code, reason) = (first.get(0), first.get(1));
     drop(ws);
-    restore(&real);
+    restore();
 
     assert!(code.is_null(), "no code: {code:?}");
     assert!(reason.is_null(), "no reason: {reason:?}");
@@ -630,7 +647,7 @@ async fn closing_with_no_frame_calls_close_with_no_arguments() {
 /// `send()`.
 #[wasm_bindgen_test]
 async fn sending_after_the_peer_closed_is_an_error_rather_than_a_silent_drop() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let mut ws = open(ANY).await;
     fire(r#"["close",1000,"bye",true]"#);
     let err = ws
@@ -639,7 +656,7 @@ async fn sending_after_the_peer_closed_is_an_error_rather_than_a_silent_drop() {
         .expect_err("a closed socket cannot carry a message");
     let sent = log_array("sent").length();
     drop(ws);
-    restore(&real);
+    restore();
 
     assert_eq!(*err.kind(), ErrorKind::Body, "{err}");
     assert_eq!(sent, 0, "nothing may reach the browser's send()");
@@ -655,12 +672,12 @@ async fn sending_after_the_peer_closed_is_an_error_rather_than_a_silent_drop() {
 /// stream.
 #[wasm_bindgen_test]
 async fn dropping_the_socket_closes_it() {
-    let real = install("[['open']]");
+    install("[['open']]");
     let ws = open(ANY).await;
     let before = log_array("closes").length();
     drop(ws);
     let after = log_array("closes").length();
-    restore(&real);
+    restore();
 
     assert_eq!(before, 0, "nothing closed while the socket was held");
     assert_eq!(after, 1, "dropping the socket must close it");
@@ -677,7 +694,7 @@ async fn dropping_the_connect_future_closes_the_socket_it_had_opened() {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
-    let real = install("[]");
+    install("[]");
     {
         let f = Fetch::new();
         let mut fut = Box::pin(f.websocket(req(ANY)));
@@ -693,7 +710,7 @@ async fn dropping_the_connect_future_closes_the_socket_it_had_opened() {
     }
     let closes = log_array("closes").length();
     let constructed = log_field("constructed").as_f64().unwrap_or(-1.0);
-    restore(&real);
+    restore();
 
     assert_eq!(constructed, 1.0, "the socket was opened");
     assert_eq!(closes, 1, "and dropping the future closed it");
@@ -720,6 +737,10 @@ async fn dropping_the_connect_future_closes_the_socket_it_had_opened() {
 /// one engine's answer is the shape that has bitten this crate before.
 #[wasm_bindgen_test]
 async fn a_handshake_against_a_server_that_is_not_a_websocket_server_fails() {
+    // First, not last: this is the one test that must run against the real
+    // constructor, and a test above it that failed before its own
+    // `restore` would otherwise hand it a stand-in.
+    restore();
     let href = web_sys::window()
         .expect("wasm_bindgen_test_configure!(run_in_browser) guarantees a window")
         .location()
