@@ -699,10 +699,13 @@ where
 /// honest statement about that half is that **no test here pins it, and
 /// none can**.
 ///
-/// Measured, not assumed: replacing this match's last two arms with
-/// `Err(_) => Ok(true)` leaves the whole `http-ng-h3` suite green, all 31
+/// Measured, not assumed, and **re-measured after streaming landed**, since
+/// a claim about which mutations a suite catches goes stale the moment the
+/// suite grows: replacing this match's last two arms with
+/// `Err(_) => Ok(true)` leaves the whole `http-ng-h3` suite green, all 44
 /// tests, `a_connection_that_dies_mid_body_is_still_an_error` in
-/// `tests/stop_sending.rs` included. The reasoning that expected a red line
+/// `tests/stop_sending.rs` included — and now also the six streaming tests
+/// that go through this function on every frame. The reasoning that expected a red line
 /// there — "swallowing a `ConnectionError` means `recv_response` hangs on a
 /// dead connection" — is wrong: `recv_response` on a connection whose peer
 /// has gone returns an error of its own, and it arrives as the same
