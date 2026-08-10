@@ -309,7 +309,7 @@ fn check_question(dns: &Dns, name: &str, query: Query) -> Result<(), DohError> {
     let got_name = question.domain_name.to_string();
     let got_name = got_name.strip_suffix('.').unwrap_or(&got_name);
     let got = format!("{got_name}/{:?}", question.q_type);
-    if !got_name.eq_ignore_ascii_case(name)
+    if !got_name.eq_ignore_ascii_case(name.trim_end_matches('.'))
         || question.q_type != query.qtype()
         || question.q_class != QClass::IN
     {

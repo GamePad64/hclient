@@ -64,22 +64,25 @@
 //! type `Native<R, T, Doh<Native<R, T, Doh<Native<…>>>>>`, which has no
 //! finite spelling: writing it needs a type alias that mentions itself, and
 //! `rustc` answers `E0072`/`E0391` — a size or cycle error at compile time,
-//! never a stack overflow at run time. `tests/no_cycle.rs` contains the
-//! recursive definition, commented out with the error the compiler gives
-//! for it, and the *finite* two-level composition next to it, which does
-//! compile and is the shape a caller actually wants (a DoH resolver over a
-//! transport that resolves by IP literal only).
+//! never a stack overflow at run time. `tests/no_cycle.rs` carries the
+//! recursive definitions in a comment, the four compiler transcripts they
+//! actually produce, and next to them the *finite* two-level composition,
+//! which does compile and is the shape a caller wants (a DoH resolver over
+//! a transport that resolves by IP literal only).
 //!
 //! **The escape hatch, named where it can be found:** the guard is a
 //! property of *not erasing*. `Arc<dyn Resolve>` — or any other boxed
-//! resolver — makes every level of that nesting the same type, and the
-//! regress becomes a runtime one. This crate stores its transport by value
-//! and is generic over it for exactly that reason; a later convenience that
-//! boxed the resolver would remove the guard silently. `Resolve` is not
-//! object-safe today (its methods return `impl Stream`), so the hatch is
-//! shut by accident as well as on purpose — but "not object-safe" is not a
-//! promise anyone has made, and this paragraph is the place to look when
-//! someone proposes making it so.
+//! resolver — would make every level of that nesting the same type, and the
+//! regress a runtime one. This crate stores its transport by value and is
+//! generic over it for exactly that reason. Today the hatch is shut twice
+//! over, and both halves were measured rather than argued: taking rustc's
+//! own `Box` suggestion produces a type that is no longer a `Resolve`
+//! (`Box<C>` is not a `Transport`), and `dyn Resolve` cannot be written at
+//! all, because `lookup_ipv4` returns an `impl Trait`. **The second is an
+//! accident**, not a promise anyone has made — `impl Stream` was chosen for
+//! RFC 8305 — so this paragraph is the place to look when someone proposes
+//! an object-safe `Resolve` or a blanket `impl Transport for Box<T>`.
+//! Neither would be a change to this crate.
 //!
 //! ## 3. What happens when the DoH server is unreachable?
 //!
@@ -169,9 +172,9 @@ const DNS_MESSAGE: &str = "application/dns-message";
 /// not silently become the slowest thing in a connection attempt. Override
 /// with [`Doh::timeouts`].
 const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
-    connect: Some(Duration::from_secs(120)),
-    first_byte: Some(Duration::from_secs(120)),
-    between_bytes: Some(Duration::from_secs(120)),
+    connect: Some(Duration::from_secs(2)),
+    first_byte: Some(Duration::from_secs(5)),
+    between_bytes: Some(Duration::from_secs(5)),
 };
 
 /// The absence of a fallback resolver, as a type.
@@ -426,7 +429,10 @@ where
         let mut req = http::Request::new(RequestBody::Full(body));
         *req.method_mut() = http::Method::POST;
         *req.uri_mut() = self.endpoint.clone();
-
+        req.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static(DNS_MESSAGE),
+        );
         // RFC 8484 §4.1: a client SHOULD say what it can read back. A
         // server that answers with anything else is refused below rather
         // than parsed hopefully.

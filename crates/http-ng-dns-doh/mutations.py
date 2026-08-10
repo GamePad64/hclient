@@ -96,8 +96,8 @@ MUTATIONS = [
     (
         "M12 the fallback is consulted even when DoH answered",
         "lib.rs",
-        "            Ok(answer) => answer.addrs.into_iter().map(Ok).collect(),\n            Err(e) => self.recover(name, query, e).await,",
-        "            Ok(_) => {\n                self.recover(name, query, DohError::NotAResponse).await\n            }\n            Err(e) => self.recover(name, query, e).await,",
+        "            Ok(answer) => answer.addrs.into_iter().map(Ok).collect(),\n            Err(e) => self.recover(name, family, e).await,",
+        "            Ok(_) => self.recover(name, family, DohError::NotAResponse).await,\n            Err(e) => self.recover(name, family, e).await,",
         1,
     ),
     (
@@ -166,14 +166,14 @@ MUTATIONS = [
     (
         "M22 an IP literal is sent to the DoH server as a name",
         "lib.rs",
-        "        if let Some(addr) = ip_literal(name) {\n            return match (addr, query) {",
-        "        if let Some(addr) = ip_literal(name).filter(|_| false) {\n            return match (addr, query) {",
+        "        if let Some(addr) = ip_literal(name) {\n            return match (addr, family) {",
+        "        if let Some(addr) = ip_literal(name).filter(|_| false) {\n            return match (addr, family) {",
         1,
     ),
     (
         "M23 an IP literal of the wrong family is an address rather than an empty stream",
         "lib.rs",
-        "                (IpAddr::V4(_), Query::A) | (IpAddr::V6(_), Query::Aaaa) => {\n                    vec![Ok(ResolvedAddr { addr, ttl: None })]\n                }\n                _ => Vec::new(),",
+        "                (IpAddr::V4(_), Family::V4) | (IpAddr::V6(_), Family::V6) => {\n                    vec![Ok(ResolvedAddr { addr, ttl: None })]\n                }\n                _ => Vec::new(),",
         "                _ => vec![Ok(ResolvedAddr { addr, ttl: None })],",
         1,
     ),
@@ -229,8 +229,8 @@ MUTATIONS = [
     (
         "M31 the default timeout values are minutes rather than seconds",
         "lib.rs",
-        "    connect: Some(Duration::from_secs(2)),\n    first_byte: Some(Duration::from_secs(5)),\n    between_bytes: Some(Duration::from_secs(5)),",
-        "    connect: Some(Duration::from_secs(120)),\n    first_byte: Some(Duration::from_secs(120)),\n    between_bytes: Some(Duration::from_secs(120)),",
+        "    connect: Some(Duration::from_secs(2)),\n    first_byte: Some(Duration::from_secs(5)),\n    between_bytes: Some(Duration::from_secs(5)),\n};",
+        "    connect: Some(Duration::from_secs(120)),\n    first_byte: Some(Duration::from_secs(120)),\n    between_bytes: Some(Duration::from_secs(120)),\n};",
         1,
     ),
     (
@@ -250,15 +250,15 @@ MUTATIONS = [
     (
         "M34 the question name is compared case-sensitively",
         "wire.rs",
-        "    if !got_name.eq_ignore_ascii_case(name.trim_end_matches('.'))",
-        "    if got_name != name.trim_end_matches('.')",
+        "    if !got_name.eq_ignore_ascii_case(name.trim_end_matches('.'))\n",
+        "    if got_name != name.trim_end_matches('.')\n",
         1,
     ),
     (
         "M35 a trailing dot on the name asked for is not stripped before comparison",
         "wire.rs",
-        "    if !got_name.eq_ignore_ascii_case(name.trim_end_matches('.'))",
-        "    if !got_name.eq_ignore_ascii_case(name)",
+        "    if !got_name.eq_ignore_ascii_case(name.trim_end_matches('.'))\n",
+        "    if !got_name.eq_ignore_ascii_case(name)\n",
         1,
     ),
     (
