@@ -510,6 +510,43 @@ async fn the_close_code_and_reason_are_reported() {
     assert!(after.is_none(), "the stream ends after the peer's close");
 }
 
+/// **A stream that has ended stays ended**, and a browser can still fire
+/// `onmessage` after `onclose` — an event queued before the close is
+/// dispatched afterwards, and nothing in the DOM forbids it.
+///
+/// Without `on_message`'s `ended` guard the late text is pushed onto the
+/// queue behind the close, so `next()` yields `Close` and then yields a
+/// `Text` *after* it. That is not a lost message, which would be
+/// forgivable; it is a stream that ends and then speaks, which no caller
+/// can be asked to handle.
+///
+/// This test exists because the guard survived a mutation run: every
+/// other plan in this file delivers its messages before the close, so
+/// deleting the guard changed nothing anywhere.
+#[wasm_bindgen_test]
+async fn a_message_that_arrives_after_the_close_is_not_delivered() {
+    install("[['open'],['close',1000,'bye',true],['text','too late']]");
+    let mut ws = open(ANY).await;
+    let first = ws.next().await;
+    let second = ws.next().await;
+    drop(ws);
+    restore();
+
+    assert_eq!(
+        first
+            .expect("the close arrives")
+            .expect("a clean close is not an error"),
+        Message::Close(Some(CloseFrame {
+            code: 1000,
+            reason: "bye".into(),
+        }))
+    );
+    assert!(
+        second.is_none(),
+        "the stream ended at the close; it must not speak again: {second:?}"
+    );
+}
+
 /// RFC 6455 §7.4.1's 1005 is "no status code was actually present" and is
 /// never on the wire: it is how a browser reports the empty close payload
 /// that `tungstenite` reports to `http-ng-native` as `None`. Reporting

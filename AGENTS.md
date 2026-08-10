@@ -358,8 +358,36 @@ cost 404.6 ms of extra DNS time and now costs 0.8 ms.
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
 behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
-in v0.3**, in its own crate `http-ng-h3`, over QUIC. WebSocket is still
-later — see [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
+in v0.3**, in its own crate `http-ng-h3`, over QUIC. **WebSocket landed in
+v0.3 (W4)** — and not as a method on `Transport`: it is its own trait pair,
+`WebSocketConnect` (what a backend implements — a backend is not a
+connection) and `WebSocket` (the message channel), so a transport that
+cannot do it is a **compile error** rather than a runtime `Unsupported`.
+`Capabilities::upgrade` is gone with it: four variants, and nothing ever
+branched on any of them.
+
+The seam is message oriented on purpose. "Hand back the socket after the
+101" is implementable by exactly one of the four backends here, and the
+three it shuts out include the browser — where `WebSocket` is a separate
+global that a `fetch`-shaped `Transport` cannot reach at all. That the
+browser then fitted the trait **unchanged** is the evidence the shape was
+right, and it settled two things the design could only argue: the seam's
+`!Send` allowance has a real subject (`FetchWebSocket` is `Rc<RefCell<..>>`
+plus three `Closure`s and needed no `unsafe impl Send`, because no `Client`
+sits between this seam and its caller), and `Message` has no `Ping`/`Pong`
+because a browser has neither `send(ping)` nor `onping` — the variant would
+have had no honest right-hand side.
+
+Framing on native is `tungstenite`, driven by us rather than through an
+async wrapper, and the reason is not taste: `WebSocketContext` takes the
+stream as a *parameter*, so the shim can borrow the poll `Context` for one
+call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
+calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
+measurements and the decisions; what is deliberately still missing is a
+timeout — **an open WebSocket has no bound of any kind today**, only the
+handshake reads `Timeouts::connect`.
+
+See [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
 deliberately does not do, and
 [`docs/v03-acceptance.md`](docs/v03-acceptance.md) for what v0.3 does,
 does not, and has not checked.
