@@ -63,6 +63,19 @@ pub enum Behaviour {
     /// the machine is doing. `tests/streaming.rs`'s buffered-cancellation
     /// test needs exactly that.
     ReadSlowly(std::time::Duration),
+    /// Send the whole response — head, body, end — **without ever reading
+    /// the request body**, and then hold the request stream open for `d`
+    /// rather than dropping it.
+    ///
+    /// The holding is the point, and it is what tells this apart from
+    /// [`Behaviour::Echo`]. Dropping an unread `RecvStream` sends
+    /// `STOP_SENDING`, which lets a blocked client stop writing; keeping it
+    /// alive leaves the client's flow-control window full with no way out.
+    /// So the client is certainly still writing while the response is
+    /// there to be read — which is the one arrangement in which a response
+    /// body that waited on the request body would hang instead of merely
+    /// being slow.
+    AnswerWithoutReading(std::time::Duration),
 }
 
 /// What one request's body looked like **from the server**, with the
@@ -365,6 +378,22 @@ fn start_inner(
                             r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             if behaviour == Behaviour::DieAfterHead {
                                 quic.close(1u32.into(), b"dying on purpose");
+                                return;
+                            }
+                            if let Behaviour::AnswerWithoutReading(d) = behaviour {
+                                let resp = http::Response::builder()
+                                    .status(http::StatusCode::OK)
+                                    .body(())
+                                    .unwrap();
+                                if stream.send_response(resp).await.is_err() {
+                                    return;
+                                }
+                                let _ =
+                                    stream.send_data(Bytes::from_static(b"hello over h3")).await;
+                                let _ = stream.finish().await;
+                                // Holding `stream`, and therefore its unread
+                                // receive half, so no `STOP_SENDING` goes out.
+                                tokio::time::sleep(d).await;
                                 return;
                             }
                             if matches!(

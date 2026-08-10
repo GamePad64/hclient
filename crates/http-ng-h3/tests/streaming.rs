@@ -463,6 +463,60 @@ async fn a_rewindable_body_whose_factory_streams_is_actually_sent() {
     assert_eq!(s.bodies().first().unwrap().bytes, FRAMES * CHUNK);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_upload_does_not_stall_the_response_body() {
+    // The other half of duplex, and the one nothing else here reaches.
+    //
+    // `H3Body::poll_frame` drives the request pump before it reads the
+    // response, and it must **not** hand back the pump's `Pending` as its
+    // own: the two halves of a stream are independent, so a write that
+    // cannot proceed has to leave the read alone. Written as a rule in the
+    // type's doc, and for a while that was all it was — the mutation that
+    // returns `Poll::Pending` whenever the pump is unfinished left all 43
+    // tests green. This is the test that was missing.
+    //
+    // The server sends the whole response and then holds the request stream
+    // open without reading it, so no `STOP_SENDING` comes back and the
+    // client's flow-control window stays full: the pump is stuck for the
+    // rest of the test, by construction. A body that waited on it would
+    // never yield the response that is already sitting in the socket.
+    const FRAMES: usize = 4096;
+
+    let s = server::start(Behaviour::AnswerWithoutReading(Duration::from_secs(30)));
+    let t = h3(&s.cert_der);
+    let (body, pulled) = repeat(FRAMES, 16 * 1024);
+
+    let r = tokio::time::timeout(
+        Duration::from_secs(5),
+        t.execute(post(s.addr, "/stalled", body)),
+    )
+    .await
+    .expect("the head is sent before anything is read")
+    .expect("h3 request");
+    assert_eq!(r.status(), 200);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), text(r))
+            .await
+            .expect(
+                "the response body is on the wire and the request body cannot \
+                 move: a body that returned the pump's Pending as its own \
+                 hangs here"
+            ),
+        "hello over h3"
+    );
+
+    // And the upload really was stuck, or the paragraph above describes a
+    // situation the test never entered.
+    let n = pulled.load(Ordering::SeqCst);
+    println!("frames pulled while the peer read nothing: {n} of {FRAMES}");
+    assert!(
+        n < FRAMES,
+        "the whole body got through, so the pump was never blocked and this \
+         test proves nothing: {n} of {FRAMES}"
+    );
+}
+
 // ── what streaming does NOT unlock ──────────────────────────────────────
 
 /// One data frame and then trailers — the shape `Capabilities::
