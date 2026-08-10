@@ -534,7 +534,35 @@ enum Pumped {
 ///
 /// It also cannot slide *before* the head by accident: `send_request`
 /// yields the `SendStream` this takes, so there is no `send` to ask until
-/// the head is on the wire.
+/// the head is on the wire. The mutation that would prove it cannot be
+/// written at all — the tolerance *is* "stop pumping and let `resp_fut`
+/// answer", and before `send_request` returns there is neither a `send` to
+/// ask nor a `resp_fut` to defer to.
+///
+/// # What the tests pin, and what they do not
+///
+/// Measured, in `tests/stream_reset.rs`, and stated this way round because
+/// a guard that is only named is worse than none:
+///
+/// - Deleting this gate is killed twice —
+///   `a_server_that_stops_reading_the_body_still_gets_its_response_read`
+///   fails at once, and `a_stalled_streaming_body_…` **hangs** into its
+///   bound. Putting the tolerance at `poll_capacity` instead of here is
+///   killed by the second of those alone, which is what that test exists
+///   for.
+/// - Widening it — tolerating `Ready(Err(_))` as well, or treating every
+///   pump error in [`exchange`] as "stop pumping" — is killed by
+///   `a_connection_that_dies_mid_request_is_still_an_error`, **on the
+///   error's kind and not on its existence**. The widened version still
+///   fails that request: the deferral hands the question to `resp_fut`,
+///   which answers `ConnectionEndedWithTheRequestQueued`, an
+///   `ErrorKind::Connect` where this version says `ErrorKind::Body`. The
+///   `expect_err` in that test would not have caught it; the `assert_eq!`
+///   on the kind beside it does, and relaxing that assertion would quietly
+///   remove the guard.
+/// - The rows of the table above are read from h2's source, not measured,
+///   except `poll_capacity`'s — that one is the defect, and it reproduced
+///   on every run.
 fn poll_pump(
     body: &mut OutgoingBody,
     send: &mut h2::SendStream<Bytes>,

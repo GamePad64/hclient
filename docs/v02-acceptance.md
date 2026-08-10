@@ -22,6 +22,7 @@ do.
 | Adding a bound does not change the client's type | `crates/http-ng/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
 | A cookie the server set comes back on the next request | `crates/http-ng/tests/cookies.rs` — a loopback server recording the `Cookie` header it was actually sent, never the jar's view of itself, plus the same server with no jar configured as the control. A jar that stores perfectly and attaches nothing passes every test in `http-ng-cookie` and fails this one |
 | Cookies are handled per redirect hop, not per operation | the same file, in both directions: a `Set-Cookie` on a 302 reaches the very next hop, and a cookie scoped `Path=/one` does **not** ride a same-origin 302 into `/two` — `next_hop` clones the previous hop's headers and `SENSITIVE_HEADERS` strips `Cookie` only across origins, so nothing but re-deriving it per hop gets this right |
+| A server that answers without reading the request body does not lose its response | `crates/http-ng-native/tests/stream_reset.rs` — a real `h2::server` that answers and then drops the request stream, which is what makes h2 send `RST_STREAM(NO_ERROR)`. Head **and** body are asserted, because the defect had two halves and fixing one leaves a `200` whose body fails. Three controls sit beside it: a connection that dies at the same moment, a reset whose reason is not `NO_ERROR`, and a stalled streaming body that puts the reset at a different write |
 | A client-side jar against a jar-owning backend is refused, not ignored | the same file — `UnsupportedCapability { what: "cookie_jar" }` at `build()`, with both controls beside it: the same jar against a backend that keeps none builds, and a client that never mentioned cookies builds against one that does (which is the line `Client::new()` takes in a browser) |
 
 ## The rule this vertical kept applying
@@ -96,6 +97,132 @@ our own `poll_frame` to drive cannot be written at all. v0.2 therefore
 drives the `h2` crate directly, exactly as it drives `http1::Connection`
 today. The design doc's `http2 = ["hyper/http2"]` was not merely a worse
 option; it was not an option.
+
+## The defect v0.3 reported here, and the half of it the report did not see
+
+`docs/v03-acceptance.md` ends its `STOP_SENDING` section with a sentence
+about this crate: *"`http-ng-native`'s HTTP/2 path has the same shape …
+Same discard, different protocol."* It does, it was, and it is fixed. What
+the report could not see from reading is that the discard happened **twice**
+on this path, and that fixing the half it named leaves the other half
+delivering a `200` whose body cannot be read.
+
+RFC 9113 §8.1 carries the same MUST NOT as RFC 9114 §4.1: *"A server MAY
+request that the client abort transmission of a request without error by
+sending a `RST_STREAM` with an error code of `NO_ERROR` after sending a
+complete response … Clients **MUST NOT** discard responses as a result of
+receiving such a `RST_STREAM`."* h2's own server produces the case without
+being asked to: dropping a request `RecvStream` while the response is
+already complete schedules exactly that frame
+(`h2-0.4.15/src/proto/streams/streams.rs:1601-1618`, `maybe_cancel`).
+
+**Half one, the reported one.** `poll_pump` turned `poll_capacity`'s
+`Poll::Ready(None)` into `StreamClosedWhileSendingTheRequestBody` — under a
+comment that already named the case — and `exchange` returned
+`Failed::Sent` on it **without ever polling `resp_fut`**.
+
+**Half two, found by fixing half one.** h2 records end-of-stream as a
+*state* rather than as an event (`recv_data` with `END_STREAM` calls
+`state.recv_close()` and queues nothing, `.../recv.rs:714`), and the
+`RST_STREAM` arriving afterwards **overwrites that state**
+(`.../state.rs:258-290`). The frames already received are still handed out;
+the clean end behind them is gone, so once the queue drains
+`ensure_recv_open` returns the reset as an error. Measured on this transport
+with only half one fixed: `status=200 version=HTTP/2.0`, then the body
+failing with `Reset(StreamId(1), NO_ERROR, Remote)`. A response whose body
+cannot be read is a response discarded by a slower route.
+
+**One question the report could not answer by reading, answered by
+measurement.** Does h2's `ResponseFuture` still resolve after the peer's
+`RST_STREAM(NO_ERROR)`? **Yes** — `pending_recv` keeps the decoded response
+and `poll_response` hands it out (`.../recv.rs:336-365`) — so the fix has
+h3's shape after all rather than a different one. That was checked before
+the fix was written, not assumed from the h3 case.
+
+**The fix is one question asked in one place, and one reason code trusted
+in another.** On the write side, `SendStream::poll_reset` at the top of the
+pump loop; on the read side, `H2Body` ends the body rather than failing it
+when the reset reason is `NO_ERROR`. The second is what hyper does, at
+`hyper-1.11.0/src/body/incoming.rs:250-259`, for the reason RFC 9113 gives:
+`NO_ERROR` *is* the server's statement that the response was complete, and
+the `END_STREAM` that would prove it independently has been overwritten by
+the time anything can look.
+
+**Why `poll_reset` rather than reading each write's error.** Four writes on
+the request stream can meet a reset stream, and three of them fail with a
+`UserError::InactiveStreamId` whose public shape (`reason() == None`,
+`is_reset() == false`) cannot be told apart from an API misuse of ours —
+narrowing by variant would have to be by `Display` string. Asking first
+means those three never see the reset. hyper asks the same question in the
+same place (`.../proto/h2/mod.rs:145-156`) and answers it the **opposite**
+way, with an error, which is not a disagreement about the RFC: hyper's body
+pipe is a separate spawned task from its response future, so failing the
+write there leaves the response alone. Here they are the same future,
+because this module has nowhere to spawn.
+
+**The fourth site is not this defect and is not touched.**
+`send.send_data(now, false)` cannot meet a reset stream: h2 reclaims a reset
+stream's send capacity (`.../send.rs:467-476`), `send.capacity()` is read in
+the same synchronous block as the `send_data` that follows it, and no frame
+can be processed in between, since the connection is only driven from
+`exchange`'s own poll. Zero capacity routes to `poll_capacity` instead.
+
+### What the tests pin, and what they do not
+
+`crates/http-ng-native/tests/stream_reset.rs`, four tests against a real
+`h2::server` on a real socket. A one-megabyte request body — sixteen times
+the 65 535-byte default flow-control window, which these servers never
+enlarge because they never read a request body — takes the race out, so
+they measure the decision rather than the scheduler. The defect reproduced
+on the first run and on every run.
+
+Eight mutations, against an anchor of **124 tests** in `cargo nextest run -p
+http-ng-native --all-features` (1025 workspace-wide). Seven killed, one
+survived:
+
+| mutation | verdict | killed by |
+|---|---|---|
+| revert the write half (delete the `poll_reset` gate) | killed | `a_server_that_stops_reading_the_body_still_gets_its_response_read`, at once; `a_stalled_streaming_body_…`, by hanging into its 30 s bound |
+| revert the read half (delete both `stopped_after_a_complete_response` checks) | killed | the same two, both on the body |
+| revert both — the code as it stood before | killed | the same two |
+| tolerance moved from `poll_reset` to `poll_capacity`'s `Ready(None)` | killed | `a_stalled_streaming_body_…`, by hanging — which is the claim its doc comment makes, measured rather than asserted |
+| widen the write tolerance: tolerate `poll_reset`'s `Ready(Err(_))` too | killed | `a_connection_that_dies_mid_request_is_still_an_error` — **and see below** |
+| widen it maximally: `exchange` treats every `poll_pump` error as "stop pumping" | killed | the same test, the same way |
+| widen the read tolerance: end the body on **every** error | killed | `a_reset_that_is_not_no_error_still_fails_the_response_body` |
+| move the tolerance before the head: delete both pre-head `Failed::NotSent` returns | **survived** | nothing — see below |
+
+**The two widenings are killed on the error's *kind*, not on its
+existence, and that is worth stating plainly** — it is the h3 fix's lesson
+applied to its own report. Under either widening the dying connection still
+produces an error, because the pump's deferral hands the question to
+`resp_fut`, which then reports `ConnectionEndedWithTheRequestQueued`. What
+changes is `ErrorKind`: `Connect` where the narrow version says `Body`. The
+`expect_err` in that test would not have caught either mutation; the
+`assert_eq!` on the kind beside it does. So the guard is real but it is a
+guard about categorisation, and a future edit that relaxes the kind
+assertion silently removes it.
+
+**The survivor is a mutation of a neighbour, because the intended one
+cannot be written.** "Move the tolerance before the request head" has no
+expression here: the tolerance *is* "stop pumping and let `resp_fut`
+answer", and before `send_request` returns there is no `SendStream` to ask
+and no `resp_fut` to defer to — the compiler refuses, which is the same
+by-construction argument `http-ng-h3`'s `write_after_head` makes. The
+nearest expressible mutation instead deletes `exchange`'s two **pre-head**
+`Failed::NotSent` returns, and all 124 tests stay green. That is a real
+gap, and it is not this defect's: **no test in this repository exercises a
+dead *pooled* h2 connection being walked past to a fresh one.** The HTTP/1
+equivalent, `pool.rs`'s `checkout_walks_past_a_dead_connection_to_a_live_one`,
+has no h2 counterpart. Recorded here rather than closed, because closing it
+is new coverage for the pool rather than a fix for the discard.
+
+**Unrelated, found while counting anchors, and left alone:** that same
+HTTP/1 test is flaky on `main` — two failures in twelve consecutive
+full-suite runs of `http-ng-native`, always
+`Connect / hyper::Error(Io, ConnectionReset)`, and never once in 35 isolated
+runs. It has nothing to do with h2 (`http2.rs` is only reachable when ALPN
+selects `h2`, and this test speaks `http://`), but anyone doing mutation
+work in this crate will meet it and should not read it as a kill.
 
 ## Deliberately not done in v0.2
 
@@ -254,6 +381,13 @@ gate.
   available there on the same terms as the native pool's. It is missing, not
   impossible; `docs/v03-design.md` promotes it to work rather than leaving
   it in this list.
+- **No test covers a dead *pooled* HTTP/2 connection being walked past to a
+  fresh one.** Found by mutation while fixing the `RST_STREAM(NO_ERROR)`
+  discard: deleting both of `http2::exchange`'s pre-head `Failed::NotSent`
+  returns leaves all 124 tests in `http-ng-native` green. The HTTP/1
+  equivalent is pinned (`pool.rs`'s
+  `checkout_walks_past_a_dead_connection_to_a_live_one`, itself flaky — see
+  the section above); h2 has no counterpart.
 - **Cancellation on a naive embassy backend does not work**, measured: the
   server sees nothing for two seconds, because `TcpSocket::drop` removes the
   socket from smoltcp before the queued FIN can become a packet. W7 must
