@@ -149,7 +149,7 @@ def main():
                 if not dead:
                     print(f"{label}: KILLED — build failure (anchors {count})")
                 else:
-                    print(f"{label}: KILLED by {', '.join(dead[:6])} (anchors {count})")
+                    print(f"{label}: KILLED by {', '.join(dead[:40])} (anchors {count})")
         finally:
             path.write_text(original)
         sys.stdout.flush()
