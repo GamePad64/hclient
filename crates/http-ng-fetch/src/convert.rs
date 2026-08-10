@@ -197,15 +197,26 @@ pub(crate) struct RequestTrailersUnsupported;
 /// (forbidden header, bad URL, unsupported body) is caught earlier and
 /// never reaches this function with a category to lose.
 pub(crate) fn js_err(v: JsValue) -> Error {
-    let msg = v
-        .as_string()
+    Error::new(ErrorKind::Other, JsError(js_message(&v)))
+}
+
+/// The three-step fallback (`as_string` → `.message` → `Debug`) on its own,
+/// for the callers that have already named their own category and want the
+/// text rather than [`js_err`]'s `ErrorKind::Other`.
+///
+/// Extracted out of [`js_err`] by `websocket.rs`, which needs the message
+/// under `ErrorKind::Connect` and `ErrorKind::Body`. `body.rs` still keeps
+/// a local copy for the reason its own module doc gives (it was written
+/// beside a mid-edit `convert.rs`); that copy is not touched here, since
+/// merging it is a change to a file this work has no other business in.
+pub(crate) fn js_message(v: &JsValue) -> String {
+    v.as_string()
         .or_else(|| {
-            js_sys::Reflect::get(&v, &JsValue::from_str("message"))
+            js_sys::Reflect::get(v, &JsValue::from_str("message"))
                 .ok()
                 .and_then(|m| m.as_string())
         })
-        .unwrap_or_else(|| format!("{v:?}"));
-    Error::new(ErrorKind::Other, JsError(msg))
+        .unwrap_or_else(|| format!("{v:?}"))
 }
 
 /// Checks headers **before** touching a single `web_sys` type. Silently

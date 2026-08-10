@@ -15,6 +15,7 @@ mod caps;
 mod convert;
 mod promise;
 mod timer;
+mod websocket;
 
 // Task 4 adds `body` — the RESPONSE body bridge over `ReadableStream`
 // (`web_sys::Response::body()` in, a `http_body::Body` out). It is the
@@ -64,6 +65,12 @@ mod timer;
 pub use body::Body;
 pub use caps::FORBIDDEN_HEADERS;
 pub use timer::BrowserClock;
+// v0.3 W4 step 3: the WebSocket seam, over the browser's own `WebSocket`
+// global. Not behind a feature — see `websocket.rs`'s `impl
+// WebSocketConnect` for the measurement that decided it. `Fetch` is the
+// connector (`http_ng_core::unversioned::WebSocketConnect`), so this is the
+// only type the module has to export.
+pub use websocket::FetchWebSocket;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};

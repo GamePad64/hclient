@@ -56,6 +56,21 @@ http          = { workspace = true }
 http-ng-core  = { workspace = true }
 js-sys        = "0.3"
 wasm-bindgen  = "0.2.126"
+# v0.3 W4 step 3 (`src/websocket.rs`) adds the last four names, and they
+# are the whole cost of the browser's WebSocket backend: `WebSocket` (the
+# global, its three `on*` setters, `send`, `close`, `readyState`),
+# `BinaryType` (the enum `set_binary_type` takes — without
+# `"arraybuffer"` every binary message would arrive as a `Blob` and need an
+# asynchronous read before its bytes existed), `MessageEvent` (`.data`) and
+# `CloseEvent` (`.code`, `.reason`, `.wasClean`). No new crate: the RFC 6455
+# implementation is the browser's, which is why this backend has no cargo
+# feature where `http-ng-native`'s has one — measured with `cargo tree -p
+# http-ng-fetch -e normal --target wasm32-unknown-unknown`.
+#
+# `ErrorEvent` is deliberately NOT here: `src/websocket.rs` installs no
+# `onerror` handler, because a WebSocket `error` event is a bare `Event`
+# carrying no information at all and the standard fires `close` after every
+# one of them. See that file's module doc.
 web-sys       = { version = "0.3.103", features = [
     "Request",
     "RequestInit",
@@ -65,6 +80,10 @@ web-sys       = { version = "0.3.103", features = [
     "Window",
     "Response",
     "ReadableStream",
+    "WebSocket",
+    "BinaryType",
+    "MessageEvent",
+    "CloseEvent",
 ] }
 # Task 4 (`src/body.rs`) is the first file in this crate to actually
 # implement `http_body::Body`, so `bytes`/`http-body`/`futures-core` move
@@ -75,6 +94,12 @@ web-sys       = { version = "0.3.103", features = [
 bytes        = { workspace = true }
 http-body    = { workspace = true }
 futures-core = { workspace = true }
+# v0.3 W4 step 3: `src/websocket.rs`'s `FetchWebSocket` is a `Sink<Message>`,
+# which is what `http_ng_core::unversioned::WebSocket` requires of it. A new
+# DIRECT dependency and no new crate in the graph: `http-ng-core` already
+# depends on `futures-sink` for the trait's own definition, so `cargo tree`
+# for this crate is unchanged.
+futures-sink = { workspace = true }
 # `default-features = false, features = ["std"]` — the same exact form
 # already used by `http-ng-native`, `http-ng-dns`, and `http-ng-dns-system`
 # for the identical need (`StreamExt::map`), not a preset copied blind.
@@ -85,6 +110,16 @@ thiserror    = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# `sink` on top of the `[dependencies]` entry above, for `tests/websocket.rs`
+# alone: `SinkExt::send`/`close` are how a caller actually drives the
+# `Sink` half of the seam, and `futures-util`'s `std` feature does not imply
+# `sink`. Costs no crate — `futures-sink` is already in this graph, as a
+# dependency of `http-ng-core`, where the `WebSocket` trait names it. Placed
+# here rather than in `[dependencies]` for the reason the `web-sys` entry
+# further down states: a `[dev-dependencies]` feature list is unified with
+# `[dependencies]`'s only when building test targets, and `src/` needs
+# nothing from it.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Task 5 (`tests/transport.rs`): the brief's own tests go through
 # `http_ng::Client`, not `Fetch` directly — the same reason
 # `http-ng-native`/`http-ng-wasi` both carry `http-ng` as a DEV dependency
