@@ -844,24 +844,47 @@ fn unbase64_len(s: &str) -> usize {
 
 // ── 3. what came off the wire ───────────────────────────────────────────
 
-/// **The TTL a caller gets is the number the server sent**, checked against
-/// a query built and decoded by hand in this file.
+/// **The TTL a caller gets is the number the server sent.**
 ///
-/// `tests/lookup.rs` already pins "per record, not per RRset" with two
-/// fabricated TTLs. What it cannot show is that the number is the
-/// *server's*: a fixture's 60 and an implementation's hard-coded 60 look
-/// alike. A live TTL is a five-digit number nobody here chose.
+/// `tests/lookup.rs` already pins "per record, not per RRset", with two
+/// fabricated TTLs. What a fixture structurally cannot show is that the
+/// number is the *server's*: a fixture's 60 and an implementation's
+/// hard-coded 60 look exactly alike. Two things here can only be true of a
+/// live answer, and neither can be produced by any constant:
 ///
-/// The tolerance is not slack. A caching recursive decrements the TTL once
-/// per second, the two queries here are seconds apart, and 1.1.1.1 is
-/// anycast — so equality would be asserting the network. What the bound
-/// does exclude is every wrong answer that is not a clock: `None`, zero, a
-/// constant, milliseconds mistaken for seconds, and the RRset's minimum
-/// where the records differ.
+/// 1. **Against Cloudflare, the value equals the one this file decoded off
+///    the wire by hand**, from a query built here and sent seconds earlier.
+/// 2. **The two operators disagree**, and by a lot. Each is serving what is
+///    left of an 86 400 s TTL out of its own cache, so the remaining time
+///    is a fact about when *that* cache last refilled. A crate that
+///    invented the number would hand back the same one to both.
+///
+/// **Why (1) is asserted against Cloudflare and not against Google, which
+/// is a measurement rather than a preference.** Two queries a second apart
+/// need a coherent cache behind them to be comparable at all. Cloudflare's
+/// gave the identical TTL every time it was asked while this file was
+/// written (73691/73689, 73129/73129, 72912/72912, 72900/72900,
+/// 72387/72387 — the widest gap 2 s). Google's frontends do not share one:
+/// the same RRset came back as **703 s and 18 759 s within the same
+/// second**, and again as 847/313 and 17765/5893 in an earlier probe. So a
+/// cross-query TTL comparison there is a statement about a resolver fleet's
+/// architecture, not about this crate, and the honest place to make claim
+/// (1) is the operator where it is sound. Google is not let off: it carries
+/// the bounds below and half of claim (2).
+///
+/// The 60 s tolerance on (1) is not slack — a caching recursive decrements
+/// once per second and the two queries are seconds apart, so equality would
+/// be asserting the clock. It still excludes every wrong answer that is not
+/// a clock: `None`, zero, a constant, and the RRset minimum.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire() {
     const NAME: &str = "the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire";
     const OWNER: &str = "one.one.one.one";
+    /// A week. Nothing is wrong with a long TTL; a value above this is not
+    /// a TTL at all, which is what a unit mix-up looks like.
+    const SANE: u64 = 7 * 24 * 60 * 60;
+
+    let mut per_operator: Vec<(Endpoint, u64)> = Vec::new();
     for ep in OPERATORS {
         let Some(ep) = live(NAME, ep) else { return };
 
@@ -892,31 +915,59 @@ async fn the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire() {
             ep.operator
         );
 
-        for (got, wire) in ours.iter().zip(&oracle) {
+        let mut ttls = Vec::new();
+        for got in &ours {
             let ttl = got
                 .ttl
                 .unwrap_or_else(|| {
                     panic!("{} answered with no TTL at all for {OWNER}", ep.operator)
                 })
                 .as_secs();
-            let wire = u64::from(*wire);
-            assert!(ttl > 0, "a TTL of zero from {} for {OWNER}", ep.operator);
-            let drift = ttl.abs_diff(wire);
             assert!(
-                drift <= 60,
-                "the TTL this crate reports ({ttl}s) is not the one on the wire ({wire}s) from \
-                 {} — {drift}s apart, where two queries seconds apart can differ by seconds",
+                ttl > 0 && ttl < SANE,
+                "{ttl}s is not a plausible TTL from {} for {OWNER}",
                 ep.operator
             );
+            ttls.push(ttl);
         }
+
+        // Claim (1), where a coherent cache makes it sound.
+        if ep.uri == CLOUDFLARE.uri {
+            for (ttl, wire) in ttls.iter().zip(&oracle) {
+                let wire = u64::from(*wire);
+                let drift = ttl.abs_diff(wire);
+                assert!(
+                    drift <= 60,
+                    "the TTL this crate reports ({ttl}s) is not the one this file decoded off \
+                     the wire ({wire}s) from {} — {drift}s apart, where two queries seconds \
+                     apart can differ by seconds",
+                    ep.operator
+                );
+            }
+        }
+
+        per_operator.push((ep, ttls[0]));
         ran(
             NAME,
             &format!(
-                "{}: TTLs {ours:?} against the hand-decoded {oracle:?}",
+                "{}: TTLs {ttls:?} against the hand-decoded {oracle:?}",
                 ep.operator
             ),
         );
     }
+
+    // Claim (2). Reached only when every operator answered, which is what
+    // the `return` in the gate above guarantees.
+    let [(a, ttl_a), (b, ttl_b)] = per_operator.as_slice() else {
+        panic!("expected one TTL per operator, got {per_operator:?}");
+    };
+    assert_ne!(
+        ttl_a, ttl_b,
+        "{} and {} report the identical remaining TTL ({ttl_a}s) for {OWNER}. Two independent \
+         caches agreeing to the second on what is left of an 86 400 s record is what a \
+         fabricated constant looks like, not what two caches look like",
+        a.operator, b.operator
+    );
 }
 
 /// **NXDOMAIN from a real authority is an empty stream, not an error.**
