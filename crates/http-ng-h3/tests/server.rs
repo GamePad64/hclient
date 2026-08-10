@@ -54,6 +54,15 @@ pub enum Behaviour {
     /// makes the exchange impossible to complete without duplex rather
     /// than merely slower — see `tests/streaming.rs`.
     HeadThenRead,
+    /// [`Behaviour::CountBody`], but pausing between DATA frames.
+    ///
+    /// Not a benchmark and not padding: it is what makes "the client is
+    /// still writing" a fact rather than a race. A reader this slow lets
+    /// the peer's flow-control window fill and stay full, so a client with
+    /// a body larger than the window **cannot** have finished, whatever
+    /// the machine is doing. `tests/streaming.rs`'s buffered-cancellation
+    /// test needs exactly that.
+    ReadSlowly(std::time::Duration),
 }
 
 /// What one request's body looked like **from the server**, with the
@@ -358,7 +367,12 @@ fn start_inner(
                                 quic.close(1u32.into(), b"dying on purpose");
                                 return;
                             }
-                            if matches!(behaviour, Behaviour::CountBody | Behaviour::HeadThenRead) {
+                            if matches!(
+                                behaviour,
+                                Behaviour::CountBody
+                                    | Behaviour::HeadThenRead
+                                    | Behaviour::ReadSlowly(_)
+                            ) {
                                 let mut report = BodyReport::default();
                                 if behaviour == Behaviour::HeadThenRead {
                                     // Before a single byte of the request
@@ -379,6 +393,9 @@ fn start_inner(
                                             report.bytes += bytes::Buf::remaining(&buf);
                                             report.frames += 1;
                                             report.last_byte = Some(t0.elapsed());
+                                            if let Behaviour::ReadSlowly(d) = behaviour {
+                                                tokio::time::sleep(d).await;
+                                            }
                                         }
                                         Ok(None) => {
                                             report.complete = true;
@@ -397,7 +414,7 @@ fn start_inner(
                                 // waiting on a write to a peer that has
                                 // gone.
                                 bodies.lock().unwrap().push(report);
-                                if behaviour == Behaviour::CountBody {
+                                if behaviour != Behaviour::HeadThenRead {
                                     let resp = http::Response::builder()
                                         .status(http::StatusCode::OK)
                                         .body(())

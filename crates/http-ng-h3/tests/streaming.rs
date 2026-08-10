@@ -374,6 +374,50 @@ async fn dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connec
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn dropping_a_buffered_upload_mid_write_leaves_the_connection_too() {
+    // The same claim as the test above, for a `RequestBody::Full` — because
+    // the defect it guards against is **older than streaming**. Dropping
+    // `execute` in the middle of a large buffered body already left quinn
+    // to `finish()` a stream with a truncated DATA frame on it, which RFC
+    // 9114 §7.1 makes a connection error; nothing reached it because the
+    // suite's one cancellation test used an empty body. The guard lives in
+    // the send half's `Drop`, so one fix covers both, and this is the half
+    // that says so.
+    //
+    // Mid-write is a fact here rather than a race: the server pauses 40 ms
+    // between DATA frames, so the peer's flow-control window (quinn's
+    // default is 1.25 MiB per stream) fills and stays full, and a 4 MiB
+    // body cannot have been written by the time the drop happens.
+    const BODY: usize = 4 * 1024 * 1024;
+
+    let s = server::start(Behaviour::ReadSlowly(Duration::from_millis(40)));
+    let t = h3(&s.cert_der);
+    let body = RequestBody::Full(Bytes::from(vec![b'z'; BODY]));
+
+    let mut doomed = Box::pin(t.execute(post(s.addr, "/abandoned", body)));
+    tokio::select! {
+        _ = &mut doomed => panic!("a 4 MiB body cannot be read by a 40ms-per-frame reader in 150ms"),
+        _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+    }
+    drop(doomed);
+
+    assert!(
+        s.wait_for_bodies(1, Duration::from_secs(5)).await,
+        "the reset must reach the server"
+    );
+    let report = *s.bodies().first().unwrap();
+    assert!(!report.complete, "reset, not finished: {report:?}");
+    assert!(report.bytes < BODY, "it was mid-write: {report:?}");
+
+    let r = t
+        .execute(post(s.addr, "/after", RequestBody::Empty))
+        .await
+        .expect("a truncated frame on a cleanly-closed stream would have killed this");
+    assert_eq!(text(r).await, "0 bytes");
+    assert_eq!(s.accepted(), 1, "still one connection");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rewindable_body_whose_factory_streams_is_actually_sent() {
     // A body this crate used to drop on the floor. `one_attempt` matched
     // `if let RequestBody::Full(b) = f()`, so a factory returning anything
