@@ -322,7 +322,13 @@ someone to "fix" an item whose absence is the decision.
   `Arc`. What would settle the original question: one server serving both
   TLS-over-TCP and QUIC with a shared ticketer, one shared
   `ClientSessionStore`, a TCP handshake then a QUIC 0-RTT attempt.
-- **0-RTT ACCEPTANCE has not been observed end to end here; rejection has.**
+- ~~**0-RTT ACCEPTANCE has not been observed end to end here; rejection
+  has.**~~ **Observed in W1**, and from outside both endpoints: a relay
+  between client and server counts packets and shows request bytes leaving
+  before the handshake completes, with the server's own timing as the
+  second witness. `crates/http-ng-h3/tests/zero_rtt.rs`. What follows was
+  true when written and is kept because the rejection half is still the
+  half that carries the replay:
   `a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it` runs
   the research's scenario 3 — two servers, one certificate, separate
   ticketers — and proves three things at once, because it cannot pass
@@ -356,7 +362,17 @@ someone to "fix" an item whose absence is the decision.
   assertion on that ordering would be measuring the scheduler. What stands
   in for it is structural: `execute` returns the response without awaiting
   the verdict at all, and reads it only on the error path.
-- **`two_requests_share_one_connection` failed once, under the full
+- ~~**`two_requests_share_one_connection` failed once, under the full
+  922-test workspace run, and has not been reproduced.**~~ **Explained, and
+  the cause is fixed** — see the defect section above. The mechanism found
+  there matches this signature exactly: `Remote reset: 0x0`, only under
+  load, only on a connection's first request, from a server that answers
+  without reading the body. That this particular failure was that
+  mechanism is not *proven* — it was never reproduced to be captured — but
+  the two other h3 live tests that failed the same way under a concurrency
+  campaign were, and they were this. Recorded this way rather than deleted,
+  because a flake closed by inference is a weaker claim than one closed by
+  capture, and the difference should be visible. The original note follows:
   922-test workspace run, and has not been reproduced.** Not in twelve
   isolated runs of that test, not in five runs of the h3 crate alone, and
   not in three further full-workspace runs. It is recorded rather than
