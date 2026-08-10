@@ -197,8 +197,40 @@ async fn peer_sending_fin_mid_handshake_is_reported_as_tls_not_a_hang() {
 /// any platform.
 #[tokio::test]
 async fn peer_resetting_mid_handshake_is_reported_as_tls_not_a_hang() {
-    let err = handshake_against(|tcp| {
+    let err = handshake_against(|mut tcp| {
         Box::pin(async move {
+            // **Read the ClientHello before resetting, and the wait is
+            // the test rather than politeness.**
+            //
+            // The reason that stands on its own: "mid-handshake" is not
+            // what a reset before the first byte is. Without this read the
+            // server could tear the connection down before rustls had
+            // written anything, and the test would pass having exercised
+            // nothing the sibling above does not already cover.
+            //
+            // The second reason is a flake, and it is reported here more
+            // carefully than it was diagnosed. One captured failure, with
+            // an unambiguous stack: `TcpConnect::connect(..).unwrap()` at
+            // the call below, `Os { code: 104, ConnectionReset }` — the
+            // test panicked before asserting anything. The mechanism is
+            // read rather than measured: resetting straight out of
+            // `accept` races the client's own connect, because a
+            // non-blocking connect completes at the SYN-ACK and its error
+            // is collected from `SO_ERROR` afterwards, so an RST landing
+            // in that window fails the connect itself.
+            //
+            // **It was not reproduced on demand, so this read is not
+            // proven to be the fix.** It was seen at 3-4 failures in 20
+            // runs while several other builds and suites shared the
+            // machine; with those gone, both arms of an A/B — this read
+            // present and absent — gave 0 failures in 40 isolated runs
+            // each and 0 in 12 full-workspace runs each. What the read
+            // does is remove the window by construction: once a byte has
+            // arrived, the client has certainly finished connecting,
+            // because it wrote that byte.
+            use tokio::io::AsyncReadExt as _;
+            let mut first = [0u8; 1];
+            let _ = tcp.read(&mut first).await;
             let std = tcp.into_std().unwrap();
             socket2::Socket::from(std)
                 .set_linger(Some(Duration::ZERO))
