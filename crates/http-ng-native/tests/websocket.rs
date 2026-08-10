@@ -1304,11 +1304,22 @@ async fn a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye() {
 /// swallowed by the probe it failed to answer. That ordering is causal —
 /// the server sends it before it goes silent — with a margin of the whole
 /// deadline against a loopback round trip.
+///
+/// **The ping count is what makes this test about the probe rather than
+/// about "something failed", and it was added because the mutation it
+/// catches survived without it.** With the frame clearing the probe, the
+/// interval simply restarts, a *second* ping goes out and *that* one dies
+/// unanswered — the same `PongNotReceived`, at the same kind, with the
+/// same bound, roughly 100 ms later. Every assertion above passed under
+/// it. `pings == 1` is the difference: the correct implementation cannot
+/// send a second ping, because only a matching pong clears the first, and
+/// a stream that has ended never sends anything again.
 #[tokio::test]
 async fn only_a_pong_with_the_pings_own_payload_answers_it() {
     const EVERY: Duration = Duration::from_millis(100);
     const WITHIN: Duration = Duration::from_millis(300);
 
+    let (tx, rx) = mpsc::channel::<usize>();
     let (addr, _) = serve(move |mut w| {
         let Some(head) = w.head() else { return };
         let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
@@ -1318,27 +1329,32 @@ async fn only_a_pong_with_the_pings_own_payload_answers_it() {
             return;
         }
         let answer_with_a_text = head.starts_with("GET /text ");
+        let mut pings = 0;
         loop {
             let Some((opcode, _masked, payload)) = w.frame() else {
+                // The client is gone, which is the only way out of this
+                // loop: it has either failed the probe or been dropped.
+                let _ = tx.send(pings);
                 return;
             };
             if opcode != OP_PING {
                 continue;
             }
-            let sent = if answer_with_a_text {
-                w.send(OP_TEXT, b"still talking")
-            } else {
-                // A pong, and never this ping's payload: the client's are
-                // eight bytes of sequence number.
-                assert_ne!(payload, b"an unsolicited heartbeat");
-                w.send(OP_PONG, b"an unsolicited heartbeat")
-            };
-            if !sent {
-                return;
+            pings += 1;
+            // Answered once, and never with an answer to *this* ping.
+            if pings == 1 {
+                let sent = if answer_with_a_text {
+                    w.send(OP_TEXT, b"still talking")
+                } else {
+                    // A pong, and never this ping's payload: the client's
+                    // are eight bytes of sequence number.
+                    assert_ne!(payload, b"an unsolicited heartbeat");
+                    w.send(OP_PONG, b"an unsolicited heartbeat")
+                };
+                if !sent {
+                    return;
+                }
             }
-            // And then nothing, ever.
-            while w.fill() {}
-            return;
         }
     });
 
@@ -1376,6 +1392,16 @@ async fn only_a_pong_with_the_pings_own_payload_answers_it() {
             std::error::Error::source(&err).and_then(|s| s.downcast_ref::<PongNotReceived>()),
             Some(&PongNotReceived(WITHIN)),
             "for /{path}, the failure must be the unanswered probe and not something else"
+        );
+
+        // Closes the socket, which is what releases the server's count.
+        drop(ws);
+        let pings = rx.recv_timeout(BOUND).expect("the server's report");
+        assert_eq!(
+            pings, 1,
+            "for /{path}: the probe that failed must be the one the server refused to \
+             answer. A second ping means the frame cleared the first probe and the \
+             interval simply restarted — a different fact, reported with the same error"
         );
     }
 }
