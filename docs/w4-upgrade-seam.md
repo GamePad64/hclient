@@ -70,10 +70,13 @@ h1 upgrade or a `CONNECT` tunnel exposed to callers. That is a proxy
 feature nobody has asked for, and inventing a user for a field in order to
 keep the field is the reasoning this project rejects everywhere else.
 
-**So: delete it, in the same change that adds the trait, not before.**
-Deleting first would leave a window where a backend can neither declare nor
-implement upgrade, and the acceptance documents would have to describe a
-state that never shipped.
+**So: delete it — but not before the trait exists and a backend implements
+it.** Deleting first would leave a window where a backend can neither
+declare nor implement upgrade, and the acceptance documents would have to
+describe a state that never shipped. That places it at step 4 below, beside
+the `http-ng-fetch` implementation, because the field lives on every
+backend's `Capabilities` and removing it touches all of them at once —
+which is exactly the change that also gives the browser its own answer.
 
 One consequence to handle rather than discover: `crates/http-ng/tests/
 facade.rs` sets `UpgradeSupport::H1` on a test fixture and asserts it back.
