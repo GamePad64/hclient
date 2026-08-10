@@ -27,8 +27,39 @@ repository.workspace = true
 # written against those two traits and this crate's IO is
 # `hyper::rt::{Read, Write}`, so `http2::TokioIo` bridges them.
 [features]
+#
+# `websocket` (v0.3 W4) is off by default for the same reason and one
+# more: it is the only feature here that adds a *protocol implementation*
+# rather than a second framing of the one this crate already speaks, and
+# the graph says so. Measured `cargo tree -e normal`, unique crates, this
+# tree:
+#
+#   this crate alone                   32 -> 49  (+17)
+#   a real client build (this crate +
+#   http-ng + rt-tokio + tls-rustls +
+#   dns-system)                        79 -> 93  (+14)
+#
+# The difference between the two rows is `libc`, `cfg-if` and `getrandom`,
+# which any build with `rustls` in it already has. The +14 are
+# `tungstenite`, `log`, `data-encoding`, `rand` + `rand_core` +
+# `chacha20`, and `sha1` with the RustCrypto stack under it (`digest`,
+# `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`,
+# `cpufeatures`). None of them is a runtime, and none of them is `tokio`,
+# `hyper` or `h2`.
+#
+# `handshake` is on top of `default-features = false` deliberately, and it
+# is the *only* default feature taken back: it is what carries
+# `generate_key`/`derive_accept_key`, which are RFC 6455 §4.1 and not
+# optional for a client. It is also where `sha1` and `data-encoding` come
+# from (tungstenite's own `handshake = ["data-encoding", "http",
+# "httparse", "sha1"]`); `http` and `httparse` were already here through
+# `hyper`. Everything else `tungstenite`'s default would bring — its own
+# TLS connectors, its blocking `connect()` — is glue this workspace has
+# better versions of, which is `docs/w4-upgrade-seam.md` §6's whole
+# argument.
 default = []
 http2 = ["dep:h2", "dep:tokio"]
+websocket = ["dep:tungstenite"]
 
 [dependencies]
 bytes          = { workspace = true }
@@ -48,11 +79,19 @@ http-ng-proto  = { workspace = true }
 http-ng-rt     = { path = "../http-ng-rt",    version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",   version = "0.1.0" }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
+futures-core   = { workspace = true }
+futures-sink   = { workspace = true }
 thiserror      = { workspace = true }
 tokio          = { version = "1", default-features = false, optional = true }
+tungstenite    = { version = "0.30", default-features = false, features = ["handshake"], optional = true }
 
 [dev-dependencies]
 futures-executor    = { version = "0.3", default-features = false, features = ["std"] }
+# `sink` on top of the library's own feature set: `SinkExt::send`/`close`
+# live there, and `tests/websocket.rs` drives the seam the way a caller
+# would. Dev-only, so the shipped graph is unchanged — `cargo deny`'s
+# `exclude-dev` says the same thing from the other side.
+futures-util        = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-ng             = { workspace = true }
 http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
 http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
@@ -65,6 +104,12 @@ http-ng-tls-rustls  = { path = "../http-ng-tls-rustls",  version = "0.1.0", feat
 # to feature unification with `hyper`'s own `tokio/sync` — that union is a
 # fact about today's graph, not a dependency this crate declared.
 tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+# `tests/websocket.rs`'s fixture speaks RFC 6455 by hand and borrows
+# exactly one function, `derive_accept_key` — which
+# `the_accept_key_derivation_matches_rfc_6455` then pins against the RFC's
+# own vector, so the fixture and the client agreeing is not the same as
+# them both being right.
+tungstenite         = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [lints]
 workspace = true

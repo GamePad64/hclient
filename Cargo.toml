@@ -14,6 +14,7 @@ http-body      = "1.1"
 http-body-util = "0.1"
 bytes          = "1.12"
 futures-core   = { version = "0.3", default-features = false }
+futures-sink   = { version = "0.3", default-features = false }
 url            = "2.5"
 proptest       = "1"
 

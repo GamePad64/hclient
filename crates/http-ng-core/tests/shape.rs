@@ -336,3 +336,62 @@ fn captured_instants_are_orderable_without_a_third_now_call() {
         "second capture must order after the first"
     );
 }
+
+/// The WebSocket seam (v0.3 W4) declares no `Send` either, and a backend
+/// whose types are genuinely `!Send` implements it.
+///
+/// The same claim `non_send_transport_still_satisfies_the_trait` makes for
+/// `Transport`, made for the second seam before there is a second backend
+/// to discover it with. It is not idle: `http-ng-native` reaches this
+/// trait through `hyper::client::conn::http1::Parts`, and the obvious way
+/// to get there — `hyper::upgrade::Upgraded` — is
+/// `Rewind<Box<dyn Io + Send>>`. A seam that had inherited that bound
+/// would have shut out every single-threaded runtime, and nothing short of
+/// a test like this would have said so before a backend tried.
+#[test]
+fn a_non_send_backend_still_satisfies_the_websocket_seam() {
+    use futures_core::Stream;
+    use futures_sink::Sink;
+    use http_ng_core::unversioned::{Message, WebSocket, WebSocketConnect};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct LocalSocket {
+        _rc: std::rc::Rc<()>,
+    }
+
+    impl Stream for LocalSocket {
+        type Item = Result<Message, Error>;
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(None)
+        }
+    }
+    impl Sink<Message> for LocalSocket {
+        type Error = Error;
+        fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Error> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    impl WebSocket for LocalSocket {}
+
+    struct LocalBackend(std::rc::Rc<()>);
+    impl WebSocketConnect for LocalBackend {
+        type WebSocket = LocalSocket;
+        async fn websocket(&self, _req: http::Request<()>) -> Result<LocalSocket, Error> {
+            Ok(LocalSocket {
+                _rc: self.0.clone(),
+            })
+        }
+    }
+
+    let _ = LocalBackend(std::rc::Rc::new(()));
+}
