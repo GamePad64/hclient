@@ -198,3 +198,63 @@ here: that `WouldBlock` out of the shim leaves `WebSocketContext` in a
 resumable state on every path (tungstenite documents `read` as never
 blocking on write, which is the interesting one), and that a partial write
 is not lost between polls.
+
+## 7. The bound an open WebSocket has — decided
+
+Steps 1–3 shipped with none. Only the handshake reads `Timeouts::connect`;
+past it, a peer that vanishes without a `FIN` leaves a `Stream` that never
+yields and never errors. This section decides what to do about it, before
+any code.
+
+**It is not `Timeouts`.** `total` is meaningless for a connection whose
+whole point is to outlive the exchange that opened it, and `between_bytes`
+would be actively wrong: silence is the normal state of a WebSocket, so a
+gap bound would kill healthy connections. The need is not "bound the
+transfer", it is **liveness** — is the peer still there — and RFC 6455 has
+an answer for exactly that in ping/pong.
+
+**It does not go on the seam.** `WebSocketConnect` is implemented by
+`http-ng-fetch` too, and a browser has no `send(ping)` and no `onping` —
+the same fact that kept `Ping`/`Pong` out of `Message`. A knob on the trait
+that one backend silently could not honour would be a capability that lies,
+and this project has caught that four times. Nor does it go in the
+request's `extensions`: `AllowEarlyData` sets the precedent for a mark only
+some transports honour, but there the fallback is a **degradation** (a
+1-RTT request), while here it is **silence** — a caller who asked for
+liveness detection and got none has no way to learn that.
+
+**So it goes where the seam already puts everything else: on the backend
+that can do it.** A configuration on `http-ng-native`'s WebSocket path, and
+no counterpart on `http-ng-fetch`, so asking the browser for it does not
+compile. Same rule as the trait itself, one level down.
+
+**The mechanism, and the constraint that shapes it.** Nothing is spawned
+here — the caller's `poll_next` is the only thing driving the socket. So
+the ping can only be written when the caller polls, which means the shape
+is: `poll_next` that has been `Pending` for the interval sends a `Ping`,
+and a `Pong` that does not arrive within the deadline ends the stream with
+an error.
+
+That is the mirror of what HTTP/3 found and is worth stating in the same
+words, because the two halves point opposite ways. There, **a spawned
+driver was necessary and not sufficient**: driving a connection is what
+lets it *send* a PING, not what makes it *decide* to, so `H3` had to set
+`keep_alive_interval` itself. Here there is no driver at all, and the
+consequence is the one this design accepts openly: **a caller that stops
+polling gets no keep-alive.** That is defensible precisely because a caller
+that is not polling is not waiting for anything — but it is a real
+difference from h3, where a pooled connection is kept alive on behalf of
+requests that have not been made yet.
+
+**Two things must be true of the default.** It is off, because a default
+that pings is a default that sends traffic nobody asked for — and on a
+metered radio that is not free. And the error a missed pong produces must
+be distinguishable from the peer closing, or a caller cannot tell "the
+network went away" from "the server said goodbye"; `wasClean == false` is
+already treated that way in the browser backend, and this should agree with
+it rather than invent a second vocabulary.
+
+**What this section does not decide**: whether an unanswered ping should
+also be surfaced as a warning before the deadline expires, and whether the
+interval should reset on any inbound frame or only on a pong. Both are for
+whoever writes it, with tests.
