@@ -1,0 +1,349 @@
+//! Tier 2 of h3-research §4's discovery ladder: the HTTPS record this
+//! client already knows how to fetch, finally read (v0.3 W2).
+//!
+//! `http_ng_dns::SvcbEndpoint` has carried `alpn`, `port`, `ipv4hint`,
+//! `ipv6hint` and `ech_config_list` since v0.2, and `Resolve::
+//! supports_svcb` has said which resolvers can answer. Nothing consumed
+//! any of it: [`crate::connect`]'s module doc said so in its own words and
+//! passed `ech: None`. This module is what consumes it, and
+//! [`crate::connect::connect`] is its only caller.
+//!
+//! # What tier 2 cannot do, and no amount of care here would change it
+//!
+//! **It cannot choose HTTP/3.** An `alpn` containing `h3` is a fact this
+//! crate can read and cannot act on: `http-ng-h3` is a different crate
+//! with different bounds (`R: UdpBind + Spawn<..>`, `T: QuicTlsConnect`),
+//! `Native<R, T, D>` has neither, and `Client<T>` names exactly one
+//! transport type — there is nowhere in this codebase for "choose between
+//! two protocol stacks" to live. That is a racing transport owning both,
+//! which is a vertical rather than a task (`docs/v03-design.md` §W2).
+//!
+//! So [`alpn_offer`] below never returns `h3`, and it is not an oversight
+//! to be fixed by adding it to the list: offering a protocol this
+//! transport cannot speak would let a server select it, at which point the
+//! connection is unusable. The record's `h3` is read, is not offered, and
+//! is not treated as an error either — the origin also advertised
+//! something we *can* speak, or the endpoint is not for us.
+//!
+//! # Only `https://`, and only at the scheme's default port
+//!
+//! Two conditions, each with a reason that is not "we did not get round to
+//! it":
+//!
+//! - **`http://` is excluded** because for a cleartext origin the presence
+//!   of an HTTPS RR means something this connector will not do: RFC 9460
+//!   §9.5 makes it an instruction to *upgrade the scheme to `https`*.
+//!   Taking the record's port and hints while ignoring that is applying
+//!   half a rule whose other half is the entire point, and the upgrade
+//!   itself is a redirect-shaped decision that belongs to whoever owns the
+//!   request, not to a connector.
+//! - **A non-default port is excluded** because the record we would be
+//!   holding is the wrong one. RFC 9460 §9.5 puts the record for a
+//!   non-default port under a prefixed name (`_8443._https.example.com`),
+//!   and `Resolve::lookup_svcb` is handed the origin host, so what comes
+//!   back is the default-port record. Applying it to `https://host:8443/`
+//!   would be applying one service's parameters to another's. This
+//!   connector does not construct the prefixed name: it would then have to
+//!   decide what `lookup_ipv4`/`lookup_ipv6` are asked for (the prefixed
+//!   name has no addresses), and that is a resolver-facing question the
+//!   `Resolve` seam does not answer today.
+//!
+//! # AliasMode is skipped, and skipping it is load-bearing
+//!
+//! `endpoint_from_binding` in `http-ng-dns-system` emits AliasMode records
+//! as an endpoint with `priority: 0` and every other field empty (RFC 9460
+//! §2.4.1: a recipient MUST ignore the SvcParams of an AliasMode record).
+//! Priority 0 is also numerically the *lowest*, so a selection that took
+//! the minimum priority without checking would pick the alias every time
+//! and act on an endpoint that carries nothing — discovery would look
+//! wired up and do nothing at all. Following an alias means restarting
+//! resolution at another name, which is not implemented here.
+//!
+//! # The negative cache, and why it is this crate's rather than Alt-Svc's
+//!
+//! A record is a claim about an origin that the network may not honour:
+//! the port it names can be filtered, the addresses it hints at can be
+//! unreachable from here. Without a memory, *every* request to such an
+//! origin pays that failed attempt again. `docs/v03-design.md` §W2
+//! corrects the assumption that this cache belongs to Alt-Svc — the cache
+//! of *what was advertised* is Alt-Svc's, the cache of *what failed* is
+//! the connector's, and the advertisement's source (a DNS record or a
+//! header) does not change what a blocked port costs.
+//!
+//! So: a connect that used a discovered endpoint and failed marks the
+//! origin for [`SVCB_FAILURE_TTL`], and while that mark stands, requests to
+//! that origin are made exactly as they were before this module existed.
+//! The mark is per-origin and not per-endpoint, because the alternative is
+//! not usable: an origin whose record we have just refused to use is an
+//! origin whose record we do not fetch, so there is no endpoint left to
+//! key on.
+//!
+//! Two things it deliberately is not. It is **not exponential** — a flat
+//! window is what can be defended without a failure counter per origin and
+//! a cap on it, and the condition it is waiting out (a stale record, a
+//! filtered port) is usually resolved by a DNS change on a timescale of
+//! minutes. And it is **not a cache of the lookup**: "this origin has no
+//! HTTPS record" is a DNS answer with a TTL of its own, which
+//! `SvcbEndpoint` does not carry, and inventing a lifetime for someone
+//! else's answer is how a resolver's cache and ours drift apart.
+
+use bytes::Bytes;
+use futures_util::StreamExt;
+use http_ng_dns::{Resolve, SvcbEndpoint};
+use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// How long a failed connect through a discovered endpoint keeps this
+/// transport away from that origin's HTTPS record.
+///
+/// Five minutes: long enough that a filtered port is paid for once rather
+/// than once per request, short enough that an operator who fixes a record
+/// sees clients follow it again within the time a DNS change takes to
+/// propagate anyway. It is a constant rather than a setting because a
+/// setting would need a caller who knows better than that, and the failure
+/// it waits out belongs to the network rather than to the caller.
+pub const SVCB_FAILURE_TTL: Duration = Duration::from_secs(300);
+
+/// The origin a discovery attempt is remembered against: what a URI's
+/// authority resolves to once the scheme's default port has been applied.
+///
+/// The host is ASCII-lowercased for the same reason [`crate::pool`]'s key
+/// lowercases it — `Example.COM` and `example.com` are one origin, and a
+/// key that told them apart would remember a failure under a name the next
+/// request does not use.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Origin {
+    host: Box<str>,
+    port: u16,
+}
+
+impl Origin {
+    pub(crate) fn new(host: &str, port: u16) -> Self {
+        Self {
+            host: host.to_ascii_lowercase().into_boxed_str(),
+            port,
+        }
+    }
+}
+
+/// The origins whose HTTPS record has just cost a failed connection.
+///
+/// Cheap to clone (an `Arc` bump), and every clone is the same cache — it
+/// lives on [`crate::Native`] and is shared by every request that
+/// transport makes, which is the whole point: a memory that lasted one
+/// request would be no memory at all.
+#[derive(Clone, Default)]
+pub(crate) struct NegativeCache {
+    /// Origin -> the elapsed time, measured on the owning transport's
+    /// `Timer` from the instant that transport was constructed, past which
+    /// discovery may be attempted again.
+    ///
+    /// The same clock and the same origin as [`crate::pool`]'s deadlines,
+    /// and for the same reason: `http_ng_rt::Timer` is the one seam
+    /// through which time reaches this crate, and a `std::time::Instant::
+    /// now()` here would disagree with a caller testing under
+    /// `tokio::time::pause()`.
+    until: Arc<Mutex<HashMap<Origin, Duration>>>,
+}
+
+impl std::fmt::Debug for NegativeCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NegativeCache")
+            .field(
+                "suppressed",
+                &self.until.lock().map(|m| m.len()).unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+impl NegativeCache {
+    /// Whether discovery is currently suppressed for `origin` — and, as
+    /// the same pass, forgetting the entry if its window has closed.
+    ///
+    /// The expiry is applied here rather than by a background sweep
+    /// because this is the only place that asks: an entry nobody looks up
+    /// costs one small map slot until the next lookup for that origin, and
+    /// a transport is not usually built for one origin it then never
+    /// contacts again.
+    pub(crate) fn suppressed(&self, origin: &Origin, now: Duration) -> bool {
+        let mut until = self.until.lock().expect("svcb negative cache poisoned");
+        match until.get(origin) {
+            Some(&expires_at) if now < expires_at => true,
+            Some(_) => {
+                until.remove(origin);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Records that a connect using this origin's HTTPS record failed.
+    ///
+    /// Saturating, for the same reason [`crate::Native::checkin_for`]'s
+    /// deadline is: an elapsed time near `Duration::MAX` is not a case to
+    /// panic on.
+    pub(crate) fn record(&self, origin: Origin, now: Duration) {
+        let mut until = self.until.lock().expect("svcb negative cache poisoned");
+        until.insert(origin, now.saturating_add(SVCB_FAILURE_TTL));
+    }
+}
+
+/// What one HTTPS record contributes to one connection attempt.
+///
+/// A type of this crate's own rather than the `SvcbEndpoint` it is built
+/// from: `target` is deliberately absent, because this connector does not
+/// resolve the target name (see [`lookup`]), and a field carried but never
+/// read is how the previous round of this plumbing came to sit unused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Endpoint {
+    /// RFC 9460 §7.2 `port`, or `None` when the record does not name one
+    /// and the scheme's default stands.
+    pub(crate) port: Option<u16>,
+    /// §7.3 `ipv4hint`.
+    pub(crate) ipv4hint: Vec<Ipv4Addr>,
+    /// §7.3 `ipv6hint`.
+    pub(crate) ipv6hint: Vec<Ipv6Addr>,
+    /// §7.1 `alpn`, as the record gave it — the intersection with what
+    /// this transport can speak is [`alpn_offer`]'s job.
+    pub(crate) alpn: Vec<Vec<u8>>,
+    /// RFC 9849 `ech`. Whether it is offered to the TLS backend is
+    /// `TlsConnect::applies_ech`'s answer, not this module's — see
+    /// [`crate::connect`].
+    pub(crate) ech: Option<Bytes>,
+}
+
+impl Endpoint {
+    /// `true` when acting on this record changes nothing about the
+    /// connection — no port, no hints, no ALPN restriction, no ECH.
+    ///
+    /// Used to decide whether a failed connect is the *record's* failure,
+    /// and the distinction is not cosmetic: marking an origin because a
+    /// record that contributed nothing was present would suppress
+    /// discovery for an origin whose record never took part in the
+    /// attempt, and the next request would behave identically anyway.
+    pub(crate) fn is_inert(&self) -> bool {
+        self.port.is_none()
+            && self.ipv4hint.is_empty()
+            && self.ipv6hint.is_empty()
+            && self.alpn.is_empty()
+            && self.ech.is_none()
+    }
+}
+
+impl From<SvcbEndpoint> for Endpoint {
+    fn from(e: SvcbEndpoint) -> Self {
+        Self {
+            port: e.port,
+            ipv4hint: e.ipv4hint,
+            ipv6hint: e.ipv6hint,
+            alpn: e.alpn,
+            ech: e.ech_config_list,
+        }
+    }
+}
+
+/// The HTTPS record this connection should be made under, or `None` when
+/// there is none to act on.
+///
+/// **The lowest ServiceMode priority wins, and nothing else is tried.** RFC
+/// 9460 §2.4.2 ranks alternatives by priority and expects a client to fall
+/// back through them; this connector uses the first-ranked endpoint and
+/// then, if the connection fails, the origin's own addresses — which is
+/// the fallback that matters, because it is the one that is still there
+/// when every record is wrong. Walking the whole list would multiply a
+/// request's connect budget by the number of records an attacker-influenced
+/// answer may contain.
+///
+/// **A lookup error is not fatal, and that is a decision rather than a
+/// discarded `Result`.** An HTTPS query is answered with SERVFAIL by a
+/// long tail of middleboxes and old resolvers that have never heard of RR
+/// type 65; a client that failed the request there would be unable to
+/// reach origins it reaches perfectly well today. The lookup's job is to
+/// improve a connection, and it either has an answer or it has not. Note
+/// what this does *not* swallow: the address lookups below it are
+/// untouched, so a resolver that is genuinely broken (or a runtime that is
+/// shutting down — `ErrorKind::Cancelled`) still reaches the caller
+/// through `connect::drive`'s own machinery, with its kind intact.
+///
+/// **The target name is not resolved.** RFC 9460 §2.5 lets a ServiceMode
+/// record point at another name whose addresses should be used; this
+/// connector uses the record's hints and the *origin's* addresses, and
+/// nothing else. A record whose target differs from the origin and carries
+/// no hints therefore contributes only its port, ALPN and ECH — honest,
+/// and one lookup rather than two.
+pub(crate) async fn lookup<D>(dns: &D, host: &str) -> Option<Endpoint>
+where
+    D: Resolve,
+{
+    // The capability, asked rather than inferred from an empty stream —
+    // the distinction `Resolve::supports_svcb` exists to carry (a resolver
+    // that cannot ask, and one that asked and found nothing, both return
+    // an empty stream, and only the first should stop us asking).
+    if !dns.supports_svcb() {
+        return None;
+    }
+    let mut best: Option<SvcbEndpoint> = None;
+    let mut records = std::pin::pin!(dns.lookup_svcb(host));
+    while let Some(record) = records.next().await {
+        let Ok(record) = record else { continue };
+        // AliasMode. See the module doc: priority 0 sorts *below* every
+        // ServiceMode record and carries no parameters at all, so a
+        // selection that did not skip it would reliably choose the one
+        // endpoint with nothing in it.
+        if record.priority == 0 {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| record.priority < b.priority) {
+            best = Some(record);
+        }
+    }
+    best.map(Endpoint::from)
+}
+
+/// The ALPN list to offer, restricted to what the record says the endpoint
+/// speaks.
+///
+/// RFC 9460 §7.1: the SVCB-ALPN set is the union of the record's `alpn`
+/// values with the scheme's default set, and a client is to offer the
+/// protocols it supports *from that set*. For `https` the default set is
+/// `http/1.1`, which is why a record listing only `h3` still leaves this
+/// transport with something to offer rather than nothing.
+///
+/// `ours` arrives ranked (h2 before http/1.1, when h2 is on offer at all)
+/// and the ranking is preserved: RFC 7301 leaves the choice to the server,
+/// but every implementation reads the client's list as a preference order.
+///
+/// # Two limits, both about what does not cross the `SvcbEndpoint` seam
+///
+/// **`no-default-alpn` is invisible here.** `http-ng-dns-system` parses the
+/// parameter and `SvcbEndpoint` has no field for it, so this function
+/// cannot tell "the default set applies" from "the record switched it
+/// off". It assumes the former, which is the safe direction: assuming the
+/// latter would drop `http/1.1` from the offer for every record that did
+/// not mention it, and leave a client with nothing to propose.
+///
+/// **An empty result falls back to `ours`.** It cannot happen while
+/// `http/1.1` is in the default set and in every list this crate builds,
+/// and the fallback is there for the shape rather than the case: a client
+/// that offered an empty ALPN list would meet `no_application_protocol`
+/// from a server that would have answered it.
+pub(crate) fn alpn_offer<'a>(ours: &[&'a [u8]], record: &'a [Vec<u8>]) -> Vec<&'a [u8]> {
+    /// RFC 9460 §7.1.2 — the default set for the `https` scheme.
+    const DEFAULT_SET: &[&[u8]] = &[b"http/1.1"];
+
+    let offer: Vec<&[u8]> = ours
+        .iter()
+        .copied()
+        .filter(|p| {
+            DEFAULT_SET.contains(p) || record.iter().any(|advertised| advertised.as_slice() == *p)
+        })
+        .collect();
+    if offer.is_empty() {
+        ours.to_vec()
+    } else {
+        offer
+    }
+}

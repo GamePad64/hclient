@@ -80,16 +80,34 @@
 //! `http-ng-dns-system` — but that's a property of a particular backend,
 //! not a guarantee of the trait.)
 //!
-//! # RFC 9460 SVCB/ECH isn't wired up here either
+//! # RFC 9460 SVCB/HTTPS is wired up here now (v0.3 W2)
 //!
-//! `TlsRequest::ech` was added ahead of time in Task 8, and
-//! `Resolve::lookup_svcb`/`SvcbEndpoint::ech_config_list` in Task 6, but
-//! neither is part of this task's Interfaces block (`connect` there takes
-//! `alpn: &[&[u8]]`, but no SVCB endpoint list and no ECH). `connect`
-//! below passes `ech: None` — honestly: it doesn't query SVCB and can't
-//! offer an ECH config it doesn't have, rather than pretending it queried
-//! and found none (the same distinction `supports_svcb()` already draws
-//! at the `Resolve` level).
+//! This section read "isn't wired up here either" until v0.3 W2, and it
+//! was honest: `TlsRequest::ech` (Task 8) and `Resolve::lookup_svcb`/
+//! `SvcbEndpoint` (Task 6) both existed, `connect` consumed neither, and
+//! it passed `ech: None` rather than pretending it had asked. It asks now.
+//! [`crate::discovery`] holds the record-shaped half — which record is
+//! chosen, what an `alpn` set means, and the negative cache — and this
+//! file holds the connection-shaped half: the port every attempt uses, the
+//! addresses Happy Eyeballs starts from, the ALPN list the handshake
+//! offers, and whether an ECH config is passed on.
+//!
+//! **The ECH config is passed on only to a backend that says it applies
+//! one** (`TlsConnect::applies_ech`, defaulted to `false`, and `false` for
+//! every backend in this workspace today). The alternative is not a
+//! stylistic choice: `http-ng-tls-rustls` refuses a non-`None` `ech`, so a
+//! connector that filled the field from every record would make every
+//! origin publishing an ECH config unreachable through the default TLS
+//! backend. Measured before it was decided rather than reasoned about —
+//! `tests/svcb.rs`'s `an_ech_publishing_origin_is_still_reachable`, which
+//! fails with exactly zero bytes on the wire if the guard is removed.
+//!
+//! What that guard costs is a privacy fact rather than an implementation
+//! detail, and it is written where a caller can find it: on
+//! `TlsConnect::applies_ech`, on `Native::new`'s `Capabilities`, and in
+//! `docs/v03-acceptance.md`. In one line — with no backend that applies
+//! ECH, a connection to an origin that publishes a config is still made,
+//! and still sends that origin's name in the clear.
 //!
 //! # `connect` is no longer dead code outside tests
 //!
@@ -105,6 +123,7 @@
 //! `Inner`/`OutgoingBody` a year earlier in the same vertical).
 #![allow(clippy::too_many_arguments)]
 
+use crate::discovery::{self, Endpoint, NegativeCache, Origin};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use http::Uri;
@@ -554,12 +573,37 @@ where
     drive(rt, sched, v6, v4, port, opts).await
 }
 
-/// DNS-consuming connector: resolves `uri`, runs Happy Eyeballs (feeding
-/// [`Scheduler`] as results arrive — see the module doc comment), then
-/// optionally runs a TLS handshake with the given ALPN. `uri`'s scheme
-/// decides whether TLS is needed at all (`https` — yes, `http` — no); any
-/// other scheme is `ErrorKind::Unsupported`, not a silent treatment as
-/// `http`.
+/// DNS-consuming connector: consults the origin's HTTPS record where one
+/// is to be had (see [`crate::discovery`]), resolves `uri`, runs Happy
+/// Eyeballs (feeding [`Scheduler`] as results arrive — see the module doc
+/// comment), then optionally runs a TLS handshake with the negotiated ALPN
+/// offer. `uri`'s scheme decides whether TLS is needed at all (`https` —
+/// yes, `http` — no); any other scheme is `ErrorKind::Unsupported`, not a
+/// silent treatment as `http`.
+///
+/// # The record is consulted once, and its failure is paid for once
+///
+/// A discovered endpoint moves the connection: a different port, a
+/// different set of addresses to start from. If that connection fails,
+/// this function tries again **on the origin's own terms** — no port
+/// override, no hints, no ALPN restriction, no ECH — and marks the origin
+/// in `discovery` so the next request skips discovery altogether for
+/// [`crate::SVCB_FAILURE_TTL`]. Without the retry an origin with a stale
+/// record would be unreachable rather than slow; without the mark, every
+/// request would pay the failed attempt again.
+///
+/// **Both attempts share one `Timeouts::connect` budget**, because that
+/// deadline wraps this whole future exactly once (`crate::
+/// with_connect_timeout`). A retry that could double a caller's bound
+/// would not be a bound.
+///
+/// **The error the caller sees is the second attempt's**, and that is the
+/// one about the origin: the first attempt went to an endpoint the caller
+/// never named, chosen by this transport from a DNS record, and its
+/// failure is recorded in the cache rather than reported as the answer to
+/// a request that was still able to proceed. When there was no record, or
+/// when it contributed nothing, there is only ever one attempt and one
+/// error.
 pub(crate) async fn connect<R, D, L>(
     rt: &R,
     dns: &D,
@@ -567,6 +611,8 @@ pub(crate) async fn connect<R, D, L>(
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
+    discovery_cache: &NegativeCache,
+    now: Duration,
 ) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>
 where
     R: TcpConnect + Timer,
@@ -576,23 +622,142 @@ where
     let host = host(uri)?;
     let use_tls = wants_tls(uri)?;
     let port = port(uri, use_tls);
-    let sched = build_scheduler(HeConfig::default())?;
 
-    let tcp = drive(
+    let endpoint = discovered_endpoint(dns, host, use_tls, port, discovery_cache, now).await;
+
+    let first = attempt(
         rt,
-        sched,
-        dns.lookup_ipv6(host),
-        dns.lookup_ipv4(host),
+        dns,
+        tls,
+        host,
+        use_tls,
         port,
         opts,
+        alpn,
+        endpoint.as_ref(),
     )
-    .await?;
+    .await;
+    match first {
+        Ok(conn) => Ok(conn),
+        Err(e) if endpoint.is_some() => {
+            discovery_cache.record(Origin::new(host, port), now);
+            let _ = e;
+            attempt(rt, dns, tls, host, use_tls, port, opts, alpn, None).await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The HTTPS record this connection may act on, with every reason it may
+/// not in one place.
+///
+/// Each condition is `crate::discovery`'s to justify (its module doc has
+/// them: the `http://` upgrade rule, the prefixed name a non-default port
+/// needs, and the negative cache); what belongs here is that they are
+/// checked **before** the lookup rather than after it. A suppressed origin
+/// or a non-default port must not cost a DNS query whose answer is then
+/// thrown away — that would be the cost of discovery without any of its
+/// effect.
+///
+/// A record that contributes nothing (`Endpoint::is_inert`) is dropped to
+/// `None` here too, so that the caller's "was a record in play" test is
+/// the same question as "could this attempt have gone differently".
+async fn discovered_endpoint<D>(
+    dns: &D,
+    host: &str,
+    use_tls: bool,
+    port: u16,
+    cache: &NegativeCache,
+    now: Duration,
+) -> Option<Endpoint>
+where
+    D: Resolve,
+{
+    if !use_tls || port != HTTPS_DEFAULT_PORT {
+        return None;
+    }
+    if cache.suppressed(&Origin::new(host, port), now) {
+        return None;
+    }
+    discovery::lookup(dns, host).await.filter(|e| !e.is_inert())
+}
+
+/// The port `https` means when a URI does not say otherwise — and the only
+/// port at which the HTTPS record fetched for a bare origin name applies
+/// (RFC 9460 §9.5, see [`crate::discovery`]).
+const HTTPS_DEFAULT_PORT: u16 = 443;
+
+/// One connection attempt: Happy Eyeballs over `endpoint`'s hints followed
+/// by the origin's own addresses, then TLS if the scheme asks for it.
+///
+/// `endpoint: None` is exactly what this function did before v0.3 W2, and
+/// it is the shape the retry above uses — the "without the record" path is
+/// the same code with the record absent, not a second implementation of
+/// connecting.
+///
+/// **The hints come first and the resolver's answers follow**, rather than
+/// replacing them: RFC 9460 §10.3 has the hints as a way to start
+/// connecting before the address queries return, not as an alternative to
+/// asking. Chaining them onto the front of each family's stream is
+/// literally that — `Scheduler` gets the hint on its first poll, and the
+/// A/AAAA answers as they arrive, through the same state machine and with
+/// the same pacing rules as any other address.
+async fn attempt<R, D, L>(
+    rt: &R,
+    dns: &D,
+    tls: &L,
+    host: &str,
+    use_tls: bool,
+    port: u16,
+    opts: &TcpOpts,
+    alpn: &[&[u8]],
+    endpoint: Option<&Endpoint>,
+) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>
+where
+    R: TcpConnect + Timer,
+    D: Resolve,
+    L: TlsConnect,
+{
+    let sched = build_scheduler(HeConfig::default())?;
+    // RFC 9460 §7.2: the record's port replaces the scheme's default for
+    // every attempt in this race, hints and resolved addresses alike —
+    // there is one port per race (see `drive`), and an endpoint that named
+    // one named it for the service, not for some of its addresses.
+    let port = endpoint.and_then(|e| e.port).unwrap_or(port);
+    let hint6 = endpoint.map(|e| e.ipv6hint.clone()).unwrap_or_default();
+    let hint4 = endpoint.map(|e| e.ipv4hint.clone()).unwrap_or_default();
+
+    let v6 = futures_util::stream::iter(hint6.into_iter().map(|a| {
+        Ok(ResolvedAddr {
+            addr: IpAddr::V6(a),
+            ttl: None,
+        })
+    }))
+    .chain(dns.lookup_ipv6(host));
+    let v4 = futures_util::stream::iter(hint4.into_iter().map(|a| {
+        Ok(ResolvedAddr {
+            addr: IpAddr::V4(a),
+            ttl: None,
+        })
+    }))
+    .chain(dns.lookup_ipv4(host));
+
+    let tcp = drive(rt, sched, v6, v4, port, opts).await?;
 
     if use_tls {
+        // Held outside the `TlsRequest` so the borrowed list outlives it.
+        let restricted = endpoint.map(|e| discovery::alpn_offer(alpn, &e.alpn));
         let req = TlsRequest {
             server_name: host,
-            alpn,
-            ech: None,
+            alpn: restricted.as_deref().unwrap_or(alpn),
+            // The whole of the ECH decision, and the reason it is a
+            // question rather than an assignment: see the module doc.
+            // `applies_ech()` is `false` for every backend here today, so
+            // this is `None` today — but it is `None` because a backend
+            // said it would not use one, not because nobody asked.
+            ech: endpoint
+                .filter(|_| tls.applies_ech())
+                .and_then(|e| e.ech.as_deref()),
             // Reserved, not used — see `http_ng_tls::TlsRequest::
             // early_data`, which explains what a transport has to settle
             // before it may ask for 0-RTT, and why none of that is v0.2's.
@@ -1500,6 +1665,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
         ))
         .expect("the v4 address must win the race");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -1528,6 +1695,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
         ))
         .expect("connect");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -1552,6 +1721,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &alpn,
+            &NegativeCache::default(),
+            Duration::ZERO,
         ))
         .expect("connect");
         assert!(matches!(conn, Conn::Tls(_)));
@@ -1572,6 +1743,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
         ))
         .expect_err("ftp isn't supported");
         assert_eq!(err.kind(), &ErrorKind::Unsupported);
@@ -1599,6 +1772,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
         ));
         let log = rt.log.borrow();
         assert_eq!(log.len(), 1);
@@ -1620,6 +1795,8 @@ mod tests {
             &uri,
             &TcpOpts::default(),
             &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
         ))
         .expect_err("no host — nowhere to connect to");
         assert_eq!(err.kind(), &ErrorKind::Connect);
