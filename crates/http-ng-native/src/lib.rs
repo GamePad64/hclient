@@ -222,6 +222,24 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // `TlsConnect::tls_support` defaults to `Full`, so every real
         // implementation reports what it did before; only a stub differs.
         caps.tls_config = tls.tls_support();
+        // **What `tls_config` does not say, and where the answer is.**
+        // Since v0.3 W2 this transport reads HTTPS records, so it can hold
+        // an `EchConfigList` for an origin that published one — and it
+        // offers it only to a backend whose `TlsConnect::applies_ech()`
+        // says it will use one, which today is none of them (see
+        // `crate::connect`'s module doc for why filling the field
+        // regardless would make every such origin unreachable). The cost
+        // of that is a privacy fact rather than an implementation detail:
+        // the connection is still made, and the server name the origin
+        // asked to have encrypted still goes out in the clear.
+        //
+        // It is not a `Capabilities` field because the answer is the TLS
+        // backend's and the caller already holds it — `tls.applies_ech()`
+        // is readable at construction, before any request — where a field
+        // here would be this crate copying someone else's answer into a
+        // second place it could drift from. `tests/svcb.rs`'s
+        // `the_name_a_record_asked_to_protect_goes_out_in_the_clear` is
+        // the same fact, exhibited on the wire.
         caps.version_reported = true;
         caps.timeouts = TimeoutSupport {
             // Actually enforced — see `execute`'s race between
