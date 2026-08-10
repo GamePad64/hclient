@@ -219,11 +219,18 @@ impl Clone for Identity {
 }
 
 pub fn identity() -> Identity {
-    // Both names: the tests dial the literal `127.0.0.1` (so the resolver
-    // is not a second thing under test), and rcgen turns an IP-shaped SAN
-    // into an IP SAN, which is what rustls checks a literal against.
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
-        .expect("rcgen can always make a self-signed cert");
+    // All three names: the tests dial the literal `127.0.0.1` (so the
+    // resolver is not a second thing under test), and rcgen turns an
+    // IP-shaped SAN into an IP SAN, which is what rustls checks a literal
+    // against. `::1` is `tests/quic_server_name.rs`'s — the only authority
+    // a URI writes in brackets — and `localhost` is that file's control
+    // that the brackets come off a bracketed host and nothing else.
+    let cert = rcgen::generate_simple_self_signed(vec![
+        "localhost".into(),
+        "127.0.0.1".into(),
+        "::1".into(),
+    ])
+    .expect("rcgen can always make a self-signed cert");
     Identity {
         cert_der: rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec()),
         key_der: rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der())
@@ -265,11 +272,33 @@ pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Dur
 /// h3 layer before the handshake finished for every other test in this
 /// suite — changing what they measure for the benefit of one that needs it.
 pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
-    start_inner(behaviour, None, identity(), true)
+    start_inner(behaviour, None, identity(), true, v4()).expect("a v4 loopback bind")
 }
 
 pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
-    start_inner(behaviour, idle, id, false)
+    start_inner(behaviour, idle, id, false, v4()).expect("a v4 loopback bind")
+}
+
+/// The address every other server in this suite binds.
+fn v4() -> SocketAddr {
+    "127.0.0.1:0".parse().unwrap()
+}
+
+/// A server on the **IPv6** loopback, or `None` on a host that has none.
+///
+/// The one thing a v4 server cannot say anything about: an IPv6 authority
+/// is the only one a URI writes in brackets, and the brackets are what
+/// `tests/quic_server_name.rs` is about. `None` rather than a panic for the
+/// same reason `an_endpoint_is_bound_in_the_peers_address_family` skips its
+/// v6 half in `src/lib.rs` — a host without IPv6 is a fact about the host.
+pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
+    start_inner(
+        behaviour,
+        None,
+        identity(),
+        false,
+        "[::1]:0".parse().unwrap(),
+    )
 }
 
 fn start_inner(
@@ -277,7 +306,8 @@ fn start_inner(
     idle: Option<std::time::Duration>,
     id: Identity,
     watch_early_data: bool,
-) -> Server {
+    bind: SocketAddr,
+) -> Option<Server> {
     let Identity { cert_der, key_der } = id;
 
     let mut tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -322,8 +352,17 @@ fn start_inner(
             .build()
             .unwrap();
         rt.block_on(async move {
-            let endpoint = quinn::Endpoint::server(cfg, "127.0.0.1:0".parse().unwrap()).unwrap();
-            tx.send(endpoint.local_addr().unwrap()).unwrap();
+            let endpoint = match quinn::Endpoint::server(cfg, bind) {
+                Ok(e) => e,
+                // The only expected failure is "this host has no IPv6", and
+                // the caller has to be able to tell it apart from a server
+                // that bound and then went quiet.
+                Err(_) => {
+                    let _ = tx.send(None);
+                    return;
+                }
+            };
+            tx.send(Some(endpoint.local_addr().unwrap())).unwrap();
             while let Some(incoming) = endpoint.accept().await {
                 let (a, r, ts, bs) = (a.clone(), r.clone(), ts.clone(), bs.clone());
                 tokio::spawn(async move {
@@ -478,17 +517,17 @@ fn start_inner(
         });
     });
 
-    Server {
+    Some(Server {
         addr: rx
             .recv()
-            .expect("the server thread binds before it answers"),
+            .expect("the server thread binds before it answers")?,
         cert_der,
         accepted,
         requests,
         timings,
         bodies,
         _thread: thread,
-    }
+    })
 }
 
 /// A `Rustls` that trusts exactly this server's certificate, and nothing
