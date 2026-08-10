@@ -324,53 +324,42 @@ async fn plaintext_http_is_refused_rather_than_silently_upgraded() {
 #[tokio::test(flavor = "multi_thread")]
 async fn capabilities_describe_this_implementation_not_the_protocol() {
     // HTTP/3 does full duplex and streaming request bodies: a QUIC stream's
-    // two halves are independent. `execute` does neither — it writes the
-    // whole request body, then reads the head — and these two `false`s are
-    // therefore about this code and not about the protocol.
+    // two halves are independent. That is NOT why these two are `true` —
+    // they were `false` for as long as `execute` wrote the whole request
+    // body and then read the head, and they moved in the change that split
+    // the stream and made the write a future polled beside
+    // `recv_response`.
     //
-    // The one that matters is `full_duplex`: over-claiming it costs a
-    // caller a deadlock rather than a degradation, which is the argument
-    // W3's floor rule is built on. Pinned here so that implementing duplex
-    // and forgetting to move the declaration is a red test, and so that
-    // moving the declaration without implementing it is one too.
+    // This is the declaration half of a pair, and it is worth nothing on
+    // its own: flipping either field here is caught by this test, and
+    // undoing the implementation while leaving the fields alone is caught
+    // by `tests/streaming.rs`, which cannot pass without the behaviour.
+    // `full_duplex` is the one that has to be earned rather than argued —
+    // over-claiming it costs a caller a deadlock rather than a
+    // degradation, which is the argument W3's floor rule is built on — and
+    // `a_response_head_arrives_while_the_request_body_is_still_going_out`
+    // is the exchange that cannot complete without it.
     let s = server::start(Behaviour::Echo);
     let t = h3(&s.cert_der);
     let c = t.capabilities();
     assert!(
-        !c.full_duplex,
-        "execute writes the request body before reading the response head"
+        c.full_duplex,
+        "the response head is delivered while the request body is still \
+         being written — tests/streaming.rs measures it from the server"
     );
     assert!(
-        !c.streaming_request_body,
-        "and it refuses a streaming body outright — see the test below"
+        c.streaming_request_body,
+        "a RequestBody::Streaming is written frame by frame, paced by the \
+         peer's flow control — tests/streaming.rs measures that too"
     );
-    // The two `true`s in the same set, so this is a description of the
-    // implementation rather than a habit of saying no.
+    // Two neighbours that stayed `false`/`true` in the same set, so this is
+    // a description of the implementation rather than a habit of saying
+    // yes. `request_trailers` is the interesting one now: a streaming body
+    // can produce a trailers frame, and this transport answers with a
+    // typed error rather than dropping it.
+    assert!(!c.request_trailers, "nothing here sends request trailers");
     assert!(c.response_trailers, "H3Body yields a trailers frame");
     assert_eq!(c.connection_reuse, http_ng_core::ReuseSupport::Supported);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_streaming_request_body_is_refused_by_name() {
-    // `Capabilities::streaming_request_body` is `false`, and this is what
-    // makes that declaration cost something: the refusal is typed and names
-    // the capability, rather than the body being quietly buffered.
-    let s = server::start(Behaviour::Echo);
-    let t = h3(&s.cert_der);
-    let body = RequestBody::Streaming(Box::new(
-        http_body_util::Empty::<bytes::Bytes>::new()
-            .map_err(|e: std::convert::Infallible| match e {}),
-    ));
-    let req = http::Request::builder()
-        .uri(format!("https://{}/x", s.addr))
-        .body(body)
-        .unwrap();
-    let err = t
-        .execute(req)
-        .await
-        .expect_err("declared false, so refused");
-    assert!(err.is_unsupported(), "{err}");
-    assert!(err.to_string().contains("streaming_request_body"), "{err}");
 }
 
 // ── `Timeouts::connect`, declared and enforced in the same change ───────

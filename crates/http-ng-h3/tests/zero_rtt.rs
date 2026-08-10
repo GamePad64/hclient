@@ -23,11 +23,16 @@
 //!   it.
 //!
 //! The relay is what makes the second of those causal rather than merely
-//! likely. It **holds the server's flight back for `HOLD`**, and a client's
-//! handshake completes on processing that flight — so inside the window
-//! there is no state of the world in which a request reaches the server by
-//! any route but early data. The margin is then 150 ms against about 2, in
-//! a suite whose other timing tests run on 300 and 1500.
+//! likely, and it does it **without a window**. It holds the server's
+//! flight back until the server has resolved a request, and a client's
+//! handshake completes on processing that flight — so a request the server
+//! resolved before the release is one it resolved before its handshake, at
+//! any speed and under any load. There is no duration to tune and none to
+//! lose: `wire::Wire::release` carries the measurement of what a tuned one
+//! cost. The failure the test exists to catch survives the change and gets
+//! sharper — a server that discarded the early data can only resolve the
+//! request after the handshake, which cannot happen while the flight is
+//! held, so nothing releases it and the backstop expires.
 //!
 //! # The server-side signal that looked right and is not
 //!
@@ -42,9 +47,10 @@
 //! 0-RTT packets going past — which is how the timing observation below
 //! came to exist.
 //!
-//! Measured on this host: 9 zero-RTT packets carrying 6370 bytes before any
-//! Handshake packet from the client; the server resolving the request 1 ms
-//! into the connection and completing its handshake at 151 ms.
+//! Measured on this host: 9 zero-RTT packets carrying 6375 bytes before any
+//! Handshake packet from the client; the server resolving the request
+//! 2.6 ms into the connection and completing its handshake at 7.2 ms, with
+//! the relay holding its flight for the 4.1 ms in between.
 #![cfg(not(target_family = "wasm"))]
 
 mod server;
@@ -60,14 +66,23 @@ use server::Behaviour;
 use std::time::Duration;
 use wire::{Kind, Wire};
 
-/// How long the relay holds the server's flight back.
+/// The relay's backstop: how long it will hold the server's flight if
+/// nothing releases it.
 ///
-/// It buys the guarantee, not the margin: while the flight is in the relay
-/// the client's handshake **cannot** complete, so everything the client
-/// sends meanwhile is early data by construction rather than by luck. Well
-/// under quinn's first PTO (about a second), or both ends would start
-/// retransmitting.
-const HOLD: Duration = Duration::from_millis(150);
+/// **Not the plan.** The hold normally ends the moment the server has
+/// resolved a request — see `wire::Wire::release`, which carries the
+/// measurement that made an event-driven hold necessary rather than tidy.
+/// Reaching this deadline means the server never resolved one while its
+/// handshake was outstanding, which is the failure this test exists to
+/// catch; the value only decides whether that failure arrives as an
+/// assertion with numbers in it or as a wedged suite.
+///
+/// It stays under quinn's first PTO (about a second: no RTT sample, a
+/// 333 ms assumed initial RTT, so `srtt + 4*rttvar + max_ack_delay` lands
+/// near 1022 ms) for the happy path, where the release comes in
+/// milliseconds. On the failure path a retransmission or two is the least
+/// of what has gone wrong.
+const BACKSTOP: Duration = Duration::from_secs(5);
 
 /// A header big enough that carrying it is not something the h3 control
 /// stream could have done.
@@ -163,13 +178,47 @@ async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handsha
 
     // ---- Phase two: the same client, one marked request. ----
     wire.forget();
-    wire.hold_server_flight(HOLD);
+    wire.hold_server_flight(BACKSTOP);
+
+    // The hold ends on the EVENT it exists to order against, not on a
+    // clock: as soon as the server has resolved a request on this second
+    // connection, the flight is let through. Until then the client's
+    // handshake cannot complete, so a request resolved before the release
+    // is a request resolved before the handshake — under any load, at any
+    // speed. See `wire::Wire::release` for the measurement that made this
+    // necessary rather than tidy.
+    //
+    // The test thread is about to block in `execute`, so the watcher has to
+    // be somewhere else; it holds only the two `Arc`s it needs.
+    let watcher = {
+        let (releaser, timings) = (wire.releaser(), s.timings.clone());
+        tokio::spawn(async move {
+            for _ in 0..1000 {
+                let resolved = timings
+                    .lock()
+                    .unwrap()
+                    .get(1)
+                    .and_then(|t| t.first_request())
+                    .is_some();
+                if resolved {
+                    releaser.release();
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            // Let the exchange finish anyway, so the failure below is an
+            // assertion with the numbers in it rather than a wedged suite.
+            releaser.release();
+            false
+        })
+    };
 
     let mut marked = padded_get(wire.addr, "/early", true);
     marked.extensions_mut().insert(AllowEarlyData);
     let started = std::time::Instant::now();
     let r = t.execute(marked).await.expect("a marked request");
     let answered = started.elapsed();
+    let released_on_the_request = watcher.await.expect("the watcher does not panic");
     assert_eq!(r.status(), 200);
     assert_eq!(body_of(r).await, "hello over h3");
 
@@ -215,12 +264,47 @@ async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handsha
         .first_request()
         .expect("the server answered, so it resolved a request");
     println!("server: request at {request:?}, handshake completed at {handshake:?}");
-    assert!(
-        handshake >= HOLD,
-        "the relay was supposed to hold the server's flight for {HOLD:?}, so \
-         no handshake can have completed before then; {handshake:?} means the \
-         hold did not happen and the separation below proves nothing"
+
+    // The fixture check — "the hold was not a no-op" — asked from the
+    // relay, which is the only party that knows, and answered on the
+    // relay's own clock.
+    //
+    // It used to read `handshake >= HOLD`, and that was **wrong by
+    // construction rather than by margin**: `handshake` is measured from
+    // the moment the SERVER accepted the connection, while `HOLD` runs from
+    // the moment this test armed the relay — and between those two lie the
+    // request being built, `execute` resolving and checking out, quinn
+    // emitting an Initial, the datagram crossing the relay, and the
+    // server's task starting. So the two numbers have different origins and
+    // the recorded one is always the smaller, by an amount nobody bounded.
+    // It failed about one run in three under load, at 146-150 ms against
+    // 150. Widening the window would have been the wrong repair twice over:
+    // it would have kept a comparison that cannot be right, and every
+    // millisecond of tolerance is a millisecond in which a post-handshake
+    // packet could start to count.
+    let held = wire.held();
+    println!(
+        "relay: held {} server datagram(s), longest wait {:?}",
+        held.datagrams, held.longest
     );
+    assert!(
+        held.datagrams > 0,
+        "the relay forwarded every server datagram without waiting, so the \
+         client's handshake was never held back and the separation below \
+         would be a race rather than a guarantee"
+    );
+    assert!(
+        released_on_the_request,
+        "the hold ran to its {BACKSTOP:?} backstop: the server never resolved \
+         a request while its handshake was outstanding, which is what \
+         discarding the early data looks like from here"
+    );
+
+    // The claim, restated from the server's own record. It cannot fail once
+    // the release above happened on the request — the handshake could not
+    // complete while the flight was held — and it is asserted anyway,
+    // because a fixture that stopped releasing on the event would otherwise
+    // go on passing.
     assert!(
         request < handshake,
         "the server resolved the request at {request:?} and completed its \

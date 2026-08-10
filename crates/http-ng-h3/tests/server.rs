@@ -37,6 +37,66 @@ pub enum Behaviour {
     /// two apart by tolerating everything would pass one and hang on the
     /// other.
     DieAfterHead,
+    /// Read the request body to its end, **then** answer `200` with the
+    /// byte count as the response body.
+    ///
+    /// The ordinary shape of an upload, and the only one that can say
+    /// whether a whole streamed body arrived: the count comes from the
+    /// server's own reading, so a client that sent one frame and stopped
+    /// cannot produce it.
+    CountBody,
+    /// Answer `200` **before reading a single byte** of the request body,
+    /// then read it to the end and send the byte count as the response
+    /// body.
+    ///
+    /// This is the server half of duplex. Paired with a client whose body
+    /// does not produce its last chunk until the head has been seen, it
+    /// makes the exchange impossible to complete without duplex rather
+    /// than merely slower — see `tests/streaming.rs`.
+    HeadThenRead,
+    /// [`Behaviour::CountBody`], but pausing between DATA frames.
+    ///
+    /// Not a benchmark and not padding: it is what makes "the client is
+    /// still writing" a fact rather than a race. A reader this slow lets
+    /// the peer's flow-control window fill and stay full, so a client with
+    /// a body larger than the window **cannot** have finished, whatever
+    /// the machine is doing. `tests/streaming.rs`'s buffered-cancellation
+    /// test needs exactly that.
+    ReadSlowly(std::time::Duration),
+    /// Send the whole response — head, body, end — **without ever reading
+    /// the request body**, and then hold the request stream open for `d`
+    /// rather than dropping it.
+    ///
+    /// The holding is the point, and it is what tells this apart from
+    /// [`Behaviour::Echo`]. Dropping an unread `RecvStream` sends
+    /// `STOP_SENDING`, which lets a blocked client stop writing; keeping it
+    /// alive leaves the client's flow-control window full with no way out.
+    /// So the client is certainly still writing while the response is
+    /// there to be read — which is the one arrangement in which a response
+    /// body that waited on the request body would hang instead of merely
+    /// being slow.
+    AnswerWithoutReading(std::time::Duration),
+}
+
+/// What one request's body looked like **from the server**, with the
+/// server's own clock, measured from the moment the request head resolved.
+///
+/// The rule every timing test in this workspace follows: the client is the
+/// thing under test, so the observer is the other end of the wire.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BodyReport {
+    /// Request-body bytes read before the stream ended or failed.
+    pub bytes: usize,
+    /// How many DATA frames those bytes arrived in.
+    pub frames: usize,
+    /// `true` if the request stream ended cleanly, `false` if it failed —
+    /// which on this path means the client reset it.
+    pub complete: bool,
+    /// When the response head was sent. `None` for behaviours that send it
+    /// after reading.
+    pub head_sent: Option<std::time::Duration>,
+    /// When the last request-body byte arrived.
+    pub last_byte: Option<std::time::Duration>,
 }
 
 pub struct Server {
@@ -52,6 +112,10 @@ pub struct Server {
     /// [`ConnTiming`]. Empty unless the server was started by
     /// [`start_watching_early_data`].
     pub timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>>,
+    /// One entry per request whose body this server read — see
+    /// [`BodyReport`]. Empty unless the behaviour is [`Behaviour::
+    /// CountBody`] or [`Behaviour::HeadThenRead`].
+    pub bodies: Arc<std::sync::Mutex<Vec<BodyReport>>>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -109,6 +173,27 @@ impl Server {
     /// One [`ConnTiming`] per accepted connection, in accept order.
     pub fn timings(&self) -> Vec<Arc<ConnTiming>> {
         self.timings.lock().unwrap().clone()
+    }
+    /// One [`BodyReport`] per request whose body was read, in the order the
+    /// reads finished.
+    pub fn bodies(&self) -> Vec<BodyReport> {
+        self.bodies.lock().unwrap().clone()
+    }
+    /// Wait for the server to have finished reading `n` request bodies.
+    ///
+    /// A poll rather than a sleep: the thing being waited for is the
+    /// server's own record, so the test never has to guess how long a
+    /// reset takes to arrive. Returns `false` if it did not happen inside
+    /// `within`, so a caller can fail with its own message.
+    pub async fn wait_for_bodies(&self, n: usize, within: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while std::time::Instant::now() < deadline {
+            if self.bodies.lock().unwrap().len() >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        self.bodies.lock().unwrap().len() >= n
     }
 }
 
@@ -222,7 +307,14 @@ fn start_inner(
     let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    let (a, r, ts) = (accepted.clone(), requests.clone(), timings.clone());
+    let bodies: Arc<std::sync::Mutex<Vec<BodyReport>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (a, r, ts, bs) = (
+        accepted.clone(),
+        requests.clone(),
+        timings.clone(),
+        bodies.clone(),
+    );
 
     let thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -233,7 +325,7 @@ fn start_inner(
             let endpoint = quinn::Endpoint::server(cfg, "127.0.0.1:0".parse().unwrap()).unwrap();
             tx.send(endpoint.local_addr().unwrap()).unwrap();
             while let Some(incoming) = endpoint.accept().await {
-                let (a, r, ts) = (a.clone(), r.clone(), ts.clone());
+                let (a, r, ts, bs) = (a.clone(), r.clone(), ts.clone(), bs.clone());
                 tokio::spawn(async move {
                     let started = std::time::Instant::now();
                     let timing = Arc::new(ConnTiming::default());
@@ -272,10 +364,12 @@ fn start_inner(
                     };
                     while let Ok(Some(resolver)) = h3.accept().await {
                         let (r, timing, quic) = (r.clone(), timing.clone(), quic.clone());
+                        let bodies = bs.clone();
                         tokio::spawn(async move {
                             let Ok((_req, mut stream)) = resolver.resolve_request().await else {
                                 return;
                             };
+                            let t0 = std::time::Instant::now();
                             timing
                                 .first_request
                                 .lock()
@@ -284,6 +378,84 @@ fn start_inner(
                             r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             if behaviour == Behaviour::DieAfterHead {
                                 quic.close(1u32.into(), b"dying on purpose");
+                                return;
+                            }
+                            if let Behaviour::AnswerWithoutReading(d) = behaviour {
+                                let resp = http::Response::builder()
+                                    .status(http::StatusCode::OK)
+                                    .body(())
+                                    .unwrap();
+                                if stream.send_response(resp).await.is_err() {
+                                    return;
+                                }
+                                let _ =
+                                    stream.send_data(Bytes::from_static(b"hello over h3")).await;
+                                let _ = stream.finish().await;
+                                // Holding `stream`, and therefore its unread
+                                // receive half, so no `STOP_SENDING` goes out.
+                                tokio::time::sleep(d).await;
+                                return;
+                            }
+                            if matches!(
+                                behaviour,
+                                Behaviour::CountBody
+                                    | Behaviour::HeadThenRead
+                                    | Behaviour::ReadSlowly(_)
+                            ) {
+                                let mut report = BodyReport::default();
+                                if behaviour == Behaviour::HeadThenRead {
+                                    // Before a single byte of the request
+                                    // body has been read, which is the
+                                    // whole point of this behaviour.
+                                    let resp = http::Response::builder()
+                                        .status(http::StatusCode::OK)
+                                        .body(())
+                                        .unwrap();
+                                    if stream.send_response(resp).await.is_err() {
+                                        return;
+                                    }
+                                    report.head_sent = Some(t0.elapsed());
+                                }
+                                loop {
+                                    match stream.recv_data().await {
+                                        Ok(Some(buf)) => {
+                                            report.bytes += bytes::Buf::remaining(&buf);
+                                            report.frames += 1;
+                                            report.last_byte = Some(t0.elapsed());
+                                            if let Behaviour::ReadSlowly(d) = behaviour {
+                                                tokio::time::sleep(d).await;
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            report.complete = true;
+                                            break;
+                                        }
+                                        // The client reset the stream, or
+                                        // the connection went. Either way
+                                        // what arrived is not the whole
+                                        // request, and saying so is the
+                                        // point of the field.
+                                        Err(_) => break,
+                                    }
+                                }
+                                // Recorded before the tail is sent, so a
+                                // test waiting on a cancelled upload is not
+                                // waiting on a write to a peer that has
+                                // gone.
+                                bodies.lock().unwrap().push(report);
+                                if behaviour != Behaviour::HeadThenRead {
+                                    let resp = http::Response::builder()
+                                        .status(http::StatusCode::OK)
+                                        .body(())
+                                        .unwrap();
+                                    if stream.send_response(resp).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                let _ = stream
+                                    .send_data(Bytes::from(format!("{} bytes", report.bytes)))
+                                    .await;
+                                let _ = stream.finish().await;
                                 return;
                             }
                             if let Behaviour::Slow(d) = behaviour {
@@ -314,6 +486,7 @@ fn start_inner(
         accepted,
         requests,
         timings,
+        bodies,
         _thread: thread,
     }
 }

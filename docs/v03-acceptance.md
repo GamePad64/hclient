@@ -18,13 +18,20 @@ carried forward on trust.
 | Cancelling one request does not disturb its neighbours | `dropping_one_request_does_not_disturb_the_others` — and on this transport the property is not vacuous, because there really are neighbours on the connection |
 | A request enters early data only if the caller marked it | `early_data_is_offered_only_to_a_request_the_caller_marked` plus three unit tests in `src/early.rs` covering every body kind. The two requests have the same body; the extension is the only difference |
 | 0-RTT is really taken, and a rejection is replayed rather than surfaced | `a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it` — two servers, one certificate, separate ticketers. It cannot pass unless `into_0rtt` took the shortcut, the rejection was detected and the replay went out; checked for vacuity by mutating the replay away, which turns it red |
-| 0-RTT is **accepted** end to end, and the data really left before the handshake | `crates/http-ng-h3/tests/zero_rtt.rs` (W1) — two observers, neither of them the client. On the wire, a UDP relay reading cleartext long headers counted 7 zero-RTT packets carrying 7003 bytes before the client's first Handshake packet; on the server, the request was resolved at 2.7 ms against a handshake completing at 151.5 ms, the separation forced by the relay holding the server's flight for 150 ms. The unmarked warm-up is the asserted negative control: no early data at all |
+| 0-RTT is **accepted** end to end, and the data really left before the handshake | `crates/http-ng-h3/tests/zero_rtt.rs` (W1) — two observers, neither of them the client. On the wire, a UDP relay reading cleartext long headers counted 9 zero-RTT packets carrying 6370 bytes before the client's first Handshake packet; on the server, the request was resolved at 1.8 ms against a handshake completing at 5.0 ms. **The separation is forced by an event and not by a window**: the relay holds the server's flight until the server has resolved a request, so a handshake cannot complete first at any speed or under any load. It was a 150 ms hold and it was flaky for two reasons at once — the fixture check compared two clocks with different origins, and the relay was single-threaded, so holding the server's flight also stopped forwarding the client's early data. Both fixed; 40 runs under 20 spinning CPU hogs, 40 pass. The unmarked warm-up is the asserted negative control: no early data at all |
 | The UDP seam's offloads are enforced, not merely published | `crates/http-ng-rt-tokio/tests/udp.rs`, and since W1 `crates/http-ng-rt-pair-check/tests/udp_pair_property.rs` on **both** backends — a socket refuses a GSO batch one segment past what it declared, accepts one exactly at the limit, and a declared batch really arrives as that many datagrams |
 | A socket reports the ECN it can actually observe | same files — the claim is checked against a real loopback round trip, in both directions: a socket claiming ECN must deliver the codepoint, one not claiming it must report `None` |
 | The UDP seam is a seam and not a design | W1 — `UdpBind`/`UdpAdoptStd`/`UdpDatagrams` on `http_ng_rt_smol::Smol` behind a `udp` feature, and one generic body (`exercise_udp<R>`) run under both runtimes rather than two similar test files. `both_backends_report_the_same_kernel` makes each backend the other's oracle, which is the check neither runtime crate could make alone |
 | HTTP/3 runs on two runtimes, from one function | `crates/http-ng-h3/tests/two_runtimes.rs` (W1) — `fetch_once<R>` under `TokioHandle` in a real `tokio::runtime::Runtime` and under `Smol` on a bare `futures_executor::block_on`. Sensitive rather than merely green: adding `R::Instant: PartialEq<std::time::Instant>` breaks the tokio instantiation alone |
 | Neither seam carries a QUIC dependency | the `dependency-graph` job's *"the runtime and TLS seams contain no QUIC"*, plus its companion proving the ban is not vacuous |
 | A handshake that never completes is cut at the caller's bound | `a_connect_timeout_cuts_a_quic_handshake_that_never_completes` — a bound UDP port that answers nothing, a 300 ms `Timeouts::connect`, and `ErrorKind::Timeout(Phase::Connect)` with the bound readable off `ConnectTimedOut` rather than out of a message. Its control is the same black hole with no bound at all, which must still be waiting at 1200 ms; measured by mutation, the unbounded handshake takes **30 s** to fail on quinn's own idle timeout. `a_client_may_now_set_a_connect_timeout_over_h3` is the caller-visible half — before this it was an `UnsupportedCapability` at `build()` — and `h3_declares_the_timeouts_it_enforces_and_no_others` pins the declaration beside the measurement |
+| A streamed request body really streams, and arrives whole | `crates/http-ng-h3/tests/streaming.rs`, `a_streamed_request_body_arrives_whole` — eight 32 KiB frames, and the byte count in the response is the **server's** own, from reading the request body to its end. A client that wrote one frame and stopped cannot produce that number; measured by mutation, stopping after the first frame turns six tests red |
+| The response head arrives **while the request body is still being written** | `a_response_head_arrives_while_the_request_body_is_still_going_out` — causal, not timed. The caller's body does not have its second chunk until `execute` has returned a head, so a transport that wrote the whole body before reading the head deadlocks rather than merely lagging. The server's own clock is the second witness: head sent before the last request byte arrived. This is what `full_duplex: true` rests on; the declaration alone is pinned separately by `capabilities_describe_this_implementation_not_the_protocol`, and neither test is worth anything without the other |
+| A stalled upload does not stall the response body | `a_stalled_upload_does_not_stall_the_response_body` — the server answers in full and then holds the request stream open without reading it, so no `STOP_SENDING` comes back and the client's flow-control window stays full for the rest of the test. The response still reads back. This test exists because the mutation it kills survived the other 43 |
+| A streaming body stops when the peer stops reading, and the response survives | `a_streaming_body_stops_when_the_server_stops_reading_and_the_response_still_arrives` — RFC 9114 §4.1 across many frames rather than one 4 MiB blob. 64 MiB offered against a 1.25 MiB window and a server that answered without reading: the response arrives complete, and fewer than 1024 of 4096 frames were ever pulled from the caller's body. Tolerating the `STOP_SENDING` without stopping is a separate mutation, and it is caught here too |
+| An abandoned upload resets its stream instead of poisoning the connection | `dropping_a_streaming_request_mid_upload_resets_it_and_leaves_the_connection` and `dropping_a_buffered_upload_mid_write_leaves_the_connection_too`. quinn's `SendStream::drop` *finishes* a stream, so an upload dropped mid-frame used to end cleanly with a truncated DATA frame — a connection error of type `H3_FRAME_ERROR` under RFC 9114 §7.1, which on a transport that shares connections takes the neighbours down too. The server reports the stream as reset rather than finished, and a following request lands on the same connection. Both shapes are tested because the defect predates streaming |
+| A streaming body is never admitted to early data | `a_marked_streaming_request_is_not_admitted_to_early_data` — the mark is there and the body is single-pass, so `admits_early_data` refuses it, and the refusal is visible from outside as the **server's accept count**: early data is part of the pool key, so an admitted request could not have shared the unmarked connection. The pair to `live.rs`'s `early_data_is_offered_only_to_a_request_the_caller_marked`, where the same mark on a replayable body gives two connections |
+| Request trailers are refused by name, not dropped | `a_request_body_that_yields_trailers_is_refused_by_name` — `Capabilities::request_trailers` stays `false`, and streaming is what gave that declaration something to refuse: before it, no caller could hand this transport a trailers frame at all |
 
 ## The seam changes, and one that turned out not to be needed
 
@@ -228,12 +235,38 @@ someone to "fix" an item whose absence is the decision.
   a fresh connection and `into_0rtt` puts it straight back into early data,
   against the server that just refused to risk one. `src/early.rs`'s module
   doc carries the argument next to the code.
-- **No streaming request body, and no full duplex.** HTTP/3 does both — a
-  QUIC stream's halves are independent — and `execute` does neither: it
-  writes the whole body, then reads the head. Both capabilities are declared
-  `false` accordingly, and a streaming body is a typed refusal naming the
-  capability rather than a quiet buffering. This is a limitation of the
-  implementation and the capability describes the implementation.
+- ~~**No streaming request body, and no full duplex.**~~ **Both done.** The
+  bullet is kept rather than deleted because the reason it gave for the two
+  `false`s is what governed the change when it came: `execute` wrote the
+  whole body and then read the head, and that — not anything about HTTP/3 —
+  was what the capabilities described. `one_attempt` now splits the stream
+  (RFC 9000 §2.1: the halves are independent), writes the body from a future
+  polled beside `recv_response`, and hands the unfinished write to `H3Body`
+  to carry on from `poll_frame`. The declarations moved in the same commit
+  as the code, and `full_duplex` is measured from outside rather than
+  argued — see the rows above.
+
+  **Three things it costs, and none of them are hidden.** A caller that
+  never polls the response body never finishes sending the request body:
+  nothing is spawned, so the pump advances only when the body is read. That
+  is inherent to duplex without a spawned writer — `http-ng-wasi`'s module
+  doc records the same consequence for the same technique — and spawning it
+  would be worse, because a dropped response would leave an upload running
+  with nowhere for its errors to go. A write failure *after* the head has
+  arrived can only be a response-body error, which is cost (2) from
+  `http-ng-wasi`'s deferral note, paid rather than deferred. And the
+  response body ending does not wait for the request to finish: a body that
+  held the caller until the upload completed would hang against a server
+  that answered in full and then neither read the request stream nor stopped
+  it.
+
+  **`request_trailers` stays `false`**, and it is now enforced rather than
+  merely declared: a streaming body that yields a trailers frame gets a
+  typed `RequestTrailersNotSent` and the stream is reset with
+  `H3_REQUEST_INCOMPLETE` rather than finished as if the request had been
+  whole. h3 can send trailers in one call, so this is a scope decision, and
+  it stays `false` until it is implemented and measured in one change —
+  which is the same rule that kept `Timeouts::connect` off until W1.
 - **No ECH on the QUIC path.** rustls builds ECH through a different builder
   entry point, so honouring it is a second construction path and a third
   cache dimension. An ECH config that arrived from a DNS answer is a typed
@@ -318,6 +351,35 @@ someone to "fix" an item whose absence is the decision.
   and not a shared over-claim. A wholesale `caps: UdpCaps::NONE` in either
   backend **is** killed, by the ECN half of `ecn_claim_matches_reality`: a
   socket that claims no ECN and then delivers `Ect0` fails there.
+- **One mutation survives on the write-side tolerance, and it is the same
+  one `write_after_head`'s doc has always recorded.** Widening its match to
+  `Err(_) => Ok(true)` — tolerating *every* write failure after the head,
+  not only `RemoteTerminate` — leaves the whole suite green. Re-measured
+  after streaming landed, because a claim about which mutations a suite
+  catches goes stale the moment the suite grows: 44 tests, still all green,
+  including the six streaming tests that go through that function on every
+  frame. The reason is unchanged and is a fact about what is observable —
+  a swallowed connection error reappears immediately as the same
+  `ErrorKind::Body` from the read side, so the two spellings are
+  indistinguishable from outside — and a white-box test cannot close it
+  either, since `StreamError` is `#[non_exhaustive]` outside h3's
+  third-party-backend feature. The narrowness is right by construction and
+  the construction is the only argument for it.
+- **Duplex is measured with a streaming request body only.** The code path
+  is one — `one_attempt` splits the stream and starts the pump whatever the
+  body is — but the *observation* needs a body whose later chunks can be
+  withheld until the head arrives, and only `RequestBody::Streaming` can do
+  that. So "the head arrives while a `Full` body is still going out" is true
+  of the same lines and is not separately pinned. What is pinned for a
+  buffered body is the cancellation half:
+  `dropping_a_buffered_upload_mid_write_leaves_the_connection_too`.
+- **`http-ng-rt-smol` has a `OnceLock` init race, found here and not fixed
+  here.** `smol_spawn` spawns its executor thread from inside
+  `EXEC.get_or_init(..)`, and that thread's first act is
+  `EXEC.get().expect("initialised")` — which can run before `get_or_init`
+  has published the value. Observed twice in 48 runs of the `http-ng-h3`
+  suite at six concurrent processes, as a panic on the `http-ng-smol`
+  thread. It is that crate's to fix.
 - **A ticket issued over TCP offered to a QUIC handshake.** rustls keys its
   session store by `ServerName` alone while a QUIC ticket also carries
   `quic_params`. `http-ng-tls-rustls`'s QUIC path uses a **separate** store,
