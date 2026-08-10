@@ -174,12 +174,19 @@ def main():
                 text=True,
                 check=False,
             )
-        failed = p.returncode != 0
-        if failed == must_fail:
+        # A non-zero exit is not enough. A parser that dies with a
+        # `KeyError` traceback also exits non-zero, and in CI that reads as
+        # broken infrastructure rather than as a failing check — the same
+        # distinction `ci-mirrors-just.py` draws about its own YAML error.
+        # So a rejection must carry the `::error::` marker, which is what
+        # makes it a diagnosis. Three mutations of the parser survived
+        # until this line required it.
+        rejected = p.returncode != 0 and "::error::" in p.stderr
+        if rejected == must_fail:
             print(f"  killed  {name}" if must_fail else f"  passes  {name}")
         else:
             bad += 1
-            want = "fail" if must_fail else "pass"
+            want = "reject with ::error::" if must_fail else "pass"
             print(f"  SURVIVED  {name}: expected the parser to {want}, it returned {p.returncode}")
             print("    " + (p.stdout + p.stderr).replace("\n", "\n    ").strip())
 
