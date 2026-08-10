@@ -42,6 +42,14 @@ rstest           = { workspace = true }
 http-ng-native   = { path = "../http-ng-native",   version = "0.1.0" }
 http-ng-rt-tokio = { path = "../http-ng-rt-tokio", version = "0.1.0" }
 http-ng-tls      = { path = "../http-ng-tls",      version = "0.1.0" }
+# `tests/live.rs` alone, and `platform-verifier` is the whole point of it
+# rather than a convenience. The unverified row that suite exists to settle
+# is whether a certificate presented for an IP ADDRESS validates through the
+# PLATFORM's own verifier — `Doh::pinned` takes an IP literal, so that is the
+# handshake every pinned deployment makes. `webpki-roots` would answer a
+# different question (rustls's bundled roots, its own webpki path) and leave
+# the one asked exactly where it was.
+http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["platform-verifier"] }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
