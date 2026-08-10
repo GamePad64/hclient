@@ -472,6 +472,45 @@ async fn a_101_whose_accept_key_is_wrong_is_refused() {
     );
 }
 
+/// A `101` that is upgrading to something that is not WebSocket is
+/// refused, even though its accept key is correct.
+///
+/// `Upgrade: chat` is not a straw man: it is exactly what
+/// `tests/switching_protocols.rs`'s fixture answers, because `101` is a
+/// general HTTP mechanism and WebSocket is one of its users. A client that
+/// read only the status would start framing RFC 6455 onto a protocol
+/// nobody agreed to.
+#[tokio::test]
+async fn a_101_that_is_not_upgrading_to_websocket_is_refused() {
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key") else {
+            return;
+        };
+        w.send_raw(
+            format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: chat\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                derive_accept_key(key.as_bytes())
+            )
+            .as_bytes(),
+        );
+        while w.fill() {}
+    });
+
+    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("the handshake must not hang");
+    let Err(err) = outcome else {
+        panic!("a 101 to a protocol that is not WebSocket is not a WebSocket")
+    };
+    assert_eq!(err.kind(), &ErrorKind::Status);
+    assert!(
+        err.to_string().contains("Upgrade"),
+        "the error must name the header it rejected, and said {err}"
+    );
+}
+
 /// RFC 6455 §5.5.2: a ping is answered with a pong, and the answer is this
 /// endpoint's duty rather than the caller's.
 ///
