@@ -41,6 +41,19 @@ red step with a message naming what is missing. The strictness sits exactly
 where the promise was made; everywhere else the run degrades honestly. Two of
 the four predate this arrangement and are the pattern the other two copy.
 
+**There is a fifth marker with no job behind it, deliberately.**
+`HTTP_NG_REQUIRE_NETWORK` gates `just test-doh-live`, the only suite in this
+repository that talks to servers nobody here runs (Cloudflare's and Google's
+public DoH endpoints). It is in no workflow, and the reasoning is written out
+in `docs/v03-acceptance.md`'s "Should this be in CI?": what that suite
+measures is a fact about a third party, so it goes red when *they* change,
+and a red build nobody here can fix is how people learn to ignore red builds.
+The marker exists anyway, and is worth having without a job — it is what
+lets a human run the suite in the mode that refuses to skip, and it is what
+a future scheduled workflow would set on the day this project has somewhere
+for a nightly's result to go. Until then the record of what it said, and
+when, lives in the acceptance doc rather than in a badge.
+
 ## The two rules the whole file is built on
 
 **Every check fails closed.** If the crate or file a check names is absent,
