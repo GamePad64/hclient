@@ -580,6 +580,134 @@ Two of those (M10, M11) are killed by a unit test on `FakeRt`'s attempt log
 rather than by a peer, and that is a limitation of the fixture rather than
 a preference — see the first bullet under "what W2 has not checked".
 
+### The two queries, made concurrent — a follow-up, with the numbers
+
+W2 shipped the HTTPS query **in front of** the address queries, and the
+last two bullets of "what W2 has not checked" said so and priced it. This
+is that item, done: `connect` now starts `lookup_ipv6`/`lookup_ipv4` at the
+top and awaits the record with both of them running underneath it
+(`alongside_address_lookups`), which is what RFC 9460 §10 asks for and what
+a browser does.
+
+Nothing about an address depends on the record — this connector does not
+resolve a record's target name — and what does depend on it (the port, the
+hints, the ALPN offer, the ECH slot) is needed when a socket is opened, not
+when a name is resolved.
+
+**`attempt` no longer takes a resolver.** That is the shape change, and it
+was chosen over the two alternatives for reasons written next to the type
+(`connect.rs`'s `Answers`): re-fetching costs a second query on any
+resolver that does not cache, and `http-ng-dns-system` caches nothing of
+its own; collecting both families into `Vec`s is the shape this module's
+opening paragraph rules out, because `Scheduler` would then never be in the
+state "AAAA has not arrived and the resolver is not done either" and RFC
+8305's Resolution Delay would be dead code. So the answers are **replayed**:
+what arrived early is handed over at once, what has not is still awaited
+item by item, and the resolver's stream is polled as many times as one
+attempt would have polled it.
+
+#### The claims
+
+| claim | proof |
+|---|---|
+| The HTTPS query and the address queries are outstanding at the same time | `connect::tests::the_record_and_the_addresses_are_asked_at_once` — a resolver fixture writes call/ask/answer for each of its three streams into one log; the test asserts the A query was **sent before the record was answered** *and* the record's query was **sent before the addresses were answered**. Two claims because each rules out one of the two ways to be serial, and neither is a duration: there is no clock in the fixture |
+| …and a serialised connector fails rather than hangs | the fixture's pending poll wakes itself, so the wrong order is a red assertion in a millisecond rather than a watchdog kill ten seconds later. The h3 test that missed a 150 ms window by 0.22 ms is why no timing is asserted here at all |
+| The retry on the origin's own terms does not resolve again | `the_retry_without_the_record_does_not_resolve_again` — one `a:call`/`a:ask` pair across two attempts, **with the attempt log asserted alongside**, so that "one lookup" cannot pass for a connector that never retried |
+| A dropped connect drops all three queries | `a_dropped_connect_drops_the_record_query_with_the_address_ones` — the resolver's streams report their own `Drop`; one poll puts all three in flight and the HTTPS one never answers |
+| The hints still reach Happy Eyeballs first | `a_failed_discovered_endpoint_is_retried_without_the_record`, unchanged: `[hint, origin, origin]` |
+
+**A correction to what the W2 rows above claim.** `svcb::the_address_
+hints_reach_happy_eyeballs` pins that a hint *reaches* the race; it does
+**not** pin that it comes first, because its resolver answers neither
+family and there is nothing for the hint to be in front of. Measured, not
+reasoned: with the chain reversed (mutation N3 below) that test stays
+green, and the two that go red are the `FakeRt` attempt-log ones. The
+ordering claim belongs to them.
+
+#### Mutations
+
+Baseline before each run: `cargo nextest run -p http-ng-native
+--all-features`, **141 tests, all passing** (139 before this item, plus the
+two order/retry tests; the cancellation test makes 141 with the third).
+Each mutation was applied at one site — the patch had to match exactly once
+or it was not run — the suite run in full with `--no-fail-fast`, and the
+source restored.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| N1 | the two queries serialised again (`pump` dropped from `alongside_address_lookups`, replay kept) | **killed**, 1 test | `connect::tests::the_record_and_the_addresses_are_asked_at_once` — and nothing else in the suite, which is exactly why it had to be written |
+| N2 | the record's `port` ignored after the reorder | **killed**, 10 tests | `svcb::the_port_from_the_record_is_where_the_connection_goes`, and every other `svcb` record test whose peer is reached through that port |
+| N3 | the hints no longer first (the chain reversed) | **killed**, 2 tests | `connect::tests::a_failed_discovered_endpoint_is_retried_without_the_record`, `connect::tests::the_retry_without_the_record_does_not_resolve_again`. **Not** `svcb::the_address_hints_reach_happy_eyeballs` — see the correction above |
+| N4 | the retry resolves a second time (a fresh `Answers` pair before the retry) | **killed**, 1 test | `connect::tests::the_retry_without_the_record_does_not_resolve_again` |
+| N5 | `Replay` starts at the end of the buffer, so the retry sees no addresses | **killed**, 21 tests | broad: every `svcb` peer test, the `connect` plumbing tests, `transport::declared_connect_timeout_is_actually_applied` |
+| N6 | `Answers::pump` keeps only `Ok` items, losing a resolver error | **killed**, 1 test | `transport::resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened` — which is why `seen` holds `Result`s and not addresses |
+| N7 | discovery never consulted at all (`discovered_endpoint` returns `None` before the lookup) | **killed**, 14 tests | all ten `svcb` record tests plus the four `connect::tests` discovery ones, including the cancellation one — the check that it observes the *record's* query and not only the address ones |
+
+**N7 is also why the cancellation fixture answers empty instead of
+hanging.** Its first version hung all three families, and under N7
+`connect` went straight into `drive` with two streams that never finish and
+a `FakeSleep` that resolves at once — an infinite loop *inside a single
+poll*, which no watchdog in that module can interrupt. It wedged two test
+runs before being found. With the address families empty, N7 makes
+`connect` return `Ready(Err)` on the first poll and the test is red in 10
+ms.
+
+#### The measurement
+
+Same host both sides, and the host matters: x86-64 Linux, `systemd-resolved`
+active in stub mode (`nameserver 127.0.0.53`), upstream `172.18.0.2` over a
+VPN `tun0` holding the `~.` domain, DNSSEC off.
+
+**Getting a cold number needed more than flushing the stub.** With
+`resolvectl flush-caches` alone the same box reads 2.7–9.0 ms per query —
+the stub's cache is empty, the *upstream's* is not. Every sample below
+therefore asks for a **fresh random label** under the wildcard
+`*.localtest.me`, which nothing on the path has seen. Cold, that way:
+`lookup_svcb` median **85.4 ms**, `lookup_ipv4` median **130.0 ms** (n=15).
+(The 37.5 / 39.3 ms in the bullet below was measured on this same box under
+different network conditions, and is left as it was recorded.)
+
+**Live, DNS-dominated.** `https://<fresh-label>.localtest.me/` through
+`Native<Tokio, Rustls, SystemDns<Tokio>>` with pooling off. That name
+resolves to 127.0.0.1/::1, so what follows the lookups is a loopback
+refusal measured in microseconds and what is left in the number is the DNS
+phase. 41 samples per run, three runs a side:
+
+| | min | median |
+|---|---|---|
+| before (`b78af57`) | 395.93 / 398.13 / 396.87 ms | 517.79 / 456.12 / 453.03 ms |
+| after | 325.23 / 323.51 / 321.47 ms | 343.21 / 340.38 / 338.29 ms |
+
+**−73 ms on the floor, −115 ms on the median.** The cross-check is N1: with
+the concurrency reverted and the replay kept, the same measurement returns
+to min 396.19 / median 406.68 ms — the floor it had before the change. This
+origin publishes no HTTPS record, so there is no retry here and nothing for
+the replay to save; the whole difference is the concurrency.
+
+**Synthetic, deterministic, and it separates the two effects.** A `Resolve`
+whose every query takes exactly 200 ms, a record naming a loopback peer's
+port and carrying **no hints** (so the race must wait for the A answer),
+7 samples, medians:
+
+| | with a record | with no record — the floor |
+|---|---|---|
+| before | 606.2 ms | 201.6 ms |
+| N1 applied (serial again, replay kept) | 406.0 ms | 201.8 ms |
+| after | 202.4 ms | 201.7 ms |
+
+An origin's HTTPS record used to cost **404.6 ms of extra DNS time** here —
+one query in front, and one more because the retry re-resolved — and now
+costs **0.8 ms**. The concurrency is 203.6 ms of that and the replay 200.2
+ms.
+
+**What was not visible, and is reported rather than dropped.** A full
+request to a real origin (`cloudflare.com` and four neighbours, stub cache
+flushed before each, n=20) has a before-median of 252.5 ms with a
+run-to-run spread of roughly ±150 ms. Against a warm upstream the DNS phase
+there is 7–9 ms, which is far inside that spread; that measurement says
+nothing either way and is not offered as evidence. It is the reason for the
+`localtest.me` construction above rather than a second number beside it.
+
 ### Decisions worth knowing before touching this
 
 - **Only `https://`, and only at the scheme's default port.** For an
@@ -630,25 +758,33 @@ a preference — see the first bullet under "what W2 has not checked".
   it from outside: a runner where the test may bind 443, or a `Resolve`
   fixture paired with a transport whose default port is configurable, which
   is a change to `connect::port` rather than to the test.
-- **The cost of the extra query is measured on one host, and it is a cost
-  the default transport now pays.** `SystemDns::supports_svcb()` is `true`
-  on Linux, so `DefaultTransport` asks for an HTTPS record before every
-  connect that opens a new connection. Measured here (systemd-resolved
-  active, `res_query` through the stub): a **cold** `lookup_svcb` is 37.5 ms
-  — one real round trip, the same order as the `A` lookup beside it (39.3
-  ms) — and repeats are **54 µs to 1.4 ms**. The repeats are cheap only
-  because the OS stub caches; `http-ng-dns-system` caches nothing of its
-  own (grep it for `cache`), so on a host with no caching stub every
-  request adds a full query. Not measured: that second machine. What would
-  settle it is the same timing with `systemd-resolved` stopped.
-- **The query is serialised before the address lookups, deliberately, and
-  the alternative is not free.** RFC 9460 §10 has the HTTPS query running
-  *in parallel* with A/AAAA; this connector awaits it first, because the
-  record's `port` applies to every attempt in the race and `drive` takes one
-  port for all of them. Running them in parallel means either starting
-  attempts that may have to be abandoned when the record arrives, or
-  teaching Happy Eyeballs a per-attempt port. Neither is written; the cost
-  of not writing them is the row above.
+- **The extra query is still a query the default transport pays for, but it
+  no longer costs a round trip of latency.** `SystemDns::supports_svcb()`
+  is `true` on Linux, so `DefaultTransport` asks for an HTTPS record before
+  every connect that opens a new connection. When this was first measured
+  (systemd-resolved active, `res_query` through the stub) a **cold**
+  `lookup_svcb` was 37.5 ms — one real round trip, the same order as the
+  `A` lookup beside it (39.3 ms) — and repeats **54 µs to 1.4 ms**. The
+  repeats are cheap only because the OS stub caches; `http-ng-dns-system`
+  caches nothing of its own (grep it for `cache`), so on a host with no
+  caching stub every request adds a full query. That query is now made
+  **beside** the address lookups rather than in front of them — see "the
+  two queries, made concurrent" above for the before/after numbers and for
+  a cold measurement that does not depend on any cache being empty. What
+  is still not measured is a second machine; what would settle it is the
+  same timing with `systemd-resolved` stopped, and on a host whose
+  resolver cannot answer SVCB at all (where the whole cost is zero,
+  because `supports_svcb()` is `false` and nothing is asked).
+- ~~**The query is serialised before the address lookups.**~~ **Done in the
+  follow-up above.** The reason recorded here for the serial order was that
+  "the record's `port` applies to every attempt in the race and `drive`
+  takes one port for all of them", so parallelism would mean either
+  abandoning started attempts or teaching Happy Eyeballs a per-attempt
+  port. Both alternatives were real and both were avoided: the record is
+  still awaited before the **race** starts, only not before the
+  **resolution**. The addresses do not depend on it, and they were the only
+  thing being blocked. `drive` still takes one port and no attempt is ever
+  abandoned.
 - **`no-default-alpn` does not cross the `SvcbEndpoint` seam.**
   `http-ng-dns-system` parses the parameter (`RawParam::NoDefaultAlpn`) and
   `SvcbEndpoint` has no field for it, so `alpn_offer` cannot tell "the

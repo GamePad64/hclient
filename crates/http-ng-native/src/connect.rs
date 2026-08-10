@@ -19,9 +19,14 @@
 //!
 //! `drive` below is the only place that polls `Scheduler`, and it feeds it
 //! REAL streams: `connect` passes `dns.lookup_ipv6`/`lookup_ipv4` into it
-//! as-is, one item at a time, and calls `mark_*_done` only once the
-//! stream has actually finished (`None` from `poll_next`), not ahead of
-//! time. `race_connect` is the second, simpler entry point: it has
+//! one item at a time, and calls `mark_*_done` only once the stream has
+//! actually finished (`None` from `poll_next`), not ahead of time. Since
+//! the HTTPS query became concurrent with them the resolver's stream is
+//! reached through [`Answers`] rather than handed over directly, and that
+//! type exists precisely so this paragraph stays true: it replays what
+//! arrived early and goes on polling for the rest, where a `Vec` of
+//! collected answers would have been the dead-Resolution-Delay shape
+//! above. `race_connect` is the second, simpler entry point: it has
 //! nothing to resolve (the addresses are already given whole), so it
 //! wraps them in `stream::iter` (a stream that yields everything on the
 //! first poll and immediately ends) and passes that into the same
@@ -573,6 +578,164 @@ where
     drive(rt, sched, v6, v4, port, opts).await
 }
 
+/// One address family's answers for one call to [`connect`]: asked once,
+/// replayed for every attempt that needs them.
+///
+/// # Started early, which is what "in parallel" actually means here
+///
+/// A `Resolve` stream is inert until it is polled — `lookup_ipv4` builds a
+/// query, it does not send one. So running the HTTPS query beside the
+/// address queries is not a matter of constructing all three and awaiting
+/// the first; it is a matter of **polling** the address streams while the
+/// record is still outstanding. [`pump`](Self::pump) is that poll, and
+/// [`alongside_address_lookups`] is where it is called from.
+///
+/// # Kept, because the retry must not resolve a second time
+///
+/// [`connect`] makes up to two attempts — through the record, then on the
+/// origin's own terms. Three shapes were available for the addresses the
+/// second one needs, and this type is the third:
+///
+/// - **re-fetch**, which is what the code did while `attempt` owned its
+///   own resolution: a second query on any resolver that does not cache,
+///   and `http-ng-dns-system` caches nothing of its own. The retry exists
+///   so that a stale record costs a connect; making it cost a round trip
+///   as well is the very expense this type was added to remove.
+/// - **collect both families into `Vec`s** and hand those to both
+///   attempts. This is the shape the module doc rules out in its opening
+///   paragraph: `Scheduler` would then never be in the state "AAAA has not
+///   arrived and the resolver is not done either", and RFC 8305's
+///   Resolution Delay would be dead code.
+/// - **replay** — what has already arrived is handed over at once, what
+///   has not is still awaited item by item, and the resolver's stream is
+///   polled exactly as many times as one attempt would have polled it.
+///
+/// The buffer holds one resolution's worth of answers (a `getaddrinfo`
+/// reply, in the shipped resolver) and lives for one `connect` call.
+struct Answers<'a> {
+    /// Boxed rather than held by value: this crate forbids `unsafe`, and
+    /// projecting a pin into an `impl Stream` field cannot be written
+    /// without it. One allocation per family per new connection, set
+    /// against a DNS query.
+    inner: Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>,
+    /// Everything the stream has produced, in order — items **and**
+    /// errors, because [`drive`] tells a family that failed apart from one
+    /// that answered nothing (`ResolveErrors`), and a replay that dropped
+    /// the errors would give the second attempt a different diagnosis from
+    /// the first.
+    seen: Vec<Result<ResolvedAddr, Error>>,
+    /// Set once the stream has returned `None`. Polling past that is a
+    /// `Stream` contract violation, and both [`pump`](Self::pump) and
+    /// [`Replay`] come back for more by design.
+    done: bool,
+}
+
+impl<'a> Answers<'a> {
+    fn new(stream: impl Stream<Item = Result<ResolvedAddr, Error>> + 'a) -> Self {
+        Self {
+            inner: Box::pin(stream),
+            seen: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// Takes whatever the resolver has ready, and leaves a waker behind for
+    /// the rest.
+    ///
+    /// Returns nothing on purpose: nobody here is waiting for a
+    /// resolution. This exists so the query is in flight while [`connect`]
+    /// waits for the HTTPS record; what it collects is read afterwards, by
+    /// [`replay`](Self::replay).
+    fn pump(&mut self, cx: &mut Context<'_>) {
+        while !self.done {
+            match self.inner.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => self.seen.push(item),
+                Poll::Ready(None) => self.done = true,
+                Poll::Pending => return,
+            }
+        }
+    }
+
+    /// This family from its first answer: what has arrived, then whatever
+    /// the resolver still has to say.
+    fn replay(&mut self) -> Replay<'_, 'a> {
+        Replay { src: self, at: 0 }
+    }
+}
+
+/// One reader of an [`Answers`], starting at its first item.
+///
+/// A borrow rather than a copy of the buffer, because the two attempts in
+/// [`connect`] are strictly sequential: there is never more than one of
+/// these alive, and the borrow is what says so. A reader that could
+/// outlive its source would be a second resolution wearing this name.
+struct Replay<'r, 'a> {
+    src: &'r mut Answers<'a>,
+    at: usize,
+}
+
+impl Stream for Replay<'_, '_> {
+    type Item = Result<ResolvedAddr, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let me = self.get_mut();
+        if me.at < me.src.seen.len() {
+            let item = me.src.seen[me.at].clone();
+            me.at += 1;
+            return Poll::Ready(Some(item));
+        }
+        if me.src.done {
+            return Poll::Ready(None);
+        }
+        match me.src.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                me.src.seen.push(item.clone());
+                me.at = me.src.seen.len();
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => {
+                me.src.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// `discovery`'s answer, with both address lookups running underneath it.
+///
+/// The one place where the three queries are concurrent, and it is a
+/// hand-written `poll_fn` rather than a `join!` because the address
+/// streams are not being *awaited*: nothing here wants their answers yet,
+/// only that they are on the wire. So [`Answers::pump`] returns nothing,
+/// and this future finishes when `discovery` does — however far along the
+/// addresses happen to be, which for a record that arrives first is not far
+/// at all.
+///
+/// **Nothing is spawned, so a dropped connect drops all three queries.**
+/// They are branches of one future rather than tasks; this crate has no
+/// `Spawn` to hand them to, and a discovery query still running after the
+/// request that asked for it is the leak that would be.
+async fn alongside_address_lookups<F>(
+    v6: &mut Answers<'_>,
+    v4: &mut Answers<'_>,
+    discovery: F,
+) -> F::Output
+where
+    F: Future,
+{
+    let mut discovery = std::pin::pin!(discovery);
+    std::future::poll_fn(move |cx| {
+        // Before `discovery`, and on every round. The addresses must be
+        // asked no later than the record is, and a stream nobody polls has
+        // not been asked.
+        v6.pump(cx);
+        v4.pump(cx);
+        discovery.as_mut().poll(cx)
+    })
+    .await
+}
+
 /// DNS-consuming connector: consults the origin's HTTPS record where one
 /// is to be had (see [`crate::discovery`]), resolves `uri`, runs Happy
 /// Eyeballs (feeding [`Scheduler`] as results arrive — see the module doc
@@ -580,6 +743,26 @@ where
 /// offer. `uri`'s scheme decides whether TLS is needed at all (`https` —
 /// yes, `http` — no); any other scheme is `ErrorKind::Unsupported`, not a
 /// silent treatment as `http`.
+///
+/// # The record and the addresses are asked at once
+///
+/// RFC 9460 §10.3, and it is where this function's cost was hiding for one
+/// release: the HTTPS query used to be awaited *in front of* the address
+/// queries, so on a resolver that answers SVCB — `SystemDns` on Linux does
+/// — every new connection paid one round trip before it started resolving.
+///
+/// Nothing about an address depends on the record. This connector does not
+/// resolve a record's target name (`discovery::lookup` says why), so the
+/// origin's own A/AAAA answers are the same answers whatever comes back;
+/// what *does* depend on the record — the port, the hints, the ALPN offer,
+/// the ECH slot — is needed when a socket is opened, not when a name is
+/// resolved. So all three queries go out together and this function waits
+/// for whichever it actually needs next.
+///
+/// The two halves are not merely constructed together, they are **polled**
+/// together — see [`Answers`] for why that distinction is the whole
+/// mechanism — and neither is spawned, so a dropped connect drops all
+/// three.
 ///
 /// # The record is consulted once, and its failure is paid for once
 ///
@@ -623,17 +806,30 @@ where
     let use_tls = wants_tls(uri)?;
     let port = port(uri, use_tls);
 
-    let endpoint = discovered_endpoint(dns, host, use_tls, port, discovery_cache, now).await;
+    // Both families are started here, at the top, rather than inside
+    // `attempt` where they used to live — that placement is the whole of
+    // the parallelism, and it is also what leaves the retry below with
+    // nothing to re-resolve. See `Answers`.
+    let mut v6 = Answers::new(dns.lookup_ipv6(host));
+    let mut v4 = Answers::new(dns.lookup_ipv4(host));
+
+    let endpoint = alongside_address_lookups(
+        &mut v6,
+        &mut v4,
+        discovered_endpoint(dns, host, use_tls, port, discovery_cache, now),
+    )
+    .await;
 
     let first = attempt(
         rt,
-        dns,
         tls,
         host,
         use_tls,
         port,
         opts,
         alpn,
+        &mut v6,
+        &mut v4,
         endpoint.as_ref(),
     )
     .await;
@@ -644,7 +840,10 @@ where
         // whatever the origin says next. See this function's doc comment.
         Err(_through_the_record) if endpoint.is_some() => {
             discovery_cache.record(Origin::new(host, port), now);
-            attempt(rt, dns, tls, host, use_tls, port, opts, alpn, None).await
+            attempt(
+                rt, tls, host, use_tls, port, opts, alpn, &mut v6, &mut v4, None,
+            )
+            .await
         }
         Err(e) => Err(e),
     }
@@ -692,9 +891,17 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// One connection attempt: Happy Eyeballs over `endpoint`'s hints followed
 /// by the origin's own addresses, then TLS if the scheme asks for it.
 ///
-/// `endpoint: None` is exactly what this function did before v0.3 W2, and
-/// it is the shape the retry above uses — the "without the record" path is
-/// the same code with the record absent, not a second implementation of
+/// **It has no resolver, and that is deliberate.** The addresses arrive as
+/// two [`Answers`] that [`connect`] has already asked for, so "the retry
+/// does not resolve a second time" is a property of this signature rather
+/// than a rule someone has to keep in mind. Until the queries were made
+/// concurrent this function called `lookup_ipv6`/`lookup_ipv4` itself,
+/// which is exactly why nothing could resolve until the HTTPS query had
+/// finished.
+///
+/// `endpoint: None` is what this function did before v0.3 W2, and it is
+/// the shape the retry above uses — the "without the record" path is the
+/// same code with the record absent, not a second implementation of
 /// connecting.
 ///
 /// **The hints come first and the resolver's answers follow**, rather than
@@ -703,21 +910,23 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// asking. Chaining them onto the front of each family's stream is
 /// literally that — `Scheduler` gets the hint on its first poll, and the
 /// A/AAAA answers as they arrive, through the same state machine and with
-/// the same pacing rules as any other address.
-async fn attempt<R, D, L>(
+/// the same pacing rules as any other address. Some of them may have
+/// arrived already, while the record was still outstanding; the chain is
+/// what keeps the hint in front of them anyway.
+async fn attempt<R, L>(
     rt: &R,
-    dns: &D,
     tls: &L,
     host: &str,
     use_tls: bool,
     port: u16,
     opts: &TcpOpts,
     alpn: &[&[u8]],
+    v6: &mut Answers<'_>,
+    v4: &mut Answers<'_>,
     endpoint: Option<&Endpoint>,
 ) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>
 where
     R: TcpConnect + Timer,
-    D: Resolve,
     L: TlsConnect,
 {
     let sched = build_scheduler(HeConfig::default())?;
@@ -729,22 +938,22 @@ where
     let hint6 = endpoint.map(|e| e.ipv6hint.clone()).unwrap_or_default();
     let hint4 = endpoint.map(|e| e.ipv4hint.clone()).unwrap_or_default();
 
-    let v6 = futures_util::stream::iter(hint6.into_iter().map(|a| {
+    let v6_stream = futures_util::stream::iter(hint6.into_iter().map(|a| {
         Ok(ResolvedAddr {
             addr: IpAddr::V6(a),
             ttl: None,
         })
     }))
-    .chain(dns.lookup_ipv6(host));
-    let v4 = futures_util::stream::iter(hint4.into_iter().map(|a| {
+    .chain(v6.replay());
+    let v4_stream = futures_util::stream::iter(hint4.into_iter().map(|a| {
         Ok(ResolvedAddr {
             addr: IpAddr::V4(a),
             ttl: None,
         })
     }))
-    .chain(dns.lookup_ipv4(host));
+    .chain(v4.replay());
 
-    let tcp = drive(rt, sched, v6, v4, port, opts).await?;
+    let tcp = drive(rt, sched, v6_stream, v4_stream, port, opts).await?;
 
     if use_tls {
         // Held outside the `TlsRequest` so the borrowed list outlives it.
@@ -1724,6 +1933,376 @@ mod tests {
 
         let tried: Vec<IpAddr> = rt.log.borrow().iter().map(|(ip, _)| *ip).collect();
         assert_eq!(tried, vec![origin], "an inert record is not an endpoint");
+    }
+
+    // --- the record and the addresses, asked at once --------------------
+
+    /// A stream that takes one poll to be *asked* and one to *answer*,
+    /// writing both into a shared log.
+    ///
+    /// The pending poll wakes itself instead of parking. That is what makes
+    /// a connector which serialises its queries fail with a **wrong log**
+    /// rather than with a deadlock: the test then says, in a millisecond,
+    /// which order it saw, instead of being killed ten seconds later by
+    /// [`bounded_block_on`]'s watchdog with nothing to read. A busy-spin is
+    /// affordable here because every poll in this fixture makes progress.
+    struct Staged<T> {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        asked: &'static str,
+        answered: &'static str,
+        items: std::vec::IntoIter<T>,
+        started: bool,
+    }
+
+    impl<T: Unpin> Stream for Staged<T> {
+        type Item = Result<T, Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let me = self.get_mut();
+            if !me.started {
+                me.started = true;
+                me.log.borrow_mut().push(me.asked);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            match me.items.next() {
+                Some(item) => {
+                    me.log.borrow_mut().push(me.answered);
+                    Poll::Ready(Some(Ok(item)))
+                }
+                None => Poll::Ready(None),
+            }
+        }
+    }
+
+    /// A resolver that reports, from outside this connector, **when** each
+    /// of its queries was created, sent and answered.
+    ///
+    /// Nine possible events, one shared log, and no clock at all: whether
+    /// two queries overlap is a claim about the order of four of those
+    /// events, not about how long anything took. That distinction is the
+    /// whole reason this fixture exists rather than a timing assertion —
+    /// `crates/http-ng-h3/tests/` has a fresh example of a timing assertion
+    /// missing its window by 0.22 ms.
+    #[derive(Clone)]
+    struct WatchedResolve {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        v4: Vec<IpAddr>,
+        records: Vec<http_ng_dns::SvcbEndpoint>,
+    }
+
+    impl WatchedResolve {
+        fn new(v4: Vec<IpAddr>, records: Vec<http_ng_dns::SvcbEndpoint>) -> Self {
+            Self {
+                log: Rc::new(RefCell::new(Vec::new())),
+                v4,
+                records,
+            }
+        }
+
+        fn events(&self) -> Vec<&'static str> {
+            self.log.borrow().clone()
+        }
+
+        fn note(&self, what: &'static str) {
+            self.log.borrow_mut().push(what);
+        }
+    }
+
+    impl Resolve for WatchedResolve {
+        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.note("aaaa:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "aaaa:ask",
+                answered: "aaaa:answer",
+                items: Vec::<ResolvedAddr>::new().into_iter(),
+                started: false,
+            }
+        }
+
+        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.note("a:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "a:ask",
+                answered: "a:answer",
+                items: self
+                    .v4
+                    .iter()
+                    .map(|&addr| ResolvedAddr { addr, ttl: None })
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+                started: false,
+            }
+        }
+
+        fn supports_svcb(&self) -> bool {
+            true
+        }
+
+        fn lookup_svcb(
+            &self,
+            _: &str,
+        ) -> impl Stream<Item = Result<http_ng_dns::SvcbEndpoint, Error>> {
+            self.note("https:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "https:ask",
+                answered: "https:answer",
+                items: self.records.clone().into_iter(),
+                started: false,
+            }
+        }
+    }
+
+    fn at(events: &[&'static str], what: &str) -> usize {
+        events
+            .iter()
+            .position(|e| *e == what)
+            .unwrap_or_else(|| panic!("{what} never happened; the log was {events:?}"))
+    }
+
+    /// RFC 9460 §10.3: the HTTPS query and the address queries go out
+    /// together. Watched from the resolver's side, where it is a statement
+    /// about the order of four events and about nothing else.
+    ///
+    /// Two claims, and each rules out one of the two ways to be serial:
+    ///
+    /// - the A query was **sent before the record was answered** — false
+    ///   for a connector that awaits the record first, which is what this
+    ///   one did until the queries were made concurrent;
+    /// - the HTTPS query was **sent before the addresses were answered** —
+    ///   false for a connector that resolves first and asks afterwards.
+    ///
+    /// Neither claim alone is the property. Together they say the two
+    /// queries were outstanding at the same time.
+    #[test]
+    fn the_record_and_the_addresses_are_asked_at_once() {
+        let dns = WatchedResolve::new(
+            vec![v4(1)],
+            vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: Some(8443),
+                ipv4hint: Vec::new(),
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        );
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let events = dns.events();
+        assert!(
+            at(&events, "a:ask") < at(&events, "https:answer"),
+            "the address query must be on the wire before the record comes \
+             back, or the record's round trip is paid in front of it: {events:?}"
+        );
+        assert!(
+            at(&events, "https:ask") < at(&events, "a:answer"),
+            "and the record's query must be on the wire before the addresses \
+             come back, or the two are serialised the other way round: {events:?}"
+        );
+    }
+
+    /// The retry on the origin's own terms reuses the resolution the first
+    /// attempt raced; it does not ask again.
+    ///
+    /// `attempt` has no resolver to ask with (see its doc comment), so this
+    /// is structural — but the structure is only worth having if something
+    /// notices when it is undone, and the cost of undoing it is invisible
+    /// on a resolver that caches. Here nothing caches: a second `lookup_*`
+    /// call shows up in the log as a second `call`/`ask` pair.
+    ///
+    /// The attempt log is asserted alongside on purpose. Without it "one
+    /// lookup" would also pass for a connector that never retried at all,
+    /// which is a different regression with the same symptom.
+    #[test]
+    fn the_retry_without_the_record_does_not_resolve_again() {
+        let hint = std::net::Ipv4Addr::new(10, 0, 0, 7);
+        let origin = v4(1);
+        let dns = WatchedResolve::new(
+            vec![origin],
+            vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: None,
+                ipv4hint: vec![hint],
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        );
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let tried: Vec<IpAddr> = rt.log.borrow().iter().map(|(ip, _)| *ip).collect();
+        assert_eq!(
+            tried,
+            vec![IpAddr::V4(hint), origin, origin],
+            "the record's endpoint failed and the origin's own was tried \
+             again — without that second race there is nothing to check"
+        );
+
+        let events = dns.events();
+        for (call, ask) in [("a:call", "a:ask"), ("aaaa:call", "aaaa:ask")] {
+            assert_eq!(
+                events.iter().filter(|e| **e == call).count(),
+                1,
+                "{call} happened more than once across two attempts: {events:?}"
+            );
+            assert_eq!(
+                events.iter().filter(|e| **e == ask).count(),
+                1,
+                "{ask} happened more than once across two attempts: {events:?}"
+            );
+        }
+    }
+
+    // --- cancellation ---------------------------------------------------
+
+    /// Whatever stream it was given, plus a note of when it was dropped.
+    struct Recorded<S> {
+        name: &'static str,
+        dropped: Rc<RefCell<Vec<&'static str>>>,
+        inner: S,
+    }
+
+    impl<S: Stream + Unpin> Stream for Recorded<S> {
+        type Item = S::Item;
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Pin::new(&mut self.get_mut().inner).poll_next(cx)
+        }
+    }
+
+    impl<S> Drop for Recorded<S> {
+        fn drop(&mut self) {
+            self.dropped.borrow_mut().push(self.name);
+        }
+    }
+
+    /// A resolver whose address queries answer nothing at once and whose
+    /// HTTPS query never answers at all — and which says which of the three
+    /// were dropped.
+    ///
+    /// **The address families end rather than hang, and that is the
+    /// difference between a test and a wedged CI job.** The first version
+    /// of this fixture hung all three, and the mutation "discovery is never
+    /// consulted" then sent `connect` straight into `drive` with two
+    /// streams that never finish and a `FakeSleep` that resolves at once —
+    /// an infinite loop *inside a single poll*, which no watchdog in this
+    /// module can interrupt (`bounded_block_on`'s exists for exactly this
+    /// shape, and this test does not use it). With the families empty the
+    /// same mutation makes `connect` return `Ready(Err)` on the first poll,
+    /// and the assertion below is what fails — measured: red in 10 ms.
+    struct HangingResolve {
+        dropped: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl HangingResolve {
+        fn record<S>(&self, name: &'static str, inner: S) -> Recorded<S> {
+            Recorded {
+                name,
+                dropped: Rc::clone(&self.dropped),
+                inner,
+            }
+        }
+    }
+
+    impl Resolve for HangingResolve {
+        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.record("aaaa", futures_util::stream::empty())
+        }
+        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.record("a", futures_util::stream::empty())
+        }
+        fn supports_svcb(&self) -> bool {
+            true
+        }
+        fn lookup_svcb(
+            &self,
+            _: &str,
+        ) -> impl Stream<Item = Result<http_ng_dns::SvcbEndpoint, Error>> {
+            self.record("https", futures_util::stream::pending())
+        }
+    }
+
+    /// A connect that is dropped takes all three queries with it.
+    ///
+    /// Worth its own test now that discovery is a concurrent branch rather
+    /// than something awaited in front: the shape that would leak — spawn
+    /// the HTTPS query, keep it, hand it to the next request — is exactly
+    /// what a caller with a `connect` timeout would then be unable to
+    /// cancel. This crate has no `Spawn` to leak through and the query
+    /// borrows both the resolver and the host, so the property is also
+    /// structural; the test is what makes it observable.
+    ///
+    /// One poll gets all three queries created and in flight
+    /// (`alongside_address_lookups` pumps both address streams and then
+    /// polls discovery, all on the first round), and the HTTPS one never
+    /// answers, so the future is still pending when it is dropped.
+    #[test]
+    fn a_dropped_connect_drops_the_record_query_with_the_address_ones() {
+        let dropped = Rc::new(RefCell::new(Vec::new()));
+        let dns = HangingResolve {
+            dropped: Rc::clone(&dropped),
+        };
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+        let cache = NegativeCache::default();
+        let opts = TcpOpts::default();
+
+        {
+            let mut fut = std::pin::pin!(super::connect(
+                &rt,
+                &dns,
+                &NoOpTls,
+                &uri,
+                &opts,
+                &[],
+                &cache,
+                Duration::ZERO,
+            ));
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_pending(),
+                "the HTTPS query never answers, so the connect cannot have finished"
+            );
+        }
+
+        let mut seen = dropped.borrow().clone();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec!["a", "aaaa", "https"],
+            "every query must be dropped with the connect that started it"
+        );
     }
 
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
