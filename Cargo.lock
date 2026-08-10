@@ -1190,12 +1190,35 @@ version = "0.1.0"
 dependencies = [
  "assert_matches",
  "bytes",
+ "dns-message-parser",
  "futures-core",
  "futures-executor",
  "futures-util",
  "http-ng-core",
  "rstest",
  "thiserror",
+]
+
+[[package]]
+name = "http-ng-dns-doh"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "dns-message-parser",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-ng-core",
+ "http-ng-dns",
+ "http-ng-native",
+ "http-ng-rt-tokio",
+ "http-ng-tls",
+ "rstest",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

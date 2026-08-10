@@ -1,0 +1,48 @@
+[package]
+name = "http-ng-dns-doh"
+version = "0.1.0"
+description = "DNS-over-HTTPS (RFC 8484) resolver for http-ng, over any Transport"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes          = { workspace = true }
+dns-message-parser = "0.9"
+futures-core   = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http           = { workspace = true }
+http-body      = { workspace = true }
+http-body-util = { workspace = true }
+http-ng-core   = { workspace = true }
+# `codec`: the RFC 9460 client semantics and the `ServiceBinding` ->
+# `RawBinding` conversion, shared with `http-ng-dns-system` rather than
+# copied — see `http_ng_dns::svcb`'s module doc for why a second copy of
+# those rules was not an option.
+http-ng-dns    = { path = "../http-ng-dns", version = "0.1.0", features = ["codec"] }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+assert_matches   = { workspace = true }
+rstest           = { workspace = true }
+# The tests drive this resolver through a REAL transport against a real
+# loopback server, rather than through a mock: the claims being made are
+# about what goes over the wire (`tests/query_bytes.rs`) and about what a
+# caller gets back, and a mock transport would let both be true of a
+# `Transport` impl that exists only in this crate's tests.
+#
+# `NoTls` + `IpLiteralOnly` is not a shortcut either — it is the shape
+# `Doh::pinned` is for, and it means these tests link no TLS stack and no
+# system resolver. dev-dependencies are outside `-e normal`, so none of
+# this reaches a consumer's graph.
+#
+# Not a dependency cycle: `http-ng-native` depends on `http-ng-dns`, never
+# on this crate.
+http-ng-native   = { path = "../http-ng-native",   version = "0.1.0" }
+http-ng-rt-tokio = { path = "../http-ng-rt-tokio", version = "0.1.0" }
+http-ng-tls      = { path = "../http-ng-tls",      version = "0.1.0" }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

@@ -61,6 +61,8 @@
 //! reads only `supports_svcb()`.
 #![forbid(unsafe_code)]
 
+pub mod svcb;
+
 use bytes::Bytes;
 use futures_core::Stream;
 use http_ng_core::Error;
