@@ -2185,6 +2185,126 @@ mod tests {
         }
     }
 
+    // --- cancellation ---------------------------------------------------
+
+    /// Whatever stream it was given, plus a note of when it was dropped.
+    struct Recorded<S> {
+        name: &'static str,
+        dropped: Rc<RefCell<Vec<&'static str>>>,
+        inner: S,
+    }
+
+    impl<S: Stream + Unpin> Stream for Recorded<S> {
+        type Item = S::Item;
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Pin::new(&mut self.get_mut().inner).poll_next(cx)
+        }
+    }
+
+    impl<S> Drop for Recorded<S> {
+        fn drop(&mut self) {
+            self.dropped.borrow_mut().push(self.name);
+        }
+    }
+
+    /// A resolver whose address queries answer nothing at once and whose
+    /// HTTPS query never answers at all — and which says which of the three
+    /// were dropped.
+    ///
+    /// **The address families end rather than hang, and that is the
+    /// difference between a test and a wedged CI job.** The first version
+    /// of this fixture hung all three, and the mutation "discovery is never
+    /// consulted" then sent `connect` straight into `drive` with two
+    /// streams that never finish and a `FakeSleep` that resolves at once —
+    /// an infinite loop *inside a single poll*, which no watchdog in this
+    /// module can interrupt (`bounded_block_on`'s exists for exactly this
+    /// shape, and this test does not use it). With the families empty the
+    /// same mutation makes `connect` return `Ready(Err)` on the first poll,
+    /// and the assertion below is what fails — measured: red in 10 ms.
+    struct HangingResolve {
+        dropped: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl HangingResolve {
+        fn record<S>(&self, name: &'static str, inner: S) -> Recorded<S> {
+            Recorded {
+                name,
+                dropped: Rc::clone(&self.dropped),
+                inner,
+            }
+        }
+    }
+
+    impl Resolve for HangingResolve {
+        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.record("aaaa", futures_util::stream::empty())
+        }
+        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.record("a", futures_util::stream::empty())
+        }
+        fn supports_svcb(&self) -> bool {
+            true
+        }
+        fn lookup_svcb(
+            &self,
+            _: &str,
+        ) -> impl Stream<Item = Result<http_ng_dns::SvcbEndpoint, Error>> {
+            self.record("https", futures_util::stream::pending())
+        }
+    }
+
+    /// A connect that is dropped takes all three queries with it.
+    ///
+    /// Worth its own test now that discovery is a concurrent branch rather
+    /// than something awaited in front: the shape that would leak — spawn
+    /// the HTTPS query, keep it, hand it to the next request — is exactly
+    /// what a caller with a `connect` timeout would then be unable to
+    /// cancel. This crate has no `Spawn` to leak through and the query
+    /// borrows both the resolver and the host, so the property is also
+    /// structural; the test is what makes it observable.
+    ///
+    /// One poll gets all three queries created and in flight
+    /// (`alongside_address_lookups` pumps both address streams and then
+    /// polls discovery, all on the first round), and the HTTPS one never
+    /// answers, so the future is still pending when it is dropped.
+    #[test]
+    fn a_dropped_connect_drops_the_record_query_with_the_address_ones() {
+        let dropped = Rc::new(RefCell::new(Vec::new()));
+        let dns = HangingResolve {
+            dropped: Rc::clone(&dropped),
+        };
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+        let cache = NegativeCache::default();
+        let opts = TcpOpts::default();
+
+        {
+            let mut fut = std::pin::pin!(super::connect(
+                &rt,
+                &dns,
+                &NoOpTls,
+                &uri,
+                &opts,
+                &[],
+                &cache,
+                Duration::ZERO,
+            ));
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_pending(),
+                "the HTTPS query never answers, so the connect cannot have finished"
+            );
+        }
+
+        let mut seen = dropped.borrow().clone();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            vec!["a", "aaaa", "https"],
+            "every query must be dropped with the connect that started it"
+        );
+    }
+
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
     /// calls `TlsConnect::connect` for `https` and doesn't call it for
     /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
