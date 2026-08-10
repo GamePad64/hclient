@@ -414,19 +414,19 @@ async fn a_scheme_that_is_not_a_websocket_scheme_is_refused() {
 async fn two_messages_that_arrive_before_the_first_poll_are_both_kept() {
     install("[['open'],['text','first'],['text','second']]");
     let mut ws = open(ANY).await;
-    let a = ws.next().await;
-    let b = ws.next().await;
+    let a = ws.next().await.expect("a first").expect("not an error");
+    // Asserted here rather than after `restore()`, and the placement is
+    // half the test: a single-slot state hands back `second` on the first
+    // poll, and this line names that. Awaiting the second message first
+    // would instead hang on one that no longer exists — a kill either way,
+    // but "this test failed and here is what it saw" beats a suite the
+    // runner had to time out.
+    assert_eq!(a, Message::Text("first".into()));
+    let b = ws.next().await.expect("a second").expect("not an error");
     drop(ws);
     restore();
 
-    assert_eq!(
-        a.expect("a first message").expect("not an error"),
-        Message::Text("first".into())
-    );
-    assert_eq!(
-        b.expect("a second message").expect("not an error"),
-        Message::Text("second".into())
-    );
+    assert_eq!(b, Message::Text("second".into()));
 }
 
 /// Binary arrives as an `ArrayBuffer` and comes out as bytes — which is
