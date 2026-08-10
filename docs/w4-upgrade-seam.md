@@ -140,12 +140,58 @@ feature with a trait in front of it.
 
 ## What this document does not decide
 
-- **Framing on native.** §5.7 proposed `async-tungstenite` 0.35.0 on
-  `futures_io`, runtime-neutral, with
-  `tungstenite::handshake::client::{generate_key, derive_accept_key}` for
-  the handshake. Not re-verified here; check it against the tree's own
-  dependency policy before adopting.
+- ~~**Framing on native.**~~ **Decided: `tungstenite` 0.30 directly, no
+  async wrapper** — see §6 below.
 - **Whether the pool must change.** v0.2 W2 froze the pool without
   WebSocket, which the spec had asked to avoid. The cost is unmeasured.
 - **Permessage-deflate**, subprotocol negotiation, and close-code
   semantics.
+
+
+## 6. Framing on native — `tungstenite`, driven by us
+
+§5.7 proposed `async-tungstenite` 0.35 on `futures_io`. Measured instead:
+
+| crate, `default-features = false` | unique crates | tokio / hyper |
+|---|---|---|
+| `tungstenite` 0.30 | **17** | none |
+| `async-tungstenite` 0.35 | 22 | none |
+
+Neither pulls a runtime, so the five extra crates are the only cost — and
+they buy glue this workspace cannot use. **`TcpConnect::Stream` is bounded
+by `hyper::rt::Read + hyper::rt::Write + Unpin`**
+(`crates/http-ng-rt/src/caps.rs:149`), not `futures_io`, so an adapter is
+needed whichever crate is chosen. Given that, the choice is only about
+which side the adapter faces.
+
+**It faces `std::io`, and the reason is that it removes `unsafe`.**
+`tungstenite::protocol::WebSocketContext` takes the stream as a *parameter*
+— `read<Stream>(&mut self, stream: &mut Stream) where Stream: Read + Write`
+— rather than owning it. So the persistent protocol state and the transient
+IO can be separate values, and the shim handed to each call can borrow the
+poll `Context` for exactly that call:
+
+```rust
+// sketch, not the implementation
+ctx.read(&mut Shim { io: &mut self.io, cx })   // Shim: std::io::Read + Write,
+                                               // WouldBlock on Poll::Pending
+```
+
+`tokio-tungstenite` and `async-tungstenite` cannot do this: their wrappers
+*own* the stream across calls, so the `Context` has to be smuggled in as a
+raw pointer stored in the wrapper. That is why `tokio-tungstenite`'s
+`AllowStd` holds a `*mut Context`. Borrowing per call is the same trick
+turned right way round, and it needs no `unsafe` — which matters here, where
+`unsafe` is policed by CI and each use is argued in the spec's amendments.
+
+This is also the technique this workspace already uses twice, for the same
+reason both times: `h2`'s `Connection` is polled by hand because hyper's h2
+executor is a sealed trait, and hyper's own h1 `Connection` is polled by
+hand rather than spawned. Adopting a third party's runtime glue is the
+thing this project avoids; adopting its **protocol state machine** is not.
+
+What still has to be checked when the code is written, rather than assumed
+here: that `WouldBlock` out of the shim leaves `WebSocketContext` in a
+resumable state on every path (tungstenite documents `read` as never
+blocking on write, which is the interesting one), and that a partial write
+is not lost between polls.
