@@ -74,6 +74,11 @@ tungstenite    = { version = "0.30", default-features = false, features = ["hand
 
 [dev-dependencies]
 futures-executor    = { version = "0.3", default-features = false, features = ["std"] }
+# `sink` on top of the library's own feature set: `SinkExt::send`/`close`
+# live there, and `tests/websocket.rs` drives the seam the way a caller
+# would. Dev-only, so the shipped graph is unchanged — `cargo deny`'s
+# `exclude-dev` says the same thing from the other side.
+futures-util        = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-ng             = { workspace = true }
 http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
 http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
@@ -86,6 +91,12 @@ http-ng-tls-rustls  = { path = "../http-ng-tls-rustls",  version = "0.1.0", feat
 # to feature unification with `hyper`'s own `tokio/sync` — that union is a
 # fact about today's graph, not a dependency this crate declared.
 tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+# `tests/websocket.rs`'s fixture speaks RFC 6455 by hand and borrows
+# exactly one function, `derive_accept_key` — which
+# `the_accept_key_derivation_matches_rfc_6455` then pins against the RFC's
+# own vector, so the fixture and the client agreeing is not the same as
+# them both being right.
+tungstenite         = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [lints]
 workspace = true
