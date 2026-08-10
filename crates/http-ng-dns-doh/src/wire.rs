@@ -76,6 +76,30 @@ impl Query {
     }
 }
 
+/// The two questions an *address* lookup can ask.
+///
+/// A second, narrower enum rather than reusing [`Query`], because the
+/// address path and the SVCB path are genuinely different: `lookup_svcb`
+/// does not go through `Doh::recover`, so a `recover` taking a `Query` had
+/// an `Https` arm nothing could reach. Mutation testing found it — an
+/// unreachable arm cannot be killed by any test, which is exactly the kind
+/// of line that reads as load-bearing and proves nothing. This type is the
+/// fix: the arm is gone rather than covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Family {
+    V4,
+    V6,
+}
+
+impl Family {
+    pub(crate) fn query(self) -> Query {
+        match self {
+            Self::V4 => Query::A,
+            Self::V6 => Query::Aaaa,
+        }
+    }
+}
+
 /// What one exchange produced. Only one of the two is ever non-empty — the
 /// other belongs to a question that was not asked.
 #[derive(Debug, Default)]

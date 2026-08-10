@@ -155,7 +155,7 @@ use http_ng_core::{Error, ErrorKind, RequestBody, Timeouts};
 use http_ng_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use std::net::IpAddr;
 use std::time::Duration;
-use wire::Query;
+use wire::{Family, Query};
 
 /// `application/dns-message`, RFC 8484 §6. The one media type this crate
 /// sends and the one it accepts.
@@ -487,7 +487,7 @@ where
     /// `Resolve` is there so that A and AAAA can proceed independently
     /// (RFC 8305), and they do — these are two separate requests — but
     /// *within* one family there is no partial answer to stream.
-    async fn addrs(&self, name: &str, query: Query) -> Vec<Result<ResolvedAddr, Error>> {
+    async fn addrs(&self, name: &str, family: Family) -> Vec<Result<ResolvedAddr, Error>> {
         // An IP literal is not a name and there is nothing to ask about it.
         //
         // **This is not an optimisation; without it a `Doh`-backed client
@@ -506,35 +506,37 @@ where
         // because "there is no AAAA for this v4 literal" is a true and
         // unremarkable answer rather than a failure.
         if let Some(addr) = ip_literal(name) {
-            return match (addr, query) {
-                (IpAddr::V4(_), Query::A) | (IpAddr::V6(_), Query::Aaaa) => {
+            return match (addr, family) {
+                (IpAddr::V4(_), Family::V4) | (IpAddr::V6(_), Family::V6) => {
                     vec![Ok(ResolvedAddr { addr, ttl: None })]
                 }
                 _ => Vec::new(),
             };
         }
-        match self.exchange(name, query).await {
+        match self.exchange(name, family.query()).await {
             Ok(answer) => answer.addrs.into_iter().map(Ok).collect(),
-            Err(e) => self.recover(name, query, e).await,
+            Err(e) => self.recover(name, family, e).await,
         }
     }
 
     /// [`Doh::with_fallback`]'s rule, in one place for both families.
+    ///
+    /// Takes a [`Family`] rather than a [`Query`], and that is a correction
+    /// rather than a tidy-up. With a `Query` there was a third arm, for
+    /// `Https`, that nothing could reach — `lookup_svcb` deliberately does
+    /// not come through here — and a mutation of that arm survived the
+    /// whole suite, because an unreachable arm cannot be killed by any
+    /// test. The type now says what both callers already meant, and the
+    /// arm is gone rather than covered.
     async fn recover(
         &self,
         name: &str,
-        query: Query,
+        family: Family,
         failure: DohError,
     ) -> Vec<Result<ResolvedAddr, Error>> {
-        let recovered: Vec<Result<ResolvedAddr, Error>> = match query {
-            Query::A => self.fallback.lookup_ipv4(name).collect().await,
-            Query::Aaaa => self.fallback.lookup_ipv6(name).collect().await,
-            // A fallback resolver that cannot do SVCB returns an empty
-            // stream from the trait's default body, which lands in the
-            // "produced nothing" branch below and lets the DoH error stand.
-            // That is the right answer: `supports_svcb() == false` means it
-            // never asked.
-            Query::Https => Vec::new(),
+        let recovered: Vec<Result<ResolvedAddr, Error>> = match family {
+            Family::V4 => self.fallback.lookup_ipv4(name).collect().await,
+            Family::V6 => self.fallback.lookup_ipv6(name).collect().await,
         };
         if recovered.is_empty() {
             vec![Err(failure.into())]
@@ -553,12 +555,12 @@ where
 {
     fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
         let name = name.to_owned();
-        stream::once(async move { self.addrs(&name, Query::A).await }).flat_map(stream::iter)
+        stream::once(async move { self.addrs(&name, Family::V4).await }).flat_map(stream::iter)
     }
 
     fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
         let name = name.to_owned();
-        stream::once(async move { self.addrs(&name, Query::Aaaa).await }).flat_map(stream::iter)
+        stream::once(async move { self.addrs(&name, Family::V6).await }).flat_map(stream::iter)
     }
 
     /// **`true`, and this is the reason the crate exists.**

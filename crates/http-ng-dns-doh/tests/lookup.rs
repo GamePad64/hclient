@@ -228,6 +228,48 @@ async fn an_answer_of_a_different_type_is_refused() {
     assert!(e.to_string().contains("different question"), "{e}");
 }
 
+/// The same, for the CLASS. `IN` is the only class a web client has any
+/// business with, and a `CH` answer to an `IN` question is as much a
+/// different question as a different name would be.
+///
+/// **This test exists because a mutation survived without it.** Deleting
+/// the `q_class` clause from `check_question` passed the whole suite: every
+/// fixture sent `IN`, so nothing could tell whether the field was read.
+#[tokio::test]
+async fn an_answer_in_a_different_class_is_refused() {
+    let server = Server::answering(support::message_in_class(
+        "example.com",
+        TYPE_A,
+        support::CLASS_CH,
+        support::FLAGS_NOERROR,
+        &[Rr::a("example.com", 60, [192, 0, 2, 1])],
+    ));
+    let e = one_error(v4(&server, "example.com").await);
+    assert!(e.to_string().contains("different question"), "{e}");
+}
+
+/// A fully-qualified name — `https://example.com./` is a legal URL, and
+/// `Uri::host()` hands the trailing dot straight through to this trait.
+/// The root label is not part of the name for the purpose of comparing
+/// what the server echoed, and the lookup must succeed.
+///
+/// **Also written because a mutation survived without it**: dropping the
+/// `trim_end_matches('.')` on the asked-for name left every existing test
+/// green, and turned every fully-qualified host into a
+/// `QuestionMismatch`.
+#[tokio::test]
+async fn a_fully_qualified_name_with_a_trailing_dot_resolves() {
+    let server = Server::answering(noerror(
+        "example.com",
+        TYPE_A,
+        &[Rr::a("example.com", 60, [192, 0, 2, 1])],
+    ));
+    assert_eq!(
+        addrs(&v4(&server, "example.com.").await),
+        vec![IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))]
+    );
+}
+
 /// DNS 0x20: a server may echo the question in a different case, and that
 /// is the same question.
 #[tokio::test]

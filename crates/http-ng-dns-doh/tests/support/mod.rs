@@ -304,6 +304,22 @@ impl Rr {
 /// The ID is echoed as zero because that is what RFC 8484 §4.1 asks a DoH
 /// client to send and therefore what a server echoes.
 pub fn message(qname: &str, qtype: u16, flags: u16, answers: &[Rr]) -> Vec<u8> {
+    message_in_class(qname, qtype, CLASS_IN, flags, answers)
+}
+
+/// RFC 1035 §3.2.4. `IN` is the only class a web client has any business
+/// with; `CH` exists here so a test can send one.
+pub const CLASS_IN: u16 = 1;
+pub const CLASS_CH: u16 = 3;
+
+/// The same, with the question's QCLASS chosen by the caller.
+pub fn message_in_class(
+    qname: &str,
+    qtype: u16,
+    qclass: u16,
+    flags: u16,
+    answers: &[Rr],
+) -> Vec<u8> {
     let mut m = Vec::new();
     m.extend_from_slice(&0u16.to_be_bytes()); // ID
     m.extend_from_slice(&flags.to_be_bytes());
@@ -317,7 +333,7 @@ pub fn message(qname: &str, qtype: u16, flags: u16, answers: &[Rr]) -> Vec<u8> {
     m.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
     m.extend(name_wire(qname));
     m.extend_from_slice(&qtype.to_be_bytes());
-    m.extend_from_slice(&1u16.to_be_bytes()); // QCLASS IN
+    m.extend_from_slice(&qclass.to_be_bytes());
     for rr in answers {
         m.extend(name_wire(&rr.owner));
         m.extend_from_slice(&rr.rtype.to_be_bytes());
