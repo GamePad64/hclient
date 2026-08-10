@@ -797,9 +797,16 @@ fn dig(name: &str, rtype: &str, ep: Endpoint, owner: &str) -> Option<DigRecord> 
     // `endpoint_from_binding` does that substitution so no consumer has to
     // know the convention. Mapping `.` to the owner here is therefore not a
     // fudge to make a comparison pass — it is the check that the
-    // substitution HAPPENED, on a real record. No fixture in this crate
-    // covers it: every hand-built record in `tests/svcb.rs` names a target
-    // other than the root.
+    // substitution HAPPENED, on a record nobody here wrote.
+    //
+    // A first draft of this comment said no fixture in this crate covered
+    // the root target. **That was false, and the mutation run said so**:
+    // dropping the substitution is killed hermetically by
+    // `svcb.rs`'s `a_service_mode_record_with_a_root_target_takes_its_owner
+    // _name` as well as by this test (L4). What is added here is not
+    // coverage of the rule but coverage of the *reading*: the fixture
+    // builds a root target with `name_wire("")` and this reads one a
+    // registrar published.
     let target = match words.next()? {
         "." => owner.to_owned(),
         other => other.trim_end_matches('.').to_owned(),

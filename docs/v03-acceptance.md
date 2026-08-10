@@ -1044,19 +1044,24 @@ The four §W3 named as the minimum, and what killed each:
 
 ## What W3 leaves unverified
 
-- **No live DoH endpoint has been queried.** Every test is against a
+- ~~**No live DoH endpoint has been queried.** Every test is against a
   loopback fixture. What that leaves untested is exactly §W3's own
   unverified row: **whether a certificate with an IP SAN validates through
-  `rustls-platform-verifier`** on Linux, macOS and Windows. Nothing in this
-  crate performs a handshake, so nothing in it can settle that; it belongs to
-  whichever `TlsConnect` the transport carries, and the check is one live
-  request per platform. Until then `Doh::pinned` against a public resolver
-  is unproven on all three.
-- **The `https` requirement is enforced with one exception, and only one
+  `rustls-platform-verifier`** on Linux, macOS and Windows.~~ **Done for
+  IPv4 on Linux, and the answer is yes** — see "Live, and the four things
+  it found" below. `Doh::pinned` against Cloudflare and Google completes
+  the handshake through the platform verifier and reads a DNS answer back.
+  **macOS and Windows stay open**, and by more than a missing runner: both
+  hand the chain to the OS (Security.framework, CryptoAPI) rather than to
+  rustls's webpki path, so Linux is not evidence about them.
+- ~~**The `https` requirement is enforced with one exception, and only one
   half of it is exercised by a live request.** Cleartext is refused unless
   the host is a loopback literal — the local-DoH-proxy shape, and what makes
   these tests cheap. Every test therefore runs over `http://127.0.0.1`, so
-  the crate has never actually spoken to a TLS DoH endpoint in CI.
+  the crate has never actually spoken to a TLS DoH endpoint in CI.~~ **The
+  crate has now spoken to three TLS DoH endpoints**, though still not in
+  CI, deliberately — the argument is below. The loopback-`http` half is
+  unchanged and is still what every hermetic test uses.
 - **No total bound on one query.** `Doh::timeouts` sets `connect`,
   `first_byte` and `between_bytes` — everything `Timeouts` can express. A
   server that answers the head promptly and then dribbles the body one byte
@@ -1094,6 +1099,267 @@ The four §W3 named as the minimum, and what killed each:
   read-only-to-this-task crate consumes, and doing it half-way — filled by
   DoH, `None` from hickory and the system — would be exactly the capability
   lie this project has caught four times.
+
+## Live, and the four things it found
+
+Written after the fact, on the terms the rest of this file uses: what was
+measured, on what date, against whom, and what it cost to believe.
+
+`crates/http-ng-dns-doh/tests/live.rs`, run by `just test-doh-live`, is nine
+tests against **Cloudflare (`1.1.1.1`)** and **Google (`8.8.8.8`)**, with
+**Quad9 (`9.9.9.9`)** in one of them. Two operators rather than one because
+a single provider's behaviour is that provider's and not the protocol's —
+and every claim below except one was made at both. All measurements here
+are from **2026-08-10** on x86-64 Linux, `rustls-platform-verifier` 0.7,
+rustls 0.23 with `ring`.
+
+### 1. A certificate presented for an IP address validates — on Linux
+
+The question this whole exercise was for, and §W3's own unverified row.
+`Doh::pinned` takes an IP literal, so a pinned deployment's TLS server name
+is an address and the certificate has to carry an IP SAN; nothing in this
+workspace had ever made that handshake.
+
+**It completes, at both operators, through
+`Rustls::with_platform_verifier()`** — not `with_webpki_roots`, which would
+have answered a different question. Both answered `200
+application/dns-message` with records in it.
+
+Two limits on that, both real. **macOS and Windows are not covered and
+Linux is not evidence about them**: `rustls-platform-verifier` delegates to
+Security.framework and to CryptoAPI there, and IP-SAN name matching is
+theirs to implement. **And an IPv6-literal endpoint does not work at all**,
+which is finding 2.
+
+### 2. An IPv6-literal endpoint fails at TLS, and the defect is not in this crate
+
+`Doh::pinned`'s own doc offered `https://[2606:4700:4700::1111]/dns-query`
+as an example. Measured, it fails with **`Tls: invalid dns name`** — the
+TCP connection is made, and the handshake never starts.
+
+`http::Uri::host()` returns an IPv6 literal **with its brackets**;
+`http-ng-native`'s `connect.rs` passes that string to
+`TlsRequest::server_name` unchanged; `rustls_pki_types::ServerName::
+try_from` tries `DnsName`, then `IpAddr`, and neither strips a bracket.
+Both `IpLiteralOnly::literal` and `Doh`'s own `ip_literal` do strip them,
+each with a comment naming this exact trap — the TLS name is the one place
+on the path where nobody does.
+
+**It is not DoH-specific**: any `https://[…]/` URL through `http-ng-native`
++ `http-ng-tls-rustls` meets it. The fix is one line in one of those two
+crates, both of which were out of this task's scope, so what landed instead
+is the note on `Doh::pinned` and a test that pins the current behaviour —
+`an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate`,
+whose *failure* is the signal that the note is stale.
+
+### 3. Quad9 answers no DNS at all over HTTP/1.1
+
+`9.9.9.9` replies to every DoH request over HTTP/1.1 with **`505 HTTP
+Version Not Supported`** and an HTML body: *"This server implements RFC
+8484 … and requires HTTP/2 in accordance with section 5.2 of the RFC."*
+§5.2 makes HTTP/2 the minimum **RECOMMENDED** version; Quad9 reads that as
+a requirement. Over HTTP/2 the same request is answered normally —
+confirmed with `curl`, which negotiates `h2` by ALPN.
+
+`http-ng-native` speaks HTTP/1.1 unless its `http2` feature is on, so **a
+default build of this workspace cannot use Quad9 as a DoH resolver.** That
+is a fact about a deployment choice, not a bug, and it is now written where
+someone choosing an endpoint will meet it.
+
+The crate reports it correctly and that is worth its own assertion: the
+caller gets `DohError::Status { status: 505 }`, not a `ContentType` or a
+`Malformed`. `Doh::exchange` checks the status *before* the content type
+and the content type *before* decoding, and this is the only place in the
+suite where a real server supplies the HTML error page that ordering exists
+for.
+
+### 4. `dig` and this crate spell a root TargetName differently, for a reason
+
+The `dig` comparison failed on its first run: for `crypto.cloudflare.com`,
+BIND printed `target = .` and this crate said `crypto.cloudflare.com`.
+
+Both are right. RFC 9460 §2.5 says a ServiceMode TargetName of `.` means
+the record's own owner name, and `endpoint_from_binding` substitutes it so
+that no consumer has to know the convention; `dig` prints what is on the
+wire. The oracle now maps one notation to the other, which turns the
+comparison into a check that **the substitution happened, on a record
+nobody here wrote**.
+
+Worth recording because the first reading of it was "our parser is wrong",
+and the second was a comment claiming no fixture covered the rule — which
+the mutation run (L4 below) refuted immediately: `svcb.rs`'s
+`a_service_mode_record_with_a_root_target_takes_its_owner_name` covers it
+hermetically too.
+
+### What else a real answer settled
+
+| question | answer, at both operators |
+|---|---|
+| Does a real HTTPS record parse, field for field? | **Yes.** All seven fields of `crypto.cloudflare.com`'s record agree with `dig @<same operator>`: priority `1`, root target, `alpn=["h2"]`, no port, both hint lists, and the ECHConfigList's length |
+| Does the ECHConfigList keep RFC 9460 §7.3's redundant length prefix? | **Yes**, and the prefix is right: 71 bytes, first two reading `0x0045` = 69, then `fe 0d` — the ECHConfig draft-13 version. Exactly the shape `tests/svcb.rs` builds by hand |
+| Do the TTLs come back, and are they the wire's? | **Yes.** Against Cloudflare the value equals the one this test decoded by hand from its own query seconds earlier (measured pairs: 73691/73689, 73129/73129, 72912/72912, 72900/72900, 72387/72387, and one 15477/15478) |
+| Does `NXDOMAIN` from a real authority look like the fixture's? | **Yes** — an empty stream, not an error, for `nothing-here.invalid` (RFC 6761 §6.4) |
+| Does a real server answer the `GET` form this crate does not send? | **Yes**, `200 application/dns-message` with an A record, at Cloudflare and Google. So "POST only" stays a trade this workspace chose (no base64 encoder for one call site) rather than one a server imposed. Quad9 answers `505` to `GET` too — it is the HTTP version it objects to, not the method |
+| Is the `Content-Type` this crate sends load-bearing? Is the `Accept`? | **The first yes, the second no.** Dropping `Content-Type`: `415` at Cloudflare, `400` at Google. Dropping `Accept`: `200` at both. RFC 8484 §4.1 makes the first a MUST and the second a SHOULD, and now something fails if the MUST is deleted as redundant |
+
+**The TTL claim is made against Cloudflare only, and that is a measurement
+rather than a preference.** Comparing our TTL with a second query's needs a
+coherent cache behind the two. Cloudflare's gave the identical value every
+time it was asked. Google's frontends do not share one: the same RRset came
+back as **703 s and 18759 s within the same second** (and 847/313,
+17765/5893 in an earlier probe). So the cross-query comparison is made
+where it is sound, and the claim that covers *both* operators is that they
+**disagree** — two independent caches serving what is left of an 86400 s
+record cannot both hand back the constant a fabricating implementation
+would.
+
+### Should this be in CI? No — and the argument, not the shrug
+
+**It is in no CI job, and `just ci` does not call it.** Three reasons, in
+order of weight.
+
+**A red build nobody can fix teaches people to ignore red builds.** What
+this suite measures is a fact about somebody else's server. Findings 3 and
+4 are the proof: if Quad9 starts accepting HTTP/1.1, or Cloudflare stops
+publishing `ech` on `crypto.cloudflare.com`, a job goes red and the correct
+response is to edit the test — which is to say the signal carried no
+information about this code. Mixing that into the same signal as "your
+change broke the parser" devalues the second.
+
+**The network is a coin toss at this granularity, and mitigating it makes
+the test weaker.** Measured on the host that wrote this: **17 of 240 plain
+TCP connects to these three addresses were lost**, uniformly, unrelated to
+rate or to DoH. That is why the suite retries four times with a 250 ms
+backoff and a 5 s connect bound — and every one of those is a step away
+from "one request, one answer". A GitHub runner's link is better than this
+one; the class of failure is the same, and the mitigation is the same
+weakening.
+
+**The third reason is the one worth arguing with: a nightly would be
+defensible.** It never gates a merge, so a red nightly does not train
+anyone to ignore a red PR check, and it would catch exactly the rot that
+findings 3 and 4 are made of. It is not here because a repository with no
+maintainer rotation gets a permanently amber badge instead of an alert —
+the same failure one clock slower — and because nothing yet reads a nightly
+here. That is a fact about this project's process, not about the test, and
+it is the thing to revisit first.
+
+**What would move a real part of this into CI, and is the concrete
+recommendation.** The IP-SAN question has two halves, and only one of them
+needs a public resolver:
+
+- *Does the platform verifier match a name against an IP SAN?* — This is
+  the half that varies by OS and the half Linux cannot answer for macOS and
+  Windows. It needs **no public server at all**: a locally issued
+  certificate carrying an IP SAN for `127.0.0.1`, a test root added to the
+  platform trust store, and a loopback listener would answer it on all
+  three runners, hermetically, on every push.
+- *Do the public resolvers actually present such certificates, and behave
+  as RFC 8484 says?* — This half is irreducibly about third parties and
+  belongs where it is: an opt-in recipe, and this dated record.
+
+### The mutation table
+
+Two groups, because the live file is a harness before it is a test and a
+harness has its own way of being wrong: it can pass having done nothing.
+The script is `crates/http-ng-dns-doh/live-mutations.py`; anchor counts are
+checked before every edit and every edit is reverted afterwards.
+
+**Group H — the harness cannot pass when the query never happened.** Each
+row breaks the harness while leaving every assertion untouched, then runs
+`just test-doh-live` with `HTTP_NG_REQUIRE_NETWORK` set.
+
+| mutation | verdict | what killed it |
+|---|---|---|
+| H1 the gate always returns "skip", so no query is ever made | KILLED | the recipe's receipt count: `0 of the expected 16` |
+| H2 the endpoints point at TEST-NET-1 (`192.0.2.1`) | KILLED | three tests, on this host — see the note below |
+| H3 the test spells the receipt differently from the recipe | KILLED | the count reads 0, which is the `HTTP_NG_REQUIRE_WASMTIME` marker-symmetry check made by running rather than by grepping |
+| H4 **control:** H1 again, with the recipe's count disabled | **SURVIVED**, as it must | nothing — which is the point: H1's kill came from the belt it is supposed to demonstrate and not from somewhere else |
+| H5 the live answer is replaced with a fabricated one after the exchange, before the assertions | KILLED | `the_ttl_a_caller_gets_is_the_one_that_came_off_the_wire` |
+| H6 an unreachable endpoint with the marker's panic disabled | KILLED | the tests themselves |
+
+**Two things about H2 and H6 that are about this host rather than about the
+harness**, and they are why the rows name tests instead of the count: a TCP
+connect to `192.0.2.1:443` **succeeds** from here — something on the path
+answers the SYN for an address in TEST-NET-1 — so the gate's probe finds a
+route and the exchange fails afterwards instead. On a network where TEST-NET-1
+is unroutable, both rows would be killed by the gate and the count. Either
+way the harness does not go green.
+
+**Group L — what the live suite kills, and what only the fixtures do.**
+Each row is one library mutation run twice: against the hermetic suite
+(`cargo nextest run -p http-ng-dns-doh` with the opt-in absent, so every
+live test skips) and against the live suite alone.
+
+| mutation | hermetic | live |
+|---|---|---|
+| L1 the TTL is dropped (`ttl: None`) | KILLED | KILLED |
+| L2 `supports_svcb()` flipped to `false` | KILLED | **SURVIVED** |
+| L3 the ECHConfigList loses RFC 9460 §7.3's length prefix | KILLED | KILLED |
+| L4 RFC 9460 §2.5's owner substitution for a root TargetName is dropped | KILLED | KILLED |
+| L5 the HTTP status is not checked | KILLED | KILLED |
+| L6 the response is parsed but the answer section ignored | KILLED | KILLED |
+| L7 the echoed question is not checked | KILLED | **SURVIVED** |
+| L8 an error RCODE is treated as an empty answer | KILLED | **SURVIVED** |
+| L9 the `ipv4hint` is dropped | KILLED | KILLED |
+| L10 NXDOMAIN becomes an error rather than an answer | KILLED | KILLED |
+
+**The three survivors are the finding, and none was answered by adjusting
+anything.** They say precisely what a live suite cannot do, which is the
+half of its value that is easy to overstate:
+
+- **L7 and L8 survive because a real server behaves.** Cloudflare and
+  Google echo the question they were asked and do not return SERVFAIL on
+  request. Only a fixture can be made to misbehave on purpose, so the
+  checks against a lying server are exactly the ones the loopback tests
+  will always own. This is the concrete answer to "could the fixtures be
+  replaced by live tests": no, and here is which fixtures.
+- **L2 survives because nothing in the live suite reads the flag.**
+  `a_real_https_record_parses_and_every_field_agrees_with_dig` calls
+  `lookup_svcb` directly, which works whatever `supports_svcb()` says. Left
+  as a survivor rather than papered over with an `assert!(…supports_svcb())`
+  that no live answer could contradict: the hermetic suite kills it twice
+  over, and a decorative assertion here would be the capability lie this
+  project has caught four times, in miniature.
+
+**One row in this table was scored wrong on the first run and caught by
+reading it.** L2 came back `live=KILLED (the_ttl_…)` — a mutation of
+`supports_svcb` killed by a test about TTLs, which is not a thing that can
+be true. It was a lost packet, on the 7%-loss link measured above. Re-run
+in isolation, it survives. **Any live mutation run needs its killers read
+and not just counted**, which is the same discipline the anchor counts
+exist for one level down.
+
+### One harness bug, found while mutating
+
+The two tests that *expect* an error — the IPv6-literal one and the Quad9
+one — called `doh()` directly rather than the retrying wrapper, so a lost
+SYN turned "Quad9 answers 505" into a failed assertion about a connect
+timeout. Reproduced under `HTTP_NG_REQUIRE_NETWORK` before it was fixed.
+Both now go through `lookup_v4`, whose retry predicate reads the **typed**
+error — only `DohError::Transport` wrapping `ErrorKind::Connect` or
+`Timeout(Phase::Connect)` is retried — so every answer, welcome or not,
+arrives on the first attempt. The retry is on the network and never on an
+assertion, which is the only thing that makes one admissible here.
+
+### What the live run still leaves unverified
+
+- **macOS and Windows.** Finding 1 is a Linux measurement. See the CI
+  recommendation above for the half of it that does not need a public
+  resolver.
+- **HTTP/2 to a DoH endpoint.** The `http2` feature's arm of
+  `an_endpoint_that_demands_http2_…` has never been exercised: the run that
+  produced this section was a default build, so what is measured is the
+  505. The test reads the outcome at run time and asserts the matching arm,
+  so a build with the feature on will check the other one — nobody has made
+  that run.
+- **`Doh::bootstrapped` against a live endpoint.** Every live test here is
+  `pinned`. The bootstrapped path would need a transport carrying a real
+  resolver, which makes the DoH server's own name a second thing under
+  test; it is covered hermetically and not live.
+- **A fallback that fires against a live failure.** `with_fallback` is
+  hermetic-only, and deliberately: making a public resolver fail on demand
+  means blocking it at the firewall, which is a test about the firewall.
 
 # v0.3 W4 — the WebSocket seam (steps 1 and 2)
 
