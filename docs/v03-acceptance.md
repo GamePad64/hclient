@@ -1031,9 +1031,16 @@ The four §W3 named as the minimum, and what killed each:
   be ours; not caching is how that stays true of a later, explicit cache
   rather than of this one.
 - **No GET.** RFC 8484 §4.1 defines both and a server must support both.
-  GET's base64url `?dns=` makes a query cacheable by intermediaries, and
-  needs a base64 encoder this workspace does not have; an intermediary cache
-  is not obviously what a DNS-over-HTTPS deployment wants anyway.
+  GET's base64url `?dns=` makes a query cacheable by intermediaries, which
+  is not obviously what a DNS-over-HTTPS deployment wants. ~~and needs a
+  base64 encoder this workspace does not have~~ — **that half was wrong,
+  and the live work found it.** `cargo tree -p http-ng-dns-doh -e normal -i
+  base64` returns `base64 v0.22.1 <- dns-message-parser`: an encoder is
+  already compiled into every build of this crate. GET costs a dependency
+  line and a call site, not a crate in the graph. And it is not refused by
+  anyone — both operators answer it, `the_get_form_this_crate_does_not_
+  send_is_answered_by_both_operators`. The decision stands on the caching
+  argument alone now, which is where it should have stood.
 - **No RFC 9461 `dohpath` discovery** — see the bootstrap table.
 - **No `Client`, and therefore no `total` timeout** — see above.
 - **No wasm build of this crate has been attempted.** §W3 calls the wasm

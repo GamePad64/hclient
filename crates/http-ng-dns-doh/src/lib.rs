@@ -138,10 +138,18 @@
 //!
 //! **POST, not GET.** RFC 8484 §4.1 defines both, and a server must
 //! support both. GET carries the query base64url-encoded in `?dns=`, which
-//! makes it cacheable by intermediaries — and needs a base64 encoder this
-//! workspace does not have and would rather not add for one call site.
-//! POST needs none, and an intermediary cache is not obviously something a
-//! DNS-over-HTTPS deployment wants anyway.
+//! makes it cacheable by intermediaries, and an intermediary cache is not
+//! obviously something a DNS-over-HTTPS deployment wants.
+//!
+//! **The other half of that argument used to read "and needs a base64
+//! encoder this workspace does not have", and that was wrong.** Measured:
+//! `cargo tree -p http-ng-dns-doh -e normal -i base64` returns `base64
+//! v0.22.1 <- dns-message-parser`, so an encoder is compiled into every
+//! build of this crate already. What GET would cost is a direct dependency
+//! line and a call site, not a crate in anyone's graph — a smaller price
+//! than was written here, against an unchanged benefit. Both public
+//! operators answer the GET form (`tests/live.rs`), so nothing about the
+//! choice is forced.
 #![forbid(unsafe_code)]
 
 mod wire;
