@@ -639,9 +639,11 @@ where
     .await;
     match first {
         Ok(conn) => Ok(conn),
-        Err(e) if endpoint.is_some() => {
+        // The discovered endpoint's own failure ends here on purpose: it
+        // is recorded in the cache, and the answer to the caller is
+        // whatever the origin says next. See this function's doc comment.
+        Err(_through_the_record) if endpoint.is_some() => {
             discovery_cache.record(Origin::new(host, port), now);
-            let _ = e;
             attempt(rt, dns, tls, host, use_tls, port, opts, alpn, None).await
         }
         Err(e) => Err(e),
