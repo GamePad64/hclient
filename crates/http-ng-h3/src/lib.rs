@@ -71,9 +71,11 @@
 
 mod body;
 mod early;
+mod pump;
 mod runtime;
 
 pub use body::H3Body;
+pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
 pub use runtime::QuinnTask;
 
 use bytes::Bytes;
@@ -227,17 +229,23 @@ where
 {
     /// # The capability values, one by one
     ///
-    /// - `streaming_request_body: false` and `full_duplex: false`. HTTP/3
+    /// - `streaming_request_body: true` and `full_duplex: true`. HTTP/3
     ///   supports both — the request and response halves of a stream are
-    ///   independent — and **this implementation does neither**: `execute`
-    ///   writes the whole request body before reading the response head.
-    ///   Declaring the protocol's ability rather than the implementation's
-    ///   is the mistake the capability model exists to prevent, and for
-    ///   `full_duplex` it is the one whose cost is a deadlock rather than a
-    ///   degradation.
+    ///   independent — and as of this change **so does this
+    ///   implementation**: [`one_attempt`](H3::one_attempt) splits the
+    ///   stream, writes the body from a future polled beside
+    ///   `recv_response`, and hands the unfinished write to [`H3Body`].
+    ///   Neither field is set from what the protocol can do; both were
+    ///   `false` for as long as `execute` wrote the whole body first, and
+    ///   `full_duplex` is the one whose over-claim costs a deadlock rather
+    ///   than a degradation, so it is measured from outside rather than
+    ///   argued: `a_response_head_arrives_while_the_request_body_is_still_
+    ///   going_out` in `tests/streaming.rs` deadlocks if it is not true.
     /// - `response_trailers: true`. [`H3Body`] yields them as a trailers
     ///   frame; `request_trailers` stays `false` because nothing here sends
-    ///   any.
+    ///   any — and now that a caller can supply a body that produces them,
+    ///   that `false` is enforced rather than merely declared:
+    ///   [`RequestTrailersNotSent`].
     /// - `connection_reuse: Supported`, and here it means more than it does
     ///   for HTTP/1: requests share a connection *concurrently*, not only
     ///   in sequence.
@@ -302,15 +310,26 @@ where
 /// as a compile error somebody silences by copying the neighbouring value.
 fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
     let mut c = Capabilities::none();
-    // Both stay `false`, and neither is a limitation of HTTP/3: a QUIC
-    // stream's halves are independent, so the protocol does full duplex and
-    // streaming request bodies. `execute` below does not — it writes the
-    // whole request body, then reads the head. The capability describes the
-    // implementation, which is the distinction this model exists for.
-    c.streaming_request_body = false;
-    c.full_duplex = false;
+    // Both are `true` because `one_attempt` does both, not because HTTP/3
+    // does. They were `false` for as long as `execute` wrote the whole
+    // request body and then read the head, which is the arrangement the
+    // capability model exists to describe honestly; they moved in the
+    // change that split the stream and made the write a future polled
+    // beside `recv_response`.
+    //
+    // `full_duplex` is the one that costs a deadlock when over-claimed —
+    // v0.2 W3's floor rule — so it is not declared on the strength of the
+    // code reading right. `a_response_head_arrives_while_the_request_body_
+    // is_still_going_out` in `tests/streaming.rs` is causal rather than
+    // timed: the caller's body will not produce its second chunk until the
+    // head has been seen, so a transport that read the head only after the
+    // body finished cannot complete that exchange at all.
+    c.streaming_request_body = true;
+    c.full_duplex = true;
     // Nothing here sends request trailers; `H3Body` does yield response
-    // ones, as a trailers frame.
+    // ones, as a trailers frame. With a streaming request body a caller can
+    // now actually produce a trailers frame, so this `false` is enforced —
+    // `RequestTrailersNotSent`, a typed error, rather than a silent drop.
     c.request_trailers = false;
     c.response_trailers = true;
     // A 3xx arrives as an ordinary response and following it is `Client`'s
@@ -536,51 +555,64 @@ where
         Ok((send, conn, zero_rtt))
     }
 
-    /// Open a stream, write the whole request body, and read the head.
+    /// Open a stream, start writing the request body, and read the head —
+    /// **both at once**.
     ///
     /// Separate from `execute` because it is the unit a rejected 0-RTT
     /// request is replayed as — see there.
+    ///
+    /// # This is where `full_duplex` is true or false
+    ///
+    /// The stream is [`split`](h3::client::RequestStream::split) into its
+    /// two independent halves and the write side becomes a future
+    /// ([`crate::pump`]) polled beside `recv_response`, rather than awaited
+    /// before it. The head is returned the moment it arrives, with the
+    /// unfinished write handed to [`H3Body`] to carry on. Writing the body
+    /// first and reading the head afterwards — the arrangement this
+    /// replaced — is precisely what `full_duplex: false` described, and
+    /// putting the two `await`s back in sequence would silently withdraw
+    /// the capability while leaving its declaration standing.
+    ///
+    /// **The pump is polled first, and its errors return before the
+    /// response is looked at.** That keeps the meaning the sequential code
+    /// had: everything except the one tolerated write failure is the
+    /// request failing, and it is reported as such rather than as a
+    /// response that happens to be missing its request.
     async fn one_attempt(
         send: &mut SendRequest,
         head: http::Request<()>,
         body: RequestBody,
     ) -> Result<http::Response<H3Body>, Error> {
-        let mut stream = send.send_request(head).await.map_err(body::stream_error)?;
+        let stream = send.send_request(head).await.map_err(body::stream_error)?;
         // From here on the head is on the wire, and a write-side failure
         // stops meaning what it meant a line ago. See `write_after_head`.
-        let mut stopped = false;
-        match body {
-            RequestBody::Empty => {}
-            RequestBody::Full(b) => {
-                if !b.is_empty() {
-                    stopped = write_after_head(stream.send_data(b).await)?;
+        let (writer, mut reader) = stream.split();
+        let mut pump = Some(pump::pump(writer, body));
+        // The borrow of `reader` ends with this block, which is what lets
+        // the same value move into `H3Body` two lines later.
+        let resp = {
+            let mut head = std::pin::pin!(reader.recv_response());
+            std::future::poll_fn(|cx| {
+                if let Some(p) = pump.as_mut() {
+                    match p.as_mut().poll(cx) {
+                        std::task::Poll::Ready(Ok(())) => pump = None,
+                        std::task::Poll::Ready(Err(e)) => {
+                            pump = None;
+                            return std::task::Poll::Ready(Err(e));
+                        }
+                        // Not returned: a write that cannot proceed must
+                        // not stop the response from arriving, which is
+                        // the entire point of the two halves being
+                        // independent.
+                        std::task::Poll::Pending => {}
+                    }
                 }
-            }
-            RequestBody::Rewindable(f) => {
-                if let RequestBody::Full(b) = f()
-                    && !b.is_empty()
-                {
-                    stopped = write_after_head(stream.send_data(b).await)?;
-                }
-            }
-            RequestBody::Streaming(_) => {
-                return Err(Error::new(
-                    ErrorKind::Unsupported,
-                    std::io::Error::other(
-                        "http-ng-h3 does not stream request bodies yet; \
-                         Capabilities::streaming_request_body reports false",
-                    ),
-                ));
-            }
-        }
-        if !stopped {
-            // Not `let _ =`: everything except the one tolerated failure
-            // still propagates, and the `?` is what says so.
-            write_after_head(stream.finish().await)?;
-        }
-        let resp = stream.recv_response().await.map_err(body::stream_error)?;
+                head.as_mut().poll(cx).map_err(body::stream_error)
+            })
+            .await?
+        };
         let (parts, ()) = resp.into_parts();
-        Ok(http::Response::from_parts(parts, H3Body::new(stream)))
+        Ok(http::Response::from_parts(parts, H3Body::new(reader, pump)))
     }
 
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, Error> {
@@ -641,11 +673,27 @@ where
 /// failed roughly once in twenty under load and never once in isolation,
 /// with `Remote reset: 0x0` and a response the client had thrown away.
 ///
+/// # With a streaming body this is the ordinary case, not the rare one
+///
+/// The paragraphs above were written when every request body was one
+/// buffered chunk, so "the peer stopped reading" could only interrupt a
+/// single `send_data` or the grease frame in `finish`. A streaming body
+/// meets it in the middle of a loop, at whichever frame the
+/// `STOP_SENDING` happens to land on, and the second duty falls out of
+/// that: `Ok(true)` must **stop the pump**, not merely skip `finish`.
+/// Continuing to pull frames from the caller's body would be feeding a
+/// stream nobody is reading, for as long as the producer keeps producing.
+/// `crate::pump::write_stream` returns on the `true`, and
+/// `a_streaming_body_stops_when_the_server_stops_reading_and_the_response_
+/// still_arrives` in `tests/streaming.rs` is the RFC 9114 §4.1 guarantee
+/// across many frames rather than one.
+///
 /// # Why only this variant, and only here
 ///
-/// `STOP_SENDING` acts on one direction. The response stream is untouched,
-/// so `recv_response` below can still run and is still fully checked — the
-/// tolerance is on the write and nowhere else.
+/// `STOP_SENDING` acts on one direction. The response stream is untouched
+/// — since the streams are split it is a different object entirely — so
+/// the read side can still run and is still fully checked; the tolerance
+/// is on the write and nowhere else.
 ///
 /// Every other [`h3::error::StreamError`] propagates unchanged — and the
 /// honest statement about that half is that **no test here pins it, and
@@ -677,7 +725,7 @@ where
 /// The tolerance also cannot slide *before* the head by accident: this
 /// takes a `Result<(), _>` and `send_request` yields the stream, so the
 /// compiler refuses the move.
-fn write_after_head(r: Result<(), h3::error::StreamError>) -> Result<bool, Error> {
+pub(crate) fn write_after_head(r: Result<(), h3::error::StreamError>) -> Result<bool, Error> {
     match r {
         Ok(()) => Ok(false),
         Err(h3::error::StreamError::RemoteTerminate { .. }) => Ok(true),
