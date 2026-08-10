@@ -169,12 +169,15 @@ pub enum DohError {
 ///
 /// `rd` is set: this is a stub resolver asking a recursive one.
 pub(crate) fn encode_query(name: &str, query: Query) -> Result<Bytes, DohError> {
-    let domain_name = name
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(name)
-        .parse()
-        .map_err(
+    // No bracket stripping here, deliberately. `Uri::host()` brackets an
+    // IPv6 literal (`[::1]`) and that is the string `Resolve` receives —
+    // but a literal never reaches this function, because `Doh::addrs`
+    // answers it from the string itself and makes no query at all. What
+    // could still arrive bracketed is a thing that is *not* a literal, and
+    // turning `[foo]` into a query for `foo` would be inventing a name the
+    // caller did not give.
+    let domain_name =
+        name.parse().map_err(
             |e: dns_message_parser::DomainNameError| DohError::NameNotUsable {
                 name: name.to_owned(),
                 reason: e.to_string(),

@@ -488,6 +488,31 @@ where
     /// (RFC 8305), and they do — these are two separate requests — but
     /// *within* one family there is no partial answer to stream.
     async fn addrs(&self, name: &str, query: Query) -> Vec<Result<ResolvedAddr, Error>> {
+        // An IP literal is not a name and there is nothing to ask about it.
+        //
+        // **This is not an optimisation; without it a `Doh`-backed client
+        // cannot reach `https://192.0.2.1/` at all.**
+        // `http_ng_native::connect` hands `Uri::host()` to the resolver
+        // unconditionally — there is no literal shortcut above this seam,
+        // which is why `IpLiteralOnly` exists as a `Resolve` rather than as
+        // a branch in the connector. So a DoH resolver that queried for the
+        // "name" `192.0.2.1` would get NXDOMAIN from any honest server, and
+        // every IP-literal URL would fail to connect. Found by reading
+        // `connect.rs` while looking for what the mutation table was not
+        // covering, not by a bug report.
+        //
+        // The rule is `IpLiteralOnly`'s, deliberately: the literal goes to
+        // its own family's stream and the other family gets an empty one,
+        // because "there is no AAAA for this v4 literal" is a true and
+        // unremarkable answer rather than a failure.
+        if let Some(addr) = ip_literal(name) {
+            return match (addr, query) {
+                (IpAddr::V4(_), Query::A) | (IpAddr::V6(_), Query::Aaaa) => {
+                    vec![Ok(ResolvedAddr { addr, ttl: None })]
+                }
+                _ => Vec::new(),
+            };
+        }
         match self.exchange(name, query).await {
             Ok(answer) => answer.addrs.into_iter().map(Ok).collect(),
             Err(e) => self.recover(name, query, e).await,
@@ -555,6 +580,14 @@ where
     fn lookup_svcb(&self, name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
         let name = name.to_owned();
         stream::once(async move {
+            // An IP literal has no owner name to carry an HTTPS record, so
+            // there is nothing to ask — the same rule as `Self::addrs`, and
+            // the same reason. Empty rather than an error, because with
+            // `supports_svcb() == true` an empty stream reads as "asked,
+            // found none", and for a literal there is genuinely none.
+            if ip_literal(&name).is_some() {
+                return Vec::new();
+            }
             match self.exchange(&name, Query::Https).await {
                 Ok(answer) => answer.endpoints.into_iter().map(Ok).collect(),
                 // Deliberately NOT routed through `recover`: a fallback
