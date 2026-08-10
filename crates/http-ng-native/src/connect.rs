@@ -1935,6 +1935,256 @@ mod tests {
         assert_eq!(tried, vec![origin], "an inert record is not an endpoint");
     }
 
+    // --- the record and the addresses, asked at once --------------------
+
+    /// A stream that takes one poll to be *asked* and one to *answer*,
+    /// writing both into a shared log.
+    ///
+    /// The pending poll wakes itself instead of parking. That is what makes
+    /// a connector which serialises its queries fail with a **wrong log**
+    /// rather than with a deadlock: the test then says, in a millisecond,
+    /// which order it saw, instead of being killed ten seconds later by
+    /// [`bounded_block_on`]'s watchdog with nothing to read. A busy-spin is
+    /// affordable here because every poll in this fixture makes progress.
+    struct Staged<T> {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        asked: &'static str,
+        answered: &'static str,
+        items: std::vec::IntoIter<T>,
+        started: bool,
+    }
+
+    impl<T: Unpin> Stream for Staged<T> {
+        type Item = Result<T, Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let me = self.get_mut();
+            if !me.started {
+                me.started = true;
+                me.log.borrow_mut().push(me.asked);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            match me.items.next() {
+                Some(item) => {
+                    me.log.borrow_mut().push(me.answered);
+                    Poll::Ready(Some(Ok(item)))
+                }
+                None => Poll::Ready(None),
+            }
+        }
+    }
+
+    /// A resolver that reports, from outside this connector, **when** each
+    /// of its queries was created, sent and answered.
+    ///
+    /// Nine possible events, one shared log, and no clock at all: whether
+    /// two queries overlap is a claim about the order of four of those
+    /// events, not about how long anything took. That distinction is the
+    /// whole reason this fixture exists rather than a timing assertion —
+    /// `crates/http-ng-h3/tests/` has a fresh example of a timing assertion
+    /// missing its window by 0.22 ms.
+    #[derive(Clone)]
+    struct WatchedResolve {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        v4: Vec<IpAddr>,
+        records: Vec<http_ng_dns::SvcbEndpoint>,
+    }
+
+    impl WatchedResolve {
+        fn new(v4: Vec<IpAddr>, records: Vec<http_ng_dns::SvcbEndpoint>) -> Self {
+            Self {
+                log: Rc::new(RefCell::new(Vec::new())),
+                v4,
+                records,
+            }
+        }
+
+        fn events(&self) -> Vec<&'static str> {
+            self.log.borrow().clone()
+        }
+
+        fn note(&self, what: &'static str) {
+            self.log.borrow_mut().push(what);
+        }
+    }
+
+    impl Resolve for WatchedResolve {
+        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.note("aaaa:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "aaaa:ask",
+                answered: "aaaa:answer",
+                items: Vec::<ResolvedAddr>::new().into_iter(),
+                started: false,
+            }
+        }
+
+        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+            self.note("a:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "a:ask",
+                answered: "a:answer",
+                items: self
+                    .v4
+                    .iter()
+                    .map(|&addr| ResolvedAddr { addr, ttl: None })
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+                started: false,
+            }
+        }
+
+        fn supports_svcb(&self) -> bool {
+            true
+        }
+
+        fn lookup_svcb(
+            &self,
+            _: &str,
+        ) -> impl Stream<Item = Result<http_ng_dns::SvcbEndpoint, Error>> {
+            self.note("https:call");
+            Staged {
+                log: Rc::clone(&self.log),
+                asked: "https:ask",
+                answered: "https:answer",
+                items: self.records.clone().into_iter(),
+                started: false,
+            }
+        }
+    }
+
+    fn at(events: &[&'static str], what: &str) -> usize {
+        events
+            .iter()
+            .position(|e| *e == what)
+            .unwrap_or_else(|| panic!("{what} never happened; the log was {events:?}"))
+    }
+
+    /// RFC 9460 §10.3: the HTTPS query and the address queries go out
+    /// together. Watched from the resolver's side, where it is a statement
+    /// about the order of four events and about nothing else.
+    ///
+    /// Two claims, and each rules out one of the two ways to be serial:
+    ///
+    /// - the A query was **sent before the record was answered** — false
+    ///   for a connector that awaits the record first, which is what this
+    ///   one did until the queries were made concurrent;
+    /// - the HTTPS query was **sent before the addresses were answered** —
+    ///   false for a connector that resolves first and asks afterwards.
+    ///
+    /// Neither claim alone is the property. Together they say the two
+    /// queries were outstanding at the same time.
+    #[test]
+    fn the_record_and_the_addresses_are_asked_at_once() {
+        let dns = WatchedResolve::new(
+            vec![v4(1)],
+            vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: Some(8443),
+                ipv4hint: Vec::new(),
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        );
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let events = dns.events();
+        assert!(
+            at(&events, "a:ask") < at(&events, "https:answer"),
+            "the address query must be on the wire before the record comes \
+             back, or the record's round trip is paid in front of it: {events:?}"
+        );
+        assert!(
+            at(&events, "https:ask") < at(&events, "a:answer"),
+            "and the record's query must be on the wire before the addresses \
+             come back, or the two are serialised the other way round: {events:?}"
+        );
+    }
+
+    /// The retry on the origin's own terms reuses the resolution the first
+    /// attempt raced; it does not ask again.
+    ///
+    /// `attempt` has no resolver to ask with (see its doc comment), so this
+    /// is structural — but the structure is only worth having if something
+    /// notices when it is undone, and the cost of undoing it is invisible
+    /// on a resolver that caches. Here nothing caches: a second `lookup_*`
+    /// call shows up in the log as a second `call`/`ask` pair.
+    ///
+    /// The attempt log is asserted alongside on purpose. Without it "one
+    /// lookup" would also pass for a connector that never retried at all,
+    /// which is a different regression with the same symptom.
+    #[test]
+    fn the_retry_without_the_record_does_not_resolve_again() {
+        let hint = std::net::Ipv4Addr::new(10, 0, 0, 7);
+        let origin = v4(1);
+        let dns = WatchedResolve::new(
+            vec![origin],
+            vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: None,
+                ipv4hint: vec![hint],
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        );
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let tried: Vec<IpAddr> = rt.log.borrow().iter().map(|(ip, _)| *ip).collect();
+        assert_eq!(
+            tried,
+            vec![IpAddr::V4(hint), origin, origin],
+            "the record's endpoint failed and the origin's own was tried \
+             again — without that second race there is nothing to check"
+        );
+
+        let events = dns.events();
+        for (call, ask) in [("a:call", "a:ask"), ("aaaa:call", "aaaa:ask")] {
+            assert_eq!(
+                events.iter().filter(|e| **e == call).count(),
+                1,
+                "{call} happened more than once across two attempts: {events:?}"
+            );
+            assert_eq!(
+                events.iter().filter(|e| **e == ask).count(),
+                1,
+                "{ask} happened more than once across two attempts: {events:?}"
+            );
+        }
+    }
+
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
     /// calls `TlsConnect::connect` for `https` and doesn't call it for
     /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
