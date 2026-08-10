@@ -151,6 +151,38 @@ jobs:
           HTTP_NG_REQUIRE_BROWSERS: "1"
         run: just test-browser ${{ matrix.browser }}
 
+  # Every fixture in `crates/http-ng-native/tests/websocket.rs` was written
+  # beside the implementation it observes, which is the arrangement in
+  # which a fixture agrees with a bug. This job is the external oracle:
+  # `crossbario/autobahn-testsuite` in `fuzzingserver` mode, 517 client
+  # cases nobody in this repository wrote, and a parser that fails closed
+  # on a report with no cases in it.
+  #
+  # Its own job rather than a step in `test`, for the reason the embassy
+  # tuntap step has one: a runner that has lost Docker must go red HERE,
+  # with a name that says so, instead of reddening a matrix leg or —
+  # worse — skipping quietly. Ubuntu only, because that is where the
+  # GitHub image ships a Docker daemon.
+  #
+  # About 20 seconds, container start included, so it belongs on every
+  # push rather than on a schedule.
+  autobahn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          bins: just
+      - name: the WebSocket client against the Autobahn TestSuite
+        shell: bash
+        env:
+          # Same shape as HTTP_NG_REQUIRE_WASMTIME, and set only here:
+          # this is the job that promises a Docker daemon, so here a
+          # missing one is a broken runner rather than a laptop.
+          HTTP_NG_REQUIRE_DOCKER: "1"
+        run: just test-autobahn
+
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:

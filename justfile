@@ -301,6 +301,102 @@ fetch-must-fail-under-atomics:
     fi
     echo "OK: correctly rejected under +atomics with E0277 on the Send bound"
 
+# ── the external oracle ─────────────────────────────────────────────────
+
+# Every fixture in `crates/http-ng-native/tests/websocket.rs` was written
+# beside the implementation it observes, which is the arrangement in which
+# a fixture agrees with a bug. The Autobahn TestSuite is the answer to
+# that: 517 client cases nobody here wrote, served by `wstest --mode
+# fuzzingserver` out of `crossbario/autobahn-testsuite`.
+#
+# **Two recipes, and the split is the point.** The PARSER decides whether
+# 517 external cases passed, so it must be checked on every machine and
+# not only on the ones with Docker — `autobahn-parser-selftest` needs
+# nothing and always runs. The RUN needs a container, so it skips without
+# one, and `HTTP_NG_REQUIRE_DOCKER` turns that skip into a failure in the
+# job that promised to provide it — the same shape as
+# HTTP_NG_REQUIRE_WASMTIME and HTTP_NG_REQUIRE_TUNTAP.
+#
+# Neither is in `just test`: that is the everyday recipe and it must not
+# need Docker. Both are in `just ci`. The whole run takes about 20s on
+# loopback in a debug build, which is why it is on every push rather than
+# on a schedule.
+
+# fifteen mutants of a passing Autobahn report, none of which may pass
+autobahn-parser-selftest:
+    python3 scripts/autobahn-report-selftest.py
+
+# the WebSocket client against the Autobahn TestSuite (needs docker)
+test-autobahn: autobahn-parser-selftest
+    #!/usr/bin/env bash
+    set -uo pipefail
+    agent=http-ng-native
+    reports="$PWD/target/autobahn"
+    container=http-ng-autobahn
+    if ! docker info >/dev/null 2>&1; then
+      if [ -n "${HTTP_NG_REQUIRE_DOCKER:-}" ]; then
+        echo "::error::docker is unusable, and this job promised to provide it — the Autobahn run must happen, not skip. Do not paper over this by dropping HTTP_NG_REQUIRE_DOCKER: that returns a green job that tested nothing."
+        exit 1
+      fi
+      echo "NOTICE: no usable docker — the Autobahn TestSuite run was skipped, not run."
+      exit 0
+    fi
+    # The driver is built before the container starts, so a compile error
+    # is a compile error rather than a connection timeout.
+    cargo build -p http-ng-native --features websocket --example autobahn || exit $?
+    rm -rf "$reports" && mkdir -p "$reports" || exit $?
+    docker rm -f "$container" >/dev/null 2>&1
+    trap 'docker rm -f "$container" >/dev/null 2>&1' EXIT
+    docker run -d --rm --name "$container" \
+      -v "$PWD/scripts/autobahn:/config:ro" -v "$reports:/reports" \
+      -p 127.0.0.1:9001:9001 crossbario/autobahn-testsuite >/dev/null || {
+      echo "::error::could not start crossbario/autobahn-testsuite"
+      exit 1
+    }
+    # Readiness, and it must be an ANSWER rather than an accept: under
+    # rootless docker the port-publishing proxy takes the connection the
+    # moment `docker run` returns, seconds before `wstest` is listening
+    # behind it, so a bare TCP connect said "ready" and the driver then
+    # failed its very first handshake. Bounded, and a failure rather than
+    # a shorter run.
+    python3 - <<'PY' || { echo "::error::the fuzzingserver never answered on 127.0.0.1:9001 — container log follows"; docker logs "$container" 2>&1 | tail -40; exit 1; }
+    import socket, sys, time
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", 9001), 1) as s:
+                s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:9001\r\n\r\n")
+                if s.recv(64):
+                    sys.exit(0)
+        except OSError:
+            pass
+        time.sleep(0.1)
+    sys.exit(1)
+    PY
+    # A bound on the whole run, and it is not decoration. Measured, by
+    # mutating `Shim::write` to claim `buf.len()` on a partial write —
+    # exactly the defect that function's doc comment is about: the suite
+    # has no timeout for a client that stops mid-message, so the driver
+    # sat for ever on case 1 and the job would have been killed by the
+    # runner with no verdict at all. 900s against a 16s run.
+    secs=900
+    if command -v timeout >/dev/null 2>&1; then
+      bound=(timeout "$secs")
+    elif command -v gtimeout >/dev/null 2>&1; then
+      bound=(gtimeout "$secs")
+    else
+      echo "::error::neither timeout nor gtimeout is on PATH, so the Autobahn run would be unbounded — and a defect that hangs the driver then produces no verdict rather than a red one"
+      exit 1
+    fi
+    "${bound[@]}" ./target/debug/examples/autobahn ws://127.0.0.1:9001 "$agent"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" -eq 124 ] && echo "::error::the Autobahn driver hung and was killed at ${secs}s — a case it cannot finish is a defect, not a slow machine; the last 'case N:' line above names it"
+      echo "::error::the Autobahn driver could not complete the run (exit $rc) — the report, if any, covers only part of the suite"
+      exit 1
+    fi
+    python3 scripts/autobahn-report.py "$reports" "$agent"
+
 # ── the paths --all-features cannot reach ───────────────────────────────
 
 # `--all-features` turns `idn` ON, so every `#[cfg(not(feature = "idn"))]`
@@ -645,4 +741,4 @@ graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-smol-p
 # ── the whole pipeline ──────────────────────────────────────────────────
 
 # everything CI runs except what is bound to one OS (`macos-loopback`)
-ci: fmt-check lint invariants graph test-workspace test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-must-fail-under-atomics fuzz-smoke
+ci: fmt-check lint invariants graph test-workspace test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-must-fail-under-atomics test-autobahn fuzz-smoke

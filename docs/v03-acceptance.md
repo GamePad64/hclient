@@ -1381,14 +1381,20 @@ write-blind shim in `poll_next`) is killed at the top of the table.
   next read to be woken by *incoming* traffic, because that is the only
   waker `poll_next` registers on that path. Every async `tungstenite`
   wrapper has this shape; no test here provokes it.
-- **Nothing has been run against a real WebSocket server.** Every fixture
-  is a loopback socket in this repository, and the Autobahn test suite —
-  which is what would settle fragmentation, UTF-8 validation and the close
-  code table — has not been run.
-- **Fragmented incoming messages are reassembled by `tungstenite` and
+- ~~**Nothing has been run against a real WebSocket server.** Every
+  fixture is a loopback socket in this repository, and the Autobahn test
+  suite — which is what would settle fragmentation, UTF-8 validation and
+  the close code table — has not been run.~~ *(Run: 517 client cases,
+  0 failures. The last section of this document has the table, the two
+  things the suite tolerates that this client does anyway, and what the
+  run still does not cover.)*
+- ~~**Fragmented incoming messages are reassembled by `tungstenite` and
   never exercised.** The fixture sends single frames only, so
   `WebSocketConfig::max_message_size` and the continuation path have no
-  test of ours.
+  test of ours.~~ *(The continuation path is exercised now — Autobahn's
+  section 5 is twenty fragmentation cases and 9.4–9.6 are fragmented
+  messages up to 4 MB, all OK. `max_message_size` is not: the largest
+  case is 16 MiB against a 64 MiB ceiling, so nothing has ever hit it.)*
 
 
 # v0.3 W4 — the WebSocket seam (steps 3 and 4)
@@ -2004,10 +2010,225 @@ stranded by a full write buffer".
 - **No `wss://` keep-alive test.** Every fixture here is a plain
   `TcpListener`, the same gap step 2 recorded; the ping goes through the
   same `Sink`/`Shim` path whatever the IO is, and no test says so.
-- **Nothing has been run against a real WebSocket server**, so no real
-  implementation's pong behaviour has ever answered one of these pings.
-  The same gap steps 1–4 record, unchanged.
+- ~~**Nothing has been run against a real WebSocket server**~~, **but no
+  real implementation's pong behaviour has ever answered one of these
+  pings.** The client has met a real server now — Autobahn, 517 cases,
+  last section — and that server both sends pings and answers them. What
+  it has never answered is a *keep-alive* ping, because the keep-alive is
+  off by default and the Autobahn driver leaves it off: turning it on
+  would make the driver a thing that interprets its own run. So the
+  half of this gap that was about `Ping`/`Pong` on the wire is closed and
+  the half about `Liveness`'s own probes is not.
 - **`u64` sequence numbers wrap at `u64::MAX` pings and nothing tests
   it.** `wrapping_add` is deliberate rather than accidental; at one ping
   a nanosecond it is 584 years, so this is recorded for completeness
   rather than as a risk.
+
+
+# v0.3 W4 — the WebSocket client against the Autobahn TestSuite
+
+Everything above about WebSocket was checked by fixtures written in this
+repository, beside the implementation they observe. That is the exact
+arrangement in which a fixture agrees with a bug, and the four sections
+before this one say so in four different ways. This section is the
+external oracle: **`crossbario/autobahn-testsuite` in `fuzzingserver`
+mode — 517 client cases, none of them written here.**
+
+`just test-autobahn` starts the container, drives every case, and reads
+the suite's own `index.json`. The CI job `autobahn` runs the same recipe
+with `HTTP_NG_REQUIRE_DOCKER=1`, which turns "no Docker" from a skip into
+a failure — the shape `HTTP_NG_REQUIRE_WASMTIME` and
+`HTTP_NG_REQUIRE_TUNTAP` already have. It is **not** in `just test`: that
+is the everyday recipe and it must not need Docker.
+
+Measured on this host, image label `25.10.1`, digest
+`sha256:519915fb…fac3074`, debug build, loopback:
+
+## The table
+
+| section | what it tests | ok | informational | non-strict | unimplemented | **fail** |
+|---|---|---|---|---|---|---|
+| 1 | framing: text and binary, empty to 65535 bytes | 16 | 0 | 0 | 0 | **0** |
+| 2 | ping/pong | 11 | 0 | 0 | 0 | **0** |
+| 3 | reserved bits | 7 | 0 | 0 | 0 | **0** |
+| 4 | reserved opcodes | 10 | 0 | 0 | 0 | **0** |
+| 5 | fragmentation | 20 | 0 | 0 | 0 | **0** |
+| 6 | UTF-8 handling | 143 | 0 | 2 | 0 | **0** |
+| 7 | close handling | 34 | 3 | 0 | 0 | **0** |
+| 9 | limits and performance, to 16 MiB | 54 | 0 | 0 | 0 | **0** |
+| 10 | misc (auto-fragmentation) | 1 | 0 | 0 | 0 | **0** |
+| 12 | permessage-deflate | 0 | 0 | 0 | 90 | **0** |
+| 13 | permessage-deflate, parameter space | 0 | 0 | 0 | 126 | **0** |
+| **total** | | **296** | **3** | **2** | **216** | **0** |
+
+Nothing scored `FAILED`, `WRONG CODE`, `UNCLEAN` or `NO CLOSE`. The
+16 MiB cases are real: the suite reports `Received text message of length
+16777216` and `Received binary message of length 16777216`, echoed and
+compared, so `9.1.6`/`9.2.6` move 32 MiB between them.
+
+**The 216 UNIMPLEMENTED are permessage-deflate and nothing else**, which
+is the one absence this document already recorded and
+`docs/w4-upgrade-seam.md` already left open. The client never offers the
+extension, so the suite marks the case rather than running it. They are
+declared in `scripts/autobahn-report.py`'s `EXPECTED`, with the reason,
+and the declaration is checked in *both* directions — a compressed case
+that started passing would fail the run as a stale excuse.
+
+**The 3 INFORMATIONAL are the suite's own verdict on itself.** `7.1.6`,
+`7.13.1` and `7.13.2` say "actual events are undefined by the spec": a
+close code of 5000, and a 256K message sent back to back with a close.
+That is a fact about the case, not about this client, so it needs no
+declaration.
+
+**The 2 NON-STRICT are ours and are declared.** `6.4.3` and `6.4.4` send
+one text frame in three *chops*, with invalid UTF-8 in the middle, and
+score strictness by whether the client rejects at the second chop or at
+the end of the frame. `tungstenite` decodes a frame when it has all of
+it, so this client rejects at the end. `6.4.1` and `6.4.2` split the same
+bad message across *frames* and are strict `OK`, which is what makes the
+boundary exact: **validation is per frame, not per byte.** The suite's own
+expectation names the outcome as acceptable ("If we timeout, we expect the
+connection is failed at least then"). Declared in `NON_STRICT`, so a
+regression to `OK` and a regression to `FAILED` are both red.
+
+## Two things the suite tolerates that this client does anyway
+
+Neither is a failure, in the suite's judgement or in this one. Both are
+facts about the client that only a real oracle would have produced, and
+both are written here rather than left in a report directory.
+
+**1. When *we* detect the protocol error, we drop the TCP connection
+without sending a close frame — 109 of the 517 cases.** Sections 2 (1),
+3 (7), 4 (10), 5 (12), 6 (75) and 7 (4). Autobahn scores every one of
+them `behaviorClose: OK`, with `resultClose: "Connection was properly
+closed"` and `wasNotCleanReason: "peer dropped the TCP connection without
+previous WebSocket closing handshake"` — its expectations for these cases
+carry no clean-close requirement, because the case is about detecting the
+violation.
+
+RFC 6455 §7.1.7 makes it a **SHOULD**, not a MUST: "the endpoint SHOULD
+send a Close frame with an appropriate status code before proceeding to
+_Close the WebSocket Connection_". So this is a SHOULD not taken, and the
+cost is that a server cannot tell "you sent me something illegal" from
+"the network went away".
+
+It is **not fixed here, and the reason is not effort.** The mapping it
+needs — `tungstenite::Error::Protocol` to 1002, the UTF-8 error to 1007,
+`Capacity` to 1009 — is close-code semantics, which
+`docs/w4-upgrade-seam.md` explicitly lists as undecided, and inventing it
+in the same commit that first runs an external suite would be answering a
+design question with a test run. The suite is the oracle this section was
+written to consult, and the oracle does not call it a failure.
+
+Worth knowing about the boundary: the client sends close codes perfectly
+well in the *other* direction. Every legal code the server closes with is
+echoed back (`7.7.2`–`7.7.13`: 1001, 1003, 1007, 1008, 1009, 1010, 1011,
+3000, 3999, 4000, 4999), and a code the server has no right to use is
+answered with 1002 (`7.9.1`–`7.9.9`, `7.13.1`, `7.13.2`) — `tungstenite`'s
+`do_close` rewrites a disallowed code rather than reflecting it. So the
+gap is exactly one path: an error *we* raise while reading.
+
+**2. `WebSocketConfig::max_message_size` is still never reached.** The
+largest case is 16 MiB against a 64 MiB ceiling. `max_frame_size` (16 MiB)
+is met exactly and not exceeded — `9.1.6` is a single frame of precisely
+16777216 bytes, and `tungstenite` compares with `>`, so one byte more
+would have been a `Capacity` error. That the frame ceiling is one byte
+away from the largest case the suite has is a fact worth knowing before
+anyone lowers it.
+
+## What the run cost, and why it is on every push
+
+**15.4 s wall for `just test-autobahn` end to end** — container start,
+517 cases, and the parse. The sum of the suite's own per-case durations is
+14.9 s, so essentially all of it is the cases, and `6.4.3`/`6.4.4` alone
+are 2 s apiece because they are *supposed* to time out. That is a debug
+build, with no release pass anywhere.
+
+At that price it belongs on every push rather than on a schedule, which is
+where it is.
+
+## The mutations, and the one that survived
+
+No library code was added by this work, so the harness is what was
+mutated. Anchor counts were verified before each run: the parser's
+`SCENARIOS` list asserts its own length, and every source patch asserts
+exactly one occurrence of the text it replaces and aborts otherwise.
+
+`scripts/autobahn-report-selftest.py` builds a 517-case report in which
+everything passes, mutates one field, and requires the parser to reject
+it — fifteen scenarios, including the two this work was asked for
+specifically: a report with **zero cases** and a report with **a
+failure**.
+
+Then the parser itself was mutated, nine times, with the self-test run
+against each:
+
+| mutation of `scripts/autobahn-report.py` | verdict |
+|---|---|
+| `MINIMUM_CASES` floor removed | KILLED |
+| a `FAILED` verdict counts as good | KILLED |
+| `behaviorClose` is not read at all | KILLED |
+| the agent key is not checked | KILLED — *after* the change below; it survived first |
+| an undeclared `NON-STRICT` is tolerated | KILLED |
+| an undeclared `UNIMPLEMENTED`/failure is tolerated | KILLED |
+| a stale declaration is tolerated | KILLED |
+| a case with no `behavior` field is tolerated | KILLED — *after* the change below; it survived first |
+| a missing `index.json` is tolerated | **SURVIVED — equivalent mutant** |
+
+**Three survived on the first run, and the answer was to make the check
+stronger rather than the fixture weaker.** All three still exited
+non-zero, with a `KeyError` traceback — which in CI reads as broken
+infrastructure rather than as a failing check, the same distinction
+`scripts/ci-mirrors-just.py` already draws about its own YAML errors. The
+self-test now requires `::error::` on stderr, and two of the three die to
+it.
+
+**The third is a genuine equivalent mutant and is recorded rather than
+killed.** Without the `os.path.isfile` guard, `open()` raises
+`FileNotFoundError`, which is an `OSError`, which the very next `except`
+catches and turns into the same `die()`. The behaviour is identical — fail
+closed, with an `::error::` — and only the wording is worse. Deleting the
+better message to make a mutant die would be the wrong trade.
+
+Two mutations were also run against the code the report actually scores:
+
+| mutation | verdict |
+|---|---|
+| the driver breaks out of its loop on `Message::Close` instead of polling the `Stream` to its end | KILLED — 397 cases turned `UNCLEAN` and the recipe went red with 397 undeclared |
+| `Shim::write` returns `buf.len()` instead of the real `n` (the partial-write defect its own doc comment is about) | KILLED — **by a hang, not by a verdict** |
+
+The second is why `test-autobahn` runs the driver under `timeout`. The
+suite has no bound for a client that stops mid-message: it scored 222
+cases and then both sides waited for ever, so the job would have been
+killed by the runner with no report at all rather than going red with one.
+The bound is 900 s against a 16 s run, there is no unbounded fallback (a
+machine with neither `timeout` nor `gtimeout` is an error), and it was
+verified by re-running that same mutation with the bound at 25 s — exit
+124, with the message that says a hang is a defect and not a slow machine.
+
+## What this run still does not cover
+
+- **No `wss://`.** Every case is `ws://` on loopback. The TLS path is
+  `connect::connect`'s, the same call `execute` makes; the gap steps 1–4
+  recorded is unchanged, and now it is unchanged after 517 cases as well.
+- **The keep-alive was off**, because turning it on would make the driver
+  a thing that interprets its own run. So no real server has ever answered
+  one of `Liveness`'s probes. Autobahn's section 2 does exercise ping/pong
+  thoroughly — but in the other direction: the server pings, the client
+  answers, which is `tungstenite`'s duty rather than this crate's
+  bookkeeping.
+- **`max_message_size` is untouched**, see above.
+- **Permessage-deflate is untested rather than tested-and-absent.** 216
+  cases were marked, not run. If the extension is ever implemented those
+  216 become the acceptance for it, and the `EXPECTED` entries must go in
+  the same commit — which is why a stale declaration is a failure here.
+- **One image, one version.** The recipe uses the `latest` tag, so the
+  case count can move under it. `MINIMUM_CASES = 517` is a floor: a suite
+  that adds cases still passes and goes red about the new cases; a suite
+  that *removes* one goes red immediately and has to be re-anchored
+  deliberately. The same trade this repository already makes for the
+  browser test counts.
+- **The suite is an oracle for RFC 6455, not for this seam.** Nothing in
+  it observes `Capabilities`, cancellation, the pool, or the fact that a
+  WebSocket is never pooled. Those remain this repository's own fixtures'
+  job, and the two kinds of evidence do not substitute for each other.
