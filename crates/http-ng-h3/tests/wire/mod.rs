@@ -87,6 +87,20 @@ pub struct Wire {
     _thread: std::thread::JoinHandle<()>,
 }
 
+/// Ends a [`Wire`]'s hold from somewhere that does not hold the `Wire` —
+/// which is where the decision has to be made, because the test thread is
+/// inside `execute` while the hold is on.
+#[derive(Clone)]
+pub struct Releaser {
+    hold_until: Arc<Mutex<Option<Instant>>>,
+}
+
+impl Releaser {
+    pub fn release(&self) {
+        *self.hold_until.lock().unwrap() = None;
+    }
+}
+
 /// What the current hold actually did, **on the relay's own clock**.
 ///
 /// The relay is the only party that can say whether a datagram waited, and
@@ -119,9 +133,53 @@ impl Wire {
         let held: Arc<Mutex<Held>> = Arc::new(Mutex::new(Held::default()));
         let (log, hold, holds) = (seen.clone(), hold_until.clone(), held.clone());
 
-        // A plain blocking thread, deliberately: this is the observer, and
-        // it must not share an executor with either endpoint under test.
+        // Two plain blocking threads, deliberately: this is the observer,
+        // and it must not share an executor with either endpoint under
+        // test.
+        //
+        // **Two, and not one, and that is a correctness matter rather than
+        // a tidiness one.** A single loop that slept on a held
+        // server-to-client datagram would not be calling `recv_from`, so it
+        // would stop forwarding the CLIENT's datagrams too — and the client
+        // is in the middle of sending early data. Measured with one thread
+        // and an event-driven hold: ten runs in thirty-two under load ended
+        // at the backstop, because the server's first flight reached the
+        // relay before the last of the client's 0-RTT datagrams did, and
+        // the rest of the request then sat here until the hold ended. The
+        // reader never blocks now; held datagrams wait in a queue that one
+        // sender drains in order.
+        let (queue, pending) = std::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>();
+        let sender_sock = sock.try_clone().expect("a UDP socket can be cloned");
+        let sender = std::thread::spawn(move || {
+            while let Ok((datagram, to)) = pending.recv() {
+                let started = Instant::now();
+                let mut waited = false;
+                // Polled in slices rather than slept through in one,
+                // because `Wire::release` has to be able to end the hold
+                // early — which is what lets a test hold until an EVENT
+                // rather than for a duration it had to guess.
+                loop {
+                    let Some(t) = *hold.lock().unwrap() else {
+                        break;
+                    };
+                    let now = Instant::now();
+                    if now >= t {
+                        break;
+                    }
+                    waited = true;
+                    std::thread::sleep((t - now).min(Duration::from_millis(1)));
+                }
+                if waited {
+                    let mut h = holds.lock().unwrap();
+                    h.datagrams += 1;
+                    h.longest = h.longest.max(started.elapsed());
+                }
+                let _ = sender_sock.send_to(&datagram, to);
+            }
+        });
+
         let thread = std::thread::spawn(move || {
+            let _sender = sender;
             // 64 KiB because that is the largest a UDP datagram can be;
             // QUIC's are ~1200, but a buffer that could truncate would
             // silently turn a coalesced datagram into an `Unparsed`.
@@ -133,19 +191,10 @@ impl Wire {
                 };
                 if let Some(c) = client.filter(|_| from == server) {
                     // Server -> client, and the one direction that can be
-                    // held back. See `hold_server_flight`.
-                    let until = *hold.lock().unwrap();
-                    if let Some(t) = until {
-                        let now = Instant::now();
-                        if now < t {
-                            let waited = t - now;
-                            std::thread::sleep(waited);
-                            let mut h = holds.lock().unwrap();
-                            h.datagrams += 1;
-                            h.longest = h.longest.max(waited);
-                        }
-                    }
-                    let _ = sock.send_to(&buf[..n], c);
+                    // held back. Queued unconditionally, so the order of
+                    // this direction is preserved whether or not a hold is
+                    // on. See `hold_server_flight`.
+                    let _ = queue.send((buf[..n].to_vec(), c));
                 } else {
                     client = Some(from);
                     log.lock().unwrap().extend(packets(&buf[..n]));
@@ -176,9 +225,49 @@ impl Wire {
     /// The window has to stay well under a QUIC PTO (quinn's first is about
     /// a second, from a 333 ms assumed initial RTT) or the endpoints start
     /// retransmitting and the log fills with duplicates.
+    /// `d` is a **backstop**, not the plan: the hold normally ends at
+    /// [`Wire::release`]. Make it long enough that reaching it means
+    /// something went wrong, and short enough that the test fails on an
+    /// assertion instead of wedging.
     pub fn hold_server_flight(&self, d: Duration) {
         *self.held.lock().unwrap() = Held::default();
         *self.hold_until.lock().unwrap() = Some(Instant::now() + d);
+    }
+
+    /// End the hold now.
+    ///
+    /// # Why a hold ends on an event and not on a clock
+    ///
+    /// The thing a 0-RTT test wants is an ordering — *the server resolved a
+    /// request while its handshake was still outstanding* — and a hold
+    /// measured in milliseconds turns that into a race with the server's
+    /// scheduler. Measured on a 28-core host, with the hold at 400 ms and
+    /// twenty spinning CPU hogs alongside eight concurrent suites: three
+    /// runs in thirty-two had the server resolve the request at 401 ms
+    /// against a handshake at 400 ms — not because early data was
+    /// discarded, but because the server's thread had not been given a core
+    /// until the flight was released and woke it. Nothing about the client
+    /// was wrong, and no window rules that out; a longer one only makes it
+    /// rarer.
+    ///
+    /// Releasing on the event removes the race rather than shrinking it.
+    /// The handshake **cannot** complete while the flight is here, so a
+    /// request resolved before the release is a request resolved before the
+    /// handshake, at any speed and under any load. And the failure the test
+    /// exists to catch is preserved and sharpened: if the server discards
+    /// the early data it can only resolve the request after the handshake,
+    /// which cannot happen until something releases the hold — so nothing
+    /// releases it, the backstop expires, and the test says so.
+    pub fn release(&self) {
+        *self.hold_until.lock().unwrap() = None;
+    }
+
+    /// A handle that can [`release`](Releaser::release) this relay's hold
+    /// from another task.
+    pub fn releaser(&self) -> Releaser {
+        Releaser {
+            hold_until: self.hold_until.clone(),
+        }
     }
 
     /// What the current hold actually did — see [`Held`].
@@ -187,8 +276,8 @@ impl Wire {
     /// only honest checker is the relay. A test cannot infer it from a
     /// duration either endpoint reports: those are measured from when that
     /// endpoint entered the exchange, which is after
-    /// [`Wire::hold_server_flight`] armed the deadline, so the endpoint's
-    /// number is smaller than the hold by an amount nobody bounded.
+    /// [`Wire::hold_server_flight`] armed it, so the endpoint's number is
+    /// smaller than the hold by an amount nobody bounded.
     pub fn held(&self) -> Held {
         *self.held.lock().unwrap()
     }
