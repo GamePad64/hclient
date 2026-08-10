@@ -103,6 +103,73 @@ impl Rustls {
     }
 }
 
+/// The refusal [`Rustls::connect`] makes when a caller asks for ECH — the
+/// same answer `http-ng-tls-native-tls` gives, and the same one this
+/// crate's own QUIC path gives (`crate::quic`), so that no backend in this
+/// workspace reads [`TlsRequest::ech`] and drops it.
+///
+/// # Why refuse, when rustls *has* ECH
+///
+/// It does: `rustls::client::EchConfig` and `EchMode` are public API, not
+/// an unstable one. What is missing is not the protocol but a place to put
+/// it, and the three obstacles below were measured against rustls 0.23.43
+/// rather than assumed. Each names the check that would refute it.
+///
+/// 1. **This backend's crypto provider has no HPKE at all.**
+///    `EchConfig::new(list, hpke_suites)` takes `&[&'static dyn Hpke]`, and
+///    the only implementation of that trait in rustls is
+///    `src/crypto/aws_lc_rs/hpke.rs` (`ALL_SUPPORTED_SUITES`);
+///    `src/crypto/ring/` contains no `hpke.rs`. This crate builds rustls
+///    with `features = ["ring"]`, and `quinn-proto` beside it with
+///    `rustls-ring` — the two must name the same provider, or the QUIC
+///    config would be built from one the TLS config does not use. So there
+///    is no suite to hand `EchConfig::new`, and it cannot succeed.
+///    Honouring ECH begins with adding `aws-lc-rs`: a C toolchain in the
+///    build, on every target this crate claims.
+/// 2. **ECH is not a field on a built `ClientConfig`, and ALPN is.**
+///    `ClientConfig::alpn_protocols` is `pub`, which is the whole reason
+///    [`Rustls::config_for`] can clone `base` and cache per ALPN set.
+///    `ClientConfig::ech_mode` is `pub(super)`
+///    (`src/client/client_conn.rs:289`); the only way in is
+///    `ConfigBuilder<ClientConfig, WantsVersions>::with_ech`
+///    (`src/client/builder.rs:27`), i.e. **before** the verifier is chosen.
+///    [`Rustls::from_config`] is handed an already-built
+///    `Arc<ClientConfig>` whose `verifier`, `provider` and `versions` are
+///    `pub(super)` too, so it cannot be taken apart and rebuilt with an ECH
+///    config the way it is cloned with a new ALPN list. The caller's trust
+///    decisions would have to be re-declared, not carried over.
+/// 3. **`with_ech` pins the connection to TLS 1.3 alone**
+///    (`with_protocol_versions(&[&TLS13])`, same file) — a second
+///    per-connection property a clone of `base` cannot express, and a third
+///    dimension on the config cache next to ALPN.
+///
+/// Past construction there is protocol work too: a server that rejects ECH
+/// answers with retry configs
+/// (`PeerIncompatible::ServerRejectedEncryptedClientHello`,
+/// `src/client/ech.rs:831`) and the handshake is expected to be retried
+/// with them. So the field is not wiring even once a config can be built.
+///
+/// # Why refusing is not the same as ignoring
+///
+/// ECH exists to keep the server name off the wire. A connection made
+/// without it still succeeds, still validates, and still sends that name in
+/// the clear — so the one thing the caller asked for is the one thing
+/// silently missing, and nothing in the response says so.
+/// `crates/http-ng-tls-rustls/tests/ech.rs` measures both halves from the
+/// peer's side of a loopback socket: with `ech: Some(_)` not one byte
+/// arrives, and with `ech: None` the ClientHello that arrives carries the
+/// name in plaintext — the leak this refusal prevents, exhibited by the
+/// same observer that asserts its absence.
+fn ech_refused() -> Error {
+    Error::new(
+        ErrorKind::Tls,
+        std::io::Error::other(
+            "http-ng-tls-rustls does not apply an ECH config on the TCP path; \
+             the connection would have sent the server name in the clear",
+        ),
+    )
+}
+
 /// Normalizes the protocol version, which rustls names after its enum
 /// variant (`TLSv1_3`, underscored), to the registry form
 /// `TlsInfo::protocol_version` documents (`"TLSv1.3"`, dotted) — the same
@@ -190,6 +257,9 @@ impl TlsConnect for Rustls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin,
     {
+        if req.ech.is_some() {
+            return Err(ech_refused());
+        }
         let name = rustls_pki_types::ServerName::try_from(req.server_name)
             .map_err(|e| Error::new(ErrorKind::Tls, e))?
             .to_owned();
