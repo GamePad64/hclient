@@ -53,3 +53,24 @@ fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
     }
     assert_bound::<OutgoingBody>();
 }
+
+/// The same property for the WebSocket seam (v0.3 W4), and it is the whole
+/// reason `hyper::upgrade::Upgraded` was not used: that type is
+/// `Rewind<Box<dyn Io + Send>>`, so taking it would have made this crate's
+/// IO carry a *declared* `Send` bound and shut out single-threaded
+/// runtimes. `poll_without_shutdown` + `into_parts` hand back the concrete
+/// `I` instead, and `Send` is inferred here rather than required
+/// anywhere — exactly as for `NativeBody` above.
+///
+/// `Sync` is deliberately not asserted: a `Stream + Sink` is used through
+/// `&mut`, and nothing in this workspace shares one.
+#[cfg(feature = "websocket")]
+#[test]
+fn auto_traits_reach_the_websocket() {
+    fn assert_send<T: Send>() {}
+
+    type Rt = http_ng_rt_tokio::Tokio;
+    type Tls = http_ng_tls_rustls::Rustls;
+
+    assert_send::<http_ng_native::NativeWebSocket<http_ng_native::NativeIo<Rt, Tls>>>();
+}

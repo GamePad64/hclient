@@ -1277,6 +1277,7 @@ websocket`.
 | **the control-frame arm returns `Pending` instead of reading again** | **SURVIVED** | — see below |
 | the four reserved handshake headers overwritten rather than refused | KILLED | `a_request_that_sets_a_handshake_header_itself_is_refused` |
 | `Role::Server` instead of `Role::Client` (client frames unmasked) | KILLED | five tests |
+| `WebSocketConnect::WebSocket` gains a declared `Send` bound | KILLED (compile) | `a_non_send_backend_still_satisfies_the_websocket_seam`, `http-ng-core/tests/shape.rs` |
 
 ### The three survivors, and what each one means
 
