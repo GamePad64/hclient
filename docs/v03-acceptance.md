@@ -2516,3 +2516,151 @@ verified by re-running that same mutation with the bound at 25 s — exit
   it observes `Capabilities`, cancellation, the pool, or the fact that a
   WebSocket is never pooled. Those remain this repository's own fixtures'
   job, and the two kinds of evidence do not substitute for each other.
+
+
+# v0.3 follow-up — a URI's brackets, and the three places that kept them
+
+Found by the live DoH run above (finding 2), which could only see one of
+the three sites. **Every `https://[v6-literal]/` URL in this workspace
+failed**, and the HTTP/3 path failed in a second way as well.
+
+`http::Uri::host()` returns an IPv6 literal **with its brackets**, because
+RFC 3986 §3.2.2 puts `IP-literal = "[" ( IPv6address / IPvFuture ) "]"` in
+the *authority*'s grammar rather than in the host's. Everything on the
+far side of a URI wants them off, and three sites did not take them off:
+
+| # | site | what it did | how it failed |
+|---|---|---|---|
+| 1 | `http-ng-native`'s `connect.rs` | `server_name: host` into `TlsRequest` | `Tls: invalid dns name` — `rustls_pki_types::ServerName::try_from` tries `DnsName`, then `IpAddr`, and neither strips a bracket |
+| 2 | `http-ng-h3`'s `connect` | `endpoint.connect_with(cfg, addr, &key.host)` | `Connect: invalid server name: [::1]` — quinn makes the same `ServerName` |
+| 3 | `http-ng-h3`'s `resolve` | `host.parse::<IpAddr>()` as the literal shortcut | the shortcut misses, the address goes to the resolver, and `getaddrinfo("[::1]")` fails: `Resolve: no address for [::1]` |
+
+All three were measured before being fixed, each from outside the crate.
+`http-ng-native` never had defect 3 because `IpLiteralOnly::literal`
+strips on the way in; a shortcut in *front* of a resolver has to strip for
+itself.
+
+## The decision, which is the part that had no owner
+
+**The caller normalises, not the TLS backend**, and until this work
+`TlsRequest::server_name` had no doc comment saying so. That gap is the
+whole explanation for three sites getting it wrong independently: each
+author had to re-derive whose duty it was, and each guessed the same way.
+
+Two arguments, and the second is the one that decides it:
+
+- **A backend cannot know.** This field is a *name*, not a URI. A caller
+  may have built it from a `Host` header, from configuration, or from a
+  pinned identity that has nothing to do with the address dialled. A
+  backend that stripped defensively would be guessing which of those it
+  had.
+- **It would be the second place doing it.** The resolvers already strip
+  — `IpLiteralOnly::literal` in `http-ng-dns` and `ip_literal` in
+  `http-ng-dns-doh`, each with a comment naming this exact trap. Two
+  places normalising is how they come to disagree.
+
+So one function: `http_ng_core::bare_host`. **`http-ng-core` is the home
+because it is the only crate every consumer already has.** `http-ng-tls`,
+whose doc has to state the duty, depends on `http-ng-core` and not on
+`http-ng-dns`; putting the function in the DNS crate would make a TLS
+server name reach through a resolver for a fact about URI syntax, and
+putting it in `http-ng-tls` would do the mirror image to a resolver. It is
+also the only crate in a graph that has no resolver at all —
+`http-ng-fetch` and `http-ng-wasi` have `http-ng-core` and nothing else
+from this list.
+
+The rule generalises, and its other half is written next to the fix:
+**what must keep its brackets.** The `Host` header and HTTP/2's
+`:authority` are authority syntax (RFC 9110 §7.2), and
+`http-ng-h3`'s `PoolKey.host` is matched against the URI a later request
+arrives with. Only the step *out* of URI-land strips.
+
+## The tests
+
+Written before the fix and red against it, each observing from outside the
+crate: a **real** TLS or QUIC server on a real socket, a certificate with
+an IP SAN for `::1`, and the assertion that the handshake completed and
+the response arrived. A test that checked `ServerName::try_from` in
+isolation would pin rustls's behaviour and say nothing about ours.
+
+- `crates/http-ng-native/tests/tls_server_name.rs` — three rows:
+  `https://[::1]:p/`, `https://127.0.0.1:p/`, and `https://localhost:p/`
+  through a resolver that answers every name with one address.
+- `crates/http-ng-h3/tests/quic_server_name.rs` — the same three, over
+  QUIC. **The two v6 rows differ only in their resolver**, and that is
+  what separates sites 2 and 3: under `IpLiteralOnly` the shortcut is not
+  load-bearing (the resolver strips for us), so that row can only fail on
+  the server name; under a resolver that answers nothing, the shortcut is
+  the only path to an address at all.
+- The named rows are not decoration. A strip that fires unconditionally
+  turns `localhost` into `ocalhos` — a perfectly valid DNS name and a
+  certificate mismatch, which nothing else here would catch.
+- `crates/http-ng-core/src/host.rs`'s own unit tests carry the degenerate
+  inputs: `[`, `]`, `[::1`, `::1]`, `[]`, `[[::1]]`.
+
+The v6 rows **skip** on a host with no IPv6 loopback, printing why, the
+same shape `an_endpoint_is_bound_in_the_peers_address_family` already had.
+On such a host M1-M3 below would survive; that is recorded under
+"unverified" rather than worked around.
+
+## Mutations
+
+Seven hand-applied, anchor counts checked before each edit, the **whole
+workspace** (1157 tests, ~50 s) run for each so that an unexpected killer
+is visible. Script: `crates/http-ng-core/bare-host-mutations.py`. Final
+state: **7 anchors matched at 1 place each, 7 killed, 0 survived.**
+
+| mutation | verdict | killed by |
+|---|---|---|
+| M1 the TLS server name keeps the URI's brackets (site 1) | KILLED | `an_ipv6_literal_authority_completes_the_handshake`, alone |
+| M2 the QUIC server name keeps them (site 2) | KILLED | `an_ipv6_literal_authority_reaches_quic_as_a_server_name` and `an_ipv6_literal_authority_never_reaches_the_resolver` |
+| M3 the h3 literal shortcut is asked about the bracketed host (site 3) | KILLED | `an_ipv6_literal_authority_never_reaches_the_resolver`, alone — and NOT by the row above it, which is the point of there being two |
+| M4 the strip fires on every host (`example.com` -> `xample.co`) | KILLED | `a_named_authority_reaches_tls_unchanged`, `a_named_authority_reaches_quic_unchanged`, `an_ipv4_literal_authority_completes_the_handshake`, `host::tests::*`, and 27 more across `http-ng-h3` |
+| M5 only the opening bracket is stripped | KILLED | `host::tests::a_lone_bracket_is_a_host_like_any_other` (`[` alone), plus all three v6 rows |
+| M6 brackets are trimmed repeatedly rather than one pair | KILLED | `host::tests::the_brackets_come_off_a_bracketed_host_and_nothing_else` (`[[::1]]`) and `a_lone_bracket_is_a_host_like_any_other` |
+| M7 a bracketed empty host is handed back bracketed | KILLED | `host::tests::an_empty_bracketed_host_is_empty` (`[]`), alone |
+
+M3 is the row worth reading twice. It is killed by exactly one test, and
+that test exists only because `IpLiteralOnly` hides the defect: with the
+obvious resolver in the fixture, site 3 could be removed and the suite
+would stay green.
+
+M4's breadth is not a weakness of the mutation but a fact about the
+workspace: `127.0.0.1` becomes `27.0.0.` and every h3 fixture stops
+resolving. The two `a_named_authority_reaches_*_unchanged` rows are the
+ones that would have caught it on their own.
+
+## Live acceptance
+
+Re-run against the endpoint `Doh::pinned`'s own doc offers:
+`https://[2606:4700:4700::1111]/dns-query` now answers `cloudflare.com`
+with real A records (`104.16.132.229`, `104.16.133.229`, TTL 16 s).
+Before the fix the same call returned `Tls: invalid dns name` with the TCP
+connection made and no DNS exchanged.
+
+The live test that **pinned the failure** is gone, replaced by
+`an_ipv6_literal_endpoint_resolves`, which asserts the success at the same
+endpoint. The note on `Doh::pinned` and finding 2's "does not work" text
+went with it.
+
+## What this leaves unverified
+
+- **A host with no IPv6 loopback checks nothing here.** Three of the six
+  new tests skip, and M1-M3 would survive on such a machine. The rows
+  that stay are the named and v4 ones, which cover M4-M7 but say nothing
+  about brackets. CI on Linux and macOS has `::1`; a container started
+  with IPv6 disabled would not.
+- **`http-ng-tls-native-tls` has no test for any of this.** It takes
+  `server_name` through the same `TlsRequest` and would be fixed by the
+  same caller-side strip, but nothing in this workspace makes it dial an
+  IPv6 literal.
+- **`IpvFuture` (`[v7.…]`) is stripped and then rejected downstream**
+  rather than being understood. That is the same outcome `Uri::host()`
+  callers had before, and no test covers it because nothing in this
+  workspace can connect to one.
+- **The two pre-existing strippers were not collapsed into the new
+  function.** `IpLiteralOnly::literal` and `http-ng-dns-doh`'s
+  `ip_literal` still carry their own copies. Both are correct and both
+  are tested; folding them into `bare_host` is a change to two crates
+  outside this task's boundary, and it is the obvious next step for
+  whoever owns them.
