@@ -57,24 +57,35 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Smol {
     }
 }
 
+/// The executor every spawned task runs on, and the one thread that drives
+/// it.
+///
+/// **They are two statics on purpose, and the previous shape was a race.**
+/// The thread used to be spawned *inside* `OnceLock::get_or_init`'s
+/// closure, and its first act was `EXEC.get().expect("initialised")` — but
+/// `get_or_init` publishes nothing until the closure *returns*, so a
+/// scheduler that ran the new thread first found `None` and the process
+/// died on that `expect`. Seen twice in 48 runs of the `http-ng-h3` suite,
+/// and reproducible on demand by widening the window with a `sleep` before
+/// the closure's last expression.
+///
+/// A [`LazyLock`](std::sync::LazyLock) removes the path rather than
+/// narrowing it: the executor thread's own deref initialises it, so there
+/// is no window in which a reader can observe it unset and no `expect` for
+/// a scheduler to win. [`Once`](std::sync::Once) then keeps the thread
+/// single without putting it back inside the initialiser.
+static EXEC: std::sync::LazyLock<async_executor::Executor<'static>> =
+    std::sync::LazyLock::new(async_executor::Executor::new);
+static EXEC_THREAD: std::sync::Once = std::sync::Once::new();
+
 fn smol_spawn<F: Future<Output = ()> + Send + 'static>(f: F) {
-    static EXEC: std::sync::OnceLock<async_executor::Executor<'static>> =
-        std::sync::OnceLock::new();
-    let ex = EXEC.get_or_init(|| {
-        let ex = async_executor::Executor::new();
+    EXEC_THREAD.call_once(|| {
         std::thread::Builder::new()
             .name("http-ng-smol".into())
-            .spawn(|| {
-                futures_lite::future::block_on(
-                    EXEC.get()
-                        .expect("initialised")
-                        .run(std::future::pending::<()>()),
-                )
-            })
+            .spawn(|| futures_lite::future::block_on(EXEC.run(std::future::pending::<()>())))
             .expect("spawn executor thread");
-        ex
     });
-    ex.spawn(f).detach();
+    EXEC.spawn(f).detach();
 }
 
 impl Blocking for Smol {
