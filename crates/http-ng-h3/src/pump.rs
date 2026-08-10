@@ -96,22 +96,94 @@ fn flatten(body: RequestBody) -> Outgoing {
     }
 }
 
-/// The whole request body, as a future that can outlive `one_attempt`.
-pub(crate) fn pump(send: SendHalf, body: RequestBody) -> Pump {
-    Box::pin(write_body(send, body))
+/// The send half, and the duty that dropping it discharges.
+///
+/// # An abandoned upload must be **reset**, not finished
+///
+/// This is a guard rather than a field because the moment it has to act at
+/// is the moment nothing is running: the caller dropped the response
+/// future, or the body, and this future is being dropped with a request
+/// half written.
+///
+/// **quinn's `SendStream::drop` finishes the stream** —
+/// `quinn-0.11.11/src/send_stream.rs:354` calls `finish()`, and only falls
+/// back to `reset` when the peer had already stopped it. So a request
+/// abandoned in the middle of a DATA frame terminates *cleanly*, with a
+/// frame whose length header promises bytes that never come. RFC 9114 §7.1:
+/// *"When a stream terminates cleanly, if the last frame on the stream was
+/// truncated, this MUST be treated as a connection error of type
+/// H3_FRAME_ERROR."* h3's own server does exactly that
+/// (`h3-0.0.8/src/connection.rs:564`), and on this transport a connection
+/// error is not one request's problem — requests share connections, so it
+/// takes every neighbour down with it.
+///
+/// Measured before it was fixed, with the debug print in `checkout`: an
+/// upload dropped after 150 ms left the pooled connection reading
+/// `ApplicationClosed { error_code: 262, reason: "received incomplete
+/// frame" }` — 262 is `H3_FRAME_ERROR` — and the next request opened a
+/// second connection. **The defect predates streaming**: the same drop of
+/// the same `execute` future in the middle of a large `RequestBody::Full`
+/// did it too, and nothing reached it because the one cancellation test in
+/// the suite used an empty body. Streaming is what makes it ordinary.
+///
+/// A reset reaches the peer as a stream error (`StreamErrorIncoming::
+/// StreamTerminated` -> `StreamError::RemoteTerminate`,
+/// `h3-0.0.8/src/error/connection_error_creators.rs:125`) and the
+/// connection is untouched — which is the property [`crate::H3Body`]'s doc
+/// claims for cancellation, now true rather than assumed.
+struct Writer {
+    send: SendHalf,
+    /// `true` once this stream owes the peer nothing: the body was written
+    /// and finished, the peer stopped reading, or it has already been
+    /// reset with a code that says more than the default.
+    settled: bool,
 }
 
-async fn write_body(mut send: SendHalf, body: RequestBody) -> Result<(), Error> {
+impl Writer {
+    /// Reset now, with a code that names the reason, and take the guard out
+    /// of the way.
+    fn cancel(&mut self, code: h3::error::Code) {
+        self.send.stop_stream(code);
+        self.settled = true;
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        if !self.settled {
+            // RFC 9114 §4.1.1: an implementation cancels a request by
+            // resetting the sending part of the stream. `H3_REQUEST_
+            // CANCELLED` is what tells the server it may stop processing.
+            self.send.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+        }
+    }
+}
+
+/// The whole request body, as a future that can outlive `one_attempt`.
+pub(crate) fn pump(send: SendHalf, body: RequestBody) -> Pump {
+    Box::pin(write_body(
+        Writer {
+            send,
+            settled: false,
+        },
+        body,
+    ))
+}
+
+async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
     let stopped = match flatten(body) {
         Outgoing::Buffered(None) => false,
-        Outgoing::Buffered(Some(b)) => crate::write_after_head(send.send_data(b).await)?,
-        Outgoing::Streaming(mut s) => write_stream(&mut send, &mut *s).await?,
+        Outgoing::Buffered(Some(b)) => crate::write_after_head(w.send.send_data(b).await)?,
+        Outgoing::Streaming(mut s) => write_stream(&mut w, &mut *s).await?,
     };
     if !stopped {
         // Not `let _ =`: everything except the one tolerated failure still
-        // propagates, and the `?` is what says so.
-        crate::write_after_head(send.finish().await)?;
+        // propagates, and the `?` is what says so. On that `?` the guard
+        // above fires, which is right — a request whose write failed is not
+        // a request that ended.
+        crate::write_after_head(w.send.finish().await)?;
     }
+    w.settled = true;
     Ok(())
 }
 
@@ -135,7 +207,7 @@ async fn write_body(mut send: SendHalf, body: RequestBody) -> Result<(), Error> 
 /// streaming body is the difference between a request that ends and one
 /// that pulls for as long as the producer keeps producing.
 async fn write_stream(
-    send: &mut SendHalf,
+    w: &mut Writer,
     body: &mut (dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send), // send-bound-exception: amendment-C2
 ) -> Result<bool, Error> {
     loop {
@@ -148,9 +220,10 @@ async fn write_stream(
                 // than finished, so the server learns that what it has is
                 // not the whole request — `H3_REQUEST_INCOMPLETE` is RFC
                 // 9114 §8.1's code for exactly that, and it is a different
-                // statement from `H3_REQUEST_CANCELLED`, which would claim
-                // somebody decided to abandon the request.
-                send.stop_stream(h3::error::Code::H3_REQUEST_INCOMPLETE);
+                // statement from the guard's `H3_REQUEST_CANCELLED`, which
+                // says somebody decided to abandon a request that could
+                // have gone on.
+                w.cancel(h3::error::Code::H3_REQUEST_INCOMPLETE);
                 return Err(e);
             }
         };
@@ -160,12 +233,12 @@ async fn write_stream(
             // costs a header and says nothing.
             Ok(data) if data.is_empty() => continue,
             Ok(data) => {
-                if crate::write_after_head(send.send_data(data).await)? {
+                if crate::write_after_head(w.send.send_data(data).await)? {
                     return Ok(true);
                 }
             }
             Err(other) => {
-                send.stop_stream(h3::error::Code::H3_REQUEST_INCOMPLETE);
+                w.cancel(h3::error::Code::H3_REQUEST_INCOMPLETE);
                 return Err(match other.into_trailers() {
                     // `Capabilities::request_trailers` is `false`, and this
                     // is what makes that declaration cost something. h3 can
