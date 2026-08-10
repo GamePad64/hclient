@@ -113,3 +113,10 @@ tungstenite         = { version = "0.30", default-features = false, features = [
 
 [lints]
 workspace = true
+
+# The Autobahn TestSuite driver. `required-features` rather than a `#![cfg]`
+# inside the file: an example that silently compiles to nothing when the
+# feature is off is the shape this workspace keeps finding empty.
+[[example]]
+name = "autobahn"
+required-features = ["websocket"]
