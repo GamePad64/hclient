@@ -1909,8 +1909,8 @@ websocket`, then the tree restored from git.
 
 | mutation | verdict | killed by |
 |---|---|---|
-| the ping is never sent (the probe is still recorded) | KILLED | all five keep-alive tests |
-| the ping is written but never flushed | KILLED | the same five |
+| the ping is never sent (the probe is still recorded) | KILLED | five of the six — all but `the_keep_alive_stops_at_our_own_close`, whose whole assertion is that no ping goes out |
+| the ping is written but never flushed | KILLED | the same five, and for the same reason the sixth is not among them |
 | the pong deadline never fires | KILLED | `a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye`, `only_a_pong_with_the_pings_own_payload_answers_it` (both by hanging into `BOUND`) |
 | a missed pong reported as `Ok(Message::Close(None))` rather than an error | KILLED | `a_missed_pong_…`, on the assertion that names the confusion, and `only_a_pong_…` |
 | the interval resets **only** on a pong | KILLED | `an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings` |
