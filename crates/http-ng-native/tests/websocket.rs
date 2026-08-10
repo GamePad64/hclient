@@ -1509,3 +1509,106 @@ async fn an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings() {
     );
     drop(busy);
 }
+
+/// The keep-alive stops at **our own** close, and the closing handshake is
+/// not something it may fail.
+///
+/// `tungstenite` refuses every write once a close frame has gone out
+/// (`ProtocolError::SendAfterClosing`), and RFC 6455 makes a ping after a
+/// close meaningless anyway — so a client that kept probing would answer
+/// its own peer's perfectly ordinary goodbye with a `Decode` error
+/// manufactured by its own keep-alive. The server here holds its answering
+/// close for **ten intervals**, so a client that pings past its own close
+/// has ten chances to do so.
+///
+/// The margin only affects whether the *defect* is caught: correct code
+/// never writes past a close at any speed, so no clock can make this test
+/// fail wrongly.
+///
+/// It also covers the caller-initiated half of the close handshake — we
+/// close, the peer echoes, the stream ends — which
+/// `a_close_from_the_peer_is_echoed_and_ends_the_stream` does not reach and
+/// which `docs/v03-acceptance.md` had recorded as untested.
+#[tokio::test]
+async fn the_keep_alive_stops_at_our_own_close() {
+    const EVERY: Duration = Duration::from_millis(50);
+    const WITHIN: Duration = Duration::from_secs(10);
+    const HELD_FOR: Duration = Duration::from_millis(500);
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        loop {
+            let Some((opcode, _masked, _payload)) = w.frame() else {
+                return;
+            };
+            if opcode == OP_CLOSE {
+                break;
+            }
+        }
+        // Ten intervals of holding the handshake open, reading nothing:
+        // anything the client sends in that window is waiting in this
+        // socket's buffer for the drain below.
+        std::thread::sleep(HELD_FOR);
+        let mut close = 1000u16.to_be_bytes().to_vec();
+        close.extend_from_slice(b"bye");
+        if !w.send(OP_CLOSE, &close) {
+            return;
+        }
+        w.read_timeout(Duration::from_millis(500));
+        let mut after = Vec::new();
+        while let Some((opcode, _masked, _payload)) = w.frame() {
+            after.push(opcode);
+        }
+        let _ = tx.send(after);
+    });
+
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    tokio::time::timeout(BOUND, ws.close())
+        .await
+        .expect("closing must not hang")
+        .expect("closing must succeed");
+
+    let got = tokio::time::timeout(BOUND, ws.next())
+        .await
+        .expect("the peer's answering close must not hang")
+        .expect("the stream must not have ended before the peer answered")
+        .expect(
+            "the peer answered our close with its own, which is not an error — a keep-alive \
+             that kept probing past our close would have failed the write instead",
+        );
+    match got {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, 1000);
+            assert_eq!(frame.reason, "bye");
+        }
+        other => panic!("the peer's answering close must reach the caller, and was {other:?}"),
+    }
+    assert!(
+        tokio::time::timeout(BOUND, ws.next())
+            .await
+            .expect("must not hang")
+            .is_none(),
+        "the stream ends once the close handshake has completed"
+    );
+
+    let after = rx.recv_timeout(BOUND).expect("the server's report");
+    assert!(
+        after.is_empty(),
+        "nothing may go out after our own close — the keep-alive is over there — and the \
+         server received {after:?} in the {HELD_FOR:?} it held the handshake open"
+    );
+}
