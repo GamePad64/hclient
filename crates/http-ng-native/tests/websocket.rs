@@ -511,6 +511,58 @@ async fn a_101_that_is_not_upgrading_to_websocket_is_refused() {
     );
 }
 
+/// A `101` whose `Connection:` does not carry an `upgrade` token is
+/// refused (RFC 6455 §4.1 step 3), and one that carries it among others is
+/// accepted.
+///
+/// Both halves, in one test, because they are one decision: `Connection`
+/// is a comma-separated list (RFC 9110 §7.6.1), so reading it as a token
+/// list is what makes `keep-alive, Upgrade` — which real servers send —
+/// an upgrade, and reading it at all is what makes `keep-alive` alone not
+/// one. `tungstenite`'s own `verify_response` compares the whole value
+/// with `eq_ignore_ascii_case` and would refuse the first of those; this
+/// test is the reason this crate does not.
+#[tokio::test]
+async fn the_connection_header_is_read_as_a_token_list_and_is_read() {
+    fn server_answering(connection: &'static str) -> SocketAddr {
+        let (addr, _) = serve(move |mut w| {
+            let Some(head) = w.head() else { return };
+            let Some(key) = header(&head, "sec-websocket-key") else {
+                return;
+            };
+            w.send_raw(
+                format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                     Connection: {connection}\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                    derive_accept_key(key.as_bytes())
+                )
+                .as_bytes(),
+            );
+            while w.fill() {}
+        });
+        addr
+    }
+
+    let addr = server_answering("keep-alive, Upgrade");
+    tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("must not hang")
+        .expect("`Connection: keep-alive, Upgrade` carries the token and is an upgrade");
+
+    let addr = server_answering("keep-alive");
+    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("must not hang");
+    let Err(err) = outcome else {
+        panic!("`Connection: keep-alive` is not an upgrade, whatever the status line says")
+    };
+    assert_eq!(err.kind(), &ErrorKind::Status);
+    assert!(
+        err.to_string().contains("Connection"),
+        "the error must name the header it rejected, and said {err}"
+    );
+}
+
 /// RFC 6455 §5.5.2: a ping is answered with a pong, and the answer is this
 /// endpoint's duty rather than the caller's.
 ///
