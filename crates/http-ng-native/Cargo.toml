@@ -97,13 +97,27 @@ http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
 http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
 http-ng-rt-smol     = { path = "../http-ng-rt-smol",     version = "0.1.0" }
 http-ng-tls-rustls  = { path = "../http-ng-tls-rustls",  version = "0.1.0", features = ["webpki-roots"] }
+# `tests/tls_server_name.rs` alone: a REAL TLS server on loopback, whose
+# certificate carries an IP SAN. The claim there is "the handshake
+# completes", and a handshake needs a second implementation to complete
+# against — a mock `TlsConnect` (this crate already has `FakeTls`) can only
+# report the name it was handed, which is the argument rather than the
+# outcome. Same versions as `http-ng-tls-rustls`'s own dev-dependencies, so
+# no second copy of rustls enters the graph; dev-only, so none of it
+# reaches a consumer.
+rcgen               = "0.14"
+rustls              = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls        = { version = "0.26", default-features = false, features = ["ring"] }
 # `sync` is for `tests/cancel.rs` alone: its mock server runs on an OS
 # thread and has to hand two verdicts back into an async test that is at
 # the same time polling the future under test, which a `std::sync::mpsc`
 # receiver cannot be awaited alongside. Listed explicitly rather than left
 # to feature unification with `hyper`'s own `tokio/sync` — that union is a
 # fact about today's graph, not a dependency this crate declared.
-tokio               = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+# `io-util` is `tests/tls_server_name.rs`'s: its server reads the request
+# head and writes a response through `tokio_rustls::TlsStream`, which is
+# `AsyncRead`/`AsyncWrite` and nothing else without the extension traits.
+tokio               = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "sync", "time"] }
 # `tests/websocket.rs`'s fixture speaks RFC 6455 by hand and borrows
 # exactly one function, `derive_accept_key` — which
 # `the_accept_key_derivation_matches_rfc_6455` then pins against the RFC's

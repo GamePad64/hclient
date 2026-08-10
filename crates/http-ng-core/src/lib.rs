@@ -12,6 +12,7 @@
 mod body;
 mod caps;
 mod error;
+mod host;
 pub mod unversioned;
 
 pub use body::{RequestBody, RetryKind, RewindFactory};
@@ -20,3 +21,4 @@ pub use caps::{
     RedirectSupport, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport, UnsupportedCapability,
 };
 pub use error::{Error, ErrorKind, Phase};
+pub use host::bare_host;

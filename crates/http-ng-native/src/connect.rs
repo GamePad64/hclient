@@ -959,7 +959,19 @@ where
         // Held outside the `TlsRequest` so the borrowed list outlives it.
         let restricted = endpoint.map(|e| discovery::alpn_offer(alpn, &e.alpn));
         let req = TlsRequest {
-            server_name: host,
+            // The one place in this crate where a URI's host stops being
+            // URI syntax and becomes a name. `host` is `Uri::host()`'s
+            // answer, so an IPv6 literal still wears the brackets RFC 3986
+            // §3.2.2 gives the *authority*; `ServerName::try_from` reads
+            // them as neither a DNS name nor an address and every
+            // `https://[…]/` request failed at the handshake. The duty is
+            // the caller's rather than the backend's, and
+            // `TlsRequest::server_name`'s own doc is where that is argued.
+            //
+            // Not stripped anywhere else on purpose: the `Host` header and
+            // h2's `:authority` (`established.rs`, `websocket.rs`) are
+            // authority syntax and keep their brackets.
+            server_name: http_ng_core::bare_host(host),
             alpn: restricted.as_deref().unwrap_or(alpn),
             // The whole of the ECH decision, and the reason it is a
             // question rather than an assignment: see the module doc.

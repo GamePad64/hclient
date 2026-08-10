@@ -23,6 +23,43 @@ use std::future::Future;
 /// business, not this trait's.
 #[derive(Debug, Clone, Copy)]
 pub struct TlsRequest<'a> {
+    /// The name to present in SNI and to verify the certificate against —
+    /// a DNS name or an IP address, **never a URI authority**.
+    ///
+    /// # Whose job the normalisation is: the caller's
+    ///
+    /// `http::Uri::host()` returns an IPv6 literal **with its brackets**
+    /// (`[2001:db8::1]`), because they belong to the authority's grammar
+    /// rather than to the host's — RFC 3986 §3.2.2. A transport that
+    /// passes that string through gets `invalid dns name` from every
+    /// backend here and from every backend that could exist:
+    /// `rustls_pki_types::ServerName::try_from` tries a DNS name, then an
+    /// IP address, and a bracket is neither. So the caller strips, with
+    /// [`http_ng_core::bare_host`], before filling this field.
+    ///
+    /// **It is the caller's and not the backend's, and the reason is that
+    /// a backend cannot know.** This field is a name, not a URI: a caller
+    /// may have built it from a `Host` header, from a configuration file,
+    /// or from a pinned identity that has nothing to do with the address
+    /// dialled. A backend that stripped defensively would be guessing
+    /// which of those it had, and would be the second place in the graph
+    /// doing this normalisation — the first being the resolver, which has
+    /// to strip too (`http_ng_dns::IpLiteralOnly::literal`,
+    /// `http_ng_dns_doh`'s `ip_literal`). Two places normalising is how
+    /// they come to disagree.
+    ///
+    /// The rule generalises past this field: **`Uri::host()`'s answer is
+    /// URI syntax until someone takes the brackets off**, and the
+    /// authority-shaped consumers — the `Host` header, HTTP/2's
+    /// `:authority` — need them left on. Only the step *out* of URI-land
+    /// strips.
+    ///
+    /// This was not written down when the field was added, and the gap
+    /// cost three live defects: `http-ng-native`'s connector, and both of
+    /// `http-ng-h3`'s two uses of the same string. Their tests are
+    /// `http-ng-native`'s `tests/tls_server_name.rs` and `http-ng-h3`'s
+    /// `tests/quic_server_name.rs`, each asserting a completed handshake
+    /// against a certificate with an IP SAN.
     pub server_name: &'a str,
     pub alpn: &'a [&'a [u8]],
     /// RFC 9849 Encrypted Client Hello. The `EchConfigList` comes from an

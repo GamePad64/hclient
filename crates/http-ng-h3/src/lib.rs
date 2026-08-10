@@ -499,8 +499,22 @@ where
             transport.keep_alive_interval(Some(d));
             cfg.transport_config(Arc::new(transport));
         }
+        // `bare_host`, because `key.host` is `Uri::host()`'s answer and an
+        // IPv6 literal still wears the brackets RFC 3986 §3.2.2 gives the
+        // authority. quinn turns this argument into a
+        // `rustls_pki_types::ServerName`, which reads `[::1]` as neither a
+        // name nor an address — `InvalidServerName`, before a packet
+        // leaves. The same duty `http_ng_tls::TlsRequest::server_name`
+        // states for the TCP seam; the QUIC seam has no field for the name
+        // at all, so this call is where it lands.
+        //
+        // The key keeps the bracketed form: it is the pool's identity, and
+        // matching it against the URI a request arrives with is what a
+        // second request has to do to be reused. Normalising twice, once
+        // for the key and once here, would be the two-places-drifting
+        // problem `bare_host`'s doc is about.
         let connecting = endpoint
-            .connect_with(cfg, addr, &key.host)
+            .connect_with(cfg, addr, http_ng_core::bare_host(&key.host))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
 
         // The round trip 0-RTT exists to skip, actually skipped.
@@ -616,7 +630,15 @@ where
 
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, Error> {
         use futures_util::StreamExt;
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        // `bare_host` first: `host` came from `Uri::host()`, so `[::1]`
+        // arrives with its brackets and `str::parse::<IpAddr>` rejects it.
+        // Without this the shortcut misses every IPv6 literal and the
+        // address goes to the resolver instead — where `getaddrinfo("[::1]")`
+        // fails and the request with it. `http-ng-native` does not have
+        // this half of the defect only because `IpLiteralOnly::literal`
+        // strips on the way in; a shortcut in front of the resolver has to
+        // strip for itself.
+        if let Ok(ip) = http_ng_core::bare_host(host).parse::<std::net::IpAddr>() {
             return Ok(SocketAddr::new(ip, port));
         }
         // v6 first, then v4. Not happy eyeballs: QUIC's connect is not a

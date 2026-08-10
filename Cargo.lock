@@ -1392,8 +1392,11 @@ dependencies = [
  "http-ng-tls",
  "http-ng-tls-rustls",
  "hyper",
+ "rcgen",
+ "rustls",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
 ]
 
