@@ -595,7 +595,13 @@ async fn an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_th
     };
     let Some(ep) = live(NAME, V6) else { return };
 
-    let got: Vec<_> = doh(ep).lookup_ipv4("cloudflare.com").collect().await;
+    // Through the retrying wrapper, not `doh()` directly: `is_a_lost_packet`
+    // retries only a connect that did not happen and hands every answer
+    // back untouched, so the error this test is about arrives on the first
+    // attempt while a lost SYN does not become a finding. Both these tests
+    // failed spuriously before it was used here — the harness bug this line
+    // is the fix for.
+    let got = lookup_v4(ep, "cloudflare.com").await;
     let [Err(e)] = got.as_slice() else {
         panic!(
             "an IPv6-literal endpoint now works — the bracket defect this test pins has been \
@@ -1137,7 +1143,13 @@ async fn an_endpoint_that_demands_http2_is_a_status_error_and_not_a_parse_error(
         &[(CT, DNS_MESSAGE), (ACCEPT, DNS_MESSAGE)],
     )
     .await;
-    let got: Vec<_> = doh(ep).lookup_ipv4("cloudflare.com").collect().await;
+    // Through the retrying wrapper, not `doh()` directly: `is_a_lost_packet`
+    // retries only a connect that did not happen and hands every answer
+    // back untouched, so the error this test is about arrives on the first
+    // attempt while a lost SYN does not become a finding. Both these tests
+    // failed spuriously before it was used here — the harness bug this line
+    // is the fix for.
+    let got = lookup_v4(ep, "cloudflare.com").await;
 
     if status == http::StatusCode::OK {
         // The `http2` feature is on and ALPN got us h2: Quad9 answers.
