@@ -313,6 +313,48 @@ line, nearer to the native one than `fetch` is. Two things stand in the way:
   else: `thiserror` was already there, and no new Unicode crate arrives.
   There is no `url` in any of them.
 
+**Name resolution has a third backend, and its problem was never the wire
+format.** `http-ng-dns-doh` (v0.3) puts DNS-over-HTTPS behind the same
+`Resolve` seam, and the two questions worth knowing the answers to are
+both about bootstrapping rather than about parsing. What makes the
+request is a `Transport`, **never an `http_ng::Client`** — a cookie jar,
+a redirect policy and `Authorization` belong to `Client`, which
+`Transport` has never heard of, so "a resolver's client is not the
+user's client" is a thing that does not typecheck rather than a thing
+that is discouraged; the cost is that there is no `total` bound, because
+that is `Client`'s. And what resolves the DoH server's own name is
+stated by which constructor compiles: `Doh::pinned` takes an IP literal
+and refuses a name, `Doh::bootstrapped` takes a name and refuses a
+literal. Failing closed is the default and failing open is visible in
+the type — `Doh<C>` is `Doh<C, NoFallback>` — so it travels into every
+transport that holds it rather than hiding in a builder call.
+
+SVCB parsing moved from `http-ng-dns-system` up into `http-ng-dns`
+behind a `codec` feature, so an `IpLiteralOnly` build carries no DNS
+decoder: 13 crates without it, 16 with, and the DoH crate itself is 22
+with no `tokio`, `hyper` or `h2`.
+
+**HTTPS/SVCB records are consulted before every new connection** on a
+resolver that says it can ask (v0.3 W2), for `https://` at the default
+port only — RFC 9460 §9.5, since the record fetched for a bare name is
+the default-port one, and `http://` would mean upgrading the scheme,
+which a connector must not do silently. The record's port, address
+hints and ALPN offer are used; **its `ech_config_list` is passed on only
+to a TLS backend that says it applies one** (`TlsConnect::applies_ech`,
+defaulted `false` beside `reports_alpn`), and no backend in this
+workspace does. That is not caution: `http-ng-tls-rustls` *refuses* a
+non-`None` `ech`, so a connector that filled the field from every record
+would make every ECH-publishing origin unreachable. Measured before it
+was decided — zero bytes on the wire. The privacy cost of the gate is
+stated where a caller will find it, including a test asserting the
+origin's name goes out in the clear.
+
+The record and the addresses are asked **at once**, which took a second
+commit: the first put discovery in front of the address lookups and
+roughly doubled cold DNS on the default path. Measured after: floor
+396 → 322 ms, median 456 → 340 ms on a DNS-dominated request; a record
+cost 404.6 ms of extra DNS time and now costs 0.8 ms.
+
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
 behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
@@ -322,7 +364,38 @@ deliberately does not do, and
 [`docs/v03-acceptance.md`](docs/v03-acceptance.md) for what v0.3 does,
 does not, and has not checked.
 
-### HTTP/3: three things that are not obvious from the outside
+### HTTP/3: four things that are not obvious from the outside
+
+**It streams request bodies and it is genuinely full duplex** (v0.3).
+`streaming_request_body` and `full_duplex` are `true`, and they are the
+floor rather than the ceiling because what they describe is this code
+rather than the protocol: the request stream is split (RFC 9000 §2.1 —
+the halves are independent), the body is written from an owned future
+polled *beside* `recv_response`, and the unfinished write is handed to
+`H3Body` to drive from `poll_frame`. Nothing is spawned, deliberately: a
+spawned pump would keep uploading behind a caller that walked away, with
+nowhere for its errors to go.
+
+The claim is pinned **causally, not by a clock** — in
+`crates/http-ng-h3/tests/streaming.rs` the caller's body has no second
+chunk until `execute` has returned a head, so a transport that read the
+head only after finishing the body cannot complete the exchange at any
+speed. That shape is worth copying: three separate timing-based
+assertions in this workspace turned out to be flakes, and one of them
+was hiding a real defect.
+
+Two of those defects came out of building this, and both predate it.
+Cancelling an upload used to poison the **shared** connection —
+`quinn::SendStream::drop` calls `finish()` and only resets when the peer
+has already stopped the stream, so a request dropped mid-DATA-frame
+terminated *cleanly* carrying a truncated frame, which RFC 9114 §7.1
+makes `H3_FRAME_ERROR`, a **connection** error that takes every
+neighbour with it. Nothing reached it because the one cancellation test
+used an empty body. And a `RequestBody::Rewindable` whose factory
+returned a `Streaming` sent nothing at all: no bytes, no error, a `200`
+for a body that never existed.
+
+### HTTP/3: three more things that are not obvious from the outside
 
 **It is its own crate, and could not have been a feature of
 `http-ng-native`.** The reason is the type system rather than the 57-crate
@@ -593,7 +666,8 @@ reconnection; `act` acceptance.
 **Deliberately not done in v0.1** (recorded, not hidden): connection pooling
 (one connection per request — **since done in v0.2 W2**, and `Native::new`
 pools by default; `Native::without_pool()` restores this v0.1 behaviour);
-streaming request bodies; `first_byte`/
+streaming request bodies (**since done — v0.2 W6 on `http-ng-native`, v0.3
+on `http-ng-h3`, where they arrive with real full duplex**); `first_byte`/
 `between_bytes` timeouts (declared unsupported via `Capabilities`, rather than
 silently unimplemented — **since done in v0.2 W4**, declared and enforced in
 one commit, and measured against servers that answer never, fall silent after
