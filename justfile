@@ -180,6 +180,53 @@ embassy-strict-link:
       done
     done
 
+# `crates/http-ng-dns-doh/tests/live.rs` queries Cloudflare and Google. It is
+# the only test in this repository that talks to a server nobody here runs,
+# and every other test in that crate answers itself: the fixture and the
+# parser share an author.
+#
+# **It is deliberately NOT in `just ci`, and not in any CI job.** A test whose
+# subject is a third party's server goes red for reasons nobody here can fix,
+# and a red build nobody can fix is how people learn to ignore red builds. The
+# argument, the three things it found, and what would change the answer are
+# written out in docs/v03-acceptance.md under "Live, v0.3 W3"; the short form
+# is that what it measures is a fact about an operator, not a property of this
+# code, and the two do not belong on the same signal.
+#
+# So it is a recipe a human runs, and its findings are dated in the docs.
+# Without HTTP_NG_LIVE_DOH (which this recipe sets) every test in the file
+# prints a NOTICE and returns, so `just test` stays hermetic.
+#
+# The receipt count is the belt, and it is the one that matters: a gate that
+# returns "skip" for the wrong reason turns the file into nine green tests
+# that made no request. 16 = eight tests against two operators, plus one each
+# for the IPv6-literal and Quad9 tests, which have one endpoint each. Raise it
+# when a test is added, the way `test-browser`'s minimum is raised.
+#
+# `--no-capture` is required, not stylistic: nextest replays a test's output
+# only on failure, so a PASSING skipped test prints nothing and both the grep
+# and the count below would be vacuous.
+
+# the DoH suite against real public resolvers (needs the internet; not in CI)
+test-doh-live:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export HTTP_NG_LIVE_DOH=1
+    rc=0
+    out="$(cargo nextest run -p http-ng-dns-doh --test live \
+      --color never --no-capture --no-fail-fast 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    ran="$(printf '%s\n' "$out" | grep -c '^LIVE-DOH-RAN ' || true)"
+    echo "live DoH exchanges that actually happened: $ran (minimum 16)"
+    if [ "$ran" -lt 16 ]; then
+      if [ -n "${HTTP_NG_REQUIRE_NETWORK:-}" ]; then
+        echo "::error::only $ran of the expected 16 live DoH exchanges happened, and HTTP_NG_REQUIRE_NETWORK is set — this run promised the network and skipped instead. Do not answer this by lowering the number: a live suite that skips is a green run that checked nothing, which is the defect this count exists to catch."
+        exit 1
+      fi
+      echo "NOTICE: only $ran of 16 live DoH exchanges happened — this environment could not reach every endpoint, so the suite skipped rather than checked. Set HTTP_NG_REQUIRE_NETWORK to make that a failure."
+    fi
+
 # ── the other two targets ───────────────────────────────────────────────
 
 # the wasi example, built as a component

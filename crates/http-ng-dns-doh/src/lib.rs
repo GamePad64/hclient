@@ -138,10 +138,18 @@
 //!
 //! **POST, not GET.** RFC 8484 §4.1 defines both, and a server must
 //! support both. GET carries the query base64url-encoded in `?dns=`, which
-//! makes it cacheable by intermediaries — and needs a base64 encoder this
-//! workspace does not have and would rather not add for one call site.
-//! POST needs none, and an intermediary cache is not obviously something a
-//! DNS-over-HTTPS deployment wants anyway.
+//! makes it cacheable by intermediaries, and an intermediary cache is not
+//! obviously something a DNS-over-HTTPS deployment wants.
+//!
+//! **The other half of that argument used to read "and needs a base64
+//! encoder this workspace does not have", and that was wrong.** Measured:
+//! `cargo tree -p http-ng-dns-doh -e normal -i base64` returns `base64
+//! v0.22.1 <- dns-message-parser`, so an encoder is compiled into every
+//! build of this crate already. What GET would cost is a direct dependency
+//! line and a call site, not a crate in anyone's graph — a smaller price
+//! than was written here, against an unchanged benefit. Both public
+//! operators answer the GET form (`tests/live.rs`), so nothing about the
+//! choice is forced.
 #![forbid(unsafe_code)]
 
 mod wire;
@@ -256,6 +264,25 @@ impl<C> Doh<C, NoFallback> {
     /// which is the whole difference between this constructor and
     /// [`Doh::bootstrapped`].
     ///
+    /// **The second of those two examples does not work today over
+    /// `http-ng-native`, and the defect is not in this crate.** Measured
+    /// against `2606:4700:4700::1111`: the TCP connection is made and the
+    /// handshake then fails with `Tls: invalid dns name`, before any DNS is
+    /// exchanged. `http::Uri::host()` returns an IPv6 literal **with its
+    /// brackets**, `http-ng-native`'s connector passes that string to
+    /// `TlsRequest::server_name` unchanged, and
+    /// `rustls_pki_types::ServerName::try_from` accepts neither `[…]` as a
+    /// DNS name nor as an address. This constructor and
+    /// `IpLiteralOnly::literal` both strip the brackets, each with a
+    /// comment about this exact trap; the TLS name is the one place nobody
+    /// does. It is one line in `http-ng-native` or in
+    /// `http-ng-tls-rustls`, and it is pinned meanwhile by
+    /// `tests/live.rs`'s
+    /// `an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate`,
+    /// whose failure is the signal to delete this paragraph. An IPv4
+    /// literal is unaffected, and a v6 endpoint over a different transport
+    /// is untested rather than broken.
+    ///
     /// **The cost of pinning, which is real and which this crate cannot
     /// mitigate:** an address that stops answering leaves this resolver
     /// with nothing to ask, and DoH is then not slow but absent. There is
@@ -265,11 +292,20 @@ impl<C> Doh<C, NoFallback> {
     /// and accept what that means.
     ///
     /// **The certificate that address presents must carry an IP SAN**, and
-    /// whether the platform verifiers accept one is listed as unverified in
-    /// `docs/v03-design.md` §W3 and stays unverified here: nothing in this
-    /// crate performs a handshake, so nothing in it can settle the question
-    /// — it belongs to whichever `TlsConnect` the transport carries, and
-    /// the check is one live request per platform.
+    /// `docs/v03-design.md` §W3 listed it as unverified whether the
+    /// platform verifiers accept one. **On Linux they do** — measured, not
+    /// argued: `tests/live.rs`'s
+    /// `a_certificate_presented_for_an_ip_address_validates_through_the_platform_verifier`
+    /// completes the handshake through `rustls-platform-verifier` against
+    /// Cloudflare's `1.1.1.1` and Google's `8.8.8.8` and reads a DNS answer
+    /// back from each.
+    ///
+    /// The question is still open on **macOS and Windows**, and by more
+    /// than a missing runner: those two do not use rustls's own webpki path
+    /// at all but hand the chain to Security.framework and to CryptoAPI,
+    /// which apply their own name-matching rules. Linux is therefore not
+    /// evidence about them. Run `just test-doh-live` on either and the
+    /// answer is one line of output.
     ///
     /// **`http://` is accepted for a loopback literal, and that is not a
     /// concession to tests.** A local DoH proxy on `127.0.0.1` — the
