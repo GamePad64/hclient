@@ -222,6 +222,42 @@ compiled here. The musl build made every fuzz target fail with `sanitizer is
 incompatible with statically linked libc`. The host triple is read out of
 `rustc -vV`.
 
+### `autobahn`
+
+The WebSocket client against the Autobahn TestSuite —
+`crossbario/autobahn-testsuite` in `fuzzingserver` mode, 517 client cases,
+none of them written in this repository. Every other WebSocket fixture here
+was written beside the implementation it observes, which is the arrangement
+in which a fixture agrees with a bug; this is the job that does not have
+that property. The table and the verdict are in `docs/v03-acceptance.md`.
+
+`HTTP_NG_REQUIRE_DOCKER` is set here and only here: this is the job that
+promises a daemon, so a missing one is a broken runner rather than a laptop.
+Without the marker the recipe prints a NOTICE and skips.
+
+Three things in the recipe are there because a run without them was wrong,
+not because they looked prudent.
+
+**Readiness is an answer, not an accept.** Under rootless Docker the
+port-publishing proxy takes the connection the moment `docker run` returns,
+seconds before `wstest` is listening behind it. A bare TCP probe said ready
+and the driver's first handshake failed; the probe sends an HTTP request and
+requires bytes back.
+
+**The driver runs under `timeout`.** The suite has no bound for a client
+that stops mid-message. Measured, by mutating `Shim::write` to lose a
+partial write: 222 cases scored, then both sides waited for ever, and the
+job would have been killed by the runner with no report at all rather than
+going red with one. There is no unbounded fallback — a machine with neither
+`timeout` nor `gtimeout` is an error.
+
+**The report is parsed by something that can say no.** A missing report,
+unparseable JSON, an unknown agent, fewer than 517 cases, an undeclared
+failure and a declaration that has gone stale are six separate failures in
+`scripts/autobahn-report.py`. `autobahn-parser-selftest` is a *prerequisite*
+of the run rather than a sibling, so the parser's fifteen mutants are
+checked even on the machines that skip the run itself.
+
 ## Targets other than the host
 
 ### `wasip2`
