@@ -27,8 +27,26 @@ repository.workspace = true
 # written against those two traits and this crate's IO is
 # `hyper::rt::{Read, Write}`, so `http2::TokioIo` bridges them.
 [features]
+#
+# `websocket` (v0.3 W4) is off by default for the same reason and one
+# more: it is the only feature here that adds a *protocol implementation*
+# rather than a second framing of the one this crate already speaks, and
+# the graph says so — `tungstenite` with `default-features = false,
+# features = ["handshake"]` brings five crates this workspace did not have
+# (`tungstenite`, `data-encoding`, `sha1`, `cpufeatures`, `log`; `rand`,
+# `getrandom`, `libc` and the digest crates were already in the graph
+# through `rustls`). None of them is a runtime, and none of them is
+# `tokio`.
+#
+# `handshake` is on top of `default-features = false` deliberately, and it
+# is the *only* default feature taken back: it is what carries
+# `generate_key`/`derive_accept_key`, which are RFC 6455 §4.1 and not
+# optional for a client. Everything else `tungstenite`'s default would
+# bring — its own TLS connectors, its blocking `connect()` — is glue this
+# workspace already has better versions of, which is §6's whole argument.
 default = []
 http2 = ["dep:h2", "dep:tokio"]
+websocket = ["dep:tungstenite"]
 
 [dependencies]
 bytes          = { workspace = true }
@@ -48,8 +66,11 @@ http-ng-proto  = { workspace = true }
 http-ng-rt     = { path = "../http-ng-rt",    version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",   version = "0.1.0" }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
+futures-core   = { workspace = true }
+futures-sink   = { workspace = true }
 thiserror      = { workspace = true }
 tokio          = { version = "1", default-features = false, optional = true }
+tungstenite    = { version = "0.30", default-features = false, features = ["handshake"], optional = true }
 
 [dev-dependencies]
 futures-executor    = { version = "0.3", default-features = false, features = ["std"] }

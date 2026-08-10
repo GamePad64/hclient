@@ -47,11 +47,15 @@ mod h1;
 mod http2;
 mod idle;
 mod pool;
+#[cfg(feature = "websocket")]
+mod websocket;
 
 pub use connect::Conn;
 pub use discovery::SVCB_FAILURE_TTL;
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
+#[cfg(feature = "websocket")]
+pub use websocket::NativeWebSocket;
 
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{

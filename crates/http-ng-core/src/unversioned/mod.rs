@@ -11,6 +11,8 @@
 
 mod timer;
 mod transport;
+mod websocket;
 
 pub use timer::{Discard, Timer};
 pub use transport::Transport;
+pub use websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
