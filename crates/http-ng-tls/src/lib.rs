@@ -361,6 +361,46 @@ pub trait TlsConnect: TlsIdentity {
     fn reports_alpn(&self) -> bool {
         false
     }
+
+    /// Whether a non-`None` [`TlsRequest::ech`] would actually be applied
+    /// — that is, whether this backend encrypts the ClientHello with the
+    /// config it is handed, rather than refusing the request.
+    ///
+    /// **`false` today for every backend in this workspace**, and that is
+    /// the truth rather than a placeholder: all three refuse ECH by name
+    /// (see [`TlsRequest::ech`]). The method exists because a *caller* now
+    /// has an ECH config to offer — `http-ng-native`'s connector reads
+    /// `SvcbEndpoint::ech_config_list` out of an HTTPS record — and
+    /// without an answer here it would have to choose between two wrong
+    /// things: filling the field, which turns the refusal into "every
+    /// origin that publishes an ECH config is unreachable", or dropping
+    /// the config on the floor, which is the silent no-op the refusal was
+    /// added to end.
+    ///
+    /// So the third option is this: the discovery layer fills the field
+    /// only for a backend that says it will use it, and records in its own
+    /// documentation what a `false` here costs — the server name goes out
+    /// in the clear to an origin that asked for it not to. That is a fact
+    /// about privacy the caller can read *before* making a request
+    /// (`TlsConnect` is in hand at construction), not one it would have to
+    /// infer from a failure.
+    ///
+    /// **The default is `false` for the same reason
+    /// [`reports_alpn`](Self::reports_alpn)'s is**, and the asymmetry with
+    /// [`tls_support`](Self::tls_support) is the same one: a default must
+    /// never be stronger than the truth. A backend that forgot this method
+    /// under a `true` default would be handed an ECH config, would refuse
+    /// (or, worse, would ignore it), and the caller would have been told
+    /// its name was protected. Under `false` the same backend merely gets
+    /// no ECH config, which is what it can handle.
+    ///
+    /// **This is not `reports_alpn` with a different name**, and the two
+    /// must not be collapsed: `reports_alpn` is about reading a value back
+    /// out of a completed handshake, this is about putting one in. A
+    /// backend could do either without the other.
+    fn applies_ech(&self) -> bool {
+        false
+    }
 }
 
 /// A [`TlsConnect`] that performs no TLS, for a client built without it.

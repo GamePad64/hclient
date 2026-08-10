@@ -239,12 +239,15 @@ someone to "fix" an item whose absence is the decision.
   cache dimension. An ECH config that arrived from a DNS answer is a typed
   refusal, not a silent drop: a caller who asked for encrypted SNI and did
   not get it is worse off than one who was told no.
-- **No HTTPS/SVCB discovery, and no Alt-Svc.** h3 is chosen by constructing
-  `H3`. `http_ng_dns::SvcbEndpoint` already carries `alpn` and the resolvers
-  already answer, so tier 2 of the research's discovery ladder is a task
-  rather than a vertical; Alt-Svc still needs a store with an eviction
-  policy, a negative cache and a rule for `clear`, none of which is protocol
-  work.
+- ~~**No HTTPS/SVCB discovery, and no Alt-Svc.**~~ **Tier 2 landed in W2**,
+  in `http-ng-native` rather than here — see the section at the end of this
+  document. h3 is still chosen by constructing `H3`, and that has not
+  moved: what tier 2 delivers is everything an HTTPS record says *except*
+  the protocol choice, because there is nowhere in this codebase for
+  "choose between two protocol stacks" to live. Alt-Svc still needs a store
+  with an eviction policy and a rule for `clear`; what it no longer needs
+  to carry is the negative cache, which W2 showed belongs to whoever makes
+  the failed attempt.
 - ~~**No timeouts.** All three `TimeoutSupport` fields are honestly
   `false`.~~ **`connect` is done**, and the row is in the claims table
   above. The bullet is kept rather than deleted because the reason it gave
@@ -396,3 +399,218 @@ someone to "fix" an item whose absence is the decision.
   wide margins, and the multiplexing test's 450 ms threshold against two
   300 ms requests has wider ones. Neither is a benchmark; both would rather
   pass on a loaded runner than measure anything precisely.
+
+---
+
+## W2 — tier 2 discovery: the HTTPS record, consumed
+
+*Everything from here to the end of the document is v0.3 W2 parts 2 and 3
+(`crates/http-ng-native`), written the way the rest of this file is: the
+claim, the thing that proves it, and — at the same length — what it does
+not do.* Part 1, the rustls backend's ECH refusal, is already recorded
+above and in `crates/http-ng-tls-rustls/tests/ech.rs`.
+
+The plumbing had been in the tree since v0.2 and was used by nothing:
+`SvcbEndpoint` carried `alpn`, `port`, `ipv4hint`, `ipv6hint` and
+`ech_config_list`, `Resolve::supports_svcb` said who could ask, and
+`connect.rs` said in its own module doc that it did not ask and passed
+`ech: None`. It asks now. `crates/http-ng-native/src/discovery.rs` holds
+the record-shaped half (which record wins, what an `alpn` set means, the
+negative cache), `connect.rs` the connection-shaped half (the port, the
+addresses Happy Eyeballs starts from, the ALPN offer, the ECH slot).
+
+### The claims
+
+Every row is measured by a **peer socket** unless it says otherwise:
+`crates/http-ng-native/tests/svcb.rs` runs a `TcpListener` that records the
+first flight it is sent and then closes, so "the record was used" means a
+connection arrived where the record said, carrying what the record allowed.
+No test in that file reads a field of `Native`.
+
+| claim | proof |
+|---|---|
+| The record's `port` is where the connection goes | `the_port_from_the_record_is_where_the_connection_goes` — the peer is on an ephemeral port nothing else in the request names, and the origin's own endpoint (`127.0.0.1:443`) has no listener at all |
+| A resolver that reports it cannot ask is not asked | `a_resolver_that_says_it_cannot_ask_is_not_asked` — the same records, `supports_svcb()` false, nothing arrives. The control for every row above and below it |
+| A default-port record is not applied to a URI that named its own port | `a_record_is_not_applied_to_a_uri_that_named_its_own_port` — two peers; the URI's port receives, the record's does not. RFC 9460 §9.5: the record for a non-default port lives under a prefixed name, and this one was fetched for the origin name |
+| `ipv4hint`/`ipv6hint` reach Happy Eyeballs | `the_address_hints_reach_happy_eyeballs` — the resolver answers **neither** family, so the hint is the only address that exists; a connection arrives anyway |
+| The record narrows the ALPN offer to the SVCB-ALPN set | `the_record_narrows_the_alpn_offer` (h2 withdrawn by a record advertising `http/1.1` alone) with `a_record_that_advertises_h2_leaves_it_in_the_offer` as its control. The ClientHello is parsed rather than grepped — `\x02h2` turns up in a 32-byte random field about once in half a million hellos |
+| `h3` in a record never reaches the TCP path's ALPN offer | `h3_in_a_record_is_never_offered_on_the_tcp_path` — and the rest of the record's set still is, so this is a filter and not a refusal |
+| An origin publishing an ECH config is still reachable | `an_ech_publishing_origin_is_still_reachable` — see "the ECH decision" below; this is the row the whole item had to settle first |
+| …and the name it asked to protect goes out in the clear | `the_name_a_record_asked_to_protect_goes_out_in_the_clear` — the cost of that decision, exhibited by the same observer that asserts the connection survived |
+| An AliasMode record does not outrank the ServiceMode record beside it | `an_aliasmode_record_does_not_outrank_the_service_it_precedes` — priority 0 is *numerically lowest* and carries no parameters, so a selection that did not skip it would reliably pick the one endpoint with nothing in it |
+| A failed discovery is not repeated by the next request | `a_failed_discovery_is_not_repeated_by_the_next_request` — two requests, one arrival |
+| …and the memory is a window, not a verdict | `the_negative_cache_expires` — three requests, two arrivals, with `SVCB_FAILURE_TTL` passing between the second and the third through the `Timer` seam |
+| A failed discovered endpoint is retried on the origin's own terms | `src/connect.rs`'s `a_failed_discovered_endpoint_is_retried_without_the_record` — **not** a peer socket, and the reason is below |
+| A record that sets nothing is not an endpoint | `a_record_that_sets_nothing_does_not_buy_a_second_race` — same observer, same reason |
+
+### The ECH decision, and the measurement that forced it
+
+Part 1 made `http-ng-tls-rustls` *refuse* a non-`None` `TlsRequest::ech`
+rather than drop it. That turned part 2 into a trap: a connector that
+filled the field from every HTTPS record would make **every origin
+publishing an ECH config unreachable** through the default TLS backend.
+Discovery would have turned a working request into a failing one.
+
+The premise was checked rather than reasoned about, because that is the
+whole method here: the naive version was written first — `ech:
+endpoint.and_then(|e| e.ech.as_deref())` — and run against the fixture.
+`an_ech_publishing_origin_is_still_reachable` fails with **`left: 0, right:
+1`**: zero bytes at the peer. Not a degraded connection, no connection.
+
+Three ways out, and the third is what shipped:
+
+- **(a) read the field and drop it** — the silent no-op part 1 existed to
+  end, now with a config in hand rather than absent;
+- **(b) fill it and let those origins fail** — measured above, and not an
+  option;
+- **(c) fill it only for a backend that says it applies one.**
+  `TlsConnect::applies_ech()`, defaulted to `false`, is the sibling of
+  `TlsConnect::reports_alpn` — the same shape, the same asymmetry against
+  `tls_support`'s `Full` default, and the same reason: a default must never
+  be stronger than the truth. No backend in this workspace overrides it, so
+  the field is `None` today — but it is `None` because a backend said it
+  would not use one, not because nobody asked.
+
+**Where the cost is written, since it is a privacy fact and not an
+implementation detail.** A client that cannot do ECH and connects anyway to
+an ECH-publishing origin sends the server name in the clear. That sentence
+is on `TlsConnect::applies_ech` (where a caller reads the capability), in
+`connect.rs`'s module doc (where the decision is made), next to
+`caps.tls_config` in `Native::new` (where a caller looks for what TLS this
+transport does, including why this is *not* a `Capabilities` field: the
+answer is the backend's and the caller already holds it), and on the wire
+in `the_name_a_record_asked_to_protect_goes_out_in_the_clear`.
+
+### The structural limit, honoured rather than worked around
+
+**Tier 2 cannot choose HTTP/3**, and nothing here pretends otherwise.
+`http-ng-h3` is a different crate with different bounds (`R: UdpBind +
+Spawn<..>`, `T: QuicTlsConnect`), `Native<R, T, D>` has neither, and
+`Client<T>` names exactly one transport type. So an `alpn` containing `h3`
+is read, is not offered on the TCP path (`h3_in_a_record_is_never_offered_
+on_the_tcp_path`), and is not an error either. Acting on it is a racing
+transport owning both stacks — a vertical, not a task — and no line in this
+change moves towards one.
+
+### Mutations
+
+Baseline before each run: `cargo nextest run -p http-ng-native
+--all-features`, **134 tests, all passing**. Each mutation was applied to
+one site, the suite run in full, and the source restored. Anchor counts
+were checked before each (the patch had to match exactly once, or the
+mutation was not run).
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M1 | `ech` filled from the record unconditionally (the trap: part 1's refusal makes those origins unreachable) | **killed** | `svcb::an_ech_publishing_origin_is_still_reachable` (`left: 0, right: 1` — nothing on the wire), `svcb::the_name_a_record_asked_to_protect_goes_out_in_the_clear` |
+| M2 | the record is fetched and then ignored (`filter(\|_\| false)`) | **killed**, by 11 tests | all ten `svcb` record tests, plus `connect::tests::a_failed_discovered_endpoint_is_retried_without_the_record` |
+| M3 | the port from the record is ignored | **killed**, by 10 tests | `svcb::the_port_from_the_record_is_where_the_connection_goes` and every other `svcb` test whose peer is reached through that port |
+| M4 | the address hints do not reach Happy Eyeballs | **killed** | `svcb::the_address_hints_reach_happy_eyeballs`, `connect::tests::a_failed_discovered_endpoint_is_retried_without_the_record` |
+| M5 | the negative cache never records | **killed** | `svcb::a_failed_discovery_is_not_repeated_by_the_next_request`, `svcb::the_negative_cache_expires` |
+| M6 | the negative cache never expires | **killed** | `svcb::the_negative_cache_expires` |
+| M7 | the record's `alpn` does not narrow the offer | **killed** | `svcb::the_record_narrows_the_alpn_offer` |
+| M8 | AliasMode (priority 0) is not skipped | **killed** | `svcb::an_aliasmode_record_does_not_outrank_the_service_it_precedes` |
+| M9 | `supports_svcb()` is not consulted | **killed** | `svcb::a_resolver_that_says_it_cannot_ask_is_not_asked` |
+| M10 | no retry on the origin's own terms after a discovered endpoint fails | **killed** | `connect::tests::a_failed_discovered_endpoint_is_retried_without_the_record` |
+| M11 | an inert record counts as a discovered endpoint | **killed** | `connect::tests::a_record_that_sets_nothing_does_not_buy_a_second_race` |
+
+Two of those (M10, M11) are killed by a unit test on `FakeRt`'s attempt log
+rather than by a peer, and that is a limitation of the fixture rather than
+a preference — see the first bullet under "what W2 has not checked".
+
+### Decisions worth knowing before touching this
+
+- **Only `https://`, and only at the scheme's default port.** For an
+  `http://` origin an HTTPS RR means *upgrade the scheme* (RFC 9460 §9.5),
+  which is a redirect-shaped decision this connector will not make on its
+  own; taking the record's port and hints while ignoring that would be half
+  a rule. And a URI that names a non-default port needs the record under a
+  prefixed name (`_8443._https.…`), which is not the one `lookup_svcb(host)`
+  returns.
+- **The lowest ServiceMode priority wins and nothing else is tried.** RFC
+  9460 expects a walk down the list; walking it would multiply a request's
+  connect budget by the number of records an attacker-influenced answer may
+  contain. The fallback that matters is the one that is still there when
+  every record is wrong: the origin's own addresses.
+- **A `lookup_svcb` error is treated as "no record", not as a failure.**
+  HTTPS queries are answered with SERVFAIL by a long tail of middleboxes,
+  and a client that failed there would be unable to reach origins it
+  reaches today. Nothing below is swallowed with it: the address lookups
+  keep their own error handling, so `ErrorKind::Cancelled` still reaches
+  the caller through `connect::drive`'s machinery, kind intact.
+- **The retry after a failed discovered endpoint spends the caller's
+  budget, not a fresh one.** `Timeouts::connect` wraps the whole
+  `connect::connect` future exactly once, so both races share the one
+  deadline. The error the caller sees is the second attempt's, because that
+  is the one about the origin the caller named.
+- **The negative mark is per origin, flat, and 5 minutes.** Not exponential
+  (that needs a failure counter and a cap, and the condition being waited
+  out is usually a DNS change), and not a cache of the *lookup* — "this
+  origin has no HTTPS record" is a DNS answer with a TTL of its own, which
+  `SvcbEndpoint` does not carry, and inventing a lifetime for someone
+  else's answer is how two caches drift apart.
+- **The pool key still uses the URI's port.** A connection made to a
+  discovered endpoint is pooled under the origin, which is correct — the
+  record's claim is precisely that this endpoint serves that origin — but
+  it means a request made while the negative mark stands may reuse a
+  connection opened through the record. Same origin, same server name, same
+  trust configuration; noted because it is easy to read the key as an
+  endpoint and it is not one.
+
+### What W2 has not checked
+
+- **The in-request retry is not observed from outside, and cannot be by
+  this fixture.** The retry goes to the origin's own endpoint, which for a
+  default-port `https` URI is `:443`, and an unprivileged test process
+  cannot put a listener there (this one runs as uid 1000). So M10 and M11
+  are killed on `FakeRt`'s attempt log instead — a real observation of
+  behaviour rather than of state, but inside the process. What would settle
+  it from outside: a runner where the test may bind 443, or a `Resolve`
+  fixture paired with a transport whose default port is configurable, which
+  is a change to `connect::port` rather than to the test.
+- **The cost of the extra query is measured on one host, and it is a cost
+  the default transport now pays.** `SystemDns::supports_svcb()` is `true`
+  on Linux, so `DefaultTransport` asks for an HTTPS record before every
+  connect that opens a new connection. Measured here (systemd-resolved
+  active, `res_query` through the stub): a **cold** `lookup_svcb` is 37.5 ms
+  — one real round trip, the same order as the `A` lookup beside it (39.3
+  ms) — and repeats are **54 µs to 1.4 ms**. The repeats are cheap only
+  because the OS stub caches; `http-ng-dns-system` caches nothing of its
+  own (grep it for `cache`), so on a host with no caching stub every
+  request adds a full query. Not measured: that second machine. What would
+  settle it is the same timing with `systemd-resolved` stopped.
+- **The query is serialised before the address lookups, deliberately, and
+  the alternative is not free.** RFC 9460 §10 has the HTTPS query running
+  *in parallel* with A/AAAA; this connector awaits it first, because the
+  record's `port` applies to every attempt in the race and `drive` takes one
+  port for all of them. Running them in parallel means either starting
+  attempts that may have to be abandoned when the record arrives, or
+  teaching Happy Eyeballs a per-attempt port. Neither is written; the cost
+  of not writing them is the row above.
+- **`no-default-alpn` does not cross the `SvcbEndpoint` seam.**
+  `http-ng-dns-system` parses the parameter (`RawParam::NoDefaultAlpn`) and
+  `SvcbEndpoint` has no field for it, so `alpn_offer` cannot tell "the
+  default set applies" from "the record switched it off" and assumes the
+  former. That is the safe direction — assuming the latter would leave a
+  client with nothing to offer for every record that did not mention
+  `http/1.1` — but it means a record that really did set
+  `no-default-alpn` gets `http/1.1` offered to it anyway. The fix is a
+  field on `SvcbEndpoint`, in a crate this change deliberately did not
+  touch.
+- **The record's target name is never resolved.** RFC 9460 §2.5 lets a
+  ServiceMode record point at another name whose addresses should be used;
+  this connector uses the record's hints and the *origin's* addresses.
+  A record whose target differs and carries no hints therefore contributes
+  only its port, ALPN and ECH. One lookup rather than two, and honest, but
+  it is not the whole rule.
+- **No live origin has been contacted through this path.** Every test here
+  drives a fixture resolver against a loopback peer. `cloudflare.com`
+  publishes exactly the record this consumes (`1 . alpn="h3,h2"
+  ipv4hint=… ipv6hint=…`), and reading it through `SystemDns` is what the
+  timing above did — but no test in this repository makes a request to a
+  real origin, and none should start now for this.
+- **The `http2` feature is what makes the ALPN rows observable.** Without
+  it this transport offers `http/1.1` alone whatever a record says, so
+  `the_record_narrows_the_alpn_offer` and its two companions are
+  `#[cfg(feature = "http2")]`. A build without the feature keeps the code
+  path and loses the observation.

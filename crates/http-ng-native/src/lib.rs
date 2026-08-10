@@ -40,6 +40,7 @@
 
 mod body;
 mod connect;
+mod discovery;
 mod established;
 mod h1;
 #[cfg(feature = "http2")]
@@ -48,6 +49,7 @@ mod idle;
 mod pool;
 
 pub use connect::Conn;
+pub use discovery::SVCB_FAILURE_TTL;
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 
@@ -115,6 +117,16 @@ where
     /// parameter for the runtime.
     epoch: R::Instant,
     pool: Pool<NativeIo<R, T>>,
+    /// The origins whose HTTPS record has already cost a failed
+    /// connection — see [`crate::discovery`], and [`SVCB_FAILURE_TTL`] for
+    /// how long that is remembered.
+    ///
+    /// On the transport rather than inside `connect::connect` for the same
+    /// reason the pool is: it is a memory across requests, and one built
+    /// per call would be no memory at all. Shared by `Arc`, so a
+    /// transport's clones (and the response bodies that outlive a call)
+    /// all see the same one.
+    svcb_failures: discovery::NegativeCache,
 }
 
 /// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
@@ -210,6 +222,24 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // `TlsConnect::tls_support` defaults to `Full`, so every real
         // implementation reports what it did before; only a stub differs.
         caps.tls_config = tls.tls_support();
+        // **What `tls_config` does not say, and where the answer is.**
+        // Since v0.3 W2 this transport reads HTTPS records, so it can hold
+        // an `EchConfigList` for an origin that published one — and it
+        // offers it only to a backend whose `TlsConnect::applies_ech()`
+        // says it will use one, which today is none of them (see
+        // `crate::connect`'s module doc for why filling the field
+        // regardless would make every such origin unreachable). The cost
+        // of that is a privacy fact rather than an implementation detail:
+        // the connection is still made, and the server name the origin
+        // asked to have encrypted still goes out in the clear.
+        //
+        // It is not a `Capabilities` field because the answer is the TLS
+        // backend's and the caller already holds it — `tls.applies_ech()`
+        // is readable at construction, before any request — where a field
+        // here would be this crate copying someone else's answer into a
+        // second place it could drift from. `tests/svcb.rs`'s
+        // `the_name_a_record_asked_to_protect_goes_out_in_the_clear` is
+        // the same fact, exhibited on the wire.
         caps.version_reported = true;
         caps.timeouts = TimeoutSupport {
             // Actually enforced — see `execute`'s race between
@@ -265,6 +295,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             opts: TcpOpts::default(),
             caps,
             pool,
+            svcb_failures: discovery::NegativeCache::default(),
         }
     }
 
@@ -876,7 +907,21 @@ where
         } else {
             &[b"http/1.1"]
         };
-        let connect_fut = connect::connect(&self.rt, &self.dns, &self.tls, &uri, &self.opts, alpn);
+        // `now` is the same reading of the runtime's clock the pool's
+        // bookkeeping above uses, passed on rather than taken again: the
+        // negative cache's window and a connection's idle deadline are
+        // measured from one epoch on one clock, and two reads a
+        // microsecond apart would be two facts where there is one.
+        let connect_fut = connect::connect(
+            &self.rt,
+            &self.dns,
+            &self.tls,
+            &uri,
+            &self.opts,
+            alpn,
+            &self.svcb_failures,
+            now,
+        );
         let (conn, tls_info) = match timeouts.connect {
             Some(d) => with_connect_timeout(&self.rt, d, connect_fut).await?,
             None => connect_fut.await?,
