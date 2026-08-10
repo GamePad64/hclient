@@ -1680,6 +1680,50 @@ mod tests {
         );
     }
 
+    /// A record that sets no parameter at all changes nothing about the
+    /// connection, so its presence must not be mistaken for its taking
+    /// part: `Endpoint::is_inert` drops it, and this is what that costs if
+    /// it does not.
+    ///
+    /// One race, not two. Without the check the empty record counts as a
+    /// discovered endpoint, the (identical) attempt "fails with the
+    /// record", and the retry runs the same race a second time — twice the
+    /// connect budget for an origin whose record said nothing, and a
+    /// negative-cache entry for a discovery that never happened.
+    #[test]
+    fn a_record_that_sets_nothing_does_not_buy_a_second_race() {
+        let origin = v4(1);
+        let dns = SvcbResolve {
+            v4: vec![origin],
+            records: vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: None,
+                ipv4hint: Vec::new(),
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        };
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &NegativeCache::default(),
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let tried: Vec<IpAddr> = rt.log.borrow().iter().map(|(ip, _)| *ip).collect();
+        assert_eq!(tried, vec![origin], "an inert record is not an endpoint");
+    }
+
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
     /// calls `TlsConnect::connect` for `https` and doesn't call it for
     /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
