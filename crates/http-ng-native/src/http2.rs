@@ -372,7 +372,11 @@ where
             }
             if pumping {
                 match poll_pump(&mut outgoing, &mut send_stream, &mut pending, cx) {
-                    Poll::Ready(Ok(())) => {
+                    // `Done` and `PeerStoppedReading` alike: there is
+                    // nothing more to write, and whether the exchange
+                    // succeeded is `resp_fut`'s answer, not the pump's.
+                    // RFC 9113 §8.1 — see `poll_pump`'s doc comment.
+                    Poll::Ready(Ok(_)) => {
                         pumping = false;
                         // Round the loop rather than falling through: the
                         // frames the pump just queued only reach the
@@ -431,6 +435,22 @@ where
     ))
 }
 
+/// Why [`poll_pump`] finished, and the reason the two are not the same
+/// thing said twice.
+///
+/// [`exchange`] stops pumping on either, so the distinction buys no
+/// branch there — it is here because the *request* is complete in one
+/// case and truncated in the other, and a later reader deciding what to
+/// do about that (a `content-length` guard, a capability, a log line)
+/// needs the answer to still exist.
+enum Pumped {
+    /// The whole body reached h2, end-of-stream included.
+    Done,
+    /// The peer stopped reading before it was all written. See
+    /// [`poll_pump`]'s "the peer stopped reading" section.
+    PeerStoppedReading,
+}
+
 /// Writes as much of the request body as flow control currently allows.
 ///
 /// `pending` is the one chunk that has been taken off the body and not yet
@@ -446,13 +466,90 @@ where
 /// and waiting is what makes the declared streaming real: a slow server
 /// stops granting window, `poll_capacity` goes `Pending`, and the caller's
 /// stream stops being polled.
+///
+/// # "The peer stopped reading" is not a failure of the request
+///
+/// RFC 9113 §8.1: *"A server MAY request that the client abort
+/// transmission of a request without error by sending a `RST_STREAM` with
+/// an error code of `NO_ERROR` after sending a complete response … Clients
+/// **MUST NOT** discard responses as a result of receiving such a
+/// `RST_STREAM`."* Every server that answers a `404`, a `401` or a `413`
+/// without reading the body does exactly this, and h2's own server does it
+/// for them without being asked: dropping the request's `RecvStream` while
+/// the response is already complete schedules a `RST_STREAM(NO_ERROR)`
+/// (`h2-0.4.15/src/proto/streams/streams.rs:1601-1618`, `maybe_cancel`).
+///
+/// That reset closes the **send** half only. The response the peer already
+/// sent stays in `pending_recv` and is still handed out by `poll_response`
+/// (`.../recv.rs:336-365`) — measured, not assumed: with the request body
+/// abandoned mid-write, `resp_fut` still resolves `200`. But every write
+/// this function could make now fails, this function turned that into an
+/// error, and [`exchange`] returned on it **without ever polling
+/// `resp_fut`**. The complete response was one poll away and was thrown
+/// away. That is the defect [`Pumped::PeerStoppedReading`] exists for.
+///
+/// # One question, asked before every write, rather than four verdicts
+///
+/// The four writes below fail *differently* when the peer has stopped
+/// reading, and only one of the four failures is identifiable from
+/// outside h2:
+///
+/// | site | how it fails on a reset stream | tellable apart? |
+/// |---|---|---|
+/// | `poll_capacity` | `Poll::Ready(None)` — no longer `is_send_streaming` (`.../send.rs:363-370`) | yes, but `None` also means an API misuse of ours |
+/// | `send_data(now, false)` | `UserError::InactiveStreamId` | no — `reason() == None`, `is_reset() == false` |
+/// | `send_data(Bytes::new(), true)` (end of stream) | the same | no |
+/// | `send_trailers(..)` | the same | no |
+///
+/// So the question is asked once, at the top of the loop, of the one API
+/// that answers it in types: [`h2::SendStream::poll_reset`]. `Ready(Ok(_))`
+/// is a `RST_STREAM` or a `GOAWAY` from the peer; `Ready(Err(_))` is the
+/// stream closed by something that is not a reset (a dead connection);
+/// `Pending` is a stream that is still open (`ensure_reason`,
+/// `.../state.rs:446-462`). Placing it there also means the three
+/// unidentifiable sites never see the reset at all — the pump returns
+/// before reaching them — so they keep propagating their errors unchanged
+/// and no `Display`-string matching is needed anywhere.
+///
+/// hyper asks the same question in the same place
+/// (`hyper-1.11.0/src/proto/h2/mod.rs:145-156`, the first thing
+/// `PipeToSendStream::poll` does) and answers it the *opposite* way, with
+/// an error. That is not a disagreement about the RFC: hyper's body pipe
+/// is a **separate spawned task** from its response future, so an error
+/// there fails the write and leaves the response untouched. Here the pump
+/// and the response are the same future — this module has nowhere to spawn
+/// — so an error there is exactly what discards the response.
+///
+/// # Why this is safe without deciding anything
+///
+/// The tolerance is a *deferral*, not a verdict. Stopping the pump does
+/// not declare the exchange a success; it hands the question to
+/// `resp_fut`, which is the only side that knows whether a response
+/// exists. When the stream was reset for a reason that left no response —
+/// a `RST_STREAM` with a real error code, a `GOAWAY` past our stream id —
+/// `poll_response` finds `pending_recv` empty, `ensure_recv_open` returns
+/// the stream's own error (`.../state.rs:433-443`), and the exchange fails
+/// as it did before. A dead connection is caught one branch earlier still,
+/// by the poll of `Connection` at the top of [`exchange`]'s loop.
+///
+/// It also cannot slide *before* the head by accident: `send_request`
+/// yields the `SendStream` this takes, so there is no `send` to ask until
+/// the head is on the wire.
 fn poll_pump(
     body: &mut OutgoingBody,
     send: &mut h2::SendStream<Bytes>,
     pending: &mut Option<Bytes>,
     cx: &mut Context<'_>,
-) -> Poll<Result<(), Error>> {
+) -> Poll<Result<Pumped, Error>> {
     loop {
+        // Before every write, and not only before the first: the peer may
+        // stop reading at any point, and each of the four writes below
+        // fails differently when it has. This is the one place that asks.
+        match send.poll_reset(cx) {
+            Poll::Ready(Ok(_)) => return Poll::Ready(Ok(Pumped::PeerStoppedReading)),
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body))),
+            Poll::Pending => {}
+        }
         if let Some(mut chunk) = pending.take() {
             if send.capacity() == 0 {
                 send.reserve_capacity(chunk.len());
@@ -461,9 +558,11 @@ fn poll_pump(
                     Poll::Ready(Some(Err(e))) => {
                         return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
                     }
-                    // The send half is gone — the peer reset the stream,
-                    // or the connection is closing. Not "no more capacity
-                    // for now": there will never be any.
+                    // Not "no more capacity for now": there will never
+                    // be any. With `peer_reset` above having already
+                    // answered `Pending`, the stream is not closed by the
+                    // peer, so this is our own send half — an API misuse
+                    // rather than a message from the far end.
                     Poll::Ready(None) => {
                         return Poll::Ready(Err(Error::new(
                             ErrorKind::Body,
@@ -498,6 +597,7 @@ fn poll_pump(
                     return Poll::Ready(match frame.into_trailers() {
                         Ok(trailers) => send
                             .send_trailers(trailers)
+                            .map(|()| Pumped::Done)
                             .map_err(|e| from_h2_error(e, ErrorKind::Body)),
                         // `http_body::Frame` is non-exhaustive: a frame
                         // that is neither data nor trailers is one this
@@ -518,12 +618,54 @@ fn poll_pump(
             Poll::Ready(None) => {
                 return Poll::Ready(
                     send.send_data(Bytes::new(), true)
+                        .map(|()| Pumped::Done)
                         .map_err(|e| from_h2_error(e, ErrorKind::Body)),
                 );
             }
             Poll::Pending => return Poll::Pending,
         }
     }
+}
+
+/// The other half of RFC 9113 §8.1, on the receiving side: a
+/// `RST_STREAM(NO_ERROR)` ends the response body rather than failing it.
+///
+/// # Why the response body needs a rule of its own
+///
+/// Fixing [`poll_pump`] alone gets the response *head* back and stops
+/// there. h2 records end-of-stream as a state rather than as an event —
+/// `recv_data` with `END_STREAM` calls `state.recv_close()`
+/// (`h2-0.4.15/src/proto/streams/recv.rs:714`) and queues nothing — and a
+/// `RST_STREAM` arriving afterwards **overwrites that state** with
+/// `Closed(Cause::Error(Reset(..)))` (`.../state.rs:258-290`). The frames
+/// already received stay in `pending_recv` and are still handed out, but
+/// the clean end behind them is gone: once the queue drains,
+/// `ensure_recv_open` returns the reset as an error
+/// (`.../state.rs:433-443`). Measured on this transport before the fix:
+/// `status=200`, then the body failing with
+/// `Reset(StreamId(1), NO_ERROR, Remote)`. A response whose body cannot be
+/// read is a response discarded, whatever the head says.
+///
+/// # `NO_ERROR` is the server's statement that the response was complete
+///
+/// It is also the only evidence available: the END_STREAM that would have
+/// proved it has been overwritten by the time anything here can look, and
+/// the frames arrive in one `Connection::poll` in any case. RFC 9113 §8.1
+/// defines the code as meaning exactly this — *"after sending a complete
+/// response"* — so a server that sends `NO_ERROR` over a half-written body
+/// truncates it silently here. That is the same exposure a client already
+/// has to a server that ends a length-less body early, and it is the
+/// behaviour hyper chose for the same reason
+/// (`hyper-1.11.0/src/body/incoming.rs:250-259`, and again at 273-281 for
+/// trailers). Every other reason code still fails the body.
+///
+/// The connection is **not** handed back to the pool on this path — the
+/// two call sites clear `reuse` before asking. A stream that ended by
+/// reset is not the evidence a check-in is made of, and h2 permits reuse
+/// here (a stream reset says nothing about the connection), so this is
+/// deliberately the losing side of "easier to lose reuse than to gain it".
+fn stopped_after_a_complete_response(e: &h2::Error) -> bool {
+    e.is_reset() && e.reason() == Some(h2::Reason::NO_ERROR)
 }
 
 /// The h2 counterpart of [`crate::h1`]'s connection-went-away error: the
@@ -654,6 +796,9 @@ where
                 }
                 Poll::Ready(Some(Err(e))) => {
                     this.reuse = None;
+                    if stopped_after_a_complete_response(&e) {
+                        return Poll::Ready(None);
+                    }
                     return Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))));
                 }
                 Poll::Ready(None) => this.data_done = true,
@@ -668,6 +813,9 @@ where
             }
             Poll::Ready(Err(e)) => {
                 this.reuse = None;
+                if stopped_after_a_complete_response(&e) {
+                    return Poll::Ready(None);
+                }
                 Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))))
             }
             Poll::Pending => Poll::Pending,
