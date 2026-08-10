@@ -1100,9 +1100,12 @@ The four §W3 named as the minimum, and what killed each:
 `docs/w4-upgrade-seam.md` decided the shape; this is steps 1 and 2 of its
 §5 — the trait in `http-ng-core`, and `http-ng-native` implementing it.
 Steps 3 (`http-ng-fetch`) and 4 (`UpgradeSupport` deleted) are not here,
-and **`Capabilities::upgrade` is untouched: every backend still reports
-`UpgradeSupport::None`**, because §3 places its removal beside the change
-that also gives the browser its own answer.
+and `Capabilities::upgrade` was untouched by this change: every backend
+still reported `UpgradeSupport::None`, because §3 places its removal
+beside the change that also gives the browser its own answer. **Both
+statements describe steps 1 and 2 as they landed, and both have since been
+overtaken** — steps 3 and 4 are the section below, and there is no
+`Capabilities::upgrade` in this workspace any more.
 
 ## The shape, and why
 
@@ -1323,11 +1326,12 @@ write-blind shim in `poll_next`) is killed at the top of the table.
 ## Deliberately not done
 
 - **`Capabilities::upgrade` is untouched**, and every backend still says
-  `UpgradeSupport::None` — §3's step 4, not this one.
+  `UpgradeSupport::None` — §3's step 4, not this one. *(Done since, in
+  the step 3 and 4 section below: the field and the enum are gone.)*
 - **No `http-ng-fetch` implementation**, which is §5's step 3 and the one
   that makes this a seam rather than a native feature with a trait in
   front of it. Nothing here has been checked against a backend that cannot
-  see bytes.
+  see bytes. *(Done since — same section.)*
 - **No permessage-deflate, no subprotocol negotiation, no close-code
   semantics.** All three are on `docs/w4-upgrade-seam.md`'s own undecided
   list. A subprotocol *can* be asked for, because the request carries
@@ -1379,3 +1383,348 @@ write-blind shim in `poll_next`) is killed at the top of the table.
   never exercised.** The fixture sends single frames only, so
   `WebSocketConfig::max_message_size` and the continuation path have no
   test of ours.
+
+
+# v0.3 W4 — the WebSocket seam (steps 3 and 4)
+
+The two halves of `docs/w4-upgrade-seam.md` §5 that steps 1 and 2 left:
+`http-ng-fetch` implements `WebSocketConnect` over the browser's own
+`WebSocket` global, and `UpgradeSupport` is deleted from the workspace.
+They are one change because §3 says so — the field lives on every
+backend's `Capabilities`, and the change that removes it is the same one
+that gives the browser its own answer.
+
+## Did the seam fit the browser?
+
+**Yes, unchanged, and that is the result rather than a formality.** The
+trait was not widened, no method was added, no bound was relaxed, and
+`http-ng-fetch` implements it in one file with no `#[cfg]` in it. What the
+seam asks for — `Stream<Item = Result<Message, Error>> + Sink<Message>`,
+opened from `websocket(http::Request<()>)` — is what the browser's
+`WebSocket` provides once its events are bridged.
+
+Three things about the fit are worth stating precisely, because "it fit"
+is the kind of claim that is easy to make and easy to make emptily.
+
+**The seam's `!Send` allowance now has a real subject.** When the trait
+landed, `http-ng-core/tests/shape.rs`'s
+`a_non_send_backend_still_satisfies_the_websocket_seam` pinned "a backend
+whose socket is `!Send` still satisfies this" against a *synthetic*
+`LocalSocket` built for the test. `FetchWebSocket` is the real one it was
+predicting: it holds `Rc<RefCell<..>>` and three `Closure`s, both `!Send`,
+because a browser socket is bound to one JS event loop. Nothing had to be
+relaxed to admit it — and, more usefully, **no second `unsafe impl Send`
+was needed.** `http-ng-fetch` carries this project's only `unsafe` block
+(`promise.rs`, so `Transport::execute`'s future can be `Send` for
+`Client::execute`); this file needed none, because there is no `Client`
+between this seam and its caller and therefore nothing demanding `Send`.
+
+**The message vocabulary was the right one, and the `Ping`/`Pong`
+omission is now checked rather than argued.** Step 1's module doc said a
+caller-visible `Ping` "would be a variant the browser can neither send nor
+ever receive". That is what a browser's API actually looks like from
+inside an implementation: there is no `send(ping)` and no `onping`, and a
+`Message::Ping` variant would have been a compile error here with no
+honest right-hand side.
+
+**`Message::Close(Option<CloseFrame>)`'s `Option` earns itself twice.**
+`tungstenite` reports `None` for a close frame with an empty payload; a
+browser reports the same event as close code **1005**, RFC 6455 §7.4.1's
+*"no status code was actually present"*, which is never on the wire. Two
+backends, two entirely different APIs, and one shape that both map onto
+without inventing anything.
+
+## What it cost: the headers
+
+`WebSocketConnect::websocket`'s duty is that **a backend that cannot send
+a header the request carries must fail rather than drop it**, and the
+browser's constructor is `new WebSocket(url, protocols)` — a URL and a
+subprotocol list, and nothing else. So this backend refuses a great deal,
+and refusing precisely is the deliverable:
+
+| what the request carries | what happens |
+|---|---|
+| `Sec-WebSocket-Protocol` (any number of them, each a comma-separated list) | flattened into the constructor's second argument, in order |
+| **any other header at all** | `ErrorKind::Unsupported`, naming the header, **before a socket is constructed** |
+| `ws://`, `wss://`, `http://`, `https://` | opened, `http`/`https` rewritten to `ws`/`wss` |
+| any other scheme, or a URI with no authority | `ErrorKind::Unsupported` |
+
+"Any other header" includes `Authorization`, `Origin`, `Cookie`, `Host`,
+and the four RFC 6455 handshake headers `http-ng-native` refuses under its
+own `ReservedHeader` name. That distinction has no subject here — the
+browser can send none of them — and
+`every_other_header_is_refused_too_including_the_handshakes_own` says so
+in one test rather than letting the two backends look like they disagree.
+
+The cost is real and is not this crate's to remove: **a bearer token in an
+`Authorization` header cannot open a WebSocket from a browser.** The ways
+round it — a ticket in the query string, or the credential as a
+subprotocol — are the caller's decision, and a backend that dropped the
+header would have made it silently.
+
+## The bridge, and the two places it interprets
+
+The browser's `WebSocket` is event driven, so the crossing is the one
+`promise.rs` already makes for a `Promise`: a shared cell, a `Waker`
+parked in it, closures that fill it and wake. Two decisions inside that
+are not mechanical.
+
+**The queue is a queue.** Messages arrive when the browser says so, not
+when the caller polls. `Shared::queue` is a `VecDeque`, and
+`two_messages_that_arrive_before_the_first_poll_are_both_kept` delivers
+two messages inside the same microtask as `open` — before the connect
+future has even resumed — and reads both back.
+
+**There is no `onerror` handler, deliberately.** A WebSocket `error` event
+is a bare `Event` carrying no information at all — that is deliberate in
+the standard, so a page cannot use a WebSocket to probe its network — and
+the standard fires `close` after every `error`. So everything an `onerror`
+could report, `onclose` reports with a close code attached, and `onclose`
+is where the one interpretation in the file lives:
+
+- **before `open` ever fired** — the handshake failed;
+  `websocket()` returns `ErrorKind::Connect`. There is no other reading: a
+  server that accepted and then closed would have fired `open` first.
+- **`wasClean`** — the peer's `Message::Close`, and the `Stream` ends
+  after it. Code 1005 becomes `Close(None)`.
+- **not `wasClean`** — code 1006, no close frame received: an *error* on
+  the `Stream`, not a `Close(1006)` message. 1006 is a code RFC 6455
+  forbids on the wire, and delivering it as a close message would tell a
+  caller that only inspects `Message::Close` that its peer said goodbye.
+
+## No cargo feature here, where `http-ng-native` has one
+
+`http-ng-native` gates its implementation at `websocket`, off by default,
+because `tungstenite` and its RFC 6455 codec are +17 crates for that crate
+alone and +14 in a real client build. **This backend adds no crate at
+all**, because the protocol implementation is the browser's. Measured,
+`cargo tree -p http-ng-fetch -e normal --prefix none --target
+wasm32-unknown-unknown`, unique crates: **33 before and 33 after**, zero
+matches for `tokio`, `hyper` or `h2` in either. What it adds is four
+`web-sys` feature names (`WebSocket`, `BinaryType`, `MessageEvent`,
+`CloseEvent`) on a crate that already depends on `web-sys`, and one direct
+dependency on `futures-sink` — already in the graph, since `http-ng-core`
+is where the `WebSocket` trait names it.
+
+A feature gating nothing would still cost something: the browser suite
+would have to spell it in the `justfile` as well, and drift between a
+`--features` list there and a crate's own gate is exactly what that
+recipe's own error message warns about.
+
+## The tests
+
+`crates/http-ng-fetch/tests/websocket.rs`, twenty-one of them, green on
+**both** engines — Chrome 151 and Firefox 153. The browser suite's minimum
+count goes 78 → **99**, measured by running both engines rather than
+counting attributes.
+
+**Twenty of them run against a stand-in `globalThis.WebSocket`, and that
+is a decision worth defending.** There is no WebSocket server in this test
+environment — `wasm-pack test --headless` serves the harness page over
+plain HTTP and nothing in this repository speaks RFC 6455 to a browser —
+and a public echo server would put the whole suite on the network, which
+nothing else here is. So the trick `tests/caps.rs` already uses for the
+`Request` constructor: `web_sys::WebSocket::new(..)` compiles to `new
+WebSocket(..)` in wasm-bindgen's glue, where `WebSocket` is a free
+variable resolved through the scope chain to `globalThis` at call time.
+The stand-in is a stand-in for the *browser*, not a mock of this crate:
+every line under test runs against it unmodified. What it buys is the two
+things a real server cannot give on demand — exact close codes with
+`wasClean` in either direction, and a message delivered at a chosen moment
+relative to the caller's first poll.
+
+**The twenty-first constructs a real one.** It opens a WebSocket to the
+harness's own origin, which answers the upgrade with ordinary HTTP, and
+asserts the handshake fails as `ErrorKind::Connect`. That is the only live
+WebSocket outcome reachable without a network, and it proves the part a
+stand-in cannot: that the real global answers to the same property and
+method names, that `binaryType`/`onopen`/`onclose` are where `web-sys`
+says they are, and that a failed handshake reaches the caller rather than
+hanging. **It asserts the `ErrorKind` and not a close code**, because
+Chrome and Firefox do not agree on the number and neither is required to —
+the standard hides the reason from the page on purpose. Asserting one
+engine's answer is the shape that produced this crate's
+`[object ReadableStream]` finding.
+
+**The harness heals a leak rather than spreading one**, and it does so
+because the first mutation run said to. That run produced three failures
+where the mutation explained two: a test that panicked before its own
+`restore` left the stand-in installed, and the real-global test inherited
+it. The real constructor is now stashed once in `globalThis.__ws_real`,
+`restore()` reads it from there, and the real-global test restores
+*before* it runs. A `Drop` guard would be the usual answer and is not
+available: `wasm32-unknown-unknown` does not unwind, so a panicking
+`#[wasm_bindgen_test]` runs no destructor.
+
+## Mutations
+
+Anchor verified before each run — 21 passing in
+`wasm-pack test --headless --chrome crates/http-ng-fetch --test websocket`,
+and 8 passing in `cargo nextest run -p http-ng --all-features --test
+facade`. Each mutation applied alone, reverted before the next.
+
+| mutation | verdict | killed by |
+|---|---|---|
+| a header the browser cannot send is dropped (`continue`) instead of refused | KILLED | `a_header_the_browser_cannot_send_is_refused_and_nothing_is_opened`, `every_other_header_is_refused_too_including_the_handshakes_own` |
+| the close code is not reported (`Close(None)` for every clean close) | KILLED | `the_close_code_and_reason_are_reported` |
+| a message arriving before the caller polls is lost (the queue becomes a single slot) | KILLED | `two_messages_that_arrive_before_the_first_poll_are_both_kept` |
+| `binaryType` left at the browser's default `"blob"` | KILLED | `binary_type_is_set_to_arraybuffer_before_anything_can_arrive` |
+| `wasClean` ignored — every close is a clean close | KILLED | `a_connection_that_broke_is_an_error_and_not_a_close_message` |
+| `sendable()` always `Ok`, so a send after the close is discarded silently | KILLED | `sending_after_the_peer_closed_is_an_error_rather_than_a_silent_drop` |
+| the caller's close code never reaches `close()` | KILLED | `closing_the_sink_closes_the_socket_with_the_callers_code` |
+| 1005 reported as a real code rather than as `Close(None)` | KILLED | `a_close_with_no_status_is_reported_as_no_frame_at_all` |
+| the subprotocol list is parsed and then not passed to the constructor | KILLED | `a_subprotocol_reaches_the_constructor` |
+| dropping the socket leaves it open | KILLED | `dropping_the_socket_closes_it`, `dropping_the_connect_future_closes_the_socket_it_had_opened` |
+| `poll_next` reads `ended` before draining the queue | KILLED | `the_close_code_and_reason_are_reported` and two others |
+| `wss`/`https` collapse to `ws` | KILLED | `http_and_https_are_opened_as_ws_and_wss` |
+| **`poll_ready` stops checking `readyState`** | **SURVIVED** | — see below |
+| **`on_message` drops its `ended` guard** | **SURVIVED** | — see below |
+| `EarlyDataSupport` removed from `http-ng`'s `pub use` | KILLED (compile) | `crates/http-ng/tests/facade.rs`, two `E0433`s |
+| the facade fixture sets `EarlyDataSupport::None` — the value `Capabilities::none()` already has | KILLED | `capability_support_types_are_reachable_from_the_facade` |
+| **both `caps.early_data` lines deleted from the facade test** | **SURVIVED, and is meant to** | — see below |
+
+### The two survivors, and the third row that is not one
+
+**`poll_ready` stops checking `readyState` — survived, and it is a
+redundancy rather than a hole.** `SinkExt::send` calls `poll_ready` and
+then `start_send`, and `start_send` calls `sendable()` too, so a message
+sent to a closed socket is still refused with the same error by the same
+check one call later. What no test distinguishes is a caller that drives
+the `Sink` by hand and treats `poll_ready`'s `Ok` as permission to
+`start_send` without reading its result. The check stays because
+`poll_ready`'s job *is* to answer "can this sink take an item", and
+answering yes when it cannot is the lie the mutation installs; it is not
+load-bearing today, and this row says so rather than letting the file
+imply otherwise.
+
+**`on_message` drops its `ended` guard — survived, and this one is a
+real gap.** With the guard gone, a `message` event arriving after
+`onclose` is pushed onto the queue *behind* the terminal item, and
+`poll_next` drains the queue before it honours `ended` — so the `Stream`
+would deliver a message after its `Close` and the seam's "a `Stream` that
+has ended stays ended" would be false. No test provokes it: every
+close-carrying plan ends at the close. The guard is kept because it makes
+the ordering structurally impossible rather than merely unobserved, and
+the missing test is recorded below rather than written now.
+
+**The facade fixture's two lines deleted — survived, and that is the
+point of the row above it.** A deleted assertion never fails, so this
+tells you nothing on its own; it is here because it is the mutation
+somebody will reach for when asking whether the re-pointing was real. The
+guard that answers is the compile-time one: `EarlyDataSupport` removed
+from `http-ng`'s `pub use` breaks `facade.rs` — an external consumer —
+with two `E0433`s, and the fixture setting the value `Capabilities::none()`
+already has breaks the assertion. Both were run, both killed.
+
+## `UpgradeSupport`, and where the facade's plumbing proof went
+
+Four variants (`None`, `H1`, `ExtendedConnect`, `Both`), every backend
+assigning `None`, and no production code branching on it — re-verified
+across the workspace before deleting, and the only non-test matches for
+`.upgrade` that remain are `Weak::upgrade`. v0.2's rule is explicit: a
+capability variant exists only if a caller decision turns on it, and with
+WebSocket expressed as a trait a backend implements, none does. The field,
+the enum, its `http-ng-core` and `http-ng` re-exports, and the five
+backend assignments are gone; `Capabilities` has 17 fields.
+
+`crates/http-ng/tests/facade.rs` was setting `UpgradeSupport::H1` on a
+fixture and asserting it back. **That test pins the plumbing** — that a
+`Capabilities` field's type is nameable *and writable* from a crate
+depending only on `http-ng`, which is what building your own
+`Capabilities` for `MockTransport::with_capabilities` needs — so it needed
+a different field, not deletion.
+
+**It now carries the proof on `early_data`/`EarlyDataSupport`**, chosen
+over the alternatives on three grounds:
+
+- **A fixture can set it to something distinguishable.**
+  `Capabilities::none()` gives `EarlyDataSupport::None` and the test sets
+  `Supported`, so the assertion can fail — and does, as the mutation table
+  shows.
+- **Nothing else reached it through the facade.**
+  `DecompressionSupport` — the only other enum-typed capability re-exported
+  from `http-ng` — is already named as `http_ng::DecompressionSupport` by
+  `tests/compression_capability.rs`, so pointing this test at it would
+  have duplicated a live guard and left `EarlyDataSupport`'s re-export
+  unexercised. `tests/too_early.rs`, the one place that works with early
+  data, reaches for `http_ng_core::AllowEarlyData` directly rather than
+  through `http_ng::`. The early-data corner was the one with no facade
+  check at all.
+- **The remaining candidates would have needed a new re-export.**
+  `ReuseSupport` and `CancelSupport` are enum-typed `Capabilities` fields
+  and are deliberately not re-exported from `http-ng`; pointing the test at
+  one of them would mean adding a re-export in order to make a test
+  compile, which is the reasoning this project rejects everywhere else.
+
+## Deliberately not done
+
+- **No backpressure, and it is not faked.** `Sink::poll_ready` and
+  `poll_flush` are `Ready(Ok(()))` whenever the socket is open;
+  `bufferedAmount` is read by nothing. There is no event anywhere in the
+  platform that fires when a `WebSocket`'s send buffer drains, so
+  returning `Pending` on a non-empty buffer would be returning it with no
+  waker anything can wake, and the alternative is a `setTimeout` poll loop
+  — the busy-spin this workspace measured and rejected once already
+  (`http_ng_native::testing::blocking_io`: 600 ms wall, 600 ms CPU). So
+  **the two backends differ here**: `http-ng-native`'s `Sink` gives
+  backpressure from the socket, this one gives none and the browser's own
+  buffer is unbounded. That is a fact about the platform, recorded rather
+  than smoothed over.
+- **No timeout of any kind.** `Timeouts` in the request's extensions is
+  not read at all — not even `connect`, which `http-ng-native`'s
+  implementation does honour. `AbortSignal` does not apply to a
+  `WebSocket` constructor, and there is no other bound the browser
+  exposes, so a caller who needs one races the future itself.
+- **Nothing checks the negotiated subprotocol.** The list goes out;
+  `WebSocket.protocol` is never read back, and a server that picked none
+  of the offered protocols, or one that was not offered, is not detected.
+  Same position as `http-ng-native`, and on `docs/w4-upgrade-seam.md`'s
+  own undecided list.
+- **No permessage-deflate.** The browser negotiates its own extensions and
+  exposes no control over them; `Sec-WebSocket-Extensions` is refused like
+  every other header, which is the honest answer rather than a partial
+  one.
+- **`Capabilities` gained nothing.** The seam expresses itself by being
+  implemented, so there is no field saying this backend can do WebSocket —
+  which is the whole of `docs/w4-upgrade-seam.md` §2's third decision, now
+  true of two backends instead of one.
+
+## What steps 3 and 4 leave unverified
+
+- **This backend has never spoken to a WebSocket server.** Twenty of the
+  twenty-one tests run against a stand-in constructor and the
+  twenty-first against a server that answers the handshake with ordinary
+  HTTP. So a real frame has never been sent or received by this code, no
+  subprotocol has ever actually been negotiated, and the Autobahn suite —
+  which is what would settle fragmentation, UTF-8 validation and the close
+  code table — has not been run against it either. The same gap
+  `http-ng-native`'s section already records, reached by a different
+  route: there, every fixture is a loopback socket in this repository;
+  here, there is no server at all.
+- **A message arriving after `onclose` would be delivered after the
+  `Close`.** The `ended` guard in `on_message` is what prevents it and no
+  test provokes it — the surviving mutation above. Provoking it needs a
+  `message` step *after* a `close` step in the stand-in's plan, and an
+  assertion that the stream ends rather than yielding it.
+- **`poll_ready`'s `readyState` check is redundant with `start_send`'s**
+  under every caller `SinkExt` produces, and no test drives the `Sink` by
+  hand to tell them apart. Also a surviving mutation above.
+- **The caller-initiated close handshake is only half tested.** The tests
+  assert that `close(code, reason)` reaches the browser with the caller's
+  code; what a real peer answers, and that the `Stream` then ends on the
+  echo, has no test — the stand-in never echoes. Exactly the gap
+  `http-ng-native`'s section records for its own `poll_close`, and for the
+  same reason.
+- **`wss://` is mapped and never opened.** Every stand-in URL is
+  `example.invalid` and the one real handshake is `ws://` to the harness's
+  own origin, so no TLS WebSocket has been opened from this code.
+- **The Chrome/Firefox difference is asserted away, not measured.** The
+  real-handshake test asserts an `ErrorKind` precisely because the engines
+  disagree on the close code for a failed handshake. What each engine
+  actually reports was not recorded, so if one of them ever started
+  reporting a *clean* close for a refused upgrade, this test would still
+  pass while meaning something else.
+- **Nothing measures the wasm binary's growth.** The crate graph is
+  unchanged at 33 crates, which is the claim made and the only one
+  measured; how many kilobytes the bridge and the four `web-sys` bindings
+  add to a built `.wasm` was not weighed.
