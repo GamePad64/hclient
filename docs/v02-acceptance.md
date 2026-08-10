@@ -231,9 +231,9 @@ work in this crate will meet it and should not read it as a kill.
 to be made from a captured failure, not from reading the code.** Both were
 done, in that order.
 
-*Captured.* 150 isolated runs on an idle machine produced nothing; the
-same loop with the machine deliberately busy (40 spinners on 28 cores)
-failed on run **103**, at `tests/pool.rs`'s `get_ok`:
+*Captured.* 150 runs of the test on its own, with no load added, produced
+nothing; the same loop with the machine deliberately busy (40 spinners on
+28 cores) failed on run **103**, at `tests/pool.rs`'s `get_ok`:
 `Error { kind: Connect, source: hyper::Error(Io, Os { code: 104, kind:
 ConnectionReset }) }`, the whole test process gone in **0.564 s** against
 a nominal 0.71 s — so the fourth request failed the instant it was issued
