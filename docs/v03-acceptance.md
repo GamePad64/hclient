@@ -535,7 +535,32 @@ tell the move happened.
 matching zero or several places is reported rather than scored — the
 convention W1's h3 work established. The script is
 `crates/http-ng-dns-doh/mutations.py`; it reverts each edit whether the run
-passes or fails.
+passes or fails. Final state, on a clean tree with nothing else running:
+**37 anchors matched (M2 at 2 places, by design; the rest at 1), 37
+killed.**
+
+**Two things about that number, because 37/37 on its own is a number to
+distrust.**
+
+*Three of them survived first, and none was answered by adjusting a
+fixture.* The three below are the finding, and the kills are what the
+answers bought.
+
+*The anchor count did real work rather than decorating the run.* An
+intermediate pass reported **six ANCHOR MISMATCH — matched 0**, after
+rustfmt rewrapped the source and the `Family` refactor renamed a match
+arm. Scored as kills they would have been six lies; reported as mismatches
+they were six stale `find` strings to fix. That is the whole reason the
+count is checked before the edit.
+
+*And the run has a hazard worth writing down, because it cost a commit
+here.* The script mutates files in place, so **nothing else may touch the
+tree while it runs** — the docs commit was made mid-run with `git add -A`,
+and the pre-commit `cargo fmt --all` reformatted the mutant into the
+staged tree. Three live mutations reached the branch and were backed out
+in the next commit. Editing during a mutation run also corrupts the run
+itself: that pass showed two unrelated tests failing under almost every
+mutation, which is what a moving source file looks like from the outside.
 
 **Three survived, and none of them was answered by adjusting a fixture.**
 
@@ -562,10 +587,10 @@ The four §W3 named as the minimum, and what killed each:
 
 | mutation | verdict | killed by |
 |---|---|---|
-| the response is parsed but the answer ignored | KILLED | `every_a_record_in_the_answer_reaches_the_caller` and eleven others |
-| the TTL is ignored (`ttl: None`) | KILLED | `each_address_carries_the_ttl_that_came_with_its_own_record` |
-| an error RCODE is treated as an empty answer | KILLED | `servfail_is_an_error_and_not_an_empty_stream`, `a_servfail_also_reaches_the_fallback` |
-| `supports_svcb` flipped to `false` | KILLED | `a_service_mode_record_round_trips_every_field_svcbendpoint_holds`, `a_name_with_no_https_record_is_an_empty_stream_not_an_error` |
+| the response is parsed but the answer ignored (M1) | KILLED | `a_mandatory_key_the_record_does_not_carry_is_an_error`, `a_doh_resolver_composes_into_a_transport_and_that_transport_resolves`, and ten others |
+| the TTL is ignored — `ttl: None` (M2, 2 anchors) | KILLED | `each_address_carries_the_ttl_that_came_with_its_own_record`, alone |
+| an error RCODE is treated as an empty answer (M3) | KILLED | `servfail_is_an_error_and_not_an_empty_stream`, `a_servfail_also_reaches_the_fallback` |
+| `supports_svcb` flipped to `false` (M4) | KILLED | `a_service_mode_record_round_trips_every_field_svcbendpoint_holds`, `a_name_with_no_https_record_is_an_empty_stream_not_an_error` |
 
 ## Deliberately not done
 
@@ -618,6 +643,19 @@ The four §W3 named as the minimum, and what killed each:
   `ResolvedAddr::ttl` is now filled by a second backend and still read by
   nothing in this workspace. That is one step better than v0.2's position —
   the value is checked to be the server's, per record — and no better.
+- **A second h3 timing flake, seen once during W3 and not reproduced.**
+  `zero_rtt.rs`'s
+  `early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake`
+  failed once inside a `--workspace --all-features` run — *"the relay was
+  supposed to hold the server's flight for 150 ms … 144.71 ms means the
+  hold did not happen"* — and passed in isolation immediately afterwards,
+  at that commit, at this branch's base and at the commit before it. Nothing
+  in W3 touches `http-ng-h3`. Recorded here rather than in the h3 section
+  because W3 is where it was seen, and next to
+  `two_requests_share_one_connection` above because it is the same class:
+  an assertion whose margin is 5 ms out of 150 and whose observer is a
+  loaded runner. What would settle it is a wider hold, which is a change to
+  a test W3 has no business editing.
 - **`SvcbEndpoint` still carries no TTL and no `no-default-alpn`.** Both
   were asked for by the W2 consumer while this work was in flight, and both
   are visible from here (the record's TTL is decoded, and `RawParam::
