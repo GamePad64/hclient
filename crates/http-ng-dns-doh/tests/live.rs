@@ -564,30 +564,28 @@ async fn a_certificate_presented_for_an_ip_address_validates_through_the_platfor
     }
 }
 
-/// **An IPv6-literal endpoint does not work today, and the defect is not in
-/// this crate.** `Doh::pinned`'s own doc offers
-/// `https://[2606:4700:4700::1111]/dns-query` as an example; over
-/// `http-ng-native` + `http-ng-tls-rustls` it fails at the handshake with
-/// `Tls: invalid dns name`, before a byte of DNS is exchanged.
+/// **An IPv6-literal endpoint resolves**, which it did not until the
+/// bracket defect was fixed.
 ///
-/// The cause, read after measuring rather than instead of it:
-/// `http::Uri::host()` returns an IPv6 literal **with its brackets**, and
-/// `connect.rs` hands that string to `TlsRequest::server_name` unchanged,
-/// where `rustls_pki_types::ServerName::try_from` rejects `[…]` — it tries
-/// `DnsName`, then `IpAddr`, and neither strips a bracket. Both
-/// `IpLiteralOnly::literal` and this crate's own `ip_literal` do strip
-/// them, each with a comment about this exact trap, so the TCP connection
-/// is made and only the TLS name is wrong.
+/// `Doh::pinned`'s own doc offers `https://[2606:4700:4700::1111]/dns-query`
+/// as an example, and for one release it was an example that did not work:
+/// `http::Uri::host()` returns an IPv6 literal **with its brackets**,
+/// `connect.rs` handed that string to `TlsRequest::server_name` unchanged,
+/// and `rustls_pki_types::ServerName::try_from` rejected `[…]` as neither a
+/// `DnsName` nor an `IpAddr` — the TCP connection was made and only the TLS
+/// name was wrong (`Tls: invalid dns name`, measured). This crate never had
+/// the defect: `ip_literal` and `IpLiteralOnly::literal` both strip, each
+/// with a comment about the trap; the TLS name was the one place on the
+/// path where nobody did. `http_ng_core::bare_host` is the one place now.
 ///
-/// **This test asserts the defect, on purpose.** Fixing it is a one-line
-/// change in `http-ng-native` or `http-ng-tls-rustls`, neither of which is
-/// this crate; pinning the current behaviour is what makes the fix visible
-/// here — when this test starts failing, the note on `Doh::pinned` and the
-/// entry in `docs/v03-acceptance.md` are both stale and should go.
+/// The predecessor of this test asserted the failure and told whoever
+/// fixed it to come here. What replaces it asserts the success, over the
+/// wire, against the operator the doc names: same endpoint, opposite
+/// expectation. It is the only test in this file whose endpoint is a v6
+/// literal, so it is the only one that can say the brackets come off.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate() {
-    const NAME: &str =
-        "an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate";
+async fn an_ipv6_literal_endpoint_resolves() {
+    const NAME: &str = "an_ipv6_literal_endpoint_resolves";
     const V6: Endpoint = Endpoint {
         operator: "Cloudflare over IPv6",
         uri: "https://[2606:4700:4700::1111]/dns-query",
@@ -597,25 +595,24 @@ async fn an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_th
 
     // Through the retrying wrapper, not `doh()` directly: `is_a_lost_packet`
     // retries only a connect that did not happen and hands every answer
-    // back untouched, so the error this test is about arrives on the first
-    // attempt while a lost SYN does not become a finding. Both these tests
+    // back untouched, so a lost SYN does not become a finding. This test
     // failed spuriously before it was used here — the harness bug this line
     // is the fix for.
     let got = lookup_v4(ep, "cloudflare.com").await;
-    let [Err(e)] = got.as_slice() else {
-        panic!(
-            "an IPv6-literal endpoint now works — the bracket defect this test pins has been \
-             fixed. Delete this test, the note on `Doh::pinned`, and the entry in \
-             docs/v03-acceptance.md. Got: {got:?}"
-        );
-    };
-    let text = chain(e);
+    let addrs = expect_addrs(got);
     assert!(
-        text.contains("invalid dns name"),
-        "an IPv6-literal endpoint failed, but not with the bracketed-server-name error this \
-         test pins: {text}"
+        !addrs.is_empty(),
+        "the v6-literal endpoint answered with no A records"
     );
-    ran(NAME, &format!("{}: {text}", ep.operator));
+    ran(
+        NAME,
+        &format!(
+            "{} at {}: the handshake against a v6 literal completed and {} A records came back",
+            ep.operator,
+            ep.addr,
+            addrs.len()
+        ),
+    );
 }
 
 // ── 2. a real record, against an oracle that is not ours ────────────────

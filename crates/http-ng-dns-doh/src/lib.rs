@@ -264,25 +264,6 @@ impl<C> Doh<C, NoFallback> {
     /// which is the whole difference between this constructor and
     /// [`Doh::bootstrapped`].
     ///
-    /// **The second of those two examples does not work today over
-    /// `http-ng-native`, and the defect is not in this crate.** Measured
-    /// against `2606:4700:4700::1111`: the TCP connection is made and the
-    /// handshake then fails with `Tls: invalid dns name`, before any DNS is
-    /// exchanged. `http::Uri::host()` returns an IPv6 literal **with its
-    /// brackets**, `http-ng-native`'s connector passes that string to
-    /// `TlsRequest::server_name` unchanged, and
-    /// `rustls_pki_types::ServerName::try_from` accepts neither `[…]` as a
-    /// DNS name nor as an address. This constructor and
-    /// `IpLiteralOnly::literal` both strip the brackets, each with a
-    /// comment about this exact trap; the TLS name is the one place nobody
-    /// does. It is one line in `http-ng-native` or in
-    /// `http-ng-tls-rustls`, and it is pinned meanwhile by
-    /// `tests/live.rs`'s
-    /// `an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate`,
-    /// whose failure is the signal to delete this paragraph. An IPv4
-    /// literal is unaffected, and a v6 endpoint over a different transport
-    /// is untested rather than broken.
-    ///
     /// **The cost of pinning, which is real and which this crate cannot
     /// mitigate:** an address that stops answering leaves this resolver
     /// with nothing to ask, and DoH is then not slow but absent. There is

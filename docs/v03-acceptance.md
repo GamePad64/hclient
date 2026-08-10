@@ -1135,29 +1135,40 @@ application/dns-message` with records in it.
 Two limits on that, both real. **macOS and Windows are not covered and
 Linux is not evidence about them**: `rustls-platform-verifier` delegates to
 Security.framework and to CryptoAPI there, and IP-SAN name matching is
-theirs to implement. **And an IPv6-literal endpoint does not work at all**,
-which is finding 2.
+theirs to implement. **An IPv6-literal endpoint did not work at all** when
+this section was first written; that was finding 2, and it is now fixed.
 
-### 2. An IPv6-literal endpoint fails at TLS, and the defect is not in this crate
+### 2. An IPv6-literal endpoint failed at TLS — found here, fixed elsewhere
 
 `Doh::pinned`'s own doc offered `https://[2606:4700:4700::1111]/dns-query`
-as an example. Measured, it fails with **`Tls: invalid dns name`** — the
-TCP connection is made, and the handshake never starts.
+as an example. Measured, it failed with **`Tls: invalid dns name`** — the
+TCP connection was made, and the handshake never started.
 
-`http::Uri::host()` returns an IPv6 literal **with its brackets**;
-`http-ng-native`'s `connect.rs` passes that string to
+`http::Uri::host()` returns an IPv6 literal **with its brackets** (RFC 3986
+§3.2.2 puts them in the *authority*, not in the host);
+`http-ng-native`'s `connect.rs` passed that string to
 `TlsRequest::server_name` unchanged; `rustls_pki_types::ServerName::
 try_from` tries `DnsName`, then `IpAddr`, and neither strips a bracket.
 Both `IpLiteralOnly::literal` and `Doh`'s own `ip_literal` do strip them,
-each with a comment naming this exact trap — the TLS name is the one place
-on the path where nobody does.
+each with a comment naming this exact trap — the TLS name was the one place
+on the path where nobody did.
 
-**It is not DoH-specific**: any `https://[…]/` URL through `http-ng-native`
-+ `http-ng-tls-rustls` meets it. The fix is one line in one of those two
-crates, both of which were out of this task's scope, so what landed instead
-is the note on `Doh::pinned` and a test that pins the current behaviour —
-`an_ipv6_literal_endpoint_fails_at_tls_today_and_the_defect_is_not_in_this_crate`,
-whose *failure* is the signal that the note is stale.
+**It was not DoH-specific**: every `https://[…]/` URL in this workspace met
+it, and the follow-up found **two more sites** in `http-ng-h3` — the QUIC
+server name handed to `Endpoint::connect_with`, and `resolve`'s
+`host.parse::<IpAddr>()` shortcut, which a bracketed literal fails, so the
+address went to a resolver that cannot answer it either.
+
+All three now call `http_ng_core::bare_host`, and
+`http_ng_tls::TlsRequest::server_name`'s doc states whose duty the
+normalisation is (the caller's) — the gap that let three sites get it wrong
+was that nobody had written that down. The tests are
+`http-ng-native`'s `tests/tls_server_name.rs` and `http-ng-h3`'s
+`tests/quic_server_name.rs`, each asserting a completed handshake against a
+certificate with an IP SAN, plus this file's own live
+`an_ipv6_literal_endpoint_resolves`, which replaces the test that used to
+pin the defect and measured, against Cloudflare over IPv6, real A records
+coming back.
 
 ### 3. Quad9 answers no DNS at all over HTTP/1.1
 
@@ -1339,10 +1350,10 @@ exist for one level down.
 
 ### One harness bug, found while mutating
 
-The two tests that *expect* an error — the IPv6-literal one and the Quad9
-one — called `doh()` directly rather than the retrying wrapper, so a lost
-SYN turned "Quad9 answers 505" into a failed assertion about a connect
-timeout. Reproduced under `HTTP_NG_REQUIRE_NETWORK` before it was fixed.
+The two tests that *expected* an error — the IPv6-literal one (since
+rewritten to expect success, finding 2) and the Quad9 one — called `doh()`
+directly rather than the retrying wrapper, so a lost SYN turned "Quad9
+answers 505" into a failed assertion about a connect timeout. Reproduced under `HTTP_NG_REQUIRE_NETWORK` before it was fixed.
 Both now go through `lookup_v4`, whose retry predicate reads the **typed**
 error — only `DohError::Transport` wrapping `ErrorKind::Connect` or
 `Timeout(Phase::Connect)` is retried — so every answer, welcome or not,
