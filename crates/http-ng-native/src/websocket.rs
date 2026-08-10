@@ -15,14 +15,28 @@
 //! Nothing in that shape can be reused here. This file therefore does its
 //! own exchange, on three rules:
 //!
-//! 1. **The `101` is recognised by status, before the connection is polled
-//!    out.** [`upgrade`] reads the status and returns a typed error on
-//!    anything else, *then* drives the connection to completion and calls
-//!    `into_parts`. Moving that check after the `into_parts` step is not a
-//!    style question: `poll_without_shutdown` on an ordinary `200` with a
-//!    body never returns `Ready` at all, so the mutation is a hang rather
-//!    than a wrong answer — `tests/websocket.rs`'s
-//!    `a_200_is_an_error_rather_than_a_websocket` is what catches it.
+//! 1. **The `101` is recognised by its status and its handshake headers,
+//!    never by "the connection future completed".** That distinction is
+//!    the whole trap: hyper reports a finished ordinary exchange and a
+//!    destroyed upgrade with the same `Ready(Ok(()))`, so a client taking
+//!    the completion as its signal would upgrade onto any response at
+//!    all. [`upgrade`] reads four things — the status, `Upgrade:`,
+//!    `Connection:` and `Sec-WebSocket-Accept` — and returns a typed
+//!    error on each; `tests/websocket.rs` has a server for every one, and
+//!    deleting any of the four kills a named test.
+//!
+//!    Measured, because the stronger claim an earlier draft of this
+//!    paragraph made is false: **moving all four checks to after
+//!    `into_parts` changes nothing any test can see**, and that mutation
+//!    survives. The reason is `drop(body)` below — dropping hyper's
+//!    `Incoming` finishes the dispatcher whatever the response was, so
+//!    `poll_without_shutdown` returns `Ready` on a `200` as readily as on
+//!    a `101`, and an upgrade that is then refused drops its socket
+//!    either way. The checks stay where they are because reading a
+//!    response before dismantling the connection that produced it is the
+//!    order that stays correct if hyper's does not; they are not load
+//!    bearing *today*, and `docs/v03-acceptance.md` says so rather than
+//!    letting this file imply otherwise.
 //! 2. **`poll_without_shutdown` + `into_parts`, never
 //!    `hyper::upgrade::{on, Upgraded}`.** `Upgraded` holds
 //!    `Rewind<Box<dyn Io + Send>>` (`hyper/src/upgrade.rs:66-67`), which
@@ -311,9 +325,9 @@ where
     };
     drop(sender);
 
-    // Rule 1: by status, and before the connection is polled out. A `200`
-    // with a body leaves `poll_without_shutdown` `Pending` for ever, so
-    // this check is what stands between a wrong answer and a hang.
+    // Rule 1, first of four: by status. Not by "hyper is finished with
+    // this connection", which is the same observation for an ordinary
+    // exchange — see the module doc.
     let (head, body) = resp.into_parts();
     if head.status != http::StatusCode::SWITCHING_PROTOCOLS {
         return Err(Error::new(

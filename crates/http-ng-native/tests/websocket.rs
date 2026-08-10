@@ -395,13 +395,20 @@ async fn the_first_frame_may_arrive_in_the_same_flight_as_the_101() {
     assert_eq!(got, Message::Text("in the same flight".into()));
 }
 
-/// The `101` is recognised **by status**, and before the connection is
-/// polled out.
+/// The `101` is recognised **by status**, and not by hyper reporting that
+/// it has finished with the connection — which is the same observation for
+/// an ordinary exchange.
 ///
-/// A `200` with a body is a connection hyper is not finished with, so
-/// `poll_without_shutdown` on it never returns `Ready` — which is why
-/// moving the status check after the `into_parts` step is a hang rather
-/// than a wrong answer, and why this test is the one that catches it.
+/// A client that upgraded on the completion signal would hand a `200 OK`
+/// back as a WebSocket and start framing RFC 6455 onto a socket that is
+/// still speaking HTTP. Deleting the status check is the mutation, and
+/// this is the test that dies.
+///
+/// What this test does **not** pin — measured, not assumed — is the
+/// *position* of that check relative to `into_parts`: moving all four
+/// handshake checks after it survives every test here, because dropping
+/// hyper's `Incoming` finishes the dispatcher whatever the status was.
+/// `docs/v03-acceptance.md` carries that row.
 #[tokio::test]
 async fn a_200_is_an_error_rather_than_a_websocket() {
     let (addr, _) = serve(move |mut w| {
@@ -416,10 +423,7 @@ async fn a_200_is_an_error_rather_than_a_websocket() {
 
     let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
         .await
-        .expect(
-            "a 200 must come back as an error rather than hang: the status has to be read \
-             before the connection is driven to completion",
-        );
+        .expect("must not hang");
     let Err(err) = outcome else {
         panic!("a 200 is not a WebSocket")
     };

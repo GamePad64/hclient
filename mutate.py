@@ -277,6 +277,27 @@ MUTATIONS["m6-connection-token-unchecked"] = [(
     1,
 )]
 
+# M6b — Connection read by equality rather than as a token list, which is
+#        what tungstenite's own verify_response does.
+MUTATIONS["m6b-connection-by-equality"] = [(
+    """    v.and_then(|v| v.to_str().ok()).is_some_and(|v| {
+        v.split(',')
+            .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+    })""",
+    """    v.and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("upgrade"))""",
+    1,
+)]
+
+# M9 — the framing role is Server, so client frames go out unmasked.
+MUTATIONS["m9-server-role"] = [(
+    """                read_buf.to_vec(),
+                Role::Client,""",
+    """                read_buf.to_vec(),
+                Role::Server,""",
+    1,
+)]
+
 # M7 — the Upgrade header unchecked (only the status is read).
 MUTATIONS["m7-upgrade-header-unchecked"] = [(
     """    if !head
