@@ -1587,6 +1587,99 @@ mod tests {
         }
     }
 
+    /// [`StaticResolve`] that also answers SVCB, for the one property
+    /// below that cannot be watched from a socket.
+    struct SvcbResolve {
+        v4: Vec<IpAddr>,
+        records: Vec<http_ng_dns::SvcbEndpoint>,
+    }
+
+    impl Resolve for SvcbResolve {
+        fn lookup_ipv6(
+            &self,
+            _: &str,
+        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
+            futures_util::stream::iter(Vec::new())
+        }
+        fn lookup_ipv4(
+            &self,
+            _: &str,
+        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
+            futures_util::stream::iter(
+                self.v4
+                    .clone()
+                    .into_iter()
+                    .map(|addr| Ok(ResolvedAddr { addr, ttl: None }))
+                    .collect::<Vec<_>>(),
+            )
+        }
+        fn supports_svcb(&self) -> bool {
+            true
+        }
+        fn lookup_svcb(
+            &self,
+            _: &str,
+        ) -> impl futures_util::Stream<Item = Result<http_ng_dns::SvcbEndpoint, Error>> {
+            futures_util::stream::iter(self.records.clone().into_iter().map(Ok).collect::<Vec<_>>())
+        }
+    }
+
+    /// The one claim of this item that a peer socket cannot make, and the
+    /// reason is in `tests/svcb.rs`'s module doc: the retry after a
+    /// discovered endpoint fails goes to the origin's *own* endpoint,
+    /// which for a default-port `https` URI is port 443 — where an
+    /// unprivileged test process cannot put a listener. So it is watched
+    /// here instead, on the one observer that does see every attempt:
+    /// `FakeRt`'s log.
+    ///
+    /// Three attempts for one call. The hint first (the record moved where
+    /// we start), then the origin's own address, then — after the whole
+    /// race failed — the origin's address again, on a second race run
+    /// **without** the record. Without the retry the third entry is
+    /// missing and a stale record is an outage rather than a slow request;
+    /// without the discovery the first is.
+    #[test]
+    fn a_failed_discovered_endpoint_is_retried_without_the_record() {
+        let hint = std::net::Ipv4Addr::new(10, 0, 0, 7);
+        let origin = v4(1);
+        let dns = SvcbResolve {
+            v4: vec![origin],
+            records: vec![http_ng_dns::SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: None,
+                ipv4hint: vec![hint],
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            }],
+        };
+        // Every attempt fails, so the discovered race and the plain one
+        // both run to `Exhausted` — which is the case this is about.
+        let rt = FakeRt::new([]);
+        let uri: Uri = "https://example.invalid/".parse().unwrap();
+        let cache = NegativeCache::default();
+
+        let _ = bounded_block_on(super::connect(
+            &rt,
+            &dns,
+            &NoOpTls,
+            &uri,
+            &TcpOpts::default(),
+            &[],
+            &cache,
+            Duration::ZERO,
+        ))
+        .expect_err("nothing answers");
+
+        let tried: Vec<IpAddr> = rt.log.borrow().iter().map(|(ip, _)| *ip).collect();
+        assert_eq!(
+            tried,
+            vec![IpAddr::V4(hint), origin, origin],
+            "the hint, then the origin, then the origin again without the record"
+        );
+    }
+
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
     /// calls `TlsConnect::connect` for `https` and doesn't call it for
     /// `http`. The same technique as `NoOpTls` in `http_ng_tls`'s own
