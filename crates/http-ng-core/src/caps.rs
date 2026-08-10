@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn none_is_the_conservative_base() {
-        // Every one of the 17 fields, spelled out individually — not
+        // Every field, spelled out individually — not
         // `assert_eq!` on the whole struct via a derived `PartialEq`, which
         // `Capabilities` deliberately does not implement (it's
         // `#[non_exhaustive]` so its shape stays ours to change, and a
@@ -541,6 +541,11 @@ mod tests {
         //
         // Destructured with no `..` rest pattern — `#[non_exhaustive]` only
         // blocks that from outside the crate, and this test lives inside it.
+        // The count used to be written here as a number and had drifted by
+        // two by the time `upgrade` was removed (it said 18 against a
+        // struct with 20 fields), which is the whole argument against
+        // stating it: the destructure below is the count, and it cannot go
+        // stale.
         // A prior version of this comment claimed the individual assertions
         // below "fail informatively when a seventeenth field is added and
         // someone forgets to default it". That was false: a reviewer added a

@@ -288,8 +288,8 @@ fn construct(url: &str, protocols: &[String]) -> Result<web_sys::WebSocket, Erro
 /// anything can arrive. Left at the default `"blob"`, every binary message
 /// would need an asynchronous read before its bytes existed, and this
 /// function would see a `Blob` and report [`NotAMessage`] — which is why
-/// `binary_type_is_arraybuffer_or_no_binary_message_has_bytes` asserts the
-/// setting rather than trusting it.
+/// `binary_type_is_set_to_arraybuffer_before_anything_can_arrive` asserts
+/// the setting rather than trusting it.
 fn decode(data: JsValue) -> Result<Message, Error> {
     if let Some(text) = data.as_string() {
         return Ok(Message::Text(text));

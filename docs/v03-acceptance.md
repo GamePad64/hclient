@@ -1625,7 +1625,14 @@ across the workspace before deleting, and the only non-test matches for
 capability variant exists only if a caller decision turns on it, and with
 WebSocket expressed as a trait a backend implements, none does. The field,
 the enum, its `http-ng-core` and `http-ng` re-exports, and the five
-backend assignments are gone; `Capabilities` has 17 fields.
+backend assignments are gone; `Capabilities` is down to 19 fields.
+
+One thing fell out of counting them. `http-ng-core`'s own
+`none_is_the_conservative_base` carried the count in a comment — "every one
+of the 18 fields" — against a struct that had 20 of them; the number had
+drifted twice while the exhaustive destructure underneath it stayed
+correct, which is the argument against writing it down at all. The comment
+now says what it checks and no longer says how many.
 
 `crates/http-ng/tests/facade.rs` was setting `UpgradeSupport::H1` on a
 fixture and asserting it back. **That test pins the plumbing** — that a
