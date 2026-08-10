@@ -122,6 +122,82 @@ In QUIC it resolves **after the response** — 8.63 ms against a response at
 only hold it by waiting for the handshake, which is the round trip 0-RTT
 exists to skip.
 
+## One defect the live tests found and this document's own reasoning missed
+
+Worth its own section, because it is the case the acceptance model is for:
+a claim nobody had written down, broken in a way no amount of reading would
+have caught, surfaced by a test that only failed when the machine was busy.
+
+**`a_real_request_over_real_quic` failed about once in twenty under load
+and never once in isolation** — 0 failures in 150 isolated runs, 4 in 90
+runs of six concurrent processes — always with `Error { kind: Body, source:
+"Remote reset: 0x0" }`, and always on a connection's first request. Two
+other tests in the same file failed the same way. It was not a port, not a
+bind race and not a timeout: the client was discarding a response it had
+already been sent.
+
+The chain, each link read from source rather than inferred:
+
+1. the client writes its HEADERS frame; the server resolves the request;
+2. the server answers **without reading the request body** — what any
+   server answering `404`, `401` or `413` does — and drops its half.
+   Dropping a `quinn::RecvStream` that was not read to the end sends
+   `STOP_SENDING(0)` (`quinn-0.11.11/src/recv_stream.rs:534`);
+3. the client then calls `finish()`, which on a connection's **first**
+   request is not a no-op: h3 writes a grease frame there
+   (`h3-0.0.8/src/connection.rs:1101-1119`). That write fails
+   `Stopped(0)`, which `h3-quinn` maps to `StreamTerminated`
+   (`h3-quinn-0.0.10/src/lib.rs:425`) and h3 to
+   `StreamError::RemoteTerminate`;
+4. `one_attempt` propagated it and returned **before `recv_response`**.
+
+`STOP_SENDING` acts on one direction. The response stream was untouched,
+and RFC 9114 §4.1 says so in as many words: *"Clients MUST NOT discard
+complete responses as a result of having their request terminated
+abruptly."*
+
+**The fix is one tolerated variant, on the write side, after the head.**
+`write_after_head` in `crates/http-ng-h3/src/lib.rs`; every other
+`StreamError` propagates unchanged. It cannot slide before the head by
+accident: it takes a `Result<(), _>` and `send_request` yields the stream,
+so the compiler refuses.
+
+**The tests pin the behaviour and not the narrowness, and the difference is
+worth stating** — this document exists to record what was checked, not what
+was intended. `crates/http-ng-h3/tests/stop_sending.rs` has two: a server
+that stops reading still has its response read, and a server that *dies* at
+the same moment still produces an error. A four-megabyte body — past
+quinn's 1.25 MiB stream window — takes the race out, so both measure the
+decision instead of the scheduler.
+
+What the second test does **not** do is keep the tolerance narrow, though
+the first draft of this section and of the code's own comment both claimed
+it did. Measured afterwards: widening the match to `Err(_) => Ok(true)`
+leaves all 31 tests green. The expected failure — "swallowing a
+`ConnectionError` means `recv_response` hangs on a dead connection" — does
+not happen; that call returns an error of its own, reported as the same
+`ErrorKind::Body`, so the wide and narrow spellings are indistinguishable
+from outside. Nor can a white-box test close the gap: `StreamError`'s
+variants are `#[non_exhaustive]` outside an h3 feature flag, so a
+`ConnectionError` cannot be synthesised to feed the function directly.
+
+So the narrow match is defended by construction rather than by measurement,
+and that argument is written where the match is: `RemoteTerminate` is the
+one variant whose meaning is known here — one direction stopped, the other
+untouched — and for the rest there is no ground to claim the response
+stream survived. Recorded this way round because a test named as a guard,
+which is not one, is worse than no guard at all: the next person reads the
+name and stops checking.
+
+**`http-ng-native`'s HTTP/2 path has the same shape and is not fixed here**
+(a crate this task does not own; reported rather than touched). RFC 9113
+§8.1 carries the same MUST NOT for a `RST_STREAM(NO_ERROR)` after a
+complete response, and `http2.rs`'s `poll_pump` returns `Err` on
+`poll_capacity` answering `Ready(None)` — under a comment that names the
+case, *"the peer reset the stream"* — after which `exchange` returns
+`Failed::Sent(..)` without ever polling `resp_fut`. Same discard, different
+protocol.
+
 ## Deliberately not done
 
 Recorded, not hidden, and each with the reason — a bare list invites

@@ -28,6 +28,15 @@ pub enum Behaviour {
     Slow(std::time::Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
+    /// Tear the whole QUIC connection down the moment the request head has
+    /// arrived, without answering.
+    ///
+    /// The opposite pole to [`Behaviour::Echo`] for a client still writing
+    /// its request body: `Echo` stops reading and the response survives,
+    /// this kills the connection and nothing can. A client that told the
+    /// two apart by tolerating everything would pass one and hang on the
+    /// other.
+    DieAfterHead,
 }
 
 pub struct Server {
@@ -252,13 +261,17 @@ fn start_inner(
                         conn
                     };
                     a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // Kept beside the h3 layer, for `DieAfterHead`: closing
+                    // the QUIC connection is not something the h3 API
+                    // exposes, and it is the point of that behaviour.
+                    let quic = conn.clone();
                     let Ok(mut h3) =
                         h3::server::Connection::new(h3_quinn::Connection::new(conn)).await
                     else {
                         return;
                     };
                     while let Ok(Some(resolver)) = h3.accept().await {
-                        let (r, timing) = (r.clone(), timing.clone());
+                        let (r, timing, quic) = (r.clone(), timing.clone(), quic.clone());
                         tokio::spawn(async move {
                             let Ok((_req, mut stream)) = resolver.resolve_request().await else {
                                 return;
@@ -269,6 +282,10 @@ fn start_inner(
                                 .unwrap()
                                 .get_or_insert(started.elapsed());
                             r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if behaviour == Behaviour::DieAfterHead {
+                                quic.close(1u32.into(), b"dying on purpose");
+                                return;
+                            }
                             if let Behaviour::Slow(d) = behaviour {
                                 tokio::time::sleep(d).await;
                             }
