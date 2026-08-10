@@ -28,6 +28,15 @@ pub enum Behaviour {
     Slow(std::time::Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
+    /// Tear the whole QUIC connection down the moment the request head has
+    /// arrived, without answering.
+    ///
+    /// The opposite pole to [`Behaviour::Echo`] for a client still writing
+    /// its request body: `Echo` stops reading and the response survives,
+    /// this kills the connection and nothing can. A client that told the
+    /// two apart by tolerating everything would pass one and hang on the
+    /// other.
+    DieAfterHead,
 }
 
 pub struct Server {
@@ -39,7 +48,49 @@ pub struct Server {
     pub accepted: Arc<std::sync::atomic::AtomicUsize>,
     /// How many HTTP/3 requests it has answered.
     pub requests: Arc<std::sync::atomic::AtomicUsize>,
+    /// One entry per accepted connection, in accept order — see
+    /// [`ConnTiming`]. Empty unless the server was started by
+    /// [`start_watching_early_data`].
+    pub timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>>,
     _thread: std::thread::JoinHandle<()>,
+}
+
+/// When two things happened on one connection, **as the server saw them**,
+/// both measured from the moment the connection reached the application.
+///
+/// # Why this and not `accepted_0rtt`
+///
+/// The obvious server-side signal does not exist. `Connecting::into_0rtt`
+/// hands back a `ZeroRttAccepted` future which resolves to
+/// `quinn_proto::Connection::accepted_0rtt`, and that field is assigned
+/// **client-side only** — `quinn-proto-0.11.16/src/connection/mod.rs:2540`
+/// guards the whole block with `if self.side.is_client()`, with a
+/// `debug_assert!(self.side.is_client())` inside it for good measure. A
+/// server therefore always reports `false`, whatever it did with the early
+/// data. Measured, after writing a test against the assumption that it
+/// meant something: it read `0` on a connection whose 0-RTT packets the
+/// wire had just counted going past.
+///
+/// What a server *can* say is **when** it saw things, and with the client's
+/// handshake held back by `wire::Wire::hold_server_flight` the two orders
+/// are causally separated rather than merely likely: a request that arrives
+/// before this connection's handshake completed cannot have travelled any
+/// way but in early data the server chose to process.
+#[derive(Debug, Default)]
+pub struct ConnTiming {
+    /// When the first HTTP/3 request on this connection was resolved.
+    pub first_request: std::sync::Mutex<Option<std::time::Duration>>,
+    /// When this connection's handshake completed.
+    pub handshake_done: std::sync::Mutex<Option<std::time::Duration>>,
+}
+
+impl ConnTiming {
+    pub fn first_request(&self) -> Option<std::time::Duration> {
+        *self.first_request.lock().unwrap()
+    }
+    pub fn handshake_done(&self) -> Option<std::time::Duration> {
+        *self.handshake_done.lock().unwrap()
+    }
 }
 
 impl std::fmt::Debug for Server {
@@ -54,6 +105,10 @@ impl Server {
     }
     pub fn requests(&self) -> usize {
         self.requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    /// One [`ConnTiming`] per accepted connection, in accept order.
+    pub fn timings(&self) -> Vec<Arc<ConnTiming>> {
+        self.timings.lock().unwrap().clone()
     }
 }
 
@@ -110,7 +165,34 @@ pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Dur
     start_full(behaviour, idle, identity())
 }
 
+/// A server that hands its connections to the application **before the
+/// handshake completes**, and records when each of the two happened — see
+/// [`ConnTiming`].
+///
+/// That is what `Connecting::into_0rtt()` does on the server side: it
+/// always succeeds there (`quinn-0.11.11/src/connection.rs:131` —
+/// `has_0rtt() || side().is_server()`), so it is not evidence of anything
+/// by itself; it is the only way to be handed the connection early enough
+/// for "early" to be observable at all, and the only source of the
+/// completion signal.
+///
+/// Opt-in rather than the default, because taking this path would start the
+/// h3 layer before the handshake finished for every other test in this
+/// suite — changing what they measure for the benefit of one that needs it.
+pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
+    start_inner(behaviour, None, identity(), true)
+}
+
 pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
+    start_inner(behaviour, idle, id, false)
+}
+
+fn start_inner(
+    behaviour: Behaviour,
+    idle: Option<std::time::Duration>,
+    id: Identity,
+    watch_early_data: bool,
+) -> Server {
     let Identity { cert_der, key_der } = id;
 
     let mut tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -138,7 +220,9 @@ pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: I
     let (tx, rx) = std::sync::mpsc::channel();
     let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (a, r) = (accepted.clone(), requests.clone());
+    let timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (a, r, ts) = (accepted.clone(), requests.clone(), timings.clone());
 
     let thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -149,22 +233,59 @@ pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: I
             let endpoint = quinn::Endpoint::server(cfg, "127.0.0.1:0".parse().unwrap()).unwrap();
             tx.send(endpoint.local_addr().unwrap()).unwrap();
             while let Some(incoming) = endpoint.accept().await {
-                let (a, r) = (a.clone(), r.clone());
+                let (a, r, ts) = (a.clone(), r.clone(), ts.clone());
                 tokio::spawn(async move {
-                    let Ok(conn) = incoming.await else { return };
+                    let started = std::time::Instant::now();
+                    let timing = Arc::new(ConnTiming::default());
+                    let conn = if watch_early_data {
+                        let Ok(connecting) = incoming.accept() else {
+                            return;
+                        };
+                        // Always `Ok` on the server side; what it is for is
+                        // the connection arriving before the handshake, and
+                        // the completion signal that comes with it.
+                        let Ok((conn, done)) = connecting.into_0rtt() else {
+                            return;
+                        };
+                        ts.lock().unwrap().push(timing.clone());
+                        let t = timing.clone();
+                        tokio::spawn(async move {
+                            // The `bool` is deliberately discarded: on a
+                            // server it is always `false`. See `ConnTiming`.
+                            let _ = done.await;
+                            *t.handshake_done.lock().unwrap() = Some(started.elapsed());
+                        });
+                        conn
+                    } else {
+                        let Ok(conn) = incoming.await else { return };
+                        conn
+                    };
                     a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // Kept beside the h3 layer, for `DieAfterHead`: closing
+                    // the QUIC connection is not something the h3 API
+                    // exposes, and it is the point of that behaviour.
+                    let quic = conn.clone();
                     let Ok(mut h3) =
                         h3::server::Connection::new(h3_quinn::Connection::new(conn)).await
                     else {
                         return;
                     };
                     while let Ok(Some(resolver)) = h3.accept().await {
-                        let r = r.clone();
+                        let (r, timing, quic) = (r.clone(), timing.clone(), quic.clone());
                         tokio::spawn(async move {
                             let Ok((_req, mut stream)) = resolver.resolve_request().await else {
                                 return;
                             };
+                            timing
+                                .first_request
+                                .lock()
+                                .unwrap()
+                                .get_or_insert(started.elapsed());
                             r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if behaviour == Behaviour::DieAfterHead {
+                                quic.close(1u32.into(), b"dying on purpose");
+                                return;
+                            }
                             if let Behaviour::Slow(d) = behaviour {
                                 tokio::time::sleep(d).await;
                             }
@@ -192,6 +313,7 @@ pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: I
         cert_der,
         accepted,
         requests,
+        timings,
         _thread: thread,
     }
 }

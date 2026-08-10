@@ -531,18 +531,21 @@ where
         body: RequestBody,
     ) -> Result<http::Response<H3Body>, Error> {
         let mut stream = send.send_request(head).await.map_err(body::stream_error)?;
+        // From here on the head is on the wire, and a write-side failure
+        // stops meaning what it meant a line ago. See `write_after_head`.
+        let mut stopped = false;
         match body {
             RequestBody::Empty => {}
             RequestBody::Full(b) => {
                 if !b.is_empty() {
-                    stream.send_data(b).await.map_err(body::stream_error)?;
+                    stopped = write_after_head(stream.send_data(b).await)?;
                 }
             }
             RequestBody::Rewindable(f) => {
                 if let RequestBody::Full(b) = f()
                     && !b.is_empty()
                 {
-                    stream.send_data(b).await.map_err(body::stream_error)?;
+                    stopped = write_after_head(stream.send_data(b).await)?;
                 }
             }
             RequestBody::Streaming(_) => {
@@ -555,7 +558,11 @@ where
                 ));
             }
         }
-        stream.finish().await.map_err(body::stream_error)?;
+        if !stopped {
+            // Not `let _ =`: everything except the one tolerated failure
+            // still propagates, and the `?` is what says so.
+            write_after_head(stream.finish().await)?;
+        }
         let resp = stream.recv_response().await.map_err(body::stream_error)?;
         let (parts, ()) = resp.into_parts();
         Ok(http::Response::from_parts(parts, H3Body::new(stream)))
@@ -587,6 +594,79 @@ where
             ErrorKind::Resolve,
             std::io::Error::other(format!("no address for {host}")),
         ))
+    }
+}
+
+/// A write on the request stream **after the head is on the wire**, and the
+/// one failure of it that is not a failure of the request.
+///
+/// `Ok(true)` means the peer stopped reading; there is nothing more to
+/// write, and the response is still coming.
+///
+/// # RFC 9114 §4.1, and the mechanism that makes it a live case
+///
+/// *"When the server does not need to receive the remainder of the request,
+/// it MAY abort reading the request stream, send a complete response, and
+/// cleanly close the sending part of the stream. Clients **MUST NOT**
+/// discard complete responses as a result of having their request
+/// terminated abruptly."* A `404`, a `401`, a `413` — every server that
+/// answers without reading the body does this.
+///
+/// On quinn it happens without the server intending anything: dropping a
+/// `quinn::RecvStream` that has not been read to the end sends
+/// `STOP_SENDING(0)` (`quinn-0.11.11/src/recv_stream.rs:534`), which
+/// `h3-quinn` maps to `StreamTerminated` (`h3-quinn-0.0.10/src/lib.rs:425`)
+/// and h3 to [`h3::error::StreamError::RemoteTerminate`]. **It reaches
+/// even an empty-bodied request**, because h3 writes a grease frame in
+/// `RequestStream::finish` on the first request of a connection
+/// (`h3-0.0.8/src/connection.rs:1101-1119`) — so `finish()` is a real write
+/// and can lose the race with the server's `STOP_SENDING`.
+///
+/// That is how this was found: not by reading the RFC, but as a test that
+/// failed roughly once in twenty under load and never once in isolation,
+/// with `Remote reset: 0x0` and a response the client had thrown away.
+///
+/// # Why only this variant, and only here
+///
+/// `STOP_SENDING` acts on one direction. The response stream is untouched,
+/// so `recv_response` below can still run and is still fully checked — the
+/// tolerance is on the write and nowhere else.
+///
+/// Every other [`h3::error::StreamError`] propagates unchanged — and the
+/// honest statement about that half is that **no test here pins it, and
+/// none can**.
+///
+/// Measured, not assumed: replacing this match's last two arms with
+/// `Err(_) => Ok(true)` leaves the whole `http-ng-h3` suite green, all 31
+/// tests, `a_connection_that_dies_mid_body_is_still_an_error` in
+/// `tests/stop_sending.rs` included. The reasoning that expected a red line
+/// there — "swallowing a `ConnectionError` means `recv_response` hangs on a
+/// dead connection" — is wrong: `recv_response` on a connection whose peer
+/// has gone returns an error of its own, and it arrives as the same
+/// `ErrorKind::Body` the narrow version produces. From outside, the two
+/// spellings are indistinguishable.
+///
+/// A white-box test cannot close the gap either: every `StreamError`
+/// variant is `#[non_exhaustive]` outside h3's
+/// `i-implement-a-third-party-backend-…` feature, so a `ConnectionError`
+/// cannot be synthesised to feed this function directly.
+///
+/// So the narrowness is right *by construction* rather than by measurement,
+/// and the construction is the only argument for it: `RemoteTerminate` is
+/// the one variant whose meaning we know here — one direction stopped, the
+/// other untouched — and for every other variant we do not know that the
+/// response stream survived, so we do not claim it. Widening the match
+/// would not break a test today; it would replace a statement we can defend
+/// with one we cannot.
+///
+/// The tolerance also cannot slide *before* the head by accident: this
+/// takes a `Result<(), _>` and `send_request` yields the stream, so the
+/// compiler refuses the move.
+fn write_after_head(r: Result<(), h3::error::StreamError>) -> Result<bool, Error> {
+    match r {
+        Ok(()) => Ok(false),
+        Err(h3::error::StreamError::RemoteTerminate { .. }) => Ok(true),
+        Err(e) => Err(body::stream_error(e)),
     }
 }
 

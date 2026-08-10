@@ -12,8 +12,10 @@ publish = false
 
 [dev-dependencies]
 http-ng-rt       = { path = "../http-ng-rt", version = "0.1.0" }
-http-ng-rt-tokio = { path = "../http-ng-rt-tokio", version = "0.1.0" }
-http-ng-rt-smol  = { path = "../http-ng-rt-smol", version = "0.1.0" }
+# `udp` on both, because the point of this crate is that the seam has two
+# implementations and the same body runs on either.
+http-ng-rt-tokio = { path = "../http-ng-rt-tokio", version = "0.1.0", features = ["udp"] }
+http-ng-rt-smol  = { path = "../http-ng-rt-smol", version = "0.1.0", features = ["udp"] }
 hyper            = { version = "1.11", default-features = false }
 tokio            = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
