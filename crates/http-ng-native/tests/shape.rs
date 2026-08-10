@@ -64,6 +64,13 @@ fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
 ///
 /// `Sync` is deliberately not asserted: a `Stream + Sink` is used through
 /// `&mut`, and nothing in this workspace shares one.
+///
+/// The second type argument is the keep-alive's clock, and it carries a
+/// second claim of the same kind: `NativeWebSocket` holds a
+/// `Pin<Box<Tm::Sleep>>`, and a box around a **concrete** type lets auto
+/// traits through where a `Pin<Box<dyn Future>>` would have stopped them.
+/// `Timer::Sleep` being a named associated type rather than an RPITIT is
+/// what makes that available — the same property `IdleTimeout` relies on.
 #[cfg(feature = "websocket")]
 #[test]
 fn auto_traits_reach_the_websocket() {
@@ -72,5 +79,5 @@ fn auto_traits_reach_the_websocket() {
     type Rt = http_ng_rt_tokio::Tokio;
     type Tls = http_ng_tls_rustls::Rustls;
 
-    assert_send::<http_ng_native::NativeWebSocket<http_ng_native::NativeIo<Rt, Tls>>>();
+    assert_send::<http_ng_native::NativeWebSocket<http_ng_native::NativeIo<Rt, Tls>, Rt>>();
 }

@@ -254,7 +254,54 @@ network went away" from "the server said goodbye"; `wasClean == false` is
 already treated that way in the browser backend, and this should agree with
 it rather than invent a second vocabulary.
 
-**What this section does not decide**: whether an unanswered ping should
-also be surfaced as a warning before the deadline expires, and whether the
-interval should reset on any inbound frame or only on a pong. Both are for
-whoever writes it, with tests.
+**~~What this section does not decide~~ — both decided, in the writing.**
+This paragraph left two questions to whoever implemented it, with tests.
+Both are answered, the reasoning is next to the code
+(`crates/http-ng-native/src/websocket.rs`'s module doc) and the answers
+are pinned by `crates/http-ng-native/tests/websocket.rs`.
+
+**No, an unanswered ping is not surfaced before its deadline.** The
+`Stream` can yield two things and neither can carry it. `Message` has no
+`Ping`/`Pong` variant and must not gain one — §2's own reason, that the
+browser can neither send nor receive one — and an `Err` on this stream is
+*terminal* by the seam's contract ("a `Stream` that has ended stays
+ended"), so a warning delivered as one would break that contract for every
+caller rather than only for those who asked for a keep-alive. A third
+channel would be a second vocabulary for information nobody can act on:
+the only action available on "the ping has not come back **yet**" is to
+wait, which is what the deadline already does, and a pong arriving one
+millisecond inside it is a healthy connection — an early signal would
+report ordinary jitter as a fault. What a caller can read is the
+configuration in force and the failure when it happens.
+
+**The interval resets on any inbound frame; the deadline resets only on a
+pong carrying that ping's own payload.** They are two clocks answering two
+questions. The interval measures *silence*, and any frame at all is proof
+the peer is there, so it restarts — which is what makes "off by default" a
+bound on traffic rather than a slogan: **a busy connection sends no
+keep-alive traffic at all**, where resetting only on a pong would make a
+chatty socket ping for ever. The deadline measures *an unanswered probe*,
+and only the answer RFC 6455 §5.5.2 makes a MUST answers it: data comes
+from the peer's application, a pong comes from its WebSocket layer, and it
+is the layer that must be alive for anything sent to be read. Letting any
+frame clear it would turn the probe back into the gap bound this section
+rejected, restricted to the window after a ping. The payload is matched
+rather than the opcode accepted, because §5.5.3 allows *unsolicited* pongs
+as a unidirectional heartbeat — a peer emitting one every second would
+otherwise keep a probe permanently "answered" without ever answering it.
+
+One consequence, stated rather than left to be discovered: both clocks are
+polled only when the read side has nothing, since `Pending` is the only
+moment `poll_next` has to poll them in. So the deadline cannot fire in the
+middle of a stream of data — it fires after the deadline of *silence*
+following a ping. That falls out of "`poll_next` is the only driver", and
+it is what makes the paragraph above safe: a peer that answers a ping with
+data and keeps talking is not killed, one that answers with data and then
+stops is.
+
+**A third thing the section did not raise and the implementation had to
+answer: the keep-alive stops at our own close.** `tungstenite` refuses
+every write once a close frame has gone out (`SendAfterClosing`) and RFC
+6455 makes a ping after a close meaningless, so no probe follows one — a
+probe already in flight keeps its deadline. The closing handshake is
+therefore still unbounded, the same gap `poll_close` records for itself.

@@ -116,6 +116,129 @@
 //! the same conclusion `tests/switching_protocols.rs` reached from the
 //! other side, and here it costs nothing to arrange: this file never
 //! builds a `CheckIn`.
+//!
+//! # The bound an open socket has: liveness, and only when it is asked for
+//!
+//! Steps 1-3 shipped with none — only the handshake read
+//! `Timeouts::connect`, so a peer that vanished without a `FIN` left a
+//! `Stream` that never yielded and never errored.
+//! `docs/w4-upgrade-seam.md` §7 decided the shape and left two questions
+//! open; both are answered below, and the answers are what this code
+//! does.
+//!
+//! **Ping/pong, not a timeout.** `Timeouts::total` is meaningless for a
+//! connection whose whole point is to outlive the exchange that opened
+//! it, and a gap bound would be actively *wrong*: silence is the normal
+//! state of a WebSocket, so `between_bytes` here would kill healthy
+//! connections. The question is not "is this transfer taking too long",
+//! it is **is the peer still there**, and RFC 6455 §5.5.2 answers exactly
+//! that. It is configured on this transport
+//! ([`crate::Native::websocket_keep_alive`]) rather than on the seam or in
+//! the request's extensions, because `http-ng-fetch` implements the same
+//! seam and a browser has no `send(ping)` at all — §7's own reasoning.
+//!
+//! **`poll_next` is the only thing driving the socket, and that is a real
+//! difference from `http-ng-h3`.** Nothing is spawned here; this crate has
+//! no `Spawn` bound anywhere, deliberately. So a ping can only be written
+//! while the caller is polling, and **a caller that stops polling gets no
+//! keep-alive.** That is accepted openly rather than worked around: a
+//! caller that is not polling is not waiting for anything. It is genuinely
+//! unlike `http_ng_h3`, where a spawned driver keeps a *pooled* connection
+//! alive on behalf of requests nobody has made yet — there the connection
+//! has no caller, here it always has one.
+//! `tests/websocket.rs`'s `a_socket_nobody_polls_gets_no_keep_alive` pins
+//! it from the server's side of the wire, so it is a stated property
+//! rather than an unstated consequence.
+//!
+//! **What `tungstenite` already does, and the one thing it does not.**
+//! `WebSocketContext::read` answers a peer's `Ping` with a `Pong` itself
+//! — its own doc says "This function sends pong and close responses
+//! automatically", and `tests/websocket.rs` watches that pong leave from
+//! the server's side. What it does **not** do is keep any record of pings
+//! *we* send: `read` hands an inbound `Pong` straight back out as
+//! `Message::Pong`, solicited or not, and there is no outstanding-ping
+//! state anywhere in `tungstenite 0.30`. So the frame this file writes is
+//! a `Ping`, and every bit of bookkeeping that decides whether a pong
+//! answered it is ours. That is the same division HTTP/3 met with quinn:
+//! driving a connection is what lets it *send* a keep-alive, not what
+//! makes it *decide* to.
+//!
+//! The ping also has to be **flushed**, which is not what the shape
+//! suggests and was read out of `tungstenite 0.30.0` rather than assumed:
+//! `write` formats a `Ping` into `out_buffer` and calls through to the
+//! socket only when the buffer passes `write_buffer_size` (128 KiB by
+//! default) or when it had a queued pong or close of its own to send
+//! (`_write`'s `should_flush`). A ping written and not flushed never
+//! leaves.
+//!
+//! ## §7's first open question: no, an unanswered ping is not surfaced
+//! before its deadline
+//!
+//! The `Stream` can yield exactly two things, and neither can carry it.
+//! `Message` has no `Ping`/`Pong` variant and must not gain one — the
+//! seam's own doc records why (the browser can neither send nor receive
+//! one), and a native-only concern is not a reason to change a seam three
+//! other backends implement. And an `Err` on this stream is **terminal**
+//! by that same seam's contract ("the connection broke and the error has
+//! already been reported"; "a `Stream` that has ended stays ended"), so a
+//! warning delivered as an error would break the contract for every
+//! caller, not only the ones who asked for a keep-alive.
+//!
+//! A third channel — a callback, a watch handle — would be a second
+//! vocabulary for information nobody can act on. The only action available
+//! on "the ping has not come back *yet*" is to wait, which is precisely
+//! what `within` already does; and a pong that arrives one millisecond
+//! inside the deadline is a perfectly healthy connection, so an early
+//! signal would report ordinary jitter as a fault. What a caller can read
+//! is the configuration in force ([`NativeWebSocket::keep_alive`]) and the
+//! failure when it happens. Between those two there is nothing true to
+//! say.
+//!
+//! ## §7's second open question: the interval resets on **any** inbound
+//! frame, the deadline **only** on the pong
+//!
+//! They are two clocks answering two different questions, so they reset on
+//! different events.
+//!
+//! `every` measures **silence**. Any inbound frame at all — text, binary,
+//! ping, pong, close — is proof the peer is there and ends the silence, so
+//! it restarts the interval. The consequence is the one that matters for
+//! the "off by default" argument: **a busy connection sends no keep-alive
+//! traffic whatsoever.** Resetting only on a pong would make a chatty
+//! socket ping every `every` for ever, which is exactly the traffic nobody
+//! asked for.
+//!
+//! `within` measures **an unanswered probe**, and only the answer RFC 6455
+//! §5.5.2 makes a MUST answers it: a `Pong` carrying the ping's own
+//! payload. A text frame does not, because the two say different things —
+//! data comes from the peer's application, a pong comes from its WebSocket
+//! layer, and it is the layer that has to be alive for anything we send to
+//! be read at all. Letting any frame clear the deadline would turn the
+//! probe back into the gap bound §7 rejected, restricted to the window
+//! after a ping.
+//!
+//! The payload is **matched**, not accepted on the opcode alone, because
+//! RFC 6455 §5.5.3 explicitly allows *unsolicited* pongs as a
+//! unidirectional heartbeat: a peer that emits one every second would keep
+//! our probe permanently "answered" without ever having answered it. The
+//! payload is the ping's sequence number, so a stale pong for an earlier
+//! ping does not answer a later one either.
+//!
+//! One consequence to state rather than leave to be discovered: **both
+//! sleeps are polled only when the read side has nothing**, because
+//! `Pending` is the only moment `poll_next` has to poll them in. So the
+//! deadline cannot fire in the middle of a stream of data; it fires after
+//! `within` of *silence* following a ping. That falls straight out of
+//! "`poll_next` is the only driver", and it is what makes the paragraph
+//! above safe: a peer that answers a ping with data and keeps talking is
+//! not killed, while one that answers with data and then stops is.
+//!
+//! **The keep-alive stops at our own close.** `tungstenite` refuses every
+//! write once a close frame has gone out (`ProtocolError::
+//! SendAfterClosing`), and RFC 6455 makes a ping after a close meaningless
+//! anyway, so no probe follows one — a probe already in flight still has
+//! its deadline. The closing handshake is therefore unbounded, which is
+//! the same gap [`Sink::poll_close`] already records for itself.
 use crate::connect;
 use bytes::Bytes;
 use futures_core::Stream;
@@ -130,6 +253,7 @@ use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tungstenite::Message as Frame;
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 
@@ -471,25 +595,165 @@ fn ws_error(e: tungstenite::Error) -> Error {
     Error::new(kind, e)
 }
 
+/// The liveness bound on an open WebSocket: how long the socket may be
+/// silent before a `Ping` goes out, and how long the peer then has to
+/// answer it.
+///
+/// **Off by default**, and [`crate::Native::websocket_keep_alive`] is the
+/// only way to turn it on. A default that pings is a default that sends
+/// traffic nobody asked for, and on a metered radio that is not free.
+///
+/// **This is not `TcpOpts::keepalive`, and neither substitutes for the
+/// other.** That one is the kernel's, on the TCP connection, and a
+/// middlebox that has forgotten the WebSocket while holding the socket
+/// open answers it happily. This one is RFC 6455 §5.5.2's ping/pong,
+/// written and answered by the WebSocket endpoints themselves, so its
+/// answer says something about the peer that is actually reading the
+/// messages.
+///
+/// The two fields reset on different events, deliberately — the module
+/// doc is where the reasoning for both is written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSocketKeepAlive {
+    /// How long the socket may be **silent** before a `Ping` goes out.
+    ///
+    /// Silence, not "since the last ping": any inbound frame restarts it,
+    /// so a busy connection never pings at all.
+    pub every: Duration,
+    /// How long the peer then has to answer with a `Pong` carrying that
+    /// ping's payload, before the `Stream` fails with [`PongNotReceived`].
+    ///
+    /// Only a matching pong answers it. A data frame arriving in the
+    /// meantime is delivered to the caller and leaves the probe standing.
+    pub within: Duration,
+}
+
+impl WebSocketKeepAlive {
+    /// `every` of silence, then `within` to answer.
+    pub const fn new(every: Duration, within: Duration) -> Self {
+        Self { every, within }
+    }
+}
+
+/// The source of the [`ErrorKind::Body`] error a missed pong produces.
+///
+/// A named public type rather than a message, for the reason
+/// [`crate::BetweenBytesElapsed`] is one: a caller must be able to tell
+/// this apart from every other way a connection can fail with
+/// `Error::source().downcast_ref()`, and to read the bound that was
+/// actually in force rather than parse it out of a string.
+///
+/// # Why it is an error and not a `Message::Close`
+///
+/// Because those are different facts and a caller acts differently on
+/// them: a `Close` is the peer saying goodbye, this is the network having
+/// gone away underneath a peer that never did. `http-ng-fetch` already
+/// draws that line in the same place and in the same vocabulary — a
+/// browser `CloseEvent` with `wasClean == false` becomes an
+/// `ErrorKind::Body` on the `Stream` rather than a `Message::Close(1006)`,
+/// precisely so that a caller inspecting `Message::Close` is not told its
+/// peer said goodbye when it did not. This agrees with that rather than
+/// inventing a second vocabulary.
+///
+/// It is deliberately **not** an `ErrorKind::Timeout`: no field of
+/// [`Timeouts`] is in force here, and `Phase::BetweenBytes` in particular
+/// would name a bound `docs/w4-upgrade-seam.md` §7 explicitly refused to
+/// give this seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the peer did not answer a keep-alive ping within {0:?}")]
+pub struct PongNotReceived(pub Duration);
+
+/// The keep-alive's state, and the one sleep it runs at a time.
+///
+/// Which question that sleep answers depends on `outstanding`: with no
+/// probe in flight it measures silence against
+/// [`WebSocketKeepAlive::every`], with one it is that probe's deadline
+/// against [`WebSocketKeepAlive::within`]. One sleep rather than two,
+/// because the two states are exclusive — a socket cannot be both waiting
+/// to probe and waiting for an answer.
+///
+/// `Pin<Box<Tm::Sleep>>` for the reason [`crate::IdleTimeout`]'s is: a box
+/// around a **concrete** type, so auto traits pass straight through it and
+/// a `NativeWebSocket` over a `Send` runtime stays `Send`.
+struct Liveness<Tm: Timer> {
+    timer: Tm,
+    config: WebSocketKeepAlive,
+    sleep: Option<Pin<Box<Tm::Sleep>>>,
+    /// The payload of the ping waiting for an answer, and `None` when none
+    /// is.
+    outstanding: Option<u64>,
+    /// The payload the next ping will carry. A sequence number rather than
+    /// a constant, so a pong for an earlier ping cannot answer a later one.
+    next: u64,
+}
+
+impl<Tm: Timer> Liveness<Tm> {
+    fn new(timer: Tm, config: WebSocketKeepAlive) -> Self {
+        Self {
+            timer,
+            config,
+            sleep: None,
+            outstanding: None,
+            next: 0,
+        }
+    }
+
+    /// A frame arrived — and the two clocks answer to different events,
+    /// which is §7's second open question. See the module doc.
+    fn saw(&mut self, frame: &Frame) {
+        if let Frame::Pong(payload) = frame
+            && self
+                .outstanding
+                .is_some_and(|seq| payload.as_ref() == seq.to_be_bytes())
+        {
+            self.outstanding = None;
+        }
+        // Any inbound frame ends the silence `every` measures — but only
+        // once the probe, if there was one, has been answered. A text
+        // frame arriving while a ping is outstanding is delivered to the
+        // caller and leaves the deadline running.
+        if self.outstanding.is_none() {
+            self.sleep = None;
+        }
+    }
+
+    /// The next ping's payload, and the record that it is waiting.
+    fn probe(&mut self) -> Bytes {
+        let seq = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.outstanding = Some(seq);
+        Bytes::copy_from_slice(&seq.to_be_bytes())
+    }
+
+    fn no_pong(&self) -> Error {
+        Error::new(ErrorKind::Body, PongNotReceived(self.config.within))
+    }
+}
+
 /// An open WebSocket on a native socket.
 ///
 /// The IO and the protocol state are separate fields on purpose: that is
 /// what lets [`Shim`] borrow the poll `Context` for one call, and it is
 /// the whole of §6's argument for driving `tungstenite` rather than
 /// wrapping it.
-#[derive(Debug)]
-pub struct NativeWebSocket<I> {
+pub struct NativeWebSocket<I, Tm: Timer> {
     io: I,
     ctx: WebSocketContext,
     /// A `Stream` that has ended stays ended — the contract
     /// `http_ng_core::unversioned::WebSocket` states, held here rather
     /// than left to whatever `tungstenite` answers on a second call.
     ended: bool,
+    /// `None` — no keep-alive was asked for, and nothing here ever builds
+    /// a sleep. That matters beyond an allocation: `Tokio::sleep` panics
+    /// outside a runtime, and a socket that asked for nothing must not
+    /// need one. Still in the type, because a type cannot appear and
+    /// disappear with a runtime value.
+    live: Option<Liveness<Tm>>,
 }
 
-impl<I> NativeWebSocket<I> {
+impl<I, Tm: Timer> NativeWebSocket<I, Tm> {
     /// The negotiated connection, from the pieces [`upgrade`] hands back.
-    fn new(io: I, read_buf: Bytes) -> Self {
+    fn new(io: I, read_buf: Bytes, timer: Tm, keep_alive: Option<WebSocketKeepAlive>) -> Self {
         Self {
             io,
             ctx: WebSocketContext::from_partially_read(
@@ -498,25 +762,96 @@ impl<I> NativeWebSocket<I> {
                 Some(WebSocketConfig::default()),
             ),
             ended: false,
+            live: keep_alive.map(|c| Liveness::new(timer, c)),
         }
+    }
+
+    /// The liveness bound in force on this socket, and `None` — the
+    /// default — when there is none.
+    ///
+    /// The default being *readable* is the point: "off by default" is then
+    /// a claim a caller can check rather than one it has to believe, and
+    /// `tests/websocket.rs` checks it here as well as on the wire.
+    pub fn keep_alive(&self) -> Option<WebSocketKeepAlive> {
+        self.live.as_ref().map(|l| l.config)
     }
 }
 
-impl<I> WebSocket for NativeWebSocket<I> where I: Read + Write + Unpin {}
+/// Hand-written for the reason [`crate::IdleTimeout`]'s is:
+/// `#[derive(Debug)]` would demand `Debug` of the clock, which [`Timer`]
+/// does not ask for. The keep-alive state is in it because an outstanding
+/// probe is exactly what a reader debugging a stalled socket wants to see
+/// — and, per §7's first question, the only place it is visible.
+impl<I: std::fmt::Debug, Tm: Timer> std::fmt::Debug for NativeWebSocket<I, Tm> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeWebSocket")
+            .field("io", &self.io)
+            .field("ended", &self.ended)
+            .field("keep_alive", &self.keep_alive())
+            .field(
+                "ping_awaiting_a_pong",
+                &self.live.as_ref().and_then(|l| l.outstanding),
+            )
+            .finish()
+    }
+}
 
-impl<I> Stream for NativeWebSocket<I>
+/// `Unpin` whenever the IO is, stated rather than derived — the same
+/// reasoning, in the same words, as [`crate::IdleTimeout`]'s: the
+/// derivation would also demand it of the clock, which [`Timer`] does not
+/// require, and every `Stream`/`Sink` method here starts with
+/// `self.get_mut()`. Sound because nothing in this type is ever pinned in
+/// place: the only projections are `Pin::new(&mut io)`, which needs
+/// `I: Unpin` on its own, and the sleep, which is behind its own
+/// `Pin<Box<_>>`.
+impl<I: Unpin, Tm: Timer> Unpin for NativeWebSocket<I, Tm> {}
+
+impl<I, Tm> WebSocket for NativeWebSocket<I, Tm>
 where
     I: Read + Write + Unpin,
+    Tm: Timer,
+{
+}
+
+impl<I, Tm> Stream for NativeWebSocket<I, Tm>
+where
+    I: Read + Write + Unpin,
+    Tm: Timer,
 {
     type Item = Result<Message, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Self { io, ctx, ended } = self.get_mut();
+        let Self {
+            io,
+            ctx,
+            ended,
+            live,
+        } = self.get_mut();
         if *ended {
             return Poll::Ready(None);
         }
         loop {
-            match ctx.read(&mut Shim { io, cx }) {
+            // A ping the socket refused is formatted into `tungstenite`'s
+            // own `out_buffer`, and `read` flushes only what *it* queued
+            // (`additional_send`/`unflushed_additional`) — never a frame
+            // this file wrote. So while a probe is outstanding the retry
+            // is ours, and it is cheap: with an empty buffer `flush` is a
+            // `poll_flush` on the socket and nothing more.
+            if live.as_ref().is_some_and(|l| l.outstanding.is_some())
+                && let Err(e) = ctx.flush(&mut Shim { io, cx })
+                && !would_block(&e)
+            {
+                *ended = true;
+                return Poll::Ready(Some(Err(ws_error(e))));
+            }
+            let read = ctx.read(&mut Shim { io, cx });
+            // Before the match, and on every `Ok` arm including the ones
+            // that `continue`: the interval measures silence on the wire,
+            // not silence a caller could see.
+            if let (Ok(frame), Some(l)) = (&read, live.as_mut()) {
+                l.saw(frame);
+            }
+            match read {
                 Ok(Frame::Text(t)) => return Poll::Ready(Some(Ok(Message::Text(t.to_string())))),
                 Ok(Frame::Binary(b)) => return Poll::Ready(Some(Ok(Message::Binary(b)))),
                 Ok(Frame::Close(f)) => {
@@ -540,7 +875,76 @@ where
                 // a write-side variant — and is folded in here rather than
                 // given an `unreachable!`.
                 Ok(Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_)) => continue,
-                Err(e) if would_block(&e) => return Poll::Pending,
+                // The socket has nothing, so this is the only moment
+                // `poll_next` has a `Pending` to spend on the keep-alive —
+                // and the read waker has just been registered, which is
+                // what makes it safe to park here at all.
+                Err(e) if would_block(&e) => {
+                    let Some(l) = live.as_mut() else {
+                        return Poll::Pending;
+                    };
+                    // At most two turns: arm the sleep, then either park
+                    // on it or spend it and arm the next one.
+                    loop {
+                        if l.outstanding.is_none() && !ctx.can_write() {
+                            // A close of ours has gone out. `tungstenite`
+                            // refuses every write past that
+                            // (`SendAfterClosing`) and RFC 6455 makes a
+                            // ping after a close meaningless anyway, so
+                            // the keep-alive is over — with nothing armed,
+                            // so nothing wakes this task but the peer's
+                            // answer. The closing handshake is therefore
+                            // unbounded, the same gap `poll_close` records
+                            // for itself.
+                            l.sleep = None;
+                            return Poll::Pending;
+                        }
+                        if l.sleep.is_none() {
+                            let due = if l.outstanding.is_some() {
+                                l.config.within
+                            } else {
+                                l.config.every
+                            };
+                            l.sleep = Some(Box::pin(l.timer.sleep(due)));
+                        }
+                        let sleep = l.sleep.as_mut().expect("just set");
+                        if sleep.as_mut().poll(cx).is_pending() {
+                            return Poll::Pending;
+                        }
+                        l.sleep = None;
+                        if l.outstanding.is_some() {
+                            *ended = true;
+                            return Poll::Ready(Some(Err(l.no_pong())));
+                        }
+                        let payload = l.probe();
+                        match ctx.write(&mut Shim { io, cx }, Frame::Ping(payload)) {
+                            // Formatted into `out_buffer`; the retry at
+                            // the top of the outer loop finishes it.
+                            Ok(()) => {}
+                            Err(e) if would_block(&e) => {}
+                            Err(e) => {
+                                *ended = true;
+                                return Poll::Ready(Some(Err(ws_error(e))));
+                            }
+                        }
+                        // Not optional: `write` only *buffers* a ping —
+                        // `_write` flushes just when it had a pong or
+                        // close of its own to send, and the default write
+                        // buffer is 128 KiB. A ping written and not
+                        // flushed never leaves.
+                        match ctx.flush(&mut Shim { io, cx }) {
+                            Ok(()) => {}
+                            Err(e) if would_block(&e) => {}
+                            Err(e) => {
+                                *ended = true;
+                                return Poll::Ready(Some(Err(ws_error(e))));
+                            }
+                        }
+                        // Round again, to arm and poll the deadline: the
+                        // read waker alone would never bring this task
+                        // back to notice it expire.
+                    }
+                }
                 Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                     *ended = true;
                     return Poll::Ready(None);
@@ -554,9 +958,10 @@ where
     }
 }
 
-impl<I> Sink<Message> for NativeWebSocket<I>
+impl<I, Tm> Sink<Message> for NativeWebSocket<I, Tm>
 where
     I: Read + Write + Unpin,
+    Tm: Timer,
 {
     type Error = Error;
 
@@ -629,15 +1034,19 @@ where
 /// it can do WebSocket. There is no capability to read and no method that
 /// returns `Unsupported`: a backend that cannot do this does not write
 /// this `impl`, and asking it does not compile.
+/// `R: Clone` is new with the keep-alive and is not a new restriction:
+/// `Transport for Native` has required it since v0.2 W2 and every runtime
+/// in this workspace is a ZST or a handle. The socket needs its own clock
+/// because it outlives the call that opened it, and a `&R` cannot.
 impl<R, T, D> WebSocketConnect for crate::Native<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type WebSocket = NativeWebSocket<crate::NativeIo<R, T>>;
+    type WebSocket = NativeWebSocket<crate::NativeIo<R, T>, R>;
 
     async fn websocket(&self, req: http::Request<()>) -> Result<Self::WebSocket, Error> {
         let uri = as_http_uri(req.uri())?;
@@ -669,6 +1078,11 @@ where
         };
 
         let (io, read_buf, _resp) = upgrade(conn, handshake, &key).await?;
-        Ok(NativeWebSocket::new(io, read_buf))
+        Ok(NativeWebSocket::new(
+            io,
+            read_buf,
+            self.rt.clone(),
+            self.ws_keep_alive,
+        ))
     }
 }

@@ -1358,7 +1358,11 @@ write-blind shim in `poll_next`) is killed at the top of the table.
   is read at all: `first_byte` would be a bound on the `101` and is not
   applied, and `between_bytes`/`total` have no meaning for a channel with
   no response body. So **an open WebSocket has no bound of any kind**, and
-  a caller who needs one wraps the future themselves.
+  a caller who needs one wraps the future themselves. *(Superseded: it
+  can have one now — RFC 6455 ping/pong, off by default, on
+  `Native::websocket_keep_alive`. `Timeouts` is still not read past
+  `connect`, and §7's first decision says why a gap bound in particular
+  would have been the wrong answer. The last section of this document.)*
 - **The `Sink` gives backpressure from the socket, and that has one
   measured test and one untested consequence.** `poll_ready` is
   `poll_flush`, so a message is accepted only when the write buffer is
@@ -1369,7 +1373,9 @@ write-blind shim in `poll_next`) is killed at the top of the table.
   frame and flushes; the peer's answer arrives on the `Stream`.
   `a_close_from_the_peer_is_echoed_and_ends_the_stream` covers the
   peer-initiated direction; **the caller-initiated close handshake — we
-  send `Close`, the peer echoes, the stream ends — has no test.**
+  send `Close`, the peer echoes, the stream ends — has no test.** *(It has
+  one now: `the_keep_alive_stops_at_our_own_close`, written for a
+  different mutation and closing this at the same time.)*
 - **A queued pong can be stranded by a full write buffer.** If the flush
   inside `read` blocks and no further data arrives, the pong waits for the
   next read to be woken by *incoming* traffic, because that is the only
@@ -1735,3 +1741,273 @@ over the alternatives on three grounds:
   unchanged at 33 crates, which is the claim made and the only one
   measured; how many kilobytes the bridge and the four `web-sys` bindings
   add to a built `.wasm` was not weighed.
+
+
+# v0.3 W4 — the bound an open WebSocket has
+
+Steps 1–4 shipped a seam with **no bound of any kind past the
+handshake**: only `Timeouts::connect` was read, so a peer that vanished
+without a `FIN` left a `Stream` that never yielded and never errored. The
+section above records that in its own words, and
+`docs/w4-upgrade-seam.md` §7 took the decisions — liveness rather than
+`Timeouts`, ping/pong rather than a gap bound, on `http-ng-native`'s own
+configuration, off by default, driven from `poll_next`. This is the
+implementation, and the answers to the two questions §7 left open.
+
+`Native::websocket_keep_alive(WebSocketKeepAlive { every, within })`,
+behind the `websocket` feature, no counterpart on `http-ng-fetch`. A
+socket silent for `every` sends a `Ping`; a peer that does not answer
+within `within` ends the `Stream` with `ErrorKind::Body` whose source is
+`PongNotReceived(within)`.
+
+## The two open questions, and why each was decided that way
+
+**§7.1 — no, an unanswered ping is not surfaced before its deadline.**
+Not a judgement about how much a caller wants to know, but about what
+this `Stream` can say. It yields exactly two things. `Message` has no
+`Ping`/`Pong` variant and must not gain one — the seam's own doc gives
+the reason, that the browser can neither send nor receive one — and an
+`Err` here is *terminal* by that same seam's contract ("a `Stream` that
+has ended stays ended"), so a warning delivered as an error would break
+the contract for every caller rather than only for the ones who asked for
+a keep-alive. A third channel — a callback, a watch handle — would be a
+second vocabulary for information nobody can act on: the only action
+available on "the ping has not come back **yet**" is to wait, which is
+exactly what `within` already does, and a pong arriving a millisecond
+inside the deadline is a perfectly healthy connection, so an early signal
+would report ordinary jitter as a fault. What a caller can read is
+`NativeWebSocket::keep_alive()` and the failure when it happens; the
+outstanding probe appears in `Debug` and nowhere else.
+
+**§7.2 — the interval resets on any inbound frame, the deadline only on
+a pong carrying that ping's own payload.** Two clocks, two questions.
+
+The interval measures *silence*, and any frame at all — text, binary,
+ping, pong, close — is proof the peer is there, so it restarts. That is
+what makes "off by default" a bound on traffic rather than a slogan: **a
+busy connection sends no keep-alive traffic whatsoever**, where resetting
+only on a pong would make a chatty socket ping every interval for ever —
+precisely the traffic nobody asked for that the default is off to avoid.
+
+The deadline measures *an unanswered probe*, and only the answer RFC 6455
+§5.5.2 makes a MUST answers it. Data comes from the peer's application, a
+pong comes from its WebSocket layer, and it is the layer that has to be
+alive for anything we send to be read at all; letting any frame clear the
+deadline would turn the probe back into the gap bound §7 rejected,
+restricted to the window after a ping. The payload is *matched* rather
+than the opcode accepted, because §5.5.3 explicitly allows unsolicited
+pongs as a unidirectional heartbeat — a peer emitting one every second
+would otherwise keep a probe permanently "answered" without ever having
+answered it — and it is a sequence number, so a stale pong for an earlier
+ping cannot answer a later one.
+
+**A consequence worth stating rather than discovering: both clocks are
+polled only when the read side has nothing.** `Pending` is the only
+moment `poll_next` has to poll them in. So the deadline cannot fire in
+the middle of a stream of data; it fires after `within` of *silence*
+following a ping. That falls straight out of "`poll_next` is the only
+driver", and it is what makes the paragraph above safe — a peer that
+answers a ping with data and keeps talking is not killed, while one that
+answers with data and then stops is.
+
+**A third question §7 did not raise, which the code had to answer: the
+keep-alive stops at our own close.** `tungstenite` refuses every write
+once a close frame has gone out (`ProtocolError::SendAfterClosing`), so a
+client that kept probing would answer its peer's ordinary goodbye with a
+`Decode` error of its own making. No probe follows our close; a probe
+already in flight keeps its deadline. The closing handshake is therefore
+still unbounded, which is the same gap `poll_close` records for itself.
+
+## The error is distinguishable from the peer closing, in the browser backend's own vocabulary
+
+A missed pong is `Error::new(ErrorKind::Body, PongNotReceived(within))`.
+That is not a new vocabulary: `http-ng-fetch` turns a `CloseEvent` with
+`wasClean == false` into an `ErrorKind::Body` on the `Stream` rather than
+a `Message::Close(1006)`, for exactly the reason that applies here — a
+caller inspecting `Message::Close` must not be told its peer said goodbye
+when the network went away underneath one that never did. `PongNotReceived`
+is public and named, like `BetweenBytesElapsed` and `FirstByteTimedOut`,
+so the distinction survives `Error::source().downcast_ref()` without
+parsing a message, and it carries the bound that was in force.
+
+It is deliberately **not** an `ErrorKind::Timeout`. No field of `Timeouts`
+is in force on an open WebSocket, and `Phase::BetweenBytes` in particular
+would name the gap bound §7 refused to give this seam.
+
+## `poll_next` is the only driver, and that is stated rather than implied
+
+Nothing is spawned; this crate has no `Spawn` bound, deliberately. So the
+ping is written from `poll_next` or not at all, and **a caller that stops
+polling gets no keep-alive.** It is written in the module doc, in
+`Native::websocket_keep_alive`'s doc, and pinned from the server's side of
+the wire by `a_socket_nobody_polls_gets_no_keep_alive`, whose two arms
+carry the *same* configuration so that the only difference is whether
+anything is polling them.
+
+This is the genuine difference from `http-ng-h3`, and both halves are
+written next to their own policy so that changing one does not silently
+import the other's justification: there a spawned driver keeps a *pooled*
+connection alive on behalf of requests nobody has made yet, because such a
+connection has no caller. A WebSocket always has one, and a caller that is
+not polling is not waiting for anything.
+
+## What `tungstenite` already does, checked before anything was written
+
+`WebSocketContext::read` answers a peer's `Ping` with a `Pong` itself —
+its own doc says so, and `tests/websocket.rs` has watched that pong leave
+since step 2. What it does **not** do is keep any record of pings *we*
+send: `read` hands an inbound `Pong` straight back out as
+`Message::Pong`, solicited or not, and `tungstenite 0.30` has no
+outstanding-ping state anywhere. So the frame this code writes is a
+`Ping`, and all the bookkeeping that decides whether a pong answered it is
+ours — the same division HTTP/3 met with quinn's unset
+`keep_alive_interval`.
+
+One thing that is not what the shape suggests, and was read out of the
+source rather than assumed: **`write` only buffers a ping.** `_write`
+flushes just when it had a pong or close of its own to send, and the
+default write buffer is 128 KiB, so a ping written and not flushed never
+leaves. The explicit flush is not optional and the `no-flush` mutation
+below kills five tests.
+
+## The tests
+
+Six added to `crates/http-ng-native/tests/websocket.rs`, bringing it to
+**19**. Each is an A/B against the same fixture with the same
+configuration, so what it measures is the difference the *server* made
+rather than a number:
+
+| test | what it pins |
+|---|---|
+| `keep_alive_is_off_by_default_and_pings_only_when_it_is_configured` | the default is off — read back from the socket **and** watched on the wire; a configured socket pings; a pong clears a probe |
+| `a_socket_nobody_polls_gets_no_keep_alive` | the ping comes from `poll_next` and nowhere else |
+| `a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye` | the kind, the named source, the bound it carries, that the stream stays ended — and a control that closes cleanly and yields `Message::Close` under the same configuration |
+| `only_a_pong_with_the_pings_own_payload_answers_it` | a text frame and an unsolicited pong both leave the probe standing, **and exactly one ping was ever sent** |
+| `an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings` | the interval half of §7.2, with a silent control proving the same configuration does ping |
+| `the_keep_alive_stops_at_our_own_close` | nothing goes out past our close, and the caller-initiated close handshake completes |
+
+**Where a duration is unavoidable it is arranged so the clock can only
+make a test hang.** An interval and a deadline *are* durations, so three
+of the six wait for one; the negative half of each pair is released by a
+*causal* event — three completed ping/pong round trips — rather than by a
+sleep. Three rather than one deliberately: `poll_next` sends a second ping
+only once the first has been cleared, and only a matching pong clears one,
+so a client that ignored pongs could never reach ping two at any speed.
+The one ratio a slow machine could genuinely upset is
+`an_inbound_message_resets_the_interval_…`'s — a 1 s interval against
+messages every 150 ms, **6.7×** — and it says so where the numbers are
+chosen. `the_keep_alive_stops_at_our_own_close` has the best shape of the
+three: correct code writes nothing past a close *at any speed*, so its
+ten-interval margin affects only whether the defect is caught.
+
+## Mutations
+
+Anchor verified before every run: 19 tests, all passing. Each mutation
+applied alone to `crates/http-ng-native/src/`, then
+`cargo nextest run -p http-ng-native --features websocket --test
+websocket`, then the tree restored from git.
+
+| mutation | verdict | killed by |
+|---|---|---|
+| the ping is never sent (the probe is still recorded) | KILLED | five of the six — all but `the_keep_alive_stops_at_our_own_close`, whose whole assertion is that no ping goes out |
+| the ping is written but never flushed | KILLED | the same five, and for the same reason the sixth is not among them |
+| the pong deadline never fires | KILLED | `a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye`, `only_a_pong_with_the_pings_own_payload_answers_it` (both by hanging into `BOUND`) |
+| a missed pong reported as `Ok(Message::Close(None))` rather than an error | KILLED | `a_missed_pong_…`, on the assertion that names the confusion, and `only_a_pong_…` |
+| the interval resets **only** on a pong | KILLED | `an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings` |
+| **any inbound frame clears the probe as well as the interval** | **SURVIVED, then KILLED** | `only_a_pong_…`, after the ping count was added — see below |
+| any pong answers a probe, whatever payload it carries | KILLED | `only_a_pong_…` |
+| keep-alive on by default | KILLED | `keep_alive_is_off_by_default_…`, at the accessor; **and separately at the wire**, verified by re-running the mutation with the accessor assertion deleted, where the failure is "a socket with no keep-alive configured sent opcode 0x9" |
+| **a ping is sent past our own close** | **SURVIVED, then KILLED** | `the_keep_alive_stops_at_our_own_close`, written for it — see below |
+| the retry-flush of a ping the socket refused is removed | **SURVIVED** | — recorded below |
+
+### The survivor that mattered, and what it says about the first version of the test
+
+**"Any inbound frame clears the probe" passed all eighteen tests as they
+first stood, and that is the interesting result of this work.**
+`only_a_pong_with_the_pings_own_payload_answers_it` asserted that the
+stream failed with `PongNotReceived`, at `ErrorKind::Body`, carrying
+`within` — and every one of those held under the mutant, because the
+frame cleared the probe, the interval simply restarted, a *second* ping
+went out and *that* one died unanswered about 100 ms later. Same error,
+same kind, same bound, different fact.
+
+The fixture was **not** adjusted. The server now counts pings and the test
+asserts exactly one, which the correct implementation cannot exceed: only
+a matching pong clears a probe, and a stream that has ended never sends
+anything again. That is the difference between "an error happened" and
+"this probe was not answered", and it is the shape of assertion this
+whole area needs.
+
+**"A ping past our own close" survived for a duller reason** — no test
+closed from the caller's side at all, which
+`docs/v03-acceptance.md` had already recorded as a gap for `poll_close`.
+`the_keep_alive_stops_at_our_own_close` was written for it and closes both
+holes at once.
+
+### The one that is still standing
+
+**The retry-flush removed — SURVIVED, and it is recorded rather than
+papered over.** After `ctx.write` has formatted a ping into
+`tungstenite`'s `out_buffer`, a socket that refuses the bytes leaves it
+there; `read` flushes only what *it* queued (`additional_send` /
+`unflushed_additional`), never a frame this crate wrote, so without the
+retry at the top of `poll_next`'s loop the ping would sit in the buffer
+until something else flushed — and the deadline would then kill a
+connection whose peer was perfectly healthy.
+
+No test provokes it, because provoking it needs a caller that
+`start_send`s a message larger than the socket buffer, does **not** flush
+it, and then polls the `Stream` while the peer stops reading and starts
+again only after a ping has been queued behind it. That is a legal caller
+and an unusual one. The retry is kept because it makes the failure
+structurally impossible rather than merely unobserved — the same reason
+the control-frame loop in `poll_next` was kept when its mutation survived
+— and this is the same shape as the already-recorded "a queued pong can be
+stranded by a full write buffer".
+
+## Deliberately not done
+
+- **No second knob.** There is no maximum number of unanswered pings, no
+  jitter on the interval, and no way to set the ping payload. Each would
+  be a field whose caller decision nobody has stated, which is the
+  reasoning this project rejects everywhere else.
+- **Nothing on the seam, and nothing in `Capabilities`.** A knob on
+  `WebSocketConnect` would be one `http-ng-fetch` could not honour, and a
+  capability would be a field nothing branches on. Asking a browser for
+  this does not compile, which is the whole of §7's placement argument.
+- **`Timeouts` is still not read past `connect`.** `first_byte`, `total`
+  and `between_bytes` have no meaning on a channel with no response body,
+  and §7's first decision says why a gap bound in particular would be
+  wrong here.
+- **No `Ping`/`Pong` a caller can send.** Unchanged from step 2, and the
+  keep-alive is deliberately not a way in: the frames it writes are never
+  visible on the `Stream`.
+
+## What this leaves unverified
+
+- **The retry of a ping the socket refused has no test** — the surviving
+  mutation above, with the caller shape that would provoke it written
+  down.
+- **The closing handshake is still unbounded.** The keep-alive stops at
+  our own close, so a peer that vanishes *after* we have closed leaves
+  `poll_close`'s successor — the `Stream` waiting for the echo — with no
+  bound at all. `the_keep_alive_stops_at_our_own_close` pins that nothing
+  goes out in that window; nothing pins what happens if the echo never
+  comes, and a caller who needs a bound there still races the future
+  itself.
+- **`within` is measured against silence, not against a round trip.** The
+  deadline sleep is polled only when the read side is empty, so a peer
+  that keeps sending data while never answering the probe is not detected
+  until it also goes quiet. That is the deliberate design above; what has
+  not been measured is how long "also goes quiet" can be in practice on a
+  chatty connection.
+- **No `wss://` keep-alive test.** Every fixture here is a plain
+  `TcpListener`, the same gap step 2 recorded; the ping goes through the
+  same `Sink`/`Shim` path whatever the IO is, and no test says so.
+- **Nothing has been run against a real WebSocket server**, so no real
+  implementation's pong behaviour has ever answered one of these pings.
+  The same gap steps 1–4 record, unchanged.
+- **`u64` sequence numbers wrap at `u64::MAX` pings and nothing tests
+  it.** `wrapping_add` is deliberate rather than accidental; at one ping
+  a nanosecond it is 584 years, so this is recorded for completeness
+  rather than as a risk.

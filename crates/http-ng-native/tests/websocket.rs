@@ -35,6 +35,16 @@
 //! establishes rather than one it hopes for. `BOUND` is a watchdog, never
 //! a threshold: every failure it can produce is "this hung", and no test
 //! passes because something happened quickly enough.
+//!
+//! The keep-alive tests at the end of this file are the one place a
+//! duration is unavoidable — an interval and a deadline *are* durations —
+//! and they are arranged so that the clock can only make a test hang,
+//! never make it pass wrongly. Each is an A/B against the same fixture
+//! with the same configuration, the negative half of each pair is released
+//! by a *causal* event (three completed ping/pong round trips) rather than
+//! by a sleep, and the one ratio a slow machine could genuinely upset —
+//! `an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings`
+//! — is 6.7× and says so where it is chosen.
 #![cfg(all(not(target_family = "wasm"), feature = "websocket"))]
 
 use bytes::Bytes;
@@ -45,7 +55,7 @@ use http_ng_core::ErrorKind;
 use http_ng_core::RequestBody;
 use http_ng_core::unversioned::{Message, Transport, WebSocketConnect};
 use http_ng_dns::IpLiteralOnly;
-use http_ng_native::Native;
+use http_ng_native::{Native, PongNotReceived, WebSocketKeepAlive};
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
 use std::io::{Read, Write};
@@ -206,6 +216,17 @@ impl Wire {
     fn send_raw(&mut self, bytes: &[u8]) -> bool {
         self.sock.write_all(bytes).is_ok()
     }
+
+    /// Shortens the watchdog so [`Wire::frame`] stops on a quiet socket
+    /// instead of on [`BOUND`].
+    ///
+    /// Used only by the keep-alive tests, and only to *drain* frames the
+    /// client has already sent — the kernel has them buffered, so what
+    /// this window bounds is how long the drain waits for nothing, never
+    /// whether a frame is seen.
+    fn read_timeout(&mut self, d: Duration) {
+        self.sock.set_read_timeout(Some(d)).expect("read timeout");
+    }
 }
 
 /// A one-line header lookup over a raw request head.
@@ -253,6 +274,12 @@ where
 /// would be a second thing that could fail.
 fn native() -> Native<Tokio, Rustls, IpLiteralOnly> {
     Native::new(Tokio, Rustls::with_webpki_roots(), IpLiteralOnly)
+}
+
+/// The same transport with the liveness bound switched on — the only way
+/// to switch it on, which is half of what "off by default" means.
+fn native_keeping_alive(every: Duration, within: Duration) -> Native<Tokio, Rustls, IpLiteralOnly> {
+    native().websocket_keep_alive(WebSocketKeepAlive::new(every, within))
 }
 
 fn open(uri: &str) -> http::Request<()> {
@@ -917,5 +944,671 @@ async fn a_websocket_never_takes_a_pooled_connection() {
         accepted.load(Ordering::SeqCst),
         2,
         "the upgrade must have opened a socket of its own"
+    );
+}
+
+// ── the liveness bound (`docs/w4-upgrade-seam.md` §7) ───────────────────
+//
+// Five tests, and each one is an A/B against the *same* fixture and the
+// same configuration, so what it measures is the difference the server
+// made rather than a number. Where a duration is unavoidable — the
+// interval and the deadline *are* durations — the margin is stated where
+// it is chosen, and the failure mode of a slow machine is `BOUND`, i.e.
+// "this hung", never a wrong verdict.
+
+/// Off by default, on when it is asked for, and a pong is what clears a
+/// probe.
+///
+/// Both halves against one fixture, and the negative one is **causal**:
+/// the assertion that the default socket sent nothing is made only after
+/// the configured one has pinged three times and had every ping answered.
+/// So "nothing arrived" is measured against three completed round trips
+/// rather than against a stopwatch.
+///
+/// Three rather than one, deliberately: `poll_next` only sends a second
+/// ping once the first has been *cleared*, and only a matching pong clears
+/// one. So a client that ignored pongs could never reach ping two, at any
+/// speed and whatever `within` is — which is why the deadline here is long
+/// enough to play no part.
+#[tokio::test]
+async fn keep_alive_is_off_by_default_and_pings_only_when_it_is_configured() {
+    const EVERY: Duration = Duration::from_millis(50);
+    // Deliberately far longer than three intervals: this test is about
+    // the ping and the pong, and the deadline must not be able to
+    // contribute to its outcome.
+    const WITHIN: Duration = Duration::from_secs(10);
+
+    let (tx_ping, rx_ping) = mpsc::channel::<Vec<u8>>();
+    let (tx_default, rx_default) = mpsc::channel::<u8>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        let configured = head.starts_with("GET /configured ");
+        let mut pings = 0;
+        loop {
+            let Some((opcode, _masked, payload)) = w.frame() else {
+                return;
+            };
+            if !configured {
+                // Any frame at all, because a default socket must send
+                // none.
+                let _ = tx_default.send(opcode);
+                continue;
+            }
+            if opcode != OP_PING {
+                continue;
+            }
+            pings += 1;
+            let _ = tx_ping.send(payload.clone());
+            // RFC 6455 §5.5.3: the pong carries the ping's own data.
+            if !w.send(OP_PONG, &payload) {
+                return;
+            }
+            if pings == 3 {
+                // Released by the third ping, which the client can only
+                // have sent because the first two were answered.
+                w.send(OP_TEXT, b"three pings in");
+                return;
+            }
+        }
+    });
+
+    let default = tokio::time::timeout(
+        BOUND,
+        native().websocket(open(&format!("ws://{addr}/default"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+    assert_eq!(
+        default.keep_alive(),
+        None,
+        "the default is off, and it is readable rather than only documented"
+    );
+
+    let mut configured = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/configured"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+    assert_eq!(
+        configured.keep_alive(),
+        Some(WebSocketKeepAlive::new(EVERY, WITHIN)),
+        "the socket reports the bound it was given"
+    );
+
+    // The default socket has to be *polled*, or it would have had no
+    // chance to ping and the assertion below would hold for the wrong
+    // reason — `poll_next` is the only thing that drives one of these.
+    let polling_the_default = tokio::spawn(async move {
+        let mut default = default;
+        let _ = default.next().await;
+    });
+
+    let got = tokio::time::timeout(BOUND, configured.next())
+        .await
+        .expect(
+            "the server withholds this message until three pings have arrived and been \
+             answered, so a client that never pings — or that never clears a probe on the \
+             pong — can never receive it",
+        )
+        .expect("the stream must not have ended")
+        .expect("the message must not be an error");
+    assert_eq!(got, Message::Text("three pings in".into()));
+
+    let first = rx_ping.recv_timeout(BOUND).expect("the first ping");
+    let second = rx_ping.recv_timeout(BOUND).expect("the second ping");
+    let third = rx_ping.recv_timeout(BOUND).expect("the third ping");
+    assert!(
+        first != second && second != third && first != third,
+        "each ping carries its own payload — a sequence number, so that a stale pong \
+         cannot answer a later ping — and they were {first:?}, {second:?}, {third:?}"
+    );
+
+    if let Ok(opcode) = rx_default.try_recv() {
+        panic!(
+            "a socket with no keep-alive configured sent opcode {opcode:#x} while a \
+             configured one completed three ping/pong round trips: the default is not off"
+        );
+    }
+    polling_the_default.abort();
+}
+
+/// A caller that stops polling gets no keep-alive, and that is a decision
+/// rather than an oversight — nothing is spawned here, so `poll_next` is
+/// the only thing that can write a ping.
+///
+/// Both sockets carry the **same** configuration, so the only difference
+/// is whether anything is polling them; and, as above, the negative
+/// assertion is made only once the polled socket has completed three round
+/// trips. This is the property that differs from `http-ng-h3`, where a
+/// spawned driver keeps a pooled connection alive for requests nobody has
+/// made yet.
+#[tokio::test]
+async fn a_socket_nobody_polls_gets_no_keep_alive() {
+    const EVERY: Duration = Duration::from_millis(50);
+    const WITHIN: Duration = Duration::from_secs(10);
+
+    let (tx_polled, rx_polled) = mpsc::channel::<()>();
+    let (tx_idle, rx_idle) = mpsc::channel::<u8>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        let polled = head.starts_with("GET /polled ");
+        let mut pings = 0;
+        loop {
+            let Some((opcode, _masked, payload)) = w.frame() else {
+                return;
+            };
+            if !polled {
+                let _ = tx_idle.send(opcode);
+                continue;
+            }
+            if opcode != OP_PING {
+                continue;
+            }
+            pings += 1;
+            if !w.send(OP_PONG, &payload) {
+                return;
+            }
+            if pings == 3 {
+                let _ = tx_polled.send(());
+                w.send(OP_TEXT, b"three pings in");
+                return;
+            }
+        }
+    });
+
+    // Held, never polled. Dropping it would close the socket and the
+    // server would stop reading; keeping it is what makes "nobody polls
+    // it" the only difference between the two arms.
+    let _unpolled = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/unpolled"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let mut polled = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/polled"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let got = tokio::time::timeout(BOUND, polled.next())
+        .await
+        .expect("a polled socket with a keep-alive must ping")
+        .expect("the stream must not have ended")
+        .expect("the message must not be an error");
+    assert_eq!(got, Message::Text("three pings in".into()));
+    rx_polled.recv_timeout(BOUND).expect("the server's report");
+
+    if let Ok(opcode) = rx_idle.try_recv() {
+        panic!(
+            "an unpolled socket sent opcode {opcode:#x}: nothing is spawned here, so a \
+             keep-alive can only be written from `poll_next`"
+        );
+    }
+}
+
+/// A missed pong is an **error**, and it is not the peer saying goodbye.
+///
+/// The two arms are the test: the same configuration against a server that
+/// vanishes and against one that closes properly, and the outcomes have to
+/// differ in kind rather than in wording. `http-ng-fetch` draws the same
+/// line in the same place — a `CloseEvent` with `wasClean == false` is an
+/// `ErrorKind::Body` on the `Stream` rather than a `Message::Close(1006)`
+/// — and this agrees with it rather than inventing a second vocabulary.
+///
+/// The `/goodbye` arm waits for a ping before closing, so the keep-alive
+/// really was armed on that socket too: what changed the outcome is what
+/// the server did, not what the client was configured with.
+///
+/// A duration is unavoidable here — the deadline *is* one — but only one
+/// direction of it can fail: a machine too slow for the deadline to fire
+/// makes this test hang into `BOUND`, never pass with the wrong verdict.
+#[tokio::test]
+async fn a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye() {
+    const EVERY: Duration = Duration::from_millis(100);
+    const WITHIN: Duration = Duration::from_millis(250);
+
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        if head.starts_with("GET /vanished ") {
+            // Alive at the TCP level and deaf at the WebSocket one: the
+            // exact peer a `FIN` would never announce.
+            while w.fill() {}
+            return;
+        }
+        loop {
+            let Some((opcode, _masked, _payload)) = w.frame() else {
+                return;
+            };
+            if opcode == OP_PING {
+                let mut close = 1000u16.to_be_bytes().to_vec();
+                close.extend_from_slice(b"bye");
+                w.send(OP_CLOSE, &close);
+                while w.fill() {}
+                return;
+            }
+        }
+    });
+
+    let mut vanished = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/vanished"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let item = tokio::time::timeout(BOUND, vanished.next())
+        .await
+        .expect("the unanswered ping must end the stream rather than leave it silent")
+        .expect("the stream must yield the failure rather than simply end");
+    let err = match item {
+        Err(err) => err,
+        Ok(Message::Close(frame)) => panic!(
+            "a peer that vanished was reported as having said goodbye ({frame:?}); a caller \
+             inspecting `Message::Close` cannot then tell the network going away from a \
+             clean close"
+        ),
+        Ok(other) => panic!("expected the keep-alive failure, and got {other:?}"),
+    };
+    assert_eq!(
+        err.kind(),
+        &ErrorKind::Body,
+        "the same kind `http-ng-fetch` gives a `wasClean == false` close, and \
+         deliberately not a `Timeout`: no field of `Timeouts` is in force here: {err}"
+    );
+    let source = std::error::Error::source(&err)
+        .and_then(|s| s.downcast_ref::<PongNotReceived>())
+        .expect(
+            "the source is a named type, so a caller can tell this from every other way a \
+             connection breaks without parsing the message",
+        );
+    assert_eq!(
+        *source,
+        PongNotReceived(WITHIN),
+        "and it carries the bound that was actually in force"
+    );
+    assert!(
+        tokio::time::timeout(BOUND, vanished.next())
+            .await
+            .expect("must not hang")
+            .is_none(),
+        "a `Stream` that has ended stays ended — the seam's own contract"
+    );
+
+    let mut goodbye = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/goodbye"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    let got = tokio::time::timeout(BOUND, goodbye.next())
+        .await
+        .expect("the close must not hang")
+        .expect("the stream must not have ended before the close was delivered")
+        .expect("a peer that says goodbye is not an error, whatever the keep-alive is doing");
+    match got {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, 1000);
+            assert_eq!(frame.reason, "bye");
+        }
+        other => panic!("the peer's close must reach the caller whole, and was {other:?}"),
+    }
+}
+
+/// §7's second open question, the deadline half: **only a pong carrying
+/// the ping's own payload answers it.**
+///
+/// Two arms, both of which are a peer that is demonstrably still sending
+/// frames and demonstrably not answering the probe:
+///
+/// - a **text** frame, because data comes from the peer's application
+///   while a pong comes from its WebSocket layer, and it is the layer that
+///   has to be alive for anything sent to be read. Letting any frame clear
+///   the deadline would turn the probe back into the gap bound §7
+///   rejected.
+/// - a **pong with different bytes**, because RFC 6455 §5.5.3 allows
+///   unsolicited pongs as a unidirectional heartbeat: a peer emitting one
+///   every second would otherwise keep a probe permanently "answered"
+///   without ever having answered it.
+///
+/// The text arm also pins the ordering: the message is delivered to the
+/// caller *first* and the failure comes after it, so the frame is not
+/// swallowed by the probe it failed to answer. That ordering is causal —
+/// the server sends it before it goes silent — with a margin of the whole
+/// deadline against a loopback round trip.
+///
+/// **The ping count is what makes this test about the probe rather than
+/// about "something failed", and it was added because the mutation it
+/// catches survived without it.** With the frame clearing the probe, the
+/// interval simply restarts, a *second* ping goes out and *that* one dies
+/// unanswered — the same `PongNotReceived`, at the same kind, with the
+/// same bound, roughly 100 ms later. Every assertion above passed under
+/// it. `pings == 1` is the difference: the correct implementation cannot
+/// send a second ping, because only a matching pong clears the first, and
+/// a stream that has ended never sends anything again.
+#[tokio::test]
+async fn only_a_pong_with_the_pings_own_payload_answers_it() {
+    const EVERY: Duration = Duration::from_millis(100);
+    const WITHIN: Duration = Duration::from_millis(300);
+
+    let (tx, rx) = mpsc::channel::<usize>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        let answer_with_a_text = head.starts_with("GET /text ");
+        let mut pings = 0;
+        loop {
+            let Some((opcode, _masked, payload)) = w.frame() else {
+                // The client is gone, which is the only way out of this
+                // loop: it has either failed the probe or been dropped.
+                let _ = tx.send(pings);
+                return;
+            };
+            if opcode != OP_PING {
+                continue;
+            }
+            pings += 1;
+            // Answered once, and never with an answer to *this* ping.
+            if pings == 1 {
+                let sent = if answer_with_a_text {
+                    w.send(OP_TEXT, b"still talking")
+                } else {
+                    // A pong, and never this ping's payload: the client's
+                    // are eight bytes of sequence number.
+                    assert_ne!(payload, b"an unsolicited heartbeat");
+                    w.send(OP_PONG, b"an unsolicited heartbeat")
+                };
+                if !sent {
+                    return;
+                }
+            }
+        }
+    });
+
+    for (path, delivers_a_message) in [("text", true), ("pong", false)] {
+        let mut ws = tokio::time::timeout(
+            BOUND,
+            native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/{path}"))),
+        )
+        .await
+        .expect("the handshake must not hang")
+        .expect("the handshake must succeed");
+
+        if delivers_a_message {
+            let got = tokio::time::timeout(BOUND, ws.next())
+                .await
+                .expect("must not hang")
+                .expect("the stream must not have ended")
+                .expect(
+                    "a frame that arrives while a probe is outstanding is still the peer's \
+                     data and must reach the caller",
+                );
+            assert_eq!(got, Message::Text("still talking".into()));
+        }
+
+        let item = tokio::time::timeout(BOUND, ws.next())
+            .await
+            .expect("the probe must still expire: neither arm answered it")
+            .expect("the stream must yield the failure");
+        let err = item.expect_err(
+            "a frame that is not a pong for this ping does not answer it, so the probe must \
+             still fail",
+        );
+        assert_eq!(err.kind(), &ErrorKind::Body, "for /{path}: {err}");
+        assert_eq!(
+            std::error::Error::source(&err).and_then(|s| s.downcast_ref::<PongNotReceived>()),
+            Some(&PongNotReceived(WITHIN)),
+            "for /{path}, the failure must be the unanswered probe and not something else"
+        );
+
+        // Closes the socket, which is what releases the server's count.
+        drop(ws);
+        let pings = rx.recv_timeout(BOUND).expect("the server's report");
+        assert_eq!(
+            pings, 1,
+            "for /{path}: the probe that failed must be the one the server refused to \
+             answer. A second ping means the frame cleared the first probe and the \
+             interval simply restarted — a different fact, reported with the same error"
+        );
+    }
+}
+
+/// §7's second open question, the interval half: **any inbound frame
+/// resets it, so a busy socket never pings at all.**
+///
+/// That is what makes "off by default" a bound on traffic rather than a
+/// slogan — a keep-alive that pinged every interval regardless of what was
+/// flowing would send exactly the traffic nobody asked for, on a
+/// connection that was already proving itself alive.
+///
+/// Both arms carry the same configuration and the `/silent` one is the
+/// control: with this interval a silent socket *does* ping, so `/busy`
+/// sending none is a difference the fixture measured. The margin is 1 s of
+/// interval against 150 ms between messages — **6.7×** — over fifteen
+/// messages, so a client that reset only on a pong would have pinged
+/// around the fifth. A machine slow enough to stretch one 150 ms gap past
+/// a second could produce a spurious ping; that is the only way this test
+/// can be wrong, and it is why the ratio is not 2×.
+#[tokio::test]
+async fn an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings() {
+    const EVERY: Duration = Duration::from_secs(1);
+    const WITHIN: Duration = Duration::from_secs(10);
+    const MESSAGES: usize = 15;
+    const GAP: Duration = Duration::from_millis(150);
+
+    let (tx_busy, rx_busy) = mpsc::channel::<Vec<u8>>();
+    let (tx_silent, rx_silent) = mpsc::channel::<()>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        if head.starts_with("GET /silent ") {
+            loop {
+                let Some((opcode, _masked, _payload)) = w.frame() else {
+                    return;
+                };
+                if opcode == OP_PING {
+                    let _ = tx_silent.send(());
+                    return;
+                }
+            }
+        }
+        for i in 0..MESSAGES {
+            if !w.send(OP_TEXT, format!("tick {i}").as_bytes()) {
+                return;
+            }
+            std::thread::sleep(GAP);
+        }
+        // Whatever the client sent is already in this socket's receive
+        // buffer, so this window bounds only how long the drain waits for
+        // nothing.
+        w.read_timeout(Duration::from_millis(500));
+        let mut opcodes = Vec::new();
+        while let Some((opcode, _masked, _payload)) = w.frame() {
+            opcodes.push(opcode);
+        }
+        let _ = tx_busy.send(opcodes);
+    });
+
+    let mut silent = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/silent"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+    let polling_the_silent = tokio::spawn(async move {
+        let _ = silent.next().await;
+    });
+
+    let mut busy = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/busy"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    for i in 0..MESSAGES {
+        let got = tokio::time::timeout(BOUND, busy.next())
+            .await
+            .expect("must not hang")
+            .expect("the stream must not have ended")
+            .expect("the message must not be an error");
+        assert_eq!(got, Message::Text(format!("tick {i}")));
+    }
+
+    rx_silent.recv_timeout(BOUND).expect(
+        "the control: with this interval a *silent* socket does ping, or the assertion \
+         below would say nothing about the busy one",
+    );
+    polling_the_silent.abort();
+
+    let opcodes = rx_busy.recv_timeout(BOUND).expect("the server's report");
+    assert!(
+        !opcodes.contains(&OP_PING),
+        "a socket receiving a message every {GAP:?} pinged under a {EVERY:?} interval, so \
+         the interval is not being reset by inbound frames; the server saw {opcodes:?}"
+    );
+    drop(busy);
+}
+
+/// The keep-alive stops at **our own** close, and the closing handshake is
+/// not something it may fail.
+///
+/// `tungstenite` refuses every write once a close frame has gone out
+/// (`ProtocolError::SendAfterClosing`), and RFC 6455 makes a ping after a
+/// close meaningless anyway — so a client that kept probing would answer
+/// its own peer's perfectly ordinary goodbye with a `Decode` error
+/// manufactured by its own keep-alive. The server here holds its answering
+/// close for **ten intervals**, so a client that pings past its own close
+/// has ten chances to do so.
+///
+/// The margin only affects whether the *defect* is caught: correct code
+/// never writes past a close at any speed, so no clock can make this test
+/// fail wrongly.
+///
+/// It also covers the caller-initiated half of the close handshake — we
+/// close, the peer echoes, the stream ends — which
+/// `a_close_from_the_peer_is_echoed_and_ends_the_stream` does not reach and
+/// which `docs/v03-acceptance.md` had recorded as untested.
+#[tokio::test]
+async fn the_keep_alive_stops_at_our_own_close() {
+    const EVERY: Duration = Duration::from_millis(50);
+    const WITHIN: Duration = Duration::from_secs(10);
+    const HELD_FOR: Duration = Duration::from_millis(500);
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (addr, _) = serve(move |mut w| {
+        let Some(head) = w.head() else { return };
+        let Some(key) = header(&head, "sec-websocket-key").map(str::to_owned) else {
+            return;
+        };
+        if !w.send_raw(accept_101(&key).as_bytes()) {
+            return;
+        }
+        loop {
+            let Some((opcode, _masked, _payload)) = w.frame() else {
+                return;
+            };
+            if opcode == OP_CLOSE {
+                break;
+            }
+        }
+        // Ten intervals of holding the handshake open, reading nothing:
+        // anything the client sends in that window is waiting in this
+        // socket's buffer for the drain below.
+        std::thread::sleep(HELD_FOR);
+        let mut close = 1000u16.to_be_bytes().to_vec();
+        close.extend_from_slice(b"bye");
+        if !w.send(OP_CLOSE, &close) {
+            return;
+        }
+        w.read_timeout(Duration::from_millis(500));
+        let mut after = Vec::new();
+        while let Some((opcode, _masked, _payload)) = w.frame() {
+            after.push(opcode);
+        }
+        let _ = tx.send(after);
+    });
+
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
+
+    tokio::time::timeout(BOUND, ws.close())
+        .await
+        .expect("closing must not hang")
+        .expect("closing must succeed");
+
+    let got = tokio::time::timeout(BOUND, ws.next())
+        .await
+        .expect("the peer's answering close must not hang")
+        .expect("the stream must not have ended before the peer answered")
+        .expect(
+            "the peer answered our close with its own, which is not an error — a keep-alive \
+             that kept probing past our close would have failed the write instead",
+        );
+    match got {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, 1000);
+            assert_eq!(frame.reason, "bye");
+        }
+        other => panic!("the peer's answering close must reach the caller, and was {other:?}"),
+    }
+    assert!(
+        tokio::time::timeout(BOUND, ws.next())
+            .await
+            .expect("must not hang")
+            .is_none(),
+        "the stream ends once the close handshake has completed"
+    );
+
+    let after = rx.recv_timeout(BOUND).expect("the server's report");
+    assert!(
+        after.is_empty(),
+        "nothing may go out after our own close — the keep-alive is over there — and the \
+         server received {after:?} in the {HELD_FOR:?} it held the handshake open"
     );
 }

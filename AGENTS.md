@@ -383,9 +383,39 @@ async wrapper, and the reason is not taste: `WebSocketContext` takes the
 stream as a *parameter*, so the shim can borrow the poll `Context` for one
 call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
 calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
-measurements and the decisions; what is deliberately still missing is a
-timeout — **an open WebSocket has no bound of any kind today**, only the
-handshake reads `Timeouts::connect`.
+measurements and the decisions.
+
+**An open WebSocket is bounded by liveness, not by `Timeouts`, and the
+knob is on `http-ng-native` rather than on the seam.** `total` is
+meaningless for a connection meant to outlive its exchange and
+`between_bytes` would be actively wrong, since silence is a WebSocket's
+normal state — so the bound is RFC 6455's ping/pong, off by default,
+because a default that pings sends traffic nobody asked for. It is not on
+the trait because a browser has neither `send(ping)` nor `onping`, the same
+fact that keeps `Ping`/`Pong` out of `Message`; asking `http-ng-fetch` for
+it does not compile.
+
+**Two clocks, answering to different events**, which is the part that took
+measuring rather than deciding. The interval measures *silence*, so any
+inbound frame restarts it — which is what makes the feature free on a busy
+connection. The deadline measures *an unanswered probe*, and only a `Pong`
+carrying that ping's own payload clears it — matched on payload rather than
+opcode, because §5.5.3 allows unsolicited pongs, and letting any frame
+clear it would turn the probe back into the gap bound that was rejected.
+That distinction was found by a mutation that **survived a test asserting
+the right error**: with any frame clearing the probe, the stream still
+failed with the same `PongNotReceived`, the same kind and the same bound —
+a second ping had simply died 100 ms later. Same error, different fact. The
+fixture now counts pings and the test asserts exactly one.
+
+The missed-pong error is `ErrorKind::Body` with a public `PongNotReceived`
+source, deliberately agreeing with `http-ng-fetch`'s treatment of a
+`wasClean == false` close rather than inventing a second vocabulary, and
+deliberately not `ErrorKind::Timeout`, since no `Timeouts` field is in
+force. Nothing is spawned: the caller's `poll_next` is the only thing
+driving the socket, **so a caller that stops polling gets no keep-alive**.
+That is the mirror of HTTP/3, where a spawned driver turned out to be
+necessary and not sufficient; here there is no driver at all.
 
 See [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
 deliberately does not do, and
