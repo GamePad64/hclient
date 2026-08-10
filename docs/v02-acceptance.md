@@ -14,6 +14,7 @@ do.
 |---|---|
 | Dropping an in-flight request stops the exchange | `crates/http-ng-native/tests/cancel.rs`, `crates/http-ng-wasi/tests/live_roundtrip.rs`, `crates/http-ng-fetch/tests/transport.rs` — one per backend, and in every case the **observer is outside the client**: a server reporting the socket closed, a wasmtime guest that outlives its own drop, and the browser rejecting its own promise with `AbortError`, which our side cannot synthesise |
 | Connections are reused | `crates/http-ng-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
+| …and on WASI they are **not**, which is now measured rather than assumed | `crates/http-ng-wasi/tests/live_roundtrip.rs` — the same accept-counting observer, on a host thread outside the sandbox, with the guest under `wasmtime`. Two sequential requests to one origin: **two** accepts. `wasmtime_wasi_http::p3::default_send_request` opens the socket and runs the HTTP/1 handshake inside the per-request function, so there is no pool for the second request to find, and the request heads carry no `Connection: close` either. `WasiHttp` declares `ReuseSupport::None`, pinned in the same file; the control is two requests down one socket from a native client, which the same server counts once |
 | Two clients with different trust cannot share a socket | `crates/http-ng-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
 | A response that never starts, or a body that goes silent, is cut | `crates/http-ng-native/tests/timeouts.rs` — three misbehaving servers (answers never; head then silence; stalls mid-body), each paired with a control that must **hang** with the bound unset, plus a dribbling server that takes twice the bound in total and must not be cut. `first_byte` and `between_bytes` were declared `true` in the same commit that enforced them, which is the rule v0.2 W4's middle bullet was written under |
 | An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
@@ -248,12 +249,16 @@ gate.
   watch sockets, and CI does not check it. This is the one declaration in
   the set that no test stands behind, and it says so where the value is set.
 
-  **Not WASI, which was wrongly included here.** `http-ng-wasi`'s live suite
-  already runs a real `TcpListener` on a host thread — the guest is the
-  thing under test, the server is not — so an accept-counting observer is
-  available there on the same terms as the native pool's. It is missing, not
-  impossible; `docs/v03-design.md` promotes it to work rather than leaving
-  it in this list.
+  **Not WASI, which was wrongly included here — and the observer it was
+  missing has now been written, and it did not confirm the declaration.**
+  `http-ng-wasi`'s live suite already runs a real `TcpListener` on a host
+  thread, with the guest as a wasmtime subprocess, so an accept-counting
+  observer was available there on the same terms as the native pool's. It is
+  in `crates/http-ng-wasi/tests/live_roundtrip.rs` now
+  (`two_guest_requests_to_one_origin_open_two_connections`), and two
+  sequential requests from one guest to one origin arrive on **two**
+  connections. `caps.connection_reuse` is `ReuseSupport::None` accordingly;
+  the row in the claims table above says what stands behind it.
 - **Cancellation on a naive embassy backend does not work**, measured: the
   server sees nothing for two seconds, because `TcpSocket::drop` removes the
   socket from smoltcp before the queued FIN can become a packet. W7 must

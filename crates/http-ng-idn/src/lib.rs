@@ -701,26 +701,35 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
         })
 }
 
-/// Both implementations, reachable side by side, for the differential
-/// corpus in `tests/differential.rs` — which cannot use
-/// [`domain_to_ascii`] for this, since that deliberately exposes only one.
+/// What the differential corpus in `tests/differential.rs` needs and
+/// [`domain_to_ascii`] deliberately will not give it: the platform backend
+/// by name, the resolved [`Backend`], and this crate's own policy layer
+/// over a conversion the caller supplies.
+///
+/// **There is no `bundled` here, and there cannot usefully be one.** It
+/// existed until it was checked: `build.rs` sets `idna_backend` only where
+/// the target has neither ICU nor Foundation, so on every target where such
+/// a function would compile it *is* the backend [`domain_to_ascii`] already
+/// calls — a differential probe comparing `idna` with itself. Measured
+/// rather than reasoned: `cargo check -p http-ng-idn --all-features`, i.e.
+/// every backend feature requested at once, emits exactly one
+/// `rustc-cfg` per target — `idna_backend` on `x86_64-unknown-linux-gnu`,
+/// `icu_backend` on `x86_64-pc-windows-msvc`, `foundation_backend` on
+/// `aarch64-apple-darwin`, and never two. Making `idna` available beside a
+/// platform backend would buy the comparison back at the price of the ICU
+/// tables on Windows and macOS, which is the saving this crate exists for.
+/// [`policy_over`] is the differential seam that does work, and
+/// `fuzz/fuzz_targets/idn_policy_vs_idna.rs` is what uses it.
 ///
 /// Not a public API: no stability promise, and nothing in the client calls
 /// it.
 #[doc(hidden)]
 pub mod testing {
-    use super::{Backend, IdnError};
+    use super::Backend;
+    #[cfg(any(icu_backend, foundation_backend))]
+    use super::IdnError;
+    #[cfg(any(icu_backend, foundation_backend))]
     use std::borrow::Cow;
-
-    /// The bundled implementation, whether or not it is the one
-    /// [`super::backend`] selected.
-    ///
-    /// # Errors
-    /// As [`super::domain_to_ascii`].
-    #[cfg(idna_backend)]
-    pub fn bundled(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-        super::bundled_to_ascii(domain)
-    }
 
     /// The platform implementation — whichever this target has — or
     /// `None` if it was not accepted, which is the difference between

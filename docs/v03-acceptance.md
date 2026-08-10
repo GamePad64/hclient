@@ -24,6 +24,7 @@ carried forward on trust.
 | The UDP seam is a seam and not a design | W1 — `UdpBind`/`UdpAdoptStd`/`UdpDatagrams` on `http_ng_rt_smol::Smol` behind a `udp` feature, and one generic body (`exercise_udp<R>`) run under both runtimes rather than two similar test files. `both_backends_report_the_same_kernel` makes each backend the other's oracle, which is the check neither runtime crate could make alone |
 | HTTP/3 runs on two runtimes, from one function | `crates/http-ng-h3/tests/two_runtimes.rs` (W1) — `fetch_once<R>` under `TokioHandle` in a real `tokio::runtime::Runtime` and under `Smol` on a bare `futures_executor::block_on`. Sensitive rather than merely green: adding `R::Instant: PartialEq<std::time::Instant>` breaks the tokio instantiation alone |
 | Neither seam carries a QUIC dependency | the `dependency-graph` job's *"the runtime and TLS seams contain no QUIC"*, plus its companion proving the ban is not vacuous |
+| A handshake that never completes is cut at the caller's bound | `a_connect_timeout_cuts_a_quic_handshake_that_never_completes` — a bound UDP port that answers nothing, a 300 ms `Timeouts::connect`, and `ErrorKind::Timeout(Phase::Connect)` with the bound readable off `ConnectTimedOut` rather than out of a message. Its control is the same black hole with no bound at all, which must still be waiting at 1200 ms; measured by mutation, the unbounded handshake takes **30 s** to fail on quinn's own idle timeout. `a_client_may_now_set_a_connect_timeout_over_h3` is the caller-visible half — before this it was an `UnsupportedCapability` at `build()` — and `h3_declares_the_timeouts_it_enforces_and_no_others` pins the declaration beside the measurement |
 
 ## The seam changes, and one that turned out not to be needed
 
@@ -244,9 +245,22 @@ someone to "fix" an item whose absence is the decision.
   rather than a vertical; Alt-Svc still needs a store with an eviction
   policy, a negative cache and a rule for `clear`, none of which is protocol
   work.
-- **No timeouts.** All three `TimeoutSupport` fields are honestly `false`.
-  `connect` is the cheapest to add and is not added, because a declaration
-  and its enforcement belong in the same change.
+- ~~**No timeouts.** All three `TimeoutSupport` fields are honestly
+  `false`.~~ **`connect` is done**, and the row is in the claims table
+  above. The bullet is kept rather than deleted because the reason it gave
+  for not doing it — "a declaration and its enforcement belong in the same
+  change" — is what shaped the change when it came: `c.timeouts.connect =
+  true`, the race in `execute`, and the tests all landed together.
+
+  **`first_byte` and `between_bytes` stay `false`, and neither is a line
+  away.** `first_byte` would have to bound `one_attempt` and then answer
+  what a 0-RTT replay does to the budget — the replayed attempt is a second
+  `one_attempt` on the same request, so "restart the bound" and "carry what
+  is left" are different promises and nobody has picked one.
+  `between_bytes` needs a body wrapper holding a sleep, the shape
+  `http_ng_native::IdleTimeout` has and `H3Body` does not; an elapsed-time
+  check cannot cut a body that goes completely silent, which v0.2 W4
+  measured with a counting waker.
 - ~~**No smol UDP backend.**~~ **Done in W1**, and the two things the design
   flagged as unverified are now measured. `Smol` satisfied every bound of
   `H3Runtime` except the UDP triple with nothing else changed — compiled,
@@ -352,6 +366,15 @@ someone to "fix" an item whose absence is the decision.
   `assert_eq!` prints the observed accept count, so the next occurrence
   says whether the connection was replaced (2) or something else went
   wrong. Nothing was loosened to make it pass.
+- **The connect-timeout fixture holds its UDP socket for a reason no run
+  here confirms.** `black_hole()` binds the port rather than picking an
+  unused one, on the argument that a datagram to a port nobody holds could
+  draw an ICMP port-unreachable and turn the control into a prompt error
+  instead of a silence. Mutated and run: dropping the socket changes
+  nothing on this Linux runner, so that ICMP is not reaching quinn here.
+  The socket stays as a portability precaution, named as one where it is
+  written. What would settle it is the same mutation on `macos-latest` or
+  `windows-latest`.
 - **The idle A/B's timings are loose on purpose and could still flake.** A
   1500 ms gap under a 1000 ms idle timeout with a 300 ms keep-alive has
   wide margins, and the multiplexing test's 450 ms threshold against two

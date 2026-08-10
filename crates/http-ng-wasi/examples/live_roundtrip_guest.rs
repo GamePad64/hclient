@@ -92,6 +92,7 @@ impl wasip3::exports::cli::run::Guest for Guest {
             "request-trailers-empty-frame" => request_trailers(port, TrailerCase::EmptyFrame).await,
             "cancel-drop" => cancel_on_drop(port, CancelCase::Drop).await,
             "cancel-hold" => cancel_on_drop(port, CancelCase::Hold).await,
+            "reuse-two-requests" => reuse_two_requests(port).await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
@@ -175,6 +176,79 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
     println!("ROUNDTRIP_OK");
     Ok(())
 }
+
+/// Two requests to the same origin, one after the other, through one
+/// `WasiHttp` — the guest half of the connection-reuse observer.
+///
+/// Nothing here can see a socket, and that is the point: the whole claim
+/// is the server's accept count on the native side (see
+/// `tests/live_roundtrip.rs`). All this half owes is that there really
+/// were two complete exchanges, in sequence, to one origin.
+///
+/// **Each body is drained to its end before the next request starts**, and
+/// that is not tidiness. A response whose body is still open is a
+/// connection no host can return to a pool, so a guest that stopped
+/// reading would be measuring its own impatience rather than the host's
+/// policy — and it would do it in the direction that makes the answer look
+/// worse than the truth.
+///
+/// One transport for both requests, as a `Client` would have it. It makes
+/// no difference to what is observed — `WasiHttp` holds only its
+/// capability set, and the pool, if there is one, is the host's — but a
+/// fixture that constructed a fresh transport per request would leave the
+/// reader wondering whether that was the variable.
+async fn reuse_two_requests(port: u16) -> Result<(), ()> {
+    let transport = http_ng_wasi::WasiHttp::new();
+    for path in ["/one", "/two"] {
+        let uri: http::Uri = format!("http://127.0.0.1:{port}{path}")
+            .parse()
+            .expect("uri");
+        let req = http::Request::builder()
+            .method(http::Method::GET)
+            .uri(uri)
+            .body(RequestBody::Empty)
+            .expect("request");
+
+        let resp = transport.execute(req).await.map_err(|e| {
+            eprintln!("execute {path} failed: {e}");
+        })?;
+        if resp.status() != http::StatusCode::OK {
+            eprintln!("unexpected status for {path}: {}", resp.status());
+            return Err(());
+        }
+
+        let mut body = resp.into_body();
+        let mut collected = Vec::new();
+        loop {
+            match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+                Some(Ok(f)) => {
+                    if let Ok(data) = f.into_data() {
+                        collected.extend_from_slice(&data);
+                    }
+                }
+                Some(Err(e)) => {
+                    eprintln!("body error for {path}: {e}");
+                    return Err(());
+                }
+                None => break,
+            }
+        }
+        if collected != REUSE_RESPONSE_BODY {
+            eprintln!(
+                "body mismatch for {path}: {:?}",
+                String::from_utf8_lossy(&collected)
+            );
+            return Err(());
+        }
+    }
+
+    println!("REUSE_TWO_REQUESTS_OK");
+    Ok(())
+}
+
+/// Must match what the counting server in `tests/live_roundtrip.rs`
+/// writes for the reuse scenario.
+const REUSE_RESPONSE_BODY: &[u8] = b"ok";
 
 /// A request body that emits one data frame, then one trailers frame
 /// (empty or carrying the `x-checksum` field, depending), needed by

@@ -57,6 +57,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Must match `EXPECTED_BODY` in `live_roundtrip_guest.rs`.
 const RESPONSE_BODY: &[u8] = b"hello from a real wasi:http host";
@@ -357,6 +359,224 @@ fn wasi_declares_the_cancellation_it_performs() {
          declare — a backend is free to declare `None`, but not to declare `None` while \
          behaving otherwise, nor to quietly stop being covered by the measurement"
     );
+}
+
+/// Must match `REUSE_RESPONSE_BODY` in `live_roundtrip_guest.rs`.
+const REUSE_RESPONSE_BODY: &[u8] = b"ok";
+
+/// The observer for connection reuse: a server that counts the TCP
+/// connections it accepts and answers as many requests on each as the peer
+/// cares to send.
+///
+/// This is the same observer `crates/http-ng-native/tests/pool.rs` uses for
+/// the native pool, and it is available here for the same reason
+/// cancellation was measurable: **the server is not inside the sandbox**.
+/// The guest runs as a wasmtime subprocess and the listener is a plain
+/// `std::net::TcpListener` on a host thread, so every number asserted below
+/// is one the server produced. `docs/v02-acceptance.md` listed WASI beside
+/// `http-ng-fetch` as a declaration nothing could observe, on the grounds
+/// that from inside a sandbox we cannot watch sockets. That is true of
+/// `http-ng-fetch` and was never true here.
+///
+/// Returns the port to point a client at, and the counter.
+fn counting_server() -> (u16, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&accepted);
+    std::thread::spawn(move || {
+        for sock in listener.incoming() {
+            let Ok(sock) = sock else { continue };
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::spawn(move || serve_keep_alive(sock));
+        }
+    });
+    (port, accepted)
+}
+
+/// One connection: read a request head, answer it with a `Content-Length`
+/// response, repeat until the peer goes away. No `Connection: close`, no
+/// response budget — this server never hangs up first.
+///
+/// `Content-Length` rather than the `chunked`+`Trailer:` response the rest
+/// of this file uses. That response exists to open the `is_end_stream()`
+/// window and nothing here needs it; what this one needs is a body whose
+/// end is unambiguous to any HTTP/1.1 implementation, so that "the peer did
+/// not reuse" can never be "the peer could not tell the response had
+/// ended".
+fn serve_keep_alive(mut sock: std::net::TcpStream) {
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .expect("set_read_timeout");
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        // Every request sent to this server is a bodyless GET, so the head
+        // is the whole request.
+        let head_end = loop {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+            match sock.read(&mut chunk) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        };
+        buf.drain(..head_end);
+
+        let mut out = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            REUSE_RESPONSE_BODY.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(REUSE_RESPONSE_BODY);
+        if sock.write_all(&out).is_err() {
+            return;
+        }
+        let _ = sock.flush();
+    }
+}
+
+/// **The finding.** Two sequential requests from one guest to one origin
+/// arrive on **two** connections: this host opens one per request.
+///
+/// `WasiHttp` used to declare `ReuseSupport::Supported`, on the reasoning
+/// that "every `wasi:http` host worth using keeps HTTP/1.1 connections
+/// alive between outbound requests". The observer above says otherwise
+/// about the one host anybody here can run, and the reason is structural
+/// rather than a setting: wasmtime's default outbound handler,
+/// `wasmtime_wasi_http::p3::default_send_request`
+/// (`crates/wasi-http/src/p3/request.rs` at v47.0.3), calls
+/// `TcpStream::connect(&authority)` and then
+/// `hyper::client::conn::http1::Builder::new().handshake(..)` **inside the
+/// per-request function**. There is no pool for a second request to be
+/// found in. Nothing on the wire hides it either: the request heads this
+/// server receives carry no `Connection: close`, so the host is not
+/// announcing a decision — it simply has nowhere to put the connection.
+///
+/// An embedder is free to replace that hook with one that pools; the CLI
+/// this suite runs does not. So the declaration this crate can honestly
+/// make is `ReuseSupport::None` — the conservative base, pinned by
+/// [`wasi_declares_the_reuse_it_actually_gets`], which under-claims against
+/// a pooling embedder rather than over-claiming against the shipped one.
+///
+/// **If this ever reads 1, that is not a regression — it is news**, and the
+/// declaration should move back up with the new measurement as its
+/// evidence. The count is in the message either way.
+#[test]
+fn two_guest_requests_to_one_origin_open_two_connections() {
+    let Some(wasmtime) = require_wasmtime("two_guest_requests_to_one_origin_open_two_connections")
+    else {
+        return;
+    };
+    let (stdout, stderr, status, accepted) = run_guest_against_counting_server(&wasmtime);
+    assert!(
+        status.success() && stdout.contains("REUSE_TWO_REQUESTS_OK"),
+        "the guest run itself failed (exit {:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        status.code(),
+    );
+    assert_eq!(
+        accepted, 2,
+        "two sequential requests to one origin, and the server accepted {accepted}. This host \
+         opens a connection per request — see this test's doc comment for where in wasmtime \
+         that happens. A 1 here means the host has started pooling, and `WasiHttp`'s \
+         `ReuseSupport::None` is then understating what it gets"
+    );
+}
+
+/// The control, and the half that gives the finding its meaning: the same
+/// server, two requests down **one** socket, counted once.
+///
+/// Without it, "two accepts" would equally be what a server that hangs up
+/// after every response reports, and the finding would be about this file
+/// rather than about the host. No guest and no wasmtime take part — the
+/// claim is about the fixture, so the fixture is all that runs.
+#[test]
+fn the_counting_server_serves_two_requests_on_one_connection() {
+    let (port, accepted) = counting_server();
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .expect("set_read_timeout");
+    let want = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\nok",
+        REUSE_RESPONSE_BODY.len()
+    );
+    for path in ["/one", "/two"] {
+        sock.write_all(format!("GET {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+            .expect("write");
+        let mut got = vec![0u8; want.len()];
+        sock.read_exact(&mut got).expect("read the whole response");
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            want,
+            "the fixture must answer the second request on the same socket"
+        );
+    }
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "the observer must report ONE accept for two requests down one socket, or the two it \
+         reports for the guest says nothing about the guest"
+    );
+}
+
+/// The declaration and the measurement, kept together — the same reason
+/// [`wasi_declares_the_cancellation_it_performs`] exists one screen up.
+///
+/// A capability flip is the quiet way to make the measurement above stop
+/// meaning anything, and here it would go in the over-claiming direction:
+/// `Supported` promises that a second request to an origin need not pay for
+/// a handshake, which is exactly what the run just showed it does pay.
+///
+/// Not behind `require_wasmtime`: no host is involved in reading a
+/// capability.
+#[test]
+fn wasi_declares_the_reuse_it_actually_gets() {
+    use http_ng_core::unversioned::Transport;
+    assert_eq!(
+        http_ng_wasi::WasiHttp::new()
+            .capabilities()
+            .connection_reuse,
+        http_ng_core::ReuseSupport::None,
+        "the live run beside this one measures a host that opens a connection per request; a \
+         backend is free to declare `Supported` once something has been seen to reuse, but \
+         not while the only measurement in the file says otherwise"
+    );
+}
+
+/// Brings up the counting server, runs the guest against it in the reuse
+/// mode, and returns the guest's output alongside the accept count.
+///
+/// The count is read after `wasmtime` has exited, so every connection the
+/// run was going to make has been made. The listener thread outlives the
+/// call and is simply abandoned — the process is a test binary and the
+/// alternative is a shutdown protocol that could itself close a connection
+/// the count depends on.
+fn run_guest_against_counting_server(
+    wasmtime: &Path,
+) -> (String, String, std::process::ExitStatus, usize) {
+    let (port, accepted) = counting_server();
+    let artifact = build_guest();
+    let output = Command::new(wasmtime)
+        .args([
+            "run",
+            "-S",
+            "http",
+            "--",
+            artifact.to_str().expect("utf8 path"),
+            &port.to_string(),
+            "reuse-two-requests",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn wasmtime");
+
+    let seen = accepted.load(Ordering::SeqCst);
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+        seen,
+    )
 }
 
 /// Brings up a server that reads the request and then says nothing at all,
