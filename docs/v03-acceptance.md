@@ -1094,3 +1094,287 @@ The four §W3 named as the minimum, and what killed each:
   read-only-to-this-task crate consumes, and doing it half-way — filled by
   DoH, `None` from hickory and the system — would be exactly the capability
   lie this project has caught four times.
+
+# v0.3 W4 — the WebSocket seam (steps 1 and 2)
+
+`docs/w4-upgrade-seam.md` decided the shape; this is steps 1 and 2 of its
+§5 — the trait in `http-ng-core`, and `http-ng-native` implementing it.
+Steps 3 (`http-ng-fetch`) and 4 (`UpgradeSupport` deleted) are not here,
+and **`Capabilities::upgrade` is untouched: every backend still reports
+`UpgradeSupport::None`**, because §3 places its removal beside the change
+that also gives the browser its own answer.
+
+## The shape, and why
+
+Two traits, both in `http_ng_core::unversioned` — the semver quarantine,
+which is where a seam validated against exactly one backend belongs.
+
+```rust
+pub trait WebSocket: Stream<Item = Result<Message, Error>> + Sink<Message, Error = Error> {}
+
+pub trait WebSocketConnect {
+    type WebSocket: WebSocket;
+    fn websocket(&self, req: http::Request<()>)
+        -> impl Future<Output = Result<Self::WebSocket, Error>>;
+}
+```
+
+**Two rather than one, because a backend is not a connection.** The
+document says "a backend that can do WebSocket implements the trait", and
+the thing a backend implements cannot itself be `Stream + Sink` — a
+transport holds many connections. So the connector is what a backend
+writes and the message channel is what it hands back.
+
+**No capability field and no method returning `Unsupported`.** The seam
+expresses itself by being implemented: `http_ng_native::Native` has the
+`impl`, and a transport that does not have one cannot be asked. That is
+`TcpAdoptStd`'s rule and `QuicTlsConnect`'s reasoning, applied a third
+time.
+
+**`Message` is `Text`, `Binary`, `Close`, and no `Ping`/`Pong`.** RFC 6455
+§5.5.2 makes answering a ping the endpoint's duty rather than the
+caller's, and `http-ng-native` discharges it without telling anybody. A
+caller-visible `Ping` would be a variant the browser can neither send nor
+ever receive — `WebSocket` in a page answers pings itself and surfaces
+nothing — which is the capability lie this workspace has caught four
+times. The enum is deliberately **not** `#[non_exhaustive]`: if a caller
+decision ever turns on a control frame, adding the variant should be a
+compile error at every backend, and nothing here is published, so that
+costs a rebase inside this workspace and nothing outside it.
+
+**The error type is concrete (`http_ng_core::Error`), unlike
+`Transport::Error`.** `Transport`'s associated error plus its `to_error`
+hook exist so a backend with a genuinely `!Send` error keeps its typed
+source while `Client` classifies. There is no `Client` between this seam
+and its caller, so the escape hatch has no subject; one concrete type also
+makes `Stream::Item`'s error and `Sink::Error` the same type without an
+associated-type equality every caller would have to spell.
+
+**`http::Request<()>` in, and one duty with it**: a backend that cannot
+send a header the request carries must **fail rather than drop it** — the
+rule `http-ng-wasi` already follows for `wasi:http`'s request options. It
+is what keeps this seam from being the place an `Authorization` silently
+does not go out, and it is the whole of the answer for a browser backend,
+which can send no headers at all beyond the subprotocol list.
+`http-ng-native` pays it in the other direction too: the four headers the
+handshake owns (`Connection`, `Upgrade`, `Sec-WebSocket-Key`,
+`Sec-WebSocket-Version`) are **refused** on the way in rather than
+overwritten, because overwriting is dropping.
+
+`futures-core` and `futures-sink` are new dependencies of
+`http-ng-core`, and unconditional. Measured before deciding: both are
+dependency-free type-only crates, and both are already in every graph in
+this workspace that has any `futures` at all — `http-ng-wasi` on
+`wasm32-wasip2` and `http-ng-fetch` on `wasm32-unknown-unknown` carry them
+today, so those crate counts do not move. Only `http-ng-core` built alone
+changes, 11 → 13. A seam a backend author can name only in some builds
+would be worse.
+
+## What `http-ng-native` does underneath
+
+Behind the `websocket` feature, off by default. Measured `cargo tree -e
+normal`, unique crates, this tree: `http-ng-native` alone 32 → 49, and a
+realistic client build (`http-ng-native` + `http-ng` + `http-ng-rt-tokio` +
+`http-ng-tls-rustls` + `http-ng-dns-system`) 79 → 93. The +14 are
+`tungstenite`, `log`, `data-encoding`, `rand`/`rand_core`/`chacha20`, and
+`sha1` with the RustCrypto stack under it. **No `tokio`, `hyper` or `h2`
+arrives with the feature**, and no runtime does.
+
+**`poll_without_shutdown` + `into_parts`, never `hyper::upgrade`.**
+`hyper::upgrade::Upgraded` holds `Rewind<Box<dyn Io + Send>>`, which would
+put a `Send` bound on this crate's IO and shut out single-threaded
+runtimes — the objection that disqualified `hyper/http2` in v0.2 W3.
+`Parts::read_buf` carries whatever the server put in the same flight as
+the `101`; hyper has already read it off the socket, and dropping it would
+lose the server's first frames in exactly the case no test with a polite
+server ever reaches.
+
+**`tungstenite` 0.30, driven by us, and it needs no `unsafe`.**
+`WebSocketContext` takes the stream as a *parameter*, so the shim handed to
+each call borrows the poll `Context` for exactly that call —
+`tokio-tungstenite`'s `AllowStd` owns the stream across calls and has to
+store a `*mut Context` instead. This is the third state machine this
+workspace drives by hand rather than adopting its runtime glue.
+
+**A WebSocket is opened on a connection of its own and never returns to
+the pool.** `crate::pool` is not consulted and no `CheckIn` is ever built,
+which is the same conclusion `tests/switching_protocols.rs` reached from
+the other side.
+
+### §6's two open checks, answered
+
+`docs/w4-upgrade-seam.md` §6 named two things to check when the code was
+written rather than assume. Both were read out of `tungstenite 0.30.0`'s
+source, and both hold.
+
+**Does `WouldBlock` out of the shim leave `WebSocketContext` resumable on
+every path?** Yes, and the interesting path is the one §6 pointed at.
+`WebSocketContext::read` catches a `WouldBlock` from *its own* flush and
+sets `unflushed_additional`, so a queued pong or close is retried on the
+next call rather than lost — which means a `WouldBlock` that escapes
+`read` can only have come from the read side, and that is what makes it
+safe to report as `Poll::Pending`: the read waker has been registered by
+then. `write` formats the frame into `out_buffer` before anything can
+block. `close` sets `ClosedByUs` before it can block and takes its
+`if let Active = state` branch only once, so a resumed close queues one
+close frame, not two.
+
+**Is a partial write lost between polls?** No.
+`FrameCodec::write_out_buffer` loops `stream.write(&out_buffer)` and does
+`out_buffer.drain(0..len)` for each partial write *before* the `?` on the
+next one propagates: what was written leaves the buffer, what was not
+stays in it, and the next flush continues from there. That is the whole
+reason the shim's `write` must return the real `n` rather than `buf.len()`
+— and it is a killable mutation, below, not a remark.
+
+## The tests
+
+`crates/http-ng-native/tests/websocket.rs`, thirteen of them, against a
+fixture that speaks RFC 6455 **by hand**: it parses the opening handshake
+out of raw request bytes and encodes and decodes frames itself, so what is
+asserted is opcodes, mask bits and payload bytes. Using `tungstenite`'s own
+server would have been a quarter of the code and a much weaker witness,
+since the client under test is framed by `tungstenite` and a fixture
+sharing its codec cannot tell a correct frame from a consistently wrong
+one. The one function the fixture does borrow —
+`handshake::derive_accept_key` — is pinned against RFC 6455 §1.3's worked
+vector by `the_accept_key_derivation_matches_rfc_6455`, so the two sides
+agreeing is not the same as both being right.
+
+**Nothing is asserted by a clock.** Two tests are causal in the shape
+`crates/http-ng-h3/tests/streaming.rs` established:
+
+- the server withholds its next message until the client's **pong** has
+  arrived, so a client that never answers a ping receives nothing at any
+  speed;
+- the partial-write test releases the server's reader only once the
+  client's own `poll_flush` has actually returned `Pending`, and asserts
+  that it did — so the partial write is a fact the test establishes rather
+  than one it hopes for.
+
+`BOUND` is a 30 s watchdog and never a threshold: every failure it can
+produce reads "this hung".
+
+## Mutations
+
+Anchor counts verified before each run; each mutation applied alone,
+`cargo nextest run -p http-ng-native --features websocket --test
+websocket`.
+
+| mutation | verdict | killed by |
+|---|---|---|
+| `Parts::read_buf` discarded (`from_partially_read` → `new`) | KILLED | `the_first_frame_may_arrive_in_the_same_flight_as_the_101`, and two others |
+| the status not checked at all | KILLED | `a_200_is_an_error_rather_than_a_websocket` |
+| the status checked *after* `into_parts`, before the header checks | KILLED | `a_200_is_an_error_rather_than_a_websocket` — but incidentally, on which error is reported first; see the row below |
+| **all four handshake checks moved after `into_parts`** | **SURVIVED** | — see below |
+| **`poll_without_shutdown` → `Connection`'s own `Future` impl** | **SURVIVED** | — see below |
+| `Sec-WebSocket-Accept` not checked | KILLED | `a_101_whose_accept_key_is_wrong_is_refused` |
+| `Upgrade:` not checked | KILLED | `a_101_that_is_not_upgrading_to_websocket_is_refused` |
+| `Connection:` not checked | KILLED | `the_connection_header_is_read_as_a_token_list_and_is_read` |
+| `Connection:` compared by equality instead of as a token list | KILLED | `the_connection_header_is_read_as_a_token_list_and_is_read` |
+| the shim's `write` returns `buf.len()` instead of the real count | KILLED | `a_message_larger_than_the_socket_buffer_arrives_whole` |
+| `poll_next` reads through a shim that cannot write, so the queued pong never leaves | KILLED | `a_ping_is_answered_with_a_pong_which_is_what_releases_the_next_message`, and `a_close_from_the_peer_is_echoed_and_ends_the_stream` |
+| **the control-frame arm returns `Pending` instead of reading again** | **SURVIVED** | — see below |
+| the four reserved handshake headers overwritten rather than refused | KILLED | `a_request_that_sets_a_handshake_header_itself_is_refused` |
+| `Role::Server` instead of `Role::Client` (client frames unmasked) | KILLED | five tests |
+
+### The three survivors, and what each one means
+
+**All four handshake checks after `into_parts` — survived, and the reason
+is worth keeping.** An earlier draft of `websocket.rs`'s module doc
+asserted this would *hang*, on the grounds that `poll_without_shutdown` on
+an ordinary `200` with a body never completes. It completes: `drop(body)`
+finishes hyper's dispatcher whatever the response was, so the connection
+comes apart on a `200` as readily as on a `101` and a refused upgrade
+drops its socket either way. The checks stay where they are because
+reading a response before dismantling the connection that produced it is
+the order that stays correct if hyper's behaviour does not — but they are
+not load-bearing today, and the module doc now says so instead of implying
+otherwise. **The property that *is* pinned** is the one the trap is about:
+the upgrade is recognised by the status and the three handshake headers,
+never by "hyper has finished with this connection", and deleting any of
+the four kills a named test.
+
+**`poll_without_shutdown` → `Connection`'s `Future` impl — survived, and
+this was predicted from hyper's source before it was run.** At hyper 1.11
+`poll_inner` returns `Dispatched::Upgrade` *before* it ever looks at
+`should_shutdown`, and both entry points then call `pending.manual()`, so
+on a `101` the two are the same call. `poll_without_shutdown` is still the
+right one: it is the API hyper documents for this, it does not require
+`B::Data: Send` where the `Future` impl does, and on any completion that is
+**not** an upgrade it is the one that leaves the socket alone. No test in
+this workspace distinguishes them, and inventing one would mean asserting
+something about hyper's internals from outside a socket.
+
+**The control-frame arm returning `Pending` — survived, and it is a latent
+hang rather than a safe alternative.** `WebSocketContext::read` returning
+`Ok(Ping)` has touched the socket successfully or not at all, so nothing
+has registered a waker on that path; returning `Pending` there is
+returning it with no guarantee of a wake. The tests do not catch it
+because a leftover tokio readiness registration from the handshake happens
+to wake the task anyway — measured, by instrumenting `poll_next` and
+counting entries: three, with the pong going out on the second. The loop
+is kept because it makes the missing wake structurally impossible, and the
+survival is recorded rather than papered over. **What is not recorded as a
+gap is the pong itself**: the mutation that actually stops it (a
+write-blind shim in `poll_next`) is killed at the top of the table.
+
+## Deliberately not done
+
+- **`Capabilities::upgrade` is untouched**, and every backend still says
+  `UpgradeSupport::None` — §3's step 4, not this one.
+- **No `http-ng-fetch` implementation**, which is §5's step 3 and the one
+  that makes this a seam rather than a native feature with a trait in
+  front of it. Nothing here has been checked against a backend that cannot
+  see bytes.
+- **No permessage-deflate, no subprotocol negotiation, no close-code
+  semantics.** All three are on `docs/w4-upgrade-seam.md`'s own undecided
+  list. A subprotocol *can* be asked for, because the request carries
+  headers; nothing checks what came back, and `tungstenite`'s own
+  `verify_response` rules for it are deliberately not reimplemented here.
+- **No `Ping`/`Pong` a caller can send.** A keep-alive ping is a real
+  need and this seam cannot express one; the answer is a variant, and a
+  variant needs a caller decision that turns on it (see above).
+- **`WebSocketConfig` is `tungstenite`'s default** — 128 KiB read and
+  write buffers, 64 MiB maximum message, 16 MiB maximum frame — and
+  nothing exposes it. A caller who needs a different message ceiling
+  cannot ask for one.
+- **No `wss://` test.** The scheme is mapped and the TLS path is
+  `connect::connect`'s, the same call `execute` makes with the same ALPN
+  list; no test in this file opens one, because every fixture here is a
+  plain `TcpListener`.
+
+## What W4 leaves unverified
+
+- **`Timeouts::connect` is honoured through `websocket()` and is not
+  tested through it.** The call is `execute`'s own `with_connect_timeout`,
+  pinned for `execute` by `crates/http-ng-native/tests/timeouts.rs`, and
+  no test in `tests/websocket.rs` reaches it. Nothing else in `Timeouts`
+  is read at all: `first_byte` would be a bound on the `101` and is not
+  applied, and `between_bytes`/`total` have no meaning for a channel with
+  no response body. So **an open WebSocket has no bound of any kind**, and
+  a caller who needs one wraps the future themselves.
+- **The `Sink` gives backpressure from the socket, and that has one
+  measured test and one untested consequence.** `poll_ready` is
+  `poll_flush`, so a message is accepted only when the write buffer is
+  empty; `a_message_larger_than_the_socket_buffer_arrives_whole` exercises
+  it once. What is not measured is the cost: `SinkExt::feed` cannot
+  pipeline, and no benchmark here says what that is worth.
+- **`poll_close` does not wait for the peer's close.** It queues a close
+  frame and flushes; the peer's answer arrives on the `Stream`.
+  `a_close_from_the_peer_is_echoed_and_ends_the_stream` covers the
+  peer-initiated direction; **the caller-initiated close handshake — we
+  send `Close`, the peer echoes, the stream ends — has no test.**
+- **A queued pong can be stranded by a full write buffer.** If the flush
+  inside `read` blocks and no further data arrives, the pong waits for the
+  next read to be woken by *incoming* traffic, because that is the only
+  waker `poll_next` registers on that path. Every async `tungstenite`
+  wrapper has this shape; no test here provokes it.
+- **Nothing has been run against a real WebSocket server.** Every fixture
+  is a loopback socket in this repository, and the Autobahn test suite —
+  which is what would settle fragmentation, UTF-8 validation and the close
+  code table — has not been run.
+- **Fragmented incoming messages are reassembled by `tungstenite` and
+  never exercised.** The fixture sends single frames only, so
+  `WebSocketConfig::max_message_size` and the continuation path have no
+  test of ours.

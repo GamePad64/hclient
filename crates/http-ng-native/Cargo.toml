@@ -31,19 +31,32 @@ repository.workspace = true
 # `websocket` (v0.3 W4) is off by default for the same reason and one
 # more: it is the only feature here that adds a *protocol implementation*
 # rather than a second framing of the one this crate already speaks, and
-# the graph says so — `tungstenite` with `default-features = false,
-# features = ["handshake"]` brings five crates this workspace did not have
-# (`tungstenite`, `data-encoding`, `sha1`, `cpufeatures`, `log`; `rand`,
-# `getrandom`, `libc` and the digest crates were already in the graph
-# through `rustls`). None of them is a runtime, and none of them is
-# `tokio`.
+# the graph says so. Measured `cargo tree -e normal`, unique crates, this
+# tree:
+#
+#   this crate alone                   32 -> 49  (+17)
+#   a real client build (this crate +
+#   http-ng + rt-tokio + tls-rustls +
+#   dns-system)                        79 -> 93  (+14)
+#
+# The difference between the two rows is `libc`, `cfg-if` and `getrandom`,
+# which any build with `rustls` in it already has. The +14 are
+# `tungstenite`, `log`, `data-encoding`, `rand` + `rand_core` +
+# `chacha20`, and `sha1` with the RustCrypto stack under it (`digest`,
+# `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`,
+# `cpufeatures`). None of them is a runtime, and none of them is `tokio`,
+# `hyper` or `h2`.
 #
 # `handshake` is on top of `default-features = false` deliberately, and it
 # is the *only* default feature taken back: it is what carries
 # `generate_key`/`derive_accept_key`, which are RFC 6455 §4.1 and not
-# optional for a client. Everything else `tungstenite`'s default would
-# bring — its own TLS connectors, its blocking `connect()` — is glue this
-# workspace already has better versions of, which is §6's whole argument.
+# optional for a client. It is also where `sha1` and `data-encoding` come
+# from (tungstenite's own `handshake = ["data-encoding", "http",
+# "httparse", "sha1"]`); `http` and `httparse` were already here through
+# `hyper`. Everything else `tungstenite`'s default would bring — its own
+# TLS connectors, its blocking `connect()` — is glue this workspace has
+# better versions of, which is `docs/w4-upgrade-seam.md` §6's whole
+# argument.
 default = []
 http2 = ["dep:h2", "dep:tokio"]
 websocket = ["dep:tungstenite"]
