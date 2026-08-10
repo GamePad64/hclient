@@ -587,10 +587,10 @@ fn poll_pump(
                         return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
                     }
                     // Not "no more capacity for now": there will never
-                    // be any. With `peer_reset` above having already
-                    // answered `Pending`, the stream is not closed by the
-                    // peer, so this is our own send half — an API misuse
-                    // rather than a message from the far end.
+                    // be any. With `poll_reset` at the top of the loop
+                    // having already answered `Pending`, the stream is not
+                    // closed by the peer, so this is our own send half —
+                    // an API misuse rather than a message from the far end.
                     Poll::Ready(None) => {
                         return Poll::Ready(Err(Error::new(
                             ErrorKind::Body,
