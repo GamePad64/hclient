@@ -84,7 +84,7 @@ pub enum RedirectSupport {
 /// puts the pool in `http-ng-native` and nowhere else.
 ///
 /// Not `#[non_exhaustive]`, deliberately: no other enum in this file is
-/// (`RedirectSupport`, `TlsSupport`, `UpgradeSupport` are all plain), and
+/// (`RedirectSupport`, `TlsSupport`, `DecompressionSupport` are all plain), and
 /// consistency across the capability set is worth more than reserving the
 /// right to add a variant to this one alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,14 +271,6 @@ pub enum TlsSupport {
     None,
     ServerTrustCallbackOnly,
     Full,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpgradeSupport {
-    None,
-    H1,
-    ExtendedConnect,
-    Both,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,7 +481,6 @@ pub struct Capabilities {
     pub version_reported: bool,
     pub timeouts: TimeoutSupport,
     pub informational_1xx: bool,
-    pub upgrade: UpgradeSupport,
     pub forbidden_request_headers: &'static [HeaderName],
 }
 
@@ -519,7 +510,6 @@ impl Capabilities {
                 between_bytes: false,
             },
             informational_1xx: false,
-            upgrade: UpgradeSupport::None,
             forbidden_request_headers: &[],
         }
     }
@@ -542,7 +532,7 @@ mod tests {
 
     #[test]
     fn none_is_the_conservative_base() {
-        // Every one of the 18 fields, spelled out individually — not
+        // Every one of the 17 fields, spelled out individually — not
         // `assert_eq!` on the whole struct via a derived `PartialEq`, which
         // `Capabilities` deliberately does not implement (it's
         // `#[non_exhaustive]` so its shape stays ours to change, and a
@@ -579,7 +569,6 @@ mod tests {
             version_reported,
             timeouts,
             informational_1xx,
-            upgrade,
             forbidden_request_headers,
         } = Capabilities::none();
         assert!(!streaming_request_body);
@@ -612,7 +601,6 @@ mod tests {
             }
         );
         assert!(!informational_1xx);
-        assert_eq!(upgrade, UpgradeSupport::None);
         assert!(forbidden_request_headers.is_empty());
     }
 

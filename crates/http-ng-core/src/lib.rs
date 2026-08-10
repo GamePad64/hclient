@@ -18,6 +18,5 @@ pub use body::{RequestBody, RetryKind, RewindFactory};
 pub use caps::{
     AllowEarlyData, CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport,
     RedirectSupport, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport, UnsupportedCapability,
-    UpgradeSupport,
 };
 pub use error::{Error, ErrorKind, Phase};

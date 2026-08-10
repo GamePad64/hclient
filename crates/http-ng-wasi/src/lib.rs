@@ -14,7 +14,7 @@ use convert::{Payload, TrailerWatch};
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
     CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport,
-    Timeouts, TlsSupport, UpgradeSupport,
+    Timeouts, TlsSupport,
 };
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
@@ -23,8 +23,11 @@ use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 /// resolution, finding B-6): `connection`/`keep-alive` — connection
 /// management here is entirely on the host side; `transfer-encoding` — the
 /// host itself decides the transfer encoding for the actual body;
-/// `upgrade` — no protocol upgrade support (`Capabilities::upgrade` is
-/// already `UpgradeSupport::None`); `host` — the host computes it itself
+/// `upgrade` — no protocol upgrade support, and this crate implements
+/// neither `wasi:http`'s `HTTP-upgrade-failed` nor
+/// `http_ng_core::unversioned::WebSocketConnect`, which is how a backend
+/// says it can now (there is no capability field to read: see that
+/// trait's own module doc); `host` — the host computes it itself
 /// from `authority`. Measured by trying to send each of them —
 /// `wasi_request.set_method` goes through, but the host rejects the
 /// request itself if it carries any of these headers in `Fields`. The list
@@ -208,7 +211,6 @@ impl WasiHttp {
         // move down had one.
         caps.connection_reuse = ReuseSupport::None;
         caps.tls_config = TlsSupport::None;
-        caps.upgrade = UpgradeSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();
         Self { caps }
     }

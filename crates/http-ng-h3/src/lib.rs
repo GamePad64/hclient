@@ -82,7 +82,7 @@ use bytes::Bytes;
 use http_ng_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
-    UpgradeSupport, unversioned::Transport,
+    unversioned::Transport,
 };
 use http_ng_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use http_ng_tls::TlsConfigId;
@@ -373,7 +373,6 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
         first_byte: false,
         between_bytes: false,
     };
-    c.upgrade = UpgradeSupport::None;
     c
 }
 

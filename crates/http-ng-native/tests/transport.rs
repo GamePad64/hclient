@@ -156,7 +156,6 @@ async fn capabilities_are_honest_about_v01_limits() {
         caps.timeouts.between_bytes,
         "enforced since v0.2 W4's middle bullet — see tests/timeouts.rs,          where a server stalls mid-body"
     );
-    assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
     assert_eq!(caps.redirects, http_ng_core::RedirectSupport::Configurable);
     assert!(caps.version_reported);
@@ -210,7 +209,6 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
         version_reported: _,
         timeouts: _,
         informational_1xx,
-        upgrade: _,
         forbidden_request_headers,
         ..
     } = *t.capabilities();

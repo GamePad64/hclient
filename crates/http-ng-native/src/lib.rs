@@ -60,7 +60,7 @@ pub use websocket::NativeWebSocket;
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
     CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
-    ReuseSupport, TimeoutSupport, Timeouts, UpgradeSupport,
+    ReuseSupport, TimeoutSupport, Timeouts,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{Spawn, TcpConnect, TcpOpts, Timer};
@@ -290,7 +290,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             first_byte: true,
             between_bytes: true,
         };
-        caps.upgrade = UpgradeSupport::None;
         Self {
             epoch: rt.now(),
             rt,

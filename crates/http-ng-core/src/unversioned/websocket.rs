@@ -13,10 +13,12 @@
 //! **So the seam expresses itself by being implemented.** A backend that
 //! can do WebSocket implements [`WebSocketConnect`]; one that cannot does
 //! not, and asking it for a WebSocket does not compile. There is
-//! deliberately no capability field to read: `Capabilities::upgrade`
-//! exists today, is `UpgradeSupport::None` on every backend, and nothing
-//! branches on it — see `docs/w4-upgrade-seam.md` §3 for when it goes and
-//! why that is not this change.
+//! deliberately no capability field to read. There used to be one:
+//! `Capabilities::upgrade` was `UpgradeSupport::None` on every backend and
+//! nothing ever branched on it, which is v0.2's rule for deleting a
+//! capability rather than for keeping it. It went with the second backend
+//! (`http-ng-fetch`), because that is the change that gave the browser its
+//! own answer — `docs/w4-upgrade-seam.md` §3.
 //!
 //! # Why message oriented, rather than "hand back the socket"
 //!

@@ -108,19 +108,51 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
     assert!(matches!(replay, http_ng::RequestBody::Full(ref b) if &b[..] == b"y"));
 }
 
-/// `RedirectSupport`/`TlsSupport`/`TimeoutSupport`/`UpgradeSupport` are
+/// `RedirectSupport`/`TlsSupport`/`TimeoutSupport`/`EarlyDataSupport` are
 /// `Capabilities` fields. Needed not just for reading (`Capabilities` is
 /// readable even without them — `#[non_exhaustive]` on the struct doesn't
 /// block access to `pub` fields), but for WRITING: you can't assemble your
 /// own `Capabilities` for a mock transport (e.g.
 /// `MockTransport::with_capabilities`) without them — the field's type has
 /// to be nameable on the caller's side.
+///
+/// The fourth used to be `UpgradeSupport`, which v0.3 W4 step 4 deleted
+/// from the workspace: four variants, `None` from every backend, and no
+/// caller decision turning on it. What this test pins is the *plumbing* —
+/// that a `Capabilities` field's type is nameable and writable from the
+/// facade — not upgrade, so it needs a different field rather than one
+/// fewer.
+///
+/// `EarlyDataSupport` is that field, picked over the other candidates on
+/// three grounds:
+///
+/// - It is a `Capabilities` field with an enum type re-exported from
+///   `http-ng`, and its `Capabilities::none()` value (`None`) differs from
+///   the one set here (`Supported`), so the fixture sets it to something
+///   distinguishable and the assertion can fail.
+/// - Nothing else reaches it through the facade. `DecompressionSupport`,
+///   the other enum-typed capability re-exported here, is already named as
+///   `http_ng::DecompressionSupport` by `tests/compression_capability.rs`,
+///   so pointing this test at it would have duplicated a live guard and
+///   left `EarlyDataSupport`'s re-export unexercised — `tests/too_early.rs`
+///   reaches for `http_ng_core::AllowEarlyData` directly rather than
+///   through `http_ng::`, so the early-data corner was the one with no
+///   facade check at all.
+/// - `ReuseSupport` and `CancelSupport` are the remaining enum-typed
+///   fields and are deliberately not re-exported from `http-ng`; pointing
+///   this test at one of them would mean adding a re-export to make a test
+///   compile.
+///
+/// The check is a compile-time one as much as a runtime one: remove
+/// `EarlyDataSupport` from `http-ng`'s `pub use` and this file — an
+/// external consumer — stops compiling. That is the mutation that proves
+/// the re-pointing is not vacuous, and it was run.
 #[test]
 fn capability_support_types_are_reachable_from_the_facade() {
     let mut caps = http_ng::Capabilities::none();
     caps.redirects = http_ng::RedirectSupport::Configurable;
     caps.tls_config = http_ng::TlsSupport::Full;
-    caps.upgrade = http_ng::UpgradeSupport::H1;
+    caps.early_data = http_ng::EarlyDataSupport::Supported;
     caps.timeouts = http_ng::TimeoutSupport {
         connect: true,
         first_byte: true,
@@ -128,7 +160,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
     };
     assert_eq!(caps.redirects, http_ng::RedirectSupport::Configurable);
     assert_eq!(caps.tls_config, http_ng::TlsSupport::Full);
-    assert_eq!(caps.upgrade, http_ng::UpgradeSupport::H1);
+    assert_eq!(caps.early_data, http_ng::EarlyDataSupport::Supported);
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
 }
 
