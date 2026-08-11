@@ -277,6 +277,20 @@ async fn a_fresh_request_reports_the_connection_it_paid_for_and_the_head_it_got(
     ok(&t, s.addr, "/hello").await;
 
     assert_eq!(s.accepted(), 1, "the server accepted one connection");
+    // The version and the URI on the connection, which are not counts and
+    // were not pinned until a mutation said so: reporting HTTP/1.1 here
+    // survived every other test in this file, because nothing else reads
+    // the field. It is `HTTP_3` by construction — `ALPN_H3` is the only
+    // token offered and a connection that negotiates anything else never
+    // reaches this line — and a claim that cannot be wrong is exactly the
+    // one a regression would leave standing.
+    match rec.connects().as_slice() {
+        [Seen::Connected { version, uri, .. }] => {
+            assert_eq!(*version, http::Version::HTTP_3);
+            assert_eq!(uri, &format!("https://{}/hello", s.addr));
+        }
+        other => panic!("expected exactly one Connected, got {other:#?}"),
+    }
     let (id, remote, _dns, tcp, tls, total) = rec.only_connect();
     assert_eq!(
         remote, s.addr,
