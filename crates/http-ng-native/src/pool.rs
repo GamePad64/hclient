@@ -957,7 +957,10 @@ mod tests {
     /// and `Pending` here would mean a broken assumption rather than "wait
     /// a little longer", which is why it panics instead of looping.
     fn parked() -> Established<NeverIo> {
-        let mut h = Box::pin(crate::h1::handshake(NeverIo));
+        let mut h = Box::pin(crate::h1::handshake(
+            NeverIo,
+            http_ng_core::unversioned::ConnectionId::UNWATCHED,
+        ));
         match poll_once(&mut h) {
             Poll::Ready(Ok(est)) => Established::H1(est),
             Poll::Ready(Err(e)) => panic!("handshake over inert IO must not fail: {e}"),

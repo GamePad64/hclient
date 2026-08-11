@@ -57,7 +57,10 @@ pub use pool::{PoolConfig, Reaper};
 #[cfg(feature = "websocket")]
 pub use websocket::{NativeWebSocket, PongNotReceived, WebSocketKeepAlive};
 
-use http_ng_core::unversioned::Transport;
+use http_ng_core::unversioned::{
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
+    Reused, Transport,
+};
 use http_ng_core::{
     CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
     ReuseSupport, TimeoutSupport, Timeouts, check_version,
@@ -79,6 +82,58 @@ use std::time::Duration;
 pub type NativeIo<R, T> =
     Conn<<R as TcpConnect>::Stream, <T as TlsConnect>::Stream<<R as TcpConnect>::Stream>>;
 
+/// What [`Native`]'s `Transport::Body` is, named once.
+///
+/// A public alias for [`NativeIo`]'s reason — a caller who has to name
+/// the body should not have to spell out three nested generics — and
+/// because with the hook parameter added there are now two places that
+/// have to spell it identically, which is one more than is safe.
+///
+/// The order is load bearing: the `between_bytes` bound is the
+/// **innermost** wrapper, next to the socket, so it measures the gap
+/// between reads on the wire rather than the gap between whatever a
+/// wrapper above chose to pass on.
+pub type NativeBody<R, T, H> = IdleTimeout<established::NativeBody<NativeIo<R, T>, H>, R>;
+
+/// A stopwatch that does not exist when nobody is watching.
+///
+/// Every clock read whose only purpose is an event goes through this, and
+/// `H::WATCHING` is a `const`, so on `NoHooks` the `then` is a
+/// compile-time `false` and there is nothing left for the optimiser to
+/// remove — not a branch, not a call. `crates/http-ng-native/tests/
+/// hooks_cost.rs` counts the reads from outside, on a runtime whose clock
+/// reports how often it was asked.
+pub(crate) fn mark<H: Hooks, R: Timer>(rt: &R) -> Option<R::Instant> {
+    H::WATCHING.then(|| rt.now())
+}
+
+/// The other half of [`mark`]: the interval since one, or `ZERO` when
+/// there was no mark to measure from.
+///
+/// The `ZERO` is never reported — a build that produced `None` above has
+/// no hook to hand it to — which is why this is not an `Option<Duration>`
+/// that every call site would then have to unwrap into a lie.
+///
+/// It takes no `H`: the gate is [`mark`]'s, once, and a second `H` here
+/// would be a second place that has to agree with it.
+pub(crate) fn since<R: Timer>(rt: &R, at: Option<R::Instant>) -> Duration {
+    match at {
+        Some(t) => rt.elapsed_since(t),
+        None => Duration::ZERO,
+    }
+}
+
+/// The id for a connection about to be made — or [`ConnectionId::UNWATCHED`]
+/// when nobody will read it, so that a no-hook build does not touch the
+/// process-wide counter once per connection.
+pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
+    if H::WATCHING {
+        ConnectionId::next()
+    } else {
+        ConnectionId::UNWATCHED
+    }
+}
+
 /// The http-ng transport over real TCP/TLS/HTTP1: wires together the
 /// runtime `R` ([`http_ng_rt::TcpConnect`] + [`http_ng_rt::Timer`]), TLS `T`
 /// ([`http_ng_tls::TlsConnect`]) and resolver `D` ([`http_ng_dns::Resolve`]).
@@ -98,8 +153,21 @@ pub type NativeIo<R, T> =
 /// `RequestBody::Streaming` goes to the wire as a stream (see
 /// [`Native::new`]'s doc comment on `streaming_request_body` — an earlier
 /// version of this paragraph claimed the opposite and was wrong).
+///
+/// # `H`, the observability hook (v0.4 W2)
+///
+/// `NoHooks` by default, which is a zero-sized type whose
+/// `Hooks::WATCHING` is `false` — so `Native<R, T, D>` still names the
+/// transport it always named, and a build that asks for nothing reads no
+/// clock and takes no connection id. [`Native::hooks`] is how a caller
+/// asks; what comes back is a different type, because the hook is a type
+/// parameter rather than a `Box<dyn Hooks>`, which is the whole of the
+/// zero-cost claim.
+///
+/// `H` is deliberately last, after the three seams: it is the only one of
+/// the four that is not a seam a backend author has to fill in.
 #[derive(Debug)]
-pub struct Native<R, T, D>
+pub struct Native<R, T, D, H = NoHooks>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
@@ -107,6 +175,9 @@ where
     rt: R,
     tls: T,
     dns: D,
+    /// Where the events go. `NoHooks` is a ZST, so this field costs a
+    /// build that wants nothing exactly nothing.
+    hooks: H,
     opts: TcpOpts,
     caps: Capabilities,
     /// The instant this transport was built, and the origin every pool
@@ -153,7 +224,7 @@ where
 /// `NativeIo<R, T>`, which cannot be named without them. Before the pool,
 /// the only question needing `T: TlsConnect` was `new`'s "what should I
 /// advertise", and the bound sat on `new` alone for exactly that reason.
-impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
+impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let pool = Pool::new(Some(PoolConfig::default()));
         let mut caps = Capabilities::none();
@@ -360,6 +431,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             rt,
             tls,
             dns,
+            hooks: NoHooks,
             opts: TcpOpts::default(),
             caps,
             pool,
@@ -371,6 +443,45 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
             // server's side of the wire.
             #[cfg(feature = "websocket")]
             ws_keep_alive: None,
+        }
+    }
+}
+
+/// Everything a `Native` can be configured with, whatever its hook —
+/// separated from [`Native::new`] above only because `new` is the one
+/// method that names a *particular* `H` ([`NoHooks`]), and putting it in
+/// this block would make `Native::<_, _, _, MyHook>::new` a thing a
+/// caller could write and get a hookless transport from.
+impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
+    /// Send this transport's events to `hooks` — see
+    /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
+    /// costs, and [`Event`] for the vocabulary.
+    ///
+    /// **It returns a different type**, and that is the zero-cost
+    /// mechanism rather than an inconvenience: the hook is a type
+    /// parameter, so the `NoHooks` build monomorphises to code with no
+    /// clock reads in it at all, where a `Box<dyn Hooks>` field would
+    /// leave every no-hook build carrying a null check on the request
+    /// path. A caller who wants to choose at run time can hold an `H`
+    /// that decides for itself — an `Arc<dyn Fn..>` inside their own type
+    /// — and pay for the choice they actually made.
+    ///
+    /// The hook may be `!Send`: nothing on this path declares it, so an
+    /// `Rc` inside a hook makes this transport `!Send` and leaves it
+    /// working (P13; `crates/http-ng-core/tests/shape.rs`).
+    pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2> {
+        Native {
+            rt: self.rt,
+            tls: self.tls,
+            dns: self.dns,
+            hooks,
+            opts: self.opts,
+            caps: self.caps,
+            epoch: self.epoch,
+            pool: self.pool,
+            svcb_failures: self.svcb_failures,
+            #[cfg(feature = "websocket")]
+            ws_keep_alive: self.ws_keep_alive,
         }
     }
 
@@ -583,12 +694,19 @@ where
 /// `Transport` needs anyway (`'static` on the two stream types is what
 /// hyper's handshake requires), kept in a separate block so `new` and the
 /// builder methods above don't inherit them.
-impl<R, T, D> Native<R, T, D>
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
+    // `H: Unpin` is not a taste: the response body holds the hook, and
+    // `H1Body::poll_frame` reaches its fields through a safe projection
+    // (`Pin<&mut Self>` -> `&mut Self`), which this workspace's
+    // `forbid(unsafe_code)` leaves as the only one available. Every hook
+    // worth writing is `Unpin` already — `Rc`, `Arc`, an atomic, a
+    // closure that captures them.
+    H: Hooks + Clone + Unpin,
 {
     /// Everything about a pool key except the protocol — and, as a side
     /// effect the rest of `execute` relies on, the point at which an
@@ -758,10 +876,32 @@ where
     /// a third path forgetting.
     fn bound_body(
         &self,
-        resp: http::Response<established::NativeBody<NativeIo<R, T>>>,
+        resp: http::Response<established::NativeBody<NativeIo<R, T>, H>>,
         every: Option<Duration>,
-    ) -> http::Response<IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>> {
+    ) -> http::Response<NativeBody<R, T, H>> {
         resp.map(|b| IdleTimeout::new(b, self.rt.clone(), every))
+    }
+    /// The `Head` event, from the one place both paths reach it.
+    ///
+    /// A method rather than two copies of four lines, because the two
+    /// call sites are the pooled attempt and the fresh one and a caller
+    /// counting heads must not be able to tell them apart — a `Head` that
+    /// fired on one path only would look exactly like a request that had
+    /// never answered.
+    fn report_head(
+        &self,
+        resp: &http::Response<established::NativeBody<NativeIo<R, T>, H>>,
+        id: ConnectionId,
+        uri: &http::Uri,
+        began: Option<R::Instant>,
+    ) {
+        self.hooks.on(Event::Head(Head {
+            id,
+            uri,
+            status: resp.status(),
+            version: resp.version(),
+            elapsed: since::<R>(&self.rt, began),
+        }));
     }
 
     /// A pooled connection that is still worth a request, or `None`.
@@ -782,6 +922,18 @@ where
             if established::is_reusable(&mut est).await {
                 return Some(est);
             }
+            // Reported here rather than at the drop below, and outside
+            // the pool's mutex rather than inside it — the two rules the
+            // hooks seam is built on (`http_ng_core::unversioned::hooks`,
+            // module doc). `Stale` is the honest reason: the peer closed
+            // it while it sat idle, which is why this loop is walking
+            // past it. A connection the pool itself drops for age never
+            // reaches this function, and that hole is written down in
+            // `docs/v03-acceptance.md` with the reason it exists.
+            self.hooks.on(Event::Closed(Closed {
+                id: est.id(),
+                reason: CloseReason::Stale,
+            }));
         }
     }
 }
@@ -843,16 +995,17 @@ fn negotiated_protocol(alpn: Option<&[u8]>, offered_h2: bool) -> Option<Protocol
 async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
+    id: ConnectionId,
 ) -> Result<established::Established<I>, Error>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     if is_h2(protocol) {
         Ok(established::Established::H2(Box::new(
-            http2::handshake(conn).await?,
+            http2::handshake(conn, id).await?,
         )))
     } else {
-        Ok(established::Established::H1(h1::handshake(conn).await?))
+        Ok(established::Established::H1(h1::handshake(conn, id).await?))
     }
 }
 
@@ -865,12 +1018,13 @@ where
 async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
+    id: ConnectionId,
 ) -> Result<established::Established<I>, Error>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     debug_assert!(!is_h2(protocol));
-    Ok(established::Established::H1(h1::handshake(conn).await?))
+    Ok(established::Established::H1(h1::handshake(conn, id).await?))
 }
 
 /// The HTTP version this transport will actually speak on a connection
@@ -931,13 +1085,19 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
 /// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
 /// pointers and says in its own doc that `Native` wants to clone it), so
 /// this pins down a fact rather than adding a restriction.
-impl<R, T, D> Transport for Native<R, T, D>
+impl<R, T, D, H> Transport for Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
+    // `H: Clone` for the same reason `R: Clone` is here: the response
+    // body outlives `execute` and reports the connection's end from
+    // `poll_frame`, so it needs a hook of its own rather than a borrow of
+    // this transport's. `H: Unpin` is argued where the sibling impl
+    // above declares it.
+    H: Hooks + Clone + Unpin,
 {
     /// The pooled body, with the `between_bytes` bound wrapped round it.
     ///
@@ -946,7 +1106,7 @@ where
     /// measures the gap between reads on the wire. Outside it the client
     /// may add its own `Deadline` and decompression, neither of which can
     /// hide a silent peer from this one.
-    type Body = IdleTimeout<established::NativeBody<NativeIo<R, T>>, R>;
+    type Body = NativeBody<R, T, H>;
     type Error = Error;
 
     async fn execute(
@@ -997,6 +1157,15 @@ where
         // the two cannot disagree.
         let now = self.rt.elapsed_since(self.epoch);
 
+        // When this transport received the request, for `Head::elapsed`
+        // — and `None` when nobody is watching, so a build with no hook
+        // does not read the clock a second time here. It is deliberately
+        // NOT derived from `now` above: that is an elapsed time from this
+        // transport's epoch, and subtracting two of those would be the
+        // same measurement done in a way that a later change to `epoch`
+        // could silently break.
+        let began = mark::<H, R>(&self.rt);
+
         // 1. Connections somebody else already opened, if any are still
         //    alive. `checkout` polls each candidate before offering it, and
         //    that poll is the only thing standing between us and handing
@@ -1028,10 +1197,25 @@ where
             let Some(est) = self.checkout(&key, now).await else {
                 continue;
             };
+            // Emitted from the branch that took a connection out of the
+            // pool, so the event cannot be right for the wrong reason:
+            // there is no flag anywhere saying "this one was reused",
+            // only the code path on which it was. The id is the
+            // connection's own, assigned when it was made, so a caller
+            // can find the `Connected` this refers back to.
+            let id = est.id();
+            self.hooks.on(Event::Reused(Reused {
+                id,
+                uri: &uri,
+                version: spoken_version(Some(protocol)),
+            }));
             let checkin = self.checkin_for(&key, now);
-            let attempt = established::exchange(est, req, checkin, &uri);
+            let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
             match self.within_first_byte(timeouts.first_byte, attempt).await {
-                Ok(resp) => return Ok(self.bound_body(resp, timeouts.between_bytes)),
+                Ok(resp) => {
+                    self.report_head(&resp, id, &uri, began);
+                    return Ok(self.bound_body(resp, timeouts.between_bytes));
+                }
                 // The one retry, and the reason it exists: a pool turns
                 // "the server closed this connection while it was idle"
                 // from something that could not happen into something
@@ -1088,7 +1272,7 @@ where
         // negative cache's window and a connection's idle deadline are
         // measured from one epoch on one clock, and two reads a
         // microsecond apart would be two facts where there is one.
-        let connect_fut = connect::connect(
+        let connect_fut = connect::connect::<R, D, T, H>(
             &self.rt,
             &self.dns,
             &self.tls,
@@ -1098,10 +1282,12 @@ where
             &self.svcb_failures,
             now,
         );
-        let (conn, tls_info) = match timeouts.connect {
-            Some(d) => with_connect_timeout(&self.rt, d, connect_fut).await?,
-            None => connect_fut.await?,
-        };
+        let (conn, tls_info, attempted) =
+            with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
+        // The whole connect, measured from the same mark `Head::elapsed`
+        // uses, so the two are comparable — which is the pair that
+        // answers "was it the connection or was it the server".
+        let connect_took = since::<R>(&self.rt, began);
 
         // The guard that keeps `PoolKey`'s protocol component honest: a
         // connection only enters the pool if what was actually negotiated
@@ -1114,6 +1300,39 @@ where
             tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
             offered_h2,
         );
+
+        // Assigned before the connection is used and carried into the
+        // handshake, so the pool holds it and every later event about
+        // this socket — `Reused`, `Closed` — names the same number.
+        let id = connection_id::<H>();
+        // `Some` exactly when `H::WATCHING` — see `connect::Attempted`,
+        // which is boxed for the stack it would otherwise cost every
+        // request that wanted none of this.
+        // Emitted here, at the honest instant: the connection exists and
+        // nothing has been spoken on it. In particular this is BEFORE
+        // the `RequireVersion` refusal below, which drops a connection
+        // that really was established — reporting it afterwards would
+        // leave that case invisible, and reporting it as closed as well
+        // would need a fourth `CloseReason` for a drop, which the seam
+        // deliberately does not have.
+        //
+        // `spoken_version(protocol)` rather than the ALPN string: it is
+        // the same function `handshake_for` branches on, so this cannot
+        // claim HTTP/2 for a connection that got an HTTP/1 handshake.
+        if let Some(attempted) = attempted {
+            self.hooks.on(Event::Connected(Connected {
+                id,
+                uri: &uri,
+                remote: attempted.remote,
+                version: spoken_version(protocol),
+                timing: ConnectTiming {
+                    dns: attempted.dns,
+                    tcp: attempted.tcp,
+                    tls: attempted.tls,
+                    total: connect_took,
+                },
+            }));
+        }
 
         // **The refusal, and its position is the guarantee.** This is the
         // first instant the negotiated protocol is known, and it is before
@@ -1141,12 +1360,14 @@ where
             None => None,
         };
 
-        let est = handshake_for(conn, protocol).await?;
-        let attempt = established::exchange(est, req, checkin, &uri);
-        self.within_first_byte(timeouts.first_byte, attempt)
+        let est = handshake_for(conn, protocol, id).await?;
+        let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
+        let resp = self
+            .within_first_byte(timeouts.first_byte, attempt)
             .await
-            .map(|resp| self.bound_body(resp, timeouts.between_bytes))
-            .map_err(established::Failed::into_error)
+            .map_err(established::Failed::into_error)?;
+        self.report_head(&resp, id, &uri, began);
+        Ok(self.bound_body(resp, timeouts.between_bytes))
     }
 
     /// Identity: `Self::Error` is already `http_ng_core::Error`, and its
@@ -1202,12 +1423,32 @@ struct ConnectTimedOut(Duration);
 /// than a per-attempt one: there is exactly one `sleep(d)` racing exactly
 /// one `fut`, called exactly once per `execute()`, not once per address
 /// Happy Eyeballs tries.
-async fn with_connect_timeout<R, F, T>(rt: &R, d: Duration, fut: F) -> Result<T, Error>
+///
+/// # `Option<Duration>`, and one `await` at the call site
+///
+/// `None` is "no bound", handled here rather than by a second arm at the
+/// call site — [`Native::within_first_byte`] has taken `Option` for the
+/// same reason since v0.2 W4, and this half had simply not caught up.
+/// It is not tidying: a `match` with `fut.await` in one arm and
+/// `with_connect_timeout(.., fut).await` in the other is **two** await
+/// points holding the same future, and a debug build lays out both — the
+/// `connect::connect` future is about half of `Native::execute`'s, so
+/// counting it twice cost ten kilobytes of stack on every request.
+/// Measured, in the round that added the observability hooks: 22952 →
+/// 12464 bytes for `execute`'s future, on a workspace test that had been
+/// passing at 99% of a 2 MiB test thread.
+async fn with_connect_timeout<R, F, T>(rt: &R, d: Option<Duration>, fut: F) -> Result<T, Error>
 where
     R: Timer,
     F: Future<Output = Result<T, Error>>,
 {
+    let Some(d) = d else {
+        return fut.await;
+    };
     let mut fut = std::pin::pin!(fut);
+    // Built only on this branch, exactly as in `within_first_byte`:
+    // `Tokio::sleep` panics outside a runtime, and a request that asked
+    // for no bound must not need one.
     let mut sleep_fut = std::pin::pin!(rt.sleep(d));
     std::future::poll_fn(|cx| {
         if let Poll::Ready(r) = fut.as_mut().poll(cx) {
@@ -1405,8 +1646,9 @@ pub mod testing {
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        let est = crate::h1::handshake(io).await?;
-        crate::h1::exchange(est, req, None)
+        use http_ng_core::unversioned::{ConnectionId, NoHooks};
+        let est = crate::h1::handshake(io, ConnectionId::UNWATCHED).await?;
+        crate::h1::exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED)
             .await
             .map(|r| r.map(crate::established::NativeBody::h1))
             .map_err(crate::established::Failed::into_error)

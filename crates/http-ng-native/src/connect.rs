@@ -129,9 +129,11 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::discovery::{self, Endpoint, NegativeCache, Origin};
+use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use http::Uri;
+use http_ng_core::unversioned::{Hooks, NoHooks};
 use http_ng_core::{Error, ErrorKind};
 use http_ng_dns::{Resolve, ResolvedAddr};
 use http_ng_proto::happy_eyeballs::{HeAction, HeConfig, Scheduler};
@@ -398,27 +400,46 @@ pub(crate) fn wants_tls(uri: &Uri) -> Result<bool, Error> {
 /// `race_connect_never_requires_send_even_through_the_wait_path` and
 /// `crates/http-ng-native/tests/dual_runtime.rs`, which run this same
 /// path through `smol` without a single scheduler thread).
-async fn drive<R, V6, V4>(
+///
+/// # What it measures, and only when somebody is watching
+///
+/// `began` is the instant the caller's connect started — `None` when
+/// `H::WATCHING` is `false`, which is how the whole of the timing work
+/// below disappears from a build with no hook. The two figures it
+/// produces are `Attempted::dns` and `Attempted::tcp`, and each is
+/// measured where it happens rather than derived from the other: `dns`
+/// ends at the first `HeAction::Start`, which is the first instant an
+/// address existed to try, and `tcp` is the winning attempt's own
+/// interval, stamped when *that* attempt was launched rather than when
+/// the race was. On a staggered race the two differ by the whole
+/// stagger, which is precisely the number a caller is trying to find.
+async fn drive<R, V6, V4, H>(
     rt: &R,
     mut sched: Scheduler,
     v6_stream: V6,
     v4_stream: V4,
     port: u16,
     opts: &TcpOpts,
-) -> Result<R::Stream, Error>
+    began: Option<R::Instant>,
+) -> Result<(R::Stream, Option<Box<Attempted>>), Error>
 where
     R: TcpConnect + Timer,
     V6: Stream<Item = Result<ResolvedAddr, Error>>,
     V4: Stream<Item = Result<ResolvedAddr, Error>>,
+    H: Hooks,
 {
     /// What happened first while we were waiting (`HeAction::Wait`): an
     /// item arrived from one of the DNS streams (or the stream finished —
     /// `None`), one of the connection attempts completed, or the wait
     /// timed out.
-    enum Event<T> {
+    enum Event<T, I> {
         V6(Option<Result<ResolvedAddr, Error>>),
         V4(Option<Result<ResolvedAddr, Error>>),
-        Attempt(Option<std::io::Result<T>>),
+        /// The address and the instant the attempt was launched travel
+        /// with the attempt, because `FuturesUnordered` does not say
+        /// which of its futures finished. Both are wanted: the address
+        /// for `Connected::remote`, the instant for `Attempted::tcp`.
+        Attempt(Option<(SocketAddr, Option<I>, std::io::Result<T>)>),
         TimedOut,
     }
 
@@ -436,13 +457,28 @@ where
     let start = rt.now();
     let mut attempts = FuturesUnordered::new();
     let mut launched = 0usize;
+    // The DNS figure, settled at the first `HeAction::Start` and never
+    // touched again: it is the wait before any address existed, so a
+    // second address arriving later must not move it.
+    let mut dns = Duration::ZERO;
 
     loop {
         let elapsed = rt.elapsed_since(start);
         match sched.poll(elapsed) {
             HeAction::Start(ip) => {
+                if launched == 0 {
+                    dns = since::<R>(rt, began);
+                }
                 launched += 1;
-                attempts.push(rt.connect(SocketAddr::new(ip, port), opts));
+                let addr = SocketAddr::new(ip, port);
+                // Stamped before the future is built, not inside it: a
+                // future in a `FuturesUnordered` is not polled until the
+                // collection is, and a mark taken on its first poll would
+                // silently leave the scheduling delay out of `tcp` and
+                // put it nowhere.
+                let at = mark::<H, R>(rt);
+                let connecting = rt.connect(addr, opts);
+                attempts.push(async move { (addr, at, connecting.await) });
             }
             HeAction::Wait(d) => {
                 let sleep_fut = rt.sleep(d);
@@ -498,8 +534,10 @@ where
                         v4_done = true;
                         sched.mark_v4_done();
                     }
-                    Event::Attempt(Some(Ok(s))) => return Ok(s),
-                    Event::Attempt(Some(Err(_))) => {
+                    Event::Attempt(Some((remote, at, Ok(s)))) => {
+                        return Ok((s, won::<H, R>(rt, remote, dns, at)));
+                    }
+                    Event::Attempt(Some((_, _, Err(_)))) => {
                         // One attempt failed — no reason to stop the rest
                         // of the race; `Scheduler` itself decides whether
                         // to start another one on the next `poll`.
@@ -515,9 +553,9 @@ where
                 }
             }
             HeAction::Exhausted => {
-                while let Some(res) = attempts.next().await {
+                while let Some((remote, at, res)) = attempts.next().await {
                     if let Ok(s) = res {
-                        return Ok(s);
+                        return Ok((s, won::<H, R>(rt, remote, dns, at)));
                     }
                 }
                 let errs = ResolveErrors::from_families(v6_err, v4_err);
@@ -553,6 +591,10 @@ where
 /// first poll), not a workaround pretending to be a stream. For real
 /// feed-as-it-arrives behavior, see [`connect`] and the module doc
 /// comment.
+///
+/// It reports no timings and takes no hook: every caller is a test in
+/// this file, and what a `NoHooks` instantiation here is good for is
+/// proving that `drive` still compiles when nobody is watching.
 pub(crate) async fn race_connect<R>(
     rt: &R,
     addrs_v6: Vec<IpAddr>,
@@ -575,7 +617,56 @@ where
             .into_iter()
             .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
     );
-    drive(rt, sched, v6, v4, port, opts).await
+    drive::<_, _, _, NoHooks>(rt, sched, v6, v4, port, opts, None)
+        .await
+        .map(|(stream, _)| stream)
+}
+
+/// The attempt that won, or `None` when nobody is watching.
+///
+/// A function rather than a struct literal at the two `return`s, so the
+/// three figures are named once and `tcp` cannot silently become `dns`'s
+/// twin.
+fn won<H: Hooks, R: Timer>(
+    rt: &R,
+    remote: SocketAddr,
+    dns: Duration,
+    launched: Option<R::Instant>,
+) -> Option<Box<Attempted>> {
+    H::WATCHING.then(|| {
+        Box::new(Attempted {
+            remote,
+            dns,
+            tcp: since::<R>(rt, launched),
+            // Filled in by `attempt`, which is where the handshake is.
+            tls: None,
+        })
+    })
+}
+
+/// Everything one [`attempt`] learned about the connection it made — and
+/// `None` all the way up when `H::WATCHING` is `false`.
+///
+/// **Boxed, and that is what the `Option` is for.** `None` costs eight
+/// bytes and no allocation, so a request that wants none of this carries
+/// a pointer rather than eighty bytes through four nested `async fn`s;
+/// `Some` costs one allocation per *connection*, set against a TCP
+/// handshake.
+///
+/// A struct rather than a tuple because three of its four fields are
+/// durations and swapping two of them would compile — which is exactly
+/// the mutation "a phase duration measured from the wrong start", made
+/// unavailable by naming rather than caught after the fact.
+#[derive(Debug)]
+pub(crate) struct Attempted {
+    pub(crate) remote: SocketAddr,
+    pub(crate) dns: Duration,
+    pub(crate) tcp: Duration,
+    /// `None` for a plaintext connection and `Some` for one that
+    /// handshook, so the distinction reaches
+    /// [`ConnectTiming::tls`](http_ng_core::unversioned::ConnectTiming::tls)
+    /// as a fact rather than as a zero.
+    pub(crate) tls: Option<Duration>,
 }
 
 /// One address family's answers for one call to [`connect`]: asked once,
@@ -787,7 +878,19 @@ where
 /// a request that was still able to proceed. When there was no record, or
 /// when it contributed nothing, there is only ever one attempt and one
 /// error.
-pub(crate) async fn connect<R, D, L>(
+///
+/// # The two attempts do not share a DNS figure
+///
+/// `began` below is taken once and given to the first attempt, whose
+/// `dns` therefore covers the HTTPS record *and* the address answers —
+/// which is the wait the caller actually experienced. The retry gets a
+/// fresh mark, because its addresses are already in hand ([`Answers`]
+/// replays them) and measuring its `dns` from the top would report the
+/// whole of the failed first attempt as time spent in DNS. Neither
+/// figure is a share of a total: see
+/// [`ConnectTiming`](http_ng_core::unversioned::ConnectTiming), which
+/// says so where a caller reads it.
+pub(crate) async fn connect<R, D, L, H>(
     rt: &R,
     dns: &D,
     tls: &L,
@@ -796,12 +899,21 @@ pub(crate) async fn connect<R, D, L>(
     alpn: &[&[u8]],
     discovery_cache: &NegativeCache,
     now: Duration,
-) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>
+) -> Result<
+    (
+        Conn<R::Stream, L::Stream<R::Stream>>,
+        Option<TlsInfo>,
+        Option<Box<Attempted>>,
+    ),
+    Error,
+>
 where
     R: TcpConnect + Timer,
     D: Resolve,
     L: TlsConnect,
+    H: Hooks,
 {
+    let began = mark::<H, R>(rt);
     let host = host(uri)?;
     let use_tls = wants_tls(uri)?;
     let port = port(uri, use_tls);
@@ -820,7 +932,7 @@ where
     )
     .await;
 
-    let first = attempt(
+    let first = attempt::<R, L, H>(
         rt,
         tls,
         host,
@@ -831,6 +943,7 @@ where
         &mut v6,
         &mut v4,
         endpoint.as_ref(),
+        began,
     )
     .await;
     match first {
@@ -840,8 +953,19 @@ where
         // whatever the origin says next. See this function's doc comment.
         Err(_through_the_record) if endpoint.is_some() => {
             discovery_cache.record(Origin::new(host, port), now);
-            attempt(
-                rt, tls, host, use_tls, port, opts, alpn, &mut v6, &mut v4, None,
+            let retry_began = mark::<H, R>(rt);
+            attempt::<R, L, H>(
+                rt,
+                tls,
+                host,
+                use_tls,
+                port,
+                opts,
+                alpn,
+                &mut v6,
+                &mut v4,
+                None,
+                retry_began,
             )
             .await
         }
@@ -913,7 +1037,7 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// the same pacing rules as any other address. Some of them may have
 /// arrived already, while the record was still outstanding; the chain is
 /// what keeps the hint in front of them anyway.
-async fn attempt<R, L>(
+async fn attempt<R, L, H>(
     rt: &R,
     tls: &L,
     host: &str,
@@ -924,10 +1048,19 @@ async fn attempt<R, L>(
     v6: &mut Answers<'_>,
     v4: &mut Answers<'_>,
     endpoint: Option<&Endpoint>,
-) -> Result<(Conn<R::Stream, L::Stream<R::Stream>>, Option<TlsInfo>), Error>
+    began: Option<R::Instant>,
+) -> Result<
+    (
+        Conn<R::Stream, L::Stream<R::Stream>>,
+        Option<TlsInfo>,
+        Option<Box<Attempted>>,
+    ),
+    Error,
+>
 where
     R: TcpConnect + Timer,
     L: TlsConnect,
+    H: Hooks,
 {
     let sched = build_scheduler(HeConfig::default())?;
     // RFC 9460 §7.2: the record's port replaces the scheme's default for
@@ -953,7 +1086,8 @@ where
     }))
     .chain(v4.replay());
 
-    let tcp = drive(rt, sched, v6_stream, v4_stream, port, opts).await?;
+    let (tcp, mut attempted) =
+        drive::<_, _, _, H>(rt, sched, v6_stream, v4_stream, port, opts, began).await?;
 
     if use_tls {
         // Held outside the `TlsRequest` so the borrowed list outlives it.
@@ -986,10 +1120,19 @@ where
             // before it may ask for 0-RTT, and why none of that is v0.2's.
             early_data: None,
         };
+        // The handshake and nothing else between these two marks: the
+        // stream it wraps is already connected, and whatever the caller
+        // does with the result afterwards is not TLS.
+        let handshake_began = mark::<H, R>(rt);
         let (stream, info) = tls.connect(tcp, req).await?;
-        Ok((Conn::Tls(stream), Some(info)))
+        if let Some(a) = attempted.as_mut() {
+            a.tls = Some(since::<R>(rt, handshake_began));
+        }
+        Ok((Conn::Tls(stream), Some(info), attempted))
     } else {
-        Ok((Conn::Plain(tcp), None))
+        // `tls` stays `None`, which is not `Some(Duration::ZERO)`: there
+        // was no handshake, and a zero would read as an instant one.
+        Ok((Conn::Plain(tcp), None, attempted))
     }
 }
 
@@ -1414,7 +1557,15 @@ mod tests {
             yielded: false,
         };
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let out = bounded_block_on(drive(&rt, sched, v6s, v4s, 81, &TcpOpts::default()));
+        let out = bounded_block_on(drive::<_, _, _, NoHooks>(
+            &rt,
+            sched,
+            v6s,
+            v4s,
+            81,
+            &TcpOpts::default(),
+            None,
+        ));
         assert!(out.is_ok(), "IPv4 must have been tried after waiting");
         let log = rt.log.borrow();
         assert_eq!(
@@ -1454,7 +1605,15 @@ mod tests {
             yielded: false,
         };
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let out = bounded_block_on(drive(&rt, sched, v6s, v4s, 81, &TcpOpts::default()));
+        let out = bounded_block_on(drive::<_, _, _, NoHooks>(
+            &rt,
+            sched,
+            v6s,
+            v4s,
+            81,
+            &TcpOpts::default(),
+            None,
+        ));
         assert!(out.is_err());
         let log = rt.log.borrow();
         assert_eq!(
@@ -1484,13 +1643,14 @@ mod tests {
         }
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             ErrOnce(true),
             futures_util::stream::empty(),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("no address arrived for either family");
         assert_eq!(
@@ -1512,13 +1672,14 @@ mod tests {
         // attempts failed" would sound as though we tried at all.
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             futures_util::stream::empty(),
             futures_util::stream::empty(),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("both families are empty");
         assert_eq!(err.kind(), &ErrorKind::Resolve);
@@ -1557,13 +1718,14 @@ mod tests {
     fn a_cancelled_resolve_error_is_not_flattened_to_resolve_kind_when_nothing_launched() {
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             ErrOnceWithKind(true, ErrorKind::Cancelled),
             futures_util::stream::empty(),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("v6 resolver was cancelled, v4 found nothing");
         assert_eq!(
@@ -1591,7 +1753,7 @@ mod tests {
     fn a_cancelled_resolve_error_is_not_discarded_when_the_other_family_launched_and_failed() {
         let rt = FakeRt::new([]); // the single v4 address isn't in outcomes -> failure
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             ErrOnceWithKind(true, ErrorKind::Cancelled),
@@ -1601,6 +1763,7 @@ mod tests {
             })]),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("the single v4 address is dead");
         assert_eq!(
@@ -1672,13 +1835,14 @@ mod tests {
     fn a_failed_ipv6_lookup_stays_reachable_through_the_source_chain() {
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             NamedResolveErr(true, "v6 lookup exploded"),
             futures_util::stream::empty(),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("v6 failed and v4 found nothing");
         let errs = resolve_errors(&err);
@@ -1701,13 +1865,14 @@ mod tests {
     fn a_failed_ipv4_lookup_stays_reachable_even_though_ipv6_recorded_nothing() {
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             futures_util::stream::empty(),
             NamedResolveErr(true, "v4 lookup exploded"),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("v4 failed and v6 found nothing");
         let errs = resolve_errors(&err);
@@ -1727,13 +1892,14 @@ mod tests {
     fn when_both_lookups_fail_the_message_names_both_and_the_chain_leads_to_ipv6() {
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             NamedResolveErr(true, "v6 lookup exploded"),
             NamedResolveErr(true, "v4 lookup exploded"),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("both families failed");
         let errs = resolve_errors(&err);
@@ -1759,13 +1925,14 @@ mod tests {
     fn zero_addresses_and_no_resolver_error_ends_the_chain_instead_of_inventing_a_cause() {
         let rt = FakeRt::new([]);
         let sched = build_scheduler(HeConfig::default()).unwrap();
-        let err = bounded_block_on(drive(
+        let err = bounded_block_on(drive::<_, _, _, NoHooks>(
             &rt,
             sched,
             futures_util::stream::empty(),
             futures_util::stream::empty(),
             81,
             &TcpOpts::default(),
+            None,
         ))
         .expect_err("both families are empty");
         let errs = resolve_errors(&err);
@@ -1883,7 +2050,7 @@ mod tests {
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let cache = NegativeCache::default();
 
-        let _ = bounded_block_on(super::connect(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -1931,7 +2098,7 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -2106,7 +2273,7 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -2162,7 +2329,7 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -2291,7 +2458,7 @@ mod tests {
         let opts = TcpOpts::default();
 
         {
-            let mut fut = std::pin::pin!(super::connect(
+            let mut fut = std::pin::pin!(super::connect::<_, _, _, NoHooks>(
                 &rt,
                 &dns,
                 &NoOpTls,
@@ -2388,7 +2555,7 @@ mod tests {
             .parse()
             .unwrap();
         let rt = FakeRt::new([(live.ip(), true)]);
-        let (conn, _info) = bounded_block_on(super::connect(
+        let (conn, _info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -2418,7 +2585,7 @@ mod tests {
         let uri: Uri = format!("http://example.invalid:{}/", addr.port())
             .parse()
             .unwrap();
-        let (conn, info) = bounded_block_on(super::connect(
+        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([(addr.ip(), true)]),
             &dns,
             &NoOpTls,
@@ -2444,7 +2611,7 @@ mod tests {
             .parse()
             .unwrap();
         let alpn: [&[u8]; 1] = [b"h2"];
-        let (conn, info) = bounded_block_on(super::connect(
+        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([(addr.ip(), true)]),
             &dns,
             &NoOpTls,
@@ -2466,7 +2633,7 @@ mod tests {
             v4: vec![],
         };
         let uri: Uri = "ftp://example.invalid/".parse().unwrap();
-        let err = bounded_block_on(super::connect(
+        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
@@ -2495,7 +2662,7 @@ mod tests {
         };
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let rt = FakeRt::new([]);
-        let _ = bounded_block_on(super::connect(
+        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
@@ -2518,7 +2685,7 @@ mod tests {
         };
         // An `http::Uri` with no authority at all (origin-form).
         let uri: Uri = "/just/a/path".parse().unwrap();
-        let err = bounded_block_on(super::connect(
+        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
