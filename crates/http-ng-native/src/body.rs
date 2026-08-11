@@ -91,9 +91,51 @@
 //! up). The attribute is removed, not narrowed: there was nothing left to
 //! narrow it to — no path through this file still lived as dead code
 //! outside tests.
+//!
+//! # The HTTP/1 trailer guard, and why it lives on the way out
+//!
+//! hyper's HTTP/1 encoder writes only the trailer fields the request
+//! **declared** in `Trailer:` (`proto/h1/encode.rs`, `Kind::Chunked(Some
+//! (allowed))`); an undeclared field is logged at `debug!` and dropped,
+//! and the message is then terminated normally — a `200` for data that
+//! never left the process. That silence is the defect `docs/v04-design
+//! .md`'s Appendix C decided to kill, and [`OutgoingBody`] is where it is
+//! killed: this is the body hyper polls, so it is the first place in the
+//! process that sees a trailers frame.
+//!
+//! **The check happens when the frame arrives, not before the head, and
+//! there is no earlier honest point.** A streaming body's trailer field
+//! names are only known once the body ends, so nothing at `execute` time
+//! can tell a request that will emit trailers from one that will not —
+//! a pre-flight check would have to fail every undeclared streaming
+//! request, and almost none of them carry trailers. By the time the frame
+//! does arrive the request is part-written and cannot be recalled; what
+//! the error still buys is the *last-chunk marker*. Returning `Err` here
+//! aborts the message instead of completing it (hyper's
+//! `Dispatcher::poll_write` turns a body error into `Error::new_user_body`
+//! and never calls `end_body`), so the server sees a truncated request
+//! rather than a well-formed one with the caller's trailers quietly
+//! missing. The error type says all of this, because a caller reading it
+//! needs to know what may already have left.
+//!
+//! *How much* has left is the caller's body's doing and not the guard's,
+//! which was measured rather than assumed: a body that pends before its
+//! trailers has had the head and every preceding chunk flushed, and one
+//! that never pends is drained inside a single `poll_write` and dies with
+//! the head still buffered — the server then sees a connection and no
+//! request. Both are pinned in `tests/request_trailers.rs`, and the
+//! error's wording is the one sentence true of both.
+//!
+//! `http-ng-wasi` reaches the same conclusion one step later — its
+//! `convert::UndeclaredTrailers` fires *after* the exchange succeeded,
+//! because the host owns the encoder there and the send is raced against
+//! the body write. Here the encoder is downstream of a body we own, so
+//! the refusal comes before the terminator rather than after the `200`.
 use bytes::Bytes;
+use http::HeaderName;
 use http_body::{Body, Frame, SizeHint};
-use http_ng_core::{Error, RequestBody};
+use http_ng_core::{Error, ErrorKind, RequestBody};
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -145,6 +187,91 @@ impl Inner {
 #[derive(Debug)]
 pub struct OutgoingBody {
     inner: Inner,
+    /// The field names the request declared in `Trailer:` — and therefore
+    /// the only ones hyper's HTTP/1 encoder will put on the wire.
+    ///
+    /// `None` is the **disarmed** state and the state this body is built
+    /// in, because whether the guard applies is a fact about the
+    /// connection rather than about the request: HTTP/2 sends trailers
+    /// unconditionally, with no `Trailer:` anywhere in RFC 9113's framing
+    /// for them, and a gRPC client sending `grpc-status` over h2 declares
+    /// nothing. So it is armed by
+    /// [`crate::established::Rewritten`] on the HTTP/1 branch and
+    /// disarmed by the same value's `undo` — paired there, rather than as
+    /// two statements at the call site, because the request object
+    /// survives a `Failed::NotSent` and may be tried again on a
+    /// connection that negotiated the other protocol.
+    declared_trailers: Option<HashSet<HeaderName>>,
+}
+
+/// The request body carried trailer field(s) the request never declared,
+/// on a connection speaking HTTP/1.1.
+///
+/// **Some of the request may already have gone**, and the error says so
+/// rather than leaving a caller to assume otherwise. How much is a fact
+/// about the caller's own body, measured both ways in
+/// `tests/request_trailers.rs`: a body that pends between its last data
+/// frame and its trailers — the shape of any real streaming producer —
+/// has had the head and every preceding chunk flushed to the socket by
+/// then, while one that answers `Ready` throughout is drained inside a
+/// single `Dispatcher::poll_write` and dies with the head still in
+/// hyper's write buffer, leaving the server with a connection and no
+/// request at all.
+///
+/// What the refusal prevents in both cases is the *last-chunk marker*:
+/// the message is aborted instead of completed without the caller's
+/// trailers, so no server ever treats it as a well-formed request whose
+/// trailers happened to be absent. A server that did receive the prefix
+/// may still have acted on it, so this is not a signal to retry blindly.
+///
+/// The fix is the caller's and is one header: `Trailer:` naming each field
+/// the body will emit (RFC 9110 §6.6.2, and hyper's
+/// `proto/h1/encode.rs` enforces it). The same request over HTTP/2 needs
+/// no such header and is unaffected — which is why
+/// [`Capabilities::request_trailers`](http_ng_core::Capabilities::request_trailers)
+/// is `true` for this transport: it sends them on both protocols it
+/// speaks, and a request that omits the declaration HTTP/1.1 requires is
+/// malformed rather than unsupported.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the request body emitted trailer field(s) [{}] that the request's `Trailer:` header did \
+     not declare, and this connection speaks HTTP/1.1, where hyper's encoder drops an \
+     undeclared trailer field silently (RFC 9110 §6.6.2) — send `Trailer: {}` with the \
+     request head. The message was aborted rather than finished without them, so the server \
+     never saw a complete request; how much of it had already been flushed depends on \
+     whether the body pended before its trailers, and a non-idempotent request that had may \
+     already have taken effect — do not retry blindly",
+    .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
+    .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
+)]
+pub struct UndeclaredRequestTrailers(Vec<HeaderName>);
+
+impl UndeclaredRequestTrailers {
+    /// The field names that were emitted and not declared, in the order
+    /// they appeared in the trailers frame.
+    pub fn fields(&self) -> &[HeaderName] {
+        &self.0
+    }
+}
+
+/// The names a request declared in `Trailer:`.
+///
+/// `Trailer:` is a comma-separated list and may be repeated across several
+/// header lines (RFC 9110 §5.3); both forms fold into one set, and
+/// `HeaderName` compares case-insensitively, so `Grpc-Status` and
+/// `grpc-status` are one name. Deliberately the same parse hyper's client
+/// encoder performs on the same header
+/// (`proto/h1/role.rs`'s `Client::set_length`), because a guard that
+/// disagreed with the encoder about which names count would either refuse
+/// a field that would have been sent or pass one that would not.
+pub(crate) fn declared_trailer_names(headers: &http::HeaderMap) -> HashSet<HeaderName> {
+    headers
+        .get_all(http::header::TRAILER)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
+        .collect()
 }
 
 impl std::fmt::Debug for Inner {
@@ -160,6 +287,51 @@ impl OutgoingBody {
     pub(crate) fn from_request_body(body: RequestBody) -> Self {
         Self {
             inner: Inner::from_request_body(body),
+            declared_trailers: None,
+        }
+    }
+
+    /// Arm the HTTP/1 trailer guard with the names the request declared
+    /// — see the module doc and [`UndeclaredRequestTrailers`].
+    ///
+    /// Called on the HTTP/1 branch only, and unconditionally there: a
+    /// buffered body can never produce a trailers frame, so arming it
+    /// costs an empty set and no branch on the body's kind.
+    pub(crate) fn require_declared_trailers(&mut self, declared: HashSet<HeaderName>) {
+        self.declared_trailers = Some(declared);
+    }
+
+    /// Disarm it again, for a request handed back unsent and about to be
+    /// tried on a connection that may speak the other protocol.
+    pub(crate) fn allow_undeclared_trailers(&mut self) {
+        self.declared_trailers = None;
+    }
+
+    /// `Ok(frame)` unless the guard is armed and this is a trailers frame
+    /// carrying a name the request did not declare.
+    ///
+    /// An empty trailers frame passes: `keys()` yields nothing, so there
+    /// is nothing undeclared and nothing that could have been lost on the
+    /// wire either.
+    fn check_trailers(&self, frame: Frame<Bytes>) -> Result<Frame<Bytes>, Error> {
+        let Some(declared) = self.declared_trailers.as_ref() else {
+            return Ok(frame);
+        };
+        let Some(map) = frame.trailers_ref() else {
+            return Ok(frame);
+        };
+        let undeclared: Vec<HeaderName> = map
+            .keys()
+            .filter(|n| !declared.contains(*n))
+            .cloned()
+            .collect();
+        if undeclared.is_empty() {
+            Ok(frame)
+        } else {
+            Err(Error::new(
+                ErrorKind::Body,
+                UndeclaredRequestTrailers(undeclared),
+            ))
         }
     }
 }
@@ -175,9 +347,18 @@ impl Body for OutgoingBody {
         // `OutgoingBody` doesn't hold any `!Unpin` fields directly
         // (`Inner::Streaming` is already `Box<dyn .. + Unpin>`), so the
         // projection is a plain `get_mut`, no `pin_project` needed.
-        match &mut self.get_mut().inner {
+        let this = self.get_mut();
+        let polled = match &mut this.inner {
             Inner::Buffered(opt) => Poll::Ready(opt.take().map(|b| Ok(Frame::data(b)))),
             Inner::Streaming(s) => Pin::new(&mut **s).poll_frame(cx),
+        };
+        // On the way out rather than in a wrapper type, because this is
+        // the one place every frame of every request body passes through
+        // on its way to hyper — a wrapper would be a second thing to
+        // remember to put on.
+        match polled {
+            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(this.check_trailers(frame))),
+            other => other,
         }
     }
 

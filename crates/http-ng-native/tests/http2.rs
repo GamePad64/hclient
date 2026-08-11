@@ -328,8 +328,19 @@ async fn capabilities_report_the_floor_with_the_feature_on() {
          this one hangs a caller instead of slowing it down"
     );
     assert!(
-        !caps.request_trailers && !caps.response_trailers,
-        "the same floor, on the two fields h2 would otherwise let us raise"
+        !caps.response_trailers,
+        "the same floor, on the field h2 would otherwise let us raise"
+    );
+    assert!(
+        caps.request_trailers,
+        "and NOT the floor, which is the correction v0.4's Appendix C \
+         made: `request_trailers` used to be listed beside \
+         `response_trailers` here as a thing only h2 could do, and \
+         HTTP/1.1 had been sending them all along (tests/request_trailers \
+         .rs reads the field off a raw socket over plaintext `http://`, \
+         with this feature compiled in and unused). The value is \
+         therefore the same with the feature on as off, exactly as every \
+         other line in this test — it is simply the true one now"
     );
     assert!(
         caps.streaming_request_body,

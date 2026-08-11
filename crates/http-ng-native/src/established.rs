@@ -193,7 +193,7 @@ where
     let id = est.id();
     match est {
         Established::H1(e) => {
-            let rewritten = Rewritten::to_origin_form(&mut req);
+            let rewritten = Rewritten::for_http1(&mut req);
             match crate::h1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
                     inner: Inner::H1(b),
@@ -214,7 +214,7 @@ where
     }
 }
 
-/// What [`Rewritten::to_origin_form`] changed about a request, and how to
+/// What [`Rewritten::for_http1`] changed about a request, and how to
 /// change it back.
 ///
 /// **Why anything has to be undone at all.** `Native::execute` may make
@@ -222,8 +222,15 @@ where
 /// [`Failed::NotSent`] is for — and the attempts need not agree on the
 /// protocol. Rewriting in place and never undoing it would leave an
 /// HTTP/2 attempt holding a URI with no authority in it.
+///
+/// The trailer guard is here for exactly that reason and not because it
+/// is a rewrite: it is armed on the HTTP/1 branch and would otherwise
+/// still be armed on an HTTP/2 retry, where `Trailer:` means nothing and
+/// trailers go out regardless. Pairing it with the URI in one value is
+/// what makes forgetting the second half impossible rather than
+/// unlikely.
 struct Rewritten {
-    /// [`Rewritten::to_origin_form`] inserted `Host:` because the caller
+    /// [`Rewritten::for_http1`] inserted `Host:` because the caller
     /// had not set one. Undoing removes exactly the header we added and no
     /// other: removing a caller's own `Host:` would lose a deliberate
     /// override, and keeping ours would hand h2 a `Host:` that can
@@ -233,15 +240,19 @@ struct Rewritten {
 }
 
 impl Rewritten {
-    /// Rewrites the request URI into origin-form (hyper's HTTP/1 client
-    /// requires exactly that, not absolute-form) and sets `Host:` if the
-    /// caller didn't set it themselves.
+    /// Everything the HTTP/1 path needs done to a request before hyper
+    /// sees it: the URI rewritten into origin-form (hyper's HTTP/1 client
+    /// requires exactly that, not absolute-form), `Host:` set if the
+    /// caller didn't set it themselves, and the body's trailer guard
+    /// armed from `Trailer:`
+    /// ([`crate::body::UndeclaredRequestTrailers`] for what that buys and
+    /// what it costs).
     ///
     /// By the time this is called, `Native::key_parts` has succeeded —
     /// meaning its checks (`connect::host`, `connect::wants_tls`) passed,
     /// so `req.uri()` is guaranteed to carry a host and a supported
     /// (`http`/`https`) scheme; this function doesn't recheck them.
-    fn to_origin_form(req: &mut http::Request<OutgoingBody>) -> Self {
+    fn for_http1(req: &mut http::Request<OutgoingBody>) -> Self {
         let uri = req.uri().clone();
         let https = uri.scheme_str() == Some("https");
         let default_port = if https { 443 } else { 80 };
@@ -275,6 +286,12 @@ impl Rewritten {
         if let Ok(u) = pq.parse::<http::Uri>() {
             *req.uri_mut() = u;
         }
+        // Read from the headers as they are about to go out, and in two
+        // statements because the second borrows `req` mutably: the set
+        // the guard enforces has to be the set hyper's encoder will parse
+        // off this same request.
+        let declared = crate::body::declared_trailer_names(req.headers());
+        req.body_mut().require_declared_trailers(declared);
         Self { host_inserted }
     }
 
@@ -283,6 +300,7 @@ impl Rewritten {
         if self.host_inserted {
             req.headers_mut().remove(http::header::HOST);
         }
+        req.body_mut().allow_undeclared_trailers();
     }
 }
 

@@ -264,7 +264,7 @@ use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 /// [`WebSocketConnect::websocket`]'s own contract says a header that
 /// cannot be sent must fail rather than disappear. `Host` is deliberately
 /// not on this list — it is defaulted when absent and honoured when
-/// present, the same rule `established::Rewritten::to_origin_form` already
+/// present, the same rule `established::Rewritten::for_http1` already
 /// follows for every other request this crate sends.
 const OURS: [http::HeaderName; 4] = [
     http::header::CONNECTION,

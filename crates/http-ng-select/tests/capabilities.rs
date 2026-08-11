@@ -58,7 +58,7 @@ fn stacks() -> (Tcp, Quic) {
 /// arrives here as a red test rather than as a silent change of what this
 /// transport promises.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_two_stacks_disagree_on_exactly_six_fields_today() {
+async fn the_two_stacks_disagree_on_exactly_seven_fields_today() {
     let (tcp, quic) = stacks();
     let (t, q) = (tcp.capabilities(), quic.capabilities());
 
@@ -131,6 +131,7 @@ async fn the_two_stacks_disagree_on_exactly_six_fields_today() {
         differ,
         [
             "full_duplex",
+            "request_trailers",
             "response_trailers",
             "early_data",
             "client_certs",
@@ -142,9 +143,9 @@ async fn the_two_stacks_disagree_on_exactly_six_fields_today() {
     );
 }
 
-/// The composite's answer on each of those six, from the real members.
+/// The composite's answer on each of those seven, from the real members.
 ///
-/// Five take the weaker claim. `early_data` takes the stronger one, and
+/// Six take the weaker claim. `early_data` takes the stronger one, and
 /// that is the field this rule was hardest to write: see `combine`'s doc.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
@@ -154,7 +155,7 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     let c = Selecting::new(tcp, quic, IpLiteralOnly).expect("the two stacks agree today");
     let c = c.capabilities();
 
-    // The five weaker claims, each asserted together with the member that
+    // The six weaker claims, each asserted together with the member that
     // said otherwise — so a test that passed because both members had
     // changed their mind would be visibly wrong rather than quietly green.
     assert!(q.full_duplex && !t.full_duplex);
@@ -162,6 +163,15 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
 
     assert!(q.response_trailers && !t.response_trailers);
     assert!(!c.response_trailers);
+
+    // The seventh, arrived in v0.4 when `http-ng-native` stopped
+    // under-declaring: it sends request trailers on both protocols it
+    // speaks, and `http-ng-h3` refuses them with a typed error. The
+    // direction is the reverse of the rows above -- here TCP is the one
+    // that can -- and the stored answer is still the weaker claim,
+    // because a request the QUIC member serves gets no trailers at all.
+    assert!(t.request_trailers && !q.request_trailers);
+    assert!(!c.request_trailers);
 
     assert!(q.client_certs && !t.client_certs);
     assert!(!c.client_certs);

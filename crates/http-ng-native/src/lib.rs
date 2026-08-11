@@ -50,6 +50,7 @@ mod pool;
 #[cfg(feature = "websocket")]
 mod websocket;
 
+pub use body::UndeclaredRequestTrailers;
 pub use connect::Conn;
 pub use discovery::SVCB_FAILURE_TTL;
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
@@ -248,11 +249,25 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         // **The floor, and it is the same value with the `http2` feature on
-        // as off** (v0.2 W3). `full_duplex`, `request_trailers` and
-        // `response_trailers` are all things HTTP/2 can do and HTTP/1.1
-        // cannot, and they all stay at `Capabilities::none()`'s `false`
-        // here, because what this reports is the value that holds on the
-        // WORST protocol this transport might negotiate.
+        // as off** (v0.2 W3). `full_duplex` and `response_trailers` are
+        // things HTTP/2 can do and HTTP/1.1 cannot, and they stay at
+        // `Capabilities::none()`'s `false` here, because what this
+        // reports is the value that holds on the WORST protocol this
+        // transport might negotiate.
+        //
+        // **`request_trailers` used to be the third name in that sentence
+        // and it was measured wrong** (v0.4, `docs/v04-design.md` Appendix
+        // C). HTTP/1.1 sends request trailers perfectly well —
+        // `tests/request_trailers.rs` reads `0\r\ngrpc-status: 0\r\n\r\n`
+        // off a raw socket from a plaintext `http://` exchange — so the
+        // floor was never the reason for that `false`; nobody had looked.
+        // It is `true` below, and the line that follows this one is the
+        // whole of the change the declaration owed: what HTTP/1.1 wants
+        // in addition is the `Trailer:` header RFC 9110 §6.6.2 asks of
+        // any sender, and a request that omits it is malformed rather
+        // than unsupported. It now gets
+        // `body::UndeclaredRequestTrailers` instead of a `200` with its
+        // data gone.
         //
         // Not blanket conservatism — chosen per field by what over-claiming
         // costs. Over-claiming `streaming_request_body` (above) would cost
@@ -289,6 +304,28 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // `Response::version()`, after the fact, which is the only honest
         // time — `version_reported` below is `true` and the negotiated
         // version really does come off the wire.
+        //
+        // **`true`, on both protocols, and it does not breach the floor
+        // rule above — it satisfies it** (v0.4, Appendix C). A capability
+        // says what the transport does with a well-formed request, and on
+        // the worst protocol this transport might negotiate a request
+        // that declares its trailer fields gets them delivered:
+        // `tests/request_trailers.rs`'s
+        // `sends_request_trailers_on_http1_when_the_caller_declares_them`
+        // reads them off the wire, and
+        // `sends_request_trailers_on_http2_without_any_declaration`
+        // reads them off an `h2::server`'s decoded stream. What
+        // over-claiming this would have cost is worth naming beside
+        // `full_duplex`'s deadlock, because it is the reason this one may
+        // be raised where that one may not: a caller who believes it and
+        // omits `Trailer:` now gets a typed error naming the field, which
+        // is a message rather than a hang or a loss.
+        //
+        // The asymmetry with `http-ng-h3`, which keeps `false`, is a real
+        // difference between two transports rather than a drift between
+        // two declarations: that crate sends no request trailers at all
+        // and refuses with `RequestTrailersNotSent`.
+        caps.request_trailers = true;
         // `Transparent`, and it is a correction rather than a change: this
         // crate has never followed a redirect. A 3xx comes back from
         // `h1::exchange`/`http2::exchange` as an ordinary response and
