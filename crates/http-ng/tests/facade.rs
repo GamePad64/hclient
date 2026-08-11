@@ -317,3 +317,81 @@ fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {
         http_ng::Client::try_new().expect("default transport supports the default config");
     let _client_no_param: http_ng::Client = client;
 }
+
+// ── v0.4 W2: the observability seam ──────────────────────────────────────
+
+/// The hook vocabulary must be reachable from a crate that depends only
+/// on `http-ng`, and — this is the half a `let _: Type` would miss — a
+/// hook must be **implementable** and its `Event` **matchable** here.
+///
+/// The distinction is the one this file's own doc makes: naming a type
+/// says it is re-exported and nothing more. What a caller actually writes
+/// is an `impl Hooks for MyType` with a `match` over every variant, so
+/// that is what is written below. If a variant is added this stops
+/// compiling — which is the right way round for a vocabulary in
+/// `unversioned`, and the reason `Event` is deliberately not
+/// `#[non_exhaustive]`.
+#[test]
+fn a_hook_can_be_written_against_the_facade_alone() {
+    #[derive(Default)]
+    struct Counts {
+        connected: std::cell::Cell<usize>,
+        reused: std::cell::Cell<usize>,
+        head: std::cell::Cell<usize>,
+        closed: std::cell::Cell<usize>,
+    }
+
+    impl http_ng::Hooks for Counts {
+        fn on(&self, event: http_ng::Event<'_>) {
+            let bump = |c: &std::cell::Cell<usize>| c.set(c.get() + 1);
+            match event {
+                http_ng::Event::Connected(e) => {
+                    // Every field a caller would log, named through the
+                    // facade: an id, an address, a version, four durations.
+                    let _: http_ng::ConnectionId = e.id;
+                    let _: std::net::SocketAddr = e.remote;
+                    let _: http::Version = e.version;
+                    let t: http_ng::ConnectTiming = e.timing;
+                    let _ = t.dns + t.tcp + t.tls.unwrap_or_default() + t.total;
+                    bump(&self.connected);
+                }
+                http_ng::Event::Reused(e) => {
+                    let _: u64 = e.id.get();
+                    bump(&self.reused);
+                }
+                http_ng::Event::Head(e) => {
+                    let _: http::StatusCode = e.status;
+                    let _: core::time::Duration = e.elapsed;
+                    bump(&self.head);
+                }
+                http_ng::Event::Closed(e) => {
+                    match e.reason {
+                        http_ng::CloseReason::Ended | http_ng::CloseReason::Stale => {}
+                        // The error is the caller's to inspect, so the
+                        // facade has to reach `ErrorKind` from here too.
+                        http_ng::CloseReason::Failed(err) => {
+                            let _: &http_ng::ErrorKind = err.kind();
+                        }
+                    }
+                    bump(&self.closed);
+                }
+            }
+        }
+    }
+
+    // Constructed and called, so the impl above is not merely compiled:
+    // an `Event` a consumer cannot build is one they cannot test against
+    // either, and `Closed` is the variant with a lifetime in it.
+    let counts = Counts::default();
+    http_ng::Hooks::on(
+        &counts,
+        http_ng::Event::Closed(http_ng::Closed {
+            id: http_ng::ConnectionId::UNWATCHED,
+            reason: http_ng::CloseReason::Ended,
+        }),
+    );
+    assert_eq!(counts.closed.get(), 1);
+
+    // And the hook a caller who wants nothing gets.
+    let _: http_ng::NoHooks = http_ng::NoHooks;
+}

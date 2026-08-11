@@ -119,6 +119,22 @@ pub use http_ng_core::{
     RedirectSupport, RequestBody, RequireVersion, RetryKind, RewindFactory, TimeoutSupport,
     TlsSupport, UnsupportedCapability, VersionNotAvailable,
 };
+// The observability seam (v0.4 W2), re-exported for the same reason
+// `AllowEarlyData` is: what a caller writes is an `impl Hooks for MyType`
+// and a `match` over `Event`, and both live in the core. A facade that
+// let a caller *set* a hook (through the transport) but not *name* the
+// trait it must implement would force a direct dependency on
+// `http-ng-core` for the one thing this feature exists to make easy.
+//
+// `Hooks` and `NoHooks` come from `unversioned`, which is the semver
+// quarantine — one backend implements this and the vocabulary has not
+// been tried against a second (see that module's own doc). Re-exporting
+// them here does not promise otherwise: the quarantine is a statement
+// about the trait, not about where its name is written.
+pub use http_ng_core::unversioned::{
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
+    Reused,
+};
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;
 // Every URL this client is handed becomes an `http::Uri` through

@@ -3655,6 +3655,22 @@ naming the reason — which is also when the check-in happens, so a
 connection that went back to the pool reports nothing and one that did not
 reports why.
 
+## The facade
+
+`http-ng` re-exports the whole vocabulary — `Hooks`, `NoHooks`, `Event`
+and its four payloads, `ConnectionId`, `ConnectTiming`, `CloseReason` —
+for `AllowEarlyData`'s reason: what a caller writes is an `impl Hooks for
+MyType` and a `match` over `Event`, and a facade that let them *set* a
+hook (through the transport) but not *name* the trait would force a
+direct dependency on `http-ng-core` for the one thing this feature exists
+to make easy.
+
+`tests/facade.rs` checks it the way that file's own doc requires — by
+**implementing** the trait and matching every variant rather than by
+naming the types, then constructing an `Event` and calling the impl. A
+`let _: Type` would say the re-export exists and nothing about whether a
+consumer can write a hook with it.
+
 ## Deliberately not done
 
 - **`Transport`'s shape is untouched.** The brief made this a stopping
