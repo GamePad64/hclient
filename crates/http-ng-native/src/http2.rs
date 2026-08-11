@@ -123,6 +123,7 @@ use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
+use http_ng_core::unversioned::ConnectionId;
 use http_ng_core::{Error, ErrorKind};
 use hyper::rt::{Read, Write};
 use std::future::Future;
@@ -231,6 +232,12 @@ where
 {
     sender: h2::client::SendRequest<Bytes>,
     conn: h2::client::Connection<TokioIo<I>, Bytes>,
+    /// Which connection this is, for the observability seam — the same
+    /// field, for the same reason, as `crate::h1::Established::id`. This
+    /// path reports `Connected`, `Reused` and `Head` (all of which
+    /// `Native::execute` emits, knowing nothing about the protocol) and
+    /// no `Closed`: see `crate::established::Inner`.
+    pub(crate) id: ConnectionId,
 }
 
 impl<I> std::fmt::Debug for Established<I>
@@ -246,14 +253,14 @@ where
 ///
 /// Split out from [`exchange`] for the same reason the HTTP/1 handshake
 /// is: a pooled connection has already had one.
-pub(crate) async fn handshake<I>(io: I) -> Result<Established<I>, Error>
+pub(crate) async fn handshake<I>(io: I, id: ConnectionId) -> Result<Established<I>, Error>
 where
     I: Read + Write + Unpin,
 {
     let (sender, conn) = h2::client::handshake(TokioIo::new(io))
         .await
         .map_err(|e| from_h2_error(e, ErrorKind::Connect))?;
-    Ok(Established { sender, conn })
+    Ok(Established { sender, conn, id })
 }
 
 /// Whether a connection taken out of the pool is still worth a request.
@@ -332,6 +339,7 @@ where
     let Established {
         mut sender,
         mut conn,
+        id,
     } = est;
 
     // One last look at the connection while the request is still OURS —
@@ -485,6 +493,7 @@ where
             recv,
             conn,
             reuse,
+            id,
             // Whatever is left of the request. `None` for a request whose
             // body was over before the head went out, and for one whose
             // body finished while the head was on its way.
@@ -961,6 +970,11 @@ where
     /// this makes it total rather than relying on every wrapper above to
     /// stop.
     ended: bool,
+    /// Carried, not used: the id has to travel back to the pool with the
+    /// connection so a later `Reused` names the same one its `Connected`
+    /// did. This body emits no event of its own — see
+    /// `crate::established::Inner`.
+    id: ConnectionId,
 }
 
 impl<I> std::fmt::Debug for H2Body<I>
@@ -1039,6 +1053,7 @@ where
             .put(crate::established::Established::H2(Box::new(Established {
                 sender: reuse.sender,
                 conn,
+                id: self.id,
             })));
     }
 }

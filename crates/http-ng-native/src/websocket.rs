@@ -1062,7 +1062,15 @@ where
         // doc. `http/1.1` alone on the ALPN list: RFC 8441 extended
         // CONNECT is the h2 answer to this and this is not it.
         let now = self.rt.elapsed_since(self.epoch);
-        let connect_fut = connect::connect(
+        // `NoHooks`, deliberately: the observability seam (v0.4 W2) is
+        // about HTTP requests, and this connection is not one. It is
+        // never pooled, so no `Reused` can follow it; there is no
+        // response head to report beyond the 101 the handshake consumes;
+        // and its end is the `Stream`'s end, which the caller sees
+        // directly. Reporting `Connected` alone would put an id into a
+        // caller's log that no later event ever mentions again. The gap
+        // is recorded in `docs/v03-acceptance.md`.
+        let connect_fut = connect::connect::<_, _, _, http_ng_core::unversioned::NoHooks>(
             &self.rt,
             &self.dns,
             &self.tls,
@@ -1072,10 +1080,8 @@ where
             &self.svcb_failures,
             now,
         );
-        let (conn, _tls_info) = match timeouts.connect {
-            Some(d) => crate::with_connect_timeout(&self.rt, d, connect_fut).await?,
-            None => connect_fut.await?,
-        };
+        let (conn, _tls_info, _facts) =
+            crate::with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
 
         let (io, read_buf, _resp) = upgrade(conn, handshake, &key).await?;
         Ok(NativeWebSocket::new(

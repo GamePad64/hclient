@@ -506,10 +506,22 @@ async fn accepted_for_two_rounds_of_three(max_idle_per_key: usize) -> usize {
         // same one connection back and forth and never fill the pool.
         // Nothing is spawned — three futures on one task, which is also a
         // small proof that the pool does not need an executor.
+        //
+        // **On the heap, and that is this fixture's business rather than
+        // the pool's.** A debug build lays a request future out at about
+        // 54 KB and does not overlap what an optimised one would; three
+        // of them plus the nested `poll` frames under them had this test
+        // passing at 99% of its 2 MiB test thread — measured while adding
+        // the observability hooks (v0.4 W2), whose ~1.8 KB of extra
+        // future was enough to turn it into a stack overflow. `Box::pin`
+        // moves the three futures off the stack and changes nothing this
+        // test asserts: still one task, still no spawn, still three
+        // requests in flight at once. Without it the next feature to add
+        // a field would meet the same wall, having done nothing wrong.
         let (a, b, c) = tokio::join!(
-            get_ok(&client, addr),
-            get_ok(&client, addr),
-            get_ok(&client, addr),
+            Box::pin(get_ok(&client, addr)),
+            Box::pin(get_ok(&client, addr)),
+            Box::pin(get_ok(&client, addr)),
         );
         let _ = (a, b, c);
     }

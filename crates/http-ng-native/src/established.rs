@@ -32,6 +32,7 @@ use crate::pool::CheckIn;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use http_ng_core::Error;
+use http_ng_core::unversioned::{ConnectionId, Hooks};
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -66,6 +67,27 @@ where
     H1(crate::h1::Established<I>),
     #[cfg(feature = "http2")]
     H2(Box<crate::http2::Established<I>>),
+}
+
+impl<I> Established<I>
+where
+    I: Read + Write + Unpin,
+{
+    /// Which connection this is, for
+    /// [`Hooks`](http_ng_core::unversioned::Hooks).
+    ///
+    /// Stored on the protocol's own `Established` and read back through a
+    /// two-line match here — the shape this module's doc describes —
+    /// rather than kept in a side table beside the pool: the id has to
+    /// survive a check-in and a checkout to be worth anything, and the
+    /// only thing that survives those is the connection itself.
+    pub(crate) fn id(&self) -> ConnectionId {
+        match self {
+            Established::H1(e) => e.id,
+            #[cfg(feature = "http2")]
+            Established::H2(e) => e.id,
+        }
+    }
 }
 
 impl<I> std::fmt::Debug for Established<I>
@@ -157,19 +179,22 @@ where
 /// the HTTP/1 rewrite has to be undone when hyper hands the request back
 /// unsent: `Native::execute` may try again on a connection that speaks the
 /// other protocol, and an origin-form URI would be unusable there.
-pub(crate) async fn exchange<I>(
+pub(crate) async fn exchange<I, H>(
     est: Established<I>,
     mut req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
     canonical: &http::Uri,
-) -> Result<http::Response<NativeBody<I>>, Failed>
+    hooks: H,
+) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
+    H: Hooks,
 {
+    let id = est.id();
     match est {
         Established::H1(e) => {
             let rewritten = Rewritten::to_origin_form(&mut req);
-            match crate::h1::exchange(e, req, checkin).await {
+            match crate::h1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
                     inner: Inner::H1(b),
                 })),
@@ -269,11 +294,11 @@ impl Rewritten {
 /// to drive, this transport deliberately has no `Spawn` to drive them
 /// with, so the body does it from `poll_frame`. See `h1.rs`'s and
 /// `http2.rs`'s module docs.
-pub struct NativeBody<I>
+pub struct NativeBody<I, H = http_ng_core::unversioned::NoHooks>
 where
     I: Read + Write + Unpin,
 {
-    inner: Inner<I>,
+    inner: Inner<I, H>,
 }
 
 /// Boxed on the HTTP/2 side for the same reason [`Established`] is, with
@@ -286,27 +311,35 @@ where
         reason = "HTTP/1 is deliberately the unboxed variant; see `Established`"
     )
 )]
-enum Inner<I>
+enum Inner<I, H>
 where
     I: Read + Write + Unpin,
 {
-    H1(crate::h1::H1Body<I>),
+    H1(crate::h1::H1Body<I, H>),
+    /// **No `H`, and that is a gap rather than a decision made twice.**
+    /// The h2 body reports no [`Closed`](http_ng_core::unversioned::Closed)
+    /// event: `Connected`, `Reused` and `Head` come from
+    /// `Native::execute` and are protocol-agnostic, but the end of a
+    /// connection is known inside the body, and h2's has three places it
+    /// can arrive (the connection future, the response stream, the pump)
+    /// where HTTP/1's has two. It is written down in
+    /// `docs/v03-acceptance.md` rather than guessed at here.
     #[cfg(feature = "http2")]
     H2(Box<crate::http2::H2Body<I>>),
 }
 
-impl<I> NativeBody<I>
+impl<I, H> NativeBody<I, H>
 where
     I: Read + Write + Unpin,
 {
-    pub(crate) fn h1(b: crate::h1::H1Body<I>) -> Self {
+    pub(crate) fn h1(b: crate::h1::H1Body<I, H>) -> Self {
         Self {
             inner: Inner::H1(b),
         }
     }
 }
 
-impl<I> std::fmt::Debug for NativeBody<I>
+impl<I, H> std::fmt::Debug for NativeBody<I, H>
 where
     I: Read + Write + Unpin,
 {
@@ -319,9 +352,10 @@ where
     }
 }
 
-impl<I> Body for NativeBody<I>
+impl<I, H> Body for NativeBody<I, H>
 where
     I: Read + Write + Unpin,
+    H: Hooks + Unpin,
 {
     type Data = Bytes;
     type Error = Error;

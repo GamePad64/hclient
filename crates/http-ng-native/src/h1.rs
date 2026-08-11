@@ -223,6 +223,7 @@ use crate::established::Failed;
 use crate::pool::CheckIn;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
+use http_ng_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use http_ng_core::{Error, ErrorKind};
 use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
@@ -252,6 +253,11 @@ where
 {
     sender: http1::SendRequest<OutgoingBody>,
     conn: http1::Connection<I, OutgoingBody>,
+    /// Which connection this is, for the observability seam. Assigned at
+    /// the handshake and carried through every check-in, so a `Closed`
+    /// event names the same connection its `Connected` did — see
+    /// `crate::established::Established::id`.
+    pub(crate) id: ConnectionId,
 }
 
 impl<I> std::fmt::Debug for Established<I>
@@ -291,7 +297,7 @@ struct ConnectionEndedWithTheRequestQueued;
 ///
 /// Generic over the IO type rather than boxing it — see the module doc
 /// comment's section on why nothing here is boxed.
-pub struct H1Body<I>
+pub struct H1Body<I, H = http_ng_core::unversioned::NoHooks>
 where
     I: Read + Write + Unpin,
 {
@@ -307,6 +313,16 @@ where
     /// to `None` is the only way a connection is kept out of the pool, and
     /// it is deliberately easier to lose reuse than to gain it.
     reuse: Option<Reuse<I>>,
+    hooks: H,
+    /// The connection's id — `take`n by [`H1Body::report_closed`], so
+    /// this body reports the end of its connection **at most once** by
+    /// construction rather than by every call site remembering to check.
+    ///
+    /// It is also what says the connection has not ended: the check-in
+    /// path reads it back out (`Some`) and the connection travels to the
+    /// pool carrying the same id, so its next request's `Reused` event
+    /// and its eventual `Closed` agree with the `Connected` that made it.
+    open: Option<ConnectionId>,
 }
 
 /// The half of [`CheckIn`] that only exists once the request has been
@@ -320,7 +336,7 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
-impl<I> std::fmt::Debug for H1Body<I>
+impl<I, H> std::fmt::Debug for H1Body<I, H>
 where
     I: Read + Write + Unpin,
 {
@@ -332,10 +348,31 @@ where
     }
 }
 
-impl<I> H1Body<I>
+impl<I, H> H1Body<I, H>
 where
     I: Read + Write + Unpin,
+    H: Hooks,
 {
+    /// Tells the hook this connection is over, at most once.
+    ///
+    /// The `take` is the "at most once", and it is not bookkeeping for
+    /// its own sake: `poll_frame` below can meet the connection's end and
+    /// then a body error in the same call, and two `Closed` events for
+    /// one socket would make a caller counting connections wrong in the
+    /// direction that looks like a leak.
+    ///
+    /// **Not called from `Drop`**, deliberately — see
+    /// `http_ng_core::unversioned::hooks`'s module doc: a panicking hook
+    /// during an unwind aborts the process, and an observability seam
+    /// that can abort a program is worse than one with a hole in it. The
+    /// hole is that a cancelled request's connection is closed silently.
+    fn report_closed(&mut self, reason: CloseReason<'_>) {
+        let Some(id) = self.open.take() else {
+            return;
+        };
+        self.hooks.on(Event::Closed(Closed { id, reason }));
+    }
+
     /// The one and only check-in. Called when `incoming` has reported a
     /// clean end of body, and from nowhere else — see the module doc.
     fn hand_back_to_pool(&mut self) {
@@ -354,18 +391,28 @@ where
         // signal that it was answering a question already answered: two
         // places deciding whether a connection is usable is how they come
         // to disagree.
+        // The id goes back into the pool with the connection rather than
+        // being reported closed: this is the one exit from a body that
+        // does not end a connection, and taking the id here would leave
+        // the next request's `Reused` event naming a connection whose
+        // close had already been announced.
+        let Some(id) = self.open.take() else {
+            return;
+        };
         reuse
             .checkin
             .put(crate::established::Established::H1(Established {
                 sender: reuse.sender,
                 conn,
+                id,
             }));
     }
 }
 
-impl<I> Body for H1Body<I>
+impl<I, H> Body for H1Body<I, H>
 where
     I: Read + Write + Unpin,
+    H: Hooks + Unpin,
 {
     type Data = Bytes;
     type Error = Error;
@@ -379,14 +426,31 @@ where
         // in the `incoming` channel (see the module doc comment).
         if let Some(conn) = this.conn.as_mut() {
             match Pin::new(conn).poll(cx) {
+                // **Deliberately not reported here**, and that was found
+                // rather than designed. A truncated response — a body
+                // that stops short of its `Content-Length` — reaches this
+                // arm, not the one below: hyper's `Connection` ends
+                // cleanly at the EOF and it is `incoming` that then
+                // reports the incomplete message. Reporting `Ended` at
+                // this line gave a failed connection the reason of one
+                // that finished, and the failure that followed a poll
+                // later had no event left to carry it. So the end is
+                // reported once the body has said how it went — at
+                // `Ready(None)` below (nothing wrong) or at
+                // `Ready(Some(Err(_)))` (something was).
                 Poll::Ready(Ok(())) => {
                     this.conn = None;
                     this.reuse = None;
                 }
+                // A connection-level failure is different: there is no
+                // later verdict to wait for, and the body is about to end
+                // with this same error.
                 Poll::Ready(Err(e)) => {
                     this.conn = None;
                     this.reuse = None;
-                    return Poll::Ready(Some(Err(from_hyper_error(e, ErrorKind::Body))));
+                    let e = from_hyper_error(e, ErrorKind::Body);
+                    this.report_closed(CloseReason::Failed(&e));
+                    return Poll::Ready(Some(Err(e)));
                 }
                 Poll::Pending => {}
             }
@@ -395,10 +459,23 @@ where
             Poll::Ready(Some(Ok(f))) => Poll::Ready(Some(Ok(f))),
             Poll::Ready(Some(Err(e))) => {
                 this.reuse = None;
-                Poll::Ready(Some(Err(from_hyper_error(e, ErrorKind::Body))))
+                let e = from_hyper_error(e, ErrorKind::Body);
+                // A body that failed takes its connection with it: this
+                // one will never be checked in (`reuse` is gone) and is
+                // closed by the drop that follows.
+                this.report_closed(CloseReason::Failed(&e));
+                Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
+                // Check in first: a connection that went back to the pool
+                // has not ended, and `hand_back_to_pool` takes the id
+                // with it, which is what makes the call below a no-op in
+                // exactly that case. When it did not go back — reuse is
+                // off, the peer closed it, the response said
+                // `Connection: close` — the connection is finished with
+                // the body, and this is the instant that is true.
                 this.hand_back_to_pool();
+                this.report_closed(CloseReason::Ended);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -419,14 +496,14 @@ where
 
 /// The HTTP/1 handshake, split out from [`exchange`] because a pooled
 /// connection has already had one and a fresh one has not.
-pub(crate) async fn handshake<I>(io: I) -> Result<Established<I>, Error>
+pub(crate) async fn handshake<I>(io: I, id: ConnectionId) -> Result<Established<I>, Error>
 where
     I: Read + Write + Unpin + 'static,
 {
     let (sender, conn) = http1::handshake::<I, OutgoingBody>(io)
         .await
         .map_err(|e| from_hyper_error(e, ErrorKind::Connect))?;
-    Ok(Established { sender, conn })
+    Ok(Established { sender, conn, id })
 }
 
 /// Whether a connection taken out of the pool is still worth a request.
@@ -465,17 +542,21 @@ where
 
 /// One request over one connection — pooled or fresh, this function cannot
 /// tell and does not need to.
-pub(crate) async fn exchange<I>(
+pub(crate) async fn exchange<I, H>(
     est: Established<I>,
     req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
-) -> Result<http::Response<H1Body<I>>, Failed>
+    hooks: H,
+    id: ConnectionId,
+) -> Result<http::Response<H1Body<I, H>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
+    H: Hooks,
 {
     let Established {
         mut sender,
         mut conn,
+        id: _,
     } = est;
 
     // One last look at the connection while the request is still OURS.
@@ -499,6 +580,16 @@ where
     let dead =
         std::future::poll_fn(|cx| Poll::Ready(Pin::new(&mut conn).poll(cx).is_ready())).await;
     if dead {
+        // The residual race the checkout poll cannot close: the peer
+        // closed this connection while it was idle, and one poll ago it
+        // had not shown yet. `Stale` rather than `Ended` — the pool
+        // handed out a connection that was already gone, which is the
+        // fact that explains the fresh connect the caller is about to
+        // pay for.
+        hooks.on(Event::Closed(Closed {
+            id,
+            reason: CloseReason::Stale,
+        }));
         return Err(Failed::NotSent {
             error: Error::new(ErrorKind::Connect, ConnectionWentAwayBeforeTheRequest),
             request: Box::new(req),
@@ -519,14 +610,28 @@ where
         let mut send = Box::pin(sender.try_send_request(req));
         std::future::poll_fn(|cx| {
             if !conn_done {
+                // The connection's two ends are reported from here and
+                // from `H1Body::poll_frame`, and between them they are
+                // every place hyper's `Connection` future can complete —
+                // which is what makes `open` below a decision rather than
+                // a guess: `conn_done` means the end has already been
+                // told, so the body must not tell it again.
                 match Pin::new(&mut conn).poll(cx) {
-                    Poll::Ready(Ok(())) => conn_done = true,
+                    Poll::Ready(Ok(())) => {
+                        conn_done = true;
+                        hooks.on(Event::Closed(Closed {
+                            id,
+                            reason: CloseReason::Ended,
+                        }));
+                    }
                     Poll::Ready(Err(e)) => {
                         conn_done = true;
-                        return Poll::Ready(Err(Failed::Sent(from_hyper_error(
-                            e,
-                            ErrorKind::Connect,
-                        ))));
+                        let e = from_hyper_error(e, ErrorKind::Connect);
+                        hooks.on(Event::Closed(Closed {
+                            id,
+                            reason: CloseReason::Failed(&e),
+                        }));
+                        return Poll::Ready(Err(Failed::Sent(e)));
                     }
                     Poll::Pending => {}
                 }
@@ -585,12 +690,23 @@ where
         )
     };
 
+    // Read before `conn` is moved into the body below, and it is the
+    // same question `conn_done` answered: the connection either survived
+    // this function or was reported as it ended.
+    let still_open = conn.is_some().then_some(id);
     Ok(http::Response::from_parts(
         parts,
         H1Body {
             incoming,
             conn,
             reuse,
+            hooks,
+            // `None` when the connection already ended inside this
+            // function: the loop above reported it at the instant it
+            // happened, and a body that reported it again on its first
+            // poll would be reporting one socket's end twice — or, for a
+            // response whose body a caller never reads, once too late.
+            open: still_open,
         },
     ))
 }
@@ -599,6 +715,7 @@ where
 mod tests {
     use super::*;
     use http_ng_core::RequestBody;
+    use http_ng_core::unversioned::NoHooks;
     use std::future::Future;
     use std::io;
     use std::time::Duration;
@@ -697,11 +814,11 @@ mod tests {
             .unwrap();
 
         let est = {
-            let fut = handshake(SinkIo);
+            let fut = handshake(SinkIo, ConnectionId::UNWATCHED);
             let mut fut = std::pin::pin!(fut);
             poll_once(fut.as_mut()).expect("handshake over SinkIo must succeed")
         };
-        let fut = exchange(est, req, None);
+        let fut = exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED);
         let mut fut = std::pin::pin!(fut);
         let err = match poll_once(fut.as_mut()) {
             Ok(_) => panic!("a failed outgoing body must fail exchange"),
@@ -851,7 +968,7 @@ mod tests {
         );
 
         let est = {
-            let fut = handshake(io);
+            let fut = handshake(io, ConnectionId::UNWATCHED);
             let mut fut = std::pin::pin!(fut);
             poll_to_completion(fut.as_mut()).expect("handshake must succeed")
         };
@@ -860,6 +977,8 @@ mod tests {
                 est,
                 get_request(),
                 Some(CheckIn::new(pool.clone(), key.clone(), Duration::MAX)),
+                NoHooks,
+                ConnectionId::UNWATCHED,
             );
             let mut fut = std::pin::pin!(fut);
             match poll_to_completion(fut.as_mut()) {
@@ -934,7 +1053,7 @@ mod tests {
         );
 
         let est = {
-            let fut = handshake(io);
+            let fut = handshake(io, ConnectionId::UNWATCHED);
             let mut fut = std::pin::pin!(fut);
             poll_to_completion(fut.as_mut()).expect("handshake must succeed")
         };
@@ -943,6 +1062,8 @@ mod tests {
                 est,
                 get_request(),
                 Some(CheckIn::new(pool.clone(), key.clone(), Duration::MAX)),
+                NoHooks,
+                ConnectionId::UNWATCHED,
             );
             let mut fut = std::pin::pin!(fut);
             match poll_to_completion(fut.as_mut()) {
@@ -990,7 +1111,7 @@ mod tests {
         // with the request already queued.
         script.end_after(1);
 
-        let fut = exchange(est, get_request(), None);
+        let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
         let mut fut = std::pin::pin!(fut);
         let err = match poll_to_completion(fut.as_mut()) {
             Ok(_) => panic!("nothing was ever written, so there is no response to have"),
