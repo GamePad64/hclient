@@ -18,7 +18,8 @@ pub mod unversioned;
 pub use body::{RequestBody, RetryKind, RewindFactory};
 pub use caps::{
     AllowEarlyData, CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport,
-    RedirectSupport, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport, UnsupportedCapability,
+    RedirectSupport, RequireVersion, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
+    UnsupportedCapability, VersionNotAvailable, check_version,
 };
 pub use error::{Error, ErrorKind, Phase};
 pub use host::bare_host;

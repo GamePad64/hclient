@@ -504,6 +504,154 @@ pub enum EarlyDataSupport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllowEarlyData;
 
+/// The caller's per-request statement that this request needs a particular
+/// HTTP version, and must fail rather than go out over another one.
+///
+/// Put into `http::Extensions` on the request, and read by the transport at
+/// the moment the protocol becomes known — which is **before the head is
+/// written**, on every transport here that honours one. Absent, the
+/// transport picks as it always did.
+///
+/// # It is [`AllowEarlyData`]'s mechanism with the polarity reversed
+///
+/// Same shape: a mark in the request's extensions that a transport reads
+/// and acts on before sending, `Copy`, defined in this crate because
+/// transports read it and do not depend on `http-ng`. The difference is
+/// that one is a permission and this is a requirement, and that difference
+/// is why both have to be per request rather than per client — see below.
+///
+/// # Why a demand and not a question
+///
+/// [`Capabilities::full_duplex`] and its neighbours report the **floor**:
+/// the value that holds on the worst protocol a transport might negotiate.
+/// That is right for a static answer and cannot be otherwise — Cargo
+/// unifies features across a graph, so a library built on `http-ng` can
+/// never know whether some other crate turned `http2` on — but it leaves a
+/// caller who genuinely needs HTTP/2 with no way to act.
+///
+/// The two answers that do not work were measured against the code first
+/// (`docs/v03-acceptance.md`, and Appendix A of `docs/v04-design.md`):
+///
+/// - **Per response.** `Response::version()` already answers it, honestly,
+///   and *after the fact*. A caller structured for bidirectional streaming
+///   has to decide before it sends.
+/// - **Per connection.** There is no connection handle in the public API,
+///   so it means either a new seam or a query answered from a pool — and
+///   the pooled answer is racy in the way that matters: the entry can be
+///   evicted between the answer and the request that relied on it. It
+///   would be a fact about the past presented as a promise about the next
+///   request.
+///
+/// This is the third: the caller states the requirement, and the transport
+/// converts "the floor says no" into "this connection says yes" for one
+/// request, or fails it before committing to a shape that would deadlock.
+///
+/// # Why it cannot be a client-level setting
+///
+/// Turning an ALPN outcome into a request failure is **correct for gRPC**,
+/// whose RPC cannot proceed over HTTP/1.1 at all, and **wrong for a
+/// browser-shaped client**, which should degrade quietly. Only the caller
+/// knows which of the two it is — the same argument that put
+/// [`AllowEarlyData`] in the caller's hands rather than in a transport's
+/// configuration.
+///
+/// # Exact match, deliberately, not a minimum
+///
+/// `RequireVersion(HTTP_2)` is satisfied by HTTP/2 and by nothing else. It
+/// is tempting to read it as "at least", and there is no ordering that
+/// makes that mean anything: a caller who needs h2 framing does not want
+/// HTTP/3 instead, and a caller who needs HTTP/1.1 — to keep an upgrade
+/// path open, say — wants strictly less than HTTP/2, not more. A "minimum"
+/// reading would satisfy the first demand with the wrong protocol and be
+/// unable to express the second at all.
+///
+/// # Refusal, and the two shapes it takes
+///
+/// - The **backend cannot honour demands at all**
+///   ([`Capabilities::version_select`] is `false` — `http-ng-fetch` and
+///   `http-ng-wasi`, neither of which chooses or even learns the version):
+///   a typed [`UnsupportedCapability`] from `Client`, the same arm a
+///   [`RedirectPolicy`](https://docs.rs/) against
+///   [`RedirectSupport::Internal`] takes. It fires whatever version was
+///   demanded, because the backend cannot answer for any of them.
+/// - The **backend honours demands and this connection does not match**:
+///   a typed [`VersionNotAvailable`] under
+///   [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported), raised by
+///   the transport before the head goes out.
+///
+/// A transport that always speaks one version still *honours* demands —
+/// `http-ng-h3` reports `version_select: true` and answers
+/// `RequireVersion(HTTP_3)` by proceeding and everything else with
+/// [`VersionNotAvailable`]. Reporting `false` there would refuse the one
+/// demand it trivially satisfies.
+///
+/// # The origin boundary, and why this one crosses it
+///
+/// [`AllowEarlyData`] comes off on a cross-origin redirect, because
+/// "replaying this is safe" is a claim about what a request does *at a
+/// server* and the caller judged only the first one. **This mark is not
+/// that kind of claim.** It is a statement about the caller's own code —
+/// "the thing I am about to do needs this protocol" — and it is equally
+/// true at hop 1 and at hop 4. Dropping it across an origin would mean a
+/// redirect could silently deliver over HTTP/1.1 exactly the request that
+/// said it could not use HTTP/1.1, which is the failure the mark exists to
+/// prevent, arriving through the one door left open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequireVersion(pub http::Version);
+
+/// A [`RequireVersion`] demand the connection in hand does not satisfy.
+///
+/// Carries both halves, because "HTTP/2 was required" and "HTTP/1.1 is
+/// what this connection negotiated" are separately actionable — the first
+/// is the caller's own request coming back, the second is a fact about the
+/// server or the TLS configuration.
+///
+/// One type in this crate rather than one per backend (the shape
+/// `http_ng_h3::RequestTrailersNotSent` takes), because a caller
+/// downcasting on it must not have to know which transport is underneath:
+/// the demand is portable, so its refusal is too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the request required {required:?} and this connection negotiated {negotiated:?}; \
+     it was refused before the head was written"
+)]
+pub struct VersionNotAvailable {
+    pub required: http::Version,
+    pub negotiated: http::Version,
+}
+
+/// The one comparison, shared by every transport that honours a demand.
+///
+/// `Ok(())` when there is no demand or `negotiated` satisfies it; a typed
+/// [`VersionNotAvailable`] under
+/// [`ErrorKind::Unsupported`](crate::ErrorKind::Unsupported) otherwise.
+///
+/// A function here rather than a `==` at each call site so that the rule —
+/// exact match, absence means no demand — has one definition. Two
+/// transports enforce it today and they must not drift.
+///
+/// **What it does not do is decide *when* to call it.** That is the whole
+/// content of the guarantee: `check_version` at the wrong point is a check
+/// that reports a violation after the bytes are already gone. Each caller
+/// places it where the protocol is first known and no head has been
+/// written, and pins that placement with a test that asserts the server
+/// saw nothing.
+pub fn check_version(
+    extensions: &http::Extensions,
+    negotiated: http::Version,
+) -> Result<(), crate::Error> {
+    match extensions.get::<RequireVersion>() {
+        Some(&RequireVersion(required)) if required != negotiated => Err(crate::Error::new(
+            crate::ErrorKind::Unsupported,
+            VersionNotAvailable {
+                required,
+                negotiated,
+            },
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// What the transport can do **in this process, right now**.
 ///
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
@@ -567,6 +715,36 @@ pub struct Capabilities {
     /// the variant and the `check_supported` arm arrive together.
     pub owns_cookie_jar: bool,
     pub owns_cache: bool,
+    /// Whether the transport honours a per-request [`RequireVersion`]
+    /// demand: reads it, and either serves the request over that version
+    /// or fails it with [`VersionNotAvailable`] **before the head is
+    /// written**.
+    ///
+    /// # It says "honours", not "chooses"
+    ///
+    /// A transport that only ever speaks one version reports `true` if it
+    /// answers demands — `http-ng-h3` does, by proceeding on
+    /// `RequireVersion(HTTP_3)` and refusing everything else. Reporting
+    /// `false` there would make `Client` refuse the one demand it
+    /// trivially satisfies, which is the opposite of honest.
+    ///
+    /// `false` is for a transport that cannot answer at all:
+    /// `http-ng-fetch` and `http-ng-wasi` neither select the version nor
+    /// learn it (both also report `version_reported: false`), so a demand
+    /// against either becomes an [`UnsupportedCapability`] from `Client` —
+    /// the same arm a `RedirectPolicy` against
+    /// [`RedirectSupport::Internal`] takes.
+    ///
+    /// # This field had no reader for three verticals
+    ///
+    /// It shipped in v0.1 as `false` everywhere, branched on nowhere, and
+    /// was on its way to being deleted under v0.2's rule that *a variant
+    /// exists only if a caller decision turns on it* (`docs/v04-design.md`
+    /// P5 catches the same shape in `RedirectSupport`, and two of those
+    /// variants were deleted for it). [`RequireVersion`] is the caller
+    /// decision that arrived, so the field is kept rather than removed —
+    /// but the rule stands, and it is the reason the demand and this
+    /// field's first `true` land in one change.
     pub version_select: bool,
     pub version_reported: bool,
     pub timeouts: TimeoutSupport,
@@ -718,5 +896,83 @@ mod tests {
             between_bytes: false,
         };
         assert!(t.connect && t.first_byte && !t.between_bytes);
+    }
+
+    /// No mark, no opinion. The absence of a demand is the overwhelmingly
+    /// common case and it must not cost a request anything, on any
+    /// version — including the ones nothing in this workspace speaks, so
+    /// that the rule is "absent means silent" rather than "absent means
+    /// the ones we happened to list".
+    #[test]
+    fn an_unmarked_request_is_satisfied_by_every_version() {
+        let e = http::Extensions::new();
+        for v in [
+            http::Version::HTTP_09,
+            http::Version::HTTP_10,
+            http::Version::HTTP_11,
+            http::Version::HTTP_2,
+            http::Version::HTTP_3,
+        ] {
+            assert!(check_version(&e, v).is_ok(), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_demand_the_connection_meets_passes() {
+        let mut e = http::Extensions::new();
+        e.insert(RequireVersion(http::Version::HTTP_2));
+        assert!(check_version(&e, http::Version::HTTP_2).is_ok());
+    }
+
+    /// The refusal carries both halves and is `Unsupported`, not `Other`:
+    /// a caller sorting failures by `kind()` must be able to tell "this
+    /// connection cannot do what I asked" from a genuine transport
+    /// failure without a downcast.
+    #[test]
+    fn a_demand_the_connection_misses_is_a_typed_unsupported() {
+        let mut e = http::Extensions::new();
+        e.insert(RequireVersion(http::Version::HTTP_2));
+        let err = check_version(&e, http::Version::HTTP_11).unwrap_err();
+        assert_eq!(*err.kind(), crate::ErrorKind::Unsupported);
+        let named = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<VersionNotAvailable>())
+            .expect("the source must be the typed refusal, not an opaque string");
+        assert_eq!(
+            *named,
+            VersionNotAvailable {
+                required: http::Version::HTTP_2,
+                negotiated: http::Version::HTTP_11,
+            }
+        );
+    }
+
+    /// Exact match in **both** directions, and the second one is the
+    /// interesting half: a caller demanding HTTP/1.1 — to keep an upgrade
+    /// path open — must not be quietly served over HTTP/2 on the grounds
+    /// that HTTP/2 is "newer". A `>=` comparison would pass this test's
+    /// sibling above and fail here, which is why the pair is written out
+    /// rather than parameterised into one loop over "mismatches".
+    #[test]
+    fn a_newer_version_does_not_satisfy_a_demand_for_an_older_one() {
+        let mut e = http::Extensions::new();
+        e.insert(RequireVersion(http::Version::HTTP_11));
+        let err = check_version(&e, http::Version::HTTP_2).unwrap_err();
+        assert_eq!(*err.kind(), crate::ErrorKind::Unsupported);
+    }
+
+    /// The message names both versions. Not a `Display` assertion for its
+    /// own sake: `VersionNotAvailable` reaches a log or a `{e}` far more
+    /// often than it reaches a downcast, and a message naming only one of
+    /// the two versions leaves the reader unable to tell which end was
+    /// wrong.
+    #[test]
+    fn the_refusal_message_names_both_versions() {
+        let msg = VersionNotAvailable {
+            required: http::Version::HTTP_2,
+            negotiated: http::Version::HTTP_11,
+        }
+        .to_string();
+        assert!(msg.contains("HTTP/2.0"), "{msg}");
+        assert!(msg.contains("HTTP/1.1"), "{msg}");
     }
 }
