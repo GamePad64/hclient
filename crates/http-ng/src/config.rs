@@ -592,12 +592,18 @@ mod tests {
     // anything but a single blessed variant, would break the browser
     // backend or the WASI one respectively while still passing the first
     // test. That second wording used to name `Configurable` as the blessed
-    // one, which v0.4 W1 deleted — with three variants left, "reject unless
-    // `Transparent`" is the mutant it now describes, and
-    // `configured_redirect_policy_against_a_transparent_backend_is_fine`
-    // below no longer catches it on its own: `None` does, since
-    // `Capabilities::none()` returns it and every mock built that way would
-    // start refusing a policy.
+    // one, which v0.4 W1 deleted — with three variants left, the mutant it
+    // now describes is "reject unless `Transparent`", and that one is
+    // caught, but by neither of the four tests below: it was run against
+    // the whole workspace (1156 tests) and killed by exactly two, both in
+    // `crates/http-ng/tests/redirect.rs` — `enforces_the_hop_limit` and
+    // `redirect_limit_of_zero_sends_only_the_original_request`. They catch
+    // it because `MockTransport` starts from `Capabilities::none()`, whose
+    // `redirects` is `None`, so a check keyed on `Transparent` refuses a
+    // policy against every plain mock in the suite. The four tests here
+    // cover `Internal` and `Transparent` and deliberately not `None`; the
+    // guard against that arm is those two integration tests, which is where
+    // to look before narrowing this condition.
 
     #[test]
     fn configured_redirect_policy_against_an_internal_backend_is_an_error() {

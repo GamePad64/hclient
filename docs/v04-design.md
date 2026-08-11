@@ -46,8 +46,8 @@ needs — none of which is gRPC-specific.
 | P1 | One value can own both stacks and still be a `Transport` | **Measured.** A probe crate compiles a two-stack type over `Native<TokioHandle, Rustls, SystemDns<TokioHandle>>` and `H3<TokioHandle, Rustls, SystemDns<TokioHandle>>` and calls `Transport::capabilities` on it. One runtime type satisfies both bound sets |
 | P2 | …but only with `http-ng-rt-tokio`'s `udp` feature on | **Measured.** Without it the same probe fails `E0277: TokioHandle: UdpAdoptStd is not satisfied`. Cargo unifies features, so a build that wants both gets it and an h1-only build does not pay |
 | P3 | The selecting transport must **store** its capabilities | **Measured.** `Transport::capabilities(&self) -> &Capabilities` returns a reference (`http-ng-core/src/unversioned/transport.rs:92`), so a floor computed per call cannot be returned |
-| P4 | The floor is not always defined | **Measured.** `Native` declares `RedirectSupport::Configurable`, `H3` declares `Transparent`. The four variants are not ordered, and these two have no meet |
-| P5 | …and P4 has a cause worth fixing first | **Measured.** Only `RedirectSupport::Internal` is branched on anywhere (`http-ng/src/config.rs:342`). `Configurable`'s entire doc is one sentence — *"We set the policy."* — where the others have paragraphs, and `http-ng-native` contains **no redirect handling at all** (zero matches for `Location` or `30x` in its `src/`). Its declaration is unforced at best |
+| P4 | The floor is not always defined | **Measured, and the instance it was found on is closed.** It read: `Native` declares `RedirectSupport::Configurable`, `H3` declares `Transparent`, and those two have no meet. Both declare `Transparent` since W1 deliverable 1, so `redirects` has a meet today **because the members agree**, not because an order was found. The premise survives its own fix: the three remaining variants are still unordered, and `Internal` against `Transparent` — a selecting transport over `Native` and an `http-ng-urlsession` background session (W3) — has no meet either. W1's answer, *constrain the members rather than invent an order*, is unchanged |
+| P5 | …and P4 has a cause worth fixing first | **Measured, and fixed — W1 deliverable 1, landed independently.** Only `RedirectSupport::Internal` was branched on anywhere (`http-ng/src/config.rs`), `Configurable`'s entire doc was one sentence — *"We set the policy."* — and `http-ng-native` contains **no redirect handling at all** (zero matches for `Location` or a 3xx status in its `src/`). The declaration was not merely unforced, it was wrong: `Native` says `Transparent` now, and `Configurable` and `Inspectable` are **deleted** — no branch, no carrier, one-sentence docs, which is what `UpgradeSupport` was deleted for in v0.3 W4. See §W1 deliverable 1 for the URLSession evidence that no carrier is arriving, and for the mutation run that says which variants are distinguishable at all |
 | P6 | `full_duplex: false` on `http-ng-native` is not a declaration, it is the code | **Measured.** `http2::exchange` writes the whole request body before awaiting the response, and `tests/http2.rs` pins the floor with the feature on |
 | P7 | The h2 path already *handles* trailers | **Measured.** `send_trailers` on the write side and `into_trailers` on the read side both exist in `http2.rs`; the `false` in `Capabilities` is the HTTP/1.1 floor, not the ceiling |
 | P8 | `objc2-foundation` is already in this workspace's Apple graph | **Measured.** `http-ng-idn` pulls `objc2-foundation 0.3.2` on `aarch64-apple-darwin`, so W3 adds no new vendor to that target |
@@ -101,12 +101,69 @@ was made.
 
 **Deliverable, and the order is load-bearing.**
 
-1. **Settle `RedirectSupport` first.** Establish what `http-ng-native`
-   actually does (P5 says: nothing), fix the declaration, and decide
-   whether `Configurable` earns its variant at all under v0.2's rule — *a
-   variant exists only if a caller decision turns on it*, and today none
-   does. **This is a v0.3-era defect and lands independently of the rest**,
-   so a racing transport is not the reason it is fixed.
+1. **Settle `RedirectSupport` first — done, and it landed independently of
+   everything else here**, so a selecting transport is not the reason it
+   was fixed. `http-ng-native` says `Transparent`, which is what it always
+   did; `Configurable` and `Inspectable` are deleted. Three variants left:
+   nobody follows, `Client` follows, the backend follows.
+
+   **Deleted rather than documented, and the deciding evidence was not the
+   missing branch.** `Configurable` was not merely unused, it was
+   *unimplementable*: the merged `RedirectPolicy` never crosses the seam.
+   `Client::run` merges the client-level and per-request policy and
+   deliberately does not write the result back into the request's
+   extensions — *"no transport reads a `RedirectPolicy`"* (`client.rs`) —
+   so a backend claiming to set the policy would see only what a
+   `RequestBuilder` happened to leave in the extension bag, and
+   `Client::builder(..).redirect(Limited(2))` would be silently ignored by
+   the one variant whose name promises to honour it.
+
+   **URLSession was the carrier to check for, and it is not one.** W3's own
+   text predicts `RedirectSupport::Internal` for `http-ng-urlsession`, and
+   that prediction stands with a caveat that is now written down. Apple's
+   hook is
+   `urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`,
+   whose completion handler takes *"either the value of the `request`
+   parameter, a modified URL request object, or `NULL` to refuse the
+   redirect and return the body of the redirect response"*, and which *"is
+   called only for tasks in default and ephemeral sessions. Tasks in
+   background sessions automatically follow redirects."*
+   ([developer.apple.com](https://developer.apple.com/documentation/foundation/urlsessiontaskdelegate/urlsession(_:task:willperformhttpredirection:newrequest:completionhandler:)))
+   There is no `maximumRedirects` on `URLSessionConfiguration` and no
+   declarative policy of any kind — the only knobs are follow, rewrite, or
+   refuse, one hop at a time. So the platform yields exactly two of the
+   three surviving variants: **`Internal` for a background session**, where
+   there is no hook to install and P11's transfer-outlives-the-process case
+   lives, and **`Transparent` for a default or ephemeral one**, by
+   answering `nil` so the 3xx becomes the task's response and `Client`'s
+   stage does the chain. A third reading — follow inside the delegate and
+   count hops there — is not a platform affordance, it is a second
+   implementation of `http_ng_proto::redirect`, and it would silently drop
+   what that stage carries per hop: `SENSITIVE_HEADERS` stripped across an
+   origin, cookies re-derived rather than carried, the `AllowEarlyData`
+   mark taken off. Reason enough to prefer `Transparent` even where the
+   platform permits the other.
+
+   `Inspectable` went with it rather than after it: *"we set the policy and
+   see every hop"* is `Configurable` plus an increment, and a variant
+   defined in terms of a deleted one is not defined.
+
+   **What the mutation run found, and it belongs here rather than in a
+   commit message.** Anchor 362 tests (`-p http-ng-native -p http-ng
+   --all-features`), `Native` made to declare each variant in turn:
+   `Internal` fails **two** — the capability read-back in
+   `http-ng-native/tests/transport.rs`, and
+   `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
+   which dies at `build()` with `UnsupportedCapability { what:
+   "redirect_policy" }` — while `None` and `Transparent` (and
+   `Configurable`, before it was deleted) fail **one**, the read-back, and
+   nothing else. `Internal` versus not-`Internal` is the only distinction
+   any behaviour in this workspace can witness, because `Client`'s redirect
+   stage follows a 3xx whatever the field says. **A variant nobody can
+   catch lying has to earn its place from a carrier rather than from a doc
+   comment**, which is the general form of the rule this deliverable
+   applied. Recorded in `docs/v03-acceptance.md`'s unverified list as well,
+   since `Transparent` has no behavioural witness and is not claimed to.
 2. The type itself: a stored floor, and a constructor that refuses
    disagreement, naming the field.
 3. **The fast tier first, because half of it already exists.** v0.3 W2
@@ -193,6 +250,22 @@ carrier is indistinguishable from a variant shaped around that carrier;
 a second, on a different platform and for a different reason, is what
 tests the model. That is also a 1.0 condition — *plugin traits validated
 against ≥3 backends*.
+
+**The redirect half of that prediction now has a condition on it**, found
+while settling W1 deliverable 1 and worth carrying into this workstream
+rather than rediscovering: `Internal` is forced only for a **background**
+session, because the redirect delegate is not called for one. On a default
+or ephemeral session the delegate *is* called and answering `nil` refuses
+the hop and hands the 3xx back as the task's response — which is
+`Transparent`, and which lets `Client`'s redirect stage keep doing the
+per-hop work it already does (`SENSITIVE_HEADERS` across an origin,
+cookies re-derived, the `AllowEarlyData` mark removed). So this backend may
+well have to report *different* redirect support depending on how it was
+configured, and that — not the value itself — is the interesting thing for
+the `Capabilities` model: `Capabilities` is per-transport, and `Native` has
+already shown the shape once, in `reuse_of(&pool)`, where the field is
+asked of the thing that behaves rather than written down twice. The
+citation and the reasoning are in `RedirectSupport`'s own doc comment.
 
 **Deliverable.**
 

@@ -2664,3 +2664,75 @@ went with it.
   are tested; folding them into `bare_host` is a change to two crates
   outside this task's boundary, and it is the obvious next step for
   whoever owns them.
+
+---
+
+# A v0.3-era defect, fixed in v0.4 W1: `RedirectSupport`
+
+Recorded here rather than in the v0.4 document because the defect is this
+vertical's, not the next one's: `http-ng-native` has declared
+`RedirectSupport::Configurable` — *"we set the policy"* — since v0.1, while
+containing no redirect handling at all. Zero matches for `Location` or a
+3xx status in its `src/`; a 3xx comes back from `h1::exchange` as an
+ordinary response and `Client`'s redirect stage owns the chain. It declares
+`Transparent` now, and `Configurable` and `Inspectable` are deleted from
+`RedirectSupport`, leaving three variants: nobody follows, `Client`
+follows, the backend follows.
+
+The deletion is `UpgradeSupport`'s precedent (W4 step 4 above, four
+variants and zero branches) applied to the same shape. The extra fact that
+made it a deletion rather than a documentation fix: **`Configurable` was
+unimplementable, not merely unused.** `Client::run` merges the client-level
+and per-request `RedirectPolicy` and deliberately does not write the result
+into the request's extensions — *"no transport reads a `RedirectPolicy`"* —
+so a backend claiming to set the policy could never see one set on the
+client. `http-ng-fetch` had shipped the same wrong value and corrected it
+to `Internal` in v0.1's audit; that audit did not reach the native crate,
+which is why its `redirects_are_internal_not_configurable` still names a
+variant that no longer exists. Left as written: it is the record of the
+first half of this defect being found, and `http-ng-fetch` was outside the
+fixing task's boundary.
+
+## What the mutation run showed, and what it leaves unverified
+
+Anchor 362 tests, `cargo nextest run -p http-ng-native -p http-ng
+--all-features`, all green before each mutation. `Native` made to declare
+each variant in turn:
+
+| declaration | tests that fail |
+|---|---|
+| `None` | 1 — `http-ng-native::transport::capabilities_are_honest_about_v01_limits`, a read-back of the field |
+| `Transparent` (the mutant, before the fix made it the truth) | 1 — the same read-back, and nothing else |
+| `Internal` | 2 — the read-back, and `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`, which dies at `build()` with `UnsupportedCapability { what: "redirect_policy" }` |
+
+A fourth, on the check rather than on the declaration: narrowing
+`check_redirect_supported` from `== Internal` to `!= Transparent` is killed
+by exactly two tests across the whole workspace (1156), both in
+`crates/http-ng/tests/redirect.rs` — `enforces_the_hop_limit` and
+`redirect_limit_of_zero_sends_only_the_original_request` — because
+`MockTransport` starts from `Capabilities::none()`, whose `redirects` is
+`None`. `config.rs`'s own four unit tests cover `Internal` and
+`Transparent` and do not catch it.
+
+**So: `Internal` versus not-`Internal` is the only distinction any
+behaviour in this workspace can witness**, and `Transparent` has no
+behavioural witness at all — neither the new declaration nor the assertion
+that pins it. That is structural rather than a gap in the fixture:
+`Client`'s redirect stage follows a 3xx whatever this field says, so no
+observation from a server can separate `Transparent` from `None`. Nothing
+was adjusted to hide it, and it is the reason the variant set had to
+shrink: a variant nobody can catch lying must be justified by a carrier,
+not by a doc comment.
+
+Also unverified, and named because it would be easy to assume otherwise:
+the claim that **`http-ng-urlsession` will not be `Configurable`'s carrier**
+rests on Apple's documentation for
+`urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`
+— *"either the value of the `request` parameter, a modified URL request
+object, or `NULL` to refuse the redirect and return the body of the
+redirect response"*, and *"called only for tasks in default and ephemeral
+sessions. Tasks in background sessions automatically follow redirects."* —
+and on the absence of any redirect knob on `URLSessionConfiguration`. It is
+read documentation, not a running Objective-C program: no Apple hardware
+was involved, and W3 should confirm the `nil`-refusal path delivers the 3xx
+with its `Location` intact before relying on `Transparent` there.
