@@ -244,6 +244,34 @@ async fn a_cleartext_origin_is_not_offered_to_quic_and_costs_no_lookup() {
     assert_eq!(dns.svcb_lookups(), 0, "no record is fetched for http://");
 }
 
+/// An IP literal is served over TCP, and no record is fetched for it.
+///
+/// A literal has no name to look up: `_443._https.127.0.0.1` is a query
+/// with no answer, and a transport that built it would make every
+/// literal-addressed request pay for one. The resolver here holds a record
+/// offering `h3` and says it can answer, so a transport that skipped the
+/// literal check would choose QUIC.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ip_literal_has_no_record_to_look_up_and_is_served_over_tcp() {
+    let pair = servers::start();
+    let dns = FakeDns::with_records(vec![service_record(1, &[b"h3"])]);
+    let t = selector(&pair, dns.clone());
+
+    let req = http::Request::builder()
+        .uri(format!("https://127.0.0.1:{}/hello", pair.port))
+        .body(RequestBody::Empty)
+        .expect("a well-formed request");
+    let (_, body) = send(&t, req).await;
+
+    assert_eq!(body, "h1");
+    assert_eq!(pair.quic_answered(), 0);
+    assert_eq!(
+        dns.svcb_lookups(),
+        0,
+        "a literal is not a name to ask about"
+    );
+}
+
 // --- a demand outranks the record --------------------------------------
 
 /// `RequireVersion(HTTP_3)` reaches the QUIC stack at an origin that
