@@ -637,6 +637,71 @@ deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
 is `RetryKind::Free` and is precisely what must never go into early data.
 `docs/h3-research.md` §3.5 has the three-row table.
 
+### One transport can now choose between the two stacks (v0.4 W1)
+
+`http-ng-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an
+`H3<R, T, D>` and sends each request over one of them, deciding from the
+origin's **HTTPS record**: `alpn` containing `h3` chooses QUIC, anything
+else chooses TCP. That closes a gap `http-ng-native`'s discovery module had
+written down about itself — *"an `alpn` containing `h3` is a fact this crate
+can read and cannot act on … there is nowhere in this codebase for 'choose
+between two protocol stacks' to live"*. It is a crate rather than a feature
+of either member for the reason `http-ng-h3` is not a feature of
+`http-ng-native`: features are additive, and one on either would put the
+whole QUIC stack into every build in any graph that switched it on.
+
+**Discovery has two tiers and the race is neither, so only the fast tier is
+built.** Browsers do not race an unknown origin; first contact is TCP unless
+something said otherwise *before* the connection. An HTTPS record says so at
+resolution time (the fast tier — this); `Alt-Svc` is a response header and
+can only help the *next* connection (the slow tier — not built, and it is
+the one that needs storage); racing the two stacks is a third thing, a hedge
+against a network that blocks UDP/443, and v0.3 W2 recorded that the size of
+the cost it pays is unverified. A measurement comes before a policy.
+`docs/v04-w1-acceptance.md` §7 says what each of the two would need.
+
+**The part that was not mechanical is the capability set, and it is not the
+race.** `Transport::capabilities` returns a `&Capabilities`, so the pair's
+answer is stored at construction, and it is decided field by field by one
+rule: **the stored value must be true whichever member serves the request.**
+Six fields disagree today — measured, not taken from the design document,
+whose two examples had both been fixed under it while it was being written.
+Five take the weaker claim, `full_duplex` among them, which is the same
+answer `http-ng-native` already gives one level down for the same reason: an
+over-claimed `full_duplex` deadlocks a caller and an under-claimed one costs
+a buffered copy. Where the two values are *different claims* rather than a
+stronger and a weaker one — every remaining enum, and the two *the transport
+already does this itself* flags — there is no true value and the constructor
+**refuses, naming the field**. `Native::without_pool()` against `H3` is the
+one refusal reachable from the two members this workspace ships, and it is
+an ordinary mistake rather than a contrived one.
+
+`early_data` is the single field whose *stronger* value is the true one, and
+that is about what the variant says rather than an exception to the rule:
+`Supported` means the transport *can* place a marked request into early
+data, which stays true of the pair, where `None` — "never offers early data"
+— is false of it, and false in the direction that matters, since nothing in
+`http-ng` reads the field and a marked request would reach the QUIC stack
+anyway. The contrast three lines below it in the same function is
+`CancelSupport`, where `Supported` is a **duty owed on every dropped
+future** and a member that does not owe it makes the claim false.
+
+**What the choice costs is counted rather than argued**: one type-65 query
+per request, and **two** on the TCP path at an origin's default port,
+because `http-ng-native` fetches the record again inside its own connector
+and no record can cross the `Transport` seam. A `RequireVersion` demand,
+`http://` and an IP literal cost none at all. The duplicate is a finding
+about `http-ng-native` rather than a defect here, and the three shapes that
+would close it are in `docs/v04-w1-acceptance.md` §3.
+
+Checked against **two real servers behind one authority** — a `quinn`
+endpoint on UDP and a `tokio-rustls` listener on TCP, on the same port
+number, both alive in every test — so a request reaching one is a choice and
+not the only possibility. Nineteen mutations applied, nineteen killed; the
+first run of them scored every one as survived and was wrong, which is why
+`docs/v04-w1-acceptance.md` §5 records how the table was checked as well as
+what it says.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
