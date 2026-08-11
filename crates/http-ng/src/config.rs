@@ -588,9 +588,16 @@ mod tests {
     // written against came true when `http-ng-fetch` started reporting
     // `RedirectSupport::Internal`. These four tests are the check that
     // replaced it, and the middle two matter as much as the first: a check
-    // that rejected any configured policy, or one that rejected under any
-    // non-`Configurable` variant, would break the browser backend or the
-    // WASI one respectively while still passing the first test.
+    // that rejected any configured policy, or one that rejected under
+    // anything but a single blessed variant, would break the browser
+    // backend or the WASI one respectively while still passing the first
+    // test. That second wording used to name `Configurable` as the blessed
+    // one, which v0.4 W1 deleted — with three variants left, "reject unless
+    // `Transparent`" is the mutant it now describes, and
+    // `configured_redirect_policy_against_a_transparent_backend_is_fine`
+    // below no longer catches it on its own: `None` does, since
+    // `Capabilities::none()` returns it and every mock built that way would
+    // start refusing a policy.
 
     #[test]
     fn configured_redirect_policy_against_an_internal_backend_is_an_error() {

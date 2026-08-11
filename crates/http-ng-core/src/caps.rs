@@ -1,5 +1,87 @@
 use http::HeaderName;
 
+/// Who follows a redirect chain: nobody, `Client`, or the backend.
+///
+/// Three variants, and only the third is branched on anywhere
+/// (`check_redirect_supported`, `http-ng/src/config.rs`). That is the whole
+/// content of the enum rather than an accident of implementation: the first
+/// two differ in what a caller *reading the field* may conclude, the third
+/// differs in what `Client` will *do*.
+///
+/// # What a test can and cannot catch here
+///
+/// Measured (v0.4 W1), not asserted. With `http-ng-native` made to declare
+/// each variant in turn and `cargo nextest run -p http-ng-native -p http-ng
+/// --all-features` (362 tests) run against each: `Internal` fails **two** —
+/// the capability read-back in `http-ng-native/tests/transport.rs`, and
+/// `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
+/// which dies at `build()` with `UnsupportedCapability { what:
+/// "redirect_policy" }`. `None` and `Transparent` each fail exactly **one**,
+/// the read-back, and nothing else.
+///
+/// So `Internal` versus not-`Internal` is the only distinction any behaviour
+/// in this workspace can witness; between `None` and `Transparent` the field
+/// is a claim a caller reads and no test can contradict. That asymmetry is
+/// why a variant here has to earn its place from a *carrier* rather than
+/// from a doc comment — nothing else will catch it lying.
+///
+/// # The two variants that used to be here
+///
+/// `Configurable` ("We set the policy.") and `Inspectable` ("We set the
+/// policy and see every hop.") came from the original design sketch and
+/// shipped with exactly those one-sentence docs, no branch, and — after
+/// `http-ng-fetch` corrected itself to `Internal` — no carrier. They are
+/// gone (v0.4 W1 deliverable 1, a v0.3-era defect), for the reason
+/// `UpgradeSupport` went in v0.3 W4: *a capability variant exists only if a
+/// caller decision turns on it.*
+///
+/// What made `Configurable` unimplementable rather than merely unused:
+/// **the policy never crosses the seam.** `Client::run` merges the
+/// client-level and per-request `RedirectPolicy` and deliberately does not
+/// write the result back into the request's extensions — *"no transport
+/// reads a `RedirectPolicy`"* (`http-ng/src/client.rs`). A backend claiming
+/// to set the policy could see only what a `RequestBuilder` happened to
+/// leave in the extension bag, never one set on the client, so
+/// `Client::builder(..).redirect(Limited(2))` would be silently ignored by
+/// the one variant whose name promises to honour it.
+///
+/// `http-ng-native` was its only carrier, and it declared `Configurable`
+/// while containing no redirect handling at all — zero matches for
+/// `Location` or a 3xx status in its `src/`. It reports `Transparent` now,
+/// which is what it always did. `http-ng-fetch` had made the same mistake
+/// and corrected it to `Internal` a vertical earlier, in an audit that
+/// never reached the native crate; its
+/// `redirects_are_internal_not_configurable` still names the variant, and
+/// is the record of that.
+///
+/// Re-adding a variant is a breaking change for an external `match` — this
+/// enum is deliberately not `#[non_exhaustive]`, see [`CancelSupport`] —
+/// and that cost is the point: the variant should arrive *with* the backend
+/// that carries it. The nearest candidates are a `libcurl` backend
+/// (`CURLOPT_FOLLOWLOCATION` plus `CURLOPT_MAXREDIRS` is a genuinely
+/// declarative policy) and WinHTTP; neither is planned, and both would also
+/// need the seam to start carrying the merged policy.
+///
+/// **URLSession is not that backend, and that is the evidence this was
+/// decided on**, because `http-ng-urlsession` (v0.4 W3) is the next
+/// platform stack due and the obvious place a "configurable" backend would
+/// come from. It offers no declarative redirect policy at all: the hook is
+/// `urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`,
+/// whose completion handler takes *"either the value of the `request`
+/// parameter, a modified URL request object, or `NULL` to refuse the
+/// redirect and return the body of the redirect response"*, and which
+/// *"is called only for tasks in default and ephemeral sessions. Tasks in
+/// background sessions automatically follow redirects."* (Apple, developer
+/// documentation for that method.) The platform therefore hands out exactly
+/// two of the variants below — `Internal` for a background session, where
+/// there is no hook to install, and `Transparent` for a foreground one, by
+/// answering `nil` so the 3xx becomes the task's response and `Client`'s
+/// stage does the chain. A third reading, following inside the delegate
+/// while counting hops there, is not a platform affordance but a second
+/// implementation of `http_ng_proto::redirect` — and one that would silently
+/// drop what `Client`'s stage carries per hop: `SENSITIVE_HEADERS` stripped
+/// across an origin, cookies re-derived rather than carried, and the
+/// `AllowEarlyData` mark taken off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectSupport {
     /// No redirects, and nothing to observe.
@@ -27,6 +109,14 @@ pub enum RedirectSupport {
     /// claim `None` for lack of this variant, and a caller who concluded
     /// from `redirects == None` that redirects were impossible here was
     /// wrong about the one backend that actually existed.
+    ///
+    /// **Three backends report it**: `http-ng-wasi`, `http-ng-h3`, and —
+    /// since v0.4 W1 — `http-ng-native`, which had said `Configurable`
+    /// since v0.1 while implementing nothing of the sort. It is also what
+    /// an `http-ng-urlsession` on a default or ephemeral session would
+    /// report, by refusing each hop in its delegate; see the type's own
+    /// doc for why that is a choice the platform allows and not one it
+    /// makes.
     Transparent,
     /// The backend follows redirects itself; we neither control nor see it.
     ///
@@ -51,11 +141,11 @@ pub enum RedirectSupport {
     /// An earlier version of this doc said the example was "not in this
     /// workspace" and that the field was deliberately unchecked. Both
     /// halves stopped being true when `http-ng-fetch` landed.
+    ///
+    /// The variant an `http-ng-urlsession` **background** session will have
+    /// to report, and there it is forced rather than chosen: the redirect
+    /// delegate is not called for background tasks at all.
     Internal,
-    /// We set the policy.
-    Configurable,
-    /// We set the policy and see every hop.
-    Inspectable,
 }
 
 /// Whether dropping the future returned by

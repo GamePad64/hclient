@@ -139,6 +139,29 @@ async fn request_line_is_origin_form_and_host_header_is_set() {
 /// (captures wire bytes, asserts `transfer-encoding: chunked`);
 /// `timeouts.connect` → `declared_connect_timeout_is_actually_applied`
 /// (a `TcpConnect` that never resolves, raced against a real timeout).
+///
+/// **A third was wrong the same way and is corrected here (v0.4 W1).**
+/// `redirects` read `RedirectSupport::Configurable` — "we set the policy" —
+/// for a crate that reads no `RedirectPolicy` and follows no `Location`,
+/// and this assertion agreed with it for three verticals. It reads
+/// `Transparent` now, and the variant that made the mistake expressible is
+/// deleted.
+///
+/// This assertion is also the *only* thing in the workspace that can catch
+/// this field changing, and that was measured rather than assumed: with
+/// `Native` made to declare each other variant in turn and all 362 tests of
+/// `-p http-ng-native -p http-ng --all-features` run, `None` fails this
+/// test and nothing else, `Transparent` (before the fix) failed this test
+/// and nothing else, and only `Internal` gets a second, behavioural witness
+/// — `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
+/// which dies at `build()` with `UnsupportedCapability { what:
+/// "redirect_policy" }` because `check_redirect_supported` refuses a
+/// configured policy against an `Internal` backend. A behavioural witness
+/// for `Transparent` specifically is not available and is not being
+/// claimed: `Client`'s redirect stage follows a 3xx whatever this field
+/// says, so no server-side observation can separate `Transparent` from
+/// `None`. The honest guard for those two is that the variant set is small
+/// enough for the read-back to be reviewable.
 #[tokio::test]
 async fn capabilities_are_honest_about_v01_limits() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
@@ -157,7 +180,12 @@ async fn capabilities_are_honest_about_v01_limits() {
         "enforced since v0.2 W4's middle bullet — see tests/timeouts.rs,          where a server stalls mid-body"
     );
     assert_eq!(caps.tls_config, http_ng_core::TlsSupport::Full);
-    assert_eq!(caps.redirects, http_ng_core::RedirectSupport::Configurable);
+    assert_eq!(
+        caps.redirects,
+        http_ng_core::RedirectSupport::Transparent,
+        "this crate follows nothing: a 3xx comes back as an ordinary response \
+         and Client's redirect stage owns the chain"
+    );
     assert!(caps.version_reported);
 }
 

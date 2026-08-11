@@ -147,10 +147,16 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 /// `EarlyDataSupport` from `http-ng`'s `pub use` and this file — an
 /// external consumer — stops compiling. That is the mutation that proves
 /// the re-pointing is not vacuous, and it was run.
+///
+/// The `redirects` line said `RedirectSupport::Configurable` until v0.4 W1
+/// deleted that variant. `Transparent` carries the same proof and for the
+/// same reason `EarlyDataSupport` was chosen above: `Capabilities::none()`
+/// gives `None`, so the value set here still differs from the default and
+/// the assertion can still fail.
 #[test]
 fn capability_support_types_are_reachable_from_the_facade() {
     let mut caps = http_ng::Capabilities::none();
-    caps.redirects = http_ng::RedirectSupport::Configurable;
+    caps.redirects = http_ng::RedirectSupport::Transparent;
     caps.tls_config = http_ng::TlsSupport::Full;
     caps.early_data = http_ng::EarlyDataSupport::Supported;
     caps.timeouts = http_ng::TimeoutSupport {
@@ -158,7 +164,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
         first_byte: true,
         between_bytes: false,
     };
-    assert_eq!(caps.redirects, http_ng::RedirectSupport::Configurable);
+    assert_eq!(caps.redirects, http_ng::RedirectSupport::Transparent);
     assert_eq!(caps.tls_config, http_ng::TlsSupport::Full);
     assert_eq!(caps.early_data, http_ng::EarlyDataSupport::Supported);
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
