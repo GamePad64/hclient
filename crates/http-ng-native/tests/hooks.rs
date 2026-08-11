@@ -265,6 +265,22 @@ fn serve(mut sock: std::net::TcpStream, behaviour: Behaviour) {
     }
 }
 
+/// Waits for the server to have accepted `n` connections.
+///
+/// For the one test where nothing is exchanged on the connection: the
+/// accept loop bumps its counter on a thread of its own, and a client
+/// that connects and immediately refuses can reach its assertion first.
+async fn server_has_accepted(accepted: &AtomicUsize, n: usize) {
+    tokio::time::timeout(BOUND, async {
+        while accepted.load(Ordering::SeqCst) < n {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the server never accepted {n} connection(s)"));
+    assert_eq!(accepted.load(Ordering::SeqCst), n, "and not more than {n}");
+}
+
 /// Waits for the server to report `n` closed sockets — the same helper,
 /// for the same reason, as `tests/pool.rs`'s: a test that slept instead
 /// would be asserting on a race.
@@ -636,6 +652,120 @@ async fn the_three_reasons_are_not_one_reason_wearing_three_names() {
     assert_eq!(reasons.len(), 2);
     assert_eq!(reasons[0], Why::Ended);
     assert!(matches!(reasons[1], Why::Failed(_)), "{reasons:?}");
+}
+
+/// **One socket, one close event, even from a caller that keeps asking.**
+///
+/// `http_body` leaves polling past the end unspecified, so a wrapper (or
+/// a caller) that polls once more is not doing anything wrong — and a
+/// second `Closed` for the same connection would make anybody counting
+/// open connections from these events drift downwards, which looks
+/// exactly like a leak in the other direction. `H1Body::report_closed`
+/// takes the id rather than reading it, and this is the test that makes
+/// that `take` mean something: mutation testing found the version that
+/// only reads it passing every other test in this file.
+///
+/// It goes through `Transport::execute` rather than `Client`, because
+/// `Client` hands back a body it has already decided how to consume and
+/// this test's whole subject is the extra poll.
+#[tokio::test]
+async fn a_body_polled_past_its_end_reports_one_close_and_not_two() {
+    use http_body::Body;
+    use http_ng_core::RequestBody;
+    use http_ng_core::unversioned::Transport;
+
+    // `without_pool`, and that is what makes the test deterministic
+    // rather than a race. The connection outlives the exchange (the
+    // server keeps it), so the body — not `h1::exchange` — is what
+    // reports the end; with reuse off there is no check-in to take the
+    // id first, so `report_closed` is reached with something to take.
+    // Against a `Connection: close` server the end is reported from
+    // inside `exchange` instead, before the head, and the body never has
+    // an id at all: that version of this test passed with the `take`
+    // removed, which is how the shape above was arrived at.
+    let (addr, _accepted) = server(Behaviour::default());
+    let rec = Recorder::default();
+    let t = watched(&rec).without_pool();
+
+    let req = http::Request::builder()
+        .uri(format!("http://{addr}/"))
+        .body(RequestBody::Empty)
+        .unwrap();
+    let resp = t.execute(req).await.expect("request");
+    let mut body = std::pin::pin!(resp.into_body());
+
+    let mut ended = false;
+    for _ in 0..8 {
+        let frame = tokio::time::timeout(
+            BOUND,
+            std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)),
+        )
+        .await
+        .expect("the body must not hang");
+        match frame {
+            Some(Ok(_)) => assert!(!ended, "no frame may follow the end"),
+            Some(Err(e)) => panic!("the body must not fail: {e}"),
+            None => ended = true,
+        }
+    }
+    assert!(ended, "the body must have ended within eight polls");
+
+    assert_eq!(
+        rec.closes().len(),
+        1,
+        "one connection ended once, however many times its body was asked: {:?}",
+        rec.closes()
+    );
+}
+
+/// **A connection that was made and then refused is still reported as
+/// made.**
+///
+/// `Native::execute` emits `Connected` before it checks a
+/// [`RequireVersion`] demand, and the order is the decision: the
+/// connection exists at that instant and the server has paid for a TCP
+/// handshake, so a caller asking "why was that slow" must be able to see
+/// it. Emitting after the refusal would leave the one case where a
+/// connect was made and thrown away invisible — which is the case a
+/// caller most wants explained.
+///
+/// The refusal itself is `tests/require_version.rs`'s subject; what is
+/// asserted here is only that the event survived it.
+#[tokio::test]
+async fn a_connection_refused_by_a_version_demand_was_still_reported_made() {
+    use http_ng::RequireVersion;
+
+    let (addr, accepted) = server(Behaviour::default());
+    let rec = Recorder::default();
+    let client = Client::builder(watched(&rec)).build().unwrap();
+
+    // Built as an `http::Request` rather than through `RequestBuilder`,
+    // which has no extension setter — the same route
+    // `tests/require_version.rs` takes, and the same one a caller has.
+    let mut req = http::Request::builder()
+        .method("GET")
+        .uri(format!("http://{addr}/"))
+        .body(http_ng_core::RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut()
+        .insert(RequireVersion(http::Version::HTTP_2));
+    let refused = client.execute(req).await;
+    assert!(
+        refused.is_err(),
+        "`http://` cannot negotiate h2, so the demand must be refused"
+    );
+
+    // Waited for, not asserted outright: nothing was exchanged on this
+    // connection, so the accept loop's `fetch_add` races the client's
+    // refusal. The bound turns "has it happened yet" into a failure
+    // rather than into a flake.
+    server_has_accepted(&accepted, 1).await;
+    assert_eq!(
+        rec.connects(),
+        1,
+        "the connection the server accepted must be reported, refusal or not"
+    );
+    assert_eq!(rec.heads(), 0, "and not a byte of HTTP went out on it");
 }
 
 // ── a hook that misbehaves ──────────────────────────────────────────────
