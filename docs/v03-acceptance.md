@@ -2705,14 +2705,25 @@ each variant in turn:
 | `Transparent` (the mutant, before the fix made it the truth) | 1 — the same read-back, and nothing else |
 | `Internal` | 2 — the read-back, and `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`, which dies at `build()` with `UnsupportedCapability { what: "redirect_policy" }` |
 
-A fourth, on the check rather than on the declaration: narrowing
-`check_redirect_supported` from `== Internal` to `!= Transparent` is killed
-by exactly two tests across the whole workspace (1156), both in
-`crates/http-ng/tests/redirect.rs` — `enforces_the_hop_limit` and
-`redirect_limit_of_zero_sends_only_the_original_request` — because
-`MockTransport` starts from `Capabilities::none()`, whose `redirects` is
-`None`. `config.rs`'s own four unit tests cover `Internal` and
-`Transparent` and do not catch it.
+Two more on the check rather than on the declaration, both against the
+whole workspace (1156 tests):
+
+- **`== Internal` → `!= Transparent`** (reject unless transparent): killed
+  by exactly **two** tests, both in `crates/http-ng/tests/redirect.rs` —
+  `enforces_the_hop_limit` and
+  `redirect_limit_of_zero_sends_only_the_original_request` — because
+  `MockTransport` starts from `Capabilities::none()`, whose `redirects` is
+  `None`. `config.rs`'s own four unit tests cover `Internal` and
+  `Transparent` and none of them catches this.
+- **`== Internal` → `== Transparent`** (reject *on* transparent): **22**
+  failures, including `config.rs`'s own transparent-is-fine test, because
+  `portable_example.rs` and `http-ng-tower`'s round-trip build mocks that
+  positively declare `Transparent` rather than leaving the default.
+
+The gap between two and twenty-two is worth reading as a map of where the
+suite's attention is: the arm that says "a policy is fine here" is watched
+from many directions, the arm that says "and `None` is fine too" by two
+tests that never mention redirect support at all.
 
 **So: `Internal` versus not-`Internal` is the only distinction any
 behaviour in this workspace can witness**, and `Transparent` has no
