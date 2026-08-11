@@ -29,12 +29,19 @@ fn declares_what_fetch_genuinely_cannot_do() {
 /// governs every request unconditionally, resolved entirely inside the
 /// browser before `Client`'s own redirect stage — or this crate — ever sees
 /// an intermediate 3xx. `RedirectSupport::Configurable` ("we set the
-/// policy") was never true here; `Internal` is `RedirectSupport`'s own name,
+/// policy") was never true here — and **that variant no longer exists**:
+/// v0.4 W1 deleted it, along with `Inspectable`, after finding it had no
+/// truthful carrier anywhere and could not have had one, since `Client`
+/// never writes the merged `RedirectPolicy` back where a transport could
+/// read it. This comment is kept rather than tidied because it is the
+/// record of the same defect being caught **here** and not carried across:
+/// `http-ng-native` went on declaring `Configurable` for three more
+/// versions. `Internal` is `RedirectSupport`'s own name,
 /// in `http-ng-core`, for exactly this shape — its doc comment names a
 /// browser's `fetch()` with the default `redirect: "follow"` as the
 /// motivating example, written before this crate existed to be that example.
 #[wasm_bindgen_test]
-fn redirects_are_internal_not_configurable() {
+fn the_browser_follows_redirects_itself_so_a_client_policy_cannot_apply() {
     let c = http_ng_fetch::Fetch::new().capabilities_for_test();
     assert_eq!(c.redirects, http_ng_core::RedirectSupport::Internal);
 }

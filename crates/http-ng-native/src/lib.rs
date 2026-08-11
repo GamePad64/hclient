@@ -208,7 +208,24 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // `Response::version()`, after the fact, which is the only honest
         // time — `version_reported` below is `true` and the negotiated
         // version really does come off the wire.
-        caps.redirects = RedirectSupport::Configurable;
+        // `Transparent`, and it is a correction rather than a change: this
+        // crate has never followed a redirect. A 3xx comes back from
+        // `h1::exchange`/`http2::exchange` as an ordinary response and
+        // `Client`'s redirect stage does the chain — grep `src/` for
+        // `Location` or a 3xx status and there is nothing to find.
+        //
+        // It said `Configurable` from v0.1 until v0.4 W1: "we set the
+        // policy", for a crate that reads no policy and sets nothing.
+        // `http-ng-fetch` shipped the same wrong value and corrected it to
+        // `Internal` a vertical earlier, in an audit that never came here.
+        // The variant is deleted now, so this line no longer has a way to
+        // be wrong in that direction.
+        //
+        // Not `None`, which is the stronger claim that redirects are
+        // impossible and is also what `Capabilities::none()` returns for a
+        // backend that said nothing at all — the same distinction
+        // `http-ng-h3` writes down beside its own `Transparent`.
+        caps.redirects = RedirectSupport::Transparent;
         // Asked of the pool, never written down twice. `reuse_of` reads the
         // same `Option<PoolConfig>` the pool actually behaves on, so the
         // capability cannot drift from the behaviour — which is the failure

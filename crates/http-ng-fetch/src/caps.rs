@@ -338,9 +338,11 @@ pub(crate) fn probe() -> Capabilities {
     // sends, unconditionally. That default is resolved INSIDE the browser:
     // the JS code (and everything built on top of it, including `Client`'s
     // own redirect stage) only ever sees the final response, never an
-    // intermediate 3xx. `RedirectSupport::Configurable` claims "we set the
-    // policy" — a specific, false claim: nothing here reads a
-    // `RedirectPolicy` or translates it into any fetch option. This is
+    // intermediate 3xx. `RedirectSupport::Configurable` claimed "we set
+    // the policy" — a specific, false claim: nothing here reads a
+    // `RedirectPolicy` or translates it into any fetch option. That
+    // variant was deleted in v0.4 W1, once it turned out to have no
+    // truthful carrier in the workspace at all. This is
     // exactly the case `RedirectSupport::Internal`'s own doc comment in
     // `http-ng-core` names by example — "a browser's `fetch()` with
     // `redirect: "follow"` (the default) follows the redirect inside the
