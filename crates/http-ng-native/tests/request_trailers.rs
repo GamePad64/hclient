@@ -255,6 +255,33 @@ async fn sends_request_trailers_on_http1_when_the_caller_declares_them() {
     );
 }
 
+/// `Trailer:` is a comma-separated list of case-insensitive field names,
+/// and the guard has to read it the way hyper's encoder does or it will
+/// refuse a request hyper would have sent.
+///
+/// Both halves in one header, because both are the same parse and either
+/// alone would leave the other unpinned: a guard that took the whole
+/// header value as one name would not find `grpc-status` in
+/// `X-Checksum, Grpc-Status`, and one that compared raw strings would not
+/// match the capitalised spelling.
+#[tokio::test]
+async fn a_comma_separated_and_differently_cased_declaration_still_declares() {
+    let (outcome, text) = exchange(
+        Some("X-Checksum, Grpc-Status"),
+        DataThenTrailers::new(Some("grpc-status")),
+    )
+    .await;
+    assert_eq!(
+        outcome.expect("the field is declared, in the second position and in another case"),
+        200
+    );
+    assert!(
+        text.contains("0\r\ngrpc-status: 0\r\n\r\n"),
+        "and it goes out, so the guard agreed with the encoder rather \
+         than merely staying quiet. Got:\n{text}"
+    );
+}
+
 /// The defect Appendix C decided to kill: a caller who attached trailers
 /// and omitted `Trailer:` used to get a `200` with the data gone and
 /// nothing said.
