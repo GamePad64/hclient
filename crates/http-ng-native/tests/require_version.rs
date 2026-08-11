@@ -77,6 +77,26 @@ impl Fixture {
 /// interesting case is the one where no request ever comes: a loop that
 /// waited for `\r\n\r\n` would hang exactly where this test needs an
 /// answer.
+///
+/// # It is keep-alive, and the first version of it was not
+///
+/// This fixture answered and then `break`, closing the socket. Every test
+/// here still passed — including
+/// `a_pooled_connection_of_the_wrong_version_is_skipped_not_used`, whose
+/// whole subject is a connection in the pool. It passed because there
+/// never was one: the client's second request opened a fresh connection
+/// either way, so `accepted == 2` held whether or not the pool filter
+/// existed, and the mutation that deleted that filter survived.
+///
+/// The comment beside the `break` said "keep reading so the loop still
+/// ends on the client's own close", describing something the code did not
+/// do. That is the defect this project keeps finding, arriving in a test
+/// rather than in a transport, and it was caught by running the mutation
+/// rather than by reading the fixture.
+///
+/// So: no `break` after a response, `Content-Length` framing and no
+/// `Connection: close`, and exactly one report per connection — the first
+/// request if one arrived, otherwise what was there at EOF.
 fn spawn_server() -> Fixture {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -90,6 +110,7 @@ fn spawn_server() -> Fixture {
             let tx = tx.clone();
             std::thread::spawn(move || {
                 let mut acc = Vec::new();
+                let mut reported = false;
                 let mut b = [0u8; 4096];
                 while let Ok(n) = s.read(&mut b) {
                     if n == 0 {
@@ -97,14 +118,28 @@ fn spawn_server() -> Fixture {
                     }
                     acc.extend_from_slice(&b[..n]);
                     // A head is a complete request here; nothing below
-                    // sends a body. Answer it, then keep reading so the
-                    // loop still ends on the client's own close.
+                    // sends a body.
                     if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                        // `Content-Length`-framed and no `Connection:
+                        // close`, so the connection stays usable — and
+                        // **the loop does not break**, which is the whole
+                        // difference between a fixture the pool can reuse
+                        // and one it cannot. See the note above.
                         let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-                        break;
+                        if !reported {
+                            let _ = tx.send(std::mem::take(&mut acc));
+                            reported = true;
+                        }
+                        acc.clear();
                     }
                 }
-                let _ = tx.send(acc);
+                // Exactly one report per connection: the first request if
+                // one arrived, otherwise whatever was accumulated when the
+                // client closed — which for a refusal is nothing, and is
+                // the assertion.
+                if !reported {
+                    let _ = tx.send(acc);
+                }
             });
         }
     });

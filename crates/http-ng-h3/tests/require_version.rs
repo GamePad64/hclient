@@ -176,6 +176,42 @@ async fn an_unmarked_request_is_unaffected() {
     assert_eq!(s.requests(), 1);
 }
 
+/// **Through a real `Client`, which is where declaring `false` would
+/// actually cost something.**
+///
+/// Everything above calls `Transport::execute` directly, so `Client`'s
+/// `UnsupportedCapability` gate never runs and a wrong `version_select`
+/// would go unwitnessed by any of them. Measured: flipping this crate's
+/// declaration to `false` kills only the read-back below — a test that
+/// asserts the field and nothing about what it does.
+///
+/// This one is the behaviour. With `version_select: false` the gate in
+/// `Client::run` refuses `RequireVersion(HTTP_3)` before the transport is
+/// asked anything, and a caller who wanted HTTP/3 from the HTTP/3
+/// transport gets `UnsupportedCapability`. That is the exact sentence the
+/// crate's doc comments make, so it needs a test rather than a claim.
+#[tokio::test]
+async fn a_client_over_this_transport_does_not_refuse_a_demand_for_http3() {
+    let s = server::start(Behaviour::Echo);
+    let c = http_ng::Client::builder(h3(&s.cert_der))
+        .build()
+        .expect("client");
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        c.execute(get(
+            &format!("https://{}/x", s.addr),
+            Some(http::Version::HTTP_3),
+        )),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the gate must let through the one demand this backend meets");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(s.requests(), 1, "the request reached the server");
+}
+
 /// The declaration, next to the behaviour that earns it — v0.2 W4's rule.
 ///
 /// `true` here is not a claim to *choose* a version. It is the claim that
