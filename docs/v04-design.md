@@ -320,3 +320,64 @@ it, which makes it the cheapest thing to drop.
   and that is what makes porting a consumer line-for-line possible. The
   condition needs rewriting or the decision needs reversing, and neither
   belongs in a feature vertical.
+
+
+---
+
+## Appendix A — W2 deliverable 2, decided
+
+The question was how a caller truthfully learns HTTP/2 is in force, given
+that `capabilities()` must keep reporting the HTTP/1.1 floor. Three shapes
+were investigated against the code:
+
+- **Per response.** `Response::version()` already answers it. Honest, and
+  useless for the capability that raised the question: a caller structured
+  for bidirectional streaming has to decide **before** it sends, and this
+  answers after.
+- **Per connection.** Needs either a new seam or a pool query that is racy
+  in the way that matters — the entry can be evicted between the answer and
+  the request that relied on it.
+- **Per request, as a demand.** The caller says *this request needs HTTP/2*,
+  and a connection that negotiated something else fails it **before the head
+  is written**, with a typed error.
+
+**Take the third.** Its shape already exists here: `AllowEarlyData` is a
+mark in the request's extensions that a transport reads and acts on before
+sending, and `Client` knows to strip it across an origin. This is the same
+mechanism with the polarity reversed — an *allow* becomes a *require* — and
+the reversal is why it must be per request rather than per client. Making
+an ALPN outcome a request failure is correct for gRPC, whose RPC simply
+cannot proceed over HTTP/1.1, and wrong for a browser-shaped client that
+should degrade quietly. Only the caller knows which of the two it is, which
+is the same argument that put `AllowEarlyData` in the caller's hands.
+
+**It also gives `Capabilities::version_select` a decision to turn on.**
+That field is `false` in every backend and **read by nothing** — P5's shape
+exactly, and the second instance found in this vertical. A demand against a
+backend that cannot honour one becomes an `UnsupportedCapability`, the same
+arm `RedirectPolicy`-against-`Internal` already takes. A field that was
+about to be deleted for having no caller instead acquires its first.
+
+**What it does not do**, and this must not be blurred: it does not widen
+the static floor. `full_duplex` stays `false` for the same reason it always
+has — Cargo unifies features across a graph, so a library cannot know
+whether some other crate turned `http2` on. The demand is how a caller
+converts "the floor says no" into "this connection says yes", per request,
+before committing to a shape that would deadlock without it.
+
+## Appendix B — `request_trailers`, one decision for two crates
+
+Found while making h2 duplex: `http-ng-native` declares
+`request_trailers: false` while its pump calls `send_trailers`, and
+`http-ng-h3` declares the same `false` and **enforces** it with a typed
+`RequestTrailersNotSent`. Two crates, one field, opposite behaviours — and
+v0.2 W4's rule is that a declaration and its enforcement belong in the same
+change.
+
+`http-ng-h3` is the one that followed the rule. The gRPC case does not
+argue otherwise: what gRPC needs is *response* trailers, which already
+reach a caller on an h2 connection, and `grpc-status` is the server's to
+send. So the fix is to make `http-ng-native` enforce what it declares
+rather than to raise the declaration — unless the h1 path turns out to send
+them too, in which case the field has a second carrier and the answer is
+worth re-opening with that measurement in hand.
