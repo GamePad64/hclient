@@ -472,3 +472,41 @@ not send them, and it is the crate that already followed v0.2 W4's rule.
 The asymmetry that remains — native `true`, h3 `false` — is a real
 difference between two transports rather than a drift between two
 declarations, which is exactly what the field is for.
+
+### Done, and the four things the doing changed
+
+Implemented; the full account, the seven tests and the twelve mutations
+are in `docs/v03-acceptance.md`'s closing section. What this appendix got
+wrong or left open, in the order it was found:
+
+1. **"The head is already on the wire" is true of half the cases.** The
+   error is raised when the trailers frame arrives, which is the first
+   moment the fact exists — a streaming body's trailer names are unknown
+   at `execute` time, so nothing earlier can see them, and a check after
+   the response is `http-ng-wasi`'s shape, forced there by the host
+   owning the encoder. What that placement buys is the last-chunk marker:
+   the message is aborted rather than completed. But *how much has
+   already gone* turned out to depend on the caller's body, measured both
+   ways: one that pends before its trailers has had the head and every
+   preceding chunk flushed, one that answers `Ready` throughout is
+   drained inside a single `Dispatcher::poll_write` and dies with the
+   head still in hyper's write buffer — **the server sees a connection
+   and no request at all**. The error's wording is now the sentence true
+   of both, rather than the confident half of it.
+2. **"Raise it later" is not a weaker alternative, it is the bug.**
+   Mutation M11 deferred the error by one `poll_frame`, letting the frame
+   through first. hyper ends the body on a trailers frame and stops
+   polling it, so the deferred error was never delivered: the request
+   completed `200`, which is precisely the defect. A check that late has
+   to live outside the body.
+3. **h2's `send_trailers` had nothing pinning it.** Deleting the call
+   killed exactly one test, and it is the one written for this change.
+   The "sends them, unconditionally" row of the table above was true and
+   unguarded.
+4. **`http-ng-select` is left red, on purpose.** `combine` needs no
+   change — the conjunction `true && false` still stores `false`, the
+   correct weaker claim, and the constructor does not refuse — but
+   `the_two_stacks_disagree_on_exactly_six_fields_today` asserts the
+   measured list whole and `request_trailers` now belongs in it. One
+   string, a test name and a doc comment; out of scope for the change
+   that caused it, so it is reported rather than repaired.

@@ -3761,3 +3761,216 @@ consumer can write a hook with it.
   delegates the whole exchange, so the guest sees a request go out and a
   response come back. `Head` again, and nothing else without a host
   extension.
+
+# v0.4 — request trailers: the silent drop, and the declaration it hid
+
+`docs/v04-design.md` Appendix C, implemented. §B above ended with three
+behaviours under one `request_trailers: false` and the decision owed;
+this is that decision carried out, and one measurement it did not have.
+
+## What changed
+
+Two things, and the first is the defect.
+
+1. **The silent drop is a typed error.** A request body that emits a
+   trailer field the request never declared in `Trailer:` now fails with
+   `ErrorKind::Body` over a public
+   `http_ng_native::UndeclaredRequestTrailers`, which names the field(s)
+   and prints the header that would have fixed it. It used to get a `200`
+   with the data gone and nothing said.
+2. **`http-ng-native` declares `request_trailers: true`.** It sends them
+   on both protocols it speaks; the `Trailer:` header HTTP/1.1
+   additionally wants is RFC 9110 §6.6.1's requirement of a sender rather
+   than a limitation of ours, so a request that omits it is *malformed*
+   rather than *unsupported*. `http-ng-h3` is untouched and keeps `false`
+   with its `RequestTrailersNotSent`.
+
+## Where the error is raised, and why not earlier or later
+
+At the trailers **frame**, inside `OutgoingBody::poll_frame` — the body
+hyper polls — and armed only on the HTTP/1 branch of
+`established::exchange`.
+
+- **Not before the head.** A streaming body's trailer field names are
+  only known once the body ends, so nothing at `execute` time can tell a
+  request that will emit trailers from one that will not. A pre-flight
+  check would have to fail every undeclared streaming request, and almost
+  none of them carry trailers. There is no earlier point at which the
+  fact exists.
+- **Not after the response**, which is `http-ng-wasi`'s
+  `convert::UndeclaredTrailers` shape and is right *there* — the host owns
+  the encoder and the send is raced against the body write, so that crate
+  has no seat closer to the frame. Here the encoder is downstream of a
+  body we own, and refusing at the frame buys the **last-chunk marker**:
+  hyper's `Dispatcher::poll_write` turns a body error into
+  `Error::new_user_body` and never calls `end_body`, so the message is
+  aborted rather than completed. No server is ever handed a well-formed
+  request whose trailers happened to be absent.
+
+**How much of the request has already gone was measured, not assumed, and
+the answer is "it depends on the caller's body".** Both shapes are pinned
+in `crates/http-ng-native/tests/request_trailers.rs`:
+
+| the caller's body | what the server had received when the guard fired |
+|---|---|
+| pends between its last data frame and its trailers (any real streaming producer — a gRPC client computes `grpc-status` after doing work) | the head and `4\r\nAAAA\r\n`, and **no** last-chunk marker |
+| answers `Ready` for every frame | **nothing at all** — hyper drains it inside one `poll_write` and the abort takes the head with it, still in the write buffer |
+
+The second row was a surprise and it corrected the error's own wording:
+the first draft said "the head and the body chunks before the trailers
+are already on the wire", which is false for exactly half the cases it
+covers. It now says the request was aborted, that the server never saw a
+complete one, and that how much was flushed depends on whether the body
+pended — the one sentence true of both rows.
+
+## Where the guard is armed, and why it is paired with the URI rewrite
+
+`Rewritten::for_http1` (renamed from `to_origin_form`, because it now
+does two things and a name that says one is the drift this project
+hunts). It arms the guard alongside rewriting the URI into origin-form
+and inserting `Host:`; `Rewritten::undo` disarms it alongside putting
+those back.
+
+The pairing is the point rather than tidiness. A request survives a
+`Failed::NotSent` hand-back and may be tried again on a connection that
+speaks the **other** protocol — either the next pooled bucket in the same
+loop, or a fresh connection whose ALPN answers `h2` — and HTTP/2 needs no
+`Trailer:` at all. A guard armed on the h1 attempt and left armed would
+refuse, on HTTP/2, a request HTTP/2 would have sent. Pairing it with the
+value that already exists to undo an h1-only change makes forgetting the
+second half impossible rather than unlikely.
+
+## The tests
+
+`crates/http-ng-native/tests/request_trailers.rs`, seven, all from
+outside the client against a real server:
+
+- `sends_request_trailers_on_http1_when_the_caller_declares_them` —
+  unchanged from §B, still reading `0\r\ngrpc-status: 0\r\n\r\n` off a
+  raw socket over plaintext `http://`. This is the working half Appendix
+  B would have deleted.
+- `sends_request_trailers_on_http2_without_any_declaration` — new, and
+  the second carrier: an `h2::server` decodes `grpc-status` off the
+  trailing HEADERS frame with no `Trailer:` header anywhere in the
+  request. Before this there was **nothing** pinning h2's `send_trailers`
+  at all (mutation M4 below).
+- `undeclared_request_trailers_on_http1_are_a_typed_error_naming_the_field`
+  — replaces `drops_undeclared_request_trailers_on_http1_without_telling_anyone`:
+  the caller gets the typed error, the error names `grpc-status`, the
+  server received the flushed prefix, and the server did **not** receive
+  a last-chunk marker.
+- `a_body_that_never_pends_is_refused_before_any_of_it_is_flushed` — the
+  other row of the table above.
+- `a_trailer_header_naming_another_field_is_the_same_error` — hyper
+  compares names, so a guard that only checked the header's presence
+  would pass this one through to be dropped in silence.
+- `an_empty_trailers_frame_is_not_an_undeclared_trailer` — `trailers_ref`
+  answers `Some` for an empty map, which loses nothing on the wire.
+- `a_comma_separated_and_differently_cased_declaration_still_declares` —
+  `Trailer: X-Checksum, Grpc-Status` for an emitted `grpc-status`. The
+  guard has to parse the header the way hyper's encoder does or it will
+  refuse a request hyper would have sent.
+
+Two capability assertions moved rather than being added:
+`tests/transport.rs`'s `capabilities_are_honest_about_v01_limits` now
+asserts `request_trailers` **true** (it left
+`undeclared_capability_fields_match_their_conservative_defaults_today`,
+where its `false` had never been the floor rule holding a line — it was a
+field nobody had measured), and `tests/http2.rs`'s
+`capabilities_report_the_floor_with_the_feature_on` asserts `true` for
+`request_trailers` beside `false` for `response_trailers`, with the
+comment corrected: `request_trailers` was never one of the fields "h2
+would otherwise let us raise".
+
+## Mutation testing
+
+Anchor verified before **each** run: **209 tests**, `cargo nextest run -p
+http-ng-native --all-features --no-fail-fast`, all passing on the
+unmutated tree; every run below reported `209 tests run` and its
+`Summary` line was cross-checked against the `FAIL` lines it printed.
+Killers read, not counted.
+
+| # | mutation | site | verdict | killed by |
+|---|---|---|---|---|
+| M1 | `check_trailers` returns `Ok(frame)` always — the error is never raised | `body.rs` | killed | `undeclared_request_trailers_on_http1_are_a_typed_error_naming_the_field`, `a_trailer_header_naming_another_field_is_the_same_error`, `a_body_that_never_pends_is_refused_before_any_of_it_is_flushed` |
+| M2 | `declared_trailer_names` returns an empty set — the error is raised for a request that **did** declare | `body.rs` | killed | `sends_request_trailers_on_http1_when_the_caller_declares_them`, `a_comma_separated_and_differently_cased_declaration_still_declares` |
+| M3 | `caps.request_trailers = false` | `lib.rs` | killed | `transport::capabilities_are_honest_about_v01_limits`, `http2::capabilities_report_the_floor_with_the_feature_on` |
+| M4 | the h2 pump drops the trailers frame and ends the stream instead of calling `send_trailers` | `http2.rs` | killed | `over_http2::sends_request_trailers_on_http2_without_any_declaration` — and by **nothing else**, which is what that test was written for |
+| M5 | the guard is armed in `Native::execute`, so both protocols enforce | `lib.rs` | killed | `over_http2::sends_request_trailers_on_http2_without_any_declaration` |
+| M6 | `allow_undeclared_trailers` emptied — the guard is not disarmed on a `NotSent` hand-back | `body.rs` | **survived** | — see below |
+| M7 | the names are ignored: every field in a trailers frame counts as undeclared | `body.rs` | killed | `sends_request_trailers_on_http1_when_the_caller_declares_them`, `a_comma_separated_and_differently_cased_declaration_still_declares` |
+| M8 | `if undeclared.is_empty()` → always error, so an empty frame refuses too | `body.rs` | killed | `an_empty_trailers_frame_is_not_an_undeclared_trailer` and the two above |
+| M9 | `ErrorKind::Body` → `ErrorKind::Unsupported` | `body.rs` | killed | `undeclared_request_trailers_on_http1_are_a_typed_error_naming_the_field`, `a_trailer_header_naming_another_field_is_the_same_error` |
+| M10 | the error names the **declared** set instead of the emitted one | `body.rs` | killed | the same two as M9 |
+| M11 | the trailers frame is passed through and the error deferred to the next `poll_frame` — the "raise it later" placement | `body.rs` | killed | the same three as M1, and see below |
+| M12 | the arming call removed from `Rewritten::for_http1` | `established.rs` | killed | the same three as M1 |
+
+**M11 is the placement decision, and it found more than it was aimed
+at.** It was written to check that raising the error *after* the frame
+had gone out would be caught by the "no last-chunk marker" assertion.
+It never got that far: with the frame passed through, hyper ends the body
+and stops polling it (`clear_body = true` on a trailers frame), the
+response arrives, and the deferred error is **never delivered at all** —
+the request completes `200`, exactly the defect this work exists to
+remove. So a body-level check that fires one poll late is not a weaker
+version of this design, it is the original bug with extra steps; a check
+that late has to live outside the body, which is where `http-ng-wasi` put
+its.
+
+The honest limitation of that: the assertion
+`!text.contains("\r\n0\r\n")` — "the request was left unterminated" — is
+made but no mutation run made it the *sole* killer, because M11 died one
+assertion earlier on the `200`. It is a checked claim, not an
+independently mutation-pinned one.
+
+## What this leaves unverified
+
+- **M6 survived: nothing pins the disarm.** `Rewritten::undo` calls
+  `allow_undeclared_trailers`, and removing that call leaves all 209
+  tests green. The path is live rather than theoretical — a pooled HTTP/1
+  connection that the server closed while idle produces
+  `Failed::NotSent`, `Native::execute` puts the same request object back
+  into the loop, and the next attempt can be a pooled h2 bucket or a
+  fresh connection whose ALPN answers `h2`; there the stale guard would
+  refuse a request HTTP/2 would have sent. Reaching it from a test needs
+  a TLS stub whose reported ALPN differs between the first and second
+  connect, plus a server that closes an idle connection, plus a body with
+  undeclared trailers. Not built; recorded rather than papered over, and
+  the fixture was **not** adjusted to make the mutation die.
+- **Three more silent drops in hyper's h1 encoder are not covered**, all
+  reachable in principle and none measured here. `encode_trailers` drops
+  a *declared* field whose name is in `is_valid_trailer_field`'s deny
+  list (`Authorization`, `Content-Length`, `Set-Cookie`, `Trailer`,
+  `Transfer-Encoding`, `TE`, …), and it drops **every** trailer when the
+  encoder is not chunked (`Kind::Length`, i.e. a request with a known
+  `Content-Length`). The guard implemented here compares names against
+  `Trailer:` and nothing else, so both of those still complete with a
+  `200` and no trailers. Whether the second is reachable through
+  `Native` — whether a `RequestBody::Streaming` with an exact
+  `size_hint` ever gets length framing here — was not measured.
+- **`response_trailers` stays `false` and was not re-examined.** The
+  measurement in this section is about the request direction only. hyper
+  and `h2` both surface response trailers as frames, so the same "nobody
+  looked" hazard that produced the `request_trailers` understatement may
+  or may not apply; nothing here checked it.
+- **`declared_trailer_names` is a second implementation of the same
+  parse.** `http-ng-wasi`'s `convert::declared_trailer_names` is the
+  first, `pub(crate)` in its own crate. The two agree today and neither
+  is generated from the other; `check_version`'s argument in
+  `http-ng-core` ("a function here so the rule has one definition, two
+  transports enforce it and they must not drift") applies, and unifying
+  them means touching `http-ng-wasi`, which this change was not permitted
+  to do.
+- **`http-ng-select`'s pinned disagreement list is now wrong, and was
+  left wrong deliberately.** `combine` needs no change — its conjunction
+  gives the composite `true && false == false`, which is the correct
+  weaker claim, and `Selecting::new` still constructs — but
+  `crates/http-ng-select/tests/capabilities.rs`'s
+  `the_two_stacks_disagree_on_exactly_six_fields_today` asserts the
+  measured list whole, and `request_trailers` now belongs in it. That
+  test fails; the fix is one string, `"request_trailers"` between
+  `"full_duplex"` and `"response_trailers"`, plus the test's name and the
+  neighbouring `the_stored_answer_holds_whichever_stack_serves_the_request`
+  doc comment's "five take the weaker claim" becoming six. Editing that
+  crate was out of scope for this change, so the red test is reported
+  rather than repaired.
