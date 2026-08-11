@@ -23,7 +23,7 @@
 //! than the drop. hyper sends request trailers only for fields the
 //! request **declared** in a `Trailer:` header (`proto/h1/encode.rs`'s
 //! `Kind::Chunked(Some(..))` arm, reached from `role.rs`'s client encoder
-//! when `TRAILER` is present) — that is RFC 9110 §6.6.1's `Trailer` field
+//! when `TRAILER` is present) — that is RFC 9110 §6.6.2's `Trailer` field
 //! doing its job, and it is a sensible rule for a hop-by-hop-sensitive
 //! feature: an intermediary that must decide whether to buffer needs to
 //! know before the body starts. An **undeclared** field was logged at

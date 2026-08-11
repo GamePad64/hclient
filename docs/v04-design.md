@@ -453,7 +453,7 @@ decision it proposed was wrong and is superseded here.
 
 **The silent drop is the defect, and it is the one this project exists to
 kill.** A caller who attached trailers and omitted the `Trailer:` header
-gets a `200` with their data missing and nothing said. RFC 9110 §6.6.1
+gets a `200` with their data missing and nothing said. RFC 9110 §6.6.2
 requires the header and hyper enforces it — the enforcement is correct and
 the silence is not. It becomes a typed error naming the header that was
 missing, the same shape as every discarded-setter this workspace has
@@ -510,3 +510,17 @@ wrong or left open, in the order it was found:
    measured list whole and `request_trailers` now belongs in it. One
    string, a test name and a doc comment; out of scope for the change
    that caused it, so it is reported rather than repaired.
+
+And one citation, which both appendices above got wrong: the `Trailer`
+header field is **RFC 9110 §6.6.2**, not §6.6.1 (that is `Date`). The
+requirement is also stronger than "requires" suggested — *"A sender that
+uses the trailer section to communicate information that was unknown
+prior to sending the content **MUST** generate a Trailer header field
+that lists which trailer fields will be sent"* — and the condition on
+that MUST is exactly the case a streaming trailer is for. hyper is
+enforcing a MUST, which makes the argument for `request_trailers: true`
+stronger rather than weaker: a request that omits the header is one the
+RFC forbids sending. The code and the acceptance section cite §6.6.2;
+§6.5.1, which `http-ng-wasi` cites for the same neighbourhood, is
+"Limitations on Use of Trailers" and is about which *fields* may be
+trailers at all.

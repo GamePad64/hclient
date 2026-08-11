@@ -263,7 +263,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // floor was never the reason for that `false`; nobody had looked.
         // It is `true` below, and the line that follows this one is the
         // whole of the change the declaration owed: what HTTP/1.1 wants
-        // in addition is the `Trailer:` header RFC 9110 §6.6.1 asks of
+        // in addition is the `Trailer:` header RFC 9110 §6.6.2 asks of
         // any sender, and a request that omits it is malformed rather
         // than unsupported. It now gets
         // `body::UndeclaredRequestTrailers` instead of a `200` with its

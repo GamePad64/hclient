@@ -225,7 +225,7 @@ pub struct OutgoingBody {
 /// may still have acted on it, so this is not a signal to retry blindly.
 ///
 /// The fix is the caller's and is one header: `Trailer:` naming each field
-/// the body will emit (RFC 9110 §6.6.1, and hyper's
+/// the body will emit (RFC 9110 §6.6.2, and hyper's
 /// `proto/h1/encode.rs` enforces it). The same request over HTTP/2 needs
 /// no such header and is unaffected — which is why
 /// [`Capabilities::request_trailers`](http_ng_core::Capabilities::request_trailers)
@@ -236,7 +236,7 @@ pub struct OutgoingBody {
 #[error(
     "the request body emitted trailer field(s) [{}] that the request's `Trailer:` header did \
      not declare, and this connection speaks HTTP/1.1, where hyper's encoder drops an \
-     undeclared trailer field silently (RFC 9110 §6.6.1) — send `Trailer: {}` with the \
+     undeclared trailer field silently (RFC 9110 §6.6.2) — send `Trailer: {}` with the \
      request head. The message was aborted rather than finished without them, so the server \
      never saw a complete request; how much of it had already been flushed depends on \
      whether the body pended before its trailers, and a non-idempotent request that had may \

@@ -3780,7 +3780,7 @@ Two things, and the first is the defect.
    with the data gone and nothing said.
 2. **`http-ng-native` declares `request_trailers: true`.** It sends them
    on both protocols it speaks; the `Trailer:` header HTTP/1.1
-   additionally wants is RFC 9110 §6.6.1's requirement of a sender rather
+   additionally wants is RFC 9110 §6.6.2's requirement of a sender rather
    than a limitation of ours, so a request that omits it is *malformed*
    rather than *unsupported*. `http-ng-h3` is untouched and keeps `false`
    with its `RequestTrailersNotSent`.

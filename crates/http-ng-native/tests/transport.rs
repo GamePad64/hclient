@@ -191,7 +191,7 @@ async fn capabilities_are_honest_about_v01_limits() {
         "declared and enforced in one change (v0.4, `docs/v04-design.md` \
          Appendix C): both protocols this transport speaks put a request \
          body's trailers on the wire, and the `Trailer:` header HTTP/1.1 \
-         additionally wants is RFC 9110 §6.6.1's requirement of a sender \
+         additionally wants is RFC 9110 §6.6.2's requirement of a sender \
          rather than a limitation of ours — a request that omits it is \
          malformed, and gets `UndeclaredRequestTrailers` instead of the \
          silent drop it used to get. See tests/request_trailers.rs, which \
