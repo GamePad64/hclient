@@ -666,6 +666,131 @@ async fn a_connection_that_dies_under_a_body_is_reported_by_the_body() {
     );
 }
 
+/// One data frame and then trailers — the one request shape this transport
+/// refuses by name, borrowed from `tests/streaming.rs`, and here because it
+/// is the cheapest **live-connection failure** in the crate.
+struct DataThenTrailers {
+    data: Option<bytes::Bytes>,
+    trailers: Option<http::HeaderMap>,
+}
+
+impl http_body::Body for DataThenTrailers {
+    type Data = bytes::Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+        if let Some(d) = self.data.take() {
+            return std::task::Poll::Ready(Some(Ok(http_body::Frame::data(d))));
+        }
+        std::task::Poll::Ready(
+            self.trailers
+                .take()
+                .map(|t| Ok(http_body::Frame::trailers(t))),
+        )
+    }
+}
+
+/// **One stream's failure is not the connection's end**, and on a transport
+/// whose whole point is that neighbours survive, announcing it as one would
+/// be the loudest possible lie.
+///
+/// `quinn::Connection::close_reason()` is the only discriminator this crate
+/// has, and this is the test that it is consulted rather than assumed: the
+/// request fails, no `Closed` is reported, and the *same connection* then
+/// answers a second request — which the server's own accept count confirms.
+///
+/// The failure is a request-trailers refusal because it is the one this
+/// crate raises itself, on a connection that is provably untouched. Two
+/// shapes that look like candidates are not: a server that drops the
+/// request stream without answering makes the client's h3 connection fail
+/// too (measured — the server accepted a second connection), and a
+/// **cancelled** request produces no error at all, so no hook is called.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_streams_failure_is_not_the_connections_end() {
+    let s = server::start(Behaviour::CountBody);
+    let rec = Recorder::default();
+    let t = watched(&s.cert_der, &rec);
+
+    let mut trailers = http::HeaderMap::new();
+    trailers.insert("x-checksum", http::HeaderValue::from_static("deadbeef"));
+    let req = http::Request::builder()
+        .method("POST")
+        .uri(format!("https://{}/trailers", s.addr))
+        .body(RequestBody::Streaming(Box::new(DataThenTrailers {
+            data: Some(bytes::Bytes::from_static(b"payload")),
+            trailers: Some(trailers),
+        })))
+        .unwrap();
+    let err = t
+        .execute(req)
+        .await
+        .expect_err("declared false, so refused");
+    assert!(err.is_unsupported(), "{err}");
+    assert_eq!(
+        rec.closes(),
+        vec![],
+        "the stream died and the connection did not, so nothing may say it \
+         did: {:#?}",
+        rec.take()
+    );
+
+    // The proof that it really did live: a second request on it.
+    ok(&t, s.addr, "/after").await;
+    assert_eq!(
+        s.accepted(),
+        1,
+        "one accept for both requests — the same connection carried them"
+    );
+    assert_eq!(rec.reuses().len(), 1, "and it is reported as a reuse");
+    assert_eq!(rec.closes(), vec![], "still no close");
+}
+
+/// A connection whose death several requests meet reports **one** `Closed`.
+///
+/// `http-ng-native` gets this for free: an h2 connection is checked out of
+/// the pool exclusively, so one body is the only observer. Here the
+/// connection is shared and its end can be met from three places — a
+/// failing `execute`, a failing body, and the next checkout that finds it
+/// dead — so the "already told" flag lives with the connection.
+///
+/// The shape below is the deterministic one: the first request meets the
+/// death in `execute`, and the second finds the same entry still in the
+/// pool and would report it `Stale` a second time.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_connection_reports_one_close_however_many_requests_meet_its_death() {
+    let s = server::start(Behaviour::DieAfterHead);
+    let rec = Recorder::default();
+    let t = watched(&s.cert_der, &rec);
+
+    let _ = t.execute(get(s.addr, "/one")).await.expect_err("dies");
+    let _ = t.execute(get(s.addr, "/two")).await.expect_err("dies too");
+
+    assert_eq!(s.accepted(), 2, "each request paid for a connection");
+    let ids: Vec<u64> = rec
+        .connects()
+        .iter()
+        .map(|e| match e {
+            Seen::Connected { id, .. } => *id,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(
+        rec.closes(),
+        vec![
+            (ids[0], Why::Failed(ErrorKind::Body)),
+            (ids[1], Why::Failed(ErrorKind::Body)),
+        ],
+        "two connections, two closes — and in particular the first is NOT \
+         reported again as `Stale` when the second request finds it in the \
+         pool, which is what would make a caller counting connections wrong \
+         in the direction that looks like a leak"
+    );
+}
+
 /// The pair, in one process: `Stale` and `Failed` are two reasons and not
 /// one reason wearing two names.
 ///
