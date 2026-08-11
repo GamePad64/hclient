@@ -109,14 +109,22 @@
 //! can tell a request that will emit trailers from one that will not —
 //! a pre-flight check would have to fail every undeclared streaming
 //! request, and almost none of them carry trailers. By the time the frame
-//! does arrive the head and every preceding chunk are already on the wire
-//! and cannot be recalled; what the error still buys is the *last-chunk
-//! marker*. Returning `Err` here aborts the message instead of completing
-//! it (hyper's `Dispatcher::poll_write` turns a body error into
-//! `Error::new_user_body` and never calls `end_body`), so the server sees
-//! a truncated request rather than a well-formed one with the caller's
-//! trailers quietly missing. The error type says all of this, because a
-//! caller reading it needs to know the request has partly gone.
+//! does arrive the request is part-written and cannot be recalled; what
+//! the error still buys is the *last-chunk marker*. Returning `Err` here
+//! aborts the message instead of completing it (hyper's
+//! `Dispatcher::poll_write` turns a body error into `Error::new_user_body`
+//! and never calls `end_body`), so the server sees a truncated request
+//! rather than a well-formed one with the caller's trailers quietly
+//! missing. The error type says all of this, because a caller reading it
+//! needs to know what may already have left.
+//!
+//! *How much* has left is the caller's body's doing and not the guard's,
+//! which was measured rather than assumed: a body that pends before its
+//! trailers has had the head and every preceding chunk flushed, and one
+//! that never pends is drained inside a single `poll_write` and dies with
+//! the head still buffered — the server then sees a connection and no
+//! request. Both are pinned in `tests/request_trailers.rs`, and the
+//! error's wording is the one sentence true of both.
 //!
 //! `http-ng-wasi` reaches the same conclusion one step later — its
 //! `convert::UndeclaredTrailers` fires *after* the exchange succeeded,
@@ -199,13 +207,22 @@ pub struct OutgoingBody {
 /// The request body carried trailer field(s) the request never declared,
 /// on a connection speaking HTTP/1.1.
 ///
-/// **The request has already partly gone**, and the error says so rather
-/// than leaving a caller to assume otherwise: the head and every body
-/// chunk before the trailers were written to the socket, and what this
-/// refusal prevents is the *last-chunk marker* — the message is aborted
-/// instead of completed without the caller's trailers. A server may have
-/// already acted on the bytes it received, so this is not a signal to
-/// retry blindly.
+/// **Some of the request may already have gone**, and the error says so
+/// rather than leaving a caller to assume otherwise. How much is a fact
+/// about the caller's own body, measured both ways in
+/// `tests/request_trailers.rs`: a body that pends between its last data
+/// frame and its trailers — the shape of any real streaming producer —
+/// has had the head and every preceding chunk flushed to the socket by
+/// then, while one that answers `Ready` throughout is drained inside a
+/// single `Dispatcher::poll_write` and dies with the head still in
+/// hyper's write buffer, leaving the server with a connection and no
+/// request at all.
+///
+/// What the refusal prevents in both cases is the *last-chunk marker*:
+/// the message is aborted instead of completed without the caller's
+/// trailers, so no server ever treats it as a well-formed request whose
+/// trailers happened to be absent. A server that did receive the prefix
+/// may still have acted on it, so this is not a signal to retry blindly.
 ///
 /// The fix is the caller's and is one header: `Trailer:` naming each field
 /// the body will emit (RFC 9110 §6.6.1, and hyper's
@@ -220,9 +237,10 @@ pub struct OutgoingBody {
     "the request body emitted trailer field(s) [{}] that the request's `Trailer:` header did \
      not declare, and this connection speaks HTTP/1.1, where hyper's encoder drops an \
      undeclared trailer field silently (RFC 9110 §6.6.1) — send `Trailer: {}` with the \
-     request head. The head and the body chunks before the trailers are already on the wire; \
-     the message was aborted rather than finished without them, so a non-idempotent request \
-     may already have taken effect and must not be blindly retried",
+     request head. The message was aborted rather than finished without them, so the server \
+     never saw a complete request; how much of it had already been flushed depends on \
+     whether the body pended before its trailers, and a non-idempotent request that had may \
+     already have taken effect — do not retry blindly",
     .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
     .0.iter().map(HeaderName::as_str).collect::<Vec<_>>().join(", "),
 )]

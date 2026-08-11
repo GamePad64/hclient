@@ -186,6 +186,18 @@ async fn capabilities_are_honest_about_v01_limits() {
         "this crate follows nothing: a 3xx comes back as an ordinary response \
          and Client's redirect stage owns the chain"
     );
+    assert!(
+        caps.request_trailers,
+        "declared and enforced in one change (v0.4, `docs/v04-design.md` \
+         Appendix C): both protocols this transport speaks put a request \
+         body's trailers on the wire, and the `Trailer:` header HTTP/1.1 \
+         additionally wants is RFC 9110 §6.6.1's requirement of a sender \
+         rather than a limitation of ours — a request that omits it is \
+         malformed, and gets `UndeclaredRequestTrailers` instead of the \
+         silent drop it used to get. See tests/request_trailers.rs, which \
+         reads the field off a raw socket on HTTP/1.1 and off an \
+         `h2::server`'s decoded stream on HTTP/2"
+    );
     assert!(caps.version_reported);
     assert!(
         caps.version_select,
@@ -233,7 +245,14 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
     let http_ng_core::Capabilities {
         streaming_request_body: _,
         full_duplex,
-        request_trailers,
+        // `request_trailers` left this list in v0.4 and is asserted
+        // `true` in `capabilities_are_honest_about_v01_limits` above,
+        // where the declared fields live. Its `false` here was never the
+        // floor rule holding a line — it was a field nobody had
+        // measured, and `docs/v04-design.md`'s Appendix C measured it:
+        // HTTP/1.1 sends request trailers, HTTP/2 sends them, and the
+        // one shape that lost data now raises.
+        request_trailers: _,
         response_trailers,
         redirects: _,
         tls_config: _,
@@ -256,7 +275,6 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
         ..
     } = *t.capabilities();
     assert!(!full_duplex);
-    assert!(!request_trailers);
     assert!(!response_trailers);
     assert!(!client_certs);
     assert!(!proxy);
