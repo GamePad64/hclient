@@ -788,4 +788,4 @@ graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-smol-p
 # ── the whole pipeline ──────────────────────────────────────────────────
 
 # everything CI runs except what is bound to one OS (`macos-loopback`)
-ci: fmt-check lint invariants graph test-workspace test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-must-fail-under-atomics test-autobahn fuzz-smoke
+ci: fmt-check lint invariants graph test-workspace test-doc test-sse-complexity test-no-default test-idn lint-idn test-embassy-live embassy-strict-link build-three-targets build-wasi-example test-wasi test-browsers fetch-must-fail-under-atomics test-autobahn fuzz-smoke

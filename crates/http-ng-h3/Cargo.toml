@@ -50,7 +50,12 @@ http-ng-rt-tokio   = { path = "../http-ng-rt-tokio", version = "0.1.0", features
 # The second runtime, for `tests/two_runtimes.rs`. A dev-dependency only:
 # this crate is generic over `R` and names neither backend.
 http-ng-rt-smol    = { path = "../http-ng-rt-smol", version = "0.1.0", features = ["udp"] }
-http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["quic"] }
+# `webpki-roots` is here for the module doc's example, not for a test:
+# without it that example compiles only under `--workspace`, where feature
+# unification hands it a constructor its own dev-dependencies never asked
+# for. Found when `cargo test --doc -p http-ng-h3 --all-features` was run
+# alone for the first time -- no job had ever run it.
+http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["quic", "webpki-roots"] }
 quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
 quinn-proto        = { version = "0.11", default-features = false }
 rcgen              = "0.14"

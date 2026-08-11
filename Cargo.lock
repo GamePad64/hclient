@@ -1488,6 +1488,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-select"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "h3",
+ "h3-quinn",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-ng",
+ "http-ng-core",
+ "http-ng-dns",
+ "http-ng-dns-system",
+ "http-ng-h3",
+ "http-ng-native",
+ "http-ng-rt",
+ "http-ng-rt-tokio",
+ "http-ng-tls",
+ "http-ng-tls-rustls",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "http-ng-tls"
 version = "0.1.0"
 dependencies = [

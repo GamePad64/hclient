@@ -55,6 +55,12 @@ jobs:
         run: just test-embassy-live
       - shell: bash
         run: just test-workspace
+      # nextest cannot run doctests. Until v0.4 nothing did: the recipe
+      # existed and no job called it, so a broken example sat in
+      # `http-ng-h3` compiling only under feature unification.
+      - name: the doctests, which nextest cannot run
+        shell: bash
+        run: just test-doc
 
   lint:
     runs-on: ubuntu-latest
