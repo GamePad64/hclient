@@ -72,14 +72,53 @@
 //!    means somebody has to keep polling it, which is the `Spawn` question
 //!    again.
 //!
-//! # `full_duplex` is `false`, and here that is not merely a declaration
+//! # Full duplex, and why `Capabilities::full_duplex` still reports `false`
 //!
-//! [`exchange`] writes the whole request body before it waits for the
-//! response. h2 would permit otherwise, and a later version may; today the
-//! floor `Capabilities` reports is literally what this code does, so a
-//! caller that believed a `true` would deadlock exactly as the v0.2 design
-//! document says. See `Native::new`'s comment on `full_duplex` for why the
-//! capability reports the floor and not the protocol's best case.
+//! [`exchange`] used to write the whole request body before it waited for
+//! the response, and that arrangement is what `full_duplex: false` used to
+//! describe. It no longer is. The body is written by a [`Pump`] polled
+//! *beside* the response future, and a pump still running when the head
+//! arrives **moves into [`H2Body`]**, which drives it from `poll_frame`.
+//! v0.3 did the same thing for HTTP/3 (`http_ng_h3::pump` is the
+//! template), and nothing is spawned here either — this crate has nowhere
+//! to spawn, and a spawned pump would go on uploading behind a caller that
+//! walked away, with nowhere for its errors to go.
+//!
+//! **The capability still reports `false`, and that is not a stale
+//! declaration.** [`Capabilities`](http_ng_core::Capabilities) is a
+//! *static* answer for the whole transport, and this transport speaks
+//! HTTP/1.1 whenever ALPN says so — what it reports is the value that
+//! holds on the worst protocol it might negotiate. Cargo also unifies
+//! features across a graph, so a library built on `http-ng` can never know
+//! whether some other crate turned `http2` on: `true` here would be a
+//! promise made on behalf of builds that cannot keep it, and over-claiming
+//! `full_duplex` costs a caller a deadlock rather than a degradation.
+//! `tests/http2.rs`'s `capabilities_report_the_floor_with_the_feature_on`
+//! pins that, with this feature compiled in.
+//!
+//! What a caller gets instead is `Response::version()`, after the fact —
+//! `version_reported` is `true` and the value comes off the wire. Whether
+//! a caller who has to decide *in advance* can be told the truth is v0.4
+//! W2's second deliverable; what this code could offer, and what each
+//! shape would cost, is written up in `docs/v03-acceptance.md` and is
+//! deliberately not decided here.
+//!
+//! ## What duplex costs, said out loud
+//!
+//! **A caller that never reads the response body never finishes sending
+//! the request body.** That is inherent to duplex with no spawned writer —
+//! `http_ng_h3::pump` and `http-ng-wasi`'s module doc record the same
+//! consequence for the same technique — and it is why the sequential
+//! arrangement was fine for as long as nothing depended on the head
+//! arriving early. A caller that wants to finish an upload reads the
+//! response; a caller that does not read the response has said it does not
+//! care about the rest of the exchange.
+//!
+//! **A write failure after the head has arrived is a response-body
+//! error.** Before duplex, everything the write side could say was said by
+//! [`exchange`]'s return value. Now the head can be delivered while the
+//! write is still in flight, so a later failure has one channel left: the
+//! response body's terminal error.
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
@@ -341,7 +380,7 @@ where
         });
     }
 
-    let (mut parts, mut outgoing) = req.into_parts();
+    let (mut parts, outgoing) = req.into_parts();
     strip_connection_headers(&mut parts.headers);
     // The URI reaches this function in absolute form — `Native::execute`
     // runs `origin_form` on the HTTP/1 path only, because h2 builds
@@ -351,13 +390,15 @@ where
     let eos = outgoing.is_end_stream();
     let head = http::Request::from_parts(parts, ());
 
-    let (mut resp_fut, mut send_stream) = match sender.send_request(head, eos) {
+    let (mut resp_fut, send_stream) = match sender.send_request(head, eos) {
         Ok(pair) => pair,
         Err(e) => return Err(Failed::Sent(from_h2_error(e, ErrorKind::Connect))),
     };
 
-    let mut pumping = !eos;
-    let mut pending: Option<Bytes> = None;
+    // From here on the head is on the wire, and the write side has a life
+    // of its own: it is polled beside `resp_fut` below, and whatever is
+    // left of it when the head arrives goes into `H2Body`.
+    let mut pump = (!eos).then(|| Pump::new(outgoing, send_stream));
     let resp = std::future::poll_fn(|cx| {
         loop {
             if !conn_done {
@@ -370,27 +411,41 @@ where
                     Poll::Pending => {}
                 }
             }
-            if pumping {
-                match poll_pump(&mut outgoing, &mut send_stream, &mut pending, cx) {
+            if let Some(p) = pump.as_mut() {
+                match p.poll(cx) {
                     // `Done` and `PeerStoppedReading` alike: there is
                     // nothing more to write, and whether the exchange
                     // succeeded is `resp_fut`'s answer, not the pump's.
-                    // RFC 9113 §8.1 — see `poll_pump`'s doc comment.
+                    // RFC 9113 §8.1 — see [`Pump::poll`]'s doc comment.
                     Poll::Ready(Ok(_)) => {
-                        pumping = false;
+                        pump = None;
                         // Round the loop rather than falling through: the
                         // frames the pump just queued only reach the
                         // socket from inside `Connection::poll`.
                         continue;
                     }
-                    Poll::Ready(Err(e)) => return Poll::Ready(Err(Failed::Sent(e))),
-                    Poll::Pending if conn_done => {
-                        return Poll::Ready(Err(Failed::Sent(Error::new(
-                            ErrorKind::Connect,
-                            ConnectionEndedWithTheRequestQueued,
-                        ))));
+                    Poll::Ready(Err(e)) => {
+                        // Dropped here rather than at the end of the
+                        // function, and it is the drop that resets the
+                        // stream: a request whose write failed is not a
+                        // request that ended. See [`Pump`]'s `Drop`.
+                        pump = None;
+                        return Poll::Ready(Err(Failed::Sent(e)));
                     }
-                    Poll::Pending => return Poll::Pending,
+                    // **The duplex line.** A write that cannot proceed
+                    // must not stop the response from arriving — the two
+                    // halves of a stream are independent, which is the
+                    // whole of what `full_duplex` means. This used to be
+                    // `return Poll::Pending`, and that one branch was the
+                    // implementation `full_duplex: false` described.
+                    //
+                    // The `conn_done` arm that used to sit beside it is
+                    // gone rather than lost: falling through reaches
+                    // `resp_fut`'s own `Poll::Pending if conn_done`, which
+                    // returns the identical error one branch later — and
+                    // reaches it *after* giving a response that did arrive
+                    // before the connection ended the chance to be seen.
+                    Poll::Pending => {}
                 }
             }
             return match Pin::new(&mut resp_fut).poll(cx) {
@@ -430,12 +485,17 @@ where
             recv,
             conn,
             reuse,
+            // Whatever is left of the request. `None` for a request whose
+            // body was over before the head went out, and for one whose
+            // body finished while the head was on its way.
+            pump,
             data_done: false,
+            ended: false,
         },
     ))
 }
 
-/// Why [`poll_pump`] finished, and the reason the two are not the same
+/// Why [`Pump::poll`] finished, and the reason the two are not the same
 /// thing said twice.
 ///
 /// [`exchange`] stops pumping on either, so the distinction buys no
@@ -447,210 +507,348 @@ enum Pumped {
     /// The whole body reached h2, end-of-stream included.
     Done,
     /// The peer stopped reading before it was all written. See
-    /// [`poll_pump`]'s "the peer stopped reading" section.
+    /// [`Pump::poll`]'s "the peer stopped reading" section.
     PeerStoppedReading,
 }
 
-/// Writes as much of the request body as flow control currently allows.
+/// The request body, in flight — and the reason it is a value rather than
+/// three locals inside [`exchange`].
 ///
-/// `pending` is the one chunk that has been taken off the body and not yet
-/// fully written — the state that has to survive a `Pending`, since
-/// `http_body::Body::poll_frame` cannot be asked to hand the same frame
-/// back twice.
+/// Duplex means the write outlives the wait for the response head, so the
+/// state it needs has to outlive [`exchange`] too: the caller's body, the
+/// send half of the h2 stream, and the one chunk that has been taken off
+/// the body and not yet fully written. [`H2Body`] takes ownership of all
+/// three when the head arrives first.
 ///
-/// **Capacity is reserved rather than assumed.** `SendStream::send_data`
-/// is willing to accept data with no capacity available and buffer it,
-/// with, in h2's own words, unbounded buffering — which would turn
-/// `Capabilities::streaming_request_body` into a promise to read a stream
-/// as fast as the producer can make it and hold it in memory. Reserving
-/// and waiting is what makes the declared streaming real: a slow server
-/// stops granting window, `poll_capacity` goes `Pending`, and the caller's
-/// stream stops being polled.
+/// **Not a boxed future**, which is what `http_ng_h3::pump` had to use.
+/// There the write is an `async fn` and has to be erased to be stored;
+/// here it was already a poll function, so keeping it as a struct costs
+/// nothing and puts no `dyn` on the `Client -> Transport` path — which,
+/// by amendment C2, would cut the auto traits off everything above it.
+/// [`H2Body`] stays generic and unboxed, exactly as this module's doc
+/// comment says it must.
+struct Pump {
+    body: OutgoingBody,
+    send: h2::SendStream<Bytes>,
+    /// The one chunk taken off the body and not yet fully written — the
+    /// state that has to survive a `Pending`, since
+    /// `http_body::Body::poll_frame` cannot be asked to hand the same
+    /// frame back twice.
+    pending: Option<Bytes>,
+    /// `true` once this stream owes the peer nothing: the body was written
+    /// and finished, the peer stopped reading, or it has already been
+    /// reset.
+    settled: bool,
+}
+
+/// **An abandoned upload is reset, not left half-written.**
 ///
-/// # "The peer stopped reading" is not a failure of the request
+/// A guard rather than a line at a call site, because the moment it has to
+/// act at is the moment nothing is running: the caller dropped the
+/// `execute` future, or the response body, with a request half written.
 ///
-/// RFC 9113 §8.1: *"A server MAY request that the client abort
-/// transmission of a request without error by sending a `RST_STREAM` with
-/// an error code of `NO_ERROR` after sending a complete response … Clients
-/// **MUST NOT** discard responses as a result of receiving such a
-/// `RST_STREAM`."* Every server that answers a `404`, a `401` or a `413`
-/// without reading the body does exactly this, and h2's own server does it
-/// for them without being asked: dropping the request's `RecvStream` while
-/// the response is already complete schedules a `RST_STREAM(NO_ERROR)`
-/// (`h2-0.4.15/src/proto/streams/streams.rs:1601-1618`, `maybe_cancel`).
+/// h2 does something similar on its own, and it is not enough. Dropping
+/// the *last* reference to a stream that is not closed schedules a
+/// `RST_STREAM` — `maybe_cancel`, `h2-0.4.15/src/proto/streams/streams.
+/// rs:1601-1620`, with `Reason::CANCEL` for a client — but only once every
+/// reference is gone, and the receive half holds one of its own. A pump
+/// dropped while the response body lives on (the case this type exists
+/// for: the response ended and the request had not) would otherwise leave
+/// the stream open with nobody left to write it.
 ///
-/// That reset closes the **send** half only. The response the peer already
-/// sent stays in `pending_recv` and is still handed out by `poll_response`
-/// (`.../recv.rs:336-365`) — measured, not assumed: with the request body
-/// abandoned mid-write, `resp_fut` still resolves `200`. But every write
-/// this function could make now fails, this function turned that into an
-/// error, and [`exchange`] returned on it **without ever polling
-/// `resp_fut`**. The complete response was one poll away and was thrown
-/// away. That is the defect [`Pumped::PeerStoppedReading`] exists for.
+/// **This is the h3 defect's neighbourhood, and the answer differs — which
+/// is worth writing down rather than assuming.** On quinn,
+/// `SendStream::drop` calls `finish()`, so an abandoned HTTP/3 request
+/// terminated *cleanly* carrying a DATA frame whose length header promised
+/// bytes that never came: RFC 9114 §7.1 makes that a connection error, and
+/// on a shared connection it took every neighbour with it. Neither half of
+/// that reproduces here. h2 queues whole DATA frames — `send_data` hands
+/// `prioritize` a complete `frame::Data` (`.../prioritize.rs:145-222`) and
+/// a partly written frame is never a state the peer can observe — so there
+/// is nothing truncated to leave behind, and h2's own drop resets rather
+/// than finishes.
 ///
-/// # One question, asked before every write, rather than four verdicts
+/// # It is not observable today, and that is worth saying rather than
+/// implying
 ///
-/// The four writes below fail *differently* when the peer has stopped
-/// reading, and only one of the four failures is identifiable from
-/// outside h2:
+/// Removing this impl leaves all 23 tests in the three h2 files green,
+/// measured rather than assumed, and the reason is the pool policy rather
+/// than anything here. The `RST_STREAM` this queues can only reach the
+/// wire from inside `Connection::poll` — and **an h2 connection is checked
+/// out exclusively** (see [`crate::pool`]'s module doc), so the connection
+/// is owned by the same future or the same [`H2Body`] that owns the pump
+/// and is dropped in the same breath. The peer learns the request was
+/// abandoned from the socket closing instead, which is what
+/// `Capabilities::cancel_on_drop` promises and what `tests/cancel.rs`
+/// already observes from the far end.
 ///
-/// | site | how it fails on a reset stream | tellable apart? |
-/// |---|---|---|
-/// | `poll_capacity` | `Poll::Ready(None)` — no longer `is_send_streaming` (`.../send.rs:363-370`) | yes, but `None` also means an API misuse of ours |
-/// | `send_data(now, false)` | `UserError::InactiveStreamId` | no — `reason() == None`, `is_reset() == false` |
-/// | `send_data(Bytes::new(), true)` (end of stream) | the same | no |
-/// | `send_trailers(..)` | the same | no |
-///
-/// So the question is asked once, at the top of the loop, of the one API
-/// that answers it in types: [`h2::SendStream::poll_reset`]. `Ready(Ok(_))`
-/// is a `RST_STREAM` or a `GOAWAY` from the peer; `Ready(Err(_))` is the
-/// stream closed by something that is not a reset (a dead connection);
-/// `Pending` is a stream that is still open (`ensure_reason`,
-/// `.../state.rs:446-462`). Placing it there also means the three
-/// unidentifiable sites never see the reset at all — the pump returns
-/// before reaching them — so they keep propagating their errors unchanged
-/// and no `Display`-string matching is needed anywhere.
-///
-/// hyper asks the same question in the same place
-/// (`hyper-1.11.0/src/proto/h2/mod.rs:145-156`, the first thing
-/// `PipeToSendStream::poll` does) and answers it the *opposite* way, with
-/// an error. That is not a disagreement about the RFC: hyper's body pipe
-/// is a **separate spawned task** from its response future, so an error
-/// there fails the write and leaves the response untouched. Here the pump
-/// and the response are the same future — this module has nowhere to spawn
-/// — so an error there is exactly what discards the response.
-///
-/// # Why this is safe without deciding anything
-///
-/// The tolerance is a *deferral*, not a verdict. Stopping the pump does
-/// not declare the exchange a success; it hands the question to
-/// `resp_fut`, which is the only side that knows whether a response
-/// exists. When the stream was reset for a reason that left no response —
-/// a `RST_STREAM` with a real error code, a `GOAWAY` past our stream id —
-/// `poll_response` finds `pending_recv` empty, `ensure_recv_open` returns
-/// the stream's own error (`.../state.rs:433-443`), and the exchange fails
-/// as it did before. A dead connection is caught one branch earlier still,
-/// by the poll of `Connection` at the top of [`exchange`]'s loop.
-///
-/// It also cannot slide *before* the head by accident: `send_request`
-/// yields the `SendStream` this takes, so there is no `send` to ask until
-/// the head is on the wire. The mutation that would prove it cannot be
-/// written at all — the tolerance *is* "stop pumping and let `resp_fut`
-/// answer", and before `send_request` returns there is neither a `send` to
-/// ask nor a `resp_fut` to defer to.
-///
-/// # What the tests pin, and what they do not
-///
-/// Measured, in `tests/stream_reset.rs`, and stated this way round because
-/// a guard that is only named is worse than none:
-///
-/// - Deleting this gate is killed twice —
-///   `a_server_that_stops_reading_the_body_still_gets_its_response_read`
-///   fails at once, and `a_stalled_streaming_body_…` **hangs** into its
-///   bound. Putting the tolerance at `poll_capacity` instead of here is
-///   killed by the second of those alone, which is what that test exists
-///   for.
-/// - Widening it — tolerating `Ready(Err(_))` as well, or treating every
-///   pump error in [`exchange`] as "stop pumping" — is killed by
-///   `a_connection_that_dies_mid_request_is_still_an_error`, **on the
-///   error's kind and not on its existence**. The widened version still
-///   fails that request: the deferral hands the question to `resp_fut`,
-///   which answers `ConnectionEndedWithTheRequestQueued`, an
-///   `ErrorKind::Connect` where this version says `ErrorKind::Body`. The
-///   `expect_err` in that test would not have caught it; the `assert_eq!`
-///   on the kind beside it does, and relaxing that assertion would quietly
-///   remove the guard.
-/// - The rows of the table above are read from h2's source, not measured,
-///   except `poll_capacity`'s — that one is the defect, and it reproduced
-///   on every run.
-fn poll_pump(
-    body: &mut OutgoingBody,
-    send: &mut h2::SendStream<Bytes>,
-    pending: &mut Option<Bytes>,
-    cx: &mut Context<'_>,
-) -> Poll<Result<Pumped, Error>> {
-    loop {
-        // Before every write, and not only before the first: the peer may
-        // stop reading at any point, and each of the four writes below
-        // fails differently when it has. This is the one place that asks.
-        match send.poll_reset(cx) {
-            Poll::Ready(Ok(_)) => return Poll::Ready(Ok(Pumped::PeerStoppedReading)),
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body))),
-            Poll::Pending => {}
+/// It is kept for the day that stops being true. `pool.rs` records that a
+/// build with a spawner could multiplex, and on that day the connection
+/// outlives the stream: an abandoned upload would leave a stream open with
+/// nobody left to write it, and h2's own `maybe_cancel` would not fire
+/// either, because the response half's reference is what keeps the count
+/// above zero. Recorded in `docs/v03-acceptance.md`'s unverified list, not
+/// claimed as tested.
+impl Drop for Pump {
+    fn drop(&mut self) {
+        if !self.settled {
+            // `CANCEL` is what h2 itself sends for an abandoned client
+            // stream, and it is a different statement from the
+            // `RST_STREAM(NO_ERROR)` a server sends after a complete
+            // response: this one says the request will not be finished.
+            self.send.send_reset(h2::Reason::CANCEL);
         }
-        if let Some(mut chunk) = pending.take() {
-            if send.capacity() == 0 {
-                send.reserve_capacity(chunk.len());
-                match send.poll_capacity(cx) {
-                    Poll::Ready(Some(Ok(_))) => {}
-                    Poll::Ready(Some(Err(e))) => {
-                        return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
-                    }
-                    // Not "no more capacity for now": there will never
-                    // be any. With `poll_reset` at the top of the loop
-                    // having already answered `Pending`, the stream is not
-                    // closed by the peer, so this is our own send half —
-                    // an API misuse rather than a message from the far end.
-                    Poll::Ready(None) => {
-                        return Poll::Ready(Err(Error::new(
-                            ErrorKind::Body,
-                            StreamClosedWhileSendingTheRequestBody,
-                        )));
-                    }
-                    Poll::Pending => {
-                        *pending = Some(chunk);
-                        return Poll::Pending;
+    }
+}
+
+impl Pump {
+    fn new(body: OutgoingBody, send: h2::SendStream<Bytes>) -> Self {
+        Self {
+            body,
+            send,
+            pending: None,
+            settled: false,
+        }
+    }
+
+    /// Reset now, with a reason that names why, and take the guard out of
+    /// the way.
+    fn cancel(&mut self, reason: h2::Reason) {
+        self.send.send_reset(reason);
+        self.settled = true;
+    }
+
+    /// Writes as much of the request body as flow control currently allows.
+    ///
+    /// **Capacity is reserved rather than assumed.** `SendStream::send_data`
+    /// is willing to accept data with no capacity available and buffer it,
+    /// with, in h2's own words, unbounded buffering — which would turn
+    /// `Capabilities::streaming_request_body` into a promise to read a stream
+    /// as fast as the producer can make it and hold it in memory. Reserving
+    /// and waiting is what makes the declared streaming real: a slow server
+    /// stops granting window, `poll_capacity` goes `Pending`, and the caller's
+    /// stream stops being polled.
+    ///
+    /// # "The peer stopped reading" is not a failure of the request
+    ///
+    /// RFC 9113 §8.1: *"A server MAY request that the client abort
+    /// transmission of a request without error by sending a `RST_STREAM` with
+    /// an error code of `NO_ERROR` after sending a complete response … Clients
+    /// **MUST NOT** discard responses as a result of receiving such a
+    /// `RST_STREAM`."* Every server that answers a `404`, a `401` or a `413`
+    /// without reading the body does exactly this, and h2's own server does it
+    /// for them without being asked: dropping the request's `RecvStream` while
+    /// the response is already complete schedules a `RST_STREAM(NO_ERROR)`
+    /// (`h2-0.4.15/src/proto/streams/streams.rs:1601-1618`, `maybe_cancel`).
+    ///
+    /// That reset closes the **send** half only. The response the peer already
+    /// sent stays in `pending_recv` and is still handed out by `poll_response`
+    /// (`.../recv.rs:336-365`) — measured, not assumed: with the request body
+    /// abandoned mid-write, `resp_fut` still resolves `200`. But every write
+    /// this function could make now fails, this function turned that into an
+    /// error, and [`exchange`] returned on it **without ever polling
+    /// `resp_fut`**. The complete response was one poll away and was thrown
+    /// away. That is the defect [`Pumped::PeerStoppedReading`] exists for.
+    ///
+    /// # One question, asked before every write, rather than four verdicts
+    ///
+    /// The four writes below fail *differently* when the peer has stopped
+    /// reading, and only one of the four failures is identifiable from
+    /// outside h2:
+    ///
+    /// | site | how it fails on a reset stream | tellable apart? |
+    /// |---|---|---|
+    /// | `poll_capacity` | `Poll::Ready(None)` — no longer `is_send_streaming` (`.../send.rs:363-370`) | yes, but `None` also means an API misuse of ours |
+    /// | `send_data(now, false)` | `UserError::InactiveStreamId` | no — `reason() == None`, `is_reset() == false` |
+    /// | `send_data(Bytes::new(), true)` (end of stream) | the same | no |
+    /// | `send_trailers(..)` | the same | no |
+    ///
+    /// So the question is asked once, at the top of the loop, of the one API
+    /// that answers it in types: [`h2::SendStream::poll_reset`]. `Ready(Ok(_))`
+    /// is a `RST_STREAM` or a `GOAWAY` from the peer; `Ready(Err(_))` is the
+    /// stream closed by something that is not a reset (a dead connection);
+    /// `Pending` is a stream that is still open (`ensure_reason`,
+    /// `.../state.rs:446-462`). Placing it there also means the three
+    /// unidentifiable sites never see the reset at all — the pump returns
+    /// before reaching them — so they keep propagating their errors unchanged
+    /// and no `Display`-string matching is needed anywhere.
+    ///
+    /// hyper asks the same question in the same place
+    /// (`hyper-1.11.0/src/proto/h2/mod.rs:145-156`, the first thing
+    /// `PipeToSendStream::poll` does) and answers it the *opposite* way, with
+    /// an error. That is not a disagreement about the RFC: hyper's body pipe
+    /// is a **separate spawned task** from its response future, so an error
+    /// there fails the write and leaves the response untouched. Here the pump
+    /// and the response are the same future — this module has nowhere to spawn
+    /// — so an error there is exactly what discards the response.
+    ///
+    /// # Why this is safe without deciding anything
+    ///
+    /// The tolerance is a *deferral*, not a verdict. Stopping the pump does
+    /// not declare the exchange a success; it hands the question to
+    /// `resp_fut`, which is the only side that knows whether a response
+    /// exists. When the stream was reset for a reason that left no response —
+    /// a `RST_STREAM` with a real error code, a `GOAWAY` past our stream id —
+    /// `poll_response` finds `pending_recv` empty, `ensure_recv_open` returns
+    /// the stream's own error (`.../state.rs:433-443`), and the exchange fails
+    /// as it did before. A dead connection is caught one branch earlier still,
+    /// by the poll of `Connection` at the top of [`exchange`]'s loop.
+    ///
+    /// It also cannot slide *before* the head by accident: `send_request`
+    /// yields the `SendStream` this takes, so there is no `send` to ask until
+    /// the head is on the wire. The mutation that would prove it cannot be
+    /// written at all — the tolerance *is* "stop pumping and let `resp_fut`
+    /// answer", and before `send_request` returns there is neither a `send` to
+    /// ask nor a `resp_fut` to defer to.
+    ///
+    /// # What the tests pin, and what they do not
+    ///
+    /// Measured, and re-measured when duplex moved the ground under two of
+    /// these. Stated this way round because a guard that is only named is
+    /// worse than none.
+    ///
+    /// - **Deleting this gate** is killed three times:
+    ///   `a_server_that_stops_reading_the_body_still_gets_its_response_read`
+    ///   in `tests/stream_reset.rs`, and
+    ///   `a_reset_while_the_body_drives_the_pump_does_not_discard_the_
+    ///   response` and `a_body_that_ends_just_after_the_peer_stopped_reading_
+    ///   is_not_an_error` in `tests/http2_duplex.rs`.
+    /// - **Moving the tolerance to `poll_capacity`** — where it sat before
+    ///   c56cbc9 — is killed by the last of those alone, and *only* by it.
+    ///   `a_stalled_streaming_body_…` used to be what killed this, by
+    ///   hanging; duplex ends that hang, so the discrimination had to move.
+    ///   It moved to the site the placement is really about: a reset stream
+    ///   has no capacity, so every *large* body meets a reset at
+    ///   `poll_capacity` and a tolerance placed there covers it — but a body
+    ///   that simply **ends** while the stream is reset fails at
+    ///   `send_data(Bytes::new(), true)` with the `InactiveStreamId` no
+    ///   public h2 API can tell from an API misuse of ours.
+    /// - **Widening it by treating every pump error in [`exchange`] as "stop
+    ///   pumping"** is killed by
+    ///   `a_request_body_that_fails_fails_the_request_with_the_callers_own_
+    ///   error`, **on whose error comes back and not on whether one does**.
+    ///   The widened version resets the stream and defers to `resp_fut`,
+    ///   which answers with h2's reset rather than with the caller's body
+    ///   error, so an `expect_err` alone passes either way.
+    ///
+    ///   This bullet used to name `a_connection_that_dies_mid_request_is_
+    ///   still_an_error` and it was **wrong**: measured, that mutation left
+    ///   all 14 tests green on the code as it stood before duplex, and all
+    ///   22 after. A dead connection is `Connection::poll`'s verdict, and
+    ///   that poll comes first, so the pump's is never consulted for it.
+    /// - **Widening `Ready(Err(_))` into the tolerance survives**, and is
+    ///   recorded in `docs/v03-acceptance.md`'s unverified list rather than
+    ///   claimed. It survived before this branch too. The arm is shadowed:
+    ///   `poll_reset` answers `Err` from a connection error
+    ///   (`ensure_reason`), and both callers poll `Connection` immediately
+    ///   before the pump, so the connection reports it first — no fixture
+    ///   here reaches the arm at all.
+    /// - The rows of the table above are read from h2's source, not measured,
+    ///   except `poll_capacity`'s — that one is the defect, and it reproduced
+    ///   on every run.
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<Pumped, Error>> {
+        loop {
+            // Before every write, and not only before the first: the peer may
+            // stop reading at any point, and each of the four writes below
+            // fails differently when it has. This is the one place that asks.
+            match self.send.poll_reset(cx) {
+                Poll::Ready(Ok(_)) => {
+                    // The peer reset the stream, so there is nothing left
+                    // to say to it and nothing for the guard to do.
+                    self.settled = true;
+                    return Poll::Ready(Ok(Pumped::PeerStoppedReading));
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body))),
+                Poll::Pending => {}
+            }
+            if let Some(mut chunk) = self.pending.take() {
+                if self.send.capacity() == 0 {
+                    self.send.reserve_capacity(chunk.len());
+                    match self.send.poll_capacity(cx) {
+                        Poll::Ready(Some(Ok(_))) => {}
+                        Poll::Ready(Some(Err(e))) => {
+                            return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
+                        }
+                        // Not "no more capacity for now": there will never
+                        // be any. With `poll_reset` at the top of the loop
+                        // having already answered `Pending`, the stream is not
+                        // closed by the peer, so this is our own send half —
+                        // an API misuse rather than a message from the far end.
+                        Poll::Ready(None) => {
+                            return Poll::Ready(Err(Error::new(
+                                ErrorKind::Body,
+                                StreamClosedWhileSendingTheRequestBody,
+                            )));
+                        }
+                        Poll::Pending => {
+                            self.pending = Some(chunk);
+                            return Poll::Pending;
+                        }
                     }
                 }
-            }
-            let now = chunk.split_to(send.capacity().min(chunk.len()));
-            if let Err(e) = send.send_data(now, false) {
-                return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
-            }
-            if !chunk.is_empty() {
-                *pending = Some(chunk);
-                continue;
-            }
-        }
-        match Pin::new(&mut *body).poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                Ok(data) => {
-                    if !data.is_empty() {
-                        *pending = Some(data);
-                    }
+                let now = chunk.split_to(self.send.capacity().min(chunk.len()));
+                if let Err(e) = self.send.send_data(now, false) {
+                    return Poll::Ready(Err(from_h2_error(e, ErrorKind::Body)));
                 }
-                // Trailers close the send half by themselves — there is no
-                // empty end-of-stream frame to follow them with.
-                Err(frame) => {
-                    return Poll::Ready(match frame.into_trailers() {
-                        Ok(trailers) => send
-                            .send_trailers(trailers)
-                            .map(|()| Pumped::Done)
-                            .map_err(|e| from_h2_error(e, ErrorKind::Body)),
-                        // `http_body::Frame` is non-exhaustive: a frame
-                        // that is neither data nor trailers is one this
-                        // version of the crate has no name for, and
-                        // guessing what to put on the wire for it is how a
-                        // body silently loses content.
-                        Err(_) => Err(Error::new(ErrorKind::Body, UnknownRequestBodyFrame)),
+                if !chunk.is_empty() {
+                    self.pending = Some(chunk);
+                    continue;
+                }
+            }
+            match Pin::new(&mut self.body).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                    Ok(data) => {
+                        if !data.is_empty() {
+                            self.pending = Some(data);
+                        }
+                    }
+                    // Trailers close the send half by themselves — there is no
+                    // empty end-of-stream frame to follow them with.
+                    Err(frame) => {
+                        return Poll::Ready(match frame.into_trailers() {
+                            Ok(trailers) => match self.send.send_trailers(trailers) {
+                                Ok(()) => {
+                                    // The request is over: trailers close
+                                    // the send half, so there is nothing
+                                    // left for the guard to reset.
+                                    self.settled = true;
+                                    Ok(Pumped::Done)
+                                }
+                                Err(e) => Err(from_h2_error(e, ErrorKind::Body)),
+                            },
+                            // `http_body::Frame` is non-exhaustive: a frame
+                            // that is neither data nor trailers is one this
+                            // version of the crate has no name for, and
+                            // guessing what to put on the wire for it is how a
+                            // body silently loses content.
+                            Err(_) => Err(Error::new(ErrorKind::Body, UnknownRequestBodyFrame)),
+                        });
+                    }
+                },
+                Poll::Ready(Some(Err(e))) => {
+                    // The caller's own body failed. The stream is reset rather
+                    // than left half-written, so the server learns that what
+                    // it has is not the whole request. Through `cancel`
+                    // rather than `send_reset` directly, because marking
+                    // the pump settled is what stops the guard asking the
+                    // same thing again on the way out.
+                    self.cancel(h2::Reason::CANCEL);
+                    return Poll::Ready(Err(e));
+                }
+                Poll::Ready(None) => {
+                    return Poll::Ready(match self.send.send_data(Bytes::new(), true) {
+                        Ok(()) => {
+                            // End-of-stream is on the wire: the request
+                            // ended, and an ended request is not one to
+                            // reset.
+                            self.settled = true;
+                            Ok(Pumped::Done)
+                        }
+                        Err(e) => Err(from_h2_error(e, ErrorKind::Body)),
                     });
                 }
-            },
-            Poll::Ready(Some(Err(e))) => {
-                // The caller's own body failed. The stream is reset rather
-                // than left half-written, so the server learns that what
-                // it has is not the whole request.
-                send.send_reset(h2::Reason::CANCEL);
-                return Poll::Ready(Err(e));
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(None) => {
-                return Poll::Ready(
-                    send.send_data(Bytes::new(), true)
-                        .map(|()| Pumped::Done)
-                        .map_err(|e| from_h2_error(e, ErrorKind::Body)),
-                );
-            }
-            Poll::Pending => return Poll::Pending,
         }
     }
 }
@@ -746,8 +944,23 @@ where
     /// `None` — this connection will not be reused. As on HTTP/1, it is
     /// deliberately easier to lose reuse than to gain it.
     reuse: Option<Reuse<I>>,
+    /// The rest of the request body, when the head arrived before it had
+    /// all been written. `None` for a request that had no body, and for
+    /// one whose body finished inside [`exchange`] — which, against a
+    /// server that reads a request before answering it, is the ordinary
+    /// case rather than the exception.
+    pump: Option<Pump>,
     /// `poll_data` has answered `None`; what is left is the trailers.
     data_done: bool,
+    /// This body has already answered `None` or an error once.
+    ///
+    /// Not bookkeeping for its own sake: [`H2Body::end`] may reset the
+    /// request stream, and a later poll would read our own `RST_STREAM`
+    /// back off `recv` and turn a response that finished into one that
+    /// failed. `http_body` leaves polling past the end unspecified, so
+    /// this makes it total rather than relying on every wrapper above to
+    /// stop.
+    ended: bool,
 }
 
 impl<I> std::fmt::Debug for H2Body<I>
@@ -757,6 +970,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H2Body")
             .field("still_driving_connection", &self.conn.is_some())
+            .field("still_sending_the_request", &self.pump.is_some())
             .field("may_be_reused", &self.reuse.is_some())
             .finish()
     }
@@ -766,6 +980,54 @@ impl<I> H2Body<I>
 where
     I: Read + Write + Unpin,
 {
+    /// Drives the rest of the request body, and reports only a failure.
+    ///
+    /// **Deliberately not a `Poll<..>`**, so that the caller cannot return
+    /// this function's `Pending` as its own — the two halves of a stream
+    /// are independent, and a write that cannot proceed must leave a
+    /// response that is already on the wire alone. `http_ng_h3::H3Body`
+    /// has the same shape for the same reason, and there the mutation that
+    /// returned the pump's `Pending` left every test green until one was
+    /// written for it.
+    fn drive_pump(&mut self, cx: &mut Context<'_>) -> Option<Error> {
+        let pump = self.pump.as_mut()?;
+        match pump.poll(cx) {
+            // `Done` and `PeerStoppedReading` alike — the same non-verdict
+            // as in `exchange`, one step later.
+            Poll::Ready(Ok(_)) => {
+                self.pump = None;
+                None
+            }
+            Poll::Ready(Err(e)) => {
+                self.pump = None;
+                Some(e)
+            }
+            Poll::Pending => None,
+        }
+    }
+
+    /// The response is over. Called on every path that ends this body, and
+    /// on no other.
+    ///
+    /// **An upload still in flight has nowhere left to go.** Nothing polls
+    /// a body that has answered `None`, so the pump would never be driven
+    /// to its end; dropping it resets the stream (see [`Pump`]'s `Drop`),
+    /// which is what tells the server that what it has is not the whole
+    /// request. The alternative — holding the response open until the
+    /// upload finishes — hangs against exactly the server that produces
+    /// this case: one that answered in full and then neither reads the
+    /// request stream nor resets it.
+    ///
+    /// Reuse goes with it, for the reason the whole file gives: a stream
+    /// that ended by reset is not the evidence a check-in is made of, and
+    /// it is deliberately easier to lose reuse than to gain it.
+    fn end(&mut self) {
+        self.ended = true;
+        if self.pump.take().is_some() {
+            self.reuse = None;
+        }
+    }
+
     /// The one and only check-in, called when the stream has ended
     /// cleanly and from nowhere else.
     fn hand_back_to_pool(&mut self) {
@@ -793,20 +1055,57 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         let this = &mut *self;
-        // The connection first — otherwise nothing new ever arrives in
-        // `recv` (see the module doc comment, and `h1`'s identical move).
-        if let Some(conn) = this.conn.as_mut() {
-            match Pin::new(conn).poll(cx) {
-                Poll::Ready(Ok(())) => {
-                    this.conn = None;
-                    this.reuse = None;
+        // A body that has ended stays ended — see the field's doc.
+        if this.ended {
+            return Poll::Ready(None);
+        }
+        // The connection, then the rest of the request — the same order as
+        // [`exchange`]'s loop, and for the same two reasons, both of which
+        // are load-bearing rather than tidy.
+        //
+        // Nothing new ever arrives in `recv` unless `Connection` is polled
+        // (the module doc comment, and `h1`'s identical move) — and that
+        // is also the only thing that *decodes* an incoming `RST_STREAM`.
+        // With the pump polled first it would be asking about a stream
+        // state one poll out of date, so a peer that stopped reading would
+        // be noticed by `recv` in the same poll that ends the response
+        // body, and [`Pump::poll`]'s gate would never be consulted about
+        // it at all. Measured, and this is what the order is worth: with
+        // the pump first, moving the reset tolerance from `poll_reset` to
+        // `poll_capacity` left all 21 tests green.
+        //
+        // The `continue` is the other half, and it is `exchange`'s: the
+        // frames the pump queues only reach the socket from inside
+        // `Connection::poll`, so a pump that just finished rounds the loop
+        // rather than leaving its end-of-stream frame for the next
+        // wake-up. At most one extra iteration — the pump is `None` by
+        // then.
+        loop {
+            if let Some(conn) = this.conn.as_mut() {
+                match Pin::new(conn).poll(cx) {
+                    Poll::Ready(Ok(())) => {
+                        this.conn = None;
+                        this.reuse = None;
+                    }
+                    Poll::Ready(Err(e)) => {
+                        this.conn = None;
+                        this.reuse = None;
+                        this.end();
+                        return Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))));
+                    }
+                    Poll::Pending => {}
                 }
-                Poll::Ready(Err(e)) => {
-                    this.conn = None;
-                    this.reuse = None;
-                    return Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))));
-                }
-                Poll::Pending => {}
+            }
+            if this.pump.is_none() {
+                break;
+            }
+            if let Some(e) = this.drive_pump(cx) {
+                this.reuse = None;
+                this.end();
+                return Poll::Ready(Some(Err(e)));
+            }
+            if this.pump.is_some() {
+                break;
             }
         }
         if !this.data_done {
@@ -824,7 +1123,9 @@ where
                 }
                 Poll::Ready(Some(Err(e))) => {
                     this.reuse = None;
-                    if stopped_after_a_complete_response(&e) {
+                    let stopped = stopped_after_a_complete_response(&e);
+                    this.end();
+                    if stopped {
                         return Poll::Ready(None);
                     }
                     return Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))));
@@ -836,12 +1137,18 @@ where
         match this.recv.poll_trailers(cx) {
             Poll::Ready(Ok(Some(trailers))) => Poll::Ready(Some(Ok(Frame::trailers(trailers)))),
             Poll::Ready(Ok(None)) => {
+                // `end` before the check-in, never after: an unfinished
+                // upload is what makes this connection unfit to be pooled,
+                // and `hand_back_to_pool` reads the `reuse` that clears.
+                this.end();
                 this.hand_back_to_pool();
                 Poll::Ready(None)
             }
             Poll::Ready(Err(e)) => {
                 this.reuse = None;
-                if stopped_after_a_complete_response(&e) {
+                let stopped = stopped_after_a_complete_response(&e);
+                this.end();
+                if stopped {
                     return Poll::Ready(None);
                 }
                 Poll::Ready(Some(Err(from_h2_error(e, ErrorKind::Body))))

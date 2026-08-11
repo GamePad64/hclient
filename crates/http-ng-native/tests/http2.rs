@@ -308,9 +308,15 @@ async fn a_live_exchange_with_an_http2_server_is_reported_as_http2() {
 /// build turned h2 on, so the answer has to be one that is safe either
 /// way.
 ///
-/// It is also not merely a declaration here: `http2::exchange` writes the
-/// whole request body before it awaits the response, so `false` is
-/// literally what the code does.
+/// **This used to say the `false` was the code rather than a declaration,
+/// and that half has expired.** `http2::exchange` no longer writes the
+/// whole request body before awaiting the response — v0.4 W2 split it, and
+/// `tests/http2_duplex.rs` measures the duplex from the server. The floor
+/// is unchanged and the assertions below are unchanged with it, because
+/// the reason for the floor never was this file's implementation: it is
+/// that `Capabilities` is one static answer for a transport that speaks
+/// HTTP/1.1 whenever ALPN says so, in a build whose `http2` feature may
+/// have been turned on by a crate that never asked this one.
 #[tokio::test]
 async fn capabilities_report_the_floor_with_the_feature_on() {
     let transport = Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio));

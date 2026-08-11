@@ -2747,3 +2747,377 @@ and on the absence of any redirect knob on `URLSessionConfiguration`. It is
 read documentation, not a running Objective-C program: no Apple hardware
 was involved, and W3 should confirm the `nil`-refusal path delivers the 3xx
 with its `Location` intact before relying on `Transparent` there.
+
+# v0.4 W2 — full duplex on the HTTP/2 path
+
+`docs/v04-design.md`'s P6: *"`full_duplex: false` on `http-ng-native` is
+not a declaration, it is the code."* It was. `http2::exchange` wrote the
+whole request body and then awaited the response, so a caller structured
+for bidirectional streaming — gRPC's client-streaming and bidirectional
+modes, and nothing else in this workspace — deadlocked rather than
+degraded.
+
+It is now the h3 shape from `f70bf74`, and the differences from that
+template are the interesting part.
+
+## What changed in `exchange`
+
+The write was three locals (`outgoing`, `send_stream`, `pending`) and a
+`bool`. It is now a `Pump` value holding those three, and the loop lost
+exactly one branch:
+
+```
+-                    Poll::Pending => return Poll::Pending,
++                    Poll::Pending => {}
+```
+
+That branch *was* the implementation `full_duplex: false` described. With
+it gone, a write that cannot proceed falls through to `resp_fut` instead
+of stopping it, and a pump still running when the head arrives moves into
+`H2Body`, which drives it from `poll_frame`. Nothing is spawned: this
+crate has nowhere to spawn (`pool.rs`'s module doc), and a spawned pump
+would go on uploading behind a caller that walked away, with nowhere for
+its errors to go.
+
+**Not a boxed future, which is where this differs from `http_ng_h3::pump`.**
+There the write is an `async fn` and had to be erased — `Pin<Box<dyn
+Future + Send>>`, with amendment C2's `Send` bound and the compile-time
+check that goes with it. Here the write was already a poll function, so
+it stays a struct: no `dyn` lands on the `Client -> Transport` path,
+`H2Body` stays generic and unboxed, and no auto trait is cut off anything
+above it. There is no `an_h2_body_is_still_send` to write because nothing
+could have made it stop being one.
+
+**One branch was removed rather than moved.** The pump's `Poll::Pending
+if conn_done` arm is gone: falling through reaches `resp_fut`'s own
+`Poll::Pending if conn_done`, which returns the identical
+`ConnectionEndedWithTheRequestQueued`. It is strictly better placed —
+a response that *did* arrive before the connection ended is now handed
+over instead of being replaced by that error.
+
+**Two duties duplex created, neither of which h3 has.**
+
+- `Pump` has a `Drop` that resets an unfinished stream. h2 resets on its
+  own — `maybe_cancel`, `h2-0.4.15/src/proto/streams/streams.rs:1601` —
+  but only once *every* reference to the stream is gone, and the response
+  half holds one. See "what the mutations found" for the honest status of
+  this guard: it is not observable today.
+- A response that ends while the upload is still in flight takes the
+  connection's reuse with it (`H2Body::end`). That case did not exist
+  before: the response could not end before the request had been written.
+  A stream that was never finished is not the evidence a check-in is made
+  of, and it is deliberately easier to lose reuse than to gain it. The
+  case is rarer than it sounds — a server that answers without reading
+  normally drops its `RecvStream`, which schedules the
+  `RST_STREAM(NO_ERROR)` the pump ends on, so reuse survives.
+
+## The order the body polls things in, which is a decision and was measured
+
+`H2Body::poll_frame` polls the **connection first, then the pump**, in a
+loop that rounds once when the pump finishes — the same shape as
+`exchange`'s.
+
+The first draft had the pump first, on the reasoning that whatever it
+queues only reaches the socket from inside `Connection::poll`, so one
+`poll_frame` would both write and flush. That is true and it is the lesser
+half. `Connection::poll` is also the only thing that **decodes an incoming
+`RST_STREAM`**, so with the pump first it asks about a stream state one
+poll out of date: a peer that stopped reading was noticed by `recv` in the
+same poll that ended the response body, and `Pump::poll`'s gate was never
+consulted about it at all.
+
+Measured, and this is what the order is worth: with the pump polled first,
+moving the reset tolerance from `poll_reset` to `poll_capacity` — the
+placement `c56cbc9` exists to rule out — left **all 21 tests green**. With
+the connection first it is killed. The `continue` keeps the flush property
+the first draft was after, at a cost of at most one extra iteration.
+
+## The two h3 defect shapes, checked here
+
+**A cancelled upload poisoning a shared connection: structurally absent,
+for two independent reasons.**
+
+1. *There is no truncated frame to leave behind.* The h3 defect was
+   `quinn::SendStream::drop` calling `finish()` on a stream carrying a
+   DATA frame whose length header promised bytes that never came — RFC
+   9114 §7.1 makes that `H3_FRAME_ERROR`, a **connection** error. h2
+   cannot reach that state: `send_data` hands `prioritize` a complete
+   `frame::Data` (`h2-0.4.15/src/proto/streams/prioritize.rs:145-222`), so
+   a partly written frame is never something the peer observes.
+2. *h2's drop resets rather than finishes.* `maybe_cancel` schedules a
+   `RST_STREAM`, with `Reason::CANCEL` for a client
+   (`.../streams.rs:1601-1620`).
+
+And the third reason, which is the pool's rather than this file's: an h2
+connection is checked out **exclusively**, so a cancelled request has no
+neighbour on its connection to damage. That is `pool.rs`'s guarantee and
+it is written down in both places already.
+`dropping_a_streaming_request_mid_upload_stops_pulling_and_leaves_the_pool_usable`
+makes the weaker claim that is checkable from outside: the server sees a
+request that did not end, nothing goes on pulling from the caller's body
+once the future is dropped, and the next request to the same origin
+works.
+
+**A `Rewindable` whose factory returns a `Streaming` sending nothing:
+absent, and it never was present.** `body::Inner::from_request_body`
+unpacks a `Rewindable` **recursively** — the same conversion the HTTP/1
+path uses, written that way in v0.1 with a comment saying exactly why, and
+mutation-checked there. `http-ng-h3` had a second, partial copy of the
+same conversion (`if let RequestBody::Full(b) = f()`), which is how it
+came to differ. `a_rewindable_body_whose_factory_streams_is_actually_sent`
+pins it here anyway, because "shared code, therefore correct" is an
+argument and the server's byte count is a measurement.
+
+## Mutation testing
+
+Anchor verified before each run: **23 tests** across
+`tests/http2.rs`, `tests/http2_duplex.rs` and `tests/stream_reset.rs`,
+`--all-features`, all green. Each mutation hand-applied to
+`src/http2.rs`, run, reverted.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M1 | the pump writes only the first frame and calls that `Done` | KILLED | 6: `a_streamed_request_body_arrives_whole`, `a_request_body_reaches_the_server_over_http2`, `a_rewindable_body_whose_factory_streams_is_actually_sent`, `a_response_head_arrives_while_the_request_body_is_still_going_out`, `a_connection_whose_upload_never_finished_is_not_pooled`, `a_request_body_that_fails_fails_the_request_with_the_callers_own_error` |
+| M2 | the response is awaited only once the body has finished (**duplex silently lost** — the code as it stood before this work) | KILLED | 4, all by hanging into the 30 s ceiling: `a_response_head_arrives_while_the_request_body_is_still_going_out`, `a_stalled_upload_does_not_stall_the_response_body`, `a_reset_while_the_body_drives_the_pump_does_not_discard_the_response`, `a_connection_whose_upload_never_finished_is_not_pooled` |
+| M3 | the `poll_reset` gate deleted outright | KILLED | `a_server_that_stops_reading_the_body_still_gets_its_response_read`, `a_reset_while_the_body_drives_the_pump_does_not_discard_the_response`, `a_body_that_ends_just_after_the_peer_stopped_reading_is_not_an_error` |
+| M3b | the tolerance moved from `poll_reset` to `poll_capacity` | KILLED | `a_body_that_ends_just_after_the_peer_stopped_reading_is_not_an_error`, **alone**, 5 runs out of 5 |
+| M4 | the body never drives the pump | KILLED | `a_response_head_arrives_while_the_request_body_is_still_going_out` |
+| M5a | `Pump`'s `Drop` reset removed | **SURVIVED** | — see below |
+| M5b | a response that ends over an unfinished upload keeps its reuse | KILLED | `a_connection_whose_upload_never_finished_is_not_pooled` |
+| M6 | `drive_pump`'s `Pending` returned as the body's own | KILLED | `a_stalled_upload_does_not_stall_the_response_body`, `a_reset_while_the_body_drives_the_pump_does_not_discard_the_response`, `a_connection_whose_upload_never_finished_is_not_pooled` |
+| M7 | every pump error in `exchange` treated as "stop pumping" | KILLED | `a_request_body_that_fails_fails_the_request_with_the_callers_own_error` — a test that did not exist until this mutation survived |
+| M8 | `poll_reset`'s `Ready(Err(_))` folded into the tolerance | **SURVIVED** | — see below |
+
+### M3b, and the kill duplex took away
+
+`c56cbc9` recorded that putting the tolerance at `poll_capacity` instead
+of `poll_reset` was killed by `a_stalled_streaming_body_does_not_hide_a_
+response_the_server_already_sent`, which **hung**: a pump parked on the
+caller's body had no waker but `poll_reset`'s, so `exchange` never woke.
+Duplex ends that hang — `exchange` stops waiting for the pump and takes
+the head — so that test now passes either way. Measured: with the first
+version of this work in place, M3b left all 21 tests green.
+
+The discrimination moved to the site the placement is actually about. A
+reset stream has **no capacity**, so every *large* body meets a reset at
+`poll_capacity` and a tolerance placed there covers it; a body that simply
+**ends** while the stream is reset fails at `send_data(Bytes::new(),
+true)` with the `UserError::InactiveStreamId` that no public h2 API can
+tell from an API misuse of ours. `/answer-and-drop` builds that moment
+without a clock: it answers in full, drops the request stream — which is
+what schedules the `RST_STREAM` — and only then reports, and the test
+waits for that report before closing the caller's body.
+
+### M7, and a claim in the source that was false
+
+`http2.rs`'s doc comment said this widening was killed by
+`a_connection_that_dies_mid_request_is_still_an_error`, "on the error's
+kind and not on its existence". It was not, and it never was: the mutation
+leaves all **14** tests green on the code as it stood *before* this branch
+(`fcfd639`), and all **22** after. The cause is structural — the
+connection is polled before the pump at both call sites, so a dead
+connection is `Connection::poll`'s verdict and the pump's is never
+reached.
+
+The case where the pump's verdict *is* reached is a caller's error rather
+than a network one: a request body that fails part-way. The widened
+version resets the stream and defers to `resp_fut`, which answers with
+h2's reset, so an `expect_err` passes either way; what is lost is *whose*
+error comes back. The new test asserts the kind and downcasts the source
+to a marker type the fixture owns.
+
+### M5a and M8, which survived
+
+**M5a — `Pump`'s `Drop` reset.** Removing it leaves all 23 green, and the
+reason is the pool policy rather than the guard. The `RST_STREAM` it
+queues can only reach the wire from inside `Connection::poll`, and an h2
+connection is checked out **exclusively**, so on every path that drops a
+`Pump` the connection is dropped in the same breath. The peer learns from
+the socket closing instead — which is what `Capabilities::cancel_on_drop`
+promises and what `tests/cancel.rs` already observes from the far end.
+
+It is kept rather than deleted because the property it guards is not this
+file's: `pool.rs` records that a build with a spawner could multiplex, and
+on that day the connection outlives the stream. h2's own `maybe_cancel`
+would not cover it either — the response half's reference keeps the count
+above zero. Recorded here rather than claimed as tested.
+
+**M8 — tolerating `poll_reset`'s `Ready(Err(_))`.** Survived — but the
+sentence beside it, *"also survived before this branch"*, was wrong, and
+the correction matters more than the survivor.
+
+Measured on both trees during the merge review. On `b2289c4`, the commit
+before duplex, folding that arm into the tolerance **is killed**, by
+`a_connection_that_dies_mid_request_is_still_an_error`. On this tree the
+same mutation passes all 173. So **duplex removed a second kill**, not
+only the M3b one this branch found and replaced — and the cause is not
+the shadowing this paragraph first claimed. Polling the response future
+alongside the pump moves where a connection error surfaces: what used to
+be distinguishable at the write side now arrives from `resp_fut` looking
+the same.
+
+Recorded rather than closed, and recorded with the right reason, because
+a survivor explained by "no fixture could reach it" invites nobody to
+try, while one explained by "this change took the reach away" says
+exactly what a future test would have to restore.
+
+## The tests
+
+Nine new ones in `crates/http-ng-native/tests/http2_duplex.rs`, every
+claim read off a real `h2::server` on a real socket.
+
+**Causal, not timed.** `a_response_head_arrives_while_the_request_body_is_
+still_going_out` has the caller's body produce its second chunk only after
+`send()` has returned a head — the chunk is not in the channel until then
+— so a transport that finished the body before reading the head cannot
+complete the exchange at any speed. The server's own clock is the second
+witness: it records when it sent the head and when the last request byte
+arrived, and asserts the first is before the second. `a_stalled_upload_
+does_not_stall_the_response_body` needs no clock at all: `/hold` never
+reads a byte of the request, so it never enlarges either flow-control
+window, and 4 MiB cannot move through 65 535 bytes of credit.
+
+The only `Duration`s in the file are the 30 s ceilings that turn a hang
+into a named failure, and the 40 ms per-frame pacing that makes
+"mid-upload" a construction rather than a window.
+
+## The capability, deliberately unchanged
+
+`Capabilities::full_duplex` is still `false`, and
+`capabilities_report_the_floor_with_the_feature_on` is still green with
+the feature compiled in. The floor's reason never was this file's
+implementation:
+
+- one `Capabilities` value covers a transport that negotiates HTTP/1.1
+  whenever ALPN says so, and `Transport::capabilities` returns a
+  **reference** to a value fixed at construction, so there is nowhere for
+  a per-connection answer to live in it;
+- Cargo unifies features across a graph, so a library built on `http-ng`
+  cannot know whether some other crate turned `http2` on;
+- over-claiming it costs a caller a deadlock rather than a degradation.
+
+`tests/http2.rs`'s doc comment on that test used to add "and it is not
+merely a declaration here: `exchange` writes the whole request body
+first". That half has expired and is corrected in place.
+
+## What a caller could truthfully be told, and what it would cost
+
+`docs/v04-design.md` §W2 deliverable 2 asks whether the honest answer is
+per-response or per-connection. **This is an investigation, not an
+implementation** — nothing below is built, and `Capabilities` is
+untouched.
+
+What the code can already offer, measured in this tree:
+
+- **`Response::version()` already answers "was h2 negotiated", per
+  response.** `version_reported` is `true` and the value is set by the
+  `h2` crate while decoding a real HEADERS frame. This is the whole of
+  the precedent the design document cites, and it is already shipped.
+- **A per-response extension would reach the caller.** `Client::execute`
+  does `resp.into_parts()` and `from_parts(parts, ..)`
+  (`crates/http-ng/src/client.rs:558,579`) and wraps only the body, so a
+  typed value inserted into the response's extensions by
+  `Native::execute` survives the redirect loop, the deadline and the
+  decompressor untouched. Nothing needs a new seam.
+- **The pool key already carries the protocol.** `PoolKey { security,
+  host, port, protocol }` and `Native::pooled_candidates` returning
+  `[H2, Http11]` or `[Http11]` mean "a connection that speaks h2" is
+  already an expressible request of the pool, with no new storage.
+- **The protocol is known before the head goes out.**
+  `negotiated_protocol(alpn, offered_h2)` runs after `connect::connect`
+  and before `handshake_for`/`established::exchange`; for a pooled
+  connection it is the key the connection was taken from. So a refusal
+  could arrive before anything is sent.
+- **`Capabilities::version_select` exists, is `false` everywhere, and
+  nothing reads it.** `grep` across the workspace finds declarations and
+  assertions only — no branch anywhere, which by v0.2's rule (*a variant
+  exists only if a caller decision turns on it*) makes it the same shape
+  `docs/v04-design.md`'s P5 catches `RedirectSupport::Configurable` in.
+
+The three shapes, and what each is good for:
+
+1. **Per-response.** A `Negotiated` value in the response extensions
+   naming the protocol and what it enabled. Cheap, honest, survives
+   `Client`. **And useless for `full_duplex`**, which is the capability
+   that motivated the question: a caller structured for bidirectional
+   streaming has to decide *before* it sends the head, and this answers
+   after. It is adequate for a capability whose consumer reads it after
+   the fact.
+2. **Per-connection.** There is no connection handle in the public API —
+   `Transport::execute` hands back a `Response`, not a connection — so
+   this means either a new seam or a per-origin query answered from the
+   pool. The second is answerable and **racy in a way that matters**: a
+   pooled h2 entry can be evicted, idle-timed-out or closed between the
+   answer and the request, and the next connection may negotiate
+   HTTP/1.1. It would be a fact about the past presented as a promise
+   about the next request.
+3. **Per-request demand, which is what I would investigate first.** The
+   caller marks a request "this needs full duplex" (or a minimum
+   version); the transport checks it at the moment the protocol is known
+   and before the head is written, and refuses with a typed
+   `Unsupported` error otherwise. It costs no new capability field and no
+   new seam: `AllowEarlyData` is exactly this shape already — a
+   per-request extension read by a transport, gated on a correctness
+   condition, and part of the pool key so that a marked request cannot be
+   served by a connection that does not qualify. `version_select` is the
+   field that would finally have a caller decision behind it.
+
+   Its cost, stated: it turns an ALPN outcome into a request failure. For
+   gRPC that is right — client-streaming against HTTP/1.1 is not a slow
+   path, it is a hang. For a browser-shaped client it is wrong, which is
+   why it must be per request rather than per client, which it is.
+
+**One thing in the gRPC table needs no mechanism at all.** P7 says the h2
+path already handles trailers, and `response_trailers: false` is the
+HTTP/1.1 floor rather than the ceiling. Read further: `H2Body::poll_frame`
+yields them as an `http_body::Frame::trailers`, and `Decompressed` passes
+a non-data frame through untouched (`decompress.rs:583`, with a comment
+saying so). So a caller on an h2 connection **already receives response
+trailers today**, capability or no capability — `grpc-status` included.
+The `false` under-promises rather than blocks, which is the safe
+direction and the one the floor rule intends.
+
+## Deliberately not done
+
+- **No capability change of any kind.** Not `full_duplex`, not
+  `response_trailers`, not `version_select`. The floor is right for a
+  static answer and the honest per-request answer is a design decision
+  rather than a mechanical one.
+- **`request_trailers` is still `false` and still not enforced on this
+  path.** `http-ng-h3` refuses a trailers frame by name
+  (`RequestTrailersNotSent`) because it declares `false` and a streaming
+  body can now produce one. `http2.rs` *sends* them —
+  `Pump::poll`'s trailers arm calls `send_trailers` — while
+  `Capabilities::request_trailers` reads `false`. That mismatch predates
+  this work and is not a silent drop (the trailers do go out), but it is
+  a capability that understates the code, and the h3 crate made the
+  opposite choice for the same field. It wants one decision covering both.
+- **No second `poll_reset` site**, and no `Display`-string matching
+  anywhere. `c56cbc9`'s one-question-asked-once is unchanged; only the
+  order in which the body asks its two questions moved.
+
+## What this leaves unverified
+
+- **M5a and M8 survive** — see the mutation section. Neither is reachable
+  by a black-box fixture in this workspace, and both are recorded here
+  rather than papered over.
+- **Nothing exercises duplex over real TLS.** All three h2 test files use
+  a `TlsConnect` stub that reports `h2` and encrypts nothing. The bytes on
+  the wire are real HTTP/2 and every test asserts `Response::version()`,
+  but rustls's own ALPN negotiation is `http-ng-tls-rustls`'s business and
+  is not re-tested here.
+- **No second h2 implementation has seen this.** The server in every test
+  is the same `h2` crate as the client, so a shared misreading of RFC 9113
+  would be invisible — the same gap `http-ng-h3` closed by adding a second
+  UDP implementation, and it is open here.
+- **The `Timeouts` interaction with a duplex upload is untested.**
+  `first_byte` bounds "the request being handed to a connection to the
+  response head being in hand — writing the request included", and with
+  duplex the head can now arrive while the writing continues. The bound
+  is unchanged and still ends at the head, so it is if anything easier to
+  meet; `between_bytes`, held inside `IdleTimeout` around the response
+  body, now shares its polls with a pump that can go `Pending` for
+  minutes. Neither combination has a test.
+- **Concurrency is untested because it is impossible here.** One stream
+  per connection is the pool's policy, so "two duplex uploads on one
+  connection" has no fixture and no meaning today.

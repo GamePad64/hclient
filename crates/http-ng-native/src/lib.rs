@@ -198,10 +198,20 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // can never know whether some other crate turned h2 on. The floor is
         // the only answer such a library can act on.
         //
-        // On this implementation it is not merely a declaration:
-        // `http2::exchange` writes the whole request body before it awaits
-        // the response, so `full_duplex: false` is literally what the code
-        // does. `tests/http2.rs`'s
+        // **This half expired in v0.4 W2 and is corrected rather than
+        // deleted.** It used to read "on this implementation it is not
+        // merely a declaration: `http2::exchange` writes the whole request
+        // body before it awaits the response". That stopped being true
+        // when the h2 path became duplex — the loop lost exactly one
+        // branch, `Poll::Pending => return Poll::Pending`, which *was* the
+        // implementation this sentence described.
+        //
+        // The `false` stands anyway, and for the reason it always had:
+        // this is the FLOOR, and the floor is HTTP/1.1, which cannot do
+        // duplex at all. A library cannot know whether some other crate in
+        // the graph turned `http2` on, so the static answer must hold on
+        // the worst protocol that might be negotiated.
+        // `tests/http2.rs`'s
         // `capabilities_report_the_floor_with_the_feature_on` pins it.
         //
         // What a caller who wants to know the protocol gets instead:

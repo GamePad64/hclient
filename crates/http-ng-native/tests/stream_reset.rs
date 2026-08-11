@@ -317,15 +317,16 @@ async fn a_connection_that_dies_mid_request_is_still_an_error() {
 /// reason carries no such statement, so a short body must not be handed
 /// over as a whole one.
 ///
-/// **No request body here, and that is forced rather than chosen.** This
-/// server only resets once the client has read part of the response, and a
-/// client that is still writing a megabyte has not got that far: `exchange`
-/// writes the whole request body before it waits for the response, which
-/// is precisely what `Capabilities::full_duplex == false` declares. The
-/// first draft of this test posted a megabyte and deadlocked — the client
-/// waiting for flow-control window the server would only grant after a
-/// read it could not reach. So this one exercises the receive side alone,
-/// which is the side it is about.
+/// **No request body here.** It was forced when this was written —
+/// `exchange` wrote the whole request body before waiting for the
+/// response, so a client still writing a megabyte never reached the read
+/// that this server waits for, and the first draft of this test deadlocked
+/// on exactly that. v0.4 W2 made the h2 path duplex, so the constraint is
+/// gone; the test keeps its shape because the receive side is the side it
+/// is about, and `tests/http2_duplex.rs`'s
+/// `a_reset_while_the_body_drives_the_pump_does_not_discard_the_response`
+/// is where the same server behaviour is now met *with* an upload in
+/// flight.
 #[tokio::test]
 async fn a_reset_that_is_not_no_error_still_fails_the_response_body() {
     let server = spawn_server();
