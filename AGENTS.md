@@ -76,10 +76,26 @@ its own process, which matters here because mutation testing is this
 project's primary review technique.
 
 Two things nextest does not cover. Doctests: it cannot run them
-(`cargo test --doc` does) — the workspace currently has none, so nothing is
-lost, and if that changes CI needs a `--doc` step. Browser tests: those go
-through `wasm-pack test --headless --chrome|--firefox` regardless, see the
-`browser` job.
+(`cargo test --doc` does), and **the condition this paragraph used to be
+waiting on has been met.** `cargo test --doc --workspace --all-features`
+runs three and ignores three today — `http-ng-cookie`'s `CookieJar`,
+`http-ng-h3`'s and `http-ng-select`'s module examples, against
+`http-ng-dns-doh`'s one and `http-ng-rt-embassy`'s two, which are fenced
+`ignore`.
+**No CI job runs any of them**, so the `--doc` step this sentence promised
+is now owed rather than hypothetical.
+
+It is owed for a measured reason and not a tidy one. `cargo test --doc -p
+http-ng-h3 --all-features` **fails** on its own: the example calls
+`Rustls::with_webpki_roots()`, which lives behind
+`http-ng-tls-rustls`'s `webpki-roots` feature, and that crate's own
+dev-dependency on it enables `quic` alone. It compiles under `--workspace`
+only because another member's dev-dependency turns `webpki-roots` on and
+Cargo unifies features across the graph — so the workspace-wide run is
+green over an example that does not build the way a reader would build it.
+
+Browser tests: those go through `wasm-pack test --headless
+--chrome|--firefox` regardless, see the `browser` job.
 
 ## What's in the dependency graph
 

@@ -423,7 +423,19 @@ rather than fixed.
 1. **`http-ng-native` has no way to be told a record has already been
    fetched**, so the type-65 query is made twice on the TCP path at the
    default port (§3). Three possible shapes are listed there.
-2. **`Capabilities` cannot express a per-connection answer**, which is what
+2. **`http-ng-h3`'s doc example does not compile on its own.** `cargo test
+   --doc -p http-ng-h3 --all-features` fails: the example calls
+   `Rustls::with_webpki_roots()`, which lives behind
+   `http-ng-tls-rustls`'s `webpki-roots` feature, and that crate's
+   dev-dependency on it enables `quic` alone. It passes under
+   `--workspace` only because another member's dev-dependency turns
+   `webpki-roots` on and Cargo unifies features. Found while checking that
+   *this* crate's own example compiles — which needed a
+   `http-ng-dns-system` dev-dependency it did not have, so the same defect
+   was one line away here. No CI job runs `cargo test --doc` at all, which
+   is why it has been able to sit there; `AGENTS.md`'s "Running the tests"
+   section now says so.
+3. **`Capabilities` cannot express a per-connection answer**, which is what
    makes `full_duplex: false` the right value here and an under-claim at the
    same time: the pair really is duplex whenever the QUIC stack answers, and
    there is nowhere to say so. `docs/v04-design.md` §W2 deliverable 2 asks

@@ -41,6 +41,9 @@ h3                 = "0.0.8"
 h3-quinn           = "0.0.10"
 http-body-util     = { workspace = true }
 http-ng            = { workspace = true }
+# The doc example's resolver, and nothing else: this crate names no
+# resolver of its own — `D: Resolve` is the caller's to supply.
+http-ng-dns-system = { path = "../http-ng-dns-system", version = "0.1.0" }
 http-ng-rt-tokio   = { path = "../http-ng-rt-tokio",   version = "0.1.0", features = ["udp"] }
 http-ng-tls-rustls = { path = "../http-ng-tls-rustls", version = "0.1.0", features = ["quic"] }
 quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
