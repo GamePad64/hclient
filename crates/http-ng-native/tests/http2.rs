@@ -589,3 +589,112 @@ async fn connection_specific_headers_are_stripped_rather_than_sent() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.collect().await.unwrap().text().unwrap(), "ok");
 }
+
+// --- v0.4 W2: `RequireVersion` where a version is actually negotiated ---
+//
+// `tests/require_version.rs` covers the demand over plaintext, where the
+// answer is HTTP/1.1 with certainty. These three need an ALPN, and
+// `FakeTls` above is the only thing in this crate that supplies one — so
+// they live here rather than with a second copy of the stub.
+
+/// A `GET` carrying a demand. `RequestBuilder` has no extension setter, so
+/// this goes through `Client::execute`, the same route a caller has.
+fn demanding(url: &str, v: http::Version) -> http::Request<http_ng_core::RequestBody> {
+    let mut req = http::Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(http_ng_core::RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut().insert(http_ng_core::RequireVersion(v));
+    req
+}
+
+/// **The positive case for the demand that motivated it.** gRPC needs
+/// HTTP/2 or it needs to fail; here it gets HTTP/2, and the proof is the
+/// same one the rest of this file uses — a server that speaks nothing else
+/// answered, and `Response::version()` came off the wire.
+///
+/// Its value is that it is the arm the refusal must not take. A check that
+/// rejected every marked request would pass every zero-bytes assertion in
+/// `require_version.rs` and die here.
+#[tokio::test]
+async fn a_demand_for_http2_is_served_by_a_connection_that_negotiated_it() {
+    let server = spawn_h2_server();
+    let client = client(FakeTls::negotiating_h2());
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        client.execute(demanding(&server.url("/grpc"), http::Version::HTTP_2)),
+    )
+    .await
+    .expect("must not hang")
+    .expect("h2 was negotiated, so a demand for it must be satisfied");
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    let seen = server.seen();
+    assert_eq!(seen.len(), 1, "exactly one request reached the server");
+    assert_eq!(seen[0].path, "/grpc");
+}
+
+/// **The demand narrows the offer, and this is the test that says so.**
+///
+/// A caller requiring HTTP/1.1 against a TLS backend that would happily
+/// negotiate h2 must not be handed an h2 connection and then told no. The
+/// `h2` token has to be absent from the ALPN list the client actually
+/// sent, and `FakeTls` records that list.
+///
+/// Without the narrowing the client would propose `["h2", "http/1.1"]`,
+/// this stub would report `h2`, and the request would fail — against a
+/// connection the client itself chose to make wrong. So the assertion is
+/// on the offer rather than on the outcome: the outcome alone would also
+/// be produced by a client that never offered h2 to anyone.
+#[tokio::test]
+async fn a_demand_for_http1_takes_h2_off_the_alpn_offer() {
+    let server = spawn_h2_server();
+    let tls = FakeTls::negotiating_h2();
+
+    // The server here speaks only HTTP/2, so this request is expected to
+    // fail on the wire — what is under test is what was proposed, which
+    // `FakeTls` records before any of that.
+    let _ = tokio::time::timeout(
+        BOUND,
+        client(tls.clone()).execute(demanding(&server.url("/h1-only"), http::Version::HTTP_11)),
+    )
+    .await
+    .expect("must not hang");
+
+    let offered = tls.offered();
+    assert_eq!(offered.len(), 1, "one handshake");
+    assert_eq!(
+        offered[0],
+        vec![b"http/1.1".to_vec()],
+        "a demand for HTTP/1.1 must remove `h2` from the offer — proposing it \
+         and refusing the answer would make the h1 direction of the demand \
+         unsatisfiable against every h2-capable server"
+    );
+}
+
+/// The narrowing must not reach a request that made no demand: the same
+/// client, the same backend, and `h2` back on the list.
+///
+/// Written next to its sibling because either one alone reads as an
+/// accident — a client that always offered `["http/1.1"]` passes the test
+/// above, and a client that always offered both passes this one.
+#[tokio::test]
+async fn an_unmarked_request_still_offers_h2() {
+    let server = spawn_h2_server();
+    let tls = FakeTls::negotiating_h2();
+
+    let resp = tokio::time::timeout(BOUND, client(tls.clone()).get(&server.url("/any")).send())
+        .await
+        .expect("must not hang")
+        .expect("no demand, no change");
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+
+    assert_eq!(
+        tls.offered()[0],
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "an unmarked request must be offered h2 exactly as before"
+    );
+}
