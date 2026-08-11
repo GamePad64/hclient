@@ -71,6 +71,7 @@
 
 mod body;
 mod early;
+mod hooks;
 mod pump;
 mod runtime;
 
@@ -79,10 +80,15 @@ pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
 pub use runtime::QuinnTask;
 
 use bytes::Bytes;
+use hooks::{ConnState, Watch, mark, since};
+use http_ng_core::unversioned::{
+    CloseReason, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks, Reused,
+    Transport,
+};
 use http_ng_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
-    check_version, unversioned::Transport,
+    check_version,
 };
 use http_ng_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use http_ng_tls::TlsConfigId;
@@ -91,6 +97,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// The ALPN token HTTP/3 is identified by (RFC 9114 §3.2). Mandatory, and
 /// not a fallback: a QUIC connection that negotiates anything else is an
@@ -139,6 +146,36 @@ struct Pooled {
     /// ticket", which are the same thing to everyone downstream: nothing
     /// was risked, so there is nothing to replay.
     zero_rtt: Option<ZeroRtt>,
+    /// This connection's identity for the observability seam, and the flag
+    /// that keeps its end from being announced twice — `None` when nobody
+    /// is watching. It lives with the connection rather than with a
+    /// request because the connection is what outlives both.
+    state: Option<Arc<ConnState>>,
+}
+
+/// What a checkout did, carried **out of the pool's mutex** so the events
+/// can be emitted with no lock held.
+///
+/// `made` is the branch itself rather than a flag beside it: there is
+/// nothing anywhere that says "this one was reused", only the code path it
+/// came back on. That is `http-ng-native`'s discipline for the same event,
+/// and the reason it cannot be right for the wrong reason.
+struct CheckedOut {
+    send: SendRequest,
+    zero_rtt: Option<ZeroRtt>,
+    conn: quinn::Connection,
+    state: Option<Arc<ConnState>>,
+    /// `Some` when this connection was **made**; `None` when it was found.
+    made: Option<Made>,
+}
+
+/// The two intervals a fresh connection can report, measured where they
+/// happen. `total` is not here: it ends after `checkout` returns, and is
+/// stamped by `execute` from the same mark `Head::elapsed` uses.
+struct Made {
+    remote: SocketAddr,
+    dns: Duration,
+    handshake: Duration,
 }
 
 struct Shared {
@@ -202,10 +239,28 @@ impl fmt::Debug for Shared {
 pub const DEFAULT_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The HTTP/3 transport.
-pub struct H3<R, T, D> {
+///
+/// # `H`, the observability hook (v0.4 W2)
+///
+/// [`NoHooks`] by default, a zero-sized type whose `Hooks::WATCHING` is
+/// `false` — so `H3<R, T, D>` still names the transport it always named,
+/// and a build that asks for nothing reads no clock, allocates no
+/// connection state and takes no connection id. [`H3::hooks`] is how a
+/// caller asks; what comes back is a *different type*, which is the whole
+/// of the zero-cost claim rather than an inconvenience.
+///
+/// What this transport can and cannot say is in [`crate::hooks`]: `tcp`
+/// holds the QUIC attempt and `tls` is always `None`, because QUIC's
+/// handshake is TLS and `into_0rtt` hands back a usable connection before
+/// it finishes; `CloseReason::Ended` has no emitter, because nothing in
+/// HTTP/3 ends a connection by finishing an exchange.
+pub struct H3<R, T, D, H = NoHooks> {
     rt: R,
     tls: T,
     dns: D,
+    /// Where the events go. `NoHooks` is a ZST, so this field costs a
+    /// build that wants nothing exactly nothing.
+    hooks: H,
     caps: Capabilities,
     keep_alive: Option<std::time::Duration>,
     shared: Arc<Shared>,
@@ -215,7 +270,7 @@ pub struct H3<R, T, D> {
 // derive would put a `Debug` bound on all three parameters, which is a
 // bound on the runtime, the TLS backend and the resolver for the benefit of
 // a formatter. What is worth printing is the capability set anyway.
-impl<R, T, D> fmt::Debug for H3<R, T, D> {
+impl<R, T, D, H> fmt::Debug for H3<R, T, D, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("H3")
             .field("early_data", &self.caps.early_data)
@@ -223,7 +278,7 @@ impl<R, T, D> fmt::Debug for H3<R, T, D> {
     }
 }
 
-impl<R, T, D> H3<R, T, D>
+impl<R, T, D> H3<R, T, D, NoHooks>
 where
     T: QuicTlsConnect,
 {
@@ -276,6 +331,7 @@ where
             rt,
             tls,
             dns,
+            hooks: NoHooks,
             caps: capabilities(early_data),
             keep_alive: Some(DEFAULT_KEEP_ALIVE),
             shared: Arc::new(Shared {
@@ -283,6 +339,49 @@ where
                 conns: Mutex::new(HashMap::new()),
             }),
         })
+    }
+}
+
+/// Everything a `H3` can be configured with, whatever its hook — separated
+/// from [`H3::new`] above only because `new` is the one method that names a
+/// *particular* `H` ([`NoHooks`]), and putting it in this block would make
+/// `H3::<_, _, _, MyHook>::new` a thing a caller could write and get a
+/// hookless transport from. The same split `http-ng-native` makes, for the
+/// same reason.
+impl<R, T, D, H> H3<R, T, D, H>
+where
+    T: QuicTlsConnect,
+{
+    /// Send this transport's events to `hooks` — see
+    /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
+    /// costs, [`Event`] for the vocabulary, and [`crate::hooks`] for the
+    /// two things QUIC cannot say in it.
+    ///
+    /// **It returns a different type**, and that is the zero-cost
+    /// mechanism: the hook is a type parameter, so the `NoHooks` build
+    /// monomorphises to code with no clock reads in it at all, where a
+    /// `Box<dyn Hooks>` field would leave every no-hook build carrying a
+    /// null check on the request path.
+    ///
+    /// The hook may be `!Send`: nothing on this path declares it, so an
+    /// `Rc` inside a hook makes this transport `!Send` and leaves it
+    /// working (P13; `crates/http-ng-core/tests/shape.rs`). What that
+    /// costs here is written down in [`crate::hooks`] — the spawned
+    /// connection driver is `Send` because quinn says so, so a hook cannot
+    /// be called from it, and a close is discovered rather than observed.
+    ///
+    /// The pool travels across this call, because a connection's identity
+    /// lives with the connection rather than with the hook.
+    pub fn hooks<H2>(self, hooks: H2) -> H3<R, T, D, H2> {
+        H3 {
+            rt: self.rt,
+            tls: self.tls,
+            dns: self.dns,
+            hooks,
+            caps: self.caps,
+            keep_alive: self.keep_alive,
+            shared: self.shared,
+        }
     }
 
     /// Ping an idle pooled connection this often. See
@@ -414,13 +513,21 @@ where
 {
 }
 
-impl<R, T, D> H3<R, T, D>
+impl<R, T, D, H> H3<R, T, D, H>
 where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: http_ng_dns::Resolve,
+    // `H: Clone` for the reason `http-ng-native` gives: the response body
+    // outlives `execute` and reports the connection's end from
+    // `poll_frame`, so it needs a hook of its own rather than a borrow of
+    // this transport's. There is deliberately **no `H: Unpin`** here, which
+    // is where this backend is cheaper than that one: `H3Body` holds its
+    // hook behind an `Option<Box<..>>`, and a `Box` is `Unpin` whatever it
+    // contains.
+    H: Hooks + Clone,
 {
     /// The endpoint, built on first use.
     ///
@@ -457,27 +564,60 @@ where
     /// handed one out would fail the request it was reused for. This is the
     /// same "poll at checkout" W2's HTTP/1 pool does, in the form this
     /// stack offers it.
+    ///
+    /// # Where the `Stale` event comes from, and why not from a `Drop`
+    ///
+    /// A dead entry is **removed under the lock** and reported after it,
+    /// which buys two things at once: exactly one caller can report a given
+    /// connection even when several arrive at the same instant, and no hook
+    /// runs with the pool's mutex held — the rule
+    /// `http_ng_core::unversioned::hooks` states, and the one a panicking
+    /// hook would otherwise turn into a poisoned pool.
+    ///
+    /// It is reported here rather than carried out to `execute`, because a
+    /// connect that then fails or times out must not swallow the fact that
+    /// the pooled connection really was found dead.
     async fn checkout(
         &self,
         key: &PoolKey,
         addr: SocketAddr,
-    ) -> Result<(SendRequest, Option<ZeroRtt>), Error> {
-        if let Some(p) = self
-            .shared
-            .conns
-            .lock()
-            .expect("pool mutex poisoned")
-            .get(key)
-            && p.conn.close_reason().is_none()
-        {
-            // A clone, not a removal: `SendRequest` is `Clone` precisely so
-            // several requests can be in flight on one connection, which is
-            // the multiplexing this transport exists for. Contrast
-            // `http-ng-native`'s h2, which takes the connection OUT of the
-            // pool for the duration of one exchange.
-            return Ok((p.send.clone(), p.zero_rtt.clone()));
+        dns: Duration,
+    ) -> Result<CheckedOut, Error> {
+        let stale = {
+            let mut pool = self.shared.conns.lock().expect("pool mutex poisoned");
+            if let Some(p) = pool.get(key)
+                && p.conn.close_reason().is_none()
+            {
+                // A clone, not a removal: `SendRequest` is `Clone` precisely so
+                // several requests can be in flight on one connection, which is
+                // the multiplexing this transport exists for. Contrast
+                // `http-ng-native`'s h2, which takes the connection OUT of the
+                // pool for the duration of one exchange.
+                //
+                // So `Reused` here says something `http-ng-native`'s cannot:
+                // the connection may be carrying somebody else's request
+                // right now. The event's own words — "a connection somebody
+                // else already made is being used again" — stay true; what
+                // changes is that a caller must not read two `Reused` events
+                // as two consecutive uses.
+                return Ok(CheckedOut {
+                    send: p.send.clone(),
+                    zero_rtt: p.zero_rtt.clone(),
+                    conn: p.conn.clone(),
+                    state: p.state.clone(),
+                    made: None,
+                });
+            }
+            pool.remove(key).and_then(|p| p.state)
+        };
+        if let Some(dead) = stale {
+            dead.closed(&self.hooks, CloseReason::Stale);
         }
-        let (send, conn, zero_rtt) = self.connect(key, addr).await?;
+        let (send, conn, zero_rtt, handshake) = self.connect(key, addr).await?;
+        let state = ConnState::new::<H>();
+        // quinn's own answer rather than the address that was dialled: the
+        // seam asks for "the address that answered".
+        let remote = conn.remote_address();
         self.shared
             .conns
             .lock()
@@ -486,18 +626,39 @@ where
                 key.clone(),
                 Pooled {
                     send: send.clone(),
-                    conn,
+                    conn: conn.clone(),
                     zero_rtt: zero_rtt.clone(),
+                    state: state.clone(),
                 },
             );
-        Ok((send, zero_rtt))
+        Ok(CheckedOut {
+            send,
+            zero_rtt,
+            conn,
+            state,
+            made: Some(Made {
+                remote,
+                dns,
+                handshake,
+            }),
+        })
     }
 
+    /// Make one.
+    ///
+    /// The fourth element of the answer is what [`ConnectTiming`]'s `tcp`
+    /// field holds here: **the attempt itself**, from `connect_with` to a
+    /// connection that can carry a request. Binding the endpoint and
+    /// building the crypto configuration are before the mark and h3's
+    /// SETTINGS exchange is after it, so both land in `total` and in no
+    /// phase — which is exactly what `ConnectTiming` means by "three
+    /// measurements, not a decomposition". `crate::hooks` says why there is
+    /// no `tls` figure to go with it.
     async fn connect(
         &self,
         key: &PoolKey,
         addr: SocketAddr,
-    ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>), Error> {
+    ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), Error> {
         let crypto = self.tls.quic_client_config(QuicTlsRequest {
             alpn: &[ALPN_H3],
             ech: None,
@@ -524,6 +685,9 @@ where
         // second request has to do to be reused. Normalising twice, once
         // for the key and once here, would be the two-places-drifting
         // problem `bare_host`'s doc is about.
+        // The attempt's launch — see this function's doc comment. Under
+        // `NoHooks` this is a compile-time `None` and no clock is read.
+        let launched = mark::<H, R>(&self.rt);
         let connecting = endpoint
             .connect_with(cfg, addr, http_ng_core::bare_host(&key.host))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
@@ -558,6 +722,12 @@ where
             )
         };
 
+        // The connection can carry a request from here — which for a 0-RTT
+        // connection is *before its handshake has completed*, and is
+        // precisely why there is no `tls` duration to report beside this
+        // one: there is no completed handshake yet to have timed.
+        let handshake = since::<R>(&self.rt, launched);
+
         let (mut driver, send) = h3::client::builder()
             .build(h3_quinn::Connection::new(conn.clone()))
             .await
@@ -576,7 +746,7 @@ where
             let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         }) as QuinnTask);
 
-        Ok((send, conn, zero_rtt))
+        Ok((send, conn, zero_rtt, handshake))
     }
 
     /// Open a stream, start writing the request body, and read the head —
@@ -606,7 +776,8 @@ where
         send: &mut SendRequest,
         head: http::Request<()>,
         body: RequestBody,
-    ) -> Result<http::Response<H3Body>, Error> {
+        watch: Option<Box<Watch<H>>>,
+    ) -> Result<http::Response<H3Body<H>>, Error> {
         let stream = send.send_request(head).await.map_err(body::stream_error)?;
         // From here on the head is on the wire, and a write-side failure
         // stops meaning what it meant a line ago. See `write_after_head`.
@@ -636,7 +807,62 @@ where
             .await?
         };
         let (parts, ()) = resp.into_parts();
-        Ok(http::Response::from_parts(parts, H3Body::new(reader, pump)))
+        Ok(http::Response::from_parts(
+            parts,
+            H3Body::new(reader, pump, watch),
+        ))
+    }
+
+    /// The hook, the connection and its state, packed for a body — or
+    /// `None` when nobody is watching, which is the only case in which the
+    /// box is not allocated.
+    fn watch(
+        &self,
+        conn: &quinn::Connection,
+        state: &Option<Arc<ConnState>>,
+    ) -> Option<Box<Watch<H>>> {
+        let state = state.clone()?;
+        Some(Box::new(Watch::new(
+            self.hooks.clone(),
+            conn.clone(),
+            state,
+        )))
+    }
+
+    /// The `Head` event, from the one place all three attempts reach it —
+    /// the first, the 0-RTT replay, and nothing else.
+    ///
+    /// A method rather than three copies, because a caller counting heads
+    /// must not be able to tell those paths apart: a rejected 0-RTT request
+    /// that was replayed is one request that got one response, and a second
+    /// `Head` for it would report a request the caller never made.
+    /// A request that failed, told to the hook **only if the connection
+    /// under it went away**.
+    ///
+    /// The discrimination is `Watch::failed`'s, and it is the whole
+    /// difference between this transport and one that does not share
+    /// connections: over HTTP/1 a failed exchange is a failed connection,
+    /// and here it usually is not.
+    fn report_failed(&self, watch: &Option<Box<Watch<H>>>, e: &Error) {
+        if let Some(w) = watch.as_deref() {
+            w.failed(e);
+        }
+    }
+
+    fn report_head(
+        &self,
+        resp: &http::Response<H3Body<H>>,
+        id: ConnectionId,
+        uri: &http::Uri,
+        began: Option<R::Instant>,
+    ) {
+        self.hooks.on(Event::Head(Head {
+            id,
+            uri,
+            status: resp.status(),
+            version: resp.version(),
+            elapsed: since::<R>(&self.rt, began),
+        }));
     }
 
     async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, Error> {
@@ -768,21 +994,25 @@ pub(crate) fn write_after_head(r: Result<(), h3::error::StreamError>) -> Result<
     }
 }
 
-impl<R, T, D> Transport for H3<R, T, D>
+impl<R, T, D, H> Transport for H3<R, T, D, H>
 where
     R: H3Runtime,
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: http_ng_dns::Resolve,
+    // Argued where the sibling impl above declares it. `Unpin` is not
+    // among them, which is the one bound this backend does not have to
+    // charge a hook that `http-ng-native` does.
+    H: Hooks + Clone,
 {
-    type Body = H3Body;
+    type Body = H3Body<H>;
     type Error = Error;
 
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<H3Body>, Error> {
+    ) -> Result<http::Response<H3Body<H>>, Error> {
         // **A `RequireVersion` demand, answered before anything else** —
         // before the scheme check, before resolution, before a QUIC
         // packet. This transport speaks exactly one version, so the answer
@@ -852,6 +1082,15 @@ where
             .copied()
             .unwrap_or_default();
 
+        // When this transport committed to doing work, for `Head::elapsed`
+        // and for `ConnectTiming`'s `dns` and `total` — and `None` when
+        // nobody is watching, so a build with no hook reads no clock here
+        // or anywhere below. The three figures share one mark deliberately:
+        // the pair (`Head::elapsed`, `ConnectTiming::total`) is what answers
+        // "was it the connection or was it the server", and two marks would
+        // make that a subtraction of two different origins.
+        let began = mark::<H, R>(&self.rt);
+
         // Everything between "a URI" and "a connection that can carry a
         // request" — address resolution, the QUIC handshake, and h3's own
         // settings exchange on top of it — under one bound.
@@ -869,18 +1108,67 @@ where
         // without awaiting anything the timer could beat.
         let connect = async {
             let addr = self.resolve(&host, port).await?;
+            // `dns` in the seam's sense — "from the start of the connect to
+            // the moment the first address could be tried" — and it means
+            // the same thing here as it does over TCP, which is more than
+            // can be said for the two fields below it.
+            let dns = since::<R>(&self.rt, began);
             let key = PoolKey {
                 host,
                 port,
                 tls: self.tls.config_id(),
                 early_data: wants_early,
             };
-            self.checkout(&key, addr).await
+            self.checkout(&key, addr, dns).await
         };
-        let (mut send, zero_rtt) = match timeouts.connect {
+        let CheckedOut {
+            mut send,
+            zero_rtt,
+            conn,
+            state,
+            made,
+        } = match timeouts.connect {
             Some(d) => within_connect(&self.rt, d, connect).await?,
             None => connect.await?,
         };
+
+        // Emitted here, outside `checkout`, because the pool's mutex is
+        // held inside it and no hook is ever called under a lock. The
+        // *branch* still comes from the pool: `made` is `Some` only on the
+        // path that dialled, so there is no flag anywhere that could
+        // disagree with the behaviour.
+        let id = ConnState::id(state.as_ref());
+        match &made {
+            Some(m) => self.hooks.on(Event::Connected(Connected {
+                id,
+                uri: &uri,
+                remote: m.remote,
+                // Not a constant standing in for a negotiation: `ALPN_H3`
+                // is the only token offered and a connection that
+                // negotiates anything else never gets here.
+                version: http::Version::HTTP_3,
+                timing: ConnectTiming {
+                    dns: m.dns,
+                    // The QUIC attempt. Its name is `tcp` and there is no
+                    // TCP; `crate::hooks` argues why this is the honest
+                    // field to put it in and why `tls` is `None` rather
+                    // than a zero or a duplicate of this number.
+                    tcp: m.handshake,
+                    tls: None,
+                    total: since::<R>(&self.rt, began),
+                },
+            })),
+            None => self.hooks.on(Event::Reused(Reused {
+                id,
+                uri: &uri,
+                version: http::Version::HTTP_3,
+            })),
+        }
+        // Built once and cloned per attempt: the 0-RTT replay is a second
+        // stream on the same connection, and both attempts' bodies report
+        // through the same `ConnState`, which is what keeps one connection's
+        // end to one event.
+        let watch = self.watch(&conn, &state);
 
         let (parts, body) = req.into_parts();
         // Taken before the first attempt, because after it the body is
@@ -899,7 +1187,7 @@ where
             None
         };
         let head = http::Request::from_parts(parts.clone(), ());
-        let first = Self::one_attempt(&mut send, head, body).await;
+        let first = Self::one_attempt(&mut send, head, body, watch.clone()).await;
 
         // The second of the three 0-RTT failure paths (`crate::early` has
         // the table). If the server refused the early keys, the streams
@@ -918,15 +1206,28 @@ where
         // on the question anyway — it is what `into_0rtt` handed back for
         // this purpose. By the time a stream has failed this way the
         // handshake has completed, so the await does not stall.
-        let Err(e) = first else {
-            return first;
+        //
+        // **No event marks the replay**, and that is the same rule
+        // `report_head` states: one request got one response, and a caller
+        // told about the rejected stream would be told about a request they
+        // never made. See `crate::hooks` for the other half — that no event
+        // says a request went out in early data at all, and what saying so
+        // would have cost.
+        let e = match first {
+            Ok(resp) => {
+                self.report_head(&resp, id, &uri, began);
+                return Ok(resp);
+            }
+            Err(e) => e,
         };
         let Some(verdict) = zero_rtt else {
             // Nothing went into early data, so this error is the caller's.
+            self.report_failed(&watch, &e);
             return Err(e);
         };
         if verdict.await {
             // Early data was accepted; the failure is a real one.
+            self.report_failed(&watch, &e);
             return Err(e);
         }
         let Some(body) = spare else {
@@ -935,10 +1236,20 @@ where
             // returns `None` for. Kept as a typed error rather than an
             // `unwrap`, because the two checks live in different files and
             // the invariant between them is not one the compiler holds.
+            self.report_failed(&watch, &e);
             return Err(e);
         };
         let head = http::Request::from_parts(parts, ());
-        Self::one_attempt(&mut send, head, body).await
+        match Self::one_attempt(&mut send, head, body, watch.clone()).await {
+            Ok(resp) => {
+                self.report_head(&resp, id, &uri, began);
+                Ok(resp)
+            }
+            Err(e) => {
+                self.report_failed(&watch, &e);
+                Err(e)
+            }
+        }
     }
 
     fn capabilities(&self) -> &Capabilities {

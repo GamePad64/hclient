@@ -28,6 +28,22 @@ pub enum Behaviour {
     Slow(std::time::Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
+    /// Send the response **head**, wait, and then tear the whole QUIC
+    /// connection down — so the failure arrives while the caller is reading
+    /// the body rather than while it is waiting for a head.
+    ///
+    /// The two are different observers in `tests/hooks.rs`:
+    /// [`Behaviour::DieAfterHead`] makes `H3::execute` the one that meets
+    /// the connection's death, and this makes `H3Body::poll_frame` the one.
+    /// A transport that reported a close from only one of them would pass
+    /// the other's test.
+    ///
+    /// The wait is not a bound on anything and nothing is asserted about
+    /// it: it only orders the head in front of the close, on a loopback
+    /// where the head takes microseconds. If it ever lost that race the
+    /// test would fail loudly — no `Head` event at all — rather than
+    /// quietly passing.
+    HeadThenDie,
     /// Tear the whole QUIC connection down the moment the request head has
     /// arrived, without answering.
     ///
@@ -417,6 +433,18 @@ fn start_inner(
                             r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             if behaviour == Behaviour::DieAfterHead {
                                 quic.close(1u32.into(), b"dying on purpose");
+                                return;
+                            }
+                            if behaviour == Behaviour::HeadThenDie {
+                                let resp = http::Response::builder()
+                                    .status(http::StatusCode::OK)
+                                    .body(())
+                                    .unwrap();
+                                if stream.send_response(resp).await.is_err() {
+                                    return;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                quic.close(1u32.into(), b"dying after the head");
                                 return;
                             }
                             if let Behaviour::AnswerWithoutReading(d) = behaviour {

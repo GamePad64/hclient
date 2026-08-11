@@ -3974,3 +3974,327 @@ independently mutation-pinned one.
   doc comment's "five take the weaker claim" becoming six. Editing that
   crate was out of scope for this change, so the red test is reported
   rather than repaired.
+
+# v0.4 W2 — the same event set, over HTTP/3
+
+`http-ng-h3` is the **second** backend to implement
+`http_ng_core::unversioned::Hooks`, and that is the point of it. The
+WebSocket seam earned its confidence exactly this way: `http-ng-fetch`
+fitted `WebSocketConnect` unchanged, and that turned an argument into a
+fact. This section is the same experiment for the event set.
+
+## Did it fit unchanged?
+
+**Yes, and nothing in `http-ng-core` was touched.** No variant added, no
+field added, no bound moved. `H3<R, T, D, H = NoHooks>` carries a hook,
+`H3::hooks(..)` returns the different type that makes the zero-cost claim
+structural, and `http-ng-select` — which owns an `H3<R, T, D>` — compiles
+unchanged, because `H` is defaulted and last.
+
+What it cost is **one bound fewer** than the TCP backend charges.
+`http-ng-native` needs `H: Hooks + Clone + Unpin`; this needs `H: Hooks +
+Clone`. `Clone` is the same fact in both (the response body outlives
+`execute` and holds the hook rather than borrowing it); `Unpin` falls away
+because `H3Body` keeps its hook behind an `Option<Box<Watch<H>>>`, and a
+`Box` is `Unpin` whatever it contains. The box is there for two reasons
+anyway — a body nobody is watching carries eight bytes, and
+`http-ng-select` requires `<H3<..> as Transport>::Body: Unpin`.
+
+The predictions in the previous section were three-for-four. The phases do
+not divide the same way (right); `Reused` can fire while another request is
+in flight (right); `H` reaches `execute` and the body and P13 carries over
+unchanged (right). **The fourth was wrong in an interesting direction**: it
+predicted that "a spawned driver means `Closed` arrives on a task that is
+nobody's request". It cannot arrive there at all — see below.
+
+## What `Connected`'s timings mean here
+
+`ConnectTiming` has four fields and QUIC has three numbers.
+`crates/http-ng-h3/src/hooks.rs` carries the argument; the summary is:
+
+| field | over TCP | over QUIC, here |
+|---|---|---|
+| `dns` | start of the connect to the first address that could be tried | **the same**, unchanged |
+| `tcp` | the winning attempt, launch to connected | **the QUIC attempt**: `Endpoint::connect_with` to a connection that can carry a request |
+| `tls` | the handshake, or `None` for a connection that has none | **always `None`** |
+| `total` | the whole connect | **the same**, and it also contains h3's SETTINGS exchange |
+
+**`tcp` holds the attempt because its name is wrong here and its definition
+is exactly right.** "The winning attempt, from the moment it was launched to
+the moment it connected" describes what is measured precisely; only the
+field's name says TCP. The alternative was `Duration::ZERO` for a phase that
+does not exist, and the brief for this work ruled that out for the right
+reason — a number a caller will trust is worse than an absence.
+
+**`tls` is `None` because it is forced, not because it is tidy.**
+`Connecting::into_0rtt()` hands back a usable connection *before the
+handshake completes*, so on a 0-RTT connection there is no completed
+handshake to time at the moment the request goes out; reporting one would
+mean waiting for the round trip 0-RTT exists to skip. A field that was
+`Some` on the 1-RTT path and `None` on the 0-RTT one would mean two
+different things under one name, and a `Some` duplicating `tcp` would break
+the `dns + tcp + tls <= total` invariant `ConnectTiming` documents.
+
+**The cost of that decision is a wording defect in the seam, and it is
+recorded rather than fixed.** `tls`'s own doc says `None` means "a
+connection that has none", which is false of every QUIC connection ever
+made. `http-ng-core` is not one backend's to rewrite; the honest options if
+a third backend meets the same thing are to reword the field (cheap) or to
+split it (not cheap), and neither should be decided from one data point.
+
+Everything outside the three phases — binding the endpoint, building the
+crypto configuration, h3's SETTINGS exchange — is time inside `total` that
+belongs to no phase, which is what `ConnectTiming` means by "three
+measurements, not a decomposition".
+
+## `Reused` on a shared connection: the event still says something true
+
+`http-ng-native` checks an h2 connection out of the pool **exclusively**, so
+its `Reused` carries an implication its wording never claimed: the previous
+request on that connection has finished. Here it does not. A QUIC connection
+is shared and multiplexed, and a second request joins one that is already
+carrying the first.
+
+The event's own words — *"a connection somebody else already made is being
+used again"* — stay true, and the fact it exists to deliver stays exactly as
+useful: **two requests to one origin either cost one connection or two, and
+only the transport knows which happened.** What changes is an inference a
+caller might draw and the event never licensed: two `Reused` events are not
+two consecutive uses. That is written down in `crates/http-ng-h3/src/lib.rs`
+beside the pool branch and pinned by
+`a_second_request_joins_a_connection_that_is_still_carrying_the_first`,
+which is causal rather than timed — the first response's body is
+deliberately unread while the second request goes out, and both bodies are
+collected afterwards.
+
+Two mechanical consequences fell out of sharing, and both are real work
+rather than bookkeeping:
+
+- **A close can be met by several requests at once.** `http-ng-native` gets
+  at-most-once for free, because one body is the only observer of an
+  exclusive connection. Here `execute`, a body, and the next checkout can
+  all meet the same death, so the "already told" flag lives with the
+  connection (`ConnState`, an `AtomicBool` swapped outside every lock).
+  Without it a caller counting connections is wrong in the direction that
+  looks like a leak — mutation M12.
+- **A failed request is usually not a failed connection.**
+  `quinn::Connection::close_reason()` is the discriminator and there is no
+  other. Announcing every stream error as a close would be the loudest
+  possible lie about a transport whose whole point is that neighbours
+  survive — mutation M15.
+
+## `CloseReason::Ended` has no emitter, and refusing to invent one is the finding
+
+This is the mirror image of the "request queued" refusal that
+`http-ng-native` made. There, a variant was left out because that transport
+has no queue. Here, an existing variant is left **unemitted** because
+nothing in HTTP/3 has its subject: `Ended` says *"the exchange finished
+it"*, and a QUIC connection outlives its streams by construction. It goes
+away because it timed out, because the peer sent `CONNECTION_CLOSE`, or
+because something failed. So this crate emits `Stale` and `Failed`, and
+`a_clean_exchange_ends_no_connection` pins that two finished exchanges and a
+dropped transport report nothing at all.
+
+**The one place a graceful end could be observed promptly is shut by P13's
+own answer, which is worth stating plainly.** h3's connection driver is
+where a `GOAWAY`-then-close would surface, and it is spawned — but
+`crate::QuinnTask` is `Pin<Box<dyn Future<Output = ()> + Send>>`, because
+quinn declares `Runtime::spawn` that way, and `Hooks` deliberately promises
+no `Send`. A future capturing an `H` does not coerce. Calling a hook from
+the driver would therefore cost **every** hook a `Send` bound, which is the
+thing P13 was asked to avoid.
+
+So a close here is **discovered rather than observed**: at the next checkout
+that finds the connection dead (`Stale`), or at the request or body that
+fails on it (`Failed`). The previous section's prediction — "a spawned
+driver means `Closed` arrives on a task that is nobody's request" — is
+exactly backwards, and the reason is a seam property rather than a QUIC one.
+
+## 0-RTT: what a caller can learn from events, and what it would cost
+
+**Nothing.** No event says a request went out in early data, and none says
+whether it was accepted. That is a deliberate answer rather than an
+oversight, and it has two halves with different prices:
+
+- **"It went out in early data"** is knowable at the moment `Connected` is
+  emitted and has nowhere to go. It would need a field on `Connected` or a
+  variant of its own, and `http-ng-core` is not this backend's to extend —
+  a variant added for one backend is how an event set stops being a shape.
+- **"It was accepted"** is not knowable then at all. The verdict resolves
+  *after the response body* (8.63 ms against 8.58 ms, `docs/h3-research.md`
+  §3.2), so reporting it would need either a spawned task — which this
+  feature may not have, on its own rules — or making the caller wait for
+  the round trip 0-RTT exists to skip.
+
+What *is* visible without claiming anything: on a 0-RTT connection `tcp` is
+the time to `into_0rtt()` returning, which is well under a round trip. That
+is an observation a reader can make, not a fact the event asserts, and a
+caller cannot separate it from a fast handshake without knowing the RTT.
+
+The replay is invisible on purpose, and that is pinned:
+`a_replayed_0_rtt_request_reports_one_head_and_one_connection` sends a
+marked request to a second server whose ticketer refuses the first's ticket,
+and asserts **one `Connected`, one `Head`, no `Closed`** — one request got
+one response, and a caller told about the rejected stream would be told
+about a request they never made.
+
+## Zero cost when nobody is watching, measured
+
+Same technique as `http-ng-native`'s, same style — a runtime whose clock
+counts its own reads, and **equalities rather than bounds**, because a `<=`
+would pass for a build that read the clock four times when it should read it
+none. `crates/http-ng-h3/tests/hooks_cost.rs`.
+
+| | `now()` | `elapsed_since()` |
+|---|---|---|
+| `NoHooks`, fresh connection | **0** | **0** |
+| `NoHooks`, pooled request | **0** | **0** |
+| a hook, fresh connection | 2 | 4 |
+| a hook, pooled request | 1 | 2 |
+
+**The `NoHooks` row is zero where `http-ng-native`'s is 1**, and that is a
+fact about this transport rather than a virtue: `connect::drive` stamps the
+start of the Happy Eyeballs race over there and RFC 8305's pacing is
+measured from it, while QUIC's connect is not a SYN race and this crate had
+no `Timer::now` call in it at all before this work. quinn's own timers go
+through `Timer::sleep` and `std::time::Instant` (`crate::runtime`'s
+`until`), not through this clock.
+
+`elapsed_since` is counted here, which `http-ng-native`'s file deliberately
+does not do — there it is called once per iteration of a scheduler loop
+whose iteration count no test may pin. Here every call is at a fixed point.
+
+The four intervals on a fresh connection are `dns`, `tcp`, `total` and
+`Head::elapsed`, off two marks (the request's start; the QUIC attempt's
+launch). **There is no fifth, and that is the `tls: None` decision showing
+up as a number.** The pooled row's two are `dns` — computed before the pool
+is consulted and thrown away on that path — and `Head::elapsed`.
+
+`NoHooks` is zero-sized and `H3<.., NoHooks>` is the same size as `H3<..>`,
+so the default type parameter is the same type rather than a second one.
+
+## Mutation testing
+
+Anchor: **20 tests** across `binary(hooks) + binary(hooks_cost)`, verified
+green *before every single row* rather than once at the start. The complete
+table was run again end to end after the last fixture change and reproduced
+every verdict.
+
+The harness restores with `git checkout` **and** `os.utime` to now, because
+the failure this workspace hit four times in the previous round was a
+restore that preserved the backup's mtime: cargo then kept the *mutated*
+artifact and every later row was scored against the wrong binary. Killer
+*names* are read rather than counted, for the same reason — a killer that
+makes no sense is the only tell.
+
+**M18 is a control and it is meant to survive**: `Ordering::SeqCst` →
+`Ordering::Relaxed` in a swap no test can observe. A table of eighteen
+kills with no survivor anywhere is indistinguishable from a harness that
+reports "killed" unconditionally, and this row is what tells them apart.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M1 | `Connected` never emitted | killed | 11 tests, incl. `a_fresh_request_reports_the_connection_it_paid_for_and_the_head_it_got` |
+| M2 | `Reused` never emitted | killed | `two_requests_report_one_connect_and_one_reuse`, `a_second_request_joins_a_connection_that_is_still_carrying_the_first`, `one_streams_failure_is_not_the_connections_end` |
+| M3 | `Head` never emitted | killed | 8 tests, incl. `the_head_reports_the_status_the_server_sent` |
+| M4a | `Closed` never emitted **from the body** | killed | `a_connection_that_dies_under_a_body_is_reported_by_the_body` |
+| M4b | `Closed` never emitted **from `execute`** | killed | `a_connection_the_server_tore_down_is_reported_failed` (+2) |
+| M5 | `Stale` never emitted | killed | `a_pooled_connection_that_died_while_idle_is_reported_stale`, `the_two_reasons_are_not_one_reason_wearing_two_names` |
+| M6 | `Reused` emitted for a **fresh** connection too | killed | `two_transports_sharing_no_pool_report_two_connects_and_no_reuse` (+5) |
+| M7 | `dns` measured to the wrong end — stamped before the lookup | killed | `a_slow_resolver_shows_up_as_dns_and_not_as_the_attempt` |
+| M8 | `tcp` measured from the connect's start | killed | `a_slow_resolver_shows_up_as_dns_and_not_as_the_attempt`, `the_same_two_requests_with_a_hook_do_read_it` |
+| M9 | `tls` reported as a duration instead of absent | killed | `a_fresh_request_reports_the_connection_it_paid_for_and_the_head_it_got` (+2) |
+| M10 | the close reason is always the same value (`Failed` → `Stale`) | killed | `the_two_reasons_are_not_one_reason_wearing_two_names` (+3) |
+| M11 | `NoHooks::WATCHING = true` | killed | `a_client_with_no_hook_reads_no_clock_at_all` |
+| M12 | a close can be reported more than once (`load`, not `swap`) | killed | `one_connection_reports_one_close_however_many_requests_meet_its_death` |
+| M13 | `Reused` mints a new id instead of the connection's | killed | `two_requests_report_one_connect_and_one_reuse` |
+| M14 | `mark()` ignores `WATCHING`, so a hookless client pays | killed | `a_client_with_no_hook_reads_no_clock_at_all` |
+| M15 | a request failure is a close whatever the connection says | killed | `one_streams_failure_is_not_the_connections_end` |
+| M16 | `Connected` reports `HTTP_11` as the negotiated version | **survived, then killed** | `a_fresh_request_reports_the_connection_it_paid_for_and_the_head_it_got`, extended for it |
+| M17 | `Reused` reports `HTTP_11` as the version spoken | killed | `two_requests_report_one_connect_and_one_reuse` |
+| M18 | **control**: `SeqCst` → `Relaxed`, which no test can see | **survived, as intended** | — |
+
+Three rows are worth reading past the verdict.
+
+**M15 had no killer until a test was written for it, and the two obvious
+fixtures both turned out to be the wrong shape** — measured, not reasoned
+about. A server that drops the request stream without answering does *not*
+leave the connection alive: the client's h3 connection fails too, and the
+server accepts a second connection. And a **cancelled** request produces no
+error at all, so no hook is ever called. The failure that works is the
+request-trailers refusal, which this crate raises itself on a connection
+that is provably untouched — and the proof is a second request answered on
+it, one accept, the server's own count.
+
+**M8 is killed twice over, and the second killer is the cost test.**
+Measuring `tcp` from the connect's start adds an `elapsed_since` call, so
+the equality in `hooks_cost.rs` fails. A test written to pin an absence
+turns out to be a structural tripwire for the timing code as well.
+
+**M16 survived the first run and the response was to add a claim, not to
+adjust a fixture.** `Connected`'s `version` is `HTTP_3` by construction —
+`ALPN_H3` is the only token offered, and a connection that negotiates
+anything else never reaches the line — which is exactly why nothing read it
+and exactly why a regression would leave it standing.
+
+## Deliberately not done
+
+- **`http-ng-core` is untouched.** The brief made a new variant a stopping
+  condition; it was not reached, and the two places where the vocabulary
+  is a poor fit (`tls`'s wording; no word for early data) are recorded
+  above rather than legislated from one backend.
+- **Nothing is spawned for an event's sake**, and no hook fires under a
+  lock or from a `Drop`. The `Stale` event is emitted inside `checkout`
+  **after** the pool's mutex guard has been dropped, so a panicking hook
+  cannot poison the pool —
+  `a_panicking_hook_leaves_the_transport_usable` panics at the emission
+  nearest the pool and then requires the next request to succeed.
+- **No `Ended`.** Argued above.
+- **No event for the 0-RTT replay.** Argued above.
+- **`http-ng-select` gets no hook of its own.** It owns a `Native` and an
+  `H3` and would have to decide whether a hook set on the pair reaches
+  both members and what a `Connected` from either means to a caller who
+  asked one object. That is a design question, not plumbing, and this work
+  is the second backend rather than the third.
+
+## What this leaves unverified
+
+- **A connection dropped rather than finished reports no `Closed`.** Same
+  hole as `http-ng-native`'s, arriving here through the same rule: a
+  cancelled request, and a connection this transport's `Drop` takes away,
+  report nothing. **A caller cannot count open connections from these
+  events alone**, and it is a decision rather than an oversight.
+- **A `Stale` followed by a connect that fails has no test.** The event is
+  emitted inside `checkout`, synchronously after the pool's guard is
+  dropped and before the dial, with no `await` in between — so it cannot
+  be lost to a cancelled `connect` future, and that ordering is the whole
+  reason it is not carried out to `execute` with the rest. What has no
+  test is the pair actually happening: every `Stale` in this suite is
+  followed by a connect that succeeds.
+- **Nothing observes a QUIC connection migrating.** The vocabulary has no
+  word for it and this work did not look for one. A migrated connection
+  keeps its `ConnectionId` here and its `Connected::remote` goes stale —
+  that is a real inaccuracy in a field a caller may believe, and it is
+  unmeasured.
+- **The concurrent close is untested.** `ConnState`'s swap exists so that
+  two bodies meeting one death report once; the test that kills M12 is
+  the *sequential* shape (a failing `execute`, then a checkout finding the
+  same entry). Two bodies failing at the same instant is not exercised,
+  and making it deterministic would need a fixture this file does not
+  have.
+- **`Head::elapsed` is pinned against a slow server and not against a slow
+  body.** A server that stalls after the head moves nothing here, because
+  the head has already been reported.
+- **No hook has been watched under `smol`.** The events are `R`-generic and
+  read the clock only through `Timer`, and `tests/two_runtimes.rs` runs
+  this transport under both — but with no hook.
+- **The `remote` field is not distinguished from the address dialled.**
+  It is read from `quinn::Connection::remote_address()`, which is the
+  right source, and every fixture dials the address that answers — so a
+  mutation replacing one with the other would survive. On loopback there
+  is no way to tell them apart.
+- **Nothing measures the allocation.** The cost table counts clock reads;
+  `ConnState` and `Watch` are one `Arc` and one `Box` per watched
+  connection and request, and a mutation that allocated them under
+  `NoHooks` would be invisible to `hooks_cost.rs`. `M14` covers the clock
+  half of "`WATCHING` ignored" and nothing covers this half.

@@ -2,6 +2,7 @@
 //! still being written on the other half of it.
 
 use bytes::{Buf, Bytes};
+use http_ng_core::unversioned::Hooks;
 use http_ng_core::{Error, ErrorKind};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -50,7 +51,23 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 /// connection, and on this transport there genuinely are neighbours — see
 /// [`crate::H3`]'s pool policy. Nothing is spawned, so there is no pump
 /// left running behind a dropped body either.
-pub struct H3Body {
+///
+/// # It also reports the connection's end, and only the connection's
+///
+/// A body outlives `Transport::execute`, so if the connection underneath
+/// it dies while it is being read there is nothing else left to say so.
+/// [`crate::hooks::Watch`] is what it says it with, and the discrimination
+/// is `quinn::Connection::close_reason()`: a stream that failed on a
+/// connection that is still alive — a `RESET_STREAM`, a server that
+/// stopped reading — is one request's failure and **not** a close, which
+/// on a transport whose whole point is that neighbours survive would be
+/// the loudest possible lie.
+///
+/// `Option<Box<..>>`, so a body nobody is watching carries eight bytes,
+/// and so that this type is `Unpin` for every `H` — `http-ng-select`
+/// requires that of `<H3<..> as Transport>::Body`, and a `Box` is `Unpin`
+/// whatever it holds.
+pub struct H3Body<H = http_ng_core::unversioned::NoHooks> {
     stream: RecvHalf,
     /// `None` once the request body has been written in full — which for
     /// an empty body is before this type exists, and for a large one may
@@ -60,6 +77,8 @@ pub struct H3Body {
     /// them as one more frame, so the body has a second phase rather than
     /// one loop.
     phase: Phase,
+    /// `None` unless somebody is watching — see [`crate::hooks`].
+    watch: Option<Box<crate::hooks::Watch<H>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,12 +88,17 @@ enum Phase {
     Done,
 }
 
-impl H3Body {
-    pub(crate) fn new(stream: RecvHalf, pump: Option<crate::pump::Pump>) -> Self {
+impl<H> H3Body<H> {
+    pub(crate) fn new(
+        stream: RecvHalf,
+        pump: Option<crate::pump::Pump>,
+        watch: Option<Box<crate::hooks::Watch<H>>>,
+    ) -> Self {
         Self {
             stream,
             pump,
             phase: Phase::Data,
+            watch,
         }
     }
 
@@ -101,7 +125,7 @@ impl H3Body {
 // Hand-written: h3's RequestStream is not Debug, and the useful thing to
 // print about a body in flight is which phase it is in, not the QPACK
 // state behind it.
-impl std::fmt::Debug for H3Body {
+impl<H> std::fmt::Debug for H3Body<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Body")
             .field("phase", &self.phase)
@@ -110,7 +134,24 @@ impl std::fmt::Debug for H3Body {
     }
 }
 
-impl http_body::Body for H3Body {
+impl<H: Hooks> H3Body<H> {
+    /// Tell the hook, if this failure was the connection's rather than one
+    /// stream's — and at most once per connection, however many bodies are
+    /// sharing it.
+    ///
+    /// Called from `poll_frame` and never from `Drop`: a hook that panicked
+    /// during an unwind would abort the process, which
+    /// `http_ng_core::unversioned::hooks` refuses on the grounds that an
+    /// observability seam able to abort a program is worse than one with a
+    /// hole in it.
+    fn report_failure(&self, e: &Error) {
+        if let Some(w) = self.watch.as_deref() {
+            w.failed(e);
+        }
+    }
+}
+
+impl<H: Hooks> http_body::Body for H3Body<H> {
     type Data = Bytes;
     type Error = Error;
 
@@ -120,6 +161,7 @@ impl http_body::Body for H3Body {
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
         if let Some(e) = self.poll_pump(cx) {
             self.phase = Phase::Done;
+            self.report_failure(&e);
             return Poll::Ready(Some(Err(e)));
         }
         loop {
@@ -141,7 +183,9 @@ impl http_body::Body for H3Body {
                         Ok(None) => self.phase = Phase::Trailers,
                         Err(e) => {
                             self.phase = Phase::Done;
-                            return Poll::Ready(Some(Err(stream_error(e))));
+                            let e = stream_error(e);
+                            self.report_failure(&e);
+                            return Poll::Ready(Some(Err(e)));
                         }
                     }
                 }
@@ -151,7 +195,11 @@ impl http_body::Body for H3Body {
                     return Poll::Ready(match out {
                         Ok(Some(t)) => Some(Ok(http_body::Frame::trailers(t))),
                         Ok(None) => None,
-                        Err(e) => Some(Err(stream_error(e))),
+                        Err(e) => {
+                            let e = stream_error(e);
+                            self.report_failure(&e);
+                            Some(Err(e))
+                        }
                     });
                 }
             }
