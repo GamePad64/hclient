@@ -3121,3 +3121,270 @@ direction and the one the floor rule intends.
 - **Concurrency is untested because it is impossible here.** One stream
   per connection is the pool's policy, so "two duplex uploads on one
   connection" has no fixture and no meaning today.
+
+---
+
+# v0.4 W2 — a per-request version demand, and one measurement that re-opened a decision
+
+Two pieces of `docs/v04-design.md`'s appendices. Appendix A is built;
+Appendix B turned out to rest on a premise that measurement contradicted,
+so it is reported rather than implemented.
+
+## A. `RequireVersion`, and where the check lives
+
+The type is `http_ng_core::RequireVersion(pub http::Version)`, next to
+`AllowEarlyData` in `caps.rs` and for the same reason: transports read it
+out of the request's `http::Extensions` and do not depend on `http-ng`. It
+is that mark with the polarity reversed — an *allow* becomes a *require* —
+and the reversal is why it stays per request rather than becoming a client
+setting. Turning an ALPN outcome into a request failure is correct for
+gRPC, whose RPC cannot proceed over HTTP/1.1 at all, and wrong for a
+browser-shaped client that should degrade quietly; only the caller of one
+request knows which of the two it is.
+
+The refusal is `http_ng_core::VersionNotAvailable { required, negotiated }`
+under `ErrorKind::Unsupported`, and the comparison is one function,
+`http_ng_core::check_version`, so the rule cannot drift between the two
+transports that enforce it.
+
+**Exact match, in both directions, deliberately.** There is no ordering
+under which "at least HTTP/2" means anything useful: a caller who needs h2
+framing does not want HTTP/3 instead, and a caller who needs HTTP/1.1 —
+to keep an upgrade path open — wants strictly *less* than HTTP/2, which a
+minimum reading cannot express at all. The mutation that turns `!=` into
+`>` is killed by four tests (M10 below).
+
+### `http-ng-native` — three call sites, one decision
+
+| where | what it does | why there |
+|---|---|---|
+| the pooled-candidate loop, first statement | **filters**: a pooled HTTP/1.1 connection under a demand for h2 is skipped, not failed | a fresh connection may still negotiate h2, and skipping is what makes the refusal rare rather than the normal outcome for any origin already spoken to |
+| the `offered_h2` computation | **narrows** the ALPN offer to protocols the demand admits | without it the h1 direction of the demand is unsatisfiable against any h2-capable server: the client would propose `h2`, the server would take it, and the request would fail on a connection the client itself chose to make wrong |
+| immediately after `negotiated_protocol`, before `handshake_for` | **refuses** with `VersionNotAvailable` | this is the first instant the protocol is known, and it is before `handshake_for` (which for h2 writes the connection preface) and before `established::exchange` (which writes the head) |
+
+So a refused demand costs the server a TCP connection and a TLS handshake
+and **not one byte of HTTP**. The narrowing is why the third row is
+reached at all rather than dead: what survives it is the case the client
+does not control — a server that selects something else, or a TLS backend
+that reports one.
+
+`spoken_version(protocol)` derives the version from `is_h2`, the same
+predicate `handshake_for` branches on, so the two cannot answer
+differently about one connection. An ALPN this transport does not speak
+(`negotiated_protocol` → `None`) is `HTTP_11`, which is not a fallback of
+convenience: v0.2 W2's standing answer to an unknown ALPN is to speak
+HTTP/1.1 on that one connection and keep it out of the pool, so HTTP/1.1
+is the truth about what the next bytes will be.
+
+### What each backend does with a demand it cannot meet
+
+| backend | `version_select` | `RequireVersion(HTTP_3)` | `RequireVersion(HTTP_2)` | `RequireVersion(HTTP_11)` |
+|---|---|---|---|---|
+| `http-ng-native` | **`true`** (its first `true` anywhere) | `VersionNotAvailable`, nothing written | served if ALPN gave `h2`, else `VersionNotAvailable` with nothing written | served; `h2` removed from the offer so it usually can be |
+| `http-ng-h3` | **`true`** | served | `VersionNotAvailable`, **before resolution** | `VersionNotAvailable`, before resolution |
+| `http-ng-fetch` | `false`, unchanged | `UnsupportedCapability` from `Client` | same | same |
+| `http-ng-wasi` | `false`, unchanged | `UnsupportedCapability` from `Client` | same | same |
+
+**`http-ng-h3` reports `true`, and that is the decision worth reading
+twice.** It speaks exactly one version and *chooses* nothing — but the
+field says whether a demand is **honoured**, not whether a version is
+selected. `RequireVersion(HTTP_3)` is satisfied by construction, and a
+`false` would have `Client`'s gate refuse the one demand this transport
+meets without doing anything at all. Its check is the first statement of
+`execute`, before the scheme check and before resolution, because the
+answer is a pure function of the request there.
+
+`http-ng-fetch` and `http-ng-wasi` keep `false` and neither file was
+touched. Neither selects the protocol version *nor learns it* — both also
+report `version_reported: false` — so there is no moment at which either
+could compare a demand against anything, and refusing is the only honest
+answer.
+
+### The `Client` gate, and the two boundaries
+
+`config::check_version_demand_supported` is `check_redirect_supported`'s
+shape down to the `what` string (`"require_version"`), called from
+`Client::run` beside the timeouts and the redirect policy. There is no
+client-level half to merge, on purpose, and `build()` deliberately still
+succeeds for a backend that cannot honour demands: a browser client must
+go on working for every caller who never mentions a version.
+
+**The demand crosses an origin, where `AllowEarlyData` does not**, and the
+asymmetry is a decision rather than an omission from `next_hop`'s strip
+list. `AllowEarlyData` says "replaying this is safe", a claim about what a
+request does *at a server*, which a caller who addressed origin `a` never
+made about `b`. `RequireVersion` is a statement about the caller's own
+code — "the thing I am about to do needs this protocol" — equally true at
+hop 4 as at hop 1. Dropping it would let a `302` deliver over HTTP/1.1
+precisely the request that said it could not use HTTP/1.1: the failure the
+mark exists to prevent, arriving through the one door left open.
+
+**The static floor is not widened and cannot be.** `full_duplex` stays
+`false`, `capabilities_report_the_floor_with_the_feature_on` is untouched
+and green, and a request that does not carry the mark is unaffected by
+every line of this. The demand is how a caller converts "the floor says
+no" into "this connection says yes", per request.
+
+## B. `request_trailers` — the measurement re-opened the question
+
+Appendix B proposed making `http-ng-native` enforce its
+`request_trailers: false` the way `http-ng-h3` does, **unless the h1 path
+turned out to send them too**. It does.
+
+Measured on a raw socket, plaintext `http://` so no ALPN and therefore
+HTTP/1.1 with certainty — `crates/http-ng-native/tests/request_trailers.rs`.
+An ordinary `Native`, a streaming body whose second frame is a trailers
+frame, and a `Trailer: grpc-status` request header:
+
+```
+POST / HTTP/1.1
+trailer: grpc-status
+host: 127.0.0.1:36101
+transfer-encoding: chunked
+
+4
+AAAA
+0
+grpc-status: 0
+
+```
+
+So the field has **two carriers, not one**, and "make native refuse what
+h3 refuses" would have deleted a working HTTP/1.1 feature rather than
+closed a gap. Per the brief's own condition, this is reported rather than
+proceeded with, and no enforcement was added.
+
+**The condition is RFC 9110 §6.6.1's, not ours.** hyper encodes request
+trailers only for fields the request declared in a `Trailer:` header —
+`proto/h1/encode.rs`'s `Kind::Chunked(Some(..))` arm, reached from
+`role.rs`'s client encoder when `TRAILER` is present. That is a sensible
+rule for a hop-by-hop-sensitive feature: an intermediary deciding whether
+to buffer needs to know before the body starts.
+
+**And it leaves a third state that neither `true` nor `false` describes.**
+With no `Trailer:` header the same trailers are dropped silently — hyper
+logs at `debug!` and returns `None` — and the request succeeds with a
+`200`. That is not h3's behaviour (a typed `RequestTrailersNotSent`) and
+not what `true` would promise (they go out). Both halves are pinned, so
+whoever changes the declaration has to answer for this case rather than
+discover it.
+
+What the three protocols now do with a request-body trailers frame:
+
+| path | declared | actual |
+|---|---|---|
+| `http-ng-native` h1 | `false` | **sent**, if declared in `Trailer:`; **dropped silently** if not |
+| `http-ng-native` h2 | `false` | **sent**, unconditionally (`Pump::poll` calls `send_trailers`) |
+| `http-ng-h3` | `false` | **refused**, typed `RequestTrailersNotSent` |
+
+Three behaviours under one `false`. The decision Appendix B wanted is
+still owed; it is now owed with three rows rather than two, and the
+`false` is an understatement on two paths and an enforcement on the third.
+
+## Mutation testing
+
+Anchor verified before each run: **469 tests**,
+`cargo nextest run --no-fail-fast -p http-ng-core -p http-ng-native -p http-ng-h3 -p http-ng --all-features`,
+all passing on the unmutated tree. Killers read, not counted — two rows
+below changed their verdict on a re-run and both changes are recorded.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M1a | `check_version` never refuses (the demand read and ignored, everywhere at once) | **killed**, 7 | `core::a_demand_the_connection_misses_is_a_typed_unsupported`, `core::a_newer_version_does_not_satisfy_a_demand_for_an_older_one`, `native::http2::a_demand_for_http1_takes_h2_off_the_alpn_offer`, `native::require_version::{a_demand_for_http2_is_refused_before_a_single_byte_is_written, a_pooled_connection_of_the_wrong_version_is_skipped_not_used}`, `h3::require_version::{a_demand_this_transport_cannot_meet_is_refused_before_the_network, a_refused_demand_reaches_the_server_as_nothing_at_all}` |
+| M1b | native's fresh-connection check deleted | **killed**, 2 | `native::require_version::a_demand_for_http2_is_refused_before_a_single_byte_is_written`, `…::a_pooled_connection_of_the_wrong_version_is_skipped_not_used` |
+| M1c | native's pool-candidate filter deleted | **survived, then killed** — see below | `native::require_version::a_pooled_connection_of_the_wrong_version_is_skipped_not_used` |
+| M2 | the demand checked **after** `established::exchange` rather than before `handshake_for` | **killed**, 2 | `native::require_version::a_demand_for_http2_is_refused_before_a_single_byte_is_written`, `…::a_pooled_connection_of_the_wrong_version_is_skipped_not_used` |
+| M3 | `version_select` left `false` on `http-ng-native` | **killed**, 6 | `native::transport::capabilities_are_honest_about_v01_limits`, `native::http2::{a_demand_for_http1_takes_h2_off_the_alpn_offer, a_demand_for_http2_is_served_by_a_connection_that_negotiated_it}`, `native::require_version::{a_demand_the_connection_meets_is_served_normally, a_demand_for_http2_is_refused_before_a_single_byte_is_written, a_pooled_connection_of_the_wrong_version_is_skipped_not_used}` |
+| M3b | `version_select` left `false` on `http-ng-h3` | **killed by a read-back only, then by behaviour** — see below | `h3::require_version::{version_select_is_declared_and_the_tests_above_are_why, a_client_over_this_transport_does_not_refuse_a_demand_for_http3}` |
+| M4 | the refusal raised for a demand the connection **does** satisfy | **killed**, 5 | `core::a_demand_the_connection_meets_passes`, `native::http2::a_demand_for_http2_is_served_by_a_connection_that_negotiated_it`, `native::require_version::a_demand_the_connection_meets_is_served_normally`, `h3::require_version::{a_demand_for_http3_is_served, a_client_over_this_transport_does_not_refuse_a_demand_for_http3}` |
+| M6 | the ALPN narrowing removed (`h2` offered against a demand for HTTP/1.1) | **killed**, 1 | `native::http2::a_demand_for_http1_takes_h2_off_the_alpn_offer` |
+| M7 | the demand stripped on a cross-origin hop, next to `AllowEarlyData` | **killed**, 1 | `http-ng::require_version::the_demand_survives_a_cross_origin_redirect` |
+| M8 | the `Client` gate reads the capability without the mark | **killed**, 112 | `http-ng::require_version::an_unmarked_request_is_unaffected_by_a_backend_that_cannot_select` and every other mock-based test in `http-ng` — `Capabilities::none()` is `version_select: false`, so the mutant refuses every request in the crate |
+| M9 | `http-ng-h3`'s check deleted | **killed**, 2 | `h3::require_version::{a_demand_this_transport_cannot_meet_is_refused_before_the_network, a_refused_demand_reaches_the_server_as_nothing_at_all}` |
+| M10 | exact match becomes "at least" (`!=` → `>`) | **killed**, 4 | `core::a_newer_version_does_not_satisfy_a_demand_for_an_older_one`, `native::http2::a_demand_for_http1_takes_h2_off_the_alpn_offer`, `h3::require_version::{a_demand_this_transport_cannot_meet_is_refused_before_the_network, a_refused_demand_reaches_the_server_as_nothing_at_all}` |
+| M11 | the trailer measurement never sends `Trailer:` | **killed**, 1 | `native::request_trailers::sends_request_trailers_on_http1_when_the_caller_declares_them` |
+| M12 | the trailer measurement always sends `Trailer:` | **killed**, 1 | `native::request_trailers::drops_undeclared_request_trailers_on_http1_without_telling_anyone` |
+
+**"Native's trailer enforcement removed" has no row, and the reason is
+section B**: there is no enforcement to remove. M11 and M12 stand in its
+place — they are what establishes that the two measurement tests
+distinguish the two behaviours rather than both passing on one, which is
+the only thing left to be wrong about once the decision is deferred.
+
+### The two rows that changed verdict, and what they cost
+
+**M1c survived first, and the defect was in the fixture rather than in the
+mutation.** `a_pooled_connection_of_the_wrong_version_is_skipped_not_used`
+passed with the pool filter and without it. The fixture answered a request
+and then `break`, closing the socket — so there was never a connection in
+the pool, the client's second request opened a fresh one either way, and
+`accepted == 2` held for the wrong reason. The comment beside that `break`
+read *"keep reading so the loop still ends on the client's own close"*,
+describing something the code did not do. The server is keep-alive now
+(`Content-Length` framing, no `Connection: close`, no `break`), reporting
+once per connection, and M1c dies.
+
+This is worth naming as the class rather than the instance: **a test whose
+subject is the pool, which never reached the pool, passing green with the
+code under test deleted.** Nothing but running the mutation would have
+found it.
+
+**M3b killed only a read-back at first.** Flipping `http-ng-h3`'s
+`version_select` to `false` failed exactly one test — the one that asserts
+the field and nothing about what the field does. Every other test in that
+file calls `Transport::execute` directly, so `Client`'s
+`UnsupportedCapability` gate never ran in any of them, and the *behaviour*
+the crate's doc comments promise (`false` would refuse
+`RequireVersion(HTTP_3)`) had no test under it at all.
+`a_client_over_this_transport_does_not_refuse_a_demand_for_http3` is that
+test, and M3b now dies twice.
+
+## Deliberately not done
+
+- **`request_trailers` is unchanged, in both crates**, and section B is
+  why: the premise Appendix B's fix rested on is false, so the decision
+  goes back rather than forward. Nothing about the declaration, the h3
+  enforcement or the h2 `send_trailers` moved.
+- **The silent drop of undeclared h1 trailers is left standing**, pinned
+  rather than fixed. It is the same decision: three behaviours under one
+  field wants one decision, and taking a third of it here would be the
+  mistake this whole appendix is about.
+- **No `RequestBuilder::extension` setter.** A demand goes on through
+  `Client::execute` with an `http::Request`, exactly as `AllowEarlyData`
+  does today. Adding an ergonomic setter for one of the two marks and not
+  the other would be arbitrary, and adding it for both is a facade
+  question rather than a W2 one.
+- **`Transport`'s shape is untouched.** The brief made this a stopping
+  condition; it was not reached, for the same reason `AllowEarlyData`
+  never reached it.
+
+## What this leaves unverified
+
+- **The narrowing is measured against a TLS stub, not against rustls.**
+  `a_demand_for_http1_takes_h2_off_the_alpn_offer` asserts on the ALPN
+  list `FakeTls` records, which is exactly the input `Native`'s decision
+  is made from — but that rustls sends that list unchanged and reports
+  back what a real server picked is `http-ng-tls-rustls`'s business and
+  is not re-tested here. The same boundary every other test in
+  `tests/http2.rs` sits on.
+- **No demand has been tried against a real h2 server over real TLS**, so
+  the case where a server *declines* `http/1.1` and picks `h2` against a
+  demand for HTTP/1.1 — the one the third native call site exists for —
+  is exercised only through the stub reporting `h2`. The behaviour is the
+  same either way (the stub's report is what `negotiated_protocol` reads)
+  but the negotiation is simulated.
+- **`http-ng-fetch` and `http-ng-wasi` are argued, not exercised.** Their
+  `version_select: false` is unchanged and their refusal comes from
+  `Client`'s gate, which is tested against a mock reporting the same
+  `false`. No browser or `wasmtime` run has been made with a demand on a
+  request. The claim being made about them is the mock's behaviour plus
+  the fact that their field is `false`, and that is all.
+- **Nothing checks what a demand does to a `425` replay.**
+  `Client::run`'s `425` branch strips `AllowEarlyData` from the retry and
+  leaves everything else; a `RequireVersion` therefore survives into the
+  replay, which is believed correct for the same reason it survives a
+  redirect, and has no test.
+- **The interaction with `Timeouts` is untested.** A refusal happens after
+  `connect::connect` has run, so a `connect` bound applies to a request
+  that is then refused. That is the intended reading — the connection was
+  genuinely made — but no test pins it.

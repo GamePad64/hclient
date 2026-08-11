@@ -104,10 +104,20 @@ pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
 // anyone reads, so there is nothing to re-export in its place — see
 // `docs/w4-upgrade-seam.md` §3. `tests/facade.rs`'s plumbing check moved
 // to `EarlyDataSupport`, and that file says why it and not another.
+//
+// `RequireVersion` and `VersionNotAvailable` arrive on the same argument as
+// `AllowEarlyData`, one step further: `RequireVersion` is a value the
+// CALLER puts on a request, and `VersionNotAvailable` is the `source()` a
+// caller downcasts to in order to tell "this connection cannot do what I
+// asked" from every other `ErrorKind::Unsupported`. A facade that named the
+// mark and hid its refusal would leave the error unmatchable without a
+// direct dependency on `http-ng-core`. `check_version` is NOT re-exported:
+// it is the seam's own comparison, for transports, and a consumer has
+// nothing to call it on.
 pub use http_ng_core::{
     AllowEarlyData, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
-    RedirectSupport, RequestBody, RetryKind, RewindFactory, TimeoutSupport, TlsSupport,
-    UnsupportedCapability,
+    RedirectSupport, RequestBody, RequireVersion, RetryKind, RewindFactory, TimeoutSupport,
+    TlsSupport, UnsupportedCapability, VersionNotAvailable,
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;

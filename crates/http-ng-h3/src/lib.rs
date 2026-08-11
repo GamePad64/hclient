@@ -82,7 +82,7 @@ use bytes::Bytes;
 use http_ng_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
     RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
-    unversioned::Transport,
+    check_version, unversioned::Transport,
 };
 use http_ng_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use http_ng_tls::TlsConfigId;
@@ -253,8 +253,14 @@ where
     ///   [`offers_early_data`](QuicTlsConnect::offers_early_data), which
     ///   defaults to `false`. It is never set from a constant here: the
     ///   capability has to come from the component that knows.
-    /// - `version_reported: true`, `version_select: false` — this transport
-    ///   speaks exactly one version and has nothing to select.
+    /// - `version_reported: true`, and `version_select: true` — which is
+    ///   not a claim to choose anything. This transport speaks exactly one
+    ///   version and *honours* a per-request
+    ///   [`RequireVersion`](http_ng_core::RequireVersion): `HTTP_3`
+    ///   proceeds, anything else is
+    ///   [`VersionNotAvailable`](http_ng_core::VersionNotAvailable) before
+    ///   a packet goes out. `false` would make `Client` refuse the one
+    ///   demand this transport meets by construction.
     /// - `timeouts`: `connect` is `true` and enforced in `execute` — it
     ///   bounds resolution, the QUIC handshake and h3's settings exchange
     ///   together, the same scope `http-ng-native` gives the same setting.
@@ -349,8 +355,13 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
     c.early_data = early_data;
     c.tls_config = TlsSupport::Full;
     c.client_certs = true;
-    // One version, nothing to select, and `Response::version()` reports it.
-    c.version_select = false;
+    // One version — and honouring a demand is not the same as choosing
+    // one. `execute` reads `RequireVersion` before it does anything else:
+    // `HTTP_3` proceeds, everything else is `VersionNotAvailable` with not
+    // a packet sent. `false` here would make `Client` refuse
+    // `RequireVersion(HTTP_3)` at the `UnsupportedCapability` gate, which
+    // is the one demand this transport satisfies by construction.
+    c.version_select = true;
     c.version_reported = true;
     // `connect` is declared and enforced in the same change, which is v0.2
     // W4's rule and the reason it was `false` until now rather than
@@ -772,6 +783,30 @@ where
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<H3Body>, Error> {
+        // **A `RequireVersion` demand, answered before anything else** —
+        // before the scheme check, before resolution, before a QUIC
+        // packet. This transport speaks exactly one version, so the answer
+        // is a pure function of the request and there is no reason to
+        // learn anything else first.
+        //
+        // The two halves matter equally, and it is the second that makes
+        // `Capabilities::version_select` `true` here rather than `false`:
+        //
+        // - `RequireVersion(HTTP_3)` is **satisfied**, and must not fail.
+        //   Declaring `version_select: false` would have `Client` refuse
+        //   it at the `UnsupportedCapability` gate — a transport turning
+        //   down the one demand it meets by definition.
+        // - Anything else is refused with the same `VersionNotAvailable`
+        //   `http-ng-native` raises, so a caller who moved from one
+        //   backend to the other reads the same type rather than
+        //   discovering a second vocabulary.
+        //
+        // A transport that cannot *choose* still *honours*: see the field's
+        // doc in `http-ng-core`, and `http-ng-fetch`/`http-ng-wasi`, which
+        // keep `false` because they neither choose the version nor learn
+        // it.
+        check_version(req.extensions(), http::Version::HTTP_3)?;
+
         let uri = req.uri().clone();
         if uri.scheme_str() != Some("https") {
             return Err(Error::new(

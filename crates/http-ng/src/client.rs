@@ -1,6 +1,6 @@
 use crate::config::{
     Config, check_redirect_supported, check_supported, check_timeouts_supported,
-    effective_redirect, effective_timeouts, effective_uri,
+    check_version_demand_supported, effective_redirect, effective_timeouts, effective_uri,
 };
 use crate::deadline::{Deadline, within};
 use crate::decompress::{self, Decompressed};
@@ -666,6 +666,32 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         let redirect = redirect.unwrap_or_default();
+
+        // The third of the three, and the only one with nothing to merge:
+        // `RequireVersion` is per request by design (see
+        // `check_version_demand_supported`), so what is checked is exactly
+        // what the caller put in the extension bag.
+        //
+        // **Once, before the loop, and it covers every hop** — because the
+        // mark travels unchanged: `stages::redirect::next_hop` clones the
+        // extensions and strips only `AllowEarlyData`, and only across an
+        // origin. The demand deliberately is not on that list. It is a
+        // statement about the caller's own code — "what I am about to do
+        // needs this protocol" — equally true at hop 1 and hop 4, where
+        // `AllowEarlyData` is a judgement about a particular server that
+        // nobody made about the next one. Dropping it on a cross-origin
+        // redirect would let a 302 deliver over HTTP/1.1 precisely the
+        // request that said it could not use HTTP/1.1.
+        //
+        // One transport, one capability: the backend is the same for every
+        // hop of an operation, so there is no second answer a later hop
+        // could give.
+        check_version_demand_supported(
+            &hp.extensions,
+            self.inner.transport.capabilities(),
+            backend_name::<T>(),
+        )
+        .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
 
         // Read once, before the loop, and about the CALLER's request
         // rather than about the hop in hand — a `Cookie` header attached

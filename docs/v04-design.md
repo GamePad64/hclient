@@ -351,6 +351,36 @@ cannot proceed over HTTP/1.1, and wrong for a browser-shaped client that
 should degrade quietly. Only the caller knows which of the two it is, which
 is the same argument that put `AllowEarlyData` in the caller's hands.
 
+**Built.** `http_ng_core::RequireVersion(http::Version)`, refused with
+`VersionNotAvailable` under `ErrorKind::Unsupported`, compared by one
+shared `check_version`. The acceptance is
+`docs/v03-acceptance.md`'s "v0.4 W2 — a per-request version demand"; three
+things it settled that this appendix left open:
+
+- **The demand does not only refuse, it routes.** `Native::execute` reads
+  it at three points: it filters pool candidates, it **narrows the ALPN
+  offer**, and only then does it refuse. Without the middle one the h1
+  direction of the demand is unsatisfiable against any h2-capable server —
+  the client would propose `h2`, the server would take it, and the request
+  would fail on a connection the client itself chose to make wrong.
+- **Exact match, not a minimum.** There is no ordering under which "at
+  least HTTP/2" is useful: a caller needing h2 framing does not want
+  HTTP/3, and one needing HTTP/1.1 wants strictly less.
+- **`version_select: true` means "honours a demand", not "chooses a
+  version".** `http-ng-h3` speaks one protocol and reports `true`, because
+  `false` would make `Client`'s gate refuse `RequireVersion(HTTP_3)` — the
+  one demand it satisfies by construction. `http-ng-fetch` and
+  `http-ng-wasi` keep `false`: neither selects the version *nor learns
+  it*, so neither has a moment at which it could compare anything.
+
+**And one boundary this appendix got wrong by analogy.** `AllowEarlyData`
+is stripped across an origin, and the obvious reading is that its twin
+should be too. It must not be. "Replaying this is safe" is a claim about
+what a request does *at a server*; "my code needs HTTP/2" is a claim about
+the caller's own code, equally true at hop 4. Stripping it would let a
+`302` deliver over HTTP/1.1 precisely the request that said it could not
+use HTTP/1.1.
+
 **It also gives `Capabilities::version_select` a decision to turn on.**
 That field is `false` in every backend and **read by nothing** — P5's shape
 exactly, and the second instance found in this vertical. A demand against a
@@ -381,3 +411,30 @@ send. So the fix is to make `http-ng-native` enforce what it declares
 rather than to raise the declaration — unless the h1 path turns out to send
 them too, in which case the field has a second carrier and the answer is
 worth re-opening with that measurement in hand.
+
+## Appendix B, re-opened — the h1 path sends them, and there is a third state
+
+**Measured, and the conditional above fired.** On a raw socket, plaintext
+`http://` so HTTP/1.1 with certainty: an ordinary `Native`, a streaming
+body whose second frame is a trailers frame, and a `Trailer: grpc-status`
+request header put `0\r\ngrpc-status: 0\r\n\r\n` on the wire
+(`crates/http-ng-native/tests/request_trailers.rs`). So the field has two
+carriers, not one, and the proposed fix would have **deleted a working
+HTTP/1.1 feature** rather than closed a gap. Nothing was changed.
+
+The condition is RFC 9110 §6.6.1's rather than ours: hyper encodes only
+the fields a request declared in `Trailer:`
+(`proto/h1/encode.rs`'s `Kind::Chunked(Some(..))`). Which leaves a third
+state neither `true` nor `false` describes — with no `Trailer:` header the
+same trailers are **dropped silently** and the request succeeds — so what
+one decision has to cover is now three behaviours under one field:
+
+| path | declared | actual |
+|---|---|---|
+| `http-ng-native` h1 | `false` | sent when declared in `Trailer:`; **silently dropped** when not |
+| `http-ng-native` h2 | `false` | sent, unconditionally |
+| `http-ng-h3` | `false` | refused, typed `RequestTrailersNotSent` |
+
+Both h1 behaviours are pinned by tests, so whoever takes the decision
+meets the silent drop rather than discovering it. The decision itself is
+still owed.

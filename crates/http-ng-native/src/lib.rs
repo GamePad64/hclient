@@ -60,7 +60,7 @@ pub use websocket::{NativeWebSocket, PongNotReceived, WebSocketKeepAlive};
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{
     CancelSupport, Capabilities, Error, ErrorKind, Phase, RedirectSupport, RequestBody,
-    ReuseSupport, TimeoutSupport, Timeouts,
+    ReuseSupport, TimeoutSupport, Timeouts, check_version,
 };
 use http_ng_dns::Resolve;
 use http_ng_rt::{Spawn, TcpConnect, TcpOpts, Timer};
@@ -284,6 +284,32 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D> {
         // `the_name_a_record_asked_to_protect_goes_out_in_the_clear` is
         // the same fact, exhibited on the wire.
         caps.version_reported = true;
+        // **`true` unconditionally, feature or no feature**, and that is
+        // not the floor rule being broken — it is the floor rule being
+        // read correctly. The floor governs what a caller may *assume* a
+        // request will get; this field says what happens when a caller
+        // *asks*, and the answer is the same either way: `execute` reads
+        // `RequireVersion`, narrows the ALPN offer to protocols the demand
+        // admits, filters pool buckets by it, and refuses with
+        // `VersionNotAvailable` before the head if the connection still
+        // does not match.
+        //
+        // Without the `http2` feature this transport only ever speaks
+        // HTTP/1.1, and it still honours demands: `RequireVersion(HTTP_11)`
+        // proceeds, `RequireVersion(HTTP_2)` is refused before anything is
+        // written. A `false` here would make `Client` reject both at the
+        // `UnsupportedCapability` gate, including the one this build
+        // satisfies trivially — which is exactly the under-claim
+        // `Capabilities::version_select`'s doc warns about.
+        //
+        // This is also the answer to "does the demand widen the floor": it
+        // does not, and cannot. `full_duplex` stays `false` and
+        // `tests/http2.rs`'s `capabilities_report_the_floor_with_the_
+        // feature_on` still holds. The demand is how a caller converts
+        // "the floor says no" into "this connection says yes", per
+        // request, and a request that does not ask is unaffected by every
+        // line of it.
+        caps.version_select = true;
         caps.timeouts = TimeoutSupport {
             // Actually enforced — see `execute`'s race between
             // `connect::connect` and `rt.sleep(d)`, below, and
@@ -847,6 +873,41 @@ where
     Ok(established::Established::H1(h1::handshake(conn).await?))
 }
 
+/// The HTTP version this transport will actually speak on a connection
+/// [`negotiated_protocol`] answered for.
+///
+/// Derived from [`is_h2`] rather than from a `match` of its own, and that
+/// is the whole point: `is_h2` is the predicate [`handshake_for`] branches
+/// on, so this cannot answer `HTTP_2` for a connection that got an HTTP/1
+/// handshake, or the reverse, however either is later changed.
+///
+/// **`None` is `HTTP_11`, and that is not a fallback of convenience.**
+/// `negotiated_protocol` returns `None` for an ALPN value this transport
+/// does not speak, and the standing answer to that (v0.2 W2, unchanged) is
+/// to speak HTTP/1.1 on that one connection and keep it out of the pool.
+/// So HTTP/1.1 is what a [`RequireVersion`] demand is compared against
+/// there — the truth about what the next bytes will be — rather than a
+/// separate "unknown" that would have to invent a third answer.
+fn spoken_version(protocol: Option<Protocol>) -> http::Version {
+    if is_h2(protocol) {
+        http::Version::HTTP_2
+    } else {
+        http::Version::HTTP_11
+    }
+}
+
+/// Whether a connection speaking `protocol` may serve this request.
+///
+/// Used to *filter* pool candidates and to *narrow* the ALPN offer, where
+/// [`check_version`] is used to *refuse*. The two must agree, so both read
+/// the same demand through the same [`spoken_version`] mapping: a
+/// candidate this returns `false` for is precisely one `check_version`
+/// would have refused, which is why skipping it is a routing decision and
+/// not a silent downgrade.
+fn protocol_admissible(extensions: &http::Extensions, protocol: Option<Protocol>) -> bool {
+    check_version(extensions, spoken_version(protocol)).is_ok()
+}
+
 /// Reads as `protocol == Some(Protocol::H2)`, written as a function
 /// because `Protocol::H2` does not exist without the feature and a
 /// `matches!` at each of the three call sites would need its own `#[cfg]`.
@@ -949,6 +1010,20 @@ where
         //    assumption; assuming would be free and wrong on the day a
         //    server changes its mind.
         for &protocol in self.pooled_candidates(&parts_of_key) {
+            // A `RequireVersion` demand filters the buckets before it
+            // refuses anything: a pooled HTTP/1.1 connection under a
+            // demand for HTTP/2 is not a failure, it is the wrong
+            // connection, and a fresh one may still negotiate h2. Skipping
+            // here is what makes the refusal below rare rather than the
+            // normal outcome for any origin that has ever been spoken to.
+            //
+            // The head is not written on a skipped candidate because
+            // `established::exchange` is never reached for it — the check
+            // is the loop's first statement, above every borrow of the
+            // pool.
+            if !protocol_admissible(req.extensions(), Some(protocol)) {
+                continue;
+            }
             let key = parts_of_key.key(protocol);
             let Some(est) = self.checkout(&key, now).await else {
                 continue;
@@ -986,7 +1061,20 @@ where
         // the scheme (`http`/`https`, anything else is a typed
         // `ErrorKind::Unsupported`) and runs the TLS handshake, proposing
         // the protocols below.
-        let offered_h2 = self.may_speak_h2(&parts_of_key);
+        // The second half of honouring a demand, and the half that makes
+        // it useful rather than merely fatal: **a demand narrows what is
+        // offered**, so a caller who requires HTTP/1.1 gets a connection
+        // that negotiates HTTP/1.1 instead of one that negotiates h2 and
+        // is then refused. Without this conjunct the h1 direction of the
+        // demand would be unsatisfiable against any h2-capable server —
+        // the client would propose `h2`, the server would take it, and the
+        // request the caller said needed HTTP/1.1 would fail on a
+        // connection the client itself chose to make wrong.
+        //
+        // It cannot over-offer: `may_speak_h2` still governs, so this only
+        // ever removes `h2` from the list, never adds it.
+        let offered_h2 = self.may_speak_h2(&parts_of_key)
+            && check_version(req.extensions(), http::Version::HTTP_2).is_ok();
         let alpn: &[&[u8]] = if offered_h2 {
             // Order is the preference: RFC 7301 leaves the choice to the
             // server, but every implementation reads the client's list as
@@ -1026,6 +1114,28 @@ where
             tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
             offered_h2,
         );
+
+        // **The refusal, and its position is the guarantee.** This is the
+        // first instant the negotiated protocol is known, and it is before
+        // `handshake_for` — which for h2 writes the connection preface and
+        // for h1 writes nothing, and before `established::exchange`, which
+        // writes the head. So a `RequireVersion` demand this connection
+        // cannot meet costs the server a TCP connection and a TLS
+        // handshake and **not one byte of HTTP**.
+        //
+        // The narrowing above is why this is reached at all rather than
+        // being dead: the offer already excludes a protocol the demand
+        // forbids, so what remains is the case the client does not
+        // control — a server that selects something else, or a TLS backend
+        // that reports one. That is precisely the case a caller cannot
+        // discover any other way, which is the whole argument for the
+        // demand existing (`docs/v04-design.md`, Appendix A).
+        //
+        // Checked before `checkin_for`, so a connection about to be
+        // refused is never given a check-in token either. It is dropped
+        // here, unpooled, which is right: nothing was spoken on it.
+        check_version(req.extensions(), spoken_version(protocol))?;
+
         let checkin = match protocol {
             Some(p) => self.checkin_for(&parts_of_key.key(p), now),
             None => None,
