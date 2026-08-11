@@ -3388,3 +3388,360 @@ test, and M3b now dies twice.
   `connect::connect` has run, so a `connect` bound applies to a request
   that is then refused. That is the intended reading — the connection was
   genuinely made — but no test pins it.
+
+---
+
+# v0.4 W2 — event hooks, and P13 settled by construction
+
+The original spec listed observability under v0.3 and it never happened,
+so until this the answer to *"why was that request slow"* was "read the
+source". `docs/v04-design.md` §W2 deliverable 3 asks for hooks, and puts
+one thing before the API: **P13 — can an observability hook avoid a
+`Send` bound?**
+
+## P13: yes, and here is the construction
+
+Every seam in this workspace manages without a declared `Send`, but the
+two existing `Rc` probes (`Transport` and `WebSocketConnect`, in
+`crates/http-ng-core/tests/shape.rs`) both put the `Rc` in something the
+request path only ever **borrows**. A hook is a different shape, and the
+difference is not cosmetic: a response body outlives
+`Transport::execute`, so it cannot borrow the transport — it has to
+**hold** the hook and call it from `poll_frame`. If anything on that path
+declared `Send`, every single-threaded runtime would be shut out of
+observability, which is the same objection that got `hyper::upgrade` and
+`hyper/http2` refused here.
+
+`a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_
+implements_transport` is the answer: a `Transport` whose hook counts into
+an `Rc<Cell<usize>>`, a body carrying a clone of that hook past the end of
+`execute`, and a `Hooks::on` call from inside `poll_frame`. It compiles,
+and the test asserts the **call happened** rather than that the file
+type-checks — a probe whose body is never polled would pass while proving
+nothing about the site the question is about.
+
+The complement is asserted beside it
+(`a_send_hook_leaves_the_transport_and_its_body_send`), because a seam
+that were unconditionally `!Send` — a `PhantomData<Rc<_>>` inside `Hooks`
+itself, say — would satisfy the first test while costing every backend
+`tokio::spawn` on its responses. `crates/http-ng-native/tests/shape.rs`
+re-checks that direction on the real transport.
+
+Nothing about the answer was free: `H: Clone` and `H: Unpin` are on
+`Native`'s two impls, and both are consequences of the same fact. The body
+needs a hook of its own rather than a borrow (`Clone`, the same bound and
+the same reason `R: Clone` already carries), and `H1Body::poll_frame`
+reaches its fields through the safe `Pin<&mut Self> -> &mut Self`
+projection this workspace's `forbid(unsafe_code)` leaves as the only one
+(`Unpin`). Every hook worth writing is both.
+
+## The event set, derived from the code rather than from the list
+
+The plan named six things. Four are emitted, one is not because this
+transport has nothing to put in it, and the vocabulary is
+`http_ng_core::unversioned::{Hooks, Event}`.
+
+| event | what it says | why it earns its place |
+|---|---|---|
+| `Connected` | id, uri, remote address, negotiated version, and `dns`/`tcp`/`tls`/`total` | The connect is the thing a caller cannot see and cannot time. The version is `spoken_version(protocol)` — the same function `handshake_for` branches on, so it cannot claim HTTP/2 for a connection that got an HTTP/1 handshake |
+| `Reused` | id, uri, version | **The pool already knew this and threw it away.** Emitted from the branch that took a connection out of the pool, so there is no flag anywhere that could disagree with the behaviour — the `reuse_of(&pool)` discipline applied to an event |
+| `Head` | id, uri, status, version, elapsed | `Response::version()` answers after the fact and says nothing about *when*. The pair (`Head::elapsed`, `ConnectTiming::total`) is what separates "the connection was slow" from "the server was slow" |
+| `Closed` | id, and one of `Ended` / `Stale` / `Failed(&Error)` | A connection going away underneath a caller is invisible today, and `Stale` in particular is the event that explains a connect the caller did nothing to deserve |
+
+**There is no "request queued", and that is a finding rather than an
+omission.** `http-ng-native` has no queue: a request that finds no live
+pooled connection dials a fresh one, there is no per-origin connection
+limit to wait behind, and an h2 connection is checked out of the pool
+*exclusively* — one stream at a time — so `SendRequest::poll_ready` never
+waits for a stream of ours. A variant no code can emit is a capability
+that lies, which is the defect this workspace has caught four times.
+`http-ng-urlsession` (W3) will have a queue, and that is when the variant
+should arrive.
+
+**Two of the four were facts the code already computed and discarded**,
+which is why they cost no new instrumentation: `negotiated_protocol` runs
+before the head is written, and `checkout`'s own control flow is the
+difference between reuse and a fresh connect.
+
+## Zero cost when nobody is watching, measured
+
+`Hooks::WATCHING` is an associated **const**, `false` on `NoHooks`. Every
+clock read whose only purpose is an event goes through `mark::<H, R>`,
+which is `H::WATCHING.then(|| rt.now())` — so on a `NoHooks` build there
+is no branch left for the optimiser to remove, there is nothing there at
+all. The connection id is gated the same way (`connection_id::<H>`), and
+`connect::Attempted` is `Option<Box<_>>` so a request that wants none of
+this carries eight bytes rather than eighty through four nested `async
+fn`s.
+
+The evidence is `crates/http-ng-native/tests/hooks_cost.rs`, which counts
+clock reads on a `Tokio` that keeps a tally of every `now()`:
+
+| build | fresh connection | second request, served from the pool |
+|---|---|---|
+| `NoHooks` | **1** `now()` | **0** `now()` |
+| a hook that does nothing but exist | 4 | 1 |
+
+The numbers are equalities and not bounds, deliberately: a `<=` would pass
+for a build that read the clock four times when it should read none. The
+zero is the interesting one — a pooled request under `NoHooks` reads the
+clock **not at all** — and the `1` is not the hook's either: it is
+`connect::drive`'s Happy Eyeballs epoch, which RFC 8305's pacing is
+measured from and which predates this feature. The four with a hook are
+the four marks the reported figures are measured from (the request's
+start, the connect's start, the race's epoch, the winning attempt's
+launch); there is no fifth because `http://` has no handshake to time.
+
+Only `now()` is counted, and that is not laziness: `elapsed_since` is
+called once per iteration of the scheduler loop, and how many iterations
+that loop takes depends on whether a loopback connect completes on its
+first poll — not a number any test may pin.
+
+`NoHooks` is also zero-sized and asserted to be, so a transport that
+stores one is the same size as one with no field
+(`the_no_op_hook_takes_up_no_room_in_the_transport`).
+
+**One cost is not zero and is not the hook's**: `Native`'s future grew by
+about 1.8 KB in a debug build — plumbing, not events, and it survives
+removing every emission. `tests/pool.rs`'s three concurrent requests were
+passing at **99%** of a 2 MiB debug test thread (measured: the fixture
+needs between 2.03 and 2.125 MiB now and under 2.0 before), so that growth
+turned a green test into a stack overflow. The three futures are
+`Box::pin`ned now, which changes nothing the test asserts — one task, no
+spawn, three requests in flight — and buys the next feature the headroom
+this one did not have. The growth could not be localised: removing the
+connect-side plumbing, the h1-side fields and every emission each changed
+the figure by single-digit bytes, which points at rustc's debug generator
+layout losing an overlap rather than at any one field.
+
+## What a panicking hook does
+
+**It unwinds out to whoever polled, and it is deliberately not caught.**
+`std::panic::catch_unwind` needs `UnwindSafe`, which would become a bound
+on the caller's own type, and it does nothing at all under
+`panic = "abort"` — so catching would be a promise that holds in some
+builds and not others.
+
+What the backend owes instead is that a panic can only unwind *out*, never
+leave a lock poisoned or a process aborted, and that is two structural
+rules:
+
+- **No hook is called while a lock is held.** Emission is from
+  `Transport::execute` and from the response body, never from inside
+  `pool.rs` — so a panicking hook cannot poison the pool's mutex, and a
+  hook that blocks cannot stall a request that is not its own.
+- **No hook is called from a `Drop` impl.** A panic during an unwind
+  already in progress aborts the process, and an observability seam that
+  can abort a program is worse than one with a hole in it.
+
+`a_panicking_hook_leaves_the_transport_usable` tests the consequence
+rather than the panic: it panics from the hook at the point nearest the
+pool (`Reused`, emitted immediately after a checkout), requires the panic
+to reach the caller, and then requires the **next** request on the same
+transport to succeed. If the emission ever moved inside `Pool::take`, that
+next request would panic with "connection pool poisoned" instead. The
+recorder in every test locks a `Mutex` of its own for the same reason —
+the cheapest way to have a test notice if the "no lock held" rule stops
+being true.
+
+`a_slow_hook_delays_its_own_request_and_no_other` pins the other half: a
+hook is called synchronously on the task driving the request, so a hook
+that sleeps holds up its own request and nothing else. There is no
+internal queue and no spawned task, which is what a reader might otherwise
+assume.
+
+## It reports; it cannot steer
+
+`Hooks::on` returns `()`. There is no verdict for the request path to
+branch on, so this cannot grow into a second `Capabilities` where a
+caller's declaration changes what the transport does. That is structural
+rather than a rule someone has to keep.
+
+## The timings, and what they are not
+
+`dns`, `tcp` and `tls` are three measurements, **not a decomposition**,
+and `ConnectTiming`'s own doc says so where a caller reads it:
+
+- `dns` runs from the start of the connect to the first address the
+  scheduler could try. It is a DNS figure in the honest sense — everything
+  waited for is a DNS answer — including an HTTPS record (RFC 9460), which
+  is looked up beside the addresses and whose hints are tried first.
+- `tcp` is the **winning** attempt's own interval, stamped when *that*
+  attempt was launched. RFC 8305 staggers attempts, so a winner that
+  started 250 ms into the race spent that stagger in no phase at all.
+- `tls` wraps the handshake alone, and is `None` — not `Duration::ZERO` —
+  for a connection that has none, because a zero would read as an instant
+  handshake.
+- `total` is the whole connect, including attempts that failed.
+
+`dns + tcp + tls <= total` always holds — they are disjoint intervals
+inside the whole — and that is asserted, because it is the one invariant
+that does not need a clock to check. The retry through an HTTPS record's
+hints gets a **fresh** mark for its own `dns`: its addresses are already
+in hand (`Answers` replays them), and measuring from the top would report
+the whole of the failed first attempt as time spent in DNS.
+
+Every duration is measured on the transport's `R: Timer` — the same clock
+its timeouts and pool deadlines use, so a test under `tokio::time::pause()`
+sees one story rather than two. There is no `SystemTime` anywhere near
+this.
+
+`crates/http-ng-native/tests/hooks_timing.rs` pins the attribution
+**causally**: a resolver that takes 300 ms against a loopback socket makes
+`dns > tcp` a fact about which number the code put the wait into, not a
+stopwatch reading, and a handshake that takes 300 ms makes the ordering go
+the other way. The pair is load-bearing — a single slow phase cannot tell
+"measured correctly" from "everything is measured from the start of the
+connect", because under slow DNS a `tls` stamped at the connect's start
+would exceed `dns`, and that is the assertion.
+
+## Mutation testing
+
+Anchor: 22 tests across `binary(hooks) + binary(hooks_cost) +
+binary(hooks_timing)`, verified green before each run; 204 across
+`http-ng-native --all-features`.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M1 | `Connected` never emitted | killed | 13 tests, incl. `two_requests_report_one_connect_and_one_reuse` |
+| M2 | `Reused` never emitted | killed | `two_requests_report_one_connect_and_one_reuse`, `the_reuse_names_the_connection_that_was_made` |
+| M3 | `Head` never emitted | killed | `the_head_reports_the_status_the_server_sent`, `the_head_is_timed_from_before_the_connect_not_after_it` |
+| M4 | `Closed` never emitted from the body | killed | `a_truncated_body_closes_the_connection_with_the_failure`, `a_body_polled_past_its_end_reports_one_close_and_not_two` |
+| M5 | `Reused` emitted for a **fresh** connection too | killed | `without_a_pool_the_same_two_requests_report_two_connects_and_no_reuse` (+2) |
+| M6 | `dns` measured from the attempt's launch, not the connect's start | killed | `a_slow_resolver_shows_up_as_dns_and_not_as_tcp` |
+| M7 | `tls` measured from the connect's start | killed | `the_phases_never_add_up_to_more_than_the_connect` |
+| M8 | `tcp` measured from the connect's start | killed | `a_slow_resolver_shows_up_as_dns_and_not_as_tcp` (+3) |
+| M9a | a failed connection reported as `Ended` | killed | `the_three_reasons_are_not_one_reason_wearing_three_names` |
+| M9b | a stale pooled connection reported as `Ended` | killed | `a_pooled_connection_the_server_closed_while_idle_is_reported_stale` |
+| M10 | `NoHooks::WATCHING = true` | killed | `a_client_with_no_hook_reads_no_clock_the_hook_asked_for` |
+| M11 | close reported more than once (`self.open` read, not taken) | **survived, then killed** | `a_body_polled_past_its_end_reports_one_close_and_not_two`, written for it |
+| M12 | `Stale` reported for a live pooled connection | killed | `a_pooled_connection_the_server_closed_while_idle_is_reported_stale` |
+| M13 | the `Reused` event mints a new id instead of the connection's | killed | `the_reuse_names_the_connection_that_was_made` |
+| M14 | `Connected` emitted only after the `RequireVersion` refusal | **survived, then killed** | `a_connection_refused_by_a_version_demand_was_still_reported_made`, written for it |
+
+**Three things this run is worth reading for beyond the verdicts.**
+
+**M11 survived twice.** The first test written for it used a
+`Connection: close` server and passed with the mutation applied, which was
+the wrong conclusion for an instructive reason: on that path hyper's
+`Connection` future completes *inside* `h1::exchange`, the end is reported
+before the head, and the body never holds an id at all — so there was
+nothing for `report_closed` to double-report. `without_pool` against a
+keep-alive server is the shape in which the **body** is the reporter, and
+it is deterministic rather than a race. Traced by printing the recorded
+events, not by reasoning about them.
+
+**Three rows were mis-scored by the harness, not by the code.** The
+mutation script restored files with `shutil.copy2`, which preserves the
+backup's mtime — so a file restored to an mtime *older* than the build
+cargo had just made looked unchanged, and cargo kept the **mutated**
+artifact in its cache. M11, M12 and M13 were consequently scored against a
+`http-ng-core` still carrying M10's `WATCHING = true`, and all three read
+as killed by a test that had nothing to do with them. The tell was a
+`ConnectionId(1)` in a trace where a `NoHooks` build must produce
+`ConnectionId(0)`. The restore now touches the file and every row was
+re-run from a verified anchor. **Reading the killer rather than counting
+the failures is what found this.**
+
+**M9a and M4 forced a correction to the code, not to the test.** A
+truncated body — five bytes of a promised hundred — reaches hyper's
+`Connection` as a *clean* end, and it is `incoming` that reports the
+incomplete message a poll later. Reporting `Ended` at the connection's own
+poll therefore gave a failed connection the reason of one that finished,
+and the failure that followed had no event left to carry: both servers in
+`the_three_reasons_are_not_one_reason_wearing_three_names` answered
+`Ended`. `H1Body::poll_frame` now waits for the body's verdict before
+naming the reason — which is also when the check-in happens, so a
+connection that went back to the pool reports nothing and one that did not
+reports why.
+
+## Deliberately not done
+
+- **`Transport`'s shape is untouched.** The brief made this a stopping
+  condition; it was not reached. The hook is a type parameter of
+  `Native`, not a method on the seam.
+- **`http-ng-h3`, `http-ng-fetch` and `http-ng-wasi` are untouched**, by
+  the brief's boundary. What each would need is below.
+- **No `Closed` from the h2 body.** `Connected`, `Reused` and `Head` are
+  emitted by `Native::execute` and are protocol-agnostic, so the h2 path
+  gets all three for free; the *end* of a connection is known inside the
+  body, and h2's has three places it can arrive (the connection future,
+  the response stream, the pump) where HTTP/1's has two. Guessing which
+  is which without a test for each would be the kind of claim this
+  document exists to prevent. `H2Body` carries the id so a later change
+  has it to hand.
+- **No events on the WebSocket path.** `WebSocketConnect` opens a
+  connection that is never pooled, has no response head beyond the 101
+  the handshake consumes, and ends when the caller's `Stream` ends —
+  which the caller sees directly. A `Connected` alone would put an id in
+  a log that no later event ever mentions again.
+- **No `Capabilities` field.** Nothing about a hook is a promise a caller
+  can act on before making a request, and the seam expresses itself by
+  being *called* — the same argument the WebSocket seam rests on.
+
+## What this leaves unverified
+
+- **A connection dropped rather than finished reports no `Closed`.**
+  Three instances: a cancelled request, a connection the pool evicts for
+  age (`Pool::take` and `Reaper::reap` drop entries **under the mutex**,
+  and calling a hook there is the one thing this design refuses), and a
+  connection refused by a `RequireVersion` demand after `Connected` has
+  been reported. This is the hole the no-`Drop` rule buys, and it is a
+  decision rather than an oversight — but it means **a caller cannot
+  count open connections from these events alone**, and nothing in the
+  tests says so.
+- **The `Stale` path in `h1::exchange` is not exercised.** Two places
+  report a pooled connection found dead: `Native::checkout` (tested) and
+  `h1::exchange`'s look at the connection before handing the request over
+  (not). The second is the residual race `tests/pool.rs` needs its
+  `LateEof` runtime to reach, and no hook test uses it.
+- **"No hook is called under a lock" has no mutation.** It cannot be
+  expressed as a one-line mutant without adding `H` to `pool.rs`, so what
+  stands behind it is a grep (`pool.rs` contains no `hooks.on`) plus
+  `a_panicking_hook_leaves_the_transport_usable`, which tests the
+  consequence.
+- **`dns` measured from `drive`'s start rather than `connect`'s would
+  survive.** The two differ only by the HTTPS-record lookup, and that
+  lookup is only made for `https://` at port 443 — which a loopback
+  fixture cannot be. The mutation that swaps `dns` for the attempt's own
+  mark (M6) is killed; this narrower one is not reachable from here.
+- **Nothing is measured over TLS that is really TLS.** `hooks_timing.rs`
+  uses a `TlsConnect` double that waits and hands the plaintext stream
+  back, which is the right shape for timing a handshake seam and is not a
+  handshake. The same boundary `tests/http2.rs` already sits on.
+- **No h2 connection has been watched.** The three `execute`-level events
+  are protocol-agnostic by construction, and `spoken_version` is shared
+  with `handshake_for`, but no test runs a hook against an `h2::server`.
+- **The events are untested under `smol`.** They are `R`-generic and read
+  the clock only through `Timer`, so there is nothing target-specific in
+  them, but `tests/dual_runtime.rs` has no hooks counterpart.
+- **`Head::elapsed` is not pinned against a slow server.** It is asserted
+  to contain the connect (`elapsed >= total`), which is an ordering; that
+  it *tracks* a server's delay is believed and not measured.
+
+## What the other three backends would need
+
+- **`http-ng-h3`** is the closest, and its events would not be the same
+  set. `Connected` needs a QUIC handshake rather than TCP + TLS, so
+  `ConnectTiming`'s three phases do not divide the same way; it shares
+  connections rather than checking them out, so `Reused` can fire while
+  another request is in flight; and a spawned driver means `Closed`
+  arrives on a task that is nobody's request, which is a shape neither
+  `Native` nor this vocabulary has. It also has facts this enum has no
+  word for — a connection migrating, 0-RTT accepted or refused. Its `H`
+  would have to reach the same two places (`execute` and the body), and
+  P13's answer carries over unchanged because `H3Body` already holds what
+  it needs.
+- **`http-ng-fetch`** can implement almost none of it honestly. The
+  browser makes the connection and says nothing about it: there is no
+  address, no protocol until the response arrives, no reuse signal, and
+  no close. `Head` is the one event it could emit truthfully. A backend
+  that emitted `Connected` with invented numbers would be the capability
+  lie this workspace keeps catching, so the honest answer there is
+  probably "implements `Hooks` for the events it can see, and the
+  vocabulary must not force the rest" — which is an argument for keeping
+  `Event` in `unversioned` until a second backend has tried.
+- **`http-ng-wasi`** is the same shape as fetch and more so: `wasi:http`
+  delegates the whole exchange, so the guest sees a request go out and a
+  response come back. `Head` again, and nothing else without a host
+  extension.
