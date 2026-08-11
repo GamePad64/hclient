@@ -438,3 +438,37 @@ one decision has to cover is now three behaviours under one field:
 Both h1 behaviours are pinned by tests, so whoever takes the decision
 meets the silent drop rather than discovering it. The decision itself is
 still owed.
+
+
+## Appendix C — `request_trailers`, decided on three rows
+
+Appendix B asked for two rows and the measurement returned three, so the
+decision it proposed was wrong and is superseded here.
+
+| path | what it does today | declared |
+|---|---|---|
+| `http-ng-native`, HTTP/1.1 | sends them **when the caller declared `Trailer:`**, and **drops them silently** when not — measured, `0\r\ngrpc-status: 0\r\n\r\n` off the wire in the first case, a successful request with the trailers gone in the second | `false` |
+| `http-ng-native`, HTTP/2 | sends them, unconditionally | `false` |
+| `http-ng-h3` | refuses, typed, `RequestTrailersNotSent` | `false` |
+
+**The silent drop is the defect, and it is the one this project exists to
+kill.** A caller who attached trailers and omitted the `Trailer:` header
+gets a `200` with their data missing and nothing said. RFC 9110 §6.6.1
+requires the header and hyper enforces it — the enforcement is correct and
+the silence is not. It becomes a typed error naming the header that was
+missing, the same shape as every discarded-setter this workspace has
+already refused to tolerate.
+
+**`http-ng-native` then declares `request_trailers: true`.** It sends them
+on both protocols it speaks, and the HTTP/1.1 condition is not a limitation
+of ours to hide behind a `false`: `Trailer:` is what the RFC requires of
+any sender, so a request that omits it is malformed rather than
+unsupported. A capability says what the transport will do with a
+well-formed request, and this one will.
+
+**`http-ng-h3` keeps `false` and keeps enforcing it.** It genuinely does
+not send them, and it is the crate that already followed v0.2 W4's rule.
+
+The asymmetry that remains — native `true`, h3 `false` — is a real
+difference between two transports rather than a drift between two
+declarations, which is exactly what the field is for.
