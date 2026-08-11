@@ -43,9 +43,9 @@ needs — none of which is gRPC-specific.
 
 | # | premise | how it is known |
 |---|---|---|
-| P1 | One value can own both stacks and still be a `Transport` | **Measured.** A probe crate compiles `Racing<Native<TokioHandle, Rustls, SystemDns<TokioHandle>>, H3<TokioHandle, Rustls, SystemDns<TokioHandle>>>` and calls `Transport::capabilities` on it. One runtime type satisfies both bound sets |
+| P1 | One value can own both stacks and still be a `Transport` | **Measured.** A probe crate compiles a two-stack type over `Native<TokioHandle, Rustls, SystemDns<TokioHandle>>` and `H3<TokioHandle, Rustls, SystemDns<TokioHandle>>` and calls `Transport::capabilities` on it. One runtime type satisfies both bound sets |
 | P2 | …but only with `http-ng-rt-tokio`'s `udp` feature on | **Measured.** Without it the same probe fails `E0277: TokioHandle: UdpAdoptStd is not satisfied`. Cargo unifies features, so a build that wants both gets it and an h1-only build does not pay |
-| P3 | The racing transport must **store** its capabilities | **Measured.** `Transport::capabilities(&self) -> &Capabilities` returns a reference (`http-ng-core/src/unversioned/transport.rs:92`), so a floor computed per call cannot be returned |
+| P3 | The selecting transport must **store** its capabilities | **Measured.** `Transport::capabilities(&self) -> &Capabilities` returns a reference (`http-ng-core/src/unversioned/transport.rs:92`), so a floor computed per call cannot be returned |
 | P4 | The floor is not always defined | **Measured.** `Native` declares `RedirectSupport::Configurable`, `H3` declares `Transparent`. The four variants are not ordered, and these two have no meet |
 | P5 | …and P4 has a cause worth fixing first | **Measured.** Only `RedirectSupport::Internal` is branched on anywhere (`http-ng/src/config.rs:342`). `Configurable`'s entire doc is one sentence — *"We set the policy."* — where the others have paragraphs, and `http-ng-native` contains **no redirect handling at all** (zero matches for `Location` or `30x` in its `src/`). Its declaration is unforced at best |
 | P6 | `full_duplex: false` on `http-ng-native` is not a declaration, it is the code | **Measured.** `http2::exchange` writes the whole request body before awaiting the response, and `tests/http2.rs` pins the floor with the feature on |
@@ -54,11 +54,11 @@ needs — none of which is gRPC-specific.
 | P9 | The platform verifier matches a name against an **IP SAN** on Linux | **Measured** in v0.3's live-DoH run, and **only** on Linux — `rustls-platform-verifier` delegates to Security.framework and CryptoAPI elsewhere |
 | P10 | NSURLSession hands bytes to a delegate that cannot be polled | **Prior research, not re-measured.** The spec cites `frakt` 0.1.0's push-based `mpsc::Receiver<Bytes>` for exactly this |
 | P11 | Background transfer outlives the process | **Unverified, and W3's first task.** `Transport::execute` returns a future in our address space; a transfer that survives process death may not fit behind it at all |
-| P12 | Alt-Svc is the only way h3 gets chosen | **Unverified.** v0.3 W2 established that HTTPS-record discovery *cannot* choose it; whether Alt-Svc can, and where its cache lives, is W1's first question |
+| P12 | Discovery has two tiers and a race is neither of them | **Researched, not measured here.** Browsers do not race on first contact — they "only try QUIC if they know the server supports it", so an unknown origin gets TCP. Alt-Svc is the slow tier: cached from a response header, so QUIC starts from the *next* connection and the first page load is never h3. An HTTPS record is the fast tier and exists precisely to remove that penalty — it arrives at resolution time, so QUIC can be used on the first connection. Racing is a **third** thing, applied *after* the choice as a hedge against networks that block UDP: "connection racing is still needed in practice" ([Marx, Smashing Magazine](https://www.smashingmagazine.com/2021/09/http3-practical-deployment-options-part3/)) |
 | P13 | An observability hook can avoid a `Send` bound | **Unverified, and W2's first task.** Every other seam here manages it, but a hook stored in a transport and called from a body is a different shape |
 | P14 | Android has no crate to lean on | **Prior research, not re-measured.** Cronet is C++ with a C API; OkHttp is JVM and needs JNI, which puts a VM handle in a constructor no other backend has |
 
-**P4 and P5 together are the finding of this document.** The racing
+**P4 and P5 together are the finding of this document.** The selecting
 transport does not merely need a floor function — computing one *surfaces*
 a capability nobody had to be right about, because nothing observes the
 difference. That is the shape this project has caught four times, met from
@@ -69,12 +69,17 @@ caller could have caught lying.
 
 ## W1 — A transport that chooses
 
+> **On the name.** An earlier draft called this `Racing<A, B>`, which put a
+> policy in a type name before the policy was decided — and P12 says the
+> race is the *hedge*, not the chooser. The type is named for what it does
+> (selects a stack per origin) and not for one of the mechanisms it uses.
+
 **Why.** Three protocols, and the only way to pick one is to name its type
 at construction. A caller who wants "HTTP/3 where the origin offers it,
 HTTP/1.1 or HTTP/2 otherwise" — which is what every browser does — has
 nowhere to say so.
 
-**The shape, from P1 and P3.** A `Racing<A, B>` owning one of each, with
+**The shape, from P1 and P3.** One type owning one of each, with
 `type Body = Either<A::Body, B::Body>` and a **stored** `Capabilities`.
 Both are `Transport`s already; nothing new goes on the seam.
 
@@ -84,11 +89,11 @@ Two answers are possible and they are not equivalent:
 - **Report the meet.** Needs a meet to exist. It does not for `redirects`
   today, and inventing an order over four variants to make one exist is
   deciding a semantic question to satisfy a helper function.
-- **Constrain the members.** The racing transport requires its two stacks
+- **Constrain the members.** The selecting transport requires its two stacks
   to *agree*, and refuses to be constructed when they do not.
 
 **Take the second.** A capability is a promise about what a caller will
-observe, and under a racing transport the caller does not know which stack
+observe, and under a selecting transport the caller does not know which stack
 answered — so a promise that holds for one and not the other is not a
 promise. Refusing at construction is the same shape as
 `UnsupportedCapability` at `build()`: the error arrives where the mistake
@@ -102,16 +107,24 @@ was made.
    variant exists only if a caller decision turns on it*, and today none
    does. **This is a v0.3-era defect and lands independently of the rest**,
    so a racing transport is not the reason it is fixed.
-2. `Racing<A, B>` with a stored floor, and a constructor that refuses
+2. The type itself: a stored floor, and a constructor that refuses
    disagreement, naming the field.
-3. Alt-Svc: the cache, its scope, and its negative half. P12 is unverified
-   — settle whether Alt-Svc can carry the choice before building the cache
-   it would need.
-4. The race itself, its fallback, and the "broken backoff" the original
-   spec §5.6 sketched.
+3. **The fast tier first, because half of it already exists.** v0.3 W2
+   already fetches the HTTPS record and reads its ALPN list, `h3` included,
+   and already records that there is nowhere to act on it. So the first
+   protocol choice this transport makes costs no new discovery at all —
+   only the acting.
+4. **Alt-Svc second**, for origins that publish no HTTPS record: the cache,
+   its scope, and its negative half. This is the tier that needs storage,
+   which is why it is not first.
+5. **The race last, and it is a hedge rather than a chooser** (P12). It
+   exists for the network that blocks UDP/443, which is also what the
+   original spec's §5.6 "broken backoff" is about. Its cost is the one v0.3
+   W2 left unmeasured — *"the size of the cost is unverified"* — so measure
+   before choosing a policy, not after.
 
-**Deliberately not in it.** `DefaultTransport` does **not** become
-`Racing`. Making a default that opens UDP sockets is a decision about what
+**Deliberately not in it.** `DefaultTransport` does **not** become this
+type. Making a default that opens UDP sockets is a decision about what
 a plain `Client::new()` does on a network that blocks UDP/443, and it wants
 the negative-cache measurement v0.3 W2 recorded as unverified — *"the size
 of the cost is unverified"*. One vertical, one claim.
