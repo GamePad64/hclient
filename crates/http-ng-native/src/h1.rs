@@ -426,18 +426,25 @@ where
         // in the `incoming` channel (see the module doc comment).
         if let Some(conn) = this.conn.as_mut() {
             match Pin::new(conn).poll(cx) {
+                // **Deliberately not reported here**, and that was found
+                // rather than designed. A truncated response — a body
+                // that stops short of its `Content-Length` — reaches this
+                // arm, not the one below: hyper's `Connection` ends
+                // cleanly at the EOF and it is `incoming` that then
+                // reports the incomplete message. Reporting `Ended` at
+                // this line gave a failed connection the reason of one
+                // that finished, and the failure that followed a poll
+                // later had no event left to carry it. So the end is
+                // reported once the body has said how it went — at
+                // `Ready(None)` below (nothing wrong) or at
+                // `Ready(Some(Err(_)))` (something was).
                 Poll::Ready(Ok(())) => {
                     this.conn = None;
                     this.reuse = None;
-                    // The connection is over and nothing went wrong: the
-                    // peer closed it, or the response said
-                    // `Connection: close`. `incoming` may still have
-                    // buffered frames — see the module doc — so this is
-                    // the end of the *connection*, not of the body, and
-                    // the two are reported separately because they are
-                    // separately true.
-                    this.report_closed(CloseReason::Ended);
                 }
+                // A connection-level failure is different: there is no
+                // later verdict to wait for, and the body is about to end
+                // with this same error.
                 Poll::Ready(Err(e)) => {
                     this.conn = None;
                     this.reuse = None;
@@ -460,7 +467,15 @@ where
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
+                // Check in first: a connection that went back to the pool
+                // has not ended, and `hand_back_to_pool` takes the id
+                // with it, which is what makes the call below a no-op in
+                // exactly that case. When it did not go back — reuse is
+                // off, the peer closed it, the response said
+                // `Connection: close` — the connection is finished with
+                // the body, and this is the instant that is true.
                 this.hand_back_to_pool();
+                this.report_closed(CloseReason::Ended);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
