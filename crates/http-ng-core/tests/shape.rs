@@ -395,3 +395,153 @@ fn a_non_send_backend_still_satisfies_the_websocket_seam() {
 
     let _ = LocalBackend(std::rc::Rc::new(()));
 }
+
+/// **P13, settled by construction: an observability hook can avoid a
+/// `Send` bound.**
+///
+/// `docs/v04-design.md` records P13 as unverified — *"every other seam
+/// here manages it, but a hook stored in a transport and called from a
+/// body is a different shape"* — and the difference is real: the two
+/// probes above put an `Rc` in a transport and in a `WebSocketConnect`,
+/// both of which are only ever *borrowed* by the request path. A response
+/// body outlives `Transport::execute`, so it cannot borrow the transport;
+/// it has to **hold** the hook. If anything on that path declared `Send`,
+/// a single-threaded runtime could observe nothing.
+///
+/// So this is that shape, minimally: a `Transport` holding a hook whose
+/// counter is an `Rc<Cell<_>>` — genuinely `!Send`, not a `PhantomData`
+/// gesture — a body that carries a clone of it past the end of `execute`,
+/// and a call to `Hooks::on` from inside `poll_frame`. It compiles, and
+/// the assertion below is that the call actually happened rather than
+/// that the file type-checks: a probe whose body is never polled would
+/// pass while proving nothing about the site the question is about.
+#[test]
+fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements_transport() {
+    use http_body::{Body as HttpBody, Frame};
+    use http_ng_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    /// Genuinely `!Send`: the count lives behind an `Rc`, and the test
+    /// reads it afterwards through a second handle to the same cell.
+    #[derive(Clone)]
+    struct LocalHook(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl Hooks for LocalHook {
+        fn on(&self, _event: Event<'_>) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    /// The site P13 is about: a body that calls the hook while streaming.
+    struct HookedBody<H> {
+        hooks: H,
+        told: bool,
+    }
+
+    /// `H: Unpin` here rather than a pin projection, exactly as
+    /// `h1::H1Body` does it: this workspace forbids `unsafe`, so the safe
+    /// projection is the only one available, and every hook worth writing
+    /// is `Unpin` already.
+    impl<H: Hooks + Unpin> HttpBody for HookedBody<H> {
+        type Data = Bytes;
+        type Error = Error;
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+            let this = self.get_mut();
+            if !this.told {
+                this.told = true;
+                this.hooks.on(Event::Closed(Closed {
+                    id: ConnectionId::UNWATCHED,
+                    reason: CloseReason::Ended,
+                }));
+            }
+            Poll::Ready(None)
+        }
+    }
+
+    struct Watched<H> {
+        caps: Capabilities,
+        hooks: H,
+    }
+
+    impl<H: Hooks + Clone + Unpin> Transport for Watched<H> {
+        type Body = HookedBody<H>;
+        type Error = Error;
+        async fn execute(
+            &self,
+            _req: http::Request<RequestBody>,
+        ) -> Result<http::Response<Self::Body>, Self::Error> {
+            Ok(http::Response::new(HookedBody {
+                hooks: self.hooks.clone(),
+                told: false,
+            }))
+        }
+        fn capabilities(&self) -> &Capabilities {
+            &self.caps
+        }
+    }
+
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+    let t = Watched {
+        caps: Capabilities::none(),
+        hooks: LocalHook(std::rc::Rc::clone(&seen)),
+    };
+
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut fut = std::pin::pin!(t.execute(http::Request::new(RequestBody::Empty)));
+    let Poll::Ready(Ok(resp)) = fut.as_mut().poll(&mut cx) else {
+        panic!("this transport answers on the first poll");
+    };
+    let mut body = std::pin::pin!(resp.into_body());
+    assert!(
+        matches!(body.as_mut().poll_frame(&mut cx), Poll::Ready(None)),
+        "the body ends on its first poll"
+    );
+    assert_eq!(
+        seen.get(),
+        1,
+        "the hook must have been called from poll_frame — the whole of P13"
+    );
+}
+
+/// The other half of P13, and the half a `!Send` probe cannot see: a hook
+/// that *is* `Send` must leave the transport and its body `Send`.
+///
+/// Without this, `Hooks` could satisfy the test above by being
+/// unconditionally `!Send`-poisoning — a hook holding a `PhantomData<Rc>`
+/// in the seam itself, say — and every backend would lose `tokio::spawn`
+/// on its responses in exchange for the single-threaded case. Auto traits
+/// are supposed to pass through in both directions, and this is the
+/// direction `http-ng-native/tests/shape.rs` then re-checks on the real
+/// transport.
+#[test]
+fn a_send_hook_leaves_the_transport_and_its_body_send() {
+    use http_ng_core::unversioned::{Event, Hooks, NoHooks};
+
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl Hooks for Counting {
+        fn on(&self, _event: Event<'_>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    assert_send::<NoHooks>();
+    assert_send_sync::<NoHooks>();
+    assert_send::<Counting>();
+    assert_send::<std::sync::Arc<Counting>>();
+    assert_eq!(
+        std::mem::size_of::<NoHooks>(),
+        0,
+        "the no-op hook must be zero-sized, or every transport that stores \
+         one pays for a caller who asked for nothing"
+    );
+    // A `const` block, because clippy is right that this is decided at
+    // compile time — which is the point of the claim, not a weakness of
+    // the check: `NoHooks::WATCHING` is what a monomorphised build
+    // deletes the clock reads on, and a `true` here would leave every
+    // no-hook build reading them for nobody.
+    const { assert!(!NoHooks::WATCHING) };
+}

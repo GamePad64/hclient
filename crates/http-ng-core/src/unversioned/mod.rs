@@ -9,10 +9,15 @@
 //! can't freeze a trait without having checked it against native, wasi:http,
 //! and fetch.
 
+mod hooks;
 mod timer;
 mod transport;
 mod websocket;
 
+pub use hooks::{
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
+    Reused,
+};
 pub use timer::{Discard, Timer};
 pub use transport::Transport;
 pub use websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};
