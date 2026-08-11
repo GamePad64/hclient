@@ -187,6 +187,14 @@ async fn capabilities_are_honest_about_v01_limits() {
          and Client's redirect stage owns the chain"
     );
     assert!(caps.version_reported);
+    assert!(
+        caps.version_select,
+        "declared and enforced in one change (v0.4 W2): `execute` reads a \
+         `RequireVersion` demand, narrows the ALPN offer to what it admits, \
+         filters pool buckets by it, and refuses with `VersionNotAvailable` \
+         before the head — see tests/require_version.rs, which watches the \
+         refusal from the server's side of the socket"
+    );
 }
 
 /// `capabilities_are_honest_about_v01_limits` above only samples the fields
@@ -233,7 +241,14 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
         proxy,
         owns_cookie_jar,
         owns_cache,
-        version_select,
+        // `version_select` left this list in v0.4 W2 and is asserted
+        // `true` in `capabilities_are_honest_about_v01_limits` above,
+        // where the declared fields live. It was the field this project
+        // had decided to *delete* for having no reader (`docs/v04-design
+        // .md` P5) until `RequireVersion` gave it one, so its move from
+        // "undeclared, conservative" to "declared, enforced" is the whole
+        // event and belongs where the other declarations are asserted.
+        version_select: _,
         version_reported: _,
         timeouts: _,
         informational_1xx,
@@ -247,7 +262,6 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
     assert!(!proxy);
     assert!(!owns_cookie_jar);
     assert!(!owns_cache);
-    assert!(!version_select);
     assert!(!informational_1xx);
     assert!(forbidden_request_headers.is_empty());
 }

@@ -1,7 +1,9 @@
 // `Timeouts` is defined in `http-ng-core` (Task 8): transports read it from
 // `http::Extensions`, and they don't depend on `http-ng`.
 pub use http_ng_core::Timeouts;
-use http_ng_core::{Capabilities, Error, ErrorKind, RedirectSupport, UnsupportedCapability};
+use http_ng_core::{
+    Capabilities, Error, ErrorKind, RedirectSupport, RequireVersion, UnsupportedCapability,
+};
 use http_ng_proto::redirect::RedirectPolicy;
 
 #[derive(Debug, Clone, Default)]
@@ -342,6 +344,62 @@ pub(crate) fn check_redirect_supported(
     if redirect.is_some() && caps.redirects == RedirectSupport::Internal {
         return Err(UnsupportedCapability {
             what: "redirect_policy",
+            backend,
+        });
+    }
+    Ok(())
+}
+
+/// A [`RequireVersion`] demand against a backend that cannot honour one is
+/// an error — not a mark that quietly goes unread.
+///
+/// **The whole shape is `check_redirect_supported`'s**, one function up,
+/// deliberately and down to the `what` string: a caller who asked for
+/// something the transport cannot do gets an
+/// [`UnsupportedCapability`] naming the setting and the backend, at the
+/// same point in `Client::run` as the timeouts and the redirect policy. A
+/// second refusal path — a different error kind, a different moment, a
+/// `Result` shaped some other way — would be a second thing to learn for
+/// no gain.
+///
+/// # There is no client-level half, and that is the decision
+///
+/// `Timeouts` and `RedirectPolicy` are each merged from a client setting
+/// and a per-request one before being checked here. This one has no client
+/// setting to merge. Turning an ALPN outcome into a request failure is
+/// right for a gRPC call and wrong for a browser-shaped fetch, and a
+/// client-wide switch would apply one answer to both — the same argument
+/// that keeps `AllowEarlyData` per request. So the demand is read from the
+/// request's extensions and nowhere else, and `Config` gains no field.
+///
+/// # What `version_select` has to mean for this to be right
+///
+/// `true` is "honours a demand", not "chooses a version" — so
+/// `http-ng-h3`, which speaks HTTP/3 and nothing else, reports `true` and
+/// answers `RequireVersion(HTTP_3)` by proceeding. If it reported `false`
+/// this function would refuse that request, which is the failure mode this
+/// doc exists to prevent someone reintroducing: the gate is about whether
+/// the backend can *answer*, and the answer itself belongs to the
+/// transport.
+///
+/// The backends that report `false` are `http-ng-fetch` and
+/// `http-ng-wasi`, and for them the refusal is the only honest outcome:
+/// neither selects the protocol version nor learns it — both also report
+/// `version_reported: false` — so there is no moment at which either could
+/// compare a demand against anything. Silently ignoring the mark would
+/// hand a caller who requires HTTP/2 a response over whatever the browser
+/// or the host happened to use.
+///
+/// `pub(crate)`, like its siblings and for the same reason: the `http-ng`
+/// facade already exports more plumbing than it should.
+pub(crate) fn check_version_demand_supported(
+    extensions: &http::Extensions,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    if extensions.get::<RequireVersion>().is_some() && !caps.version_select {
+        return Err(UnsupportedCapability {
+            what: "require_version",
             backend,
         });
     }
