@@ -656,6 +656,29 @@ graph-smol-path:
         --config .github/deny/smol-path.toml -t "$t" check bans
     done
 
+# `docs/w4-upgrade-seam.md` §8, machine-checked in both directions. The
+# framing used to be a `websocket` feature of `http-ng-native`, and the
+# argument for moving it out was that Cargo's features are additive: one
+# crate anywhere in a graph switching it on put `tungstenite` into every
+# other crate's build of the transport. `--all-features` is therefore the
+# whole of the check — it asks for every feature this crate has at once,
+# which is the strongest thing any neighbour could do to it.
+#
+# The `present` half is not decoration: an `absent` check whose pattern
+# matches nothing anywhere would pass a workspace that had lost the framing
+# altogether, which is the failure mode this repository keeps finding.
+
+# the WebSocket framing stays out of the transport, whatever features are on
+graph-no-framing-in-the-transport:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/tree-guard.sh absent '^(tungstenite|sha1|data-encoding) ' \
+        "http-ng-native has the WebSocket framing in its graph again. It lives in http-ng-ws-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
+        -- -p http-ng-native --all-features
+    ./scripts/tree-guard.sh present '^tungstenite ' \
+        "http-ng-ws-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
+        -- -p http-ng-ws-tungstenite
+
 # Still `tree-guard`, and deliberately: `cargo deny` bans crates by name, and
 # this one bans a FAMILY by prefix. Enumerating today's names would pass for
 # tomorrow's `futures-whatever`, which is the regression the check exists
@@ -783,7 +806,7 @@ features:
         --each-feature --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 
