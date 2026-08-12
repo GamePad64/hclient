@@ -1,0 +1,532 @@
+//! Connect now, send later — on the one kind of backend that has a
+//! connector to stage.
+//!
+//! `docs/connect-only-seam.md` is the investigation this implements; what
+//! follows is the part a reader of the code needs, and the places where
+//! building it decided something that document left open.
+//!
+//! # It is not a method on `Transport`, and that is the third refusal of
+//! the same shape
+//!
+//! `Transport` is the seam **every** backend fills in. `wasi:http` 0.3's
+//! client interface is one function — `send: async func(request) ->
+//! result<response, error-code>` — with no connection resource anywhere in
+//! the WIT, so `http-ng-wasi` could answer nothing at all; and the
+//! browser's one connect-shaped API is a `<link rel="preconnect">` hint,
+//! which yields no handle, no readiness signal and no way to bind a later
+//! `fetch()` to whatever it opened, so `http-ng-fetch` would be
+//! implementing *"ask the browser nicely, then return `Ok(())`"*. A
+//! `Transport::connect` would be `Unsupported` for two of four backends and
+//! dishonest rather than merely unimplemented for one of them.
+//!
+//! The nearer precedent is in this crate: [`crate::Prefetch`] staged the
+//! phase one step earlier — name resolution — and refused the seam with the
+//! sentence that decides this one too, about a phase that had not come up
+//! yet: *"a `fetch`-shaped transport has no DNS of its own to save, and a
+//! `wasi:http` one has no connector at all."*
+//!
+//! A trait rather than two inherent methods for [`crate::Prefetch`]'s
+//! mechanical reason: a caller generic over `Native<R, T, D>` reaches it
+//! through a `where` bound, and an inherent method would make that caller
+//! repeat every structural bound [`crate::Native`]'s exchange impl declares
+//! — and then still not be able to name the response body, because
+//! `<Native<..> as Transport>::Body` behind a `where` clause is an opaque
+//! projection.
+//!
+//! # A handle, not a warm pool, and `Timeouts::connect` is why
+//!
+//! The weaker shape a reader will reach for is *"dial and leave it in the
+//! pool; the ordinary `execute` will find it"*. It fixes the same
+//! duplicate-request problem and is refused for a different one: under it
+//! the second call **may still connect**, so it reads `Timeouts::connect`
+//! off the same request and applies it again, and a caller who set
+//! `connect: Some(C)` can be made to wait `2C`. That is the defect
+//! `http_ng::Client`'s `425` replay had to be built around — *"a bound a
+//! server can double by answering `425` is not a bound"*.
+//!
+//! Here [`StagedConnect::exchange`] is handed a connection. There is no
+//! connect for a bound to bound — not *ignored*, which would need a comment
+//! and a test, but **absent**, because the code path is absent.
+//! `TimeoutSupport::connect` is untouched: it is a claim about
+//! `Transport::execute`, and `execute` is unchanged.
+//!
+//! # What the pool says about a connection held outside it
+//!
+//! `Pool`, `PoolKey`, `CheckIn` and `Established` are all `pub(crate)`, so
+//! *"a connection produced outside this crate and handed to `execute`"* is
+//! not expressible — and [`Staged`] keeps it that way: it is produced by
+//! [`StagedConnect::connect`] and consumed by [`StagedConnect::exchange`],
+//! and the fact that a caller holds it in between changes nothing about who
+//! made it. It carries **its own check-in**, minted from the key the
+//! connect computed, rather than having `exchange` recompute one: the
+//! protocol is known only at the end of the connect, and two places holding
+//! one fact is the class of invariant this crate tries not to have.
+//!
+//! `pool.rs`'s *"nobody polls an idle connection, and that is the design"*
+//! is what makes holding one across a caller's decision cost nothing new:
+//! a [`Staged`] is in exactly the state a pooled connection is in, and the
+//! residual window that module records — *"a server may close between our
+//! check and our write"* — widens by however long the handle is held and is
+//! otherwise the same window.
+//!
+//! # A dropped handle goes back to the pool
+//!
+//! `docs/connect-only-seam.md` §9 left this open: *"what happens to the
+//! loser's connection when it finishes rather than being dropped
+//! mid-handshake"*. The answer here is [`Staged`]'s `Drop`, and it is the
+//! same answer the pool gives every other connection: a handle dropped
+//! without an exchange **checks its connection in**, so a connection made
+//! for a request that went elsewhere is a warm connection rather than a
+//! closed socket. Nothing was spoken on it, so there is nothing to make it
+//! unfit; `is_reusable` polls it at the next checkout exactly as it polls
+//! every other entry.
+//!
+//! Under `Native::without_pool()` there is no check-in and the drop closes
+//! the socket, which is that setting behaving as it says.
+//!
+//! # The one thing `exchange` does not do, and it is deliberate
+//!
+//! `Native::run` retries once when hyper hands the request back **unsent**
+//! — a pooled connection the server had closed. `exchange` does not: a
+//! retry means either another pooled candidate or a fresh dial, and the
+//! fresh dial is precisely the code path the section above requires to be
+//! absent. Half a retry — pool-only, never dialling — would be the rule
+//! with an exception, and an exception here is worse than the absence.
+//!
+//! So a [`Staged`] whose connection died in the caller's window costs this
+//! request, where `execute` would have opened another. That is the price of
+//! the bound being unspendable twice, it is paid only on the staged path,
+//! and it is the reason `connect` is worth calling as late as the caller
+//! can manage.
+
+use crate::established::{self, Established};
+use crate::pool::CheckIn;
+use crate::{
+    Native, NativeIo, Prepared, body, connect, connection_id, discovery, handshake_for, mark,
+    negotiated_protocol, protocol_admissible, since, spoken_version, with_connect_timeout,
+};
+use http_ng_core::unversioned::{
+    ConnectTiming, Connected, ConnectionId, Event, Hooks, Reused, Transport,
+};
+use http_ng_core::{Error, RequestBody, Timeouts, check_version};
+use http_ng_dns::Resolve;
+use http_ng_rt::{TcpConnect, Timer};
+use http_ng_tls::TlsConnect;
+use std::future::Future;
+use std::time::Duration;
+
+/// A transport whose connect can be asked for on its own, and whose answer
+/// can then be spent on exactly one request.
+///
+/// # Who this is for
+///
+/// A caller that owns more than one protocol stack and has to find out
+/// whether one of them can reach an origin *before* it decides which one a
+/// request goes to. `http-ng-select` is the one in this workspace: it asks
+/// the QUIC stack to connect, and where that fails it routes the request —
+/// **untouched, unsent, never handed to a transport** — over TCP. Nothing
+/// is retried, because nothing was sent, and this crate's own sentence is
+/// true of it verbatim: *this is not a second request, it is the first one,
+/// which never left.*
+///
+/// # Two calls, one budget
+///
+/// [`Self::connect`] reads `Timeouts::connect` off the request and spends
+/// it. [`Self::exchange`] cannot spend it again, because it cannot connect
+/// — see the module doc. `Timeouts::first_byte` and
+/// `Timeouts::between_bytes` are read by `connect` too, off the same
+/// request, and carried in the handle: they bound the exchange, and the
+/// exchange is not the call that was handed the request.
+pub trait StagedConnect: Transport {
+    /// A connection this transport made or found, together with the
+    /// request it was made for.
+    ///
+    /// Opaque, and produced only by [`Self::connect`]: the wrong-connection
+    /// question is not answered here, it cannot be asked — which is
+    /// [`Prepared`]'s own argument for pairing a record with the request it
+    /// was fetched for, one phase earlier.
+    type Staged;
+
+    /// Everything `Transport::execute` does up to and including *"a
+    /// connection that can carry this request"*, and not one byte more.
+    ///
+    /// On failure the request comes back untouched, in [`Refused`], because
+    /// the caller asked this question in order to decide something and the
+    /// failure is half the answer.
+    ///
+    /// Written as `-> impl Future` rather than `async fn` for
+    /// `Transport::execute`'s reason: no `Send` bound is added anywhere in
+    /// this workspace's seams, and this one is on the same footing.
+    fn connect(&self, prepared: Prepared) -> impl Future<Output = Result<Self::Staged, Refused>>;
+
+    /// The rest of `Transport::execute`, on the connection
+    /// [`Self::connect`] produced.
+    fn exchange(
+        &self,
+        staged: Self::Staged,
+    ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
+}
+
+/// A connect that did not produce a connection, with the request back.
+///
+/// The pair rather than an error alone, and it is the shape
+/// `established::Failed::NotSent` already has for the same purpose: a
+/// caller that is going to send this request somewhere else needs the
+/// request, and a caller that is not can take the error and drop the rest.
+#[derive(Debug)]
+pub struct Refused {
+    error: Error,
+    request: http::Request<RequestBody>,
+}
+
+impl Refused {
+    /// Why, without taking the request.
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Why, for a caller with nowhere else to send this.
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+
+    /// Both halves, for the caller this type exists for.
+    pub fn into_parts(self) -> (Error, http::Request<RequestBody>) {
+        (self.error, self.request)
+    }
+}
+
+impl From<Refused> for Error {
+    fn from(r: Refused) -> Error {
+        r.error
+    }
+}
+
+/// A connection with a request to spend it on.
+///
+/// Named `Staged` rather than the `Connected` `docs/connect-only-seam.md`
+/// §5.2 proposes, for a duller reason than that document had: `Connected`
+/// is already the name of the hook event this module emits three lines
+/// after making one, and two meanings of the word in one file is how the
+/// wrong one gets read.
+pub struct Staged<R, T, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    /// `None` only between [`StagedConnect::exchange`] taking the contents
+    /// and the value being dropped, which is what makes [`Drop`] writable
+    /// at all: moving out of a field of a type with a destructor is what an
+    /// `Option` here buys.
+    held: Option<Held<R, T, H>>,
+}
+
+struct Held<R, T, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    est: Established<NativeIo<R, T>>,
+    /// The connection's way home, minted from the key the connect
+    /// computed — `None` when reuse is off.
+    checkin: Option<CheckIn<NativeIo<R, T>>>,
+    req: http::Request<RequestBody>,
+    /// The URI as the caller wrote it, kept because `established::exchange`
+    /// rewrites the request into its protocol's shape and has to be able to
+    /// put it back.
+    uri: http::Uri,
+    id: ConnectionId,
+    /// When this transport committed to doing work, for `Head::elapsed` —
+    /// `None` when nobody is watching.
+    began: Option<R::Instant>,
+    /// The two bounds the exchange still owes. Read in `connect`, off the
+    /// request, and carried rather than re-read: `connect` is where a
+    /// `Timeouts` is read on this path, and one reader is what keeps the
+    /// third field from creeping back in beside them.
+    first_byte: Option<Duration>,
+    between_bytes: Option<Duration>,
+    hooks: H,
+}
+
+/// Hand-written for `Native`'s reason: a derive would demand `Debug` from
+/// the runtime and the TLS backend for the benefit of a formatter.
+impl<R, T, H> std::fmt::Debug for Staged<R, T, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Staged")
+            .field("spent", &self.held.is_none())
+            .field("uri", &self.held.as_ref().map(|h| &h.uri))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R, T, H> Drop for Staged<R, T, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    /// A handle nobody spent hands its connection back to the pool.
+    ///
+    /// See the module doc: nothing was spoken on it, so it is exactly the
+    /// connection the pool would have held if this request had never been
+    /// staged. With reuse off there is no check-in and the drop closes the
+    /// socket, which is what `without_pool()` means.
+    fn drop(&mut self) {
+        if let Some(held) = self.held.take()
+            && let Some(checkin) = held.checkin
+        {
+            checkin.put(held.est);
+        }
+    }
+}
+
+/// The one implementation, and the contract is on the trait — for
+/// [`Prefetch`](crate::Prefetch)'s reason: an inherent method of the same
+/// name wins method resolution over a trait one, so a caller with the trait
+/// in scope would silently get the other function.
+impl<R, T, D, H> StagedConnect for Native<R, T, D, H>
+where
+    R: TcpConnect + Timer + Clone,
+    R::Stream: 'static,
+    T: TlsConnect,
+    T::Stream<R::Stream>: 'static,
+    D: Resolve,
+    H: Hooks + Clone + Unpin,
+{
+    type Staged = Staged<R, T, H>;
+
+    /// `Native::run`'s steps 1 and 2 — the pool, then a fresh connection —
+    /// and then nothing.
+    ///
+    /// # It is allowed to answer "I already had one"
+    ///
+    /// `run` looks in the pool before it dials, and a staged connect that
+    /// always dialled would cost a connection at every origin the pool was
+    /// already serving. [`Native::upgrade`] is the counter-example that
+    /// shows this is a choice rather than an omission: it *does* refuse the
+    /// pool, because a socket that stops speaking HTTP is not a connection
+    /// any later request could use. A staged one is.
+    ///
+    /// # What the `Prepared` is used for, and what it is not
+    ///
+    /// The request. The record it carries is **not** handed to the
+    /// connector on this path: the caller staging a connect is by
+    /// construction one that has already read the record for itself, and
+    /// `Prepared` is taken rather than a bare request so that this entry
+    /// point composes with [`Prefetch::prepare`](crate::Prefetch::prepare)
+    /// instead of competing with it. `Refused` hands the *request* back
+    /// rather than the `Prepared`, because a record the connector has
+    /// already tried and failed through is not an answer worth passing on.
+    ///
+    /// # Where this and `run` are kept in step
+    ///
+    /// Every step that **decides** anything is a private function shared
+    /// with `run`: `key_parts` (which is also where an unsupported scheme
+    /// and a missing host become typed errors), `protocol_admissible`,
+    /// `pooled_candidates`, `checkout`, `may_speak_h2` through the ALPN
+    /// narrowing, `negotiated_protocol`, `check_version` and `checkin_for`.
+    /// What is written twice is the *order*, and the two orders differ in
+    /// exactly one place: `run` retries across candidates and this cannot,
+    /// because it returns one connection.
+    async fn connect(&self, prepared: Prepared) -> Result<Self::Staged, Refused> {
+        match self.stage(prepared.req).await {
+            Ok(staged) => Ok(staged),
+            Err((error, request)) => Err(Refused { error, request }),
+        }
+    }
+
+    /// The exchange, on the connection already in hand.
+    ///
+    /// The same `established::exchange` `run` calls, under the same
+    /// `first_byte` bound, reporting the same `Head` event and wrapped in
+    /// the same `between_bytes` body — what differs is upstream of here and
+    /// not in here.
+    async fn exchange(
+        &self,
+        mut staged: Self::Staged,
+    ) -> Result<http::Response<Self::Body>, Error> {
+        let Held {
+            est,
+            checkin,
+            req,
+            uri,
+            id,
+            began,
+            first_byte,
+            between_bytes,
+            hooks,
+        } = staged
+            .held
+            .take()
+            .expect("a Staged is emptied only by this method, which consumes it");
+        let (parts, body) = req.into_parts();
+        let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body));
+        let attempt = established::exchange(est, req, checkin, &uri, hooks);
+        let resp = self
+            .within_first_byte(first_byte, attempt)
+            .await
+            .map_err(established::Failed::into_error)?;
+        self.report_head(&resp, id, &uri, began);
+        Ok(self.bound_body(resp, between_bytes))
+    }
+}
+
+impl<R, T, D, H> Native<R, T, D, H>
+where
+    R: TcpConnect + Timer + Clone,
+    R::Stream: 'static,
+    T: TlsConnect,
+    T::Stream<R::Stream>: 'static,
+    D: Resolve,
+    H: Hooks + Clone + Unpin,
+{
+    /// The body of [`StagedConnect::connect`], written where the `Refused`
+    /// packing is not, so that each failure arm is a pair rather than a
+    /// four-line struct literal.
+    async fn stage(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<Staged<R, T, H>, (Error, http::Request<RequestBody>)> {
+        // Read field by field from a copy, never branched on as a whole —
+        // `Transport::execute`'s doc states the reading literally, and
+        // "presence is not intent" is what it means.
+        let timeouts = req
+            .extensions()
+            .get::<Timeouts>()
+            .copied()
+            .unwrap_or_default();
+        let parts_of_key = match self.key_parts(req.uri()) {
+            Ok(p) => p,
+            Err(e) => return Err((e, req)),
+        };
+        let uri = req.uri().clone();
+        // The same reading of the runtime's clock both ends of the pool's
+        // bookkeeping use in `run`, for the same reason: which entries are
+        // too old to hand out and when this one becomes too old are one
+        // measurement, not two.
+        let now = self.rt.elapsed_since(self.epoch);
+        let began = mark::<H, R>(&self.rt);
+
+        // 1. Somebody else's connection, if one is still alive. Identical
+        //    to `run`'s first step down to the `Reused` event, and it is
+        //    the same event: a caller counting reuse must not be able to
+        //    tell a staged connect from an ordinary one.
+        for &protocol in self.pooled_candidates(&parts_of_key) {
+            if !protocol_admissible(req.extensions(), Some(protocol)) {
+                continue;
+            }
+            let key = parts_of_key.key(protocol);
+            let Some(est) = self.checkout(&key, now).await else {
+                continue;
+            };
+            let id = est.id();
+            self.hooks.on(Event::Reused(Reused {
+                id,
+                uri: &uri,
+                version: spoken_version(Some(protocol)),
+            }));
+            let checkin = self.checkin_for(&key, now);
+            return Ok(self.hold(est, checkin, req, uri, id, began, timeouts));
+        }
+
+        // 2. A fresh one, under `Timeouts::connect` and under nothing else.
+        //    This is the only place in the staged pair that connects, which
+        //    is the whole of the module doc's claim about the bound.
+        let offered_h2 = self.may_speak_h2(&parts_of_key)
+            && check_version(req.extensions(), http::Version::HTTP_2).is_ok();
+        let alpn: &[&[u8]] = if offered_h2 {
+            &[b"h2", b"http/1.1"]
+        } else {
+            &[b"http/1.1"]
+        };
+        let connect_fut = connect::connect::<R, D, T, H>(
+            &self.rt,
+            &self.dns,
+            &self.tls,
+            &uri,
+            &self.opts,
+            alpn,
+            &self.svcb_failures,
+            now,
+            discovery::Prefetched::NotConsulted,
+        );
+        let (conn, tls_info, attempted) =
+            match with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await {
+                Ok(v) => v,
+                Err(e) => return Err((e, req)),
+            };
+        let connect_took = since::<R>(&self.rt, began);
+        let protocol = negotiated_protocol(
+            tls_info.as_ref().and_then(|i| i.alpn.as_deref()),
+            offered_h2,
+        );
+        let id = connection_id::<H>();
+        if let Some(attempted) = attempted {
+            self.hooks.on(Event::Connected(Connected {
+                id,
+                uri: &uri,
+                remote: attempted.remote,
+                version: spoken_version(protocol),
+                timing: ConnectTiming {
+                    dns: attempted.dns,
+                    tcp: attempted.tcp,
+                    tls: attempted.tls,
+                    total: connect_took,
+                },
+            }));
+        }
+        // Before the handshake, exactly as in `run`: a demand this
+        // connection cannot meet costs a TCP connection and a TLS handshake
+        // and not one byte of HTTP.
+        if let Err(e) = check_version(req.extensions(), spoken_version(protocol)) {
+            return Err((e, req));
+        }
+        let checkin = match protocol {
+            Some(p) => self.checkin_for(&parts_of_key.key(p), now),
+            None => None,
+        };
+        let est = match handshake_for(conn, protocol, id).await {
+            Ok(e) => e,
+            Err(e) => return Err((e, req)),
+        };
+        Ok(self.hold(est, checkin, req, uri, id, began, timeouts))
+    }
+
+    /// The handle, packed from the two places that produce one.
+    ///
+    /// A method rather than two literals so that a connection found in the
+    /// pool and one just made carry the same fields — a difference between
+    /// them would be a difference `exchange` could act on, and there is
+    /// nothing about the exchange that should know which it got.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one struct literal, written once instead of twice"
+    )]
+    fn hold(
+        &self,
+        est: Established<NativeIo<R, T>>,
+        checkin: Option<CheckIn<NativeIo<R, T>>>,
+        req: http::Request<RequestBody>,
+        uri: http::Uri,
+        id: ConnectionId,
+        began: Option<R::Instant>,
+        timeouts: Timeouts,
+    ) -> Staged<R, T, H> {
+        Staged {
+            held: Some(Held {
+                est,
+                checkin,
+                req,
+                uri,
+                id,
+                began,
+                first_byte: timeouts.first_byte,
+                between_bytes: timeouts.between_bytes,
+                hooks: self.hooks.clone(),
+            }),
+        }
+    }
+}

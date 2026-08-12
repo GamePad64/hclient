@@ -961,6 +961,14 @@ make. That is the strongest argument that the answer is the seam.
    to a blocked origin — 250 ms × every request, for as long as the network
    blocks UDP. This is the same missing thing as §9.3's negative half, now
    with a second caller and a number.
+
+   **Since built**, for §9.3's caller rather than for this one —
+   `http_ng_select::H3Failures`,
+   [`docs/v04-staged-connect.md`](v04-staged-connect.md) §3. Item 3 is
+   discharged too: the seam exists, on both stacks. Items 1 and 2 are where
+   they were, and item 2 is *nearly* where it was — the sequential fallback
+   needed the same subtraction one shape simpler, and
+   `spend_connect_budget` is it.
 5. ~~A fixture~~ — discharged, §7.1.
 6. ~~A cancellation story for the QUIC arm~~ — discharged, §7.6, and it is
    the one part of the race that is already free.
@@ -1165,7 +1173,13 @@ to a member whole and the member connects to the URI's own authority. It is
 the same wall the fast tier hit from the other side (§3: no record can cross
 the `Transport` seam), and closing it is a change to a member.
 
-### 9.3 The negative half: it is **not** already someone else's, and it is still not built
+### 9.3 The negative half: it is **not** already someone else's — and it is built now
+
+**Built, and by the staged connect rather than by the race** —
+[`docs/v04-staged-connect.md`](v04-staged-connect.md) §3. The rest of this
+subsection is what was read and predicted before it; both blockers below
+are discharged, and how is recorded at the end of it.
+
 
 §7 predicted that *"the failure half may already have a home"* in
 `http-ng-native`'s connector. **Read before building, and it does not.**
@@ -1223,6 +1237,29 @@ Recorded in §6's spirit: **the failure half is not implemented and not
 tested**, and where it would live if the alt-authority were ever acted on is
 `http-ng-native`'s cache after all, because *"the alternative's port is
 blocked"* is a connector fact.
+
+**Both blockers are discharged, and the second one was the right worry
+about the wrong premise.**
+
+1. Discharged by the staged connect, exactly as the note above predicted:
+   `Selecting` asks `H3` to *connect*, and a failed connect routes a request
+   that was never handed to a transport. `http_ng_select::H3Failures` is the
+   memory; the veto sits **after both tiers**, so a record listing `h3` at a
+   UDP-blocked origin is covered too, and `RequireVersion(HTTP_3)` is
+   answered before it as it is before the resolver and the cache.
+2. **Not discharged by a fixture that blocks UDP — by noticing that the
+   memory does not read the reason.** What it records is *the connect
+   failed*. A real `quinn` server offering an ALPN this client will not
+   accept fails causally in one round trip, which produces that fact without
+   producing a clock-driven test. The black hole is still used once, where a
+   test needs the bound *spent* rather than a connect failed — the budget
+   A/B in `crates/http-ng-select/tests/h3_failure.rs`.
+
+The scope answer is `network_changed()`'s, and it is **not** the cache's
+answer: the failure memory clears *everything*, with no `persist` notion,
+because `persist=1` is the origin's claim about its own advertisement and
+nothing ever claimed that a failure to reach it belongs to the origin
+rather than to the path.
 
 ### 9.4 Scope: the network change, said at the type
 

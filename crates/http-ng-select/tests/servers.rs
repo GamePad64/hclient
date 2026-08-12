@@ -41,6 +41,39 @@ pub const ORIGIN: &str = "both-stacks.test";
 /// the same connection story, a different thing said.
 type AltSvc = Arc<std::sync::Mutex<Option<String>>>;
 
+/// What the QUIC half of the pair does.
+///
+/// The failure modes are here rather than in a test file because they are
+/// *server* behaviours, and because the choice between them is the one
+/// decision the negative-half tests had to make: §9.3 recorded the
+/// black hole as the blocker (*"the arm under test would be a multi-second
+/// handshake timeout — a clock-driven assertion"*), and
+/// [`Quic::Rejecting`] is the way round it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quic {
+    /// A real HTTP/3 server that answers.
+    Working,
+    /// A real QUIC server that **refuses the handshake**, by offering an
+    /// ALPN this client will not accept.
+    ///
+    /// The point is that it fails *causally and at once* — one round trip
+    /// on loopback, a TLS `no_application_protocol` alert — where a black
+    /// hole costs quinn's 30 s `max_idle_timeout` on every path. What the
+    /// failure memory remembers is *"the connect failed"*, and it does not
+    /// read the reason, so this produces the fact under test without
+    /// producing a clock-driven test.
+    Rejecting,
+    /// The UDP port is **bound and silent**: no ICMP, no reply, nothing —
+    /// a `DROP` rather than a `REJECT`, which is what a network blocking
+    /// UDP/443 actually does.
+    ///
+    /// Holding the socket is the whole mechanism (`docs/v04-w1-acceptance.md`
+    /// §7.1): an *unbound* port makes the kernel answer ICMP port
+    /// unreachable. Used only where a test needs the QUIC arm to spend a
+    /// `Timeouts::connect` bound rather than to fail.
+    BlackHole,
+}
+
 /// Two servers, one port number, one certificate.
 pub struct Pair {
     pub port: u16,
@@ -54,6 +87,14 @@ pub struct Pair {
     tcp_accepted: Arc<AtomicUsize>,
     /// HTTP/3 requests answered over QUIC on UDP.
     quic_answered: Arc<AtomicUsize>,
+    /// QUIC connection attempts that reached the endpoint, answered or
+    /// not — the counter a *failed* handshake still moves, and therefore
+    /// the only one that can tell "this request did not try QUIC" from
+    /// "this request tried QUIC and the handshake was refused".
+    ///
+    /// Always zero under [`Quic::BlackHole`], which has no endpoint to
+    /// accept anything.
+    quic_attempted: Arc<AtomicUsize>,
     _threads: (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>),
 }
 
@@ -76,6 +117,9 @@ impl Pair {
     }
     pub fn quic_answered(&self) -> usize {
         self.quic_answered.load(Ordering::SeqCst)
+    }
+    pub fn quic_attempted(&self) -> usize {
+        self.quic_attempted.load(Ordering::SeqCst)
     }
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
@@ -131,8 +175,13 @@ fn identity() -> (
     )
 }
 
-/// Start both. Returns once both are bound, so no test races them.
+/// Start both, with a QUIC server that works.
 pub fn start() -> Pair {
+    start_with_quic(Quic::Working)
+}
+
+/// Start both. Returns once both are bound, so no test races them.
+pub fn start_with_quic(quic: Quic) -> Pair {
     let (tcp_sock, udp_sock) = bind_pair();
     let port = tcp_sock.local_addr().expect("local_addr").port();
     let (cert_der, key_der) = identity();
@@ -140,6 +189,7 @@ pub fn start() -> Pair {
     let tcp_answered = Arc::new(AtomicUsize::new(0));
     let tcp_accepted = Arc::new(AtomicUsize::new(0));
     let quic_answered = Arc::new(AtomicUsize::new(0));
+    let quic_attempted = Arc::new(AtomicUsize::new(0));
     let alt_svc: AltSvc = Arc::default();
 
     let tcp_thread = start_tcp(
@@ -150,13 +200,27 @@ pub fn start() -> Pair {
         tcp_accepted.clone(),
         alt_svc.clone(),
     );
-    let quic_thread = start_quic(
-        udp_sock,
-        cert_der.clone(),
-        key_der,
-        quic_answered.clone(),
-        alt_svc.clone(),
-    );
+    let quic_thread = match quic {
+        // The socket is held by a thread that never reads it, so the port
+        // stays bound and nothing is ever answered. Parking rather than
+        // dropping: a dropped socket is an *unbound* port, which is the
+        // other failure and costs the same 30 s for a different reason.
+        Quic::BlackHole => std::thread::spawn(move || {
+            let _held = udp_sock;
+            loop {
+                std::thread::park();
+            }
+        }),
+        _ => start_quic(
+            udp_sock,
+            cert_der.clone(),
+            key_der,
+            quic_answered.clone(),
+            quic_attempted.clone(),
+            alt_svc.clone(),
+            quic,
+        ),
+    };
 
     Pair {
         port,
@@ -165,6 +229,7 @@ pub fn start() -> Pair {
         tcp_answered,
         tcp_accepted,
         quic_answered,
+        quic_attempted,
         _threads: (tcp_thread, quic_thread),
     }
 }
@@ -278,13 +343,25 @@ fn start_quic(
     cert: rustls::pki_types::CertificateDer<'static>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
     answered: Arc<AtomicUsize>,
+    attempted: Arc<AtomicUsize>,
     alt_svc: AltSvc,
+    mode: Quic,
 ) -> std::thread::JoinHandle<()> {
     let mut tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
         .with_single_cert(vec![cert], key)
         .expect("the cert and key were made together");
-    tls.alpn_protocols = vec![b"h3".to_vec()];
+    // The refusal is one byte of configuration and one round trip on the
+    // wire: the client offers `h3` alone (RFC 9114 §3.2 makes it mandatory
+    // rather than a preference), this server offers something else, and
+    // rustls sends `no_application_protocol`. Everything else about the
+    // server — the certificate, the port, the address — is identical, so a
+    // test using it differs from one using the working server in exactly
+    // the fact under test.
+    tls.alpn_protocols = match mode {
+        Quic::Working => vec![b"h3".to_vec()],
+        Quic::Rejecting | Quic::BlackHole => vec![b"h3-nothing-speaks-this".to_vec()],
+    };
     let quic_tls = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
         .expect("TLS 1.3 with a ring provider always has the initial suite");
     let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_tls));
@@ -303,6 +380,11 @@ fn start_quic(
             )
             .expect("the socket is already bound");
             while let Some(incoming) = endpoint.accept().await {
+                // Bumped before the handshake is awaited, so a connection
+                // this server is about to refuse still counts as an
+                // attempt — which is the whole reason this counter exists
+                // beside `quic_answered`.
+                attempted.fetch_add(1, Ordering::SeqCst);
                 let (answered, alt_svc) = (answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {
                     let Ok(conn) = incoming.await else { return };

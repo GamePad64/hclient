@@ -73,21 +73,21 @@ mod body;
 mod early;
 mod hooks;
 mod pump;
+mod staged;
 
 pub use body::H3Body;
 pub use http_ng_rt_quinn::QuinnTask;
 pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
+pub use staged::{Refused, Staged, StagedConnect};
 
 use bytes::Bytes;
 use hooks::{ConnState, Watch, mark, since};
 use http_ng_core::unversioned::{
-    CloseReason, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks, Reused,
-    Transport,
+    CloseReason, ConnectionId, Event, Head, Hooks, NoHooks, Transport,
 };
 use http_ng_core::{
     CancelSupport, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
-    RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, Timeouts, TlsSupport,
-    check_version,
+    RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport, TlsSupport,
 };
 use http_ng_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use http_ng_tls::TlsConfigId;
@@ -1008,247 +1008,18 @@ where
     type Body = H3Body<H>;
     type Error = Error;
 
+    /// [`H3::stage`] then [`H3::finish`] — the same two halves
+    /// [`crate::StagedConnect`] hands a caller separately, in one call.
+    ///
+    /// One sequencing with two entry points, for `Native::run`'s reason:
+    /// the alternative is two orders of the same steps, and the two would
+    /// drift into two transports.
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<H3Body<H>>, Error> {
-        // **A `RequireVersion` demand, answered before anything else** —
-        // before the scheme check, before resolution, before a QUIC
-        // packet. This transport speaks exactly one version, so the answer
-        // is a pure function of the request and there is no reason to
-        // learn anything else first.
-        //
-        // The two halves matter equally, and it is the second that makes
-        // `Capabilities::version_select` `true` here rather than `false`:
-        //
-        // - `RequireVersion(HTTP_3)` is **satisfied**, and must not fail.
-        //   Declaring `version_select: false` would have `Client` refuse
-        //   it at the `UnsupportedCapability` gate — a transport turning
-        //   down the one demand it meets by definition.
-        // - Anything else is refused with the same `VersionNotAvailable`
-        //   `http-ng-native` raises, so a caller who moved from one
-        //   backend to the other reads the same type rather than
-        //   discovering a second vocabulary.
-        //
-        // A transport that cannot *choose* still *honours*: see the field's
-        // doc in `http-ng-core`, and `http-ng-fetch`/`http-ng-wasi`, which
-        // keep `false` because they neither choose the version nor learn
-        // it.
-        check_version(req.extensions(), http::Version::HTTP_3)?;
-
-        let uri = req.uri().clone();
-        if uri.scheme_str() != Some("https") {
-            return Err(Error::new(
-                ErrorKind::Connect,
-                std::io::Error::other(format!(
-                    "HTTP/3 runs over QUIC, which is always TLS; `{}` has no plaintext form",
-                    uri.scheme_str().unwrap_or("(no scheme)")
-                )),
-            ));
-        }
-        let host = uri
-            .host()
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Connect,
-                    std::io::Error::other("request URI has no host"),
-                )
-            })?
-            .to_string();
-        let port = uri.port_u16().unwrap_or(443);
-
-        let wants_early = early::admits_early_data(&req);
-        if req
-            .extensions()
-            .get::<http_ng_core::AllowEarlyData>()
-            .is_some()
-            && self.caps.early_data == EarlyDataSupport::None
-        {
-            return Err(early::refuse_early_data("http-ng-h3"));
-        }
-
-        // `Timeouts` is read field by field, from a copy, and never branched
-        // on as a whole — `Transport::execute`'s doc comment states the
-        // reading literally, and "presence is not intent" is what it means:
-        // an extension carrying only `first_byte` must not be read as a
-        // request for a `connect` bound, nor its absence as a refusal.
-        // Only `connect` is honoured here; the other two are declared
-        // `false` and would be silent no-ops, which is the defect this
-        // whole channel exists to prevent.
-        let timeouts = req
-            .extensions()
-            .get::<Timeouts>()
-            .copied()
-            .unwrap_or_default();
-
-        // When this transport committed to doing work, for `Head::elapsed`
-        // and for `ConnectTiming`'s `dns` and `total` — and `None` when
-        // nobody is watching, so a build with no hook reads no clock here
-        // or anywhere below. The three figures share one mark deliberately:
-        // the pair (`Head::elapsed`, `ConnectTiming::total`) is what answers
-        // "was it the connection or was it the server", and two marks would
-        // make that a subtraction of two different origins.
-        let began = mark::<H, R>(&self.rt);
-
-        // Everything between "a URI" and "a connection that can carry a
-        // request" — address resolution, the QUIC handshake, and h3's own
-        // settings exchange on top of it — under one bound.
-        //
-        // The same scope `http-ng-native` gives `connect`, deliberately:
-        // there `with_connect_timeout` wraps `connect::connect`, which is
-        // DNS plus the TCP race plus the TLS handshake. A portable setting
-        // that meant "DNS included" on one transport and "handshake only"
-        // on another would be a capability that lies in the most tiresome
-        // way — by being true.
-        //
-        // A pooled checkout does no I/O at all, so it is inside the bound
-        // for want of a reason to write a second path rather than because
-        // it needs one: `checkout` returns a live `SendRequest` clone
-        // without awaiting anything the timer could beat.
-        let connect = async {
-            let addr = self.resolve(&host, port).await?;
-            // `dns` in the seam's sense — "from the start of the connect to
-            // the moment the first address could be tried" — and it means
-            // the same thing here as it does over TCP, which is more than
-            // can be said for the two fields below it.
-            let dns = since::<R>(&self.rt, began);
-            let key = PoolKey {
-                host,
-                port,
-                tls: self.tls.config_id(),
-                early_data: wants_early,
-            };
-            self.checkout(&key, addr, dns).await
-        };
-        let CheckedOut {
-            mut send,
-            zero_rtt,
-            conn,
-            state,
-            made,
-        } = match timeouts.connect {
-            Some(d) => within_connect(&self.rt, d, connect).await?,
-            None => connect.await?,
-        };
-
-        // Emitted here, outside `checkout`, because the pool's mutex is
-        // held inside it and no hook is ever called under a lock. The
-        // *branch* still comes from the pool: `made` is `Some` only on the
-        // path that dialled, so there is no flag anywhere that could
-        // disagree with the behaviour.
-        let id = ConnState::id(state.as_ref());
-        match &made {
-            Some(m) => self.hooks.on(Event::Connected(Connected {
-                id,
-                uri: &uri,
-                remote: m.remote,
-                // Not a constant standing in for a negotiation: `ALPN_H3`
-                // is the only token offered and a connection that
-                // negotiates anything else never gets here.
-                version: http::Version::HTTP_3,
-                timing: ConnectTiming {
-                    dns: m.dns,
-                    // The QUIC attempt. Its name is `tcp` and there is no
-                    // TCP; `crate::hooks` argues why this is the honest
-                    // field to put it in and why `tls` is `None` rather
-                    // than a zero or a duplicate of this number.
-                    tcp: m.handshake,
-                    tls: None,
-                    total: since::<R>(&self.rt, began),
-                },
-            })),
-            None => self.hooks.on(Event::Reused(Reused {
-                id,
-                uri: &uri,
-                version: http::Version::HTTP_3,
-            })),
-        }
-        // Built once and cloned per attempt: the 0-RTT replay is a second
-        // stream on the same connection, and both attempts' bodies report
-        // through the same `ConnState`, which is what keeps one connection's
-        // end to one event.
-        let watch = self.watch(&conn, &state);
-
-        let (parts, body) = req.into_parts();
-        // Taken before the first attempt, because after it the body is
-        // gone — but **only when there is something a replay could be
-        // needed for**. `rewind` on a `Rewindable` calls the caller's
-        // factory, and calling it on every request to hold a spare that
-        // almost never gets used would make every `Rewindable` body cost
-        // twice what it should.
-        //
-        // `zero_rtt.is_some()` is exactly the condition: it is `Some` only
-        // when this connection really went out with early data, which is
-        // the only way a request can be rejected in a way replaying fixes.
-        let spare = if zero_rtt.is_some() {
-            body.rewind()
-        } else {
-            None
-        };
-        let head = http::Request::from_parts(parts.clone(), ());
-        let first = Self::one_attempt(&mut send, head, body, watch.clone()).await;
-
-        // The second of the three 0-RTT failure paths (`crate::early` has
-        // the table). If the server refused the early keys, the streams
-        // opened before the handshake completed are reset with
-        // `ZeroRttRejected` while the connection itself is fine — quinn
-        // documents exactly this. The request must be replayed on that same
-        // connection, and **the caller must never see `ZeroRttRejected`**:
-        // from outside, offering early data and having it refused is not an
-        // outcome, it is a detail of how the response was obtained.
-        //
-        // The rejection is detected by AWAITING THE VERDICT, not by
-        // matching on an error string. Two reasons, and the second is the
-        // one that makes it correct rather than merely tidy: h3 surfaces
-        // the QUIC error as an opaque `Undefined(..)` whose `Display` is
-        // not a stable interface, and the verdict future is the authority
-        // on the question anyway — it is what `into_0rtt` handed back for
-        // this purpose. By the time a stream has failed this way the
-        // handshake has completed, so the await does not stall.
-        //
-        // **No event marks the replay**, and that is the same rule
-        // `report_head` states: one request got one response, and a caller
-        // told about the rejected stream would be told about a request they
-        // never made. See `crate::hooks` for the other half — that no event
-        // says a request went out in early data at all, and what saying so
-        // would have cost.
-        let e = match first {
-            Ok(resp) => {
-                self.report_head(&resp, id, &uri, began);
-                return Ok(resp);
-            }
-            Err(e) => e,
-        };
-        let Some(verdict) = zero_rtt else {
-            // Nothing went into early data, so this error is the caller's.
-            self.report_failed(&watch, &e);
-            return Err(e);
-        };
-        if verdict.await {
-            // Early data was accepted; the failure is a real one.
-            self.report_failed(&watch, &e);
-            return Err(e);
-        }
-        let Some(body) = spare else {
-            // Unreachable through `execute`: `admits_early_data` refuses a
-            // `RetryKind::Impossible` body, which is the only kind `rewind`
-            // returns `None` for. Kept as a typed error rather than an
-            // `unwrap`, because the two checks live in different files and
-            // the invariant between them is not one the compiler holds.
-            self.report_failed(&watch, &e);
-            return Err(e);
-        };
-        let head = http::Request::from_parts(parts, ());
-        match Self::one_attempt(&mut send, head, body, watch.clone()).await {
-            Ok(resp) => {
-                self.report_head(&resp, id, &uri, began);
-                Ok(resp)
-            }
-            Err(e) => {
-                self.report_failed(&watch, &e);
-                Err(e)
-            }
-        }
+        let staged = self.stage(req).await.map_err(|(e, _)| e)?;
+        self.finish(staged).await
     }
 
     fn capabilities(&self) -> &Capabilities {
