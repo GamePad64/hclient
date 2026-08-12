@@ -344,7 +344,11 @@ to do with the tests.
   suites from the far end of the wire. What is not checked is that this
   wrapper adds nothing between them — there is no `select`, no spawn and no
   buffering in `execute`, so there is nothing that could, but "nothing could"
-  is an argument rather than a measurement.
+  is an argument rather than a measurement. **What §7.6 adds is one level
+  down and in a place neither member's suite reached**: dropping an `H3`
+  connect *mid-handshake* against a black hole, which is the only moment a
+  race ever cancels one. It is prompt — one goodbye datagram 1.3 ms later
+  and then silence. Still not through `Selecting`.
 - **No live network.** Every server here is on loopback. The claim "a real
   origin publishing an HTTPS record with `h3` is reached over HTTP/3" is not
   made; what is made is that the record's ALPN decides which of two real
@@ -358,9 +362,14 @@ to do with the tests.
 
 ## 7. Alt-Svc and the race: what each would need
 
-Neither is built. Both are named in `docs/v04-design.md` §W1 as deliverables
-4 and 5, after this one and in that order, and the order is the finding
-rather than a schedule.
+Both are named in `docs/v04-design.md` §W1 as deliverables 4 and 5, after
+this one and in that order, and the order is the finding rather than a
+schedule. **Alt-Svc is built** — §9. **The race is not, and its blocker has
+been discharged**: it was a measurement, the measurement has been made, and
+§7.1–§7.7 below say what the numbers argue for. This section is written as
+prediction-then-finding for both, because in each case what the work needed
+differed from what it was expected to need, and in the race's case one of
+the four predictions was the reason the work had not started.
 
 ### Alt-Svc — the slow tier (deliverable 4) — **since built, see §9**
 
@@ -401,41 +410,327 @@ needs, and none of it is in this crate:
   at nothing in it. That is one match on `alt-svc` in the response head, and
   it is the smallest part of the work.
 
-### The race — a hedge, not a chooser (deliverable 5)
+### The race — a hedge, not a chooser (deliverable 5) — **measured, still not built**
 
 P12 is emphatic that it is a **third** thing: applied *after* the choice, as
 a hedge against a network that blocks UDP/443, not as a way of choosing.
-What it needs:
+Its blocker was a measurement — v0.3 W2's *"the size of the cost is
+unverified"*, and `docs/v04-design.md` §W1's *"measure before choosing a
+policy, not after"*. **The measurement exists now.** What follows replaces
+this subsection's original four-bullet list of what the race would need
+with what it does need, and each answer carries the number behind it.
 
-- **The measurement first, and this is the blocker.** v0.3 W2 recorded that
-  *"the size of the cost is unverified"* — how long a client waits before
-  concluding UDP is blocked, and what that costs on a network where it is
-  not. A policy chosen before that number is a guess with a timer in it.
-- **A fixture that can actually block UDP/443**, which loopback cannot: a
-  packet filter, a namespace, or the `tuntap` device the workspace already
-  gates a CI job on (`HTTP_NG_REQUIRE_TUNTAP`). Without it the arm that
-  matters is untestable and the race is a code path nobody exercises.
-- **A cancellation story.** Two in-flight connects, one of which must be
-  torn down when the other wins, with `Transport::execute`'s MUST — a drop
-  is a cancellation, never a detach — applying to the loser. Both members
-  already honour it, so the work is arranging the drop rather than making it
-  mean something.
-- **A budget.** `Timeouts::connect` is *one* deadline for the whole race on
-  both members today; a race that gave each arm the full budget would double
-  the bound a caller set, which is the mistake `Client`'s `425` replay
-  already had to avoid ("a bound a server can double by answering `425` is
-  not a bound").
+The four bullets are kept, one line each, at the end — because two of them
+turned out to be wrong and one of the two was the reason nobody had done
+this.
+
+#### 7.1 The fixture blocker was not a blocker, and the sentence that said so was wrong
+
+> *"A fixture that can actually block UDP/443, which loopback cannot."*
+
+It can, and one has been sitting in this repository since v0.3.
+`crates/http-ng-h3/tests/live.rs`'s `black_hole()` binds a UDP socket, never
+answers, and **holds** it. Holding it is the whole thing: an *unbound* port
+makes the kernel send ICMP port-unreachable, which is a firewall `REJECT`; a
+bound socket that never replies emits nothing at all, which is a `DROP` —
+the target a network blocking UDP/443 actually uses, and the one whose cost
+the policy needs.
+
+So the second bullet was wrong on its own terms, and the correction is not
+cosmetic: it is why the measurement had not been made. No packet filter, no
+namespace and no `tuntap` device is needed.
+
+**One case loopback genuinely cannot produce, and it is not the one that
+mattered.** A middlebox that *refuses* — sends an ICMP error from somewhere
+along a path — cannot be staged on a single host with a real path in front
+of it. The nearest reachable approximation is a port with nothing bound at
+all, where the local kernel answers ICMP itself. It was measured too (§7.3,
+M4b), and the result is that the distinction makes **no difference to this
+client**: both cost 30.003 s. That is checked in both directions —
+`/proc/net/snmp` shows `Icmp OutDestUnreachs` rising by exactly 5 for 5
+datagrams sent to an unbound loopback port, and `InDestUnreachs` by 5 as
+well, so the ICMP is emitted *and* delivered — and quinn ignores it: neither
+`quinn-udp` 0.5.15 nor `quinn` 0.11.11 contains `IP_RECVERR`,
+`ECONNREFUSED` or any other read of the socket error queue.
+
+#### 7.2 Where the harness is and how the numbers were taken
+
+`crates/http-ng-select/tests/race_cost.rs`. Every test in it is
+`#[ignore]`d and **prints rather than asserts**, which is the only shape a
+timing-based harness is allowed here: the file's output is numbers, not a
+verdict, so it cannot become the fourth flake. Run it with
+
+```text
+cargo nextest run -p http-ng-select --test race_cost --run-ignored all \
+    --no-capture -j1
+```
+
+No CI job runs it and none should; it takes about three minutes, almost all
+of it spent waiting for quinn to give up.
+
+The fixture is two real servers behind one authority on the same port
+number, the shape `tests/servers.rs` already established — and duplicated
+inside `race_cost.rs` rather than shared, because a fixture two suites own
+is a fixture neither can change. Where a run needs UDP to be blocked, the
+QUIC server is replaced by a `black_hole` that timestamps every datagram it
+receives; that log is what makes the client's own retransmission schedule
+observable from outside it.
+
+**What depends on the machine, and what does not.** Every figure was taken
+twice, `--release` and debug, on an Intel i7-14700K, Linux 7.0.0-29,
+`rustc` 1.97.1, over the v4 loopback. The two builds disagree by roughly an
+order of magnitude on everything that is **CPU** — a QUIC handshake is
+1.77 ms in release and 12.1 ms in debug — and agree to a millisecond on
+everything that is a **timer**, which is every number the policy actually
+turns on. The release figures are quoted below; a debug figure is given
+where the difference is the point.
+
+Two limits of loopback, stated rather than papered over. There is **no
+round trip**, so every success figure is a floor: the cost with the network
+removed. And there is no competing traffic, so nothing here says what the
+hedge costs a loaded link. Neither limit touches the failure numbers,
+because — and this is the first finding — the failure costs are not
+functions of the path at all.
+
+#### 7.3 The four measurements
+
+**M1 — what a QUIC connect to a black hole costs today, end to end.**
+`http_ng_h3::H3::execute` with no `Timeouts::connect` set, three runs:
+**30.005 s, 30.003 s, 30.005 s** (debug), **30.002 s** (release). v0.3's
+30 s is confirmed for this shape rather than reused.
+
+The mechanism, read after measuring: `quinn_proto::TransportConfig::default()`
+carries `max_idle_timeout: Some(VarInt(30_000))`, and `H3` never sets it —
+it builds a fresh default `TransportConfig` when a keep-alive interval is
+configured (the default 5 s) and touches nothing else. So the 30 s is
+quinn's, inherited, and is the same number on every path.
+
+The cost in bytes is **9 datagrams of 1200 each — 10.8 KB — per abandoned
+attempt**, from the ladder below.
+
+**M2 — how early is the earliest honest signal.** Two different questions,
+and only one of them has an answer that scales with the network.
+
+The Initial retransmission ladder, read off the black hole (release):
+
+```
++  1.299ms  1200 bytes      the ClientHello
++  1.001s   1200 bytes  ×2  PTO 1
++  3.000s   1200 bytes  ×2  PTO 2
++  6.998s   1200 bytes  ×2  PTO 3
++ 14.991s   1200 bytes  ×2  PTO 4
+  gave up after 30.002s
+```
+
+**The first PTO is at 1.001 s and it is a constant.** A client with no RTT
+sample has to guess one: `quinn_proto`'s `initial_rtt` is
+`Duration::from_millis(333)` — RFC 9002 §6.2.2's `kInitialRtt` — so
+PTO₀ = 333 + 4×166.5 ≈ 999 ms whatever the path is. That is the earliest
+moment anything in the stack has *evidence* that something is wrong;
+everything before it is the client waiting exactly as it would on a slow but
+working path. **A race cannot derive a head start shorter than 1 s from any
+signal the QUIC stack produces**, because there is none.
+
+Against that, what a working exchange costs, cold, release medians:
+
+| exchange | median | min | max |
+|---|---|---|---|
+| QUIC by name — UDP + TLS 1.3 + h3 SETTINGS + GET + body | **1.766 ms** | 0.671 ms | 5.963 ms |
+| QUIC by IP literal (no resolution) | 2.505 ms | 1.060 ms | 6.093 ms |
+| TCP by name — SYN + TLS 1.3 + GET + body | **41.767 ms** | 40.520 ms | 42.763 ms |
+| TCP by IP literal (no resolution) | 41.638 ms | 40.770 ms | 42.833 ms |
+| TCP with `TcpOpts { nodelay: true }` | **0.464 ms** | 0.383 ms | 1.813 ms |
+| TCP connect to a closed port (RST) | 0.132 ms | 0.122 ms | 0.296 ms |
+
+So the gap the policy is choosing against is **1.77 ms against 30.002 s** —
+four orders of magnitude, and the larger one does not move with the path.
+
+**The 41 ms in the TCP rows is a finding and not a floor.** It is entirely
+in the head — `execute`-to-head 43.4 ms, head-to-end-of-body 10 µs — it is
+unchanged by an IP literal, so it is not RFC 8305's `resolution_delay`, and
+it is unchanged between debug and release, so it is not crypto. It is
+**Nagle meeting the peer's delayed ACK**: `http_ng_rt::TcpOpts::default()`
+is all-off — *"the user turns nodelay on, not us"*, `caps.rs` — so every
+`Native` connection this workspace makes carries Nagle, and turning it off
+takes the same exchange to 0.464 ms. Recorded in §8 as a finding for
+`http-ng-native`'s neighbourhood rather than fixed here.
+
+**M3 — what a race costs when QUIC wins.** The hedge's whole justification.
+Four head starts against a live QUIC origin, both members real, counters
+read **twice** — at the instant the loser is dropped and one second later,
+because only the difference between the two readings distinguishes "the
+loser had already got that far" from "the loser kept going" (release):
+
+| head start | winner | in | TCP sockets accepted | TCP requests answered |
+|---|---|---|---|---|
+| 0 ms | quic | 7.6 ms | **1** | **1**, and it arrived *after* the drop |
+| 1 ms | quic | 5.0 ms | **1** | **1**, likewise |
+| 50 ms | quic | 3.4 ms | 0 | 0 |
+| 300 ms | quic | 3.3 ms | 0 | 0 |
+
+**With no head start the losing arm delivers a complete, well-formed HTTP
+request to the origin.** At the moment the future was dropped the server had
+accepted a socket and read no request; one second later it had read and
+answered one. Nagle is not the explanation — it is the reason the request
+arrives *late* rather than the reason it arrives at all. The same table with
+`nodelay: true` on the TCP arm has the request answered *before* the drop
+instead of after it, and at a zero head start **the TCP arm wins outright**
+against a QUIC origin that was available and answering.
+
+At 50 ms and above, the TCP arm opens no socket at all. The boundary
+between "cost nothing" and "sent the request twice" is sharp, and it sits
+between 1 ms and 50 ms on a machine where a QUIC handshake takes 1.8 ms.
+
+**M4 — what it costs when QUIC loses.** Both failures, and the premise that
+they are different ones is wrong.
+
+| origin | QUIC arm alone, unbounded | race, head start 0 | race, head start 300 ms |
+|---|---|---|---|
+| UDP black hole (`DROP`) | 30.002 s | tcp wins in 44.1 ms | tcp wins in 344.2 ms |
+| nothing bound on UDP (`REJECT`, ICMP) | **30.003 s** | tcp wins in 45.7 ms | tcp wins in 343.6 ms |
+
+**Both time out, at the same 30 s.** An origin with no HTTP/3 server at all
+is indistinguishable to `http-ng-h3` from a firewall dropping every packet
+— §7.1 has the mechanism. So there is no cheap "this origin has no h3"
+signal to build a policy on; a race, or a memory, or nothing.
+
+With the race, the caller's cost is `head start + the TCP exchange`, which
+is exactly additive: 44.1 ms at zero, 344.2 ms at 300 ms, 1.044 s at 1 s.
+The bound is `Timeouts::connect`, and it is honoured tightly — M1b, the
+same black hole with a bound set, overshoots by **0.5 to 1.3 ms** at 100 ms,
+300 ms, 1 s and 3 s.
+
+#### 7.4 The delay
+
+**A constant, but only because nothing here can observe the thing it should
+be derived from.**
+
+The head start cannot be derived from the failure side. The failure cost is
+a *constant* — 30 s, the same on every path — and the first signal within it
+is also a constant, 1.001 s, because it comes from a guessed RTT and not a
+measured one. Neither is a bound on anything a policy wants: a head start of
+1 s would put a full second on every request to a UDP-blocked origin, which
+is worse than never trying QUIC at all.
+
+It must therefore be derived from the **success** side, and that is the one
+number that scales with the path: a QUIC handshake that will succeed does so
+in ≈ 1 RTT plus 1.8 ms of crypto (measured floor). The head start has to
+exceed that, or M3's zero-head-start row is what happens — the hedge stops
+being a hedge and becomes a coin toss that duplicates requests.
+
+The honest derived form is **an RTT observation for that origin**, and
+`http-ng-select` has nowhere to keep one. The Alt-Svc cache added in §9 is
+keyed by origin and holds a server-supplied lifetime; an RTT is neither
+server-supplied nor covered by `ma`, so it is a second store rather than a
+field. Until that exists the head start is a constant, and the constant this
+workspace should use is **250 ms** — not a new number, but
+`http_ng_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
+which is RFC 8305 §5's recommended Connection Attempt Delay and is already
+the answer this codebase gives to the structurally identical question one
+layer down ("how long do I give the preferred family before trying the
+other"). Reusing it puts two orders of magnitude between the head start and
+the QUIC floor, and two more between it and the failure.
+
+**The head start is not a latency knob. It is the safety mechanism**, and
+§7.6 is why.
+
+#### 7.5 The budget
+
+`Timeouts::connect` is one deadline, `C`. Let the head start be `H`. The
+arithmetic the measurements allow:
+
+- The QUIC arm gets `C`. The TCP arm starts at `H` and must still finish by
+  `C`, so it gets **`C − H`**, not `C`. Handing each arm a full copy is the
+  mistake `Client`'s `425` replay already had to avoid — *"a bound a server
+  can double by answering `425` is not a bound"*.
+- **`H < C` is a precondition, not a preference.** A caller setting
+  `connect: Some(100ms)` with a 250 ms head start gets no hedge at all: the
+  QUIC arm ends at 101.2 ms (measured, M1b) and the TCP arm has not started.
+  That must be refused or documented; silently degrading to "no race" is the
+  shape this workspace refuses elsewhere by name.
+- `C − H` must be large enough for the fallback to complete. On this
+  workspace's defaults that is **at least ~45 ms on loopback**, because of
+  the 41 ms of delayed ACK in §7.3 — a fallback budget that cannot cover the
+  fallback is not a budget. The fix is `nodelay`, not a larger constant.
+- Nothing needs to be reserved for tearing the loser down. Both directions
+  measured: the QUIC arm's goodbye is one datagram 1.3 ms after the drop,
+  and `Timeouts::connect` itself overshoots by 0.5–1.3 ms.
+
+#### 7.6 Cancellation
+
+**The QUIC arm cancels promptly, and the spawned driver does not outlive
+it.** Dropped mid-handshake at 50 ms (before the first PTO), at 1.5 s and at
+3.5 s, the black hole saw in every case **exactly one further datagram,
+1.3–1.8 ms after the drop, and then silence for the whole 5 s watched**.
+The datagram is 1200 bytes — quinn pads any client datagram containing an
+Initial (RFC 9000 §14.1) — but it is a goodbye and not a retransmission, and
+the ladder settles it: a retransmission would have been due at the next PTO
+and would have been followed by more, where this is followed by nothing.
+Dropping the whole `H3` as well as the future changes nothing. The driver
+question has an answer that is almost a tautology once stated: at that
+moment there is no connection, so there is no driver — `H3` spawns one after
+`connect` returns. `CancelSupport::Supported` holds where the race needs it.
+
+**The TCP arm does not cancel in the sense the race needs, and this is the
+finding.** Dropping the future stops *this side*, exactly as
+`Transport::execute`'s MUST requires — and the origin still received a
+complete HTTP request, in every run at head start 0 and 1 ms, with Nagle on
+or off. That is not a defect in `http-ng-native`. It is what `execute`'s own
+doc says the promise excludes: *"This is a claim about this side, and
+deliberately not about the server's — the request may already have arrived
+and already have been acted on."*
+
+So the fourth bullet of the original list — *"Both members already honour
+it, so the work is arranging the drop rather than making it mean
+something"* — is **half wrong**, and it is the half that matters. Arranging
+the drop is not the work. The work is not sending in the first place:
+
+> **A race built out of two `Transport::execute` calls races requests, not
+> connections.** Browsers race *connections* and send the request on the
+> winner. `Transport` has no connect-only entry point — there is nowhere in
+> the seam to say "open a connection and do not send this yet" — so any race
+> assembled from the members as they stand duplicates the request at the
+> origin whenever the loser gets far enough.
+
+That makes an unconditional race unsafe, and it is unsafe in the way this
+workspace already has vocabulary for and already knows the vocabulary is
+insufficient: `RequestBody::retry_kind()` answers *"can I send this again"*,
+not *"may an attacker send this again"*, and `POST /transfer` with a
+buffered body is `RetryKind::Free`. The same three-row table
+`docs/h3-research.md` §3.5 draws for 0-RTT applies unchanged, which is the
+strongest argument that the answer is a connect-only seam rather than a
+gate.
+
+#### 7.7 What the race does need, given the numbers
+
+1. **A head start, and a place to derive it from.** 250 ms as a constant
+   (§7.4), and an origin-keyed RTT observation as the honest form. Nothing
+   in this crate observes an RTT today, and the Alt-Svc cache is not the
+   place for one.
+2. **A budget rule that subtracts.** `H < C` checked rather than assumed,
+   and `C − H` for the fallback arm (§7.5).
+3. **Either a connect-only seam or an idempotence gate** (§7.6). Without
+   one of the two the race duplicates requests, and `RetryKind` alone does
+   not close it.
+4. **A failure memory**, or the head start is paid again on every request
+   to a blocked origin — 250 ms × every request, for as long as the network
+   blocks UDP. This is the same missing thing as §9.3's negative half, now
+   with a second caller and a number.
+5. ~~A fixture~~ — discharged, §7.1.
+6. ~~A cancellation story for the QUIC arm~~ — discharged, §7.6, and it is
+   the one part of the race that is already free.
 
 **`DefaultTransport` does not become `Selecting`**, and that is unchanged
-from the design document. Making a plain `Client::new()` open UDP sockets is
-a decision about what happens on a network that blocks UDP/443, and it wants
-the measurement above. One vertical, one claim.
+from the design document, but the reason has moved. It was *"it wants the
+measurement above"*; the measurement is now here, and what it says is that
+a race in the shape the members allow would send some requests twice. One
+vertical, one claim.
 
 ---
 
 ## 8. Findings for other crates, not acted on
 
-Both are in read-only territory for this workstream and are recorded here
+All are in read-only territory for this workstream and are recorded here
 rather than fixed.
 
 1. **`http-ng-native` has no way to be told a record has already been
@@ -462,6 +757,31 @@ rather than fixed.
    floor"* — and a selecting transport is a second carrier for whatever that
    decides. It is the same shape as `version_reported`: the honest time to
    answer is after the fact.
+4. **Every `Native` connection carries Nagle, and on loopback that costs
+   41 ms.** `http_ng_rt::TcpOpts::default()` is all-off, with a reason
+   stated in `caps.rs` — *"the user turns nodelay on, not us"* — and
+   `Native` uses the default. Measured (§7.3): a cold TLS 1.3 exchange is
+   **41.8 ms** median with it and **0.464 ms** with `nodelay: true`, in
+   release, all of the difference in the head and none of it in the body,
+   unchanged by an IP literal and unchanged between debug and release. So
+   it is neither resolution nor crypto; it is the client's second flight
+   waiting on a delayed ACK. Whether the default is right is a policy
+   question for `http-ng-rt` and not for this crate — what is a finding is
+   that the number is 41 ms rather than "a bit", and that it dominates
+   every TCP figure the race would be tuned against.
+5. **`TokioHandle` cannot be asked for `nodelay`, though it applies it.**
+   `TcpConnect for TokioHandle` delegates `connect` to `Tokio::connect`,
+   which applies every option — its doc says *"deliberately identical to
+   `Tokio`'s, guard and all"* — but it does not restate
+   `TcpConnect::APPLIES`, so it inherits the trait's `NONE`.
+   `Native::tcp_opts` then refuses with an `UnsupportedTcpOpts` naming
+   `nodelay`, against a runtime that does in fact apply it. Found by
+   measurement rather than by reading: the first version of §7.3's control
+   used `TokioHandle` and panicked on the error. It matters here because
+   `TokioHandle` is the runtime `Selecting` requires — `H3` needs `Spawn` —
+   so the finding above is unfixable from a selecting build until the
+   constant is restated. One line in
+   `crates/http-ng-rt-tokio/src/handle.rs`.
 
 ---
 
