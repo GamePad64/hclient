@@ -634,7 +634,7 @@ is worse than never trying QUIC at all.
 
 It must therefore be derived from the **success** side, and that is the one
 number that scales with the path: a QUIC handshake that will succeed does so
-in ≈ 1 RTT plus 1.8 ms of crypto (measured floor). The head start has to
+in ≈ 1 RTT plus the 1–3 ms of crypto measured above. The head start has to
 exceed that, or M3's zero-head-start row is what happens — the hedge stops
 being a hedge and becomes a coin toss that duplicates requests.
 
@@ -673,7 +673,7 @@ arithmetic the measurements allow:
   the 41 ms of delayed ACK in §7.3 — a fallback budget that cannot cover the
   fallback is not a budget. The fix is `nodelay`, not a larger constant.
 - Nothing needs to be reserved for tearing the loser down. Both directions
-  measured: the QUIC arm's goodbye is one datagram 1.3 ms after the drop,
+  measured: the QUIC arm's goodbye is one datagram 1.3–2.4 ms after the drop,
   and `Timeouts::connect` itself overshoots by 0.5–2.0 ms.
 
 #### 7.6 Cancellation
@@ -681,7 +681,7 @@ arithmetic the measurements allow:
 **The QUIC arm cancels promptly, and the spawned driver does not outlive
 it.** Dropped mid-handshake at 50 ms (before the first PTO), at 1.5 s and at
 3.5 s, the black hole saw in every case **exactly one further datagram,
-1.3–1.8 ms after the drop, and then silence for the whole 5 s watched**.
+1.3–2.4 ms after the drop, and then silence for the whole 5 s watched**.
 The datagram is 1200 bytes — quinn pads any client datagram containing an
 Initial (RFC 9000 §14.1) — but it is a goodbye and not a retransmission, and
 the ladder settles it: a retransmission would have been due at the next PTO
@@ -694,8 +694,9 @@ moment there is no connection, so there is no driver — `H3` spawns one after
 **The TCP arm does not cancel in the sense the race needs, and this is the
 finding.** Dropping the future stops *this side*, exactly as
 `Transport::execute`'s MUST requires — and the origin still received a
-complete HTTP request, in every run at head start 0 and 1 ms, with Nagle on
-or off. That is not a defect in `http-ng-native`. It is what `execute`'s own
+complete HTTP request in nine of the twelve zero- and one-millisecond arms,
+with Nagle on and with it off. That is not a defect in `http-ng-native`, and
+it cannot be fixed there: it is what `execute`'s own
 doc says the promise excludes: *"This is a claim about this side, and
 deliberately not about the server's — the request may already have arrived
 and already have been acted on."*
@@ -716,10 +717,19 @@ That makes an unconditional race unsafe, and it is unsafe in the way this
 workspace already has vocabulary for and already knows the vocabulary is
 insufficient: `RequestBody::retry_kind()` answers *"can I send this again"*,
 not *"may an attacker send this again"*, and `POST /transfer` with a
-buffered body is `RetryKind::Free`. The same three-row table
-`docs/h3-research.md` §3.5 draws for 0-RTT applies unchanged, which is the
-strongest argument that the answer is a connect-only seam rather than a
-gate.
+buffered body is `RetryKind::Free`. `docs/h3-research.md` §3.5's whole
+argument for 0-RTT applies here unchanged.
+
+**And a race is the second thing to break the sentence that section quotes
+as the reason `http-ng-native` needed no idempotency judgement.** W2's one
+retry is safe because *"nothing to decide about idempotency: this is not a
+second request, it is the first one, which never left"* — hands the request
+back only when not a byte reached the wire. §3.5 already noted that 0-RTT
+ends that exemption because its data does reach the wire. A race ends it a
+second way, and a plainer one: **both requests leave, at the same time, and
+neither is a retry.** So an idempotence gate is not a smaller version of the
+connect-only seam — it is a judgement this codebase has twice declined to
+make. That is the strongest argument that the answer is the seam.
 
 #### 7.7 What the race does need, given the numbers
 
