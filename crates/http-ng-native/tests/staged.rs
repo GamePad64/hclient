@@ -199,6 +199,51 @@ async fn a_staged_connect_finds_a_pooled_connection_rather_than_dialling() {
     );
 }
 
+/// **The check-in the handle carries is the one the exchange uses.** A
+/// staged exchange returns its connection to the pool exactly as
+/// `Transport::execute` does, so the request after it finds it there.
+///
+/// The mutation this exists to fail is a handle minted with no way home:
+/// [`a_staged_connect_finds_a_pooled_connection_rather_than_dialling`]
+/// above passes with one, because it never asks what happened to the
+/// connection *afterwards*. Both arms are here rather than one, because
+/// the check-in is minted at two sites — the pooled branch and the fresh
+/// one — and a test covering one of them says nothing about the other.
+#[tokio::test]
+async fn a_staged_exchange_returns_its_connection_to_the_pool() {
+    for warm in [false, true] {
+        let (addr, c) = counting_server();
+        let t = native();
+        let mut expected_heads = 0;
+
+        if warm {
+            // The staged connect then comes off the pooled branch.
+            let resp = t.execute(get(addr).into_request()).await.expect("warming");
+            assert_eq!(body_of(resp).await, "ok");
+            expected_heads += 1;
+        }
+
+        let staged = t.connect(get(addr)).await.expect("connects");
+        let resp = t.exchange(staged).await.expect("exchanges");
+        assert_eq!(body_of(resp).await, "ok");
+        expected_heads += 1;
+
+        let resp = t.execute(get(addr).into_request()).await.expect("after");
+        assert_eq!(body_of(resp).await, "ok");
+        expected_heads += 1;
+
+        assert_eq!(
+            (
+                c.accepted.load(Ordering::SeqCst),
+                c.heads.load(Ordering::SeqCst)
+            ),
+            (1, expected_heads),
+            "warm={warm}: the request after a staged exchange must find that \
+             exchange's connection in the pool"
+        );
+    }
+}
+
 /// `docs/connect-only-seam.md` §9 left open what happens to a connection
 /// whose caller decided not to use it. This is the answer: it goes back to
 /// the pool, so the next request finds it.
