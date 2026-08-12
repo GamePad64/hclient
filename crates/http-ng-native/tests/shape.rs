@@ -54,30 +54,27 @@ fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
     assert_bound::<OutgoingBody>();
 }
 
-/// The same property for the WebSocket seam (v0.3 W4), and it is the whole
-/// reason `hyper::upgrade::Upgraded` was not used: that type is
-/// `Rewind<Box<dyn Io + Send>>`, so taking it would have made this crate's
-/// IO carry a *declared* `Send` bound and shut out single-threaded
-/// runtimes. `poll_without_shutdown` + `into_parts` hand back the concrete
-/// `I` instead, and `Send` is inferred here rather than required
-/// anywhere — exactly as for `NativeBody` above.
+/// The same property for the upgrade seam (v0.3 W4, split out of this
+/// crate in v0.4), and it is the whole reason `hyper::upgrade::Upgraded`
+/// was not used: that type is `Rewind<Box<dyn Io + Send>>`, so taking it
+/// would have made this crate's IO carry a *declared* `Send` bound and
+/// shut out single-threaded runtimes. `poll_without_shutdown` +
+/// `into_parts` hand back the concrete `I` instead, and `Send` is
+/// inferred here rather than required anywhere — exactly as for
+/// `NativeBody` above.
 ///
-/// `Sync` is deliberately not asserted: a `Stream + Sink` is used through
-/// `&mut`, and nothing in this workspace shares one.
+/// The framing half of the same claim is
+/// `http-ng-ws-tungstenite/tests/shape.rs`, which asserts it of the value
+/// this one turns into.
 ///
-/// The second type argument is the keep-alive's clock, and it carries a
-/// second claim of the same kind: `NativeWebSocket` holds a
-/// `Pin<Box<Tm::Sleep>>`, and a box around a **concrete** type lets auto
-/// traits through where a `Pin<Box<dyn Future>>` would have stopped them.
-/// `Timer::Sleep` being a named associated type rather than an RPITIT is
-/// what makes that available — the same property `IdleTimeout` relies on.
-#[cfg(feature = "websocket")]
+/// `Sync` is deliberately not asserted: an upgrade in flight is used
+/// through `&mut`, and nothing in this workspace shares one.
 #[test]
-fn auto_traits_reach_the_websocket() {
+fn auto_traits_reach_an_upgrade() {
     fn assert_send<T: Send>() {}
 
     type Rt = http_ng_rt_tokio::Tokio;
     type Tls = http_ng_tls_rustls::Rustls;
 
-    assert_send::<http_ng_native::NativeWebSocket<http_ng_native::NativeIo<Rt, Tls>, Rt>>();
+    assert_send::<http_ng_native::Upgrading<http_ng_native::NativeIo<Rt, Tls>>>();
 }

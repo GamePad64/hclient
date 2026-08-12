@@ -1,69 +1,48 @@
-//! WebSocket over an HTTP/1.1 upgrade, behind
-//! [`http_ng_core::unversioned::WebSocketConnect`].
+//! RFC 6455 framing on an already-upgraded byte stream, and the connector
+//! that opens one over `http-ng-native`.
 //!
-//! # The trap this file exists to avoid
+//! Two halves, and the seam between them is the whole reason this crate
+//! exists rather than a `websocket` feature on `http-ng-native`
+//! (`docs/w4-upgrade-seam.md` §8):
 //!
-//! hyper answers a `101` from `Connection`'s `Future` impl with
-//! `pending.manual(); Poll::Ready(Ok(()))` (`client/conn/http1.rs:310-320`,
-//! under its own comment *"With no `Send` bound on `I`, we can't try to do
-//! upgrades here"*). So **"the exchange finished" and "the upgrade was
-//! destroyed" are the same observation**, and [`crate::h1::exchange`] polls
-//! `Connection` exactly that way — which is why a `101` there is a response
-//! with an empty body and a socket that closes when the locals drop
-//! (`tests/switching_protocols.rs`).
+//! - [`TungsteniteWebSocket`], the framing: generic over the IO and the
+//!   clock, it names no transport at all, and it is what
+//!   [`http_ng_core::unversioned::WebSocket`] is implemented on. Give it
+//!   an upgraded stream and the bytes hyper had already read past, and it
+//!   speaks WebSocket over them.
+//! - [`Tungstenite`], the connector: it borrows a
+//!   [`http_ng_native::Native`], asks it for the h1 upgrade, and hands the
+//!   result to the framing. It is the only thing here that knows what a
+//!   socket is.
 //!
-//! Nothing in that shape can be reused here. This file therefore does its
-//! own exchange, on three rules:
+//! # The seam this crate takes from `http-ng-native` is "an upgraded byte
+//! stream, plus the `read_buf`"
 //!
-//! 1. **The `101` is recognised by its status and its handshake headers,
-//!    never by "the connection future completed".** That distinction is
-//!    the whole trap: hyper reports a finished ordinary exchange and a
-//!    destroyed upgrade with the same `Ready(Ok(()))`, so a client taking
-//!    the completion as its signal would upgrade onto any response at
-//!    all. [`upgrade`] reads four things — the status, `Upgrade:`,
-//!    `Connection:` and `Sec-WebSocket-Accept` — and returns a typed
-//!    error on each; `tests/websocket.rs` has a server for every one, and
-//!    deleting any of the four kills a named test.
+//! Which is exactly the shape `docs/w4-upgrade-seam.md` §2 rejected — as
+//! the **public** seam, where it excludes three of four backends and the
+//! browser among them. As the seam between a transport and a framing
+//! crate it is right, because it is only ever asked of the one backend
+//! that can answer it. A shape can be wrong at one level and correct at
+//! the next; §2's argument was about which level.
 //!
-//!    Measured, because the stronger claim an earlier draft of this
-//!    paragraph made is false: **moving all four checks to after
-//!    `into_parts` changes nothing any test can see**, and that mutation
-//!    survives. The reason is `drop(body)` below — dropping hyper's
-//!    `Incoming` finishes the dispatcher whatever the response was, so
-//!    `poll_without_shutdown` returns `Ready` on a `200` as readily as on
-//!    a `101`, and an upgrade that is then refused drops its socket
-//!    either way. The checks stay where they are because reading a
-//!    response before dismantling the connection that produced it is the
-//!    order that stays correct if hyper's does not; they are not load
-//!    bearing *today*, and `docs/v03-acceptance.md` says so rather than
-//!    letting this file imply otherwise.
-//! 2. **`poll_without_shutdown` + `into_parts`, never
-//!    `hyper::upgrade::{on, Upgraded}`.** `Upgraded` holds
-//!    `Rewind<Box<dyn Io + Send>>` (`hyper/src/upgrade.rs:66-67`), which
-//!    would put a `Send` bound on this crate's IO and shut out
-//!    single-threaded runtimes — the same objection that disqualified
-//!    `hyper/http2` in v0.2 W3. `poll_without_shutdown` and `into_parts`
-//!    are bounded by `T: Read + Write + Unpin` alone.
+//! The proof that the arrangement is the right way round is
+//! `http-ng-fetch`: a browser hands back **messages**, so that backend
+//! implements `WebSocketConnect` itself and needs no adapter at all. The
+//! adapter exists exactly where the platform hands back **bytes**. If
+//! both needed one, the seam would be in the wrong place.
 //!
-//!    Worth knowing, because it is not what the shape suggests: at
-//!    hyper 1.11 `poll_without_shutdown` and `Connection`'s `Future` impl
-//!    behave *identically* on a `101` — `poll_inner` returns
-//!    `Dispatched::Upgrade` before it ever looks at `should_shutdown`, and
-//!    both then call `pending.manual()`. Swapping one for the other here
-//!    is a mutation no test in this workspace kills, and it is written
-//!    down in `docs/v03-acceptance.md` rather than left for the next
-//!    reader to rediscover. `poll_without_shutdown` is still the right
-//!    call: it is the API hyper documents for this ("Once the upgrade is
-//!    completed … you would take it back using `into_parts`"), it does not
-//!    require `B::Data: Send` where the `Future` impl does, and on any
-//!    completion that is *not* an upgrade it is the one that leaves the
-//!    socket alone.
-//! 3. **`Parts::read_buf` is carried into the framing layer.** A server is
-//!    free to put its first frames in the same flight as the `101`, and
-//!    hyper will have read them already. Dropping that buffer works in
-//!    every test where the server pauses first, which is what makes it
-//!    worth a test where it does not
-//!    (`the_first_frame_may_arrive_in_the_same_flight_as_the_101`).
+//! What stays on the other side of it is in
+//! [`http_ng_native::Upgrading`]: the connection of its own (its
+//! connector, its TLS, `http/1.1` alone on the ALPN list, and deliberately
+//! never the pool), and the h1 upgrade — `poll_without_shutdown` +
+//! `into_parts`, and the `101` recognised by **status** before the
+//! connection is polled out, which is the trap that module exists to
+//! avoid. The three checks that are about *WebSocket* rather than about
+//! *an upgrade* — `Upgrade:`, `Connection:` and `Sec-WebSocket-Accept` —
+//! are [`Handshake::accept`]'s, here, and they run on the response head
+//! **before** [`http_ng_native::Upgrading::finish`] takes the connection
+//! apart. That ordering is structural rather than remembered: this crate
+//! cannot reach the socket without having been handed the head first.
 //!
 //! # Framing: `tungstenite`, driven by us
 //!
@@ -110,12 +89,14 @@
 //!
 //! # Why a WebSocket is never pooled, at either end
 //!
-//! It is opened on a connection of its own ([`crate::pool`] is not
-//! consulted) and it never goes back, because a socket that has stopped
-//! speaking HTTP is not a connection any later request could use. That is
-//! the same conclusion `tests/switching_protocols.rs` reached from the
-//! other side, and here it costs nothing to arrange: this file never
-//! builds a `CheckIn`.
+//! It is opened on a connection of its own and it never goes back,
+//! because a socket that has stopped speaking HTTP is not a connection any
+//! later request could use. That is the same conclusion
+//! `http-ng-native`'s `tests/switching_protocols.rs` reached from the
+//! other side, and neither half of this arrangement can undo it: the pool
+//! is not consulted on the way in ([`http_ng_native::Native::upgrade`]
+//! never asks it), and nothing here can put a connection back, because
+//! this crate is never handed one — only an `I` that used to be one.
 //!
 //! # The bound an open socket has: liveness, and only when it is asked for
 //!
@@ -132,8 +113,8 @@
 //! state of a WebSocket, so `between_bytes` here would kill healthy
 //! connections. The question is not "is this transfer taking too long",
 //! it is **is the peer still there**, and RFC 6455 §5.5.2 answers exactly
-//! that. It is configured on this transport
-//! ([`crate::Native::websocket_keep_alive`]) rather than on the seam or in
+//! that. It is configured on the connector
+//! ([`Tungstenite::keep_alive`]) rather than on the seam or in
 //! the request's extensions, because `http-ng-fetch` implements the same
 //! seam and a browser has no `send(ping)` at all — §7's own reasoning.
 //!
@@ -190,7 +171,7 @@
 //! what `within` already does; and a pong that arrives one millisecond
 //! inside the deadline is a perfectly healthy connection, so an early
 //! signal would report ordinary jitter as a fault. What a caller can read
-//! is the configuration in force ([`NativeWebSocket::keep_alive`]) and the
+//! is the configuration in force ([`TungsteniteWebSocket::keep_alive`]) and the
 //! failure when it happens. Between those two there is nothing true to
 //! say.
 //!
@@ -239,17 +220,18 @@
 //! anyway, so no probe follows one — a probe already in flight still has
 //! its deadline. The closing handshake is therefore unbounded, which is
 //! the same gap [`Sink::poll_close`] already records for itself.
-use crate::connect;
+#![forbid(unsafe_code)]
+
 use bytes::Bytes;
 use futures_core::Stream;
 use futures_sink::Sink;
 use http::HeaderValue;
 use http_ng_core::unversioned::{CloseFrame, Message, WebSocket, WebSocketConnect};
-use http_ng_core::{Error, ErrorKind, Timeouts};
+use http_ng_core::{Error, ErrorKind};
 use http_ng_dns::Resolve;
+use http_ng_native::{Native, NativeIo};
 use http_ng_rt::{TcpConnect, Timer};
 use http_ng_tls::TlsConnect;
-use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -264,8 +246,10 @@ use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 /// [`WebSocketConnect::websocket`]'s own contract says a header that
 /// cannot be sent must fail rather than disappear. `Host` is deliberately
 /// not on this list — it is defaulted when absent and honoured when
-/// present, the same rule `established::Rewritten::for_http1` already
-/// follows for every other request this crate sends.
+/// present, and it is not set here at all: it is
+/// [`http_ng_native::Native::upgrade`]'s, which does it for a WebSocket
+/// handshake by the same rule and in the same place as for every other
+/// HTTP/1 request that transport sends.
 const OURS: [http::HeaderName; 4] = [
     http::header::CONNECTION,
     http::header::UPGRADE,
@@ -282,10 +266,6 @@ struct ReservedHeader(http::HeaderName);
 struct UnsupportedScheme(String);
 
 #[derive(Debug, thiserror::Error)]
-#[error("the server answered {0} rather than 101 Switching Protocols")]
-struct NotSwitchingProtocols(http::StatusCode);
-
-#[derive(Debug, thiserror::Error)]
 #[error("the 101 response is missing or misspells its {0} header")]
 struct BadUpgradeHeader(&'static str);
 
@@ -293,15 +273,11 @@ struct BadUpgradeHeader(&'static str);
 #[error("the server's Sec-WebSocket-Accept does not match the Sec-WebSocket-Key this client sent")]
 struct AcceptKeyMismatch;
 
-#[derive(Debug, thiserror::Error)]
-#[error("the connection ended before the handshake response arrived")]
-struct EndedBeforeTheResponse;
-
 /// `ws`/`wss` are RFC 6455's schemes; `http`/`https` are accepted as the
 /// same two, because a caller who already holds an origin should not have
 /// to rewrite its scheme to open a socket to it. The result is what
-/// [`connect::connect`] understands, which is also what leaves the port
-/// defaulting (`80`/`443`) in that module rather than in a second copy of
+/// `http-ng-native`'s connector understands, which is also what leaves the
+/// port defaulting (`80`/`443`) over there rather than in a second copy of
 /// it here.
 fn as_http_uri(uri: &http::Uri) -> Result<http::Uri, Error> {
     let scheme = match uri.scheme_str() {
@@ -322,68 +298,112 @@ fn as_http_uri(uri: &http::Uri) -> Result<http::Uri, Error> {
     http::Uri::from_parts(parts).map_err(|e| Error::new(ErrorKind::Unsupported, e))
 }
 
-/// The RFC 6455 §4.1 opening handshake, built from the caller's request.
+/// The RFC 6455 §4.1 opening handshake: the request one end of it sends,
+/// and the check the other end's answer has to pass.
 ///
-/// Origin-form URI and a `Host:`, because this goes out on hyper's HTTP/1
-/// client, which requires exactly that — the same shape
-/// [`crate::established`] puts an ordinary request into, and for the same
-/// reason.
-fn handshake_request(
-    req: http::Request<()>,
-    uri: &http::Uri,
-    key: &str,
-) -> Result<http::Request<http_body_util::Empty<Bytes>>, Error> {
-    for name in OURS {
-        if req.headers().contains_key(&name) {
-            return Err(Error::new(ErrorKind::Unsupported, ReservedHeader(name)));
+/// **This is the half of a WebSocket that is neither framing nor a
+/// socket.** It is public because it is what a connector other than
+/// [`Tungstenite`] would need: `http::Request` in, `http::Request` out,
+/// `http::Response` checked, and no IO of any kind. The nonce it holds is
+/// why it is a value rather than two free functions — [`Handshake::accept`]
+/// can only check `Sec-WebSocket-Accept` against the key that actually
+/// went out.
+#[derive(Debug)]
+pub struct Handshake {
+    key: String,
+}
+
+impl Handshake {
+    /// The handshake request, built from the caller's.
+    ///
+    /// The URI comes back with `ws`/`wss` mapped to `http`/`https` and a
+    /// path if it had none, because that is what a connector resolves and
+    /// connects with. It is deliberately **absolute** and carries no
+    /// `Host:`: turning it into the origin-form request line HTTP/1
+    /// requires, and defaulting `Host:` from the authority, is the
+    /// transport's job for every request it sends, and a WebSocket
+    /// handshake is not the exception
+    /// ([`http_ng_native::Native::upgrade`] does it).
+    ///
+    /// The caller's extensions travel on the request, so a `Timeouts` in
+    /// them still reaches whoever connects.
+    pub fn start(req: http::Request<()>) -> Result<(Self, http::Request<()>), Error> {
+        for name in OURS {
+            if req.headers().contains_key(&name) {
+                return Err(Error::new(ErrorKind::Unsupported, ReservedHeader(name)));
+            }
         }
-    }
-    let (parts, ()) = req.into_parts();
-    let mut headers = parts.headers;
+        let uri = as_http_uri(req.uri())?;
+        let key = tungstenite::handshake::client::generate_key();
 
-    let host = uri.host().unwrap_or_default();
-    let https = uri.scheme_str() == Some("https");
-    let default_port = if https { 443 } else { 80 };
-    let port = uri.port_u16().unwrap_or(default_port);
-    if !headers.contains_key(http::header::HOST) {
-        let authority = if port == default_port {
-            host.to_owned()
-        } else {
-            format!("{host}:{port}")
-        };
-        if let Ok(v) = HeaderValue::from_str(&authority) {
-            headers.insert(http::header::HOST, v);
+        let (parts, ()) = req.into_parts();
+        let mut headers = parts.headers;
+        headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("Upgrade"),
+        );
+        headers.insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert(
+            http::header::SEC_WEBSOCKET_VERSION,
+            HeaderValue::from_static("13"),
+        );
+        headers.insert(
+            http::header::SEC_WEBSOCKET_KEY,
+            HeaderValue::from_str(&key).map_err(|e| Error::new(ErrorKind::Connect, e))?,
+        );
+
+        let mut out = http::Request::new(());
+        *out.method_mut() = http::Method::GET;
+        *out.version_mut() = http::Version::HTTP_11;
+        *out.uri_mut() = uri;
+        *out.headers_mut() = headers;
+        *out.extensions_mut() = parts.extensions;
+        Ok((Self { key }, out))
+    }
+
+    /// The three checks a `101` has to pass to be *this* handshake's
+    /// answer — and deliberately not the fourth.
+    ///
+    /// "Is this a `101` at all" belongs to whoever ran the exchange, and
+    /// it is the one check that has to happen before the connection is
+    /// polled out: hyper reports a finished ordinary exchange and a
+    /// destroyed upgrade with the same `Ready(Ok(()))`, so a client taking
+    /// the completion as its signal would upgrade onto any response at
+    /// all. [`http_ng_native::Native::upgrade`] carries that one and hands
+    /// back a head only for a `101`.
+    ///
+    /// What is left is what makes a `101` a *WebSocket* `101`. All three
+    /// are refusals rather than warnings: `tests/websocket.rs` has a
+    /// server for each, and deleting any of them kills a named test.
+    pub fn accept(&self, head: &http::response::Parts) -> Result<(), Error> {
+        if !head
+            .headers
+            .get(http::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        {
+            return Err(Error::new(ErrorKind::Status, BadUpgradeHeader("Upgrade")));
         }
+        if !has_upgrade_token(head.headers.get(http::header::CONNECTION)) {
+            return Err(Error::new(
+                ErrorKind::Status,
+                BadUpgradeHeader("Connection"),
+            ));
+        }
+        // RFC 6455 §4.1 step 5. Without it, a server that never saw the
+        // key — a cache, a proxy, anything replaying a recorded `101` —
+        // is indistinguishable from one that did.
+        let expected = tungstenite::handshake::derive_accept_key(self.key.as_bytes());
+        if head
+            .headers
+            .get(http::header::SEC_WEBSOCKET_ACCEPT)
+            .map(HeaderValue::as_bytes)
+            != Some(expected.as_bytes())
+        {
+            return Err(Error::new(ErrorKind::Status, AcceptKeyMismatch));
+        }
+        Ok(())
     }
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("Upgrade"),
-    );
-    headers.insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
-    headers.insert(
-        http::header::SEC_WEBSOCKET_VERSION,
-        HeaderValue::from_static("13"),
-    );
-    headers.insert(
-        http::header::SEC_WEBSOCKET_KEY,
-        HeaderValue::from_str(key).map_err(|e| Error::new(ErrorKind::Connect, e))?,
-    );
-
-    let target = uri
-        .path_and_query()
-        .cloned()
-        .unwrap_or_else(|| http::uri::PathAndQuery::from_static("/"));
-    let mut origin_form = http::uri::Parts::default();
-    origin_form.path_and_query = Some(target);
-
-    let mut out = http::Request::new(http_body_util::Empty::<Bytes>::new());
-    *out.method_mut() = http::Method::GET;
-    *out.version_mut() = http::Version::HTTP_11;
-    *out.uri_mut() =
-        http::Uri::from_parts(origin_form).map_err(|e| Error::new(ErrorKind::Connect, e))?;
-    *out.headers_mut() = headers;
-    *out.extensions_mut() = parts.extensions;
-    Ok(out)
 }
 
 /// `true` when `Connection:` carries an `upgrade` token.
@@ -397,109 +417,6 @@ fn has_upgrade_token(v: Option<&HeaderValue>) -> bool {
         v.split(',')
             .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
     })
-}
-
-/// The exchange, from a connected socket to the bytes that follow the
-/// `101` — see the module doc for the three rules it keeps.
-///
-/// Returns the IO, whatever hyper had already read past the response head,
-/// and the response head itself, so a caller can read what was negotiated.
-async fn upgrade<I>(
-    io: I,
-    req: http::Request<http_body_util::Empty<Bytes>>,
-    key: &str,
-) -> Result<(I, Bytes, http::Response<()>), Error>
-where
-    I: Read + Write + Unpin + 'static,
-{
-    let (mut sender, mut conn) = http1::handshake::<I, http_body_util::Empty<Bytes>>(io)
-        .await
-        .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-
-    let mut conn_done = false;
-    let resp = {
-        let mut send = std::pin::pin!(sender.send_request(req));
-        std::future::poll_fn(|cx| {
-            // `poll_without_shutdown`, never `Pin::new(&mut conn).poll(cx)`
-            // — see the module doc. `conn` is not polled again once it has
-            // answered `Ready`, for `Future`'s own reason.
-            if !conn_done {
-                match conn.poll_without_shutdown(cx) {
-                    Poll::Ready(Ok(())) => conn_done = true,
-                    Poll::Ready(Err(e)) => {
-                        return Poll::Ready(Err(Error::new(ErrorKind::Connect, e)));
-                    }
-                    Poll::Pending => {}
-                }
-            }
-            match send.as_mut().poll(cx) {
-                Poll::Ready(Ok(r)) => Poll::Ready(Ok(r)),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(Error::new(ErrorKind::Connect, e))),
-                // The same dead end `h1::exchange` documents: the
-                // dispatcher is finished with our request still queued on
-                // it, and the callback that would resolve this future is
-                // inside the very value we are holding.
-                Poll::Pending if conn_done => {
-                    Poll::Ready(Err(Error::new(ErrorKind::Connect, EndedBeforeTheResponse)))
-                }
-                Poll::Pending => Poll::Pending,
-            }
-        })
-        .await?
-    };
-    drop(sender);
-
-    // Rule 1, first of four: by status. Not by "hyper is finished with
-    // this connection", which is the same observation for an ordinary
-    // exchange — see the module doc.
-    let (head, body) = resp.into_parts();
-    if head.status != http::StatusCode::SWITCHING_PROTOCOLS {
-        return Err(Error::new(
-            ErrorKind::Status,
-            NotSwitchingProtocols(head.status),
-        ));
-    }
-    // A `101` carries no body (hyper decodes it as zero-length), and the
-    // connection underneath it is about to be taken apart.
-    drop(body);
-
-    if !head
-        .headers
-        .get(http::header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
-    {
-        return Err(Error::new(ErrorKind::Status, BadUpgradeHeader("Upgrade")));
-    }
-    if !has_upgrade_token(head.headers.get(http::header::CONNECTION)) {
-        return Err(Error::new(
-            ErrorKind::Status,
-            BadUpgradeHeader("Connection"),
-        ));
-    }
-    // RFC 6455 §4.1 step 5. Without it, a server that never saw the key —
-    // a cache, a proxy, anything replaying a recorded `101` — is
-    // indistinguishable from one that did.
-    let expected = tungstenite::handshake::derive_accept_key(key.as_bytes());
-    if head
-        .headers
-        .get(http::header::SEC_WEBSOCKET_ACCEPT)
-        .map(HeaderValue::as_bytes)
-        != Some(expected.as_bytes())
-    {
-        return Err(Error::new(ErrorKind::Status, AcceptKeyMismatch));
-    }
-
-    if !conn_done {
-        std::future::poll_fn(|cx| conn.poll_without_shutdown(cx))
-            .await
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-    }
-    // Rule 3: `read_buf` is whatever the server put in the same flight as
-    // the `101`. hyper has already read it off the socket, and it is
-    // unreachable from anywhere else once this value is dropped.
-    let http1::Parts { io, read_buf, .. } = conn.into_parts();
-    Ok((io, read_buf, http::Response::from_parts(head, ())))
 }
 
 /// `std::io` over `hyper::rt`, for exactly one call.
@@ -599,7 +516,7 @@ fn ws_error(e: tungstenite::Error) -> Error {
 /// silent before a `Ping` goes out, and how long the peer then has to
 /// answer it.
 ///
-/// **Off by default**, and [`crate::Native::websocket_keep_alive`] is the
+/// **Off by default**, and [`Tungstenite::keep_alive`] is the
 /// only way to turn it on. A default that pings is a default that sends
 /// traffic nobody asked for, and on a metered radio that is not free.
 ///
@@ -638,7 +555,7 @@ impl WebSocketKeepAlive {
 /// The source of the [`ErrorKind::Body`] error a missed pong produces.
 ///
 /// A named public type rather than a message, for the reason
-/// [`crate::BetweenBytesElapsed`] is one: a caller must be able to tell
+/// [`http_ng_native::BetweenBytesElapsed`] is one: a caller must be able to tell
 /// this apart from every other way a connection can fail with
 /// `Error::source().downcast_ref()`, and to read the bound that was
 /// actually in force rather than parse it out of a string.
@@ -672,9 +589,9 @@ pub struct PongNotReceived(pub Duration);
 /// because the two states are exclusive — a socket cannot be both waiting
 /// to probe and waiting for an answer.
 ///
-/// `Pin<Box<Tm::Sleep>>` for the reason [`crate::IdleTimeout`]'s is: a box
+/// `Pin<Box<Tm::Sleep>>` for the reason [`http_ng_native::IdleTimeout`]'s is: a box
 /// around a **concrete** type, so auto traits pass straight through it and
-/// a `NativeWebSocket` over a `Send` runtime stays `Send`.
+/// a `TungsteniteWebSocket` over a `Send` runtime stays `Send`.
 struct Liveness<Tm: Timer> {
     timer: Tm,
     config: WebSocketKeepAlive,
@@ -736,7 +653,7 @@ impl<Tm: Timer> Liveness<Tm> {
 /// what lets [`Shim`] borrow the poll `Context` for one call, and it is
 /// the whole of §6's argument for driving `tungstenite` rather than
 /// wrapping it.
-pub struct NativeWebSocket<I, Tm: Timer> {
+pub struct TungsteniteWebSocket<I, Tm: Timer> {
     io: I,
     ctx: WebSocketContext,
     /// A `Stream` that has ended stays ended — the contract
@@ -751,9 +668,20 @@ pub struct NativeWebSocket<I, Tm: Timer> {
     live: Option<Liveness<Tm>>,
 }
 
-impl<I, Tm: Timer> NativeWebSocket<I, Tm> {
-    /// The negotiated connection, from the pieces [`upgrade`] hands back.
-    fn new(io: I, read_buf: Bytes, timer: Tm, keep_alive: Option<WebSocketKeepAlive>) -> Self {
+impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
+    /// The negotiated connection, from the pieces an upgrade hands back:
+    /// the socket, whatever the server had already sent past the `101`,
+    /// a clock, and the liveness bound if the caller asked for one.
+    ///
+    /// **This is the internal seam of `docs/w4-upgrade-seam.md` §8**, and
+    /// it is public for that reason: everything above it is RFC 6455 and
+    /// nothing above it is a socket, so anything that can upgrade an
+    /// HTTP/1 connection can frame one — [`Tungstenite`] is this
+    /// workspace's one caller and not a privileged one. `read_buf` is what
+    /// the server put in the same flight as the `101`; passing an empty
+    /// `Bytes` when there was none is correct, dropping a non-empty one
+    /// loses the peer's first frames for good.
+    pub fn new(io: I, read_buf: Bytes, timer: Tm, keep_alive: Option<WebSocketKeepAlive>) -> Self {
         Self {
             io,
             ctx: WebSocketContext::from_partially_read(
@@ -777,14 +705,14 @@ impl<I, Tm: Timer> NativeWebSocket<I, Tm> {
     }
 }
 
-/// Hand-written for the reason [`crate::IdleTimeout`]'s is:
+/// Hand-written for the reason [`http_ng_native::IdleTimeout`]'s is:
 /// `#[derive(Debug)]` would demand `Debug` of the clock, which [`Timer`]
 /// does not ask for. The keep-alive state is in it because an outstanding
 /// probe is exactly what a reader debugging a stalled socket wants to see
 /// — and, per §7's first question, the only place it is visible.
-impl<I: std::fmt::Debug, Tm: Timer> std::fmt::Debug for NativeWebSocket<I, Tm> {
+impl<I: std::fmt::Debug, Tm: Timer> std::fmt::Debug for TungsteniteWebSocket<I, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeWebSocket")
+        f.debug_struct("TungsteniteWebSocket")
             .field("io", &self.io)
             .field("ended", &self.ended)
             .field("keep_alive", &self.keep_alive())
@@ -797,23 +725,23 @@ impl<I: std::fmt::Debug, Tm: Timer> std::fmt::Debug for NativeWebSocket<I, Tm> {
 }
 
 /// `Unpin` whenever the IO is, stated rather than derived — the same
-/// reasoning, in the same words, as [`crate::IdleTimeout`]'s: the
+/// reasoning, in the same words, as [`http_ng_native::IdleTimeout`]'s: the
 /// derivation would also demand it of the clock, which [`Timer`] does not
 /// require, and every `Stream`/`Sink` method here starts with
 /// `self.get_mut()`. Sound because nothing in this type is ever pinned in
 /// place: the only projections are `Pin::new(&mut io)`, which needs
 /// `I: Unpin` on its own, and the sleep, which is behind its own
 /// `Pin<Box<_>>`.
-impl<I: Unpin, Tm: Timer> Unpin for NativeWebSocket<I, Tm> {}
+impl<I: Unpin, Tm: Timer> Unpin for TungsteniteWebSocket<I, Tm> {}
 
-impl<I, Tm> WebSocket for NativeWebSocket<I, Tm>
+impl<I, Tm> WebSocket for TungsteniteWebSocket<I, Tm>
 where
     I: Read + Write + Unpin,
     Tm: Timer,
 {
 }
 
-impl<I, Tm> Stream for NativeWebSocket<I, Tm>
+impl<I, Tm> Stream for TungsteniteWebSocket<I, Tm>
 where
     I: Read + Write + Unpin,
     Tm: Timer,
@@ -958,7 +886,7 @@ where
     }
 }
 
-impl<I, Tm> Sink<Message> for NativeWebSocket<I, Tm>
+impl<I, Tm> Sink<Message> for TungsteniteWebSocket<I, Tm>
 where
     I: Read + Write + Unpin,
     Tm: Timer,
@@ -1030,15 +958,159 @@ where
     }
 }
 
-/// The seam, implemented — which is the whole of how this transport says
-/// it can do WebSocket. There is no capability to read and no method that
-/// returns `Unsupported`: a backend that cannot do this does not write
+/// A WebSocket connector over a [`Native`] transport: the thing that
+/// implements the seam.
+///
+/// # Why it borrows rather than owns
+///
+/// A `Native` is not `Clone`, and `http_ng::Client::builder` takes its
+/// transport by value, so a connector that *owned* one would leave a
+/// caller who also makes HTTP requests holding a second transport with a
+/// second connection pool — or would have to implement `Transport` itself
+/// and forward every request through a type that has nothing to do with
+/// requests. Borrowing costs one expression at the call site and keeps one
+/// transport, one pool, one resolver:
+///
+/// ```no_run
+/// # async fn doc<R, T, D>(client: &http_ng::Client<http_ng_native::Native<R, T, D>>)
+/// # -> Result<(), Box<dyn std::error::Error>>
+/// # where R: http_ng_rt::TcpConnect + http_ng_rt::Timer + Clone + 'static,
+/// #       R::Stream: 'static,
+/// #       T: http_ng_tls::TlsConnect, T::Stream<R::Stream>: 'static,
+/// #       D: http_ng_dns::Resolve {
+/// use http_ng_core::unversioned::WebSocketConnect;
+/// use http_ng_ws_tungstenite::Tungstenite;
+///
+/// let req = http::Request::builder().uri("wss://example.com/chat").body(())?;
+/// let ws = Tungstenite::new(client.transport()).websocket(req).await?;
+/// # let _ = ws; Ok(()) }
+/// ```
+///
+/// # What it is not
+///
+/// It is not a `Transport` and does not pretend to be one: nothing here
+/// sends an HTTP request, and the connection it opens is never pooled at
+/// either end (see the module doc). Nor is it a second configuration of
+/// the transport — everything the socket is opened with (the resolver, the
+/// TLS backend, `TcpOpts`, `Timeouts::connect` out of the request's
+/// extensions) is the `Native`'s. The one thing that is this type's own is
+/// [`WebSocketKeepAlive`], because pings are frames.
+pub struct Tungstenite<'a, R, T, D, H = http_ng_core::unversioned::NoHooks>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    native: &'a Native<R, T, D, H>,
+    keep_alive: Option<WebSocketKeepAlive>,
+}
+
+/// Hand-written for the reason [`TungsteniteWebSocket`]'s is, one level
+/// out: `#[derive(Debug)]` would demand it of `Native`, whose own derived
+/// `Debug` demands `R::Instant: Debug` — which [`Timer`] does not ask for.
+/// What is this type's own is the keep-alive, and that is what a reader
+/// debugging a socket that never pings is looking for.
+impl<R, T, D, H> std::fmt::Debug for Tungstenite<'_, R, T, D, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tungstenite")
+            .field("keep_alive", &self.keep_alive)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Hand-written rather than derived, for the reason
+/// [`TungsteniteWebSocket`]'s `Debug` is: the derivation would demand
+/// `Clone` of all four type parameters, and this value is a shared
+/// reference plus two `Duration`s whatever they are.
+impl<R, T, D, H> Clone for Tungstenite<'_, R, T, D, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R, T, D, H> Copy for Tungstenite<'_, R, T, D, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+}
+
+impl<'a, R, T, D, H> Tungstenite<'a, R, T, D, H>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    /// Open WebSockets over `native`, with no liveness bound — which is
+    /// the default and the whole of it: see [`Tungstenite::keep_alive`].
+    pub fn new(native: &'a Native<R, T, D, H>) -> Self {
+        Self {
+            native,
+            keep_alive: None,
+        }
+    }
+
+    /// Prove the peer of an open WebSocket is still there, with RFC 6455
+    /// §5.5.2 ping/pong — **off unless this is called.**
+    ///
+    /// Without it an open WebSocket has no bound of any kind: only the
+    /// handshake reads `Timeouts::connect`, so a peer that vanishes
+    /// without a `FIN` leaves a `Stream` that never yields and never
+    /// errors. With it, a socket silent for
+    /// [`every`](WebSocketKeepAlive::every) sends a `Ping`, and a peer
+    /// that does not answer within [`within`](WebSocketKeepAlive::within)
+    /// ends the `Stream` with an [`ErrorKind::Body`] whose source is
+    /// [`PongNotReceived`] — an error, distinguishable from the peer
+    /// having said goodbye, which arrives as `Message::Close`.
+    ///
+    /// It is **off by default** because a default that pings is a default
+    /// that sends traffic nobody asked for, and on a metered radio that is
+    /// not free. Two more things a caller should know before turning it
+    /// on, both properties of this crate rather than of the seam:
+    ///
+    /// - **A caller that stops polling gets no keep-alive.** Nothing is
+    ///   spawned here — neither this crate nor `http-ng-native` has a
+    ///   `Spawn` bound, deliberately — so the ping is written from
+    ///   `poll_next` or not at all. Unlike `http-ng-h3`, where a spawned
+    ///   driver keeps a pooled connection alive for requests nobody has
+    ///   made yet, a WebSocket always has a caller, and one that is not
+    ///   polling is not waiting for anything.
+    /// - **A busy connection never pings.** `every` measures silence on
+    ///   the wire, and any inbound frame restarts it.
+    ///
+    /// It applies to every WebSocket opened from this connector
+    /// afterwards; [`TungsteniteWebSocket::keep_alive`] reads back what a
+    /// given socket got. There is no counterpart on `http-ng-fetch`, so
+    /// asking a browser for this does not compile —
+    /// `docs/w4-upgrade-seam.md` §7.
+    ///
+    /// **It is here rather than on `Native` because pings and pongs are
+    /// frames**, which is §8's reason for this crate existing at all. On
+    /// the transport it would be a knob whose type lives in a crate the
+    /// transport must not depend on.
+    #[must_use]
+    pub fn keep_alive(mut self, keep_alive: WebSocketKeepAlive) -> Self {
+        self.keep_alive = Some(keep_alive);
+        self
+    }
+}
+
+/// The seam, implemented — which is the whole of how this crate says it
+/// can do WebSocket. There is no capability to read and no method that
+/// returns `Unsupported`: something that cannot do this does not write
 /// this `impl`, and asking it does not compile.
-/// `R: Clone` is new with the keep-alive and is not a new restriction:
-/// `Transport for Native` has required it since v0.2 W2 and every runtime
+///
+/// `R: Clone` came with the keep-alive and is not a new restriction:
+/// `Transport for Native` has required it since v0.2 W2, and every runtime
 /// in this workspace is a ZST or a handle. The socket needs its own clock
 /// because it outlives the call that opened it, and a `&R` cannot.
-impl<R, T, D> WebSocketConnect for crate::Native<R, T, D>
+impl<R, T, D, H> WebSocketConnect for Tungstenite<'_, R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -1046,54 +1118,24 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
 {
-    type WebSocket = NativeWebSocket<crate::NativeIo<R, T>, R>;
+    type WebSocket = TungsteniteWebSocket<NativeIo<R, T>, R>;
 
     async fn websocket(&self, req: http::Request<()>) -> Result<Self::WebSocket, Error> {
-        let uri = as_http_uri(req.uri())?;
-        let timeouts = req
-            .extensions()
-            .get::<Timeouts>()
-            .copied()
-            .unwrap_or_default();
-        let key = tungstenite::handshake::client::generate_key();
-        let handshake = handshake_request(req, &uri, &key)?;
-
-        // A connection of its own, and never `self.pool` — see the module
-        // doc. `http/1.1` alone on the ALPN list: RFC 8441 extended
-        // CONNECT is the h2 answer to this and this is not it.
-        let now = self.rt.elapsed_since(self.epoch);
-        // `NoHooks`, deliberately: the observability seam (v0.4 W2) is
-        // about HTTP requests, and this connection is not one. It is
-        // never pooled, so no `Reused` can follow it; there is no
-        // response head to report beyond the 101 the handshake consumes;
-        // and its end is the `Stream`'s end, which the caller sees
-        // directly. Reporting `Connected` alone would put an id into a
-        // caller's log that no later event ever mentions again. The gap
-        // is recorded in `docs/v03-acceptance.md`.
-        let connect_fut = connect::connect::<_, _, _, http_ng_core::unversioned::NoHooks>(
-            &self.rt,
-            &self.dns,
-            &self.tls,
-            &uri,
-            &self.opts,
-            &[b"http/1.1"],
-            &self.svcb_failures,
-            now,
-            // Nothing prepared, and no way to prepare one: `Prepared`
-            // holds an `http::Request<RequestBody>` and a WebSocket
-            // handshake is not one. The connector does its own discovery
-            // here, exactly as it did before that type existed.
-            crate::discovery::Prefetched::NotConsulted,
-        );
-        let (conn, _tls_info, _facts) =
-            crate::with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
-
-        let (io, read_buf, _resp) = upgrade(conn, handshake, &key).await?;
-        Ok(NativeWebSocket::new(
+        let (handshake, req) = Handshake::start(req)?;
+        // The connection, the `101`-by-status check and the h1 upgrade are
+        // `Native::upgrade`'s; what comes back is a `101`'s head with the
+        // connection still assembled behind it, so the three checks below
+        // run *before* anything is taken apart. That ordering is
+        // structural here rather than remembered: there is no way to reach
+        // the socket without having been handed the head first.
+        let upgrading = self.native.upgrade(req).await?;
+        handshake.accept(upgrading.head())?;
+        let (io, read_buf) = upgrading.finish().await?;
+        Ok(TungsteniteWebSocket::new(
             io,
             read_buf,
-            self.rt.clone(),
-            self.ws_keep_alive,
+            self.native.runtime().clone(),
+            self.keep_alive,
         ))
     }
 }

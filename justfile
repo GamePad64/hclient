@@ -350,11 +350,11 @@ fetch-must-fail-under-atomics:
 
 # ── the external oracle ─────────────────────────────────────────────────
 
-# Every fixture in `crates/http-ng-native/tests/websocket.rs` was written
-# beside the implementation it observes, which is the arrangement in which
-# a fixture agrees with a bug. The Autobahn TestSuite is the answer to
-# that: 517 client cases nobody here wrote, served by `wstest --mode
-# fuzzingserver` out of `crossbario/autobahn-testsuite`.
+# Every fixture in `crates/http-ng-ws-tungstenite/tests/websocket.rs` was
+# written beside the implementation it observes, which is the arrangement
+# in which a fixture agrees with a bug. The Autobahn TestSuite is the
+# answer to that: 517 client cases nobody here wrote, served by `wstest
+# --mode fuzzingserver` out of `crossbario/autobahn-testsuite`.
 #
 # **Two recipes, and the split is the point.** The PARSER decides whether
 # 517 external cases passed, so it must be checked on every machine and
@@ -377,7 +377,7 @@ autobahn-parser-selftest:
 test-autobahn: autobahn-parser-selftest
     #!/usr/bin/env bash
     set -uo pipefail
-    agent=http-ng-native
+    agent=http-ng-ws-tungstenite
     reports="$PWD/target/autobahn"
     container=http-ng-autobahn
     if ! docker info >/dev/null 2>&1; then
@@ -390,7 +390,7 @@ test-autobahn: autobahn-parser-selftest
     fi
     # The driver is built before the container starts, so a compile error
     # is a compile error rather than a connection timeout.
-    cargo build -p http-ng-native --features websocket --example autobahn || exit $?
+    cargo build -p http-ng-ws-tungstenite --example autobahn || exit $?
     rm -rf "$reports" && mkdir -p "$reports" || exit $?
     docker rm -f "$container" >/dev/null 2>&1
     trap 'docker rm -f "$container" >/dev/null 2>&1' EXIT
