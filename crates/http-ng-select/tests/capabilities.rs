@@ -152,7 +152,8 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     let (tcp, quic) = stacks();
     let t = tcp.capabilities().clone();
     let q = quic.capabilities().clone();
-    let c = Selecting::new(tcp, quic, IpLiteralOnly).expect("the two stacks agree today");
+    let rt = TokioHandle::current().expect("inside #[tokio::test]");
+    let c = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect("the two stacks agree today");
     let c = c.capabilities();
 
     // The six weaker claims, each asserted together with the member that
@@ -220,9 +221,9 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
 async fn a_pooling_disagreement_is_refused_at_construction_naming_the_field() {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     let tcp = Native::new(rt.clone(), tls(), IpLiteralOnly).without_pool();
-    let quic = H3::new(rt, tls(), IpLiteralOnly).expect("H3::new does no I/O");
+    let quic = H3::new(rt.clone(), tls(), IpLiteralOnly).expect("H3::new does no I/O");
 
-    let err = Selecting::new(tcp, quic, IpLiteralOnly).expect_err("these two cannot be one");
+    let err = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect_err("these two cannot be one");
     assert_eq!(err.field, "connection_reuse");
     assert_eq!(err.tcp, "None");
     assert_eq!(err.quic, "Supported");
@@ -238,7 +239,8 @@ async fn a_pooling_disagreement_is_refused_at_construction_naming_the_field() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_same_two_stacks_with_the_pool_on_are_one_transport() {
     let (tcp, quic) = stacks();
-    assert!(Selecting::new(tcp, quic, IpLiteralOnly).is_ok());
+    let rt = TokioHandle::current().expect("inside #[tokio::test]");
+    assert!(Selecting::new(rt, tcp, quic, IpLiteralOnly).is_ok());
 }
 
 // --- the rule itself, on capability sets no member here produces --------

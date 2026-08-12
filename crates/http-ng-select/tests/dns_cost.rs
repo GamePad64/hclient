@@ -70,6 +70,7 @@ fn tls() -> http_ng_tls_rustls::Rustls {
 fn selector(dns: FakeDns, tls: impl Fn() -> http_ng_tls_rustls::Rustls) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     Selecting::new(
+        rt.clone(),
         Native::new(rt.clone(), tls(), dns.clone()),
         H3::new(rt, tls(), dns.clone()).expect("H3::new does no I/O"),
         dns,
