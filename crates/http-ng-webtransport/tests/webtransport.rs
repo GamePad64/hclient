@@ -11,7 +11,7 @@
 mod server;
 
 use http_ng_core::ErrorKind;
-use http_ng_webtransport::{BadSessionUri, NotSupportedByPeer, Session, SessionRefused};
+use http_ng_webtransport::{NotHttps, NotSupportedByPeer, Session, SessionRefused};
 use server::Options;
 
 fn uri(addr: std::net::SocketAddr, path: &str) -> http::Uri {
@@ -48,6 +48,31 @@ async fn an_extended_connect_carries_the_webtransport_protocol_to_the_server() {
         session.id().value(),
         seen[0].stream_id,
         "the session ID is the CONNECT stream's ID"
+    );
+
+    // The other half of the handshake, and the only place it is visible:
+    // our own SETTINGS. RFC 9220 §3 says receipt of
+    // `SETTINGS_ENABLE_CONNECT_PROTOCOL` by a *server* has no impact, so
+    // nothing on the wire forces this — which is exactly why it needs an
+    // assertion rather than a comment. What it says is true and cheap, and
+    // a client that announces nothing is indistinguishable from one that
+    // cannot do this at all.
+    let announced = server
+        .client_settings()
+        .expect("the client's control stream was read before the request resolved");
+    assert!(
+        announced.extended_connect,
+        "the client announced extended CONNECT"
+    );
+    // And the one it cannot make: `h3` 0.0.8's *client* builder has no
+    // setter for `SETTINGS_ENABLE_WEBTRANSPORT` or
+    // `SETTINGS_WT_MAX_SESSIONS`, so the announcement the draft requires of
+    // clients does not go out. Asserted rather than described, so that a
+    // future `h3` which grows the setter fails this line instead of leaving
+    // a stale paragraph in a document — `docs/v04-w2-webtransport.md` §3.
+    assert!(
+        !announced.webtransport,
+        "h3 0.0.8's client cannot announce SETTINGS_ENABLE_WEBTRANSPORT; if this fails, it can now"
     );
 }
 
@@ -235,9 +260,9 @@ async fn a_plaintext_session_uri_is_refused_rather_than_rewritten() {
         .await
         .expect_err("WebTransport has no plaintext form");
     assert_eq!(e.kind(), &ErrorKind::Unsupported);
-    assert!(matches!(
-        std::error::Error::source(&e).and_then(|s| s.downcast_ref::<BadSessionUri>()),
-        Some(BadSessionUri::Scheme(_))
-    ));
+    let bad = std::error::Error::source(&e)
+        .and_then(|s| s.downcast_ref::<NotHttps>())
+        .expect("the reason is typed, not a string");
+    assert_eq!(bad.scheme, "http");
     assert!(server.requests().is_empty());
 }

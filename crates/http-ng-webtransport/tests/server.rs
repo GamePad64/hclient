@@ -24,6 +24,7 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
+use h3::ConnectionState as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -77,10 +78,23 @@ pub struct SeenStream {
     pub payload: Vec<u8>,
 }
 
+/// What the *client's* SETTINGS frame announced, read out of `h3`'s own
+/// server-side connection state.
+///
+/// Here because nothing else can see it: a client's own settings leave no
+/// other trace, and without this the line that sends them could be deleted
+/// without a single test noticing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeenClientSettings {
+    pub extended_connect: bool,
+    pub webtransport: bool,
+}
+
 #[derive(Debug, Default)]
 struct State {
     requests: Mutex<Vec<SeenRequest>>,
     streams: Mutex<Vec<SeenStream>>,
+    client_settings: Mutex<Option<SeenClientSettings>>,
 }
 
 #[derive(Debug)]
@@ -99,6 +113,12 @@ impl Server {
     /// Every WebTransport stream the server has read to its end so far.
     pub fn streams(&self) -> Vec<SeenStream> {
         self.state.streams.lock().unwrap().clone()
+    }
+
+    /// The client's SETTINGS, or `None` if none had arrived when the
+    /// request was resolved.
+    pub fn client_settings(&self) -> Option<SeenClientSettings> {
+        *self.state.client_settings.lock().unwrap()
     }
 
     /// Wait until `n` streams have been read, or give up.
@@ -215,6 +235,13 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
             Err(_) => continue,
         }
     };
+    // Read at the moment the request resolved, which is after the client's
+    // control stream has been read — the same `h3` shared state the client
+    // half of this exchange reads the *server's* settings from.
+    *state.client_settings.lock().unwrap() = Some(SeenClientSettings {
+        extended_connect: h3.settings().enable_extended_connect(),
+        webtransport: h3.settings().enable_webtransport(),
+    });
     state.requests.lock().unwrap().push(SeenRequest {
         method: req.method().clone(),
         uri: req.uri().clone(),

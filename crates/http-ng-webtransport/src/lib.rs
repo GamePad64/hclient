@@ -154,20 +154,28 @@ pub struct NotSupportedByPeer {
     pub extended_connect: bool,
 }
 
-/// The session URI was not one a WebTransport session can be opened to.
+/// The session URI was not `https`.
+///
+/// Refused rather than rewritten, and that is the point: `h3`'s
+/// `Pseudo::request` defaults `:scheme` to `https` when the URI has none
+/// and otherwise sends whatever it finds, so a `http://` session URI would
+/// either go out claiming TLS or go out claiming plaintext over a QUIC
+/// connection that is not — and neither is a thing to do silently.
+///
+/// # There is deliberately no companion "no authority" error
+///
+/// It would be a variant nothing could produce. `http::Uri` cannot hold a
+/// scheme without an authority: `Uri::builder().scheme("https")
+/// .path_and_query("/x").build()` is `InvalidUriParts(AuthorityMissing)`,
+/// `"https:/x"` and `"https:///x"` are `InvalidFormat`, `"https://"` is
+/// `Empty`, and `"https:echo"` parses with **no scheme at all** — so the
+/// check above catches it. Measured, in this crate's own test run, before
+/// the variant was deleted.
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum BadSessionUri {
-    /// WebTransport runs over HTTP/3, which is always TLS.
-    ///
-    /// Refused rather than rewritten, and that is the point: `h3`'s
-    /// `Pseudo::request` defaults `:scheme` to `https` when the URI has
-    /// none, so a `http://` session URI would go out over the wire as an
-    /// `https://` one with nothing said about it.
-    #[error("WebTransport runs over HTTP/3, which is always TLS; `{0}` has no plaintext form")]
-    Scheme(String),
-    /// The `:authority` pseudo-header has no value to take.
-    #[error("session URI has no authority")]
-    NoAuthority,
+#[error("WebTransport runs over HTTP/3, which is always TLS; `{scheme}` has no plaintext form")]
+pub struct NotHttps {
+    /// The scheme the session URI carried, or `(no scheme)`.
+    pub scheme: String,
 }
 
 /// An open WebTransport session: a multiplexer over one QUIC connection.
@@ -242,15 +250,13 @@ impl Session {
         if uri.scheme_str() != Some("https") {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                BadSessionUri::Scheme(uri.scheme_str().unwrap_or("(no scheme)").to_string()),
+                NotHttps {
+                    scheme: uri.scheme_str().unwrap_or("(no scheme)").to_string(),
+                },
             ));
         }
-        if uri.authority().is_none() {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                BadSessionUri::NoAuthority,
-            ));
-        }
+        // No authority check follows, and that is a fact about `http::Uri`
+        // rather than an omission — see [`NotHttps`].
 
         let (mut driver, mut send) = h3::client::builder()
             .enable_extended_connect(true)
