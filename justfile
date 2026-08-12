@@ -679,6 +679,29 @@ graph-no-framing-in-the-transport:
         "http-ng-ws-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
         -- -p http-ng-ws-tungstenite
 
+# The same argument one seam down, and in the direction that catches a
+# COPY rather than a feature. `SeamRuntime` was `mod runtime` inside
+# `http-ng-h3` — private, so unreachable rather than additive, which is the
+# other way a shared thing stops being shared. It is `http-ng-rt-quinn` now,
+# and the two things that would undo that are: the adapter growing an
+# HTTP/3 dependency (so it is no longer usable by anything else that wants
+# QUIC over the seam), or `http-ng-h3` growing a private copy again and
+# dropping the dependency. One `absent` and one `present` catch one each.
+
+# the quinn/seam adapter carries no HTTP/3, and h3 has not taken a copy back
+graph-quinn-adapter-is-shared:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/tree-guard.sh absent '^(h3|h3-quinn|http-ng-h3) ' \
+        "http-ng-rt-quinn has HTTP/3 in its graph. It is the quinn::Runtime over http_ng_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3 (docs/v04-w2-webtransport.md §4)" \
+        -- -p http-ng-rt-quinn --all-features
+    ./scripts/tree-guard.sh present '^quinn ' \
+        "http-ng-rt-quinn does not depend on quinn, so the ban above is vacuous — it would pass a workspace where the adapter had been emptied out" \
+        -- -p http-ng-rt-quinn
+    ./scripts/tree-guard.sh present '^http-ng-rt-quinn ' \
+        "http-ng-h3 no longer depends on http-ng-rt-quinn — either the adapter moved back in as a private copy, or the extraction was reverted. Copying is what this workspace does not do" \
+        -- -p http-ng-h3
+
 # Still `tree-guard`, and deliberately: `cargo deny` bans crates by name, and
 # this one bans a FAMILY by prefix. Enumerating today's names would pass for
 # tomorrow's `futures-whatever`, which is the regression the check exists
@@ -806,7 +829,7 @@ features:
         --each-feature --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport graph-quinn-adapter-is-shared graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 
