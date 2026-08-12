@@ -277,6 +277,75 @@ async fn ma_zero_sends_the_origin_back_to_tcp() {
     hop(&t, &pair, &uri(&pair), "h1").await;
 }
 
+/// `clear` in a field that also advertises `h3` still clears — RFC 7838
+/// §3 decides this exact case: *"including those specified in the same
+/// response, in case of an invalid reply containing both 'clear' and
+/// alternative services"*.
+///
+/// This is the one arm where `clear` is behaviourally distinguishable from
+/// a field that merely offers no `h3`: on its own it removes the entry,
+/// and so does an empty list, so only a reply carrying both can tell a
+/// parser that honours `clear` from one that drops it as a member it could
+/// not read.
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_beside_an_advertisement_still_clears() {
+    let pair = servers::start();
+    pair.set_alt_svc(Some(&pair.h3_here("; ma=86400")));
+    let t = selector(&pair, FakeDns::new());
+
+    hop(&t, &pair, &uri(&pair), "h1").await;
+    pair.set_alt_svc(Some(&format!("{}, clear", pair.h3_here("; ma=86400"))));
+    hop(&t, &pair, &uri(&pair), "h3").await;
+    hop(&t, &pair, &uri(&pair), "h1").await;
+}
+
+/// RFC 9110 §5.3 makes several `Alt-Svc` field lines one comma-joined
+/// list, so a client that read only the first would miss what the second
+/// said.
+///
+/// Two lines, and the `h3` is in the **second** one, so a client that read
+/// only the first would stay on TCP. The advertisement is withdrawn before
+/// the QUIC hop, because a repeated field line is an HTTP/1.1 wire shape
+/// this fixture writes by hand and there is no such thing to write over
+/// HTTP/3 — the second hop's job here is only to say which stack the first
+/// hop's field sent it to.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_repeated_field_line_is_read() {
+    let pair = servers::start();
+    let t = selector(&pair, FakeDns::new());
+
+    pair.set_alt_svc(Some(&format!(
+        "h2=\":443\"\r\nalt-svc: {}",
+        pair.h3_here("; ma=86400")
+    )));
+    hop(&t, &pair, &uri(&pair), "h1").await;
+    pair.set_alt_svc(None);
+    hop(&t, &pair, &uri(&pair), "h3").await;
+}
+
+/// …and a `clear` on one line beats an `h3` on another, which is §3's rule
+/// applied across lines rather than within one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clear_on_one_line_beats_an_advertisement_on_another() {
+    let pair = servers::start();
+    pair.set_alt_svc(Some(&pair.h3_here("; ma=86400")));
+    let t = selector(&pair, FakeDns::new());
+
+    hop(&t, &pair, &uri(&pair), "h1").await;
+    // Back to TCP first, so the line below is heard over the wire that can
+    // carry two of them.
+    pair.set_alt_svc(Some("clear"));
+    hop(&t, &pair, &uri(&pair), "h3").await;
+    hop(&t, &pair, &uri(&pair), "h1").await;
+
+    pair.set_alt_svc(Some(&format!(
+        "clear\r\nalt-svc: {}",
+        pair.h3_here("; ma=86400")
+    )));
+    hop(&t, &pair, &uri(&pair), "h1").await;
+    hop(&t, &pair, &uri(&pair), "h1").await;
+}
+
 /// RFC 7838 §3: *"its value invalidates and replaces all cached
 /// alternative services for that origin."* A field that advertises
 /// something else takes the `h3` entry with it, without saying `clear`.

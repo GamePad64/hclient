@@ -312,7 +312,16 @@ fn start_quic(
                             // once a client had moved to HTTP/3.
                             let advertisement = alt_svc.lock().expect("alt-svc fixture").clone();
                             let mut resp = http::Response::builder().status(http::StatusCode::OK);
-                            if let Some(v) = advertisement {
+                            // `from_maybe_shared` rather than `header(..)`
+                            // so that a value only the TCP arm can write —
+                            // a repeated field line, which is two `\r\n`
+                            // separated lines on that wire and nothing at
+                            // all on this one — leaves this server sending
+                            // no field instead of failing to build a
+                            // response.
+                            if let Some(v) = advertisement
+                                .and_then(|v| http::HeaderValue::from_maybe_shared(v).ok())
+                            {
                                 resp = resp.header("alt-svc", v);
                             }
                             let resp = resp.body(()).expect("a 200 with no body");
