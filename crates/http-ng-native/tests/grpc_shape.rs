@@ -33,10 +33,11 @@
 //!    timeouts stay out of the way of a stream that is idle for a long
 //!    time, which for gRPC is normal rather than suspicious.
 //! 8. **Connection management**: a call's trailers do not cost its
-//!    connection, a `GOAWAY` does not cost the *next* call, and two
-//!    concurrent calls take two connections — the last of which is the
-//!    real gap between this client and a gRPC one, and is measured here
-//!    rather than argued.
+//!    connection, a `GOAWAY` does not cost the *next* call, a server's
+//!    `PING` is answered by the next call rather than while the
+//!    connection sits pooled, and two concurrent calls take two
+//!    connections — the last of which is the real gap between this client
+//!    and a gRPC one, and is measured here rather than argued.
 //!
 //! # Everything is read from the server
 //!
@@ -141,6 +142,15 @@ enum Ending {
     Nothing,
 }
 
+/// What became of a server-initiated `PING`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pinged {
+    /// A `PONG` came back.
+    Answered,
+    /// The connection failed while the ping was outstanding.
+    Failed,
+}
+
 /// Everything the connection tasks and the test both look at. One value
 /// rather than five `Arc`s threaded through three functions, which is what
 /// it was until the fifth arrived.
@@ -161,6 +171,9 @@ struct Shared {
     /// How many requests have arrived at `/g.S/Pair`, which answers none
     /// of them until two have.
     paired: AtomicUsize,
+    /// `PING`s the server sent on a connection it had already answered on,
+    /// and what came back.
+    pongs: Mutex<Vec<Pinged>>,
 }
 
 struct Fixture {
@@ -195,6 +208,15 @@ impl Fixture {
     async fn wait_for_endings(&self, n: usize, within: Duration) -> bool {
         self.wait_until(within, || self.shared.endings.lock().unwrap().len() >= n)
             .await
+    }
+
+    async fn wait_for_pongs(&self, n: usize, within: Duration) -> bool {
+        self.wait_until(within, || self.shared.pongs.lock().unwrap().len() >= n)
+            .await
+    }
+
+    fn pongs(&self) -> Vec<Pinged> {
+        self.shared.pongs.lock().unwrap().clone()
     }
 
     async fn wait_for_closed(&self, n: usize, within: Duration) -> bool {
@@ -283,12 +305,33 @@ async fn serve(tcp: tokio::net::TcpStream, shared: Arc<Shared>) -> Result<(), h2
         // has been handed to its handler, so the stream it names is this
         // one and the response still goes out.
         let goaway = req.uri().path().ends_with("Goaway");
-        let shared = Arc::clone(&shared);
+        // The spec's §"PING Frame": *"both clients and servers can send a
+        // PING frame that the peer must respond to"*. Held until the test
+        // opens the gate, so the ping provably goes out on a connection
+        // the client has already finished with and handed back to its
+        // pool. The `PingPong` handle is independent of the accept loop
+        // below, which is what keeps driving this connection's IO.
+        let ping = req.uri().path().ends_with("Ping").then(|| conn.ping_pong());
+        let for_handler = Arc::clone(&shared);
         tokio::spawn(async move {
-            handle(req, respond, shared).await;
+            handle(req, respond, for_handler).await;
         });
         if goaway {
             conn.graceful_shutdown();
+        }
+        if let Some(Some(mut pp)) = ping {
+            let shared = Arc::clone(&shared);
+            tokio::spawn(async move {
+                while !shared.gate.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                if let Ok(r) = tokio::time::timeout(BOUND, pp.ping(h2::Ping::opaque())).await {
+                    shared.pongs.lock().unwrap().push(match r {
+                        Ok(_) => Pinged::Answered,
+                        Err(_) => Pinged::Failed,
+                    });
+                }
+            });
         }
     }
     Ok(())
@@ -1632,6 +1675,98 @@ async fn two_concurrent_calls_take_two_connections_rather_than_two_streams() {
          a gRPC caller with many concurrent RPCs pays a connection for each"
     );
 }
+
+/// **A server's `PING` on a pooled connection is answered when the
+/// connection is next used, and not before.**
+///
+/// The spec's §"PING Frame" says the peer *"must respond to"* a PING and
+/// that *"an expired client initiated PING will cause all calls to be
+/// closed"* — from which a gRPC deployment's keepalive is built. This
+/// client answers, but only from inside a request: **nothing polls a
+/// pooled connection**, which `pool.rs`'s module doc and
+/// `http2::is_reusable`'s already say in as many words, and an h2 `PONG`
+/// is written from inside `Connection::poll`.
+///
+/// An A/B rather than a bare negative, and causal in the arm that
+/// matters: the gate is opened only after the first call's body has been
+/// read to its end, so the PING provably goes out on a connection the
+/// client has finished with; the quiet window then measures a client that
+/// is doing nothing at all, and the second call — one connection, not two
+/// — is what makes the pong arrive.
+///
+/// **The consequence for a gRPC caller, stated because it is not a
+/// defect.** A server enforcing a keepalive deadline against an idle
+/// pooled connection will drop it, and this client will discover that at
+/// the next checkout (`is_reusable` polls once, sees the close, opens a
+/// fresh connection) — a wasted socket, never a failed call, because a
+/// connection with no call on it has no call to fail. There is no
+/// keepalive knob on `Native`; the WebSocket seam has one for the
+/// opposite reason, that an open WebSocket has no request future behind
+/// it at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ping_to_a_pooled_connection_waits_for_the_next_call() {
+    let server = spawn_server();
+    let client = client();
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        client.execute(call(&server, "/g.S/Ping", RequestBody::Empty)),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the call must succeed");
+    let (_, mut body) = resp.into_parts();
+    let (_, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert!(
+        trailers.is_some(),
+        "the call is over, so the connection is idle"
+    );
+
+    // A. The connection is pooled and nobody is polling it.
+    server.open_the_gate();
+    assert!(
+        !server.wait_for_pongs(1, QUIET).await,
+        "a PONG within {QUIET:?} would mean something is driving a pooled \
+         connection, which nothing in this transport does — there is no \
+         spawn anywhere on this path"
+    );
+
+    // B. The same ping, answered, because a request is what polls the
+    // connection.
+    let again = tokio::time::timeout(
+        BOUND,
+        client.execute(call(
+            &server,
+            "/g.S/Unary",
+            RequestBody::Full(Bytes::from(framed(b"ping"))),
+        )),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the call must succeed");
+    let (_, mut body) = again.into_parts();
+    let _ = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+
+    assert!(
+        server.wait_for_pongs(1, BOUND).await,
+        "the second call polls the connection, which is what writes the PONG"
+    );
+    assert_eq!(server.pongs(), vec![Pinged::Answered]);
+    assert_eq!(
+        server.accepted(),
+        1,
+        "and it is the SAME connection: an unanswered PING did not cost it"
+    );
+}
+
+/// How long arm A of the ping test watches a connection nobody is
+/// driving. Generous against the answer's own cost, which is one poll of
+/// `Connection` inside `is_reusable` — microseconds once a call arrives.
+const QUIET: Duration = Duration::from_millis(750);
 
 /// **A `GOAWAY` is not raced: the next call opens a new connection and
 /// succeeds.**
