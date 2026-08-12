@@ -54,7 +54,7 @@ needs — none of which is gRPC-specific.
 | P9 | The platform verifier matches a name against an **IP SAN** on Linux | **Measured** in v0.3's live-DoH run, and **only** on Linux — `rustls-platform-verifier` delegates to Security.framework and CryptoAPI elsewhere |
 | P10 | NSURLSession hands bytes to a delegate that cannot be polled | **Prior research, not re-measured.** The spec cites `frakt` 0.1.0's push-based `mpsc::Receiver<Bytes>` for exactly this |
 | P11 | Background transfer outlives the process | **Unverified, and W3's first task.** `Transport::execute` returns a future in our address space; a transfer that survives process death may not fit behind it at all |
-| P12 | Discovery has two tiers and a race is neither of them | **Researched, not measured here.** Browsers do not race on first contact — they "only try QUIC if they know the server supports it", so an unknown origin gets TCP. Alt-Svc is the slow tier: cached from a response header, so QUIC starts from the *next* connection and the first page load is never h3. An HTTPS record is the fast tier and exists precisely to remove that penalty — it arrives at resolution time, so QUIC can be used on the first connection. Racing is a **third** thing, applied *after* the choice as a hedge against networks that block UDP: "connection racing is still needed in practice" ([Marx, Smashing Magazine](https://www.smashingmagazine.com/2021/09/http3-practical-deployment-options-part3/)) |
+| P12 | Discovery has two tiers and a race is neither of them | **Researched here; the race's cost measured afterwards — `docs/v04-w1-acceptance.md` §7.** Browsers do not race on first contact — they "only try QUIC if they know the server supports it", so an unknown origin gets TCP. Alt-Svc is the slow tier: cached from a response header, so QUIC starts from the *next* connection and the first page load is never h3. An HTTPS record is the fast tier and exists precisely to remove that penalty — it arrives at resolution time, so QUIC can be used on the first connection. Racing is a **third** thing, applied *after* the choice as a hedge against networks that block UDP: "connection racing is still needed in practice" ([Marx, Smashing Magazine](https://www.smashingmagazine.com/2021/09/http3-practical-deployment-options-part3/)) |
 | P13 | An observability hook can avoid a `Send` bound | **Answered yes, by construction — W2 deliverable 3.** A probe in `http-ng-core/tests/shape.rs` holds an `Rc<Cell<usize>>` hook past the end of `execute` and calls it from `poll_frame`, asserting the call *happened*; the complement asserts a `Send` hook leaves the transport `Send`. Cost: `H: Clone`, and `H: Unpin` on the TCP backend only. **The answer has a consequence nobody predicted**: it is what shuts the one place HTTP/3 could observe a graceful close promptly, since `quinn::Runtime::spawn` wants `Send` and a future capturing `H` does not coerce — so `CloseReason::Ended` has no emitter there |
 | P14 | Android has no crate to lean on | **Prior research, not re-measured.** Cronet is C++ with a C API; OkHttp is JVM and needs JNI, which puts a VM handle in a constructor no other backend has |
 
@@ -205,11 +205,29 @@ was made.
    deliverable 5 is: without a fallback it costs the caller a failed
    request per window, and loopback cannot produce a UDP-blocked failure
    that is not a multi-second timeout. §9.3.
+
+   **Half of that second clause has since been measured and is true of
+   every fixture rather than of loopback.** A UDP-blocked failure *is* a
+   multi-second timeout — 30.002 s, quinn's `max_idle_timeout` default —
+   on loopback and on a real path alike, and an origin with no HTTP/3
+   server at all costs the same, because quinn reads no socket error
+   queue. What loopback turned out to manage perfectly well is the
+   *blocking*: a bound UDP socket that answers nothing is a `DROP`.
+   `docs/v04-w1-acceptance.md` §7.1 and §7.3.
 5. **The race last, and it is a hedge rather than a chooser** (P12). It
    exists for the network that blocks UDP/443, which is also what the
    original spec's §5.6 "broken backoff" is about. Its cost is the one v0.3
    W2 left unmeasured — *"the size of the cost is unverified"* — so measure
    before choosing a policy, not after.
+
+   **Measured, and the policy it argues for is in
+   `docs/v04-w1-acceptance.md` §7.4–§7.7.** The instruction held: the
+   headline is not a duration but a shape. A race assembled from two
+   `Transport::execute` calls races *requests*, not connections — with no
+   head start the losing arm delivered a complete request to the origin in
+   nine of twelve arms — so the head start is a safety mechanism before it
+   is a latency one, and the seam has no connect-only entry point to make
+   it anything else.
 
 **Deliberately not in it.** `DefaultTransport` does **not** become this
 type. Making a default that opens UDP sockets is a decision about what

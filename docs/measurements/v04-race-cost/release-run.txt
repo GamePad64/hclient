@@ -1,0 +1,109 @@
+    Finished `release` profile [optimized] target(s) in 0.07s
+running 1 test
+M1 — QUIC connect to a UDP black hole, no `Timeouts::connect`
+  run 0: 30.002s  ERR Connect: Connect: timed out
+      what the hole saw — 9 datagram(s):
+      + 449.703µs   1200 bytes
+      +    1.001s   1200 bytes
+      +    1.001s   1200 bytes
+      +    3.000s   1200 bytes
+      +    3.000s   1200 bytes
+      +    6.997s   1200 bytes
+      +    6.997s   1200 bytes
+      +   14.990s   1200 bytes
+      +   14.990s   1200 bytes
+test m1_a_quic_connect_to_a_black_hole_with_no_bound has been running for over 60 seconds
+  run 1: 30.002s  ERR Connect: Connect: timed out
+  run 2: 30.006s  ERR Connect: Connect: timed out
+  QUIC -> black hole, unbounded                  n=3   min    30.002s  median    30.002s  max    30.006s
+test m1_a_quic_connect_to_a_black_hole_with_no_bound ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 90.02s
+running 1 test
+M1b — the same black hole, bounded
+  bound   100 ms ->  101.994ms  overshoot   1.994ms  datagrams 2  ERR Timeout(Connect): Timeout(Connect): no HTTP/3 connection within the connect timeout of 100ms
+  bound   300 ms ->  301.202ms  overshoot   1.202ms  datagrams 1  ERR Timeout(Connect): Timeout(Connect): no HTTP/3 connection within the connect timeout of 300ms
+  bound  1000 ms ->     1.001s  overshoot   1.448ms  datagrams 2  ERR Timeout(Connect): Timeout(Connect): no HTTP/3 connection within the connect timeout of 1s
+  bound  3000 ms ->     3.001s  overshoot   1.192ms  datagrams 6  ERR Timeout(Connect): Timeout(Connect): no HTTP/3 connection within the connect timeout of 3s
+test m1b_the_same_black_hole_with_a_connect_bound ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 4.41s
+running 1 test
+M2a — a cold exchange that succeeds, both stacks, loopback (floors)
+  QUIC by name (UDP + TLS1.3 + SETTINGS + GET)   n=10  min    1.605ms  median    3.308ms  max    6.586ms
+  TCP  by name (SYN + TLS1.3 + GET)              n=10  min   41.038ms  median   42.523ms  max   43.350ms
+  QUIC by IP literal (no resolution)             n=10  min    1.985ms  median    2.949ms  max    6.194ms
+  TCP  by IP literal (no resolution)             n=10  min   41.349ms  median   42.689ms  max   44.159ms
+  TCP  on `Tokio`, nodelay off (Nagle on)        n=10  min   41.713ms  median   42.286ms  max   44.928ms
+  TCP  on `Tokio`, nodelay ON                    n=10  min  673.324µs  median    1.263ms  max    2.380ms
+  server counters: quic answered 20, tcp accepted 40, tcp answered 40
+test m2a_a_handshake_that_succeeds_on_either_stack ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.36s
+running 1 test
+M2b — the Initial retransmission ladder, seen from the black hole
+      what the hole saw — 9 datagram(s):
+      + 674.360µs   1200 bytes
+      +    1.002s   1200 bytes
+      +    1.002s   1200 bytes
+      +    3.001s   1200 bytes
+      +    3.001s   1200 bytes
+      +    6.998s   1200 bytes
+      +    6.998s   1200 bytes
+      +   14.991s   1200 bytes
+      +   14.991s   1200 bytes
+  gave up after 30.005s: ERR Connect: Connect: timed out
+test m2b_when_quinn_itself_first_suspects ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 30.01s
+running 1 test
+M2c — a TCP connect to a closed port (the RST case)
+  TCP -> closed port                             n=10  min   19.525µs  median   24.469µs  max  393.534µs
+test m2c_a_tcp_connect_that_is_refused ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.01s
+running 1 test
+M2d — head and body, timed apart
+  TCP Nagle on  — `execute` to head              n=10  min   43.858ms  median   45.474ms  max   47.832ms
+  TCP Nagle on  — head to end of body            n=10  min   11.967µs  median   16.192µs  max   19.514µs
+  TCP nodelay   — `execute` to head              n=10  min  435.242µs  median  547.464µs  max    1.011ms
+  TCP nodelay   — head to end of body            n=10  min    1.021µs  median    1.671µs  max    3.861µs
+  QUIC — `execute` to head                       n=10  min  952.050µs  median    1.418ms  max    3.236ms
+test m2d_which_phase_the_delay_is_in ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.49s
+running 1 test
+M3 — a race against a working QUIC origin
+  --- TCP arm with nodelay = false ---
+  head start  0.000ns: winner quic  in   5.669ms | at the drop: tcp accepted +1 answered +0 | 1 s later: +1 / +1 | quic answered +1
+  head start  1.000ms: winner quic  in   1.204ms | at the drop: tcp accepted +1 answered +0 | 1 s later: +1 / +0 | quic answered +1
+  head start 50.000ms: winner quic  in   6.865ms | at the drop: tcp accepted +0 answered +0 | 1 s later: +0 / +0 | quic answered +1
+  head start 300.000ms: winner quic  in   1.091ms | at the drop: tcp accepted +0 answered +0 | 1 s later: +0 / +0 | quic answered +1
+  --- TCP arm with nodelay = true ---
+  head start  0.000ns: winner quic  in   7.731ms | at the drop: tcp accepted +1 answered +1 | 1 s later: +1 / +1 | quic answered +1
+  head start  1.000ms: winner quic  in   2.568ms | at the drop: tcp accepted +1 answered +1 | 1 s later: +1 / +1 | quic answered +1
+  head start 50.000ms: winner quic  in   2.010ms | at the drop: tcp accepted +0 answered +0 | 1 s later: +0 / +0 | quic answered +1
+  head start 300.000ms: winner quic  in   2.145ms | at the drop: tcp accepted +0 answered +0 | 1 s later: +0 / +0 | quic answered +1
+test m3_a_race_that_quic_wins ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 8.05s
+running 1 test
+M4a — a race against a UDP black hole (DROP)
+  head start  0.000ns: winner tcp   in  42.890ms | tcp accepted +1 answered +1 | udp datagrams 1 during, 1 more in the 1.5 s after the drop
+  head start 50.000ms: winner tcp   in  92.994ms | tcp accepted +1 answered +1 | udp datagrams 1 during, 1 more in the 1.5 s after the drop
+  head start 300.000ms: winner tcp   in 343.500ms | tcp accepted +1 answered +1 | udp datagrams 1 during, 1 more in the 1.5 s after the drop
+  head start   1.000s: winner tcp   in    1.044s | tcp accepted +1 answered +1 | udp datagrams 3 during, 1 more in the 1.5 s after the drop
+test m4a_a_race_that_quic_loses_to_a_black_hole ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 7.53s
+running 1 test
+M4b — no h3 server at all: nothing bound on UDP (REJECT)
+  QUIC alone, unbounded: 30.001s  ERR Connect: Connect: timed out
+  head start  0.000ns: winner tcp   in  45.014ms | tcp accepted +1 answered +1
+  head start 300.000ms: winner tcp   in 343.882ms | tcp accepted +1 answered +1
+test m4b_a_race_against_an_origin_with_no_h3_at_all ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 30.39s
+running 1 test
+M5 — dropping an in-flight QUIC connect
+  dropped after 50.000ms: 1 datagram(s) sent before the drop, 1 in the 5 s after it — [1200], first at +52.071ms (2.071ms after the drop was issued)
+  dropped after   1.500s: 3 datagram(s) sent before the drop, 1 in the 5 s after it — [1200], first at +1.502s (1.714ms after the drop was issued)
+  dropped after   3.500s: 5 datagram(s) sent before the drop, 1 in the 5 s after it — [1200], first at +3.501s (1.410ms after the drop was issued)
+test m5_dropping_an_in_flight_quic_connect ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 20.06s
+running 1 test
+M5b — dropping the future AND the transport
+  3 datagram(s) before the drop, 1 in the 5 s after
+test m5b_dropping_the_transport_as_well_as_the_future ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 6.51s

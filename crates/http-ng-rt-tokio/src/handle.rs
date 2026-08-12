@@ -65,7 +65,9 @@
 //! `futures_executor::block_on` completed in 120.96 ms.
 
 use super::{Tokio, TokioIo, classify};
-use http_ng_rt::{Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, Timer};
+use http_ng_rt::{
+    Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
+};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -164,6 +166,19 @@ impl Blocking for TokioHandle {
 
 impl TcpConnect for TokioHandle {
     type Stream = TokioIo;
+
+    /// **The same `ALL` [`Tokio`] declares, and leaving it out was a bug.**
+    /// `connect` below delegates to `Tokio::connect`, which applies every
+    /// option on the `socket2::Socket` — so the options really are applied
+    /// here. Without this line the trait's `NONE` default stood, and
+    /// `TcpOpts::reject_unsupported` turned a `nodelay: true` a caller had
+    /// asked for into a refused connect: a capability understating its own
+    /// code, which is the shape this workspace has caught repeatedly.
+    ///
+    /// It mattered more than a stray default because `TokioHandle` is the
+    /// runtime `http-ng-select` requires, and v0.4's race measurement found
+    /// Nagle costing 41 ms on the head of every connection made without it.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL;
 
     /// **Deliberately identical to [`Tokio`]'s, guard and all — there is
     /// no guard.** See the module doc's last table row: the registration
@@ -414,5 +429,40 @@ mod tests {
             "Tokio::elapsed_since reported {by_zst:?} for an instant the \
              handle produced — the two Instant types are not the same clock"
         );
+    }
+
+    /// `TokioHandle` delegates `connect` to `Tokio`, so it applies every
+    /// option — and until v0.4 it declared none, because it left
+    /// `TcpConnect::APPLIES` to the trait's `NONE` default. The effect was
+    /// not cosmetic: `TcpOpts::reject_unsupported` turned a `nodelay: true`
+    /// the caller asked for into a refused connect.
+    ///
+    /// Shaped like `Tokio`'s own pair of tests rather than asserting the
+    /// constant: the socket is asked what it got, and the declaration is
+    /// compared against *that*. A constant checked against itself is a
+    /// constant nobody checks.
+    #[tokio::test]
+    async fn the_handle_declares_the_options_it_actually_applies() {
+        use http_ng_rt::{TcpConnect, TcpOpts};
+
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = l.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            let _ = l.accept();
+        });
+
+        let rt = TokioHandle::current().expect("inside #[tokio::test]");
+        let opts = TcpOpts {
+            nodelay: true,
+            ..Default::default()
+        };
+        let s = rt.connect(addr, &opts).await.expect(
+            "a runtime that applies nodelay must not refuse it -- if this \
+             fails with an unsupported-option error, APPLIES has drifted \
+             below what connect does",
+        );
+        let applied = s.get_ref().nodelay().expect("nodelay query");
+        assert!(applied, "nodelay did not reach the socket");
+        assert_eq!(<TokioHandle as TcpConnect>::APPLIES.nodelay, applied);
     }
 }

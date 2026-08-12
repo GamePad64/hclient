@@ -672,8 +672,27 @@ unknown origin; first contact is TCP unless something said otherwise
 fast tier — and `Alt-Svc` is a response header, so it can only help the
 *next* connection: the slow tier, and the one that needs storage. **Both are
 built.** Racing the two stacks is a third thing, a hedge against a network
-that blocks UDP/443, and it is **not** built: v0.3 W2 recorded that the size
-of the cost it pays is unverified, and a measurement comes before a policy.
+that blocks UDP/443, and it is **not** built — but the measurement it was
+waiting on is done, and it moved the question. v0.3 W2 recorded the cost as
+unverified; §7 and §8 of `docs/v04-w1-acceptance.md` now carry the numbers.
+
+**The reason to build it carefully is no longer latency.** A race made of
+two `Transport::execute` calls races *requests*, not connections — the seam
+has no connect-only entry point — so with no head start the losing arm's
+request reaches the origin, measured in 5 of 6 arms. That contradicts, more
+plainly than 0-RTT did, the sentence `http-ng-native` leans on for needing
+no idempotency judgement: *"this is not a second request, it is the first
+one, which never left."* Here both leave, at once, and neither is a retry.
+So a head start is a **safety** mechanism before it is a latency one, and
+at 250 ms — `HeConfig::default()`'s `attempt_delay`, this codebase's answer
+to the same question one layer down — no socket is opened at all.
+
+Neither failure signal can shape that number, which is the other half of
+the measurement: a black hole costs **30 s**, and so does an origin with no
+h3 server, because both are `quinn`'s `max_idle_timeout` rather than a
+refusal — quinn contains no `ECONNREFUSED` path. The earliest honest signal
+is **1.0 s**, and it too is a constant: PTO₀ off RFC 9002's guessed 333 ms
+`initial_rtt`. Against a QUIC success floor of 1.8–3.3 ms.
 
 The slow tier is where a cache became honest, and the reason inverts the
 fast tier's. There is deliberately no cache for HTTPS records here, because
