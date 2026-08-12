@@ -375,7 +375,9 @@ Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
 behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
 in v0.3**, in its own crate `http-ng-h3`, over QUIC. **WebSocket landed in
-v0.3 (W4)** — and not as a method on `Transport`: it is its own trait pair,
+v0.3 (W4)**, and in v0.4 became a crate of its own,
+`http-ng-ws-tungstenite` — and not as a method on `Transport`: it is its
+own trait pair,
 `WebSocketConnect` (what a backend implements — a backend is not a
 connection) and `WebSocket` (the message channel), so a transport that
 cannot do it is a **compile error** rather than a runtime `Unsupported`.
@@ -401,8 +403,42 @@ call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
 calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
 measurements and the decisions.
 
+**It is `http-ng-ws-tungstenite`, its own crate, and until v0.4 it was a
+`websocket` feature of `http-ng-native` — the one pluggable thing here
+that was not its own crate** (`docs/w4-upgrade-seam.md` §8). Features are
+additive, so that feature put `tungstenite` into every build in any graph
+that switched it on: the argument that kept `http-ng-h3` out of
+`http-ng-native` and `http-ng-tls-quic` out of `http-ng-tls`, applied to
+the one place it was not. A dependency in the other direction cannot be
+switched on from outside, and `graph-no-framing-in-the-transport` checks
+it with `--all-features` on the transport rather than asserting it.
+
+**The seam between them is "an upgraded byte stream, plus the `read_buf`
+hyper had already read past" — the shape §2 rejects as the public seam.**
+Both hold at once and they are about different levels: as the public seam
+it excludes three of four backends, the browser among them; between a
+transport and a framing crate it is only ever asked of the one backend
+that can answer it. `http_ng_native::Upgrading` is that seam, and it is
+two-step on purpose — it lends out the `101`'s head and is dismantled only
+by a separate `finish`, so the checks that decide whether this is *your*
+`101` cannot run after the connection has been taken apart.
+
+**What implements `WebSocketConnect` is `Tungstenite<'_, R, T, D, H>`, a
+connector that borrows a `Native`**, and the losing option is worth its
+line: `Native` keeping the impl and delegating the framing costs a caller
+**zero** lines, against one dependency and one expression
+(`Tungstenite::new(client.transport()).websocket(req)`) — and leaves the
+defect exactly where it was, since the impl needs `tungstenite` and would
+put the feature straight back on the transport. It borrows rather than
+owns, unlike `Selecting`, because `Native` is not `Clone` and
+`Client::builder` takes its transport by value: owning would cost either a
+second transport with a second pool or a `Transport` impl on a type that
+sends no requests. `http-ng-fetch` is untouched by all of this and needs
+no connector — a browser hands back *messages* — which is the asymmetry
+that says the seam is in the right place.
+
 **An open WebSocket is bounded by liveness, not by `Timeouts`, and the
-knob is on `http-ng-native` rather than on the seam.** `total` is
+knob is on the connector rather than on the seam.** `total` is
 meaningless for a connection meant to outlive its exchange and
 `between_bytes` would be actively wrong, since silence is a WebSocket's
 normal state — so the bound is RFC 6455's ping/pong, off by default,

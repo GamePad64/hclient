@@ -1391,6 +1391,21 @@ statements describe steps 1 and 2 as they landed, and both have since been
 overtaken** — steps 3 and 4 are the section below, and there is no
 `Capabilities::upgrade` in this workspace any more.
 
+**A third thing this section describes has moved, and every path it names
+below with it.** `docs/w4-upgrade-seam.md` §8 split the framing out of
+`http-ng-native` into `http-ng-ws-tungstenite`, so
+`crates/http-ng-native/src/websocket.rs` is
+`crates/http-ng-ws-tungstenite/src/lib.rs`, its tests are that crate's
+`tests/websocket.rs` (run with `cargo nextest run -p
+http-ng-ws-tungstenite`, there being no feature to name any more),
+`NativeWebSocket` is `TungsteniteWebSocket`, and
+`Native::websocket_keep_alive` is `Tungstenite::keep_alive`. What stayed
+in `http-ng-native` is the connection and the h1 upgrade, in
+`src/upgrade.rs`, with four tests of its own in `tests/upgrade.rs`. The
+mutation tables below were scored against the code where it then was;
+§8.1 of that document records the ones re-run after the move, including
+the one that still survives.
+
 ## The shape, and why
 
 Two traits, both in `http_ng_core::unversioned` — the semver quarantine,
