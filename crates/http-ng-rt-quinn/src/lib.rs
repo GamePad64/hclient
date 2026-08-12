@@ -53,7 +53,8 @@
 //! defaults to `std::time::Instant::now()`. So the deadline quinn hands
 //! over and the clock this module subtracts from are the same clock, and
 //! `reset(i)` is exactly `sleep(i - now)` with no conversion and no
-//! guesswork. [`SeamTimer`] does that, and `Timer` is untouched.
+//! guesswork. `SeamTimer` (private, below) does that, and `Timer` is
+//! untouched.
 //!
 //! [`Timer`]: http_ng_rt::Timer
 //! [`Spawn`]: http_ng_rt::Spawn

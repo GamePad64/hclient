@@ -165,6 +165,35 @@ Copying it into a second crate is the thing this workspace does not do, so
    (`docs/v04-w1-acceptance.md` §7 records that the `Transport` seam has no
    connect-only entry point and that this is why a race races requests).
 
+**Since done — option 1, in its honest version:
+[`docs/rt-quinn-extraction.md`](rt-quinn-extraction.md).** `crates/http-ng-rt-quinn`
+holds `SeamRuntime`, `SeamTimer`, `WakeAll`, `SeamSocket`, `SeamPoller` and
+a now-`pub` `endpoint(&rt, local)`; `http-ng-h3` re-exports `QuinnTask` from
+it, so its public API is unchanged and its graph went 57 → 58, the one
+addition being the new crate. 42 crates on their own, with no `h3` in them.
+
+**And the list above is wrong to present the two as alternatives**, which
+the extraction is what established. A connect-only entry point on `H3`
+**cannot serve WebTransport at any price**: `H3::connect` builds an
+`h3::client` on the connection and spawns its driver before it has anything
+to hand back, and `Session::connect` builds its own with
+`enable_extended_connect(true)`. Two h3 clients on one QUIC connection open
+two control streams — `H3_STREAM_CREATION_ERROR`, the first of the three
+reasons in (b), which is about the *pool* and applies just as hard to a
+fresh connection, because `H3` never hands out one it has not already
+claimed. So option 1 closes this gap and option 2 answers a different
+question (`docs/connect-only-seam.md`).
+
+What remains on this crate's side is its own dialling — `http_ng_rt_quinn::
+endpoint` plus a `QuicTlsConnect` and an address — and it is **not done**,
+for reasons about this crate rather than about the adapter:
+`Session::connect(conn, uri)` stays whatever else happens, so a dialling
+constructor is an addition rather than a replacement; it costs a measured
+49 → 58 crates, `ring` among them, which is the count §7 names as *"the
+visible consequence of owning no endpoint"*; and it would be a second place
+in this workspace where "how a QUIC connection is made" is decided, with
+nothing making it agree with `http-ng-h3`'s.
+
 **(b) A session cannot share one of `H3`'s pooled connections, and this is
 not a matter of plumbing.** Three independent reasons, in increasing order
 of how hard they are to change:
