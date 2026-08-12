@@ -478,6 +478,15 @@ out clean:
 
 ## 9. What this document does not decide
 
+**Since built, and three of these are now answered** —
+[`docs/v04-staged-connect.md`](v04-staged-connect.md). The seam is
+`StagedConnect` on `http-ng-native` and on `http-ng-h3` (one trait per
+crate, §4's decision, and building it produced the concrete reason: the two
+do not agree on what `connect` takes). The first customer is §8's, and is
+built: Alt-Svc's negative half in `http-ng-select`. Read the answers below
+against the bullets they belong to.
+
+
 - **Whether to build any of it.** The race's other three needs (§7.7 items
   1, 2 and 4 — an RTT store, a budget rule, a failure memory) are
   untouched by this and are unbuilt. The sequential fallback of §8 needs
@@ -494,6 +503,17 @@ out clean:
   its weakest form — *"did this origin's QUIC connect succeed"* — for which
   a handle may be more than is required. That is worth measuring against a
   real fallback before deciding, and it is not measurable from here.
+
+  **Answered: it needs one, and the reason is the bound rather than the
+  connection.** `H3::execute` resolves the origin's address *before* it
+  looks in the pool, inside `Timeouts::connect`, so the weakest form leaves
+  a second call able to spend the bound again — §6's criterion, applied to
+  a stack §6 was not looking at. What the handle *is* differs from
+  `Native`'s and could not have been predicted from `Native`'s side: since
+  `connect` builds an h3 client and spawns its driver before it has
+  anything to hand back, the handle is a **claim on a connection the pool
+  also holds**, not an unclaimed connection. Both satisfy the property,
+  because the property is about the second call's code path.
 - **What happens to the loser's connection when it finishes rather than
   being dropped mid-handshake.** On `H3`, `checkout` inserts before it
   returns and the driver keeps a 5 s keep-alive running (P11), so a losing
@@ -502,6 +522,16 @@ out clean:
   next request is a policy question with a measurable answer, and neither
   §7.6 (which only measured the mid-handshake drop) nor this document has
   it.
+
+  **Answered as "a warm connection", on both stacks, by different means to
+  the same observable end.** `http_ng_native::Staged` has a `Drop` that
+  checks the connection in — nothing was spoken on it, so it is exactly the
+  connection the pool would have held had the request never been staged;
+  with `without_pool()` there is no check-in and the drop closes the
+  socket, which is the control. `http_ng_h3::Staged` needs no `Drop`,
+  because `checkout` pooled the connection before the caller saw it. The
+  pinging is real and is stated rather than fixed: it matters to a race,
+  and the one consumer connects on the arm it intends to use.
 - **Anything about `http-ng-select`'s capability set.** `Selecting`'s
   `Capabilities` is combined at construction and its rule — *"the stored
   value must be true whichever member serves the request"* — is unaffected
@@ -533,3 +563,11 @@ out clean:
   crate was built for it, and the projection problems `Prefetch`'s own doc
   records for `<Native<..> as Transport>::Body` are the kind of thing that
   only shows up at the caller.
+
+  **It does**, and the projection was the one place it showed: the caller
+  (`http-ng-select`) names the two member bodies through
+  `<Native<..> as Transport>::Body` in a `where` clause, exactly as it
+  already did, and the staged pair adds no new one. The handle is named
+  `Staged` rather than `Connected` for a duller reason than any of this:
+  `Connected` is already the hook event both crates emit three lines after
+  making a connection.

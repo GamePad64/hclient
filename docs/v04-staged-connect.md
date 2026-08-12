@@ -271,7 +271,7 @@ one hop.
 
 | file | tests | what it watches |
 |---|---|---|
-| `crates/http-ng-native/tests/staged.rs` | 6 | a counting TCP server: connections accepted and request heads read |
+| `crates/http-ng-native/tests/staged.rs` | 7 | a counting TCP server: connections accepted and request heads read |
 | `crates/http-ng-h3/tests/staged.rs` | 5 | the h3 fixture's `accepted`/`requests` counters over real QUIC |
 | `crates/http-ng-select/tests/h3_failure.rs` | 6 | the two real servers behind one authority, with a QUIC arm that refuses |
 | `crates/http-ng-select/tests/failure_memory.rs` | 10 | the memory itself, `now` handed in |
@@ -299,7 +299,7 @@ the second.
 
 ## 5. Mutation testing
 
-Anchor **MUTATION_ANCHOR tests**, `cargo nextest run -p http-ng-native -p
+Anchor **416 tests**, `cargo nextest run -p http-ng-native -p
 http-ng-h3 -p http-ng-select --all-features`, verified before the run and
 again after every restore. Each patch had to match exactly once or the
 mutation was not run. The harness scores from the **names** of failing tests
@@ -309,7 +309,58 @@ restore that preserves mtime leaves cargo holding the mutant, and the tests
 were committed before the first mutation, because a restore that deletes an
 uncommitted test invalidates the run that used it.
 
-MUTATION_TABLE
+**Twenty applied: nineteen killed, one control survived as intended, none
+survived unintentionally.** The first run of them was scored wrong and is
+worth recording: without `--no-fail-fast` nextest stops at the first failure
+and reports a partial total, so eleven kills came back "unscorable" against
+an anchor of 415. The harness caught that itself — it refuses a run whose
+total is not the anchor's — and the second run carries the flag.
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| **N1** | a dropped handle discards its connection instead of checking it in | **killed** (1) | `native::staged::a_handle_nobody_spends_leaves_a_warm_connection` |
+| **N2** | the staged connect never looks in the pool and always dials | **killed** (2) | `a_staged_connect_finds_a_pooled_connection_rather_than_dialling`, `a_staged_exchange_returns_its_connection_to_the_pool` |
+| **N3** | the handle from the pool is minted with no way home | **killed** (1) | `a_staged_exchange_returns_its_connection_to_the_pool` |
+| **N4** | a fresh connection is staged with no check-in | **killed** (2) | `a_handle_nobody_spends_leaves_a_warm_connection`, `a_staged_exchange_returns_its_connection_to_the_pool` |
+| **N5** | **CONTROL** — `Staged`'s `Debug` reports nothing instead of what it holds | **survived, as intended** (0) | nothing, and nothing should: no test asserts on that `Debug` output and no code path reads it. Without a control, nineteen kills would be indistinguishable from a harness that reports "killed" unconditionally |
+| **H1** | the staged connect emits no `Connected`/`Reused` event | **killed** (13) | every `http-ng-h3::hooks` arm, plus `hooks_cost::the_same_two_requests_with_a_hook_do_read_it` |
+| **H2** | the exchange never replays a request whose early data was refused | **killed** (2) | `h3::live::a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it`, `h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection` |
+| **H3** | the version demand is not answered before the connect | **killed** (3) | both `h3::require_version` arms, plus `h3::staged::a_version_demand_this_stack_cannot_meet_hands_the_request_back` |
+| **H4** | the scheme is not checked, so `http://` reaches the QUIC dial | **killed** (2) | `h3::live::plaintext_http_is_refused_rather_than_silently_upgraded`, `h3::staged::a_refused_connect_hands_the_request_back` |
+| **S1** | the failure is never recorded | **killed** (3) | `an_origin_whose_quic_connect_failed_is_not_tried_again`, `a_record_that_offers_h3_is_vetoed_by_a_failure_just_the_same`, `a_reported_network_change_lets_a_failed_origin_be_tried_again` |
+| **S2** | the failure is recorded and never read | **killed** (3) | the same three |
+| **S3** | the veto is looked up for the wrong origin — the scheme's default port rather than this one | **killed** (3) | the same three |
+| **S4** | the failure is recorded against the wrong origin | **killed** (3) | the same three |
+| **S5** | the memory never expires | **killed** (4) | `failure_memory::a_failure_lives_exactly_as_long_as_the_ttl_says`, `a_lapsed_entry_is_forgotten_and_does_not_come_back`, `a_second_failure_restarts_the_window`, `the_window_starts_when_the_connect_failed` |
+| **S6** | `Timeouts::connect` is handed to the fallback untouched, so it is spent twice | **killed** (2) | `h3_failure::the_fallback_spends_what_is_left_of_the_connect_bound_and_no_more`, and — unexpectedly — `dns_cost::a_request_chosen_onto_quic_at_the_default_port_asks_once` |
+| **S7** | a reported network change does not clear the failure memory | **killed** (1) | `a_reported_network_change_lets_a_failed_origin_be_tried_again` |
+| **S8** | the veto also holds back a request that demands HTTP/3 | **killed** (1) | `a_demand_for_http_3_does_not_fall_back_but_still_teaches_the_memory` |
+| **S9** | a demand for HTTP/3 falls back to TCP like everything else | **killed** (1) | the same one |
+
+Three are worth reading twice.
+
+**N3 survived the first time it was run**, and the test that now kills it
+was written because of that. `a_staged_connect_finds_a_pooled_connection_
+rather_than_dialling` passes against a handle minted with no way home,
+because it never asks what happened to the connection *afterwards*. The
+check-in is minted at two sites — the pooled branch and the fresh one — so
+the new test covers both, and N3 and N4 are the pair that says so.
+
+**S6's second killer was not written for it.**
+`dns_cost::a_request_chosen_onto_quic_at_the_default_port_asks_once` sets a
+300 ms connect bound and points at an origin with no QUIC server; the bound
+is spent, nothing is left, and the fallback does not run — so the count
+stays at one. Hand the fallback a fresh copy of the bound and it runs,
+`http-ng-native`'s connector makes its own type-65 query, and the count
+becomes two. A DNS test noticing a timeout arithmetic error is the same
+shape as `docs/v04-w1-acceptance.md` §9.8's M22, and it is the second
+witness the budget rule deserved.
+
+**S8 and S9 are the two directions of one decision** and either alone reads
+as an accident: a demand for HTTP/3 is not held back by the memory, and is
+not sent over TCP when the connect fails. The hop that kills S8 was added
+after the first mutation run, because the test as first written put the
+demanded request first, where nothing was suppressed yet.
 
 ## 6. What is not verified
 
@@ -332,6 +383,14 @@ MUTATION_TABLE
   they cannot rule out is a write the server has not yet read. The second
   half of each test is what makes them worth reading: the same counter that
   stays at zero across the connect reaches one across the exchange.
+- **One flake, seen once and not since.** In the first mutation pass
+  `http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_
+  connection` failed under a mutation that cannot reach it — `S1`, in
+  `http-ng-select`. It passed 15 times in isolation afterwards and did not
+  recur in the 21 full-suite runs of the second pass, so it is a
+  load-dependent flake rather than a defect this work introduced; but
+  `H3::execute` was refactored into `stage` + `finish` in this branch, and
+  "not reproduced" is weaker than "not there".
 - **A `Staged` whose connection dies while the caller holds it.** The
   behaviour is decided (§2.3) and no test produces the window, because
   producing it means closing a connection between a checkout and a write.

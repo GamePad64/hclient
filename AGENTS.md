@@ -760,6 +760,74 @@ Deliberately not done, each with what it needs: datagrams, the capsule
 protocol, observing session end, `GOAWAY`, server-initiated streams, and
 more than one session per connection.
 
+### A connect can be asked for on its own, and the first thing that wanted one was not the race (v0.4)
+
+`StagedConnect` — `connect` -> an opaque handle -> `exchange` — on
+`http-ng-native` and on `http-ng-h3`, **one trait per crate and not a method
+on `Transport`**: `wasi:http` 0.3's client interface is one function with no
+connection resource in the WIT, and the browser's only connect-shaped API is
+a `<link rel="preconnect">` hint with no handle, so a seam on `Transport`
+would be `Unsupported` for two of four backends and dishonest for one. The
+nearer precedent is `Prefetch`, one phase earlier, whose own refusal reads
+as if written for this: *"a `fetch`-shaped transport has no DNS of its own
+to save, and a `wasi:http` one has no connector at all."*
+
+**A handle rather than a warmed pool, and `Timeouts::connect` is the whole
+reason.** Warm the pool and the second call may still connect, so it reads
+the same bound off the same request and applies it again — a caller who set
+`connect: Some(C)` can be made to wait `2C`. Handed a connection,
+`exchange` has no connect for a bound to bound: not *ignored*, which would
+need a comment and a test, but **absent**.
+
+**The handle is not the same thing on the two stacks, and that was found by
+letting `H3` answer for itself.** `http_ng_native::Staged` *owns* the
+connection it took out of the pool, and needs a `Drop` that checks it back
+in, so a connection made for a request that went elsewhere is warm rather
+than closed (`without_pool()` is the control: no check-in, and the drop
+closes the socket). `http_ng_h3::Staged` is a **claim on a connection the
+pool already holds** — `connect` builds an h3 client and spawns its driver
+before it has anything to hand back, which is the same fact that makes a
+connect-only entry point useless to WebTransport — so it needs no `Drop` at
+all. It still needs to be a handle, because `H3::execute` resolves the
+address *before* it looks in the pool, inside the bound.
+
+`exchange` deliberately does **not** carry `Native::run`'s one retry: a
+retry means another pooled candidate or a fresh dial, and the dial is the
+code path the bound property requires to be absent. Half a retry would be
+the rule with an exception.
+
+**The first customer is Alt-Svc's negative half**, not the race — the
+reverse of the order both were written in. `Selecting` asks `H3` to
+*connect*; where that fails it records the origin in
+`http_ng_select::H3Failures` and routes the request — untouched, unsent,
+never handed to a transport — over TCP. So the fallback is not
+request-level retry and needs no `retry_kind()` condition:
+`http-ng-native`'s own sentence is true of it verbatim, *this is not a
+second request, it is the first one, which never left.*
+
+Three things about that memory are decisions rather than mechanics. **The
+veto sits after both tiers**, so a record listing `h3` at a UDP-blocked
+origin is covered too; it does not overrule the record and does not remove
+the advertisement, because a failed connect of ours is no evidence about
+the server. **`network_changed()` clears it entirely**, where the
+advertisement cache keeps `persist=1`: that flag is the origin's claim
+about its own advertisement, and nothing ever claimed a failure belongs to
+the origin rather than to the path. And **`Timeouts::connect` is spent
+once** — the request handed to TCP carries what is left of the caller's
+bound, and where nothing is left the QUIC failure stands, which is
+`Client`'s `425` arithmetic one layer down.
+
+`RequireVersion(HTTP_3)` is answered before the memory as it is before the
+resolver and the cache, and does not fall back.
+
+Checked against a `quinn` server that **refuses** — an ALPN this client
+will not accept, so a connect fails causally in one round trip — which is
+how `docs/v04-w1-acceptance.md` §9.3's second blocker turned out to be the
+right worry about the wrong premise: the memory records *that* the connect
+failed and never reads why. The black hole is used once, where a test needs
+the bound *spent*. Twenty mutations, nineteen killed, one control.
+`docs/v04-staged-connect.md`.
+
 ### One transport can now choose between the two stacks (v0.4 W1)
 
 `http-ng-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an
@@ -825,12 +893,13 @@ public, for the caller who can see what the transport cannot. Until it is
 called every entry behaves as `persist=1`, which is the unsafe direction and
 is said where the setter is.
 
-**The negative half is missing rather than misplaced**, which took reading
-to establish: `http-ng-native`'s `NegativeCache` is a different fact — a TCP
-connect through a discovered endpoint failed — and it never sees an h3
-attempt, because when `Selecting` routes to `H3` the native transport is not
-called at all. `http-ng-h3` has no failure memory of any kind. Building it
-is blocked on the same two things as the race.
+**The negative half is built now, and not by the race** (v0.4). It took
+reading to establish that it was missing rather than misplaced:
+`http-ng-native`'s `NegativeCache` is a different fact — a TCP connect
+through a discovered endpoint failed — and it never sees an h3 attempt,
+because when `Selecting` routes to `H3` the native transport is not called
+at all. `http_ng_select::H3Failures` is the memory that was owed; the
+**staged connect** is what unblocked it, and the section below is that.
 
 `docs/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
 the slow tier does and does not check.
