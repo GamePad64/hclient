@@ -1330,6 +1330,7 @@ dependencies = [
  "http-ng-dns",
  "http-ng-dns-system",
  "http-ng-rt",
+ "http-ng-rt-quinn",
  "http-ng-rt-smol",
  "http-ng-rt-tokio",
  "http-ng-tls",
@@ -1455,6 +1456,15 @@ dependencies = [
  "http-ng-rt-tokio",
  "hyper",
  "tokio",
+]
+
+[[package]]
+name = "http-ng-rt-quinn"
+version = "0.1.0"
+dependencies = [
+ "http-ng-rt",
+ "pin-project-lite",
+ "quinn",
 ]
 
 [[package]]

@@ -73,11 +73,10 @@ mod body;
 mod early;
 mod hooks;
 mod pump;
-mod runtime;
 
 pub use body::H3Body;
+pub use http_ng_rt_quinn::QuinnTask;
 pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
-pub use runtime::QuinnTask;
 
 use bytes::Bytes;
 use hooks::{ConnState, Watch, mark, since};
@@ -492,7 +491,7 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
 /// `Send`, `Sync` and `'static` are declared on `quinn::{Runtime,
 /// AsyncTimer, AsyncUdpSocket}` and are paid **here**, by the crate that
 /// wants QUIC, rather than on [`UdpBind`] where every implementer would pay
-/// them. See `crate::runtime`'s module doc.
+/// them. See `http_ng_rt_quinn`'s crate doc.
 pub trait H3Runtime:
     Timer
     + UdpBind
@@ -551,8 +550,8 @@ where
         } else {
             SocketAddr::from(([0, 0, 0, 0], 0))
         };
-        let bound =
-            runtime::endpoint(&self.rt, wildcard).map_err(|e| Error::new(ErrorKind::Connect, e))?;
+        let bound = http_ng_rt_quinn::endpoint(&self.rt, wildcard)
+            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         slots.insert(v6, bound.clone());
         Ok(bound)
     }

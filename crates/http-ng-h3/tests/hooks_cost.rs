@@ -29,7 +29,7 @@
 //! so before this feature there was no `Timer::now` call in `http-ng-h3` at
 //! all. `grep -rn '\.now()' crates/http-ng-h3/src` finds only `crate::hooks`
 //! today, and quinn's own timers go through `Timer::sleep` and
-//! `std::time::Instant` (see `crate::runtime`'s `until`), not through this
+//! `std::time::Instant` (see `http_ng_rt_quinn`'s `until`), not through this
 //! clock.
 //!
 //! `elapsed_since` is counted too, which `http-ng-native`'s equivalent file

@@ -24,21 +24,29 @@ http-body      = { workspace = true }
 http-ng-core   = { workspace = true }
 http-ng-dns    = { path = "../http-ng-dns",      version = "0.1.0" }
 http-ng-rt     = { path = "../http-ng-rt",       version = "0.1.0" }
+# The `quinn::Runtime` over `http_ng_rt::{Timer, Spawn, UdpBind}` — this
+# crate's `mod runtime` until v0.4 W3, when its second consumer arrived and
+# an unreachable module stopped being good enough. `QuinnTask` is
+# re-exported from here, so `http_ng_h3::QuinnTask` still names the same
+# type alias it always did.
+http-ng-rt-quinn = { path = "../http-ng-rt-quinn", version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",      version = "0.1.0" }
 http-ng-tls-quic = { path = "../http-ng-tls-quic", version = "0.1.0" }
 pin-project-lite = "0.2"
-# No `runtime-*` feature: the runtime is ours (`crate::runtime`), which is
-# the whole point — see that module's doc. `futures-io` is not optional,
-# `h3-quinn` requires it. No `rustls-*` either: the TLS crypto arrives as
-# an already-built `Arc<dyn quinn_proto::crypto::ClientConfig>` from
-# `http-ng-tls-quic`, so this crate picks no TLS provider.
+# No `runtime-*` feature: the runtime is ours, and it is
+# `http-ng-rt-quinn`'s — see that crate's doc. `futures-io` is not
+# optional, `h3-quinn` requires it. No `rustls-*` either: the TLS crypto
+# arrives as an already-built `Arc<dyn quinn_proto::crypto::ClientConfig>`
+# from `http-ng-tls-quic`, so this crate picks no TLS provider.
 #
-# `ring` is not that, and is not optional: a QUIC ENDPOINT needs an HMAC key
-# for stateless resets and an AEAD for retry tokens, independently of any
-# TLS session, and quinn expresses that as a crypto feature —
-# `EndpointConfig` has no `Default` without one. It is the same provider
-# rustls already uses in this graph, not a second one.
-quinn          = { version = "0.11", default-features = false, features = ["futures-io", "ring"] }
+# And no `ring`: it went with the endpoint that needs it. Binding an
+# endpoint is the one operation here that wanted a crypto provider
+# independently of TLS — an HMAC key for stateless resets, an AEAD for
+# retry tokens, which is why `EndpointConfig` has no `Default` without one
+# — and that call now lives in `http-ng-rt-quinn`. `ring` is still in this
+# crate's graph, through that dependency and through rustls; it is simply
+# no longer asked for here, where nothing uses it.
+quinn          = { version = "0.11", default-features = false, features = ["futures-io"] }
 thiserror      = { workspace = true }
 
 [dev-dependencies]

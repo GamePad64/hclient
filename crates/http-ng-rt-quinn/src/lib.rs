@@ -1,6 +1,12 @@
 //! `quinn::Runtime` over this workspace's runtime seam.
 //!
-//! This module is the whole reason HTTP/3 is reachable here at all. quinn
+//! ```ignore
+//! // Any `R` a runtime crate here supplies: `TokioHandle`, `Smol`, ...
+//! let endpoint = http_ng_rt_quinn::endpoint(&rt, "0.0.0.0:0".parse()?)?;
+//! let conn = endpoint.connect_with(client_cfg, addr, "example.com")?.await?;
+//! ```
+//!
+//! This crate is the whole reason QUIC is reachable here at all. quinn
 //! needs a spawner, a timer and a UDP socket, and it takes all three
 //! through **unsealed public traits** — unlike `hyper`'s HTTP/2 client,
 //! whose `Http2ClientConnExec` has a private supertrait, so an executor of
@@ -8,6 +14,16 @@
 //! to the `h2` crate. Nothing here reaches past anything: `quinn::{Runtime,
 //! AsyncTimer, AsyncUdpSocket, UdpPoller}` are all implemented from
 //! outside quinn, in this file.
+//!
+//! # Which way round this crate points
+//!
+//! The rest of the `http-ng-rt-*` family implements **this workspace's**
+//! seams for one runtime — `http-ng-rt-tokio` is `TcpConnect`, `Timer`,
+//! `UdpBind` on tokio. This one points the other way: it implements
+//! **quinn's** runtime traits over whatever `R` a caller already has, so
+//! the arrow is `seam -> quinn` rather than `runtime -> seam`. It is in the
+//! family because its subject is the seam and it names no runtime; it is
+//! not one of them because it adds no backend.
 //!
 //! # The three bounds quinn adds, and where they live
 //!
@@ -17,12 +33,12 @@
 //! none of that, deliberately — `Send`ness in this workspace is inferred by
 //! auto-traits, not declared.
 //!
-//! Those bounds are therefore paid **here and in [`crate::H3`]'s `where`
-//! clause**, by the crate that wants QUIC, and not by the seam. A runtime
-//! that cannot satisfy them can still implement [`UdpBind`] honestly and be
-//! used for everything else; it just cannot be handed to this crate. That
-//! is a compile error where the caller wrote it, which is the shape this
-//! project already uses for `DefaultTransport` on unsupported targets.
+//! Those bounds are therefore paid **here and in `http_ng_h3::H3Runtime`**,
+//! by the crates that want QUIC, and not by the seam. A runtime that cannot
+//! satisfy them can still implement [`UdpBind`] honestly and be used for
+//! everything else; it just cannot be handed to this crate. That is a
+//! compile error where the caller wrote it, which is the shape this project
+//! already uses for `DefaultTransport` on unsupported targets.
 //!
 //! # The `Timer` change that turned out not to be needed
 //!
@@ -42,6 +58,7 @@
 //! [`Timer`]: http_ng_rt::Timer
 //! [`Spawn`]: http_ng_rt::Spawn
 //! [`UdpBind`]: http_ng_rt::UdpBind
+#![forbid(unsafe_code)]
 
 use http_ng_rt::{Timer, UdpAdoptStd, UdpBind, UdpDatagrams};
 use std::fmt;
@@ -360,7 +377,7 @@ where
 /// implement — as the one this path actually needs, with `UdpAdoptStd`
 /// present only because the `quinn::Runtime` trait has a method that
 /// demands it.
-pub(crate) fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
+pub fn endpoint<R>(rt: &R, local: SocketAddr) -> io::Result<quinn::Endpoint>
 where
     R: Timer + UdpAdoptStd + http_ng_rt::Spawn<QuinnTask> + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C10
     R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
