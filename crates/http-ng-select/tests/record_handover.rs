@@ -155,6 +155,71 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
     );
 }
 
+/// A resolver that cannot ask has not answered, and the transport whose
+/// resolver *can* still asks.
+///
+/// The third thing `Discovered` distinguishes, and the one that only shows
+/// up when the members do not share a resolver — which
+/// [`Selecting::new`](http_ng_select::Selecting::new) explicitly allows,
+/// since it takes one of its own. The TCP member here is built on a
+/// resolver that reports `supports_svcb() == false`; this transport's is a
+/// resolver that can, and publishes `h3`. "The connector could not ask" is
+/// **not** "the origin publishes no record", so the question is still
+/// open, and the request must reach the QUIC server.
+///
+/// Collapsed into `NoRecord` — which is what "the resolver cannot ask"
+/// used to be folded into — this origin would have gone to TCP with a
+/// perfectly capable resolver sitting unused. The counts on both logs are
+/// the other half: the member's resolver was never asked anything (it said
+/// it could not), and this transport's was asked once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks() {
+    let pair = servers::start();
+    let members = FakeDns::cannot_ask_but_would_have_said(vec![record_at(pair.port)]);
+    let ours = FakeDns::with_records(vec![service_record(1, &[b"h3"])]);
+    let rt = TokioHandle::current().expect("inside #[tokio::test]");
+    let t = Selecting::new(
+        rt.clone(),
+        Native::new(
+            rt.clone(),
+            servers::client_tls(&pair.cert_der),
+            members.clone(),
+        ),
+        H3::new(rt, servers::client_tls(&pair.cert_der), members.clone()).expect("no I/O"),
+        ours.clone(),
+    )
+    .expect("the two stacks agree");
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        t.execute(get(format!("https://{ORIGIN}:{}/hello", pair.port))),
+    )
+    .await
+    .expect("inside the bound")
+    .expect("the QUIC server answered");
+    assert_eq!(resp.status(), 200);
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("a complete body")
+        .to_bytes();
+    assert_eq!(body.as_ref(), b"h3", "the QUIC server's own answer");
+
+    assert_eq!(pair.quic_answered(), 1);
+    assert_eq!(pair.tcp_answered(), 0);
+    assert_eq!(
+        members.svcb_lookups(),
+        0,
+        "a resolver that says it cannot ask is not asked"
+    );
+    assert_eq!(
+        ours.svcb_names(),
+        [format!("_{}._https.{ORIGIN}", pair.port)],
+        "and the question was still put, by the transport whose resolver can"
+    );
+}
+
 /// A record fetched under the prefixed name stays out of the connector.
 ///
 /// The URI names its own port, so RFC 9460 §2.3 puts its record under

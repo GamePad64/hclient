@@ -274,17 +274,16 @@ impl From<SvcbEndpoint> for Endpoint {
 /// nothing else. A record whose target differs from the origin and carries
 /// no hints therefore contributes only its port, ALPN and ECH — honest,
 /// and one lookup rather than two.
+/// **The capability is asked one level up**, in
+/// [`crate::connect::discovered_endpoint`], and that is not tidying: "this
+/// resolver cannot ask" is *nobody looked*, where this function's `None`
+/// is *looked, and there is none*. They are the same instruction to this
+/// connector and different ones to a caller holding the answer — see
+/// [`Prefetched`]. Asking here as well would make the second unreachable.
 pub(crate) async fn lookup<D>(dns: &D, host: &str) -> Option<Endpoint>
 where
     D: Resolve,
 {
-    // The capability, asked rather than inferred from an empty stream —
-    // the distinction `Resolve::supports_svcb` exists to carry (a resolver
-    // that cannot ask, and one that asked and found nothing, both return
-    // an empty stream, and only the first should stop us asking).
-    if !dns.supports_svcb() {
-        return None;
-    }
     let mut best: Option<SvcbEndpoint> = None;
     let mut records = std::pin::pin!(dns.lookup_svcb(host));
     while let Some(record) = records.next().await {
@@ -370,8 +369,8 @@ pub(crate) enum Prefetched {
     /// before this type existed.
     NotConsulted,
     /// [`crate::connect::discovered_endpoint`] has already run, for this
-    /// request's own authority, and this is what it found. `None` is an
-    /// answer and not an absence.
+    /// request's own authority, with a resolver that said it could ask,
+    /// and this is what it found. `None` is an answer and not an absence.
     Looked(Option<Endpoint>),
 }
 
@@ -423,17 +422,20 @@ impl Prefetched {
 pub enum Discovered<'a> {
     /// This transport did not look, so nothing here has been ruled out.
     ///
-    /// Discovery applies to `https://` at the scheme's default port and
-    /// nowhere else (this module's doc says why for each), and it is held
-    /// off entirely while the origin is suppressed by an earlier failed
-    /// attempt through its record. A caller that wants an answer here must
-    /// get it for itself; a caller that does not may hand this straight
-    /// back, and the connector behaves exactly as it does for a request
-    /// nobody prepared.
+    /// Three ways to arrive, and none of them is a fact about the origin:
+    /// discovery applies to `https://` at the scheme's default port and
+    /// nowhere else (this module's doc says why for each); it is held off
+    /// entirely while the origin is suppressed by an earlier failed
+    /// attempt through its record; and **this transport's own resolver may
+    /// say it cannot ask** (`Resolve::supports_svcb`), which is a fact
+    /// about the resolver. A caller that wants an answer here must get it
+    /// for itself — and a caller whose own resolver *can* ask should,
+    /// because the question has not been put; a caller that does not want
+    /// one may hand this straight back, and the connector behaves exactly
+    /// as it does for a request nobody prepared.
     NotConsulted,
     /// Looked, and there is no record to act on: the origin publishes
-    /// none, the resolver said it cannot ask, the lookup failed, or every
-    /// answer was an AliasMode record.
+    /// none, the lookup failed, or every answer was an AliasMode record.
     ///
     /// **Distinct from [`Self::NotConsulted`] on purpose**, and it is the
     /// half a plain `Option` gets wrong: this is an answer, and a caller

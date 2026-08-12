@@ -1041,6 +1041,20 @@ where
     if cache.suppressed(&Origin::new(host, port), now) {
         return Prefetched::NotConsulted;
     }
+    // The capability, asked rather than inferred from an empty stream —
+    // the distinction `Resolve::supports_svcb` exists to carry (a resolver
+    // that cannot ask, and one that asked and found nothing, both return
+    // an empty stream, and only the first should stop us asking).
+    //
+    // **`NotConsulted` and not `Looked(None)`**, and the difference leaves
+    // this crate: to the connection they are the same thing, but a caller
+    // holding the answer is told *nobody looked* rather than *there is no
+    // record* — so a caller whose own resolver can ask still asks. This
+    // transport's resolver being unable to answer is not a fact about the
+    // origin.
+    if !dns.supports_svcb() {
+        return Prefetched::NotConsulted;
+    }
     Prefetched::Looked(discovery::lookup(dns, host).await)
 }
 
