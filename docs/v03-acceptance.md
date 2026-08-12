@@ -4298,3 +4298,22 @@ and exactly why a regression would leave it standing.
   connection and request, and a mutation that allocated them under
   `NoHooks` would be invisible to `hooks_cost.rs`. `M14` covers the clock
   half of "`WATCHING` ignored" and nothing covers this half.
+
+
+### The 0-RTT acceptance test is not fully settled
+
+`http-ng-h3::zero_rtt::early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake`
+was flaky on a clock and was rebuilt in v0.4 to end its relay hold **on an
+event** instead. That held under 25 runs with six spinners.
+
+It then failed **once** during a v0.4 merge review, at load average **71** —
+roughly twice anything it had been measured under, because two other agents
+were building at the time. It did not reproduce: 0 failures in 20 isolated
+runs and 0 in 8 full-workspace runs immediately afterwards, at the same
+load.
+
+Recorded rather than called fixed. One failure nobody can reproduce is not
+evidence of a healthy test, and the honest state is "the clock came out and
+something still has an edge at extreme load". What would settle it is the
+shape the pool flake needed: capture the failure with its own output, rather
+than a `FAIL` line, before diagnosing.

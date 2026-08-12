@@ -867,6 +867,38 @@ as residual and still there. Nagle's 41 ms had been padding the gap; with it
 gone the suite failed 7 runs in 12 under `-j16`. The fixture now announces
 its close, and the library's race is unchanged and still recorded.
 
+**Checked against gRPC as an external yardstick, and gRPC itself is out of
+scope.** The goal is a client powerful enough that someone else could build
+gRPC on it, so `grpc/doc/PROTOCOL-HTTP2.md` was used the way Autobahn was
+used for WebSocket: 21 requirements, 15 tests, every claim read off what a
+real `h2::server` decoded. **No library code changed** — the client already
+did all of them, including `te: trailers` reaching the wire, a Trailers-Only
+response (HEADERS with END_STREAM and no DATA) arriving as a complete
+response, a message split across DATA frames arriving as the caller sent it,
+the empty end-of-stream DATA frame, back-pressure in both directions, and
+sixteen rounds of bidirectional streaming on one stream — which is the first
+consumer-shaped exercise of the duplex h2 landed in v0.4.
+`docs/grpc-yardstick.md` is the row-by-row report.
+
+**Three limitations, none new, and two of them are one.** There is **no
+multiplexing**: an h2 connection is checked out exclusively, so two
+concurrent calls cost two connections and two handshakes. That is v0.2 W3's
+decision, and its reason is still live — without `Spawn` there is nobody to
+drive a shared connection but the in-flight request futures, so a caller
+that stopped polling would stall its neighbours. **Cancellation therefore
+closes the connection rather than sending `RST_STREAM(CANCEL)`**: the pump's
+`Drop` does queue the reset, but the `Connection` is dropped in the same
+breath. And a `PING` on a pooled connection is answered by the next call
+rather than promptly. The first costs a handshake per concurrent RPC; none
+of the three costs a failed call.
+
+Also worth knowing before reading `capabilities()`: with `http2` on,
+`full_duplex` and `response_trailers` still report the HTTP/1.1 **floor**, so
+a caller cannot ask the capability whether duplex and trailers will work.
+The honest route is `RequireVersion(HTTP_2)` before the head and
+`Response::version()` after it — the floor rule behaving as designed rather
+than a contradiction.
+
 **HTTP/2 is negotiated and spoken, not merely compiled in (v0.2 W3).** The
 `http2` feature is off by default and, when on, changes nothing a caller can
 observe except speed and `Response::version()`: `capabilities()` still report
