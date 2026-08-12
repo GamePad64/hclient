@@ -82,6 +82,15 @@ fn record_at(port: u16) -> SvcbEndpoint {
     }
 }
 
+/// An empty trust store: for the arms where nothing is meant to complete a
+/// handshake, and the observation is a resolver's log.
+fn untrusting_tls() -> http_ng_tls_rustls::Rustls {
+    let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    http_ng_tls_rustls::Rustls::from_config(std::sync::Arc::new(cfg))
+}
+
 /// The handover is real: the connection is made under the record this
 /// transport fetched, not under a second one and not under none.
 ///
@@ -136,13 +145,7 @@ async fn the_record_this_transport_fetched_is_the_one_the_connection_is_made_und
 #[tokio::test(flavor = "multi_thread")]
 async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
     let dns = FakeDns::new();
-    let t = selector(dns.clone(), || {
-        // An empty trust store: nothing here completes a handshake.
-        let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-            .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth();
-        http_ng_tls_rustls::Rustls::from_config(std::sync::Arc::new(cfg))
-    });
+    let t = selector(dns.clone(), untrusting_tls);
 
     let _ = tokio::time::timeout(BOUND, t.execute(get(format!("https://{ORIGIN}/"))))
         .await
@@ -155,59 +158,51 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
     );
 }
 
-/// A resolver that cannot ask has not answered, and the transport whose
-/// resolver *can* still asks.
+/// A member that cannot ask has not answered, so the question is still
+/// open — and a transport whose own resolver can ask still asks it.
 ///
-/// The third thing `Discovered` distinguishes, and the one that only shows
-/// up when the members do not share a resolver — which
-/// [`Selecting::new`](http_ng_select::Selecting::new) explicitly allows,
-/// since it takes one of its own. The TCP member here is built on a
-/// resolver that reports `supports_svcb() == false`; this transport's is a
-/// resolver that can, and publishes `h3`. "The connector could not ask" is
-/// **not** "the origin publishes no record", so the question is still
-/// open, and the request must reach the QUIC server.
+/// The third thing `Discovered` distinguishes, and it only shows up when
+/// the members do not share a resolver, which
+/// [`Selecting::new`](http_ng_select::Selecting::new) explicitly allows
+/// since it takes one of its own. The members here are built on a resolver
+/// reporting `supports_svcb() == false`; this transport's can ask and
+/// publishes `h3`. "The connector could not ask" is a fact about the
+/// resolver, not about the origin, so it must arrive as
+/// `Discovered::NotConsulted` — and collapsed into `NoRecord`, which is
+/// where it used to be folded, this origin would have gone to TCP with a
+/// perfectly capable resolver sitting unused.
 ///
-/// Collapsed into `NoRecord` — which is what "the resolver cannot ask"
-/// used to be folded into — this origin would have gone to TCP with a
-/// perfectly capable resolver sitting unused. The counts on both logs are
-/// the other half: the member's resolver was never asked anything (it said
-/// it could not), and this transport's was asked once.
+/// **At the origin's default port, deliberately, and this is the only arm
+/// where that is the point rather than a nuisance.** Discovery has three
+/// gates in order — the port, the negative cache, then the capability —
+/// and an arm at any other port never reaches the third. The first version
+/// of this test named a port, connected to a real server, asserted the
+/// right thing and *passed for the wrong reason*: the mutation that reads
+/// "cannot ask" as "no record" survived it untouched (M54,
+/// `docs/v04-w1-acceptance.md` §3.3).
+///
+/// What is observed is therefore the **question**, on two resolver logs,
+/// and not the connection: nothing can listen on 443 here, so the request
+/// fails, and its failure is not the observation. That the `h3` this
+/// transport then reads chooses QUIC is `choice.rs`'s claim, and it is not
+/// re-made here.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks() {
-    let pair = servers::start();
-    let members = FakeDns::cannot_ask_but_would_have_said(vec![record_at(pair.port)]);
+    let members = FakeDns::cannot_ask_but_would_have_said(vec![record_at(443)]);
     let ours = FakeDns::with_records(vec![service_record(1, &[b"h3"])]);
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     let t = Selecting::new(
         rt.clone(),
-        Native::new(
-            rt.clone(),
-            servers::client_tls(&pair.cert_der),
-            members.clone(),
-        ),
-        H3::new(rt, servers::client_tls(&pair.cert_der), members.clone()).expect("no I/O"),
+        Native::new(rt.clone(), untrusting_tls(), members.clone()),
+        H3::new(rt, untrusting_tls(), members.clone()).expect("H3::new does no I/O"),
         ours.clone(),
     )
     .expect("the two stacks agree");
 
-    let resp = tokio::time::timeout(
-        BOUND,
-        t.execute(get(format!("https://{ORIGIN}:{}/hello", pair.port))),
-    )
-    .await
-    .expect("inside the bound")
-    .expect("the QUIC server answered");
-    assert_eq!(resp.status(), 200);
-    let body = resp
-        .into_body()
-        .collect()
+    let _ = tokio::time::timeout(BOUND, t.execute(get(format!("https://{ORIGIN}/"))))
         .await
-        .expect("a complete body")
-        .to_bytes();
-    assert_eq!(body.as_ref(), b"h3", "the QUIC server's own answer");
+        .expect("the request finished inside the bound");
 
-    assert_eq!(pair.quic_answered(), 1);
-    assert_eq!(pair.tcp_answered(), 0);
     assert_eq!(
         members.svcb_lookups(),
         0,
@@ -215,7 +210,7 @@ async fn a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks
     );
     assert_eq!(
         ours.svcb_names(),
-        [format!("_{}._https.{ORIGIN}", pair.port)],
+        [ORIGIN],
         "and the question was still put, by the transport whose resolver can"
     );
 }
