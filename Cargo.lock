@@ -1604,6 +1604,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-webtransport"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "h3",
+ "h3-quinn",
+ "http",
+ "http-ng-core",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
