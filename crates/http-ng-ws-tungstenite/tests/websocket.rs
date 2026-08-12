@@ -45,7 +45,7 @@
 //! by a sleep, and the one ratio a slow machine could genuinely upset —
 //! `an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings`
 //! — is 6.7× and says so where it is chosen.
-#![cfg(all(not(target_family = "wasm"), feature = "websocket"))]
+#![cfg(not(target_family = "wasm"))]
 
 use bytes::Bytes;
 use futures_sink::Sink;
@@ -55,9 +55,10 @@ use http_ng_core::ErrorKind;
 use http_ng_core::RequestBody;
 use http_ng_core::unversioned::{Message, Transport, WebSocketConnect};
 use http_ng_dns::IpLiteralOnly;
-use http_ng_native::{Native, PongNotReceived, WebSocketKeepAlive};
+use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
+use http_ng_ws_tungstenite::{PongNotReceived, Tungstenite, WebSocketKeepAlive};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -269,17 +270,34 @@ where
     (addr, accepted)
 }
 
-/// The transport under test. `IpLiteralOnly` rather than a system
-/// resolver: every address here is a loopback literal, and a DNS backend
-/// would be a second thing that could fail.
+/// The transport the connector borrows. `IpLiteralOnly` rather than a
+/// system resolver: every address here is a loopback literal, and a DNS
+/// backend would be a second thing that could fail.
 fn native() -> Native<Tokio, Rustls, IpLiteralOnly> {
     Native::new(Tokio, Rustls::with_webpki_roots(), IpLiteralOnly)
 }
 
-/// The same transport with the liveness bound switched on — the only way
+/// The connector under test, with no liveness bound — the default.
+///
+/// It borrows, which is why every call site below writes `ws(&native())`
+/// rather than `native()`: the transport stays a transport, and
+/// `a_websocket_never_takes_a_pooled_connection` is the test that needs
+/// it to (it makes two ordinary requests and then an upgrade, all against
+/// the one value).
+fn ws(
+    native: &Native<Tokio, Rustls, IpLiteralOnly>,
+) -> Tungstenite<'_, Tokio, Rustls, IpLiteralOnly> {
+    Tungstenite::new(native)
+}
+
+/// The same connector with the liveness bound switched on — the only way
 /// to switch it on, which is half of what "off by default" means.
-fn native_keeping_alive(every: Duration, within: Duration) -> Native<Tokio, Rustls, IpLiteralOnly> {
-    native().websocket_keep_alive(WebSocketKeepAlive::new(every, within))
+fn keeping_alive(
+    native: &Native<Tokio, Rustls, IpLiteralOnly>,
+    every: Duration,
+    within: Duration,
+) -> Tungstenite<'_, Tokio, Rustls, IpLiteralOnly> {
+    ws(native).keep_alive(WebSocketKeepAlive::new(every, within))
 }
 
 fn open(uri: &str) -> http::Request<()> {
@@ -325,7 +343,7 @@ async fn a_websocket_opens_and_carries_messages_both_ways() {
 
     let mut ws = tokio::time::timeout(
         BOUND,
-        native().websocket(open(&format!("ws://{addr}/chat"))),
+        ws(&native()).websocket(open(&format!("ws://{addr}/chat"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -405,10 +423,13 @@ async fn the_first_frame_may_arrive_in_the_same_flight_as_the_101() {
         }
     });
 
-    let mut ws = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang")
-        .expect("the handshake must succeed");
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
 
     let got = tokio::time::timeout(BOUND, ws.next())
         .await
@@ -448,9 +469,12 @@ async fn a_200_is_an_error_rather_than_a_websocket() {
         }
     });
 
-    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("must not hang");
+    let outcome = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("must not hang");
     let Err(err) = outcome else {
         panic!("a 200 is not a WebSocket")
     };
@@ -483,9 +507,12 @@ async fn a_101_whose_accept_key_is_wrong_is_refused() {
         let _ = tx.send(std::mem::take(&mut w.buf));
     });
 
-    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang");
+    let outcome = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang");
     let Err(err) = outcome else {
         panic!("a 101 with the wrong accept key is not a WebSocket")
     };
@@ -529,9 +556,12 @@ async fn a_101_that_is_not_upgrading_to_websocket_is_refused() {
         while w.fill() {}
     });
 
-    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang");
+    let outcome = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang");
     let Err(err) = outcome else {
         panic!("a 101 to a protocol that is not WebSocket is not a WebSocket")
     };
@@ -575,15 +605,21 @@ async fn the_connection_header_is_read_as_a_token_list_and_is_read() {
     }
 
     let addr = server_answering("keep-alive, Upgrade");
-    tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("must not hang")
-        .expect("`Connection: keep-alive, Upgrade` carries the token and is an upgrade");
+    tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("must not hang")
+    .expect("`Connection: keep-alive, Upgrade` carries the token and is an upgrade");
 
     let addr = server_answering("keep-alive");
-    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("must not hang");
+    let outcome = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("must not hang");
     let Err(err) = outcome else {
         panic!("`Connection: keep-alive` is not an upgrade, whatever the status line says")
     };
@@ -634,10 +670,13 @@ async fn a_ping_is_answered_with_a_pong_which_is_what_releases_the_next_message(
         w.send(OP_TEXT, b"released by the pong");
     });
 
-    let mut ws = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang")
-        .expect("the handshake must succeed");
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
 
     let got = tokio::time::timeout(BOUND, ws.next())
         .await
@@ -700,10 +739,13 @@ async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
         let _ = tx.send(frame);
     });
 
-    let mut ws = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang")
-        .expect("the handshake must succeed");
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
 
     let sent = payload.clone();
     let blocked = tokio::time::timeout(BOUND, async move {
@@ -790,10 +832,13 @@ async fn a_close_from_the_peer_is_echoed_and_ends_the_stream() {
         let _ = w.sock.shutdown(std::net::Shutdown::Both);
     });
 
-    let mut ws = tokio::time::timeout(BOUND, native().websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("the handshake must not hang")
-        .expect("the handshake must succeed");
+    let mut ws = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("the handshake must not hang")
+    .expect("the handshake must succeed");
 
     let got = tokio::time::timeout(BOUND, ws.next())
         .await
@@ -844,7 +889,7 @@ async fn a_request_that_sets_a_handshake_header_itself_is_refused() {
             .header(name, "x")
             .body(())
             .unwrap();
-        let outcome = tokio::time::timeout(BOUND, native().websocket(req))
+        let outcome = tokio::time::timeout(BOUND, ws(&native()).websocket(req))
             .await
             .expect("must not hang");
         let Err(err) = outcome else {
@@ -873,14 +918,20 @@ async fn http_is_the_same_scheme_as_ws_and_anything_else_is_refused() {
         while w.fill() {}
     });
 
-    tokio::time::timeout(BOUND, native().websocket(open(&format!("http://{addr}/"))))
-        .await
-        .expect("must not hang")
-        .expect("http:// is ws://");
+    tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("http://{addr}/"))),
+    )
+    .await
+    .expect("must not hang")
+    .expect("http:// is ws://");
 
-    let outcome = tokio::time::timeout(BOUND, native().websocket(open(&format!("ftp://{addr}/"))))
-        .await
-        .expect("must not hang");
+    let outcome = tokio::time::timeout(
+        BOUND,
+        ws(&native()).websocket(open(&format!("ftp://{addr}/"))),
+    )
+    .await
+    .expect("must not hang");
     let Err(err) = outcome else {
         panic!("ftp is not a WebSocket scheme")
     };
@@ -936,10 +987,13 @@ async fn a_websocket_never_takes_a_pooled_connection() {
          below would say nothing about the upgrade"
     );
 
-    let _ws = tokio::time::timeout(BOUND, transport.websocket(open(&format!("ws://{addr}/"))))
-        .await
-        .expect("must not hang")
-        .expect("the handshake must succeed");
+    let _ws = tokio::time::timeout(
+        BOUND,
+        Tungstenite::new(&transport).websocket(open(&format!("ws://{addr}/"))),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the handshake must succeed");
     assert_eq!(
         accepted.load(Ordering::SeqCst),
         2,
@@ -1020,7 +1074,7 @@ async fn keep_alive_is_off_by_default_and_pings_only_when_it_is_configured() {
 
     let default = tokio::time::timeout(
         BOUND,
-        native().websocket(open(&format!("ws://{addr}/default"))),
+        ws(&native()).websocket(open(&format!("ws://{addr}/default"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1033,7 +1087,7 @@ async fn keep_alive_is_off_by_default_and_pings_only_when_it_is_configured() {
 
     let mut configured = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/configured"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/configured"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1136,7 +1190,7 @@ async fn a_socket_nobody_polls_gets_no_keep_alive() {
     // it" the only difference between the two arms.
     let _unpolled = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/unpolled"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/unpolled"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1144,7 +1198,7 @@ async fn a_socket_nobody_polls_gets_no_keep_alive() {
 
     let mut polled = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/polled"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/polled"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1217,7 +1271,7 @@ async fn a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye() {
 
     let mut vanished = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/vanished"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/vanished"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1263,7 +1317,7 @@ async fn a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye() {
 
     let mut goodbye = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/goodbye"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/goodbye"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1361,7 +1415,7 @@ async fn only_a_pong_with_the_pings_own_payload_answers_it() {
     for (path, delivers_a_message) in [("text", true), ("pong", false)] {
         let mut ws = tokio::time::timeout(
             BOUND,
-            native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/{path}"))),
+            keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/{path}"))),
         )
         .await
         .expect("the handshake must not hang")
@@ -1469,7 +1523,7 @@ async fn an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings() {
 
     let mut silent = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/silent"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/silent"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1480,7 +1534,7 @@ async fn an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings() {
 
     let mut busy = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/busy"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/busy"))),
     )
     .await
     .expect("the handshake must not hang")
@@ -1571,7 +1625,7 @@ async fn the_keep_alive_stops_at_our_own_close() {
 
     let mut ws = tokio::time::timeout(
         BOUND,
-        native_keeping_alive(EVERY, WITHIN).websocket(open(&format!("ws://{addr}/"))),
+        keeping_alive(&native(), EVERY, WITHIN).websocket(open(&format!("ws://{addr}/"))),
     )
     .await
     .expect("the handshake must not hang")

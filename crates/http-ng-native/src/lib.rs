@@ -47,8 +47,7 @@ mod h1;
 mod http2;
 mod idle;
 mod pool;
-#[cfg(feature = "websocket")]
-mod websocket;
+mod upgrade;
 
 pub use body::UndeclaredRequestTrailers;
 pub use connect::Conn;
@@ -56,8 +55,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
-#[cfg(feature = "websocket")]
-pub use websocket::{NativeWebSocket, PongNotReceived, WebSocketKeepAlive};
+pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
 
 use http_ng_core::unversioned::{
     CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
@@ -204,18 +202,6 @@ where
     /// transport's clones (and the response bodies that outlive a call)
     /// all see the same one.
     svcb_failures: discovery::NegativeCache,
-    /// The liveness bound every WebSocket opened from this transport gets
-    /// — `None`, and therefore none, unless
-    /// [`Native::websocket_keep_alive`] was called.
-    ///
-    /// On the transport rather than on the seam or in the request's
-    /// extensions: `WebSocketConnect` is implemented by `http-ng-fetch`
-    /// too, and a browser has no `send(ping)` at all, so a knob on the
-    /// trait would be a capability one backend could not honour. The
-    /// reasoning in full is `docs/w4-upgrade-seam.md` §7 and
-    /// [`crate::websocket`]'s module doc.
-    #[cfg(feature = "websocket")]
-    ws_keep_alive: Option<websocket::WebSocketKeepAlive>,
 }
 
 /// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
@@ -528,13 +514,6 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             caps,
             pool,
             svcb_failures: discovery::NegativeCache::default(),
-            // Off, which is the whole of the default and is checked
-            // rather than asserted: `tests/websocket.rs`'s
-            // `keep_alive_is_off_by_default_and_pings_only_when_it_is_configured`
-            // watches a default socket send nothing at all from the
-            // server's side of the wire.
-            #[cfg(feature = "websocket")]
-            ws_keep_alive: None,
         }
     }
 }
@@ -572,48 +551,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             epoch: self.epoch,
             pool: self.pool,
             svcb_failures: self.svcb_failures,
-            #[cfg(feature = "websocket")]
-            ws_keep_alive: self.ws_keep_alive,
         }
-    }
-
-    /// Prove the peer of an open WebSocket is still there, with RFC 6455
-    /// §5.5.2 ping/pong — **off unless this is called.**
-    ///
-    /// Without it an open WebSocket has no bound of any kind: only the
-    /// handshake reads `Timeouts::connect`, so a peer that vanishes
-    /// without a `FIN` leaves a `Stream` that never yields and never
-    /// errors. With it, a socket silent for
-    /// [`every`](WebSocketKeepAlive::every) sends a `Ping`, and a peer
-    /// that does not answer within
-    /// [`within`](WebSocketKeepAlive::within) ends the `Stream` with an
-    /// [`ErrorKind::Body`] whose source is [`PongNotReceived`] — an
-    /// error, distinguishable from the peer having said goodbye, which
-    /// arrives as `Message::Close`.
-    ///
-    /// It is **off by default** because a default that pings is a default
-    /// that sends traffic nobody asked for, and on a metered radio that is
-    /// not free. Two more things a caller should know before turning it
-    /// on, both of them properties of this transport rather than of the
-    /// seam:
-    ///
-    /// - **A caller that stops polling gets no keep-alive.** Nothing is
-    ///   spawned here — this crate has no `Spawn` bound, deliberately — so
-    ///   the ping is written from `poll_next` or not at all. Unlike
-    ///   `http-ng-h3`, where a spawned driver keeps a pooled connection
-    ///   alive for requests nobody has made yet, a WebSocket always has a
-    ///   caller, and one that is not polling is not waiting for anything.
-    /// - **A busy connection never pings.** `every` measures silence on
-    ///   the wire, and any inbound frame restarts it.
-    ///
-    /// It applies to every WebSocket opened from this transport
-    /// afterwards; [`NativeWebSocket::keep_alive`] reads back what a given
-    /// socket got. There is no counterpart on `http-ng-fetch`, so asking a
-    /// browser for this does not compile — `docs/w4-upgrade-seam.md` §7.
-    #[cfg(feature = "websocket")]
-    pub fn websocket_keep_alive(mut self, keep_alive: WebSocketKeepAlive) -> Self {
-        self.ws_keep_alive = Some(keep_alive);
-        self
     }
 
     /// How this transport reuses connections — see [`PoolConfig`], and

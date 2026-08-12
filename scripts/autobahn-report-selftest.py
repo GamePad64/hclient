@@ -27,7 +27,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARSER = os.path.join(HERE, "autobahn-report.py")
-AGENT = "http-ng-native"
+AGENT = "http-ng-ws-tungstenite"
 
 
 def baseline():

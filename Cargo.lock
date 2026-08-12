@@ -1397,7 +1397,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-rustls",
- "tungstenite",
 ]
 
 [[package]]
@@ -1618,6 +1617,31 @@ dependencies = [
  "rustls",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "http-ng-ws-tungstenite"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-executor",
+ "futures-sink",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "http-ng-core",
+ "http-ng-dns",
+ "http-ng-dns-system",
+ "http-ng-native",
+ "http-ng-rt",
+ "http-ng-rt-tokio",
+ "http-ng-tls",
+ "http-ng-tls-rustls",
+ "hyper",
+ "thiserror",
+ "tokio",
+ "tungstenite",
 ]
 
 [[package]]

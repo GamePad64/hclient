@@ -26,40 +26,21 @@ repository.workspace = true
 # features, so no runtime, no reactor and no timer come with it: `h2` is
 # written against those two traits and this crate's IO is
 # `hyper::rt::{Read, Write}`, so `http2::TokioIo` bridges them.
+#
+# **There is no `websocket` feature, and that is a decision rather than an
+# omission.** WebSocket over this transport is
+# `http-ng-ws-tungstenite`, a crate that depends on this one; what stays
+# here is the h1 upgrade (`src/upgrade.rs`), which is hyper and nothing
+# else. It was a feature here until `docs/w4-upgrade-seam.md` §8, and the
+# reason it stopped being one is the reason `http-ng-h3` is not a feature
+# of this crate either: Cargo's features are additive, so one crate
+# anywhere in a graph switching it on put `tungstenite` — measured at +17
+# crates for this crate alone, +14 for a full client build — into every
+# other crate's build of this transport. A dependency in the other
+# direction cannot be turned on from outside.
 [features]
-#
-# `websocket` (v0.3 W4) is off by default for the same reason and one
-# more: it is the only feature here that adds a *protocol implementation*
-# rather than a second framing of the one this crate already speaks, and
-# the graph says so. Measured `cargo tree -e normal`, unique crates, this
-# tree:
-#
-#   this crate alone                   32 -> 49  (+17)
-#   a real client build (this crate +
-#   http-ng + rt-tokio + tls-rustls +
-#   dns-system)                        79 -> 93  (+14)
-#
-# The difference between the two rows is `libc`, `cfg-if` and `getrandom`,
-# which any build with `rustls` in it already has. The +14 are
-# `tungstenite`, `log`, `data-encoding`, `rand` + `rand_core` +
-# `chacha20`, and `sha1` with the RustCrypto stack under it (`digest`,
-# `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `const-oid`,
-# `cpufeatures`). None of them is a runtime, and none of them is `tokio`,
-# `hyper` or `h2`.
-#
-# `handshake` is on top of `default-features = false` deliberately, and it
-# is the *only* default feature taken back: it is what carries
-# `generate_key`/`derive_accept_key`, which are RFC 6455 §4.1 and not
-# optional for a client. It is also where `sha1` and `data-encoding` come
-# from (tungstenite's own `handshake = ["data-encoding", "http",
-# "httparse", "sha1"]`); `http` and `httparse` were already here through
-# `hyper`. Everything else `tungstenite`'s default would bring — its own
-# TLS connectors, its blocking `connect()` — is glue this workspace has
-# better versions of, which is `docs/w4-upgrade-seam.md` §6's whole
-# argument.
 default = []
 http2 = ["dep:h2", "dep:tokio"]
-websocket = ["dep:tungstenite"]
 
 [dependencies]
 bytes          = { workspace = true }
@@ -83,15 +64,9 @@ futures-core   = { workspace = true }
 futures-sink   = { workspace = true }
 thiserror      = { workspace = true }
 tokio          = { version = "1", default-features = false, optional = true }
-tungstenite    = { version = "0.30", default-features = false, features = ["handshake"], optional = true }
 
 [dev-dependencies]
 futures-executor    = { version = "0.3", default-features = false, features = ["std"] }
-# `sink` on top of the library's own feature set: `SinkExt::send`/`close`
-# live there, and `tests/websocket.rs` drives the seam the way a caller
-# would. Dev-only, so the shipped graph is unchanged — `cargo deny`'s
-# `exclude-dev` says the same thing from the other side.
-futures-util        = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-ng             = { workspace = true }
 http-ng-dns-system  = { path = "../http-ng-dns-system",  version = "0.1.0" }
 http-ng-rt-tokio    = { path = "../http-ng-rt-tokio",    version = "0.1.0" }
@@ -118,19 +93,6 @@ tokio-rustls        = { version = "0.26", default-features = false, features = [
 # head and writes a response through `tokio_rustls::TlsStream`, which is
 # `AsyncRead`/`AsyncWrite` and nothing else without the extension traits.
 tokio               = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "sync", "time"] }
-# `tests/websocket.rs`'s fixture speaks RFC 6455 by hand and borrows
-# exactly one function, `derive_accept_key` — which
-# `the_accept_key_derivation_matches_rfc_6455` then pins against the RFC's
-# own vector, so the fixture and the client agreeing is not the same as
-# them both being right.
-tungstenite         = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [lints]
 workspace = true
-
-# The Autobahn TestSuite driver. `required-features` rather than a `#![cfg]`
-# inside the file: an example that silently compiles to nothing when the
-# feature is off is the shape this workspace keeps finding empty.
-[[example]]
-name = "autobahn"
-required-features = ["websocket"]

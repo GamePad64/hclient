@@ -34,9 +34,10 @@
 //!
 //! - **`Ping` and `Pong` are not [`Message`] variants.** RFC 6455 §5.5.2
 //!   makes answering a ping the *endpoint's* duty, not the caller's, and
-//!   `http-ng-native` discharges it without telling anybody
-//!   (`crates/http-ng-native/tests/websocket.rs` watches the pong leave
-//!   from the server's side of the wire). A caller-visible `Ping` would be
+//!   `http-ng-ws-tungstenite` discharges it without telling anybody
+//!   (`crates/http-ng-ws-tungstenite/tests/websocket.rs` watches the pong
+//!   leave from the server's side of the wire). A caller-visible `Ping`
+//!   would be
 //!   a variant the browser can neither send nor ever receive, which is the
 //!   capability lie this workspace has caught four times. If a caller
 //!   decision ever turns on one, adding the variant is a compile error at
@@ -116,9 +117,12 @@ pub trait WebSocket: Stream<Item = Result<Message, Error>> + Sink<Message, Error
 
 /// A backend that can open a WebSocket.
 ///
-/// Implemented by the transport itself (`http_ng_native::Native` today),
-/// so that a WebSocket opened from a transport inherits everything that
-/// transport already knows — its runtime, its TLS configuration, its
+/// Implemented either by a transport itself (`http_ng_fetch::Fetch`, where
+/// the platform hands back messages) or by a connector over one
+/// (`http_ng_ws_tungstenite::Tungstenite`, where it hands back bytes and
+/// the framing is a crate of its own — `docs/w4-upgrade-seam.md` §8).
+/// Either way a WebSocket opened this way inherits everything the
+/// transport already knows: its runtime, its TLS configuration, its
 /// resolver.
 pub trait WebSocketConnect {
     /// The open connection.

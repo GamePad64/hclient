@@ -157,9 +157,9 @@ jobs:
           HTTP_NG_REQUIRE_BROWSERS: "1"
         run: just test-browser ${{ matrix.browser }}
 
-  # Every fixture in `crates/http-ng-native/tests/websocket.rs` was written
-  # beside the implementation it observes, which is the arrangement in
-  # which a fixture agrees with a bug. This job is the external oracle:
+  # Every fixture in `crates/http-ng-ws-tungstenite/tests/websocket.rs` was
+  # written beside the implementation it observes, which is the arrangement
+  # in which a fixture agrees with a bug. This job is the external oracle:
   # `crossbario/autobahn-testsuite` in `fuzzingserver` mode, 517 client
   # cases nobody in this repository wrote, and a parser that fails closed
   # on a report with no cases in it.
@@ -365,6 +365,9 @@ jobs:
       - name: and the udp feature really does pull it
         shell: bash
         run: just graph-udp-pulls-quic
+      - name: the WebSocket framing stays out of the transport
+        shell: bash
+        run: just graph-no-framing-in-the-transport
       - name: the smol path carries no reactor, only hyper's inert tokio leaf
         shell: bash
         run: just graph-smol-path

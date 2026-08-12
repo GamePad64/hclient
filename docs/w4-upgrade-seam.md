@@ -270,8 +270,9 @@ it rather than invent a second vocabulary.
 **~~What this section does not decide~~ — both decided, in the writing.**
 This paragraph left two questions to whoever implemented it, with tests.
 Both are answered, the reasoning is next to the code
-(`crates/http-ng-native/src/websocket.rs`'s module doc) and the answers
-are pinned by `crates/http-ng-native/tests/websocket.rs`.
+(`crates/http-ng-ws-tungstenite/src/lib.rs`'s module doc — it was
+`http-ng-native`'s until §8 below was built) and the answers are pinned by
+`crates/http-ng-ws-tungstenite/tests/websocket.rs`.
 
 **No, an unanswered ping is not surfaced before its deadline.** The
 `Stream` can yield two things and neither can carry it. `Message` has no
@@ -357,13 +358,83 @@ would be in the wrong place.
 **What this does not change**: `WebSocket`, `WebSocketConnect` and `Message`
 stay in `http-ng-core::unversioned` — the seam was never the problem. And
 `WebSocketKeepAlive` moves with the framing, because pings and pongs are
-frames; it was never `Native`'s business, and the fact that its knob is
-spelled `Native::websocket_keep_alive` today is a symptom of the same
-misplacement.
+frames; it was never `Native`'s business, and the fact that its knob was
+spelled `Native::websocket_keep_alive` was a symptom of the same
+misplacement. It is `Tungstenite::keep_alive` now.
 
-Open, for whoever builds it: who implements `WebSocketConnect` afterwards.
-The framing crate cannot on its own — it has no connector — so it is either
-a composing type over something that can upgrade (the `Selecting` shape), or
-`Native` keeps the impl and delegates the framing. The second is less
-machinery and the first is more honest about what depends on what; measure
-the difference in what a caller has to write before choosing.
+## 8.1 Built: `http-ng-ws-tungstenite`, and the connector borrows
+
+~~Open, for whoever builds it: who implements `WebSocketConnect`
+afterwards.~~ **Decided, on the measurement §8 asked for.** The two shapes
+were "a composing type over something that can upgrade (the `Selecting`
+shape)" and "`Native` keeps the impl and delegates the framing", and the
+second one loses for a reason that turned out not to be about machinery at
+all.
+
+**`Native` keeping the impl does not do what §8 is for.** The impl would
+need `tungstenite`, so `http-ng-native` would need it, so it would be back
+behind a `websocket` feature of `http-ng-native` — and Cargo's features
+are additive, which is the whole of the paragraph this section opens with.
+One crate anywhere in the graph switching it on would still put the
+framing into every other crate's build of the transport, with the code
+merely one crate further away. Its cost in what a caller writes is **zero
+lines**, and that is the honest statement of the trade: the shape that is
+free at the call site is the one that leaves the defect in place.
+
+**So the connector is the composing type, and its cost is one dependency
+line and one expression.** Measured, against a caller who wants HTTP and
+WebSocket from one transport:
+
+```toml
+# before                              # after
+http-ng-native = { version = "0.1",   http-ng-native = "0.1"
+  features = ["websocket"] }          http-ng-ws-tungstenite = "0.1"
+```
+
+```rust
+// before                             // after
+client.transport().websocket(req)     Tungstenite::new(client.transport())
+                                          .websocket(req)
+```
+
+**It borrows the transport rather than owning it, and that is the one
+place this differs from `Selecting`.** `Selecting` owns its members and
+implements `Transport` by delegating, so a caller keeps one value. Here
+owning would cost a caller either a **second `Native`** — a second
+connection pool, a second negative cache, for a connector that never pools
+anything — or a `Transport` impl on a type that sends no requests, put
+there only to hand the caller's requests back to the value underneath.
+`Native` is not `Clone` and `Client::builder` takes its transport by
+value, so those really are the alternatives. Borrowing costs the
+expression above and nothing else, and
+`a_websocket_never_takes_a_pooled_connection` is the test that needs it:
+two ordinary requests and an upgrade, against one transport.
+
+**The internal seam is `http_ng_native::Upgrading`**, and building it
+tightened one thing this document had recorded as slack. §8 says the three
+WebSocket checks are right to run before the connection is taken apart
+while admitting the mutation that moves them after it survives. They still
+run before it, and now they cannot do otherwise: `Native::upgrade` hands
+back an `Upgrading`, which lends out the head and is dismantled only by a
+separate `finish`, so there is no way to reach the socket without having
+been handed the head first. The mutation that reorders them anyway was
+re-run after the split and **still survives**, for the reason recorded
+here — which is what makes it a control rather than a gap.
+
+What each side owns, finally:
+
+| | `http-ng-native` | `http-ng-ws-tungstenite` |
+|---|---|---|
+| connection | its connector, its TLS, `http/1.1` alone on ALPN, never the pool | — |
+| h1 upgrade | `poll_without_shutdown` + `into_parts`, `101` **by status** | — |
+| RFC 6455 §4.1 | — | key, headers, `Upgrade:`/`Connection:`/`Sec-WebSocket-Accept` |
+| framing | — | `tungstenite`, driven by us (§6) |
+| liveness | — | `WebSocketKeepAlive` (§7) |
+| `WebSocketConnect` | — | `Tungstenite<'_, R, T, D, H>` |
+
+`graph-no-framing-in-the-transport` checks the split rather than asserting
+it: `cargo tree -p http-ng-native --all-features` must contain no
+`tungstenite`, `sha1` or `data-encoding` — every feature the crate has, at
+once, being the strongest thing a neighbour could do to it — with a
+`present` half against the framing crate so the ban cannot pass a
+workspace that lost the framing altogether.

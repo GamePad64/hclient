@@ -35,8 +35,8 @@
 //! or, against a `fuzzingserver` already listening:
 //!
 //! ```text
-//! cargo run -p http-ng-native --features websocket --example autobahn \
-//!     -- ws://127.0.0.1:9001 http-ng-native
+//! cargo run -p http-ng-ws-tungstenite --example autobahn \
+//!     -- ws://127.0.0.1:9001 http-ng-ws-tungstenite
 //! ```
 
 use futures_util::{SinkExt, StreamExt};
@@ -45,8 +45,9 @@ use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
+use http_ng_ws_tungstenite::Tungstenite;
 
-type Client = Native<Tokio, Rustls, SystemDns<Tokio>>;
+type Client<'a> = Tungstenite<'a, Tokio, Rustls, SystemDns<Tokio>>;
 
 /// One connection, opened and driven to its end.
 ///
@@ -57,7 +58,7 @@ type Client = Native<Tokio, Rustls, SystemDns<Tokio>>;
 /// our behalf is only written by a later poll. A driver that broke out on
 /// `Close` would leave the closing handshake unfinished on every one of
 /// the ~520 cases and blame the library for it.
-async fn drive<F>(client: &Client, uri: &str, mut f: F) -> Result<(), String>
+async fn drive<F>(client: &Client<'_>, uri: &str, mut f: F) -> Result<(), String>
 where
     F: AsyncEcho,
 {
@@ -128,10 +129,15 @@ impl AsyncEcho for First {
 async fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let base = args.next().unwrap_or_else(|| "ws://127.0.0.1:9001".into());
-    let agent = args.next().unwrap_or_else(|| "http-ng-native".into());
+    let agent = args
+        .next()
+        .unwrap_or_else(|| "http-ng-ws-tungstenite".into());
     let base = base.trim_end_matches('/').to_owned();
 
-    let client = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let transport = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    // The connector borrows the transport rather than owning it — see
+    // `Tungstenite`. Here that costs one binding.
+    let client = Tungstenite::new(&transport);
 
     let mut count = First(None);
     if let Err(e) = drive(&client, &format!("{base}/getCaseCount"), &mut count).await {
