@@ -232,10 +232,22 @@ fn start_tcp(
                         Some(v) => format!("alt-svc: {v}\r\n"),
                         None => String::new(),
                     };
+                    // **`connection: close`, and leaving it out was the
+                    // fixture's bug rather than a scenario.** This server
+                    // answers once and shuts down, and RFC 9112 §9.6 makes
+                    // announcing that a MUST for any sender that will not
+                    // continue. Without the header the client pools a
+                    // connection the peer has already closed and the next
+                    // request races the FIN — which is a real defect of
+                    // `http-ng-native`'s pooled-reuse window, recorded in
+                    // `h1.rs`, and not the thing any test in this file is
+                    // about. It stayed invisible while Nagle put 41 ms
+                    // between the two requests; `nodelay` removed the pad
+                    // and it appeared at 7 runs in 12 under `-j16`.
                     let _ = stream
                         .write_all(
                             format!(
-                                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n{advertisement}\r\nh1"
+                                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n{advertisement}\r\nh1"
                             )
                             .as_bytes(),
                         )

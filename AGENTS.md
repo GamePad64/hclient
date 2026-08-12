@@ -835,6 +835,38 @@ directly). The direct path on WASI remains `Client::builder(http_ng_wasi::
 WasiHttp::new())`, same as before this task. Resolution details are in the
 `DefaultTransport` doc comment in `crates/http-ng/src/lib.rs`.
 
+**`TCP_NODELAY` is asked for when the runtime says it can apply it, and the
+41 ms it saves is the head of every connection.** Measured from the server's
+side of the wire, with every read stamped before TLS sees it: with Nagle on,
+the client's `Finished` and its `GET` arrive **coalesced as one 137-byte
+write, 41.6 ms late**; with `nodelay` they arrive separately at 0.25 ms.
+Four independent confirmations that it is the *request* that waits — the gap
+is inbound at the server, the byte counts show the coalescing (137 = 74 +
+63), `TCP_NODELAY` on the *server* changes nothing, and plaintext never
+stalls because there the request head is the connection's first write.
+
+**The default did not change, and that is the decision.** `TcpOpts` is a
+socket seam that cannot know its caller writes request/response, and in this
+workspace a *set* option is a **refusal**: `nodelay: true` in the seam's
+default would turn every connect on a backend that left `TcpConnect::APPLIES`
+at its understating `NONE` into an `Unsupported` error for an option nobody
+asked for. So `Native::new` asks for exactly what the runtime declares —
+`nodelay: <R as TcpConnect>::APPLIES.nodelay` — which is `applies_ech`'s and
+`reports_alpn`'s shape one seam over: a constant defaulted to the
+understating value, read by the layer above to decide whether to *ask*.
+Silence now costs a slow connection rather than a refused one. The cost is
+that `tcp_opts` replaces the whole set, so a caller setting only `keepalive`
+turns `nodelay` back off — pinned by a test.
+
+It also made a latent defect visible, which is worth more than the
+milliseconds: `http-ng-select`'s Alt-Svc fixture answered once and closed
+**without `Connection: close`**, which RFC 9112 §9.6 makes a MUST. The
+client pooled a connection the peer had already closed and the next request
+raced the FIN — `http-ng-native`'s pooled-reuse window, recorded in `h1.rs`
+as residual and still there. Nagle's 41 ms had been padding the gap; with it
+gone the suite failed 7 runs in 12 under `-j16`. The fixture now announces
+its close, and the library's race is unchanged and still recorded.
+
 **HTTP/2 is negotiated and spoken, not merely compiled in (v0.2 W3).** The
 `http2` feature is off by default and, when on, changes nothing a caller can
 observe except speed and `Response::version()`: `capabilities()` still report

@@ -470,7 +470,61 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             tls,
             dns,
             hooks: NoHooks,
-            opts: TcpOpts::default(),
+            // **Nagle off, and asked for here rather than defaulted one
+            // layer down.**
+            //
+            // Measured, twice. `docs/v04-w1-acceptance.md` §7.3 found a
+            // cold TLS 1.3 exchange on loopback costing **41.9 ms**, all
+            // of it in the head and 10 µs of it in the body;
+            // `tests/nagle_cost.rs` re-measures it with the observer on
+            // the server's side of the wire, and the shape is
+            // unambiguous. The ClientHello arrives at +0.17 ms, the
+            // change-cipher-spec record at +0.64 ms, and then **the
+            // client's Finished and its whole request arrive together at
+            // +41.6 ms**, coalesced into one segment. That is Nagle (RFC
+            // 896) meeting the peer's delayed-ACK timer: the second write
+            // is held until the first is acknowledged, and Linux's
+            // delayed ACK is 40 ms. With `nodelay` the same two writes
+            // leave as two segments at +0.76 and +0.81 ms and the whole
+            // exchange takes 0.9 ms.
+            //
+            // **The opinion is HTTP's, so it lives in the HTTP client.**
+            // `TcpOpts::default()` stays all-off, because `http-ng-rt` is
+            // a socket seam and knows nothing about who is writing:
+            // request/response over TLS is exactly the write-write-read
+            // pattern Nagle punishes, and a protocol that streams one way
+            // is exactly the one it helps. A default down there would
+            // impose this crate's protocol on every other caller of the
+            // seam.
+            //
+            // **And it is asked for only where the runtime says it
+            // applies it**, which is the whole difference between this and
+            // `TcpOpts { nodelay: true }` written unconditionally.
+            // `TcpOpts::reject_unsupported` makes a set option a *refusal*
+            // on a runtime that cannot apply it — deliberately, since
+            // dropping a caller's option silently is worse — so asking
+            // unconditionally would turn every connect on a backend whose
+            // `TcpConnect::APPLIES` is the trait's default `NONE` into an
+            // `Unsupported` error, for an option that caller never
+            // mentioned. That default exists precisely to protect a
+            // backend that forgot the line; a performance fix that broke
+            // it would be aimed at the people it was written for.
+            //
+            // The shape is `TlsConnect::applies_ech`'s, one seam over and
+            // for the same reason: a connector filling a field from
+            // something the backend declared it cannot use makes every
+            // such origin unreachable. Here silence costs a slow
+            // connection rather than a refused one, and that is the
+            // direction a claim made by silence must fail in.
+            //
+            // A caller who *wants* the refusal still gets it, by asking:
+            // `tcp_opts(TcpOpts { nodelay: true, .. })` on a `NONE`
+            // backend fails at construction, naming `nodelay`.
+            // `tests/tcp_opts.rs` pins both halves.
+            opts: TcpOpts {
+                nodelay: <R as TcpConnect>::APPLIES.nodelay,
+                ..TcpOpts::default()
+            },
             caps,
             pool,
             svcb_failures: discovery::NegativeCache::default(),
@@ -699,8 +753,26 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// question the trait already decides. What it does is move the moment
     /// of the answer for the one caller that always goes through it.
     ///
-    /// [`TcpOpts::default`] is all-off, so a transport that never calls
-    /// this method never has anything to refuse, whatever the runtime.
+    /// **This replaces the whole set, including the `nodelay` this
+    /// transport asked for itself.** [`Native::new`] sets `nodelay` to
+    /// whatever the runtime's [`TcpConnect::APPLIES`] says it can apply —
+    /// Nagle's algorithm costs the head of a TLS exchange 41 ms, measured
+    /// there — and a caller passing `TcpOpts { keepalive: Some(..),
+    /// ..Default::default() }` here turns it back off along with
+    /// everything else, because `TcpOpts::default()` is all-off. That is
+    /// deliberate rather than a trap left open: these are *the* socket
+    /// parameters for every attempt this transport makes, and a method
+    /// that silently kept one field of its own would be a worse surprise
+    /// than one that takes the caller at their word. `..transport
+    /// .tcp_opts_now()` does not exist for the same reason a getter for a
+    /// setting nobody set does not: the value to start from is
+    /// `TcpOpts { nodelay: true, .. }`, which is what
+    /// `tcp_opts_replace_the_whole_set_including_the_nodelay_new_asked_for`
+    /// says on the record.
+    ///
+    /// [`TcpOpts::default`] is all-off, so a runtime that applies nothing
+    /// still takes it — which is what makes `Native::new`'s conditional
+    /// `nodelay` free of the refusal this method exists to give.
     pub fn tcp_opts(mut self, opts: TcpOpts) -> Result<Self, Error> {
         opts.reject_unsupported(<R as TcpConnect>::APPLIES)
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;

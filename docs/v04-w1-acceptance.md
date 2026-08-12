@@ -993,18 +993,36 @@ rather than fixed.
    floor"* — and a selecting transport is a second carrier for whatever that
    decides. It is the same shape as `version_reported`: the honest time to
    answer is after the fact.
-4. **Every `Native` connection carries Nagle, and on loopback that costs
-   41 ms.** `http_ng_rt::TcpOpts::default()` is all-off, with a reason
-   stated in `caps.rs` — *"the user turns nodelay on, not us"* — and
-   `Native` uses the default. Measured (§7.3): a cold TLS 1.3 exchange is
-   **41.8 ms** median with it and **0.464 ms** with `nodelay: true`, in
-   release, all of the difference in the head and none of it in the body,
-   unchanged by an IP literal and unchanged between debug and release. So
-   it is neither resolution nor crypto; it is the client's second flight
-   waiting on a delayed ACK. Whether the default is right is a policy
-   question for `http-ng-rt` and not for this crate — what is a finding is
-   that the number is 41 ms rather than "a bit", and that it dominates
-   every TCP figure the race would be tuned against.
+4. ~~**Every `Native` connection carries Nagle, and on loopback that
+   costs 41 ms.**~~ **Closed** — `docs/nagle-and-nodelay.md`. The
+   measurement reproduces (41.8 ms against 0.82 ms, release) and the
+   diagnosis is now direct rather than by elimination: the observer moved
+   to the server's side of the wire, and the client's Finished record and
+   its whole request arrive **together, in one 137-byte segment, 41 ms
+   after the change-cipher-spec record**, where with `nodelay` they
+   arrive as two segments 11 µs apart. `TCP_NODELAY` on the *server*
+   changes nothing, so it is the client's write that is held, and
+   plaintext `http://` — where the request head is the connection's first
+   write — never stalls at all.
+
+   The policy question this bullet handed to `http-ng-rt` was answered
+   the other way. `TcpOpts::default()` is **unchanged**: a set option
+   there is a *refusal*, so every backend that left `TcpConnect::APPLIES`
+   at its `NONE` default would start failing every connect for an option
+   its caller never mentioned — a performance fix aimed at exactly the
+   implementors that default was written to protect.
+   `Native::new` asks for `nodelay` instead, and only where `APPLIES`
+   says the runtime applies it, which is `TlsConnect::applies_ech`'s
+   shape one seam over.
+
+   **One thing it broke is recorded rather than fixed**, in §6 of that
+   document: with the 41 ms gone, *this crate's* `alt_svc` suite loses a
+   pooled-reuse race it never used to reach — 9 failing runs in 20 at
+   `-j16` against 0 in 20 at `-j1`, on the same binary, all of them
+   `Connect / hyper::Error(Shutdown, BrokenPipe)`. It is the residual
+   window `http-ng-native`'s `h1.rs` names in its own comment, and the
+   fixture here is what makes it reachable: one response per connection,
+   then a close, with no `Connection: close`.
 5. **`TokioHandle` cannot be asked for `nodelay`, though it applies it.**
    `TcpConnect for TokioHandle` delegates `connect` to `Tokio::connect`,
    which applies every option — its doc says *"deliberately identical to
@@ -1018,6 +1036,14 @@ rather than fixed.
    so the finding above is unfixable from a selecting build until the
    constant is restated. One line in
    `crates/http-ng-rt-tokio/src/handle.rs`.
+   **Closed** — `handle.rs:181` declares `TcpOptsSupport::ALL`. It is
+   also now load-bearing rather than merely correct: `Native::new` reads
+   `APPLIES` to decide whether to ask for `nodelay` at all, so a
+   `TokioHandle` that had kept the trait's `NONE` would silently keep the
+   41 ms of finding 4 for every `Selecting` build.
+   `http-ng-native`'s `tcp_opts.rs` carries the tripwire for all three
+   shipped runtimes, in `const` blocks, so a regression is a build
+   failure rather than a red test.
 
 ---
 

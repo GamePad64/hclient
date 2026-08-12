@@ -13,8 +13,35 @@ pub trait Spawn<F: Future<Output = ()>> {
 /// Socket options are applied in http-ng **once**, on the `socket2::Socket`,
 /// and the runtime only adopts the descriptor (`TcpAdoptStd`). Otherwise
 /// every runtime crate would rewrite this whole rigmarole again.
+///
+/// # `default()` is all-off, and that was re-decided rather than inherited
+///
+/// Nagle's algorithm costs the head of a `Native` TLS exchange **41 ms** on
+/// loopback — measured from the server's side of the wire in
+/// `http-ng-native`'s `tests/nagle_cost.rs`, and 0.9 ms with `nodelay` set.
+/// Every field here stays `false`/`None` anyway, for two reasons that are
+/// not caution:
+///
+/// - **This is a socket seam, and it does not know who is writing.** The
+///   41 ms is the write-write-read pattern of a request over TLS meeting a
+///   peer's delayed ACK. A protocol that streams one way is exactly the one
+///   Nagle helps, and a default here would impose one caller's protocol on
+///   every other caller of the trait.
+/// - **A set option is a refusal, not a preference.**
+///   [`TcpOpts::reject_unsupported`] fails the connect on a runtime whose
+///   [`TcpConnect::APPLIES`] does not cover it, and that default is `NONE`.
+///   Turning a field on here would turn every connect on a backend that
+///   forgot to declare `APPLIES` into an `Unsupported` error for an option
+///   its caller never mentioned — a performance fix aimed straight at the
+///   implementors the `NONE` default was written to protect.
+///
+/// So the opinion lives where the protocol is: `http_ng_native::Native::new`
+/// asks for `nodelay`, and asks only where the runtime declares it applies
+/// it.
 #[derive(Debug, Clone, Default)]
 pub struct TcpOpts {
+    /// `TCP_NODELAY` — Nagle's algorithm off. See the type's own doc for
+    /// why `default()` leaves it `false` and who turns it on.
     pub nodelay: bool,
     pub keepalive: Option<Duration>,
     pub local_address: Option<IpAddr>,
@@ -108,7 +135,14 @@ impl std::fmt::Display for UnsupportedTcpOpts {
             f.write_str(if i > 0 { ", " } else { " " })?;
             f.write_str(name)?;
         }
-        Ok(())
+        // Where the claim came from, because half the readers of this
+        // message are on the wrong side of it. `TcpConnect::APPLIES`
+        // defaults to `NONE`, so a runtime that *does* apply an option and
+        // forgot the line refuses it here — which has happened once in
+        // this workspace already (`TokioHandle`, found by measurement).
+        // Naming the option alone sends that author looking at their
+        // `connect` body, where the code is correct and the bug is not.
+        f.write_str(" (a runtime that does apply one declares it in TcpConnect::APPLIES)")
     }
 }
 
@@ -257,7 +291,15 @@ mod tests {
         // gives `None` by construction, but the test's name promises the
         // whole struct — so the test must check the whole struct.
         let o = TcpOpts::default();
-        assert!(!o.nodelay, "the user turns nodelay on, not us");
+        // "The user turns nodelay on, not us" is how this line read until
+        // the 41 ms was measured, and it was half right: the user, or the
+        // transport that knows what protocol is about to be spoken —
+        // `http_ng_native::Native::new`, which asks for it and only where
+        // `TcpConnect::APPLIES` says the runtime applies it. Not this
+        // seam, which cannot know either thing, and where a `true` would
+        // become a refused connect on every backend that left `APPLIES`
+        // at its default. See the type's doc.
+        assert!(!o.nodelay, "the seam has no opinion about who is writing");
         assert!(o.keepalive.is_none());
         assert!(o.local_address.is_none());
         assert!(o.send_buffer_size.is_none());
@@ -349,6 +391,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_message_names_the_constant_an_implementor_would_have_to_change() {
+        // The other audience for this error is the backend author whose
+        // `connect` applies the option perfectly well and whose `APPLIES`
+        // line is missing — `TokioHandle`, in this workspace, found by
+        // measurement rather than by reading. The option's name sends
+        // them to their `connect` body; the constant's name sends them to
+        // the defect.
+        let err = all_six_set()
+            .reject_unsupported(all_but(0))
+            .expect_err("nodelay was withheld");
+        let msg = err.to_string();
+        assert!(msg.contains("TcpConnect::APPLIES"), "{msg}");
     }
 
     #[test]
