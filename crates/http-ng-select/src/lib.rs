@@ -153,15 +153,19 @@
 pub mod altsvc;
 mod body;
 mod caps;
+pub mod failures;
 
 pub use body::SelectedBody;
 pub use caps::{Disagreement, combine};
+pub use failures::{H3_FAILURE_TTL, H3Failures};
 
 use altsvc::{AltSvcCache, Origin};
 use futures_util::StreamExt;
-use http_ng_core::{Capabilities, Error, RequestBody, RequireVersion, unversioned::Transport};
+use http_ng_core::{
+    Capabilities, Error, RequestBody, RequireVersion, Timeouts, unversioned::Transport,
+};
 use http_ng_dns::Resolve;
-use http_ng_h3::H3;
+use http_ng_h3::{H3, StagedConnect};
 use http_ng_native::{Discovered, Native, Prefetch, Prepared};
 use http_ng_rt::{TcpConnect, Timer};
 use http_ng_tls::TlsConnect;
@@ -250,6 +254,10 @@ where
     /// construction, exactly as `Native`'s `epoch` is.
     epoch: R::Instant,
     alt_svc: AltSvcCache,
+    /// The origins whose HTTP/3 has already cost a failed connect — the
+    /// negative half of the slow tier, and see [`failures`] for why it is
+    /// here rather than in either member.
+    h3_failures: H3Failures,
 }
 
 /// Hand-written rather than derived, for `H3`'s reason: a derive would
@@ -265,6 +273,7 @@ where
             .field("full_duplex", &self.caps.full_duplex)
             .field("timeouts", &self.caps.timeouts)
             .field("alt_svc", &self.alt_svc)
+            .field("h3_failures", &self.h3_failures)
             .finish_non_exhaustive()
     }
 }
@@ -281,7 +290,20 @@ where
 enum Route {
     /// The QUIC stack. Nothing prepared travels here: `http-ng-h3` reads
     /// no HTTPS record at all, so there is nothing to hand it.
-    Quic(http::Request<RequestBody>),
+    Quic {
+        req: http::Request<RequestBody>,
+        /// Whether a QUIC connect that fails may send this request over
+        /// TCP instead.
+        ///
+        /// `false` for exactly one shape of request, and it is not a
+        /// policy of this crate's: a caller who wrote
+        /// `RequireVersion(HTTP_3)` asked for HTTP/3, so falling back
+        /// would be a silent downgrade — and would not even be silent,
+        /// since `Native` refuses the demand and the caller would get
+        /// `VersionNotAvailable` in place of the connect error that is the
+        /// real answer.
+        fallback: bool,
+    },
     /// The TCP stack, with whatever [`Prefetch::prepare`] found for this
     /// request — including "nothing was looked up", for the requests this
     /// transport does not ask about (a `RequireVersion` demand, `http://`,
@@ -347,6 +369,7 @@ where
             rt,
             epoch,
             alt_svc: AltSvcCache::default(),
+            h3_failures: H3Failures::default(),
         })
     }
 
@@ -370,12 +393,16 @@ where
     /// argued away: nothing is written to disk, and the cache is a field
     /// of this transport, so dropping the client does the whole job.
     ///
-    /// The failure it can cause is a slow one rather than a wrong one: an
-    /// unreachable alternative costs a connect that fails, after which the
-    /// request fails. What this crate does *not* have is the memory of
-    /// that failure — see [`altsvc`] and `docs/v04-w1-acceptance.md` §9.
+    /// **Both memories are cleared, and not by the same rule** — see
+    /// [`failures`]. The advertisement cache keeps `persist=1` entries,
+    /// because that flag is the origin's own claim that what it advertised
+    /// is a property of the origin rather than of the path. The failure
+    /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
+    /// about the network alone, no peer ever asked us to carry it, and it
+    /// is exactly the entry a network change makes certainly wrong.
     pub fn network_changed(&self) {
         self.alt_svc.network_changed();
+        self.h3_failures.network_changed();
     }
 
     /// Elapsed on the runtime's own clock, from this transport's epoch.
@@ -500,7 +527,16 @@ where
     async fn route(&self, req: http::Request<RequestBody>) -> Route {
         if let Some(RequireVersion(v)) = req.extensions().get::<RequireVersion>() {
             return if *v == http::Version::HTTP_3 {
-                Route::Quic(req)
+                // Not filtered by the failure memory, and that is the same
+                // rule as the line above it: a demand is answered before
+                // the resolver and the cache are asked, so it is answered
+                // before this transport's memory of failures too. A caller
+                // who demanded HTTP/3 has said what they want done about
+                // an origin that may not be reachable over it.
+                Route::Quic {
+                    req,
+                    fallback: false,
+                }
             } else {
                 Route::Tcp(Prepared::new(req))
             };
@@ -541,9 +577,41 @@ where
             }
         };
         match offers_h3 {
-            Some(true) => Route::Quic(prepared.into_request()),
+            Some(true) => self.quic_unless_it_failed(prepared, &host, port),
             Some(false) => Route::Tcp(prepared),
             None => self.by_advertisement(prepared, &host, port),
+        }
+    }
+
+    /// The last word on every request the two tiers send to QUIC: **what
+    /// this transport managed to reach**, which is a different question
+    /// from what the origin offers.
+    ///
+    /// It is a veto rather than a fourth tier, and the order is the whole
+    /// of it. The record and the cache answer *"does this origin speak
+    /// HTTP/3"*; only the origin can answer that, and a failed connect of
+    /// ours is not evidence against it — a network that blocks UDP/443
+    /// says nothing about the server behind it. So the memory does not
+    /// overrule the record and does not remove the advertisement; it stops
+    /// this transport from spending a connect on an answer it already has,
+    /// and stops nothing else. When the window closes the very next
+    /// request tries QUIC again, with the record and the cache exactly as
+    /// they were.
+    ///
+    /// Both tiers go through here, and that is the point of it being one
+    /// function: an origin that publishes a record listing `h3` on a
+    /// network that blocks UDP/443 is precisely the case this exists for,
+    /// and a veto that only covered the advertisement would leave it.
+    fn quic_unless_it_failed(&self, prepared: Prepared, host: &str, port: u16) -> Route {
+        if self
+            .h3_failures
+            .suppressed(&Origin::new(host, port), self.now())
+        {
+            return Route::Tcp(prepared);
+        }
+        Route::Quic {
+            req: prepared.into_request(),
+            fallback: true,
         }
     }
 
@@ -560,7 +628,7 @@ where
             .alt_svc
             .advertises_h3(&Origin::new(host, port), self.now())
         {
-            Route::Quic(prepared.into_request())
+            self.quic_unless_it_failed(prepared, host, port)
         } else {
             Route::Tcp(prepared)
         }
@@ -695,6 +763,141 @@ fn is_ip_literal(host: &str) -> bool {
     bare.parse::<std::net::IpAddr>().is_ok()
 }
 
+/// The QUIC arm, which is the one arm this transport does not simply hand
+/// a request to.
+///
+/// The bounds are the [`Transport`] impl's below, repeated because an
+/// inherent method cannot inherit them.
+impl<R, T, D> Selecting<R, T, D>
+where
+    R: TcpConnect + Timer + Clone,
+    T: TlsConnect,
+    Native<R, T, D>: Prefetch + Transport<Error = Error>,
+    H3<R, T, D>: StagedConnect<Error = Error>,
+    <Native<R, T, D> as Transport>::Body:
+        http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
+    <H3<R, T, D> as Transport>::Body: http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
+    D: Resolve,
+{
+    /// Ask the QUIC stack to connect; spend the connection if it answered,
+    /// and route the request over TCP if it did not.
+    ///
+    /// # This is the staged connect's first customer, and the race is not
+    ///
+    /// `docs/v04-w1-acceptance.md` §9.3's first blocker was that a failure
+    /// memory *"degrades the caller rather than protecting them"* without a
+    /// fallback, and that the fallback would be *"request-level retry with
+    /// a `RequestBody::retry_kind()` condition on it"*. It is not, because
+    /// the request is never handed to the QUIC stack: `connect` takes it,
+    /// fails, and gives it back untouched. Nothing was sent, so there is
+    /// nothing to decide about idempotency — [`http_ng_h3::Refused`] is the
+    /// type that makes that a fact about the code rather than a promise.
+    ///
+    /// # The budget is spent once, which took work
+    ///
+    /// `Timeouts::connect` is one bound for *this request*, and a
+    /// sequential fallback is the plainest way to double it: the QUIC arm
+    /// spends it, and the TCP arm reads the same field off the same request
+    /// and spends it again. *"A bound a server can double by answering
+    /// `425` is not a bound"* — `http_ng::Client`'s rule, and the same
+    /// arithmetic. So the request handed to TCP carries what is **left**,
+    /// and where nothing is left the QUIC failure stands as the answer.
+    ///
+    /// That is a rewrite of the caller's extension, which this transport
+    /// otherwise never does, and the value written is not a policy of ours:
+    /// it is the caller's own bound minus what has been spent against it.
+    ///
+    /// # What it costs, and who pays
+    ///
+    /// One extra type-65 query, on the fallback path only. The record this
+    /// request's `Prepared` carried was consumed when the QUIC arm took the
+    /// request, and there is deliberately no way to pair a record with a
+    /// request it was not fetched for — so the TCP member does its own
+    /// lookup, exactly as it does for a request that never met this crate.
+    /// **It is paid by the request that discovers the failure and by no
+    /// other**, which is what the memory is for.
+    async fn over_quic(
+        &self,
+        req: http::Request<RequestBody>,
+        fallback: bool,
+        origin: Option<&Origin>,
+    ) -> Result<http::Response<SelectedBody<NativeBodyOf<R, T, D>, QuicBodyOf<R, T, D>>>, Error>
+    {
+        let began = self.now();
+        let refused = match self.quic.connect(req).await {
+            Ok(staged) => {
+                return self
+                    .quic
+                    .exchange(staged)
+                    .await
+                    .map(|r| r.map(SelectedBody::Quic));
+            }
+            Err(refused) => refused,
+        };
+        // Read once, after the connect and before anything else: the two
+        // uses below — how much of the bound is gone, and when this failure
+        // expires — are one instant, and two reads would be two facts where
+        // there is one.
+        let now = self.now();
+        let (error, mut req) = refused.into_parts();
+        if let Some(origin) = origin {
+            self.h3_failures.note(origin, now);
+        }
+        if !fallback {
+            return Err(error);
+        }
+        if !spend_connect_budget(&mut req, now.saturating_sub(began)) {
+            return Err(error);
+        }
+        self.tcp
+            .execute_prepared(Prepared::new(req))
+            .await
+            .map(|r| r.map(SelectedBody::Tcp))
+    }
+}
+
+/// The two member bodies, named once each so that [`Selecting::over_quic`]
+/// and the [`Transport`] impl cannot spell them differently.
+type NativeBodyOf<R, T, D> = <Native<R, T, D> as Transport>::Body;
+type QuicBodyOf<R, T, D> = <H3<R, T, D> as Transport>::Body;
+
+/// Take `spent` off the request's `Timeouts::connect`, and say whether
+/// there is anything left to connect with.
+///
+/// `true` where no bound was set at all — an unbounded arm followed by an
+/// unbounded arm is what a caller who set no bound asked for, and it is
+/// what a QUIC black hole costs today (quinn's 30 s `max_idle_timeout`)
+/// with or without this function.
+///
+/// `false` means the caller's whole connect budget went on the first arm,
+/// and the honest answer is then the first arm's error rather than a second
+/// attempt the bound has no room for. That is `docs/v04-w1-acceptance.md`
+/// §7.5's precondition met by refusing rather than by silently degrading —
+/// and it is never worse than the behaviour it replaces, where a QUIC
+/// origin that could not be reached simply failed the request.
+///
+/// A free function so it can be read without the six `where` clauses the
+/// method above carries.
+fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: Duration) -> bool {
+    let timeouts = req
+        .extensions()
+        .get::<Timeouts>()
+        .copied()
+        .unwrap_or_default();
+    let Some(connect) = timeouts.connect else {
+        return true;
+    };
+    let left = connect.saturating_sub(spent);
+    if left.is_zero() {
+        return false;
+    }
+    req.extensions_mut().insert(Timeouts {
+        connect: Some(left),
+        ..timeouts
+    });
+    true
+}
+
 impl<R, T, D> Transport for Selecting<R, T, D>
 where
     // `Clone` for the reason given above the inherent impl: it is
@@ -702,7 +905,10 @@ where
     R: TcpConnect + Timer + Clone,
     T: TlsConnect,
     Native<R, T, D>: Prefetch + Transport<Error = Error>,
-    H3<R, T, D>: Transport<Error = Error>,
+    // `StagedConnect` rather than `Transport` alone — it is a supertrait of
+    // it, so this is the same bound plus the staged pair the QUIC arm goes
+    // through. See [`Selecting::over_quic`].
+    H3<R, T, D>: StagedConnect<Error = Error>,
     <Native<R, T, D> as Transport>::Body:
         http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
     <H3<R, T, D> as Transport>::Body: http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
@@ -735,9 +941,15 @@ where
     /// response that carries no such field: one `HeaderMap` lookup, no
     /// clock and no lock (see [`Selecting::note_alt_svc`]).
     ///
-    /// A failed exchange teaches nothing: there is no response head to
-    /// read, and this transport keeps no memory of failures — see
-    /// [`altsvc`] for whose that would be.
+    /// The QUIC arm is **staged** — `connect`, then `exchange` — and is
+    /// the one place in this crate where the request is not simply handed
+    /// over. See [`Selecting::over_quic`] for the two things that buys and
+    /// the one thing it costs.
+    ///
+    /// A failed *exchange* still teaches nothing: there is no response
+    /// head to read, and a failure after the connect is not a fact about
+    /// the origin's HTTP/3. A failed **connect** is, and is remembered —
+    /// see [`failures`].
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -752,11 +964,7 @@ where
                 .execute_prepared(prepared)
                 .await
                 .map(|r| r.map(SelectedBody::Tcp)),
-            Route::Quic(req) => self
-                .quic
-                .execute(req)
-                .await
-                .map(|r| r.map(SelectedBody::Quic)),
+            Route::Quic { req, fallback } => self.over_quic(req, fallback, origin.as_ref()).await,
         };
         if let (Ok(r), Some(origin)) = (&resp, &origin) {
             self.note_alt_svc(origin, r.headers());
