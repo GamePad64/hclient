@@ -171,9 +171,40 @@ was made.
    and already records that there is nowhere to act on it. So the first
    protocol choice this transport makes costs no new discovery at all —
    only the acting.
-4. **Alt-Svc second**, for origins that publish no HTTPS record: the cache,
-   its scope, and its negative half. This is the tier that needs storage,
-   which is why it is not first.
+4. **Alt-Svc second — done**, for origins that publish no HTTPS record:
+   the cache, its scope, and its negative half. This is the tier that needs
+   storage, which is why it is not first. Written up in
+   `docs/v04-w1-acceptance.md` §9; three things the doing changed about
+   what this line assumed.
+
+   **The reason there is no cache for the fast tier does not transfer, and
+   it inverts.** §3's cache-less-ness rests on `SvcbEndpoint` carrying no
+   TTL, so that a lifetime would have to be invented. RFC 7838 §3.1's `ma`
+   **is** a max-age, given by the origin, for exactly this advertisement —
+   so Alt-Svc is *more* cacheable than the fast tier, not less, and the
+   cache that would have been dishonest there is the honest shape here. It
+   is also not optional: without a memory the header cannot be acted on at
+   all, since by the time it arrives the connection it describes is already
+   in use.
+
+   **Its scope is a decision this crate cannot make alone, so it is said at
+   the type.** RFC 7838 §2.2 wants non-persistent entries cleared on a
+   network change *"when information about network state is available"* —
+   and to a `Transport` it is not. So nothing is persisted, and
+   `Selecting::network_changed()` is the event's only entry point, public
+   for the caller who can see what the transport cannot. Until it is
+   called, every entry behaves as though it carried `persist=1`, which is
+   the unsafe direction and is written where the setter is.
+
+   **"Its negative half" assumed a home that turns out not to exist.**
+   `http-ng-native`'s `NegativeCache` is about a TCP connect that used a
+   *discovered endpoint* — it never sees an HTTP/3 attempt, because
+   `Native` cannot make one, and it is `pub(crate)` behind a private
+   module besides. `http-ng-h3` has nothing of the kind. So the failure
+   half is **not built**, and it is blocked on the same two things
+   deliverable 5 is: without a fallback it costs the caller a failed
+   request per window, and loopback cannot produce a UDP-blocked failure
+   that is not a multi-second timeout. §9.3.
 5. **The race last, and it is a hedge rather than a chooser** (P12). It
    exists for the network that blocks UDP/443, which is also what the
    original spec's §5.6 "broken backoff" is about. Its cost is the one v0.3
