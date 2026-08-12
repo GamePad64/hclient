@@ -12,7 +12,9 @@
 //!
 //! 1. `te: trailers` reaches the wire, and the HTTP/1-only headers beside
 //!    it do not (RFC 9113 §8.2.2, and the spec's *"used to detect
-//!    incompatible proxies"*).
+//!    incompatible proxies"*) — and **Custom-Metadata** rides along
+//!    unchanged, repeated names and `-bin` values included, in the head,
+//!    the response and the trailers alike.
 //! 2. A **Trailers-Only** response — one HEADERS block with END_STREAM and
 //!    no DATA at all — is a complete, empty-bodied response whose
 //!    `grpc-status` is readable off the head.
@@ -447,6 +449,35 @@ async fn handle(
             });
         }
 
+        // ── Custom-Metadata in every position the spec puts it: repeated
+        // names and `-bin` values on the way in, and on the way out in
+        // both the response headers and the trailers.
+        "/g.S/Metadata" => {
+            drain(&mut body, &mut record).await;
+            let resp = head("application/grpc+proto")
+                .header("x-resp-md-bin", "AAEC")
+                .header("x-resp-md-bin", "AwQF")
+                .body(())
+                .unwrap();
+            let Ok(mut send) = respond.send_response(resp, false) else {
+                return;
+            };
+            let _ = send.send_data(Bytes::from(framed(b"pong")), false);
+            let mut trailers = grpc_trailers("2");
+            trailers.insert(
+                "grpc-message",
+                http::HeaderValue::from_static("a%20message"),
+            );
+            trailers.insert(
+                "grpc-status-details-bin",
+                http::HeaderValue::from_static("CAIS"),
+            );
+            trailers.append("x-trailer-md", http::HeaderValue::from_static("one"));
+            trailers.append("x-trailer-md", http::HeaderValue::from_static("two"));
+            let _ = send.send_trailers(trailers);
+            shared.seen.lock().unwrap().push(record);
+        }
+
         // ── A barrier: nobody is answered until two requests are in
         // flight at once. If the client serialised them the first would
         // never be answered, so the test's ceiling is what would fail —
@@ -800,6 +831,109 @@ async fn the_call_definition_reaches_the_wire_te_trailers_included() {
         "nothing here adds one, which is what a client-streaming call needs"
     );
     assert!(s.complete, "EOS: the request stream ended with END_STREAM");
+}
+
+/// **Custom-Metadata survives in all four positions, repeated names
+/// included.**
+///
+/// The spec's Custom-Metadata is *"an arbitrary set of key-value pairs
+/// defined by the application layer"*, carried as ordinary header fields
+/// on the request, the response head and the trailers. Two of its rules
+/// are the client's to keep and neither is about gRPC:
+///
+/// - **Repeated names keep both values.** *"Custom-Metadata header order is
+///   not guaranteed to be preserved except for values with duplicate header
+///   names"*, and a runtime *"must split Binary-Headers on ',' before
+///   decoding"* — both of which are nonsense if the pairs were collapsed on
+///   the way through. A client that kept one value of two would corrupt
+///   metadata silently.
+/// - **`-bin` values pass byte for byte.** Base64 is *"padded and
+///   un-padded"* on the wire, so one of each goes out here; the encoding
+///   itself is the caller's business and the point is that neither is
+///   touched.
+///
+/// The names use `.` and `_` because the spec's own Header-Name production
+/// admits them, and the response's `grpc-message` is percent-encoded for
+/// the same reason it is in the Trailers-Only row: decoding is not this
+/// client's job and neither is spotting that it was not done.
+#[tokio::test(flavor = "multi_thread")]
+async fn custom_metadata_survives_in_the_head_the_response_and_the_trailers() {
+    let server = spawn_server();
+    let client = client();
+
+    let mut req = call(&server, "/g.S/Metadata", RequestBody::Empty);
+    let h = req.headers_mut();
+    // Two values under one name, and a padded / un-padded base64 pair.
+    h.append("x-md-bin", http::HeaderValue::from_static("AAECAw=="));
+    h.append("x-md-bin", http::HeaderValue::from_static("BAUGBw"));
+    h.append(
+        "my.service_v1-key",
+        http::HeaderValue::from_static("an ascii value"),
+    );
+
+    let resp = tokio::time::timeout(BOUND, client.execute(req))
+        .await
+        .expect("must not hang")
+        .expect("the call must succeed");
+    assert_eq!(resp.status(), 200);
+
+    let out: Vec<&[u8]> = resp
+        .headers()
+        .get_all("x-resp-md-bin")
+        .iter()
+        .map(|v| v.as_bytes())
+        .collect();
+    assert_eq!(
+        out,
+        vec![b"AAEC".as_slice(), b"AwQF".as_slice()],
+        "both response-header values, in the order the server sent them"
+    );
+
+    let (_, mut body) = resp.into_parts();
+    let (data, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert_eq!(data, framed(b"pong"));
+    let trailers = trailers.expect("Trailers carry the status and the metadata with it");
+    assert_eq!(
+        trailers.get("grpc-status").map(|v| v.as_bytes()),
+        Some(b"2".as_slice())
+    );
+    assert_eq!(
+        trailers.get("grpc-message").map(|v| v.as_bytes()),
+        Some(b"a%20message".as_slice()),
+        "percent-encoded and untouched"
+    );
+    assert_eq!(
+        trailers
+            .get("grpc-status-details-bin")
+            .map(|v| v.as_bytes()),
+        Some(b"CAIS".as_slice()),
+        "Status-Details is allowed only when Status is not OK, which is why \
+         this route answers 2 rather than 0"
+    );
+    let tm: Vec<&[u8]> = trailers
+        .get_all("x-trailer-md")
+        .iter()
+        .map(|v| v.as_bytes())
+        .collect();
+    assert_eq!(tm, vec![b"one".as_slice(), b"two".as_slice()]);
+
+    assert!(server.wait_for_seen(1, BOUND).await);
+    let s = &server.seen()[0];
+    let sent: Vec<&str> = s
+        .headers
+        .iter()
+        .filter(|(n, _)| n == "x-md-bin")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        sent,
+        vec!["AAECAw==", "BAUGBw"],
+        "two values under one name, padded and un-padded, neither joined \
+         nor dropped"
+    );
+    assert_eq!(s.header("my.service_v1-key"), Some("an ascii value"));
 }
 
 // ── 2. Trailers-Only ────────────────────────────────────────────────────
