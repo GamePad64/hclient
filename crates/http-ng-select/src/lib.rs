@@ -267,7 +267,7 @@ enum Route {
     /// The QUIC stack. Nothing prepared travels here: `http-ng-h3` reads
     /// no HTTPS record at all, so there is nothing to hand it.
     Quic(http::Request<RequestBody>),
-    /// The TCP stack, with whatever [`Native::prepare`] found for this
+    /// The TCP stack, with whatever [`Prefetch::prepare`] found for this
     /// request — including "nothing was looked up", for the requests this
     /// transport does not ask about (a `RequireVersion` demand, `http://`,
     /// an IP literal, a resolver that cannot ask). Those get
@@ -278,8 +278,8 @@ enum Route {
 
 /// `R: Clone` is `Native`'s and not this crate's — it is the bound
 /// `Native`'s own exchange impl declares (its response body outlives
-/// `execute` and needs a clock of its own), and [`Native::prepare`] and
-/// [`Native::execute_prepared`] are inherent methods on that impl, so
+/// `execute` and needs a clock of its own), and [`Prefetch::prepare`] and
+/// [`Prefetch::execute_prepared`] are inherent methods on that impl, so
 /// calling them means repeating it. Every runtime in this workspace is
 /// already `Clone`, and `Selecting` could not be constructed by a caller
 /// whose `Native` did not satisfy it in any case.
@@ -441,7 +441,7 @@ where
     ///
     /// # The connector is asked first, because it was going to ask anyway
     ///
-    /// [`Native::prepare`] does the lookup this transport needs *and* the
+    /// [`Prefetch::prepare`] does the lookup this transport needs *and* the
     /// one the TCP stack was about to make inside its own connector, and
     /// hands back both the answer and the request. Before it, the same
     /// record was fetched twice for one request chosen onto TCP at an
@@ -697,12 +697,12 @@ where
     /// it is the only transport. This is what keeps the two members'
     /// behaviour a fact about them rather than a fact about this crate.
     ///
-    /// The TCP arm goes through `Native::execute_prepared` rather than
+    /// The TCP arm goes through `Prefetch::execute_prepared` rather than
     /// `Transport::execute`, which is the same exchange with one thing
     /// added: the HTTPS record the choice was made from, so the connector
     /// does not fetch it a second time. Nothing about the request itself
     /// changes — the record travels *with* it, in a `Prepared` that
-    /// [`Native::prepare`] built out of this very request.
+    /// [`Prefetch::prepare`] built out of this very request.
     ///
     /// The response is likewise handed back unchanged — the `Alt-Svc`
     /// field is *read* on the way past and is not removed, because a

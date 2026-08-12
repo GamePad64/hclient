@@ -1532,7 +1532,7 @@ where
 
     /// [`Native::run`] with nothing looked up — which is what every
     /// request through this seam is, because the seam has no way to carry
-    /// an answer and [deliberately does not gain one](Native::prepare).
+    /// an answer and [deliberately does not gain one](Prefetch::prepare).
     /// The record is fetched inside, when and if a connection is opened.
     async fn execute(
         &self,

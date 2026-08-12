@@ -861,7 +861,7 @@ where
 /// `prefetched` is [`Prefetched::NotConsulted`] for every caller that has
 /// not asked, which is the behaviour this function had before the
 /// parameter existed. A caller that *has* asked — through
-/// [`crate::Native::prepare`], for **this request's own authority**, with
+/// [`crate::Prefetch::prepare`], for **this request's own authority**, with
 /// this transport's own resolver and this transport's own negative cache —
 /// hands the answer over instead, and no query goes out here.
 ///
@@ -1021,7 +1021,7 @@ where
 /// are told apart.** A condition that stopped the lookup is
 /// [`Prefetched::NotConsulted`] — nobody has an answer, and anyone who
 /// wants one must ask elsewhere; a lookup that happened is
-/// `Looked(..)`, whatever it found. [`crate::Native::prepare`] calls this
+/// `Looked(..)`, whatever it found. [`crate::Prefetch::prepare`] calls this
 /// function rather than a copy of it, so the rule about where discovery
 /// applies is written once and cannot drift between the two callers.
 pub(crate) async fn discovered_endpoint<D>(

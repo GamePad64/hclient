@@ -409,7 +409,7 @@ impl Prefetched {
     }
 }
 
-/// What [`crate::Native::prepare`] found, as much of it as anything
+/// What [`crate::Prefetch::prepare`] found, as much of it as anything
 /// outside this crate has business reading.
 ///
 /// **The record's port and address hints are deliberately not here.** They
@@ -463,7 +463,7 @@ pub enum Discovered<'a> {
 /// this request" a question — one that can only be answered by a check,
 /// and a check needs an origin carried beside the record so that there is
 /// something to compare. Here the pairing is made by
-/// [`crate::Native::prepare`] out of the request's own URI and cannot be
+/// [`crate::Prefetch::prepare`] out of the request's own URI and cannot be
 /// taken apart afterwards: no constructor puts a record beside a request
 /// it was not fetched for, and no method replaces the request. The
 /// wrong-origin question is not answered — it cannot be asked.
@@ -496,7 +496,7 @@ impl Prepared {
     ///
     /// For a caller that prepares some requests and not others: the ones
     /// it did not ask about still go through
-    /// [`crate::Native::execute_prepared`], and this is how they get
+    /// [`crate::Prefetch::execute_prepared`], and this is how they get
     /// there, with the connector's own discovery untouched.
     pub fn new(req: http::Request<http_ng_core::RequestBody>) -> Self {
         Self {
