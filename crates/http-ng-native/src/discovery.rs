@@ -274,17 +274,16 @@ impl From<SvcbEndpoint> for Endpoint {
 /// nothing else. A record whose target differs from the origin and carries
 /// no hints therefore contributes only its port, ALPN and ECH — honest,
 /// and one lookup rather than two.
+/// **The capability is asked one level up**, in
+/// [`crate::connect::discovered_endpoint`], and that is not tidying: "this
+/// resolver cannot ask" is *nobody looked*, where this function's `None`
+/// is *looked, and there is none*. They are the same instruction to this
+/// connector and different ones to a caller holding the answer — see
+/// [`Prefetched`]. Asking here as well would make the second unreachable.
 pub(crate) async fn lookup<D>(dns: &D, host: &str) -> Option<Endpoint>
 where
     D: Resolve,
 {
-    // The capability, asked rather than inferred from an empty stream —
-    // the distinction `Resolve::supports_svcb` exists to carry (a resolver
-    // that cannot ask, and one that asked and found nothing, both return
-    // an empty stream, and only the first should stop us asking).
-    if !dns.supports_svcb() {
-        return None;
-    }
     let mut best: Option<SvcbEndpoint> = None;
     let mut records = std::pin::pin!(dns.lookup_svcb(host));
     while let Some(record) = records.next().await {
@@ -345,5 +344,200 @@ pub(crate) fn alpn_offer<'a>(ours: &[&'a [u8]], record: &'a [Vec<u8>]) -> Vec<&'
         ours.to_vec()
     } else {
         offer
+    }
+}
+
+/// What is already known about an origin's HTTPS record by the time a
+/// connection is opened for it.
+///
+/// **Three states, and the third is the one an `Option<Endpoint>` gets
+/// wrong.** "Nobody has looked" and "somebody looked and there is nothing
+/// to act on" ask opposite things of [`crate::connect::connect`]: the
+/// first is an instruction to make the query, the second is an instruction
+/// not to. Collapsed into one `None` they would re-query exactly the
+/// origins whose answer cost the most to get — the ones that publish no
+/// record, where a resolver has to reach an authoritative answer to say so
+/// — and the caller that had already paid for it would pay again.
+///
+/// Deliberately **not** a cache. It is built from one request's own
+/// authority, it lives as long as that request's connect, and nothing
+/// remembers it afterwards; the reason there is no memory of a record in
+/// this workspace is in this module's doc, and it is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Prefetched {
+    /// Nobody has looked, so the connector looks — what every request did
+    /// before this type existed.
+    NotConsulted,
+    /// [`crate::connect::discovered_endpoint`] has already run, for this
+    /// request's own authority, with a resolver that said it could ask,
+    /// and this is what it found. `None` is an answer and not an absence.
+    Looked(Option<Endpoint>),
+}
+
+impl Prefetched {
+    /// The endpoint a connection may act on — `None` where a record was
+    /// found but contributes nothing to the attempt.
+    ///
+    /// The inert filter lives here rather than in
+    /// [`crate::connect::discovered_endpoint`] so that there is exactly
+    /// one of it: a record with an empty ALPN list is still a record to
+    /// [`Self::discovered`] — which is what stops a caller reading "this
+    /// origin publishes nothing" off an origin that publishes something
+    /// dull — and is still nothing to connect *through*, which is what
+    /// keeps `connect`'s "was a record in play" test the same question as
+    /// "could this attempt have gone differently".
+    pub(crate) fn actionable(self) -> Option<Endpoint> {
+        match self {
+            // Not reachable through `connect`, which replaces this variant
+            // with a lookup before asking. `None` rather than a panic
+            // because there is genuinely nothing to act on: a record
+            // nobody looked for cannot move a connection.
+            Self::NotConsulted => None,
+            Self::Looked(found) => found.filter(|e| !e.is_inert()),
+        }
+    }
+
+    /// What this says about the origin's protocols — and nothing about its
+    /// routing, see [`Discovered`].
+    pub(crate) fn discovered(&self) -> Discovered<'_> {
+        match self {
+            Self::NotConsulted => Discovered::NotConsulted,
+            Self::Looked(None) => Discovered::NoRecord,
+            Self::Looked(Some(e)) => Discovered::Record { alpn: &e.alpn },
+        }
+    }
+}
+
+/// What [`crate::Prefetch::prepare`] found, as much of it as anything
+/// outside this crate has business reading.
+///
+/// **The record's port and address hints are deliberately not here.** They
+/// say *where to connect*, and the only thing that may decide that is this
+/// connector, from an answer its own resolver gave it about this request's
+/// own authority. What a caller may read is what the origin said it
+/// **speaks** — a fact about protocols rather than about routing, and the
+/// one a caller owning a second protocol stack needs in order to know
+/// whether to use this transport at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discovered<'a> {
+    /// This transport did not look, so nothing here has been ruled out.
+    ///
+    /// Three ways to arrive, and none of them is a fact about the origin:
+    /// discovery applies to `https://` at the scheme's default port and
+    /// nowhere else (this module's doc says why for each); it is held off
+    /// entirely while the origin is suppressed by an earlier failed
+    /// attempt through its record; and **this transport's own resolver may
+    /// say it cannot ask** (`Resolve::supports_svcb`), which is a fact
+    /// about the resolver. A caller that wants an answer here must get it
+    /// for itself — and a caller whose own resolver *can* ask should,
+    /// because the question has not been put; a caller that does not want
+    /// one may hand this straight back, and the connector behaves exactly
+    /// as it does for a request nobody prepared.
+    NotConsulted,
+    /// Looked, and there is no record to act on: the origin publishes
+    /// none, the lookup failed, or every answer was an AliasMode record.
+    ///
+    /// **Distinct from [`Self::NotConsulted`] on purpose**, and it is the
+    /// half a plain `Option` gets wrong: this is an answer, and a caller
+    /// holding it knows not to ask again.
+    NoRecord,
+    /// The first-ranked ServiceMode record's ALPN list, RFC 9460 §7.1, as
+    /// the record gave it.
+    ///
+    /// An empty list is a record that names no protocol, which is not the
+    /// same fact as [`Self::NoRecord`]: the origin published something,
+    /// and this is what it said.
+    Record {
+        /// RFC 9460 §7.1 `alpn`, unranked and unfiltered — the
+        /// intersection with what a transport can speak is that
+        /// transport's business.
+        alpn: &'a [Vec<u8>],
+    },
+}
+
+/// A request, together with what this transport has already learned about
+/// its origin's HTTPS record.
+///
+/// # The two travel together, and that is the whole of the design
+///
+/// A record is evidence about **one** authority. Handing a connector a
+/// record and a request as two arguments makes "is this the record for
+/// this request" a question — one that can only be answered by a check,
+/// and a check needs an origin carried beside the record so that there is
+/// something to compare. Here the pairing is made by
+/// [`crate::Prefetch::prepare`] out of the request's own URI and cannot be
+/// taken apart afterwards: no constructor puts a record beside a request
+/// it was not fetched for, and no method replaces the request. The
+/// wrong-origin question is not answered — it cannot be asked.
+///
+/// [`Self::new`] is the other constructor and it asserts **nothing**: it
+/// is the state every request is in when it reaches `Transport::execute`,
+/// and the connector does its own lookup for it. Both constructors
+/// therefore keep one invariant — a `Prepared` never carries a record
+/// fetched for another request.
+///
+/// # Why not a request extension
+///
+/// That was the other shape considered, and `docs/v04-w1-acceptance.md`
+/// §3 has the argument in full. In short: extensions are the **caller's**
+/// channel — `Timeouts`, `AllowEarlyData` and `RequireVersion` are all
+/// statements a caller makes about their own request, which a transport
+/// reads and may refuse — where a record is evidence the transport would
+/// otherwise have fetched for itself. An `SvcbEndpoint` carries a port and
+/// address hints, so an extension carrying one would let any code that can
+/// build a request move the connection to another port and another
+/// address. Nothing in this workspace can do that today except DNS.
+pub struct Prepared {
+    pub(crate) req: http::Request<http_ng_core::RequestBody>,
+    pub(crate) found: Prefetched,
+}
+
+impl Prepared {
+    /// A request nothing has been looked up for — exactly what
+    /// `Transport::execute` receives, and exactly what it does with it.
+    ///
+    /// For a caller that prepares some requests and not others: the ones
+    /// it did not ask about still go through
+    /// [`crate::Prefetch::execute_prepared`], and this is how they get
+    /// there, with the connector's own discovery untouched.
+    pub fn new(req: http::Request<http_ng_core::RequestBody>) -> Self {
+        Self {
+            req,
+            found: Prefetched::NotConsulted,
+        }
+    }
+
+    /// The request this was made for. There is deliberately no `_mut`: the
+    /// record inside was fetched for this URI's authority, and a URI that
+    /// could be edited afterwards would be the wrong-origin question
+    /// arriving through the back door.
+    pub fn request(&self) -> &http::Request<http_ng_core::RequestBody> {
+        &self.req
+    }
+
+    /// What the HTTPS record said — three states, see [`Discovered`].
+    pub fn discovered(&self) -> Discovered<'_> {
+        self.found.discovered()
+    }
+
+    /// The request back, leaving the record behind.
+    ///
+    /// For the caller that asked, read the answer, and decided to send
+    /// this request somewhere else entirely — which is what
+    /// `http-ng-select` does with a record offering `h3`.
+    pub fn into_request(self) -> http::Request<http_ng_core::RequestBody> {
+        self.req
+    }
+}
+
+/// Hand-written for [`crate::Native`]'s reason: a derive would print a
+/// whole request, and what is worth seeing here is which of the three
+/// states the record is in.
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prepared")
+            .field("uri", &self.req.uri())
+            .field("discovered", &self.discovered())
+            .finish()
     }
 }

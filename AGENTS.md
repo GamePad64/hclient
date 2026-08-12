@@ -754,13 +754,33 @@ anyway. The contrast three lines below it in the same function is
 `CancelSupport`, where `Supported` is a **duty owed on every dropped
 future** and a member that does not owe it makes the claim false.
 
-**What the choice costs is counted rather than argued**: one type-65 query
-per request, and **two** on the TCP path at an origin's default port,
-because `http-ng-native` fetches the record again inside its own connector
-and no record can cross the `Transport` seam. A `RequireVersion` demand,
-`http://` and an IP literal cost none at all. The duplicate is a finding
-about `http-ng-native` rather than a defect here, and the three shapes that
-would close it are in `docs/v04-w1-acceptance.md` §3.
+**What the choice costs is counted rather than argued**: **one** type-65
+query per request that has a name to ask about, whichever stack answers. A
+`RequireVersion` demand, `http://` and an IP literal cost none at all.
+
+It was two on the TCP path at an origin's default port, because
+`http-ng-native` fetched the record again inside its own connector, and the
+fix is the part worth knowing: **the record is not handed to the connector,
+it is fetched by it.** `http_ng_native::Prefetch::prepare` does the
+connector's own lookup — its resolver, its rule about where discovery
+applies, its negative cache — and hands back a `Prepared`, which is the
+request *with* the answer; `execute_prepared` then does not look again. A
+caller cannot supply a record, because there is no constructor that pairs
+one with a request it was not fetched for, so the wrong-origin question
+cannot be asked rather than being answered by a check. The shape that was
+rejected is the obvious one: a request extension is the caller's channel,
+and an HTTPS record carries a port and address hints, so an extension
+carrying one would let any code that can build a request move the
+connection somewhere else. `docs/v04-w1-acceptance.md` §3.1 has the
+argument and §3.3 the eleven mutations behind it (ten killed, one control).
+
+The other half of the rule is what keeps `http-ng-select` from owning a
+copy of the connector's: where the member did **not** look — a non-default
+port, whose record lives under a name only the selecting transport
+constructs — it answers `Discovered::NotConsulted`, which is not an answer,
+and the caller asks its own resolver exactly as it always did. `NoRecord`
+*is* an answer and stops the second query, which is the half a plain
+`Option` gets wrong.
 
 Checked against **two real servers behind one authority** — a `quinn`
 endpoint on UDP and a `tokio-rustls` listener on TCP, on the same port

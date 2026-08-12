@@ -8,21 +8,25 @@
 //! a file of its own.
 //!
 //! `http-ng-native` fetches the record itself, inside its own connector,
-//! for `https://` at the default port. That function is `pub(crate)`, no
-//! record can cross the `Transport` seam, and this crate treats its members
-//! as read-only — so at the default port the type-65 query is made twice
-//! for a request that ends up on TCP. The first three arms below, and between them
-//! they say exactly where the cost is:
+//! for `https://` at the default port — so at the default port the type-65
+//! query used to be made **twice** for a request that ends up on TCP: once
+//! here to choose the stack, once there to open the connection. **That
+//! duplicate is gone** (v0.4 W1, the `Prefetch` seam): this transport asks
+//! the TCP member to do the lookup, reads the answer, and hands both the
+//! answer and the request back, so the connector does not ask again. The
+//! first three arms below say where the cost is now, and the first of them
+//! is the one that changed:
 //!
 //! | request | queries |
 //! |---|---|
-//! | `https://origin/` chosen onto TCP | **2** — this transport's, then `http-ng-native`'s |
+//! | `https://origin/` chosen onto TCP | **1** — `Native::prepare`'s, and the connector reuses it |
 //! | `https://origin/` chosen onto QUIC | **1** — `http-ng-h3` does no SVCB lookup at all |
-//! | `https://origin:port/` | **1** — `http-ng-native` skips discovery away from the default port |
+//! | `https://origin:port/` | **1** — the connector does no discovery away from the default port, so this transport asks for the prefixed record itself |
 //!
-//! What would remove the duplicate is a way to hand an already-fetched
-//! record to a member, which is a change to `http-ng-native` and therefore
-//! a finding rather than an edit — see `docs/v04-w1-acceptance.md`.
+//! The three are one number now, and that is the point: **one type-65
+//! query per request that has a name to ask about, whichever stack
+//! answers**. What decides the count is no longer which member serves the
+//! request.
 //!
 //! # The slow tier adds nothing to any of them (v0.4 W1 deliverable 4)
 //!
@@ -41,12 +45,11 @@
 //!
 //! One row is **not** measured here and is inferred from two that are: a
 //! request the slow tier puts on QUIC at an origin's *default* port costs
-//! **1** rather than the 2 the same request costs on TCP, because the
-//! duplicate is `http-ng-native`'s and `http-ng-h3` makes no lookup (both
-//! measured, in the first two arms). It is not measured directly for the
-//! reason the first two arms cannot connect at all: an advertisement has
-//! to arrive in a response, and this process cannot put a server on port
-//! 443 to send one.
+//! **1**, which is what the same request costs on TCP as well now that the
+//! duplicate is gone (both measured, in the first two arms). It is not
+//! measured directly for the reason the first two arms cannot connect at
+//! all: an advertisement has to arrive in a response, and this process
+//! cannot put a server on port 443 to send one.
 //!
 //! # Why two of these arms do not connect to anything
 //!
@@ -115,8 +118,16 @@ fn get(uri: String) -> http::Request<RequestBody> {
     req
 }
 
+/// The row this file was written to record, and the one that moved: the
+/// record that chose the TCP stack is the record the TCP stack connects
+/// under, so it is fetched **once**.
+///
+/// The name it is asked under is the assertion as much as the count is: an
+/// answer that came back twice under the same name would be two lookups
+/// however they were counted, and a single lookup under the wrong name
+/// would be a record for another origin.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_twice() {
+async fn a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_once() {
     let dns = FakeDns::with_records(vec![service_record(1, &[b"http/1.1"])]);
     let t = selector(dns.clone(), tls);
 
@@ -126,17 +137,19 @@ async fn a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_twice
 
     assert_eq!(
         dns.svcb_names(),
-        [ORIGIN, ORIGIN],
-        "this transport asked, and then `http-ng-native`'s own connector asked again"
+        [ORIGIN],
+        "the connector was asked to look, and does not look again for what it found"
     );
 }
 
-/// The QUIC arm pays once, because `http-ng-h3` reads no HTTPS record at
-/// all — it resolves addresses and nothing else.
+/// The QUIC arm pays once too, because `http-ng-h3` reads no HTTPS record
+/// at all — it resolves addresses and nothing else.
 ///
-/// The contrast with the test above is the whole measurement: a suite that
-/// only counted one of the two arms could not tell "the duplicate is
-/// `http-ng-native`'s" from "this transport asks twice".
+/// The contrast with the test above used to be the whole measurement (2
+/// against 1, which is how the duplicate was known to be
+/// `http-ng-native`'s). It is now the control for the other direction:
+/// with both at 1, a change that started asking twice on *either* path
+/// moves one of these two rows.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_chosen_onto_quic_at_the_default_port_asks_once() {
     let dns = FakeDns::with_records(vec![service_record(1, &[b"h3"])]);
@@ -149,10 +162,18 @@ async fn a_request_chosen_onto_quic_at_the_default_port_asks_once() {
     assert_eq!(dns.svcb_names(), [ORIGIN]);
 }
 
-/// Away from the default port there is no duplicate, because
-/// `http-ng-native` does no discovery there at all — and the one query
-/// that is made carries the `_port._https.` prefix RFC 9460 §2.3 puts a
-/// non-default service's record under.
+/// Away from the default port the connector does no discovery at all, so
+/// there is nothing to share and this transport asks for itself — and the
+/// one query it makes carries the `_port._https.` prefix RFC 9460 §2.3
+/// puts a non-default service's record under.
+///
+/// **This is the fallback arm**, and it is what keeps "ask the connector
+/// first" from being a rule about where discovery applies: the connector
+/// answers `Discovered::NotConsulted`, which is not an answer, and this
+/// transport goes and asks its own resolver under its own name. A single
+/// query under the *prefixed* name is what says both halves happened —
+/// the connector asked nothing (there is no bare-name query in the log)
+/// and this transport asked once.
 ///
 /// This arm reaches a real server, so it also shows the count is not an
 /// artefact of a request that failed early.
