@@ -84,8 +84,8 @@ use std::sync::Arc;
 /// a trait is declared by the crate that implements it, `http-ng-select`
 /// owns both members concretely and needs no polymorphism between them, and
 /// the two do not agree on what `connect` takes — `Native` takes a
-/// [`Prepared`](http_ng_native::Prepared), because it has a record lookup
-/// worth composing with, and this takes a request, because it has none.
+/// `http_ng_native::Prepared`, because it has a record lookup worth
+/// composing with, and this takes a request, because it has none.
 ///
 /// It is emphatically **not** a method on `Transport`. `wasi:http` 0.3's
 /// client interface is one function with no connection resource in the WIT,
