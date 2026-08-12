@@ -326,9 +326,21 @@ The second judged point, and the half a plain `Option` gets wrong.
 
 | state | what it means | what the connector does |
 |---|---|---|
-| `NotConsulted` | nobody looked, and nothing is ruled out | looks, exactly as it did before this existed |
-| `NoRecord` | looked, and there is none to act on — none published, the resolver cannot ask, the lookup failed, every answer was AliasMode | **does not look** |
+| `NotConsulted` | nobody looked, and nothing is ruled out: `http://`, a non-default port, an origin the negative cache is holding off, **or a resolver that says it cannot ask** | looks, exactly as it did before this existed |
+| `NoRecord` | looked, and there is none to act on — none published, the lookup failed, every answer was AliasMode | **does not look** |
 | `Record { alpn }` | the first-ranked ServiceMode record's ALPN list | uses it, and does not look |
+
+**The capability belongs in the first row, and putting it there was a
+change to `http-ng-native`.** `Resolve::supports_svcb() == false` used to
+be `discovery::lookup`'s own early `None`, indistinguishable from "asked
+and found nothing" — which is right for the connector, where both mean
+*no record to act on*, and wrong the moment the answer leaves the crate:
+"my resolver cannot ask" is a fact about a resolver, not about an origin.
+The gate moved one level out, into `discovered_endpoint`, and now answers
+`NotConsulted`. It is reachable rather than theoretical, because
+`Selecting::new` takes a resolver of its own: a TCP member on a resolver
+that cannot do SVCB, beside a selecting transport on one that can, sent
+every origin to TCP with a capable resolver sitting unused.
 
 Collapsed into one `None`, the connector would re-query exactly the origins
 whose answer cost the most to get: the ones that publish nothing, where a
@@ -349,8 +361,8 @@ into never asking at all (M51).
 
 ### 3.3 Mutation testing
 
-Anchor **312 tests** — `cargo nextest run --no-fail-fast -p http-ng-select
--p http-ng-native --all-features`, 100 + 209 as they stood, plus the three
+Anchor **313 tests** — `cargo nextest run --no-fail-fast -p http-ng-select
+-p http-ng-native --all-features`, 100 + 209 as they stood, plus the four
 new arms in `record_handover.rs` — verified before the run **and again
 after every restore**. Each patch had to match exactly once or the mutation
 was not run. The harness reads the **names** of the failing tests and
@@ -358,7 +370,14 @@ refuses to score a run whose name count disagrees with nextest's own
 `Summary`; restores are `git checkout` followed by `os.utime`, because a
 restore that preserves mtime leaves cargo holding the mutant.
 
-**Nine applied: eight killed, one control survived as intended, none
+One more rule earned the hard way, and it is the one this session's brief
+already gave: **commit before every run.** `git checkout --` restores a
+file to `HEAD`, so an uncommitted edit in a mutated file is destroyed by
+the restore rather than by the mutation — which is exactly what happened
+once here, and showed up as a broken anchor two runs later. A second
+episode is recorded under M54 below.
+
+**Eleven applied: ten killed, one control survived as intended, none
 survived unintentionally.**
 
 | # | mutation | verdict | killed by |
@@ -369,11 +388,26 @@ survived unintentionally.**
 | M48 | discovery is skipped when nothing was handed over — a plain `Native::execute` never looks | **killed** (14) | `the_port_from_the_record_is_where_the_connection_goes`, `the_address_hints_reach_happy_eyeballs`, `the_record_narrows_the_alpn_offer`, `a_failed_discovery_is_not_repeated_by_the_next_request`, `the_record_and_the_addresses_are_asked_at_once`, and 9 more |
 | M49 | the record is dropped on the way over: `prepare` reports what it found and hands over nothing | **killed** (1) | `the_record_this_transport_fetched_is_the_one_the_connection_is_made_under` |
 | M50 | `http-ng-select` asks its own resolver instead of the connector, so the duplicate comes back | **killed** (3) | the three M45 killed |
-| M51 | `NotConsulted` is read as an answer, so this transport never asks where the connector does not | **killed** (11) | `away_from_the_default_port_only_this_transport_asks`, `a_record_offering_h3_puts_the_request_on_the_quic_server`, `an_origin_with_no_record_is_served_over_tcp`, `the_first_request_is_tcp_and_the_second_is_quic`, and 7 more |
+| M51 | `NotConsulted` is read as an answer, so this transport never asks where the connector does not | **killed** (12) | `away_from_the_default_port_only_this_transport_asks`, `a_record_offering_h3_puts_the_request_on_the_quic_server`, `an_origin_with_no_record_is_served_over_tcp`, `the_first_request_is_tcp_and_the_second_is_quic`, and 8 more |
 | M52 | an inert record counts as one in play (the `is_inert` filter moved and could have been lost with it) | **killed** (1) | `a_record_that_sets_nothing_does_not_buy_a_second_race` |
+| M54 | a resolver that says it cannot ask is read as an origin that publishes no record | **killed** (1) | `a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks` — see below, because it survived first |
+| M55 | the capability is not asked at all, so a resolver that says it cannot answer SVCB is asked anyway | **killed** (2) | `a_resolver_that_says_it_cannot_ask_is_not_asked` (`http-ng-native`), `a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks` |
 | **M53** | **CONTROL** — `Prepared`'s `Debug` reports a constant instead of what was discovered | **survived, as intended** (0) | nothing, and nothing should: no test formats a `Prepared` and no code path reads that `Debug`. Without a control, eight kills would be indistinguishable from a harness that reports "killed" unconditionally |
 
-Two of them are worth reading twice. **M46 and M49 are each killed by
+**M54 survived its first run, and the test was wrong rather than the
+mutation harmless.** The arm written for it named a port and connected to a
+real server; discovery's gates are checked in order — the port, the
+negative cache, then the capability — so it never reached the third one at
+all. It asserted the right thing and passed for the reason next door. The
+fixture was not touched: the arm moved to the origin's *default* port,
+which is the only place the capability gate is reached, and where nothing
+can listen, so what it observes is the **question** on two resolver logs
+rather than the connection. M54 then died to it, and M55 — the capability
+not asked at all — died to it and to `http-ng-native`'s own arm, which is
+the pair one wants: the gate is in one place and both sides of it are
+watched.
+
+Three others are worth reading twice. **M46 and M49 are each killed by
 exactly one test**, and neither test existed before this work: the suite
 that counted queries could not see either, because both leave the count at
 one. And **M47 is the wrong-origin mutation in the only form it can take**
@@ -409,8 +443,8 @@ mutation that turns a choice into a hang is red rather than eternal.
 
 > As of deliverable 4 the crate has **100**, and `dns_cost.rs` has 5 —
 > §9.7 for the census and §9.6 for the arms added there. As of §3.1's
-> handover it has **103**: `record_handover.rs` (3), which watches the
-> connection rather than the query count. The counts in this section and
+> handover it has **104**: `record_handover.rs` (4), which watches the
+> connection and the resolver's log rather than the query count alone. The counts in this section and
 > the anchor below are the ones the run in §5 was made against and are left
 > as they were, because a mutation table is only readable beside the suite
 > it was run over.
@@ -897,7 +931,7 @@ TCP and request 2 on QUIC), `altsvc_parse.rs` (31 — the parser, no socket
 and no clock), `altsvc_cache.rs` (19 — the cache, `now` handed in), and two
 more arms in `dns_cost.rs` (3 → 5). With the 25 that stand unchanged
 (`choice.rs` 12, `capabilities.rs` 10, `body.rs` 3): **100 tests**, all
-passing, `cargo nextest run -p http-ng-select --all-features`. (**103**
+passing, `cargo nextest run -p http-ng-select --all-features`. (**104**
 since §3.1 added `record_handover.rs`; this section's count is the one
 §9.8's table was run against.)
 

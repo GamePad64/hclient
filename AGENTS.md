@@ -753,7 +753,7 @@ rejected is the obvious one: a request extension is the caller's channel,
 and an HTTPS record carries a port and address hints, so an extension
 carrying one would let any code that can build a request move the
 connection somewhere else. `docs/v04-w1-acceptance.md` §3.1 has the
-argument and §3.3 the nine mutations behind it (eight killed, one control).
+argument and §3.3 the eleven mutations behind it (ten killed, one control).
 
 The other half of the rule is what keeps `http-ng-select` from owning a
 copy of the connector's: where the member did **not** look — a non-default
