@@ -119,7 +119,8 @@ was written under in vertical 1.
 | `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
 | `http-ng-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
-| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **57 crates** in total. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
+| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **58 crates** in total (57 until v0.4 moved `SeamRuntime` out into `http-ng-rt-quinn`, which is the one addition). Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
+| `http-ng-rt-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **42 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `http-ng-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 42 rather than 58 and no opinion about HTTP |
 
 **Both middle rows are the same `hyper` fact, measured in two different places
 in the graph, not two independent observations.** `hyper` depends on `tokio`
@@ -725,11 +726,28 @@ today; that is **asserted in a test** rather than described, so an `h3` that
 grows the setter fails a line instead of leaving a stale paragraph.
 Server-initiated unidirectional streams are consequently unreachable, since
 the arm that would keep them is guarded by the flag a client cannot set. And
-`http-ng-h3` exposes no `quinn::Connection`, so its `SeamRuntime` — 302
-lines — is unreachable and the new crate takes a `quinn::Connection`
-instead; closing that wants either a re-export or a move to an
-`http-ng-rt-quinn`, which is the same shape §8 argues for the WebSocket
-framing.
+`http-ng-h3` exposed no `quinn::Connection`, so its `SeamRuntime` — 302
+lines — was unreachable and this crate takes a `quinn::Connection`
+instead.
+
+**That last one is closed: `SeamRuntime` is `crates/http-ng-rt-quinn`**, the
+same shape §8 argues for the WebSocket framing, and the crate is 42 crates
+with no `h3` in them against `http-ng-h3`'s 58. `http-ng-h3` re-exports
+`QuinnTask` from it and is otherwise unchanged — one visibility change in
+the whole move, `endpoint` from `pub(crate)` to `pub`. `just
+graph-quinn-adapter-is-shared` checks both directions, including the one no
+`absent` check can see: `http-ng-h3` must still *depend* on it, or someone
+has re-added a private copy.
+
+**What that settled is that the two options recorded for closing it were
+never alternatives.** A connect-only entry point on `H3` cannot serve
+WebTransport at any price, because `H3::connect` builds an h3 client on the
+connection and spawns its driver before it has one to hand back — and two h3
+clients on one QUIC connection is `H3_STREAM_CREATION_ERROR`, the same
+reason a session cannot share a *pooled* one. `http-ng-webtransport` still
+takes its connection from outside, and now because the remaining half is a
+**dial** it would be the second author of: measured at 49 → 58 crates,
+`ring` among them. `docs/rt-quinn-extraction.md` §5.
 
 A session cannot share an `http-ng-h3` pooled connection, for three reasons
 in increasing hardness: a second h3 client on one QUIC connection opens a
