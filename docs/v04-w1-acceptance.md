@@ -943,6 +943,20 @@ make. That is the strongest argument that the answer is the seam.
 3. **Either a connect-only seam or an idempotence gate** (§7.6). Without
    one of the two the race duplicates requests, and `RetryKind` alone does
    not close it.
+
+   **Since decided, and "connect-only seam" is not what it turned out to
+   be** — [`docs/connect-only-seam.md`](connect-only-seam.md), written after
+   the same gap was reached twice more from v0.4 W2. Three things it settles
+   that this item states loosely. It is **not** a method on `Transport`
+   (`wasi:http` 0.3's client interface is one function with no connection
+   resource; `http-ng-fetch` declares `timeouts.connect = false` because
+   `AbortSignal` is one deadline) but a staged pair on the backends that
+   have a connector, which is `Prefetch`'s decision one phase later. It has
+   to hand back a **handle** rather than warm a pool, because only a handle
+   makes `Timeouts::connect` unspendable by the second call — §7.5's rule
+   applied to this pair. And item 3 is not this seam's first customer:
+   §9.3's blocker 1 is the same gap, and a staged connect removes it with no
+   race at all.
 4. **A failure memory**, or the head start is paid again on every request
    to a blocked origin — 250 ms × every request, for as long as the network
    blocks UDP. This is the same missing thing as §9.3's negative half, now
@@ -1190,6 +1204,15 @@ and they are the two that stop the race:
    connect. The equivalent here is falling back from QUIC to TCP inside
    `execute`, which is request-level retry with a `RequestBody::retry_kind()`
    condition on it, and is the same mechanism deliverable 5 is about.
+
+   **The `retry_kind()` condition is a consequence of the gap in §7.6, not
+   of the fallback** — [`docs/connect-only-seam.md`](connect-only-seam.md)
+   §8. Ask the QUIC stack to *connect*, and a failed connect routes a
+   request that was never handed to a transport at all: no retry, no
+   idempotence judgement, and `http-ng-native`'s own sentence true again —
+   *"this is not a second request, it is the first one, which never left."*
+   That makes this blocker the staged connect's first customer and the race
+   its second, which is the reverse of the order both were written in.
 2. **Loopback cannot produce the failure.** UDP to a closed port on loopback
    does not reliably surface to quinn, so the arm under test would be a
    multi-second handshake timeout — a clock-driven assertion, which is the
