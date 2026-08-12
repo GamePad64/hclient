@@ -653,6 +653,59 @@ deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
 is `RetryKind::Free` and is precisely what must never go into early data.
 `docs/h3-research.md` §3.5 has the three-row table.
 
+### WebTransport runs on this h3, and the spec's reasons for not writing it are gone (v0.4 W2)
+
+`http-ng-webtransport` opens a session over `http-ng-h3`'s QUIC:
+`Session::connect`, `Session::id`, `Session::open_bi`. Its own crate, for
+the reason `http-ng-h3` is not a feature of `http-ng-native` — features are
+additive. 49 crates, `tokio` with no reactor, and `quinn` arrives with
+`futures-io` alone and **no `ring`**, which is the visible consequence of
+owning no endpoint.
+
+**The premise was proved twice, and the second time is the one that counts.**
+`docs/w4-upgrade-seam.md` §4 said extended CONNECT was reachable from `h3`'s
+client API "verified by reading"; it is now executed — against `h3`'s own
+server, and then against **`wtransport` 0.7.2**, which carries its own
+HTTP/3 and depends on `h3` not at all. Two implementations sharing no code
+agreed on the wire. The `wtransport` spike is **not** kept as a test — 114
+crates, `url` and ICU among them — but `docs/v04-w2-webtransport.md` §10 has
+it verbatim to re-run.
+
+**The sharpest fact is a two-state answer to a three-state question.**
+`h3`'s `settings()` returns `Settings::default()` before the peer's SETTINGS
+frame arrives, and every flag in that default is `false` — so *"the peer has
+not answered yet"* and *"the peer said no"* are the same value, and only the
+frame's **arrival** separates them. That is the shape v0.4 W1 met from the
+other side, where a `NoRecord`/`NotConsulted` distinction had to be added
+for the same reason. The draft's *"clients MUST NOT attempt a session until
+they have received the settings"* cannot be satisfied by reading the value
+alone.
+
+**Five things `h3` and `http-ng-h3` do not expose, found and not patched
+around.** `h3` 0.0.8's client **cannot announce WebTransport** at all —
+`enable_webtransport` is on the *server* builder and `Config::settings`'
+fields are `pub(crate)` — so the draft's client-side MUST is unsatisfiable
+today; that is **asserted in a test** rather than described, so an `h3` that
+grows the setter fails a line instead of leaving a stale paragraph.
+Server-initiated unidirectional streams are consequently unreachable, since
+the arm that would keep them is guarded by the flag a client cannot set. And
+`http-ng-h3` exposes no `quinn::Connection`, so its `SeamRuntime` — 302
+lines — is unreachable and the new crate takes a `quinn::Connection`
+instead; closing that wants either a re-export or a move to an
+`http-ng-rt-quinn`, which is the same shape §8 argues for the WebSocket
+framing.
+
+A session cannot share an `http-ng-h3` pooled connection, for three reasons
+in increasing hardness: a second h3 client on one QUIC connection opens a
+second control stream (`H3_STREAM_CREATION_ERROR`); extended CONNECT is
+announced in SETTINGS at handshake and `http-ng-h3` announces it nowhere, so
+making pooled connections capable would change what **every** build puts on
+the wire; and `PoolKey` has no field to tell the two apart.
+
+Deliberately not done, each with what it needs: datagrams, the capsule
+protocol, observing session end, `GOAWAY`, server-initiated streams, and
+more than one session per connection.
+
 ### One transport can now choose between the two stacks (v0.4 W1)
 
 `http-ng-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an

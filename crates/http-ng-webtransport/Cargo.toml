@@ -1,0 +1,66 @@
+[package]
+name = "http-ng-webtransport"
+version = "0.1.0"
+description = "WebTransport sessions over an HTTP/3 QUIC connection, for http-ng"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Its own crate, for the reason `http-ng-h3` is not a feature of
+# `http-ng-native`: Cargo's features are additive, so a `webtransport`
+# feature on `http-ng-h3` would put the extended-CONNECT SETTINGS — a
+# *wire* change, announced on every connection that build makes — into
+# every graph that switched it on.
+[dependencies]
+bytes        = { workspace = true }
+http         = { workspace = true }
+http-ng-core = { workspace = true }
+thiserror    = { workspace = true }
+
+# The one dependency feature whose name is a warning, taken deliberately.
+#
+# `i-implement-a-third-party-backend-and-opt-into-breaking-changes` changes
+# **what can be named from outside, and nothing else**, in `h3` 0.0.8.
+# Counted rather than assumed — 27 uses, no `cfg!(feature = ..)` anywhere
+# in that crate, so no branch turns on it:
+#
+#   * 15 are `#[cfg(feature)] pub mod X` against `#[cfg(not(feature))] mod
+#     X` (`src/lib.rs`, `src/error/mod.rs`), plus the `pub use
+#     shared_state::{ConnectionState, SharedState}` beside them;
+#   * 3 put two extra methods and their impl block on the *server*'s
+#     `Connection` (`src/server/connection.rs`);
+#   * 9 are `#[cfg_attr(not(feature), non_exhaustive)]` on the variants of
+#     `ConnectionError` and `StreamError`.
+#
+# The last group is the only one that touches an existing item, and it
+# **relaxes**: removing `non_exhaustive` lets more patterns compile and
+# stops none. That is what makes Cargo's feature unification harmless here
+# — `http-ng-h3`'s own `h3` gets strictly more surface and the same
+# behaviour. `docs/v04-w2-webtransport.md` §2.
+#
+# What it buys is the two facts a WebTransport client cannot do without and
+# `h3`'s ordinary client API does not surface: the peer's SETTINGS
+# (`ConnectionState::settings`), and the moment they arrived
+# (`ConnectionInner::poll_control` resolving to `Frame::Settings`). The
+# draft makes the first a precondition of sending the CONNECT at all.
+h3 = { version = "0.0.8", features = [
+  "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
+] }
+h3-quinn = "0.0.10"
+# `quinn` in the public API on purpose: this crate's input *is* a QUIC
+# connection and its output *is* a pair of QUIC streams. Wrapping either
+# would be a second vocabulary for types the caller already holds, and the
+# crate that would hand the connection over — `http-ng-h3` — is built on
+# this same `quinn` 0.11.
+quinn = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+futures-util  = { version = "0.3", default-features = false, features = ["std"] }
+quinn         = { version = "0.11", default-features = false, features = ["futures-io", "ring", "runtime-tokio", "rustls-ring"] }
+rcgen         = "0.14"
+rustls        = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio         = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[lints]
+workspace = true

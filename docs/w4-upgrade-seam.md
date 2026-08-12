@@ -126,6 +126,19 @@ protocol — and no crate provides it for a client under our runtime seam.
 That is a real cost, and it is the honest reason to defer, unlike the two
 above.
 
+**Since built, in part, and the reading above was right** — v0.4 W2,
+`crates/http-ng-webtransport`. The extended CONNECT leaves this stack and
+is accepted both by `h3`'s own server and by `wtransport` 0.7.2, which
+shares no code with it. What the reading did not say is in
+[`docs/v04-w2-webtransport.md`](v04-w2-webtransport.md): `h3`'s **client**
+can announce neither `SETTINGS_ENABLE_WEBTRANSPORT` nor
+`SETTINGS_WT_MAX_SESSIONS`, so the announcement the draft requires of
+clients does not go out; the peer's SETTINGS — which the draft makes a
+precondition of sending the CONNECT — are reachable only behind `h3`'s
+`i-implement-a-third-party-backend…` feature; and a session cannot share an
+`http-ng-h3` pooled connection, because extended CONNECT is announced at
+handshake time and `http-ng-h3` announces it nowhere.
+
 ## 5. Order of work
 
 1. The `WebSocket` trait in `http-ng-core` — shape only, no backend.
