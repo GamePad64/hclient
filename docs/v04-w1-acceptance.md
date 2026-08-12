@@ -1,10 +1,12 @@
 # v0.4 W1 — a transport that chooses: what it does, what it costs, and what it does not do
 
-`docs/v04-design.md` §W1, deliverables 2 and 3. Deliverable 1
+`docs/v04-design.md` §W1, deliverables 2, 3 and 4. Deliverable 1
 (`RedirectSupport`) landed independently and is written up in the design
-document itself. Deliverables 4 (Alt-Svc) and 5 (the race) are **not
-built**, and the last section here says what each would need rather than
-leaving the reader to infer it from their absence.
+document itself. **Deliverable 4 (Alt-Svc — the slow tier) is now built**,
+and §9 is its own section; §7 is kept as it was written, because what it
+predicted the work would need is worth reading against what the work turned
+out to need. Deliverable 5 (the race) is **not** built, and §7 says what it
+would need rather than leaving the reader to infer it from its absence.
 
 Written the way the other acceptance documents are: every claim carries how
 it is known, and a claim that is not pinned by a test says so.
@@ -65,8 +67,12 @@ naming the field.
 
 Measured in this tree, `Native::new(rt, Rustls, dns)` against
 `H3::new(rt, Rustls, dns)`, and pinned by
-`the_two_stacks_disagree_on_exactly_six_fields_today` — **six fields, not
-the two the design document's examples name.** Two of its examples were
+`the_two_stacks_disagree_on_exactly_seven_fields_today` — **seven fields,
+not the two the design document's examples name.** It was six when this
+section was written; `request_trailers` joined in v0.4 Appendix C, when
+`http-ng-native` stopped under-declaring what it sends, and that seventh
+runs the *other* way from the six — there the TCP member is the one that
+can. The stored answer is still the weaker claim. Two of its examples were
 fixed under it while it was being written (`RedirectSupport::Configurable`
 deleted in `b2289c4`; `version_select` turned on for both in `4e9805f`), and
 four of the six were never in it.
@@ -263,6 +269,12 @@ mutation that turns a choice into a hang is red rather than eternal.
 `crates/http-ng-select/tests/`: `capabilities.rs` (10), `choice.rs` (12),
 `dns_cost.rs` (3), `body.rs` (3), plus the two fixtures. **28 tests.**
 
+> As of deliverable 4 the crate has **100**, and `dns_cost.rs` has 5 —
+> §9.7 for the census and §9.6 for the arms added there. The counts in this
+> section and the anchor below are the ones the run in §5 was made against
+> and are left as they were, because a mutation table is only readable
+> beside the suite it was run over.
+
 ---
 
 ## 5. Mutation testing
@@ -350,7 +362,13 @@ Neither is built. Both are named in `docs/v04-design.md` §W1 as deliverables
 4 and 5, after this one and in that order, and the order is the finding
 rather than a schedule.
 
-### Alt-Svc — the slow tier (deliverable 4)
+### Alt-Svc — the slow tier (deliverable 4) — **since built, see §9**
+
+This subsection is what was predicted before the work; §9 is what the work
+found. Four of the five bullets held. The one that did not is the negative
+half, and it did not hold in the direction the bullet expects: the failure
+cache `http-ng-native` already has is **not** the one this needed, and the
+one this needs is still not built — §9.3.
 
 It is a **response header**, so it can only help the *next* connection: the
 first page load at an origin is never HTTP/3 through Alt-Svc, which is
@@ -444,3 +462,352 @@ rather than fixed.
    floor"* — and a selecting transport is a second carrier for whatever that
    decides. It is the same shape as `version_reported`: the honest time to
    answer is after the fact.
+
+---
+
+## 9. Alt-Svc — the slow tier, built (deliverable 4)
+
+`crates/http-ng-select/src/altsvc.rs`, plus about thirty lines in
+`src/lib.rs`. §7 above is the prediction; this is the work.
+
+**What it is.** An origin that publishes no HTTPS record can still say
+"I speak HTTP/3 here" — in a **response header**. So it can only ever help
+the *next* connection: the first request to an unknown origin goes over TCP
+no matter what the origin has to say, because the advertisement arrives in
+the answer to it. That is not a limitation of this implementation, it is
+what RFC 7838 is; the fast tier exists precisely because it is not.
+
+**Why it matters more than its size suggests.** Before it, `Selecting` chose
+HTTP/3 only for an origin publishing an HTTPS record. Alt-Svc is how every
+other origin is ever chosen, and it is what browsers actually rely on.
+
+### 9.1 The inversion, and it is the thing to read first
+
+This crate has **no cache for the fast tier, deliberately**, and §3 gives
+the reason in `http-ng-native`'s words: *"this origin has no HTTPS record"
+is a DNS answer with a TTL of its own, which `SvcbEndpoint` does not carry,
+and inventing a lifetime for someone else's answer is how a resolver's cache
+and ours drift apart.*
+
+**That reason does not transfer, and a reader arriving from §3 will arrive
+knowing the opposite rule.** RFC 7838 §3.1's `ma` parameter *is* a max-age,
+given by the origin, for exactly this advertisement — *"the number of
+seconds since the response was generated for which the alternative service
+is considered fresh"* — with a default of 24 hours stated by the same
+section. So Alt-Svc is **more** cacheable than the fast tier, not less: the
+lifetime is read off the wire rather than invented, and a cache without one
+would be the dishonest shape. It is also not optional the way the other
+would be — without a memory the header cannot be acted on at all, since by
+the time it arrives the connection it describes is the one already in use.
+
+It is said in the module doc as well as here, because the next reader will
+meet the code before the document.
+
+The clock is `R: Timer`, which meant `Selecting::new` gained an `R`
+parameter. Never `std::time::Instant::now()` — `http-ng-native`'s negative
+cache gives that reason for its own, and it is that `Timer` is the one seam
+through which time reaches a transport here, so a caller testing under
+`tokio::time::pause()` sees what the transport sees. `AltSvcCache` itself
+reads no clock: `now` arrives as a parameter, the same shape as
+`NegativeCache::suppressed`, which is what makes a 24-hour default testable
+without waiting 24 hours.
+
+### 9.2 The parser, and what it does with everything that is not RFC 7838
+
+Hand-written, ~200 lines, **no new dependency**. That is a decision and not
+a default: the grammar is a comma list of `token "=" quoted-string` with
+two parameters, `http-ng-cookie`'s `Set-Cookie` parser is the in-tree
+precedent for exactly this shape, and a crate would put a third party
+between this workspace and a field a remote peer controls for less code
+than the crate's own manifest. `cargo deny --all-features check` is green
+(advisories, bans, licenses, sources), and the graph is unchanged.
+
+It is fed by a remote peer, so it must not panic, and what it does with bad
+input has to be a decision rather than an `unwrap`. In order:
+
+| input | what happens | why |
+|---|---|---|
+| a member that does not parse | **dropped, the others stand** | boundaries are known before any member is parsed, so one bad member says nothing about its neighbours. There is no whole-field rejection |
+| an unterminated quoted-string | costs **only its own member** | it runs to the end of the field, so it is one member, and the members before it already ended |
+| a comma inside a quoted alt-authority | **not a member boundary** | the split is quote-aware |
+| an empty member (`,,`) | skipped | RFC 9110 §5.6.1.2 |
+| `clear` anywhere in the field | **the whole field is `Clear`** | RFC 7838 §3 decides this: *"including those specified in the same response, in case of an invalid reply containing both 'clear' and alternative services"*. Matched case-sensitively, as `%s"clear"` requires |
+| a `protocol-id` that is not a token, or a bad `%` escape | drops its member | `%` is itself a tchar, so `%zz` is a malformed escape rather than a literal |
+| an alt-authority with no port, a non-numeric port, one past a `u16`, or port `0` | drops its member | zero is not a port anything is reachable at; a member naming it can only waste a connect |
+| an alt-authority's `uri-host` | **not validated** | it is only ever *compared* to the origin's, so a host that is not a host cannot match one. Rejecting it early and rejecting it late are the same answer, and the late one needs no second URI parser |
+| `ma` that is not `1*DIGIT` | **drops its member** | the one place a *known* parameter's bad value invalidates rather than being ignored: the alternative is to cache for the 24-hour default on the strength of a number nobody could read |
+| `ma` too large for a `u64` | **saturates** | RFC 9110 §5.6.7: *"a recipient that receives a value larger than it can represent MUST use the largest value it can represent"* |
+| `ma=0` | parses as zero, and the cache makes it a **removal** | see 9.4 |
+| an unknown parameter | **ignored, member survives** | RFC 7838 §3: *"the values (alt-value) they appear in MUST be processed as if the unknown parameter was not present"* |
+| `persist` with any value but `1` | treated as absent | RFC 7838 §3.1: *"Clients MUST ignore 'persist' parameters with values other than '1'"* — and ignoring it is what leaves the entry forgettable on a network change, the safe direction |
+| a repeated parameter | **last wins** | no RFC basis either way; recorded because it is a choice |
+| a parameter name in another case | **matched** | the RFC writes them lowercase and marks only `clear` case-sensitive, so this is a judgement, made where being wrong is cheaper: reading `MA=0` as unknown would leave a 24-hour entry the origin asked to expire at once |
+| junk after a member's parameters, or a `;` with nothing behind it | drops its member | the grammar admits OWS only around `;` and `,` |
+| an unrecognised protocol id | **parsed**, and not acted on | the parser does not know which protocols the caller speaks; the cache does, and filters where it filters |
+
+The no-panic property is asserted rather than argued:
+`no_input_makes_the_parser_panic` runs every single-byte deletion,
+substitution and insertion over a valid field value, every prefix of it, a
+hand-written list of hostile shapes, and three long inputs (2000 members,
+5000 quotes, 5000 backslashes) — 1,400-odd inputs, deterministic so a
+failure is reproducible from the file alone, asserting only that `parse`
+returns.
+
+**What the parser returns is wider than what the cache stores**, and that is
+deliberate: `AltSvcCache` keeps one bit per origin — *this origin advertised
+`h3` at its own authority* — because that is the only part this transport
+can act on, and *"a field carried but never read is how the previous round
+of this plumbing came to sit unused"* (`http-ng-native`'s `discovery`).
+
+**An alternative at another host or port is understood and not acted on**,
+and this is a finding rather than a shortcut. RFC 7838 §2: *"the Host header
+field … is still derived from the origin, not the alternative service (just
+as it would if a CNAME were being used)"* — so honouring `h3="other:8443"`
+means connecting to one authority while the request keeps another's, and
+`Transport::execute` has nowhere to say that: this crate hands the request
+to a member whole and the member connects to the URI's own authority. It is
+the same wall the fast tier hit from the other side (§3: no record can cross
+the `Transport` seam), and closing it is a change to a member.
+
+### 9.3 The negative half: it is **not** already someone else's, and it is still not built
+
+§7 predicted that *"the failure half may already have a home"* in
+`http-ng-native`'s connector. **Read before building, and it does not.**
+
+`http_ng_native::discovery::NegativeCache` is about a different fact. Its
+subject is *"a TCP connect that used a discovered endpoint's port, hints,
+ALPN or ECH failed, so stop applying that origin's HTTPS record for five
+minutes"*. Three things follow, each checked in the source rather than
+inferred:
+
+- **It never sees an HTTP/3 attempt, because `Native` cannot make one.**
+  Written at exactly one site (`connect.rs`, in the arm that retries without
+  the record) and read at exactly one (`discovered_endpoint`, gated on
+  `use_tls && port == 443`). When `Selecting` routes a request to `H3`,
+  `Native` is not called at all: the cache is neither read nor written.
+- **It is unreachable from here.** `mod discovery;` is private in
+  `http-ng-native`, `NegativeCache` is `pub(crate)`, and `Native`'s
+  `svcb_failures` field has no accessor. `http-ng-h3` has nothing of the
+  kind — no negative cache, no suppression, no failure memory at all.
+- **Its own doc's sentence is still right, and it is about the other
+  half.** *"The cache of what was advertised is Alt-Svc's, the cache of what
+  failed is the connector's"* — the cache of what was advertised is now
+  built, here. The cache of what failed is the connector's, and the
+  connector that would own an h3 failure is `http-ng-h3`, which has none.
+
+So there is no second cache and no disagreement. What there is instead is a
+**gap, stated rather than filled**: if an Alt-Svc entry sends a request to
+QUIC on a network that blocks UDP/443, that request fails, and this
+transport remembers nothing about it. Two things stop it being built here,
+and they are the two that stop the race:
+
+1. **Without a fallback it degrades the caller rather than protecting
+   them.** A windowed suppression on `http-ng-native`'s model would cost one
+   *failed* request per window per origin — where native's own costs none,
+   because native falls back to the origin's addresses inside the same
+   connect. The equivalent here is falling back from QUIC to TCP inside
+   `execute`, which is request-level retry with a `RequestBody::retry_kind()`
+   condition on it, and is the same mechanism deliverable 5 is about.
+2. **Loopback cannot produce the failure.** UDP to a closed port on loopback
+   does not reliably surface to quinn, so the arm under test would be a
+   multi-second handshake timeout — a clock-driven assertion, which is the
+   shape three flakes in this workspace already came from. It wants the
+   `HTTP_NG_REQUIRE_TUNTAP` fixture §7 names for the race.
+
+Recorded in §6's spirit: **the failure half is not implemented and not
+tested**, and where it would live if the alt-authority were ever acted on is
+`http-ng-native`'s cache after all, because *"the alternative's port is
+blocked"* is a connector fact.
+
+### 9.4 Scope: the network change, said at the type
+
+RFC 7838 §2.2 asks for something this crate cannot do, and says so in the
+same sentence: *"clients SHOULD remove from cache all alternative services
+that lack the 'persist' flag with the value '1' when they detect such a
+change, **when information about network state is available**."* To a
+`Transport` it is not — nothing in `http-ng-rt` reports an interface coming
+up, a route changing or a VPN connecting, and inventing one would be a
+runtime seam rather than a transport.
+
+So the honest answer is given in two places rather than assumed:
+
+- **Nothing is persisted.** The cache is a field of one `Selecting`, never
+  written to disk and never shared between transports, so an advertisement
+  outlives at most the transport that heard it. A caller that drops its
+  client on a network change has already done the whole job —
+  `a_new_transport_has_heard_nothing_and_starts_on_tcp` pins it.
+- **`Selecting::network_changed()` is the event's only entry point**, public
+  because the caller can usually see what the transport cannot. Until it is
+  called, every entry behaves as though it carried `persist=1`, which is the
+  unsafe direction — a laptop that moved networks is advertising an
+  alt-authority that was reachable *somewhere else* — and is therefore
+  written where the setter is rather than left to be discovered.
+
+That also gives `persist` a real reader instead of a field parsed and
+ignored: `network_changed()` keeps `persist=1` entries and drops the rest,
+which is exactly §2.2. A `persist` value the RFC makes us ignore does not
+survive it, because ignoring the parameter means it was never there.
+
+### 9.5 The ordering, and why the fast tier is not made worse
+
+The rule is about *whose statement is fresher*, not a preference between
+mechanisms. A record is fetched for this request; an entry was heard on an
+earlier one and may be up to its `ma` old.
+
+1. A first-ranked record listing `h3` chooses QUIC. **The cache is not
+   consulted and its lock is not taken.**
+2. A first-ranked record *not* listing `h3` chooses TCP, and the cache is
+   not consulted either — RFC 9460 §2.4.2 makes priority the operator's
+   preference order, so an origin whose best endpoint is HTTP/2-only has
+   asked for HTTP/2, and yesterday's header does not overrule it.
+3. Only where there is **no record to read** — none published, the lookup
+   failed, the resolver cannot ask, or the authority is an IP literal — is
+   the cache consulted.
+
+That needed `origin_offers_h3` to gain a third state. "Publishes a record
+that does not offer `h3`" and "publishes no record" were both `false`
+before; collapsing them would let a stale header beat a fresh record.
+
+On the population side, a response with **no** `Alt-Svc` field leaves
+`note_alt_svc` before the clock is read or the lock is taken — which is
+every response from every origin that has never heard of the header. RFC
+7838 §3's *"invalidates and replaces"* is about a field that is **present**;
+a missing one is not an instruction.
+
+**The IP literal is served by this tier and not by the fast one**, which
+looks like an exception and is not: the fast tier skips a literal because
+`_443._https.127.0.0.1` is a query with no answer, a reason about DNS rather
+than about QUIC. The slow tier needs no query, so it applies, and costs
+nothing — `an_ip_literal_has_no_record_to_ask_for_but_can_still_be_advertised_to`
+asserts zero lookups on both hops.
+
+### 9.6 What it costs in DNS — the §3 table, re-run and extended
+
+`crates/http-ng-select/tests/dns_cost.rs`, five arms now. **The three
+measured before this deliverable are unchanged**, re-run on this branch:
+
+| request | type-65 queries | |
+|---|---|---|
+| `https://origin/` chosen onto TCP | **2** | unchanged — this transport's, then `http-ng-native`'s own connector's |
+| `https://origin/` chosen onto QUIC | **1** | unchanged — `http-ng-h3` does no SVCB lookup at all |
+| `https://origin:port/` | **1** | unchanged — `http-ng-native` skips discovery away from the default port |
+| any request carrying `RequireVersion` | **0** | unchanged |
+| `http://` or an IP literal | **0** | unchanged |
+
+And the two the slow tier adds:
+
+| request | type-65 queries | |
+|---|---|---|
+| one advertised onto QUIC, at a non-default port | **1** | the same query the hop before it paid. Alt-Svc adds none |
+| any request where the resolver cannot do SVCB, advertised onto QUIC | **0** | and this origin was unreachable by the fast tier at any price |
+
+One row is **inferred rather than measured**, and is marked as such in the
+file: a request the slow tier puts on QUIC at an origin's *default* port
+costs **1** rather than the 2 the same request costs on TCP, because the
+duplicate is `http-ng-native`'s and `http-ng-h3` makes no lookup — both
+measured, in the first two rows. It is not measured directly for the same
+reason those two rows cannot connect at all: an advertisement has to arrive
+in a response, and an unprivileged test process cannot put a server on port
+443 to send one.
+
+So the slow tier adds **no query anywhere**, adds no lock to the fast tier's
+path, and on one path removes a query.
+
+### 9.7 How it is checked
+
+The same two real servers behind one authority, both alive throughout, with
+one addition: either can be made to send an `Alt-Svc` field, and the field
+can be changed **between** requests — which is what makes the tier testable
+at all, since an origin has to be able to advertise, then withdraw.
+
+`crates/http-ng-select/tests/`: `alt_svc.rs` (20 — end to end, request 1 on
+TCP and request 2 on QUIC), `altsvc_parse.rs` (31 — the parser, no socket
+and no clock), `altsvc_cache.rs` (19 — the cache, `now` handed in), and two
+more arms in `dns_cost.rs` (3 → 5). With the 25 that stand unchanged
+(`choice.rs` 12, `capabilities.rs` 10, `body.rs` 3): **100 tests**, all
+passing, `cargo nextest run -p http-ng-select --all-features`.
+
+Every assertion is causal. Nothing waits for a duration and concludes; the
+observations are "this server answered and that one did not", read as
+**deltas** across each hop because these tests make several requests to
+servers that outlive them. The `ma` timescales that cannot be reached that
+way — twenty-four hours — are in `altsvc_cache.rs`, where the clock is a
+parameter rather than something to wait for.
+
+Two arms exist only because the mutation table asked for them, and they are
+the ones worth naming. `clear` on its own and a field offering no `h3`
+produce the **same** outcome here — §3's replace rule already removes on
+both — so a parser that dropped `clear` as an unreadable member would have
+passed every arm in the file. The reply carrying *both* is where they part
+company, and §3 decides it explicitly.
+
+### 9.8 Mutation testing
+
+Anchor **100 tests**, `cargo nextest run -p http-ng-select --all-features`,
+verified before the run and again after every restore. Each patch had to
+match exactly once or the mutation was not run. The harness reads the
+**names** of the failing tests and refuses to score a run where the count of
+names disagrees with nextest's own `Summary` — and it caught itself doing
+exactly that on the first two mutations, where a regular expression missed
+nextest's `( 38/100)` progress field and would otherwise have reported two
+kills as zero. Restores are `git checkout` followed by `os.utime`, because a
+restore that preserves mtime leaves cargo holding the mutant.
+
+**Twenty-five applied: twenty-four killed, one control survived as
+intended, none survived unintentionally.**
+
+| # | mutation | verdict | killed by (a selection where there are many) |
+|---|---|---|---|
+| M20 | the `Alt-Svc` field is parsed and then ignored | **killed** (16) | `the_first_request_is_tcp_and_the_second_is_quic`, `one_client_moves_itself_to_http_3_on_the_second_request`, `every_repeated_field_line_is_read`, and 13 more |
+| M21 | the cache is never consulted, so the slow tier never chooses | **killed** (16) | the same 16 |
+| M22 | the cache is consulted **before** the record | **killed** (3) | `a_record_that_does_not_offer_h3_is_not_overruled_by_an_advertisement`, `the_first_request_is_tcp_and_the_second_is_quic`, `a_request_advertised_onto_quic_asks_no_more_than_the_one_before_it` |
+| M23 | the cache answers `true` before it is populated, so request 1 goes to QUIC | **killed** (40) | every arm whose first hop is TCP, plus every cache test |
+| M24 | `ma` is ignored, so entries never expire | **killed** (9) | `an_entry_lives_exactly_as_long_as_its_ma_says`, `a_field_with_no_ma_lives_for_the_rfcs_twenty_four_hours`, `ma_zero_sends_the_origin_back_to_tcp`, and 6 more |
+| M25 | `ma=0` is read as an absent `ma`, so the 24-hour default applies | **killed** (2) | `ma_zero_is_a_removal`, `ma_zero_sends_the_origin_back_to_tcp` |
+| M26 | `clear` is not recognised | **killed** (4) | `clear_is_its_own_instruction`, `clear_beats_alternatives_in_the_same_field`, `clear_beside_an_advertisement_still_clears`, `a_clear_on_one_line_beats_an_advertisement_on_another` |
+| M27 | a present field offering no `h3` leaves the stored entry standing | **killed** (8) | `a_field_that_no_longer_offers_h3_removes_what_was_stored`, `a_later_field_that_offers_no_h3_replaces_the_entry`, `clear_removes`, and 5 more |
+| M28 | the expiry comparison is inclusive, so a lapsed window is still fresh | **killed** (7) | `an_entry_lives_exactly_as_long_as_its_ma_says` and 6 more cache arms |
+| M29 | a stale entry is not forgotten by the lookup that found it stale | **killed** (1) | `a_stale_entry_is_forgotten_and_does_not_come_back` |
+| M30 | the protocol id is not checked, so any advertisement is an `h3` one | **killed** (3) | `an_advertisement_for_another_protocol_moves_nothing`, `only_h3_at_this_origin_is_remembered`, `a_field_that_no_longer_offers_h3_removes_what_was_stored` |
+| M31 | the alternative's port is not checked | **killed** (3) | `an_alternative_at_another_authority_is_not_acted_on`, `only_h3_at_this_origin_is_remembered`, `only_an_alternative_at_the_origins_own_authority_is_actionable` |
+| M32 | the alternative's host is not checked | **killed** (5) | the same three, plus `the_first_actionable_h3_in_the_list_is_the_one_taken` and `the_uri_host_is_not_validated_because_it_is_only_ever_compared` |
+| M33 | `network_changed` clears nothing | **killed** (4) | `a_reported_network_change_sends_the_origin_back_to_tcp`, `a_network_change_forgets_what_did_not_ask_to_persist`, `a_persist_value_the_rfc_ignores_does_not_survive_a_network_change`, `a_clone_is_the_same_cache` |
+| M34 | `network_changed` clears everything, `persist=1` included | **killed** (3) | `a_persistent_advertisement_survives_a_reported_network_change`, `a_network_change_forgets_what_did_not_ask_to_persist`, `persisting_across_a_network_change_is_not_living_for_ever` |
+| M35 | the origin key ignores the port | **killed** (32) | `the_key_is_the_whole_origin` and 31 more |
+| M36 | the origin key keeps the host's case | **killed** (1) | `the_key_is_the_whole_origin` |
+| M37 | a response with **no** field is treated as an instruction, and removes | **killed** (2) | `a_response_with_no_field_leaves_the_entry_alone`, `a_persistent_advertisement_survives_a_reported_network_change` |
+| M38 | only the first `Alt-Svc` field line is read | **killed** (1) | `every_repeated_field_line_is_read` |
+| M39 | the **last** actionable `h3` wins rather than the first | **killed** (1) | `the_first_actionable_h3_in_the_list_is_the_one_taken` |
+| M40 | an unknown parameter invalidates its member | **killed** (1) | `an_unknown_parameter_is_ignored_and_its_member_survives` |
+| M41 | `persist` is accepted for any value | **killed** (2) | `persist_is_only_ever_the_literal_one`, `a_persist_value_the_rfc_ignores_does_not_survive_a_network_change` |
+| M42 | members are split on every comma, quoted or not | **killed** (2) | `a_comma_inside_the_quotes_is_not_a_member_boundary`, `an_unknown_parameter_is_ignored_and_its_member_survives` |
+| M43 | an alt-authority's port `0` is accepted | **killed** (1) | `an_alt_authority_without_a_usable_port_drops_its_member` |
+| **M44** | **CONTROL** — `AltSvcCache`'s `Debug` reports a constant instead of the entry count | **survived, as intended** (0) | nothing, and nothing should: no test asserts on that `Debug` output and no code path reads it. Without a control, twenty-four kills would be indistinguishable from a harness that reports "killed" unconditionally |
+
+M22 is the one worth reading twice, because it is the mutation the ordering
+rule exists to fail: with the cache consulted first, a stale header beats a
+record fetched for this request, and three arms catch it — including one in
+`dns_cost.rs`, which notices the *lookup that stops happening*.
+
+### 9.9 What is not verified
+
+Added to §6's list rather than replacing it:
+
+- **The negative half is not built and not tested** — §9.3. An Alt-Svc entry
+  that sends a request to QUIC on a network blocking UDP/443 costs that
+  request, every time, with no memory of the failure.
+- **No live network.** Every server here is on loopback. The claim "a real
+  origin advertising `h3` is reached over HTTP/3 on the next request" is not
+  made; what is made is that an advertisement decides which of two real
+  servers is reached.
+- **The advertisement is never acted on across an authority**, so nothing
+  checks what would happen if it were — that path does not exist, by §9.2.
+- **The `ma` clock is exercised through the cache and not through
+  `R: Timer`.** `altsvc_cache.rs` hands `now` in directly; no test drives a
+  live `Selecting` past an entry's expiry under `tokio::time::pause()`. The
+  wiring in between — `Selecting::now()` reading `elapsed_since(self.epoch)`
+  — is one line and is not separately pinned. What *is* pinned end to end is
+  `ma=0`, which is the shortest lifetime there is.
+- **`Alt-Svc` on a 1xx or on an error response** is not exercised. The
+  header is read off whatever response head comes back, whatever its status;
+  no test uses a non-200.

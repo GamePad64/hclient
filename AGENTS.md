@@ -666,23 +666,56 @@ of either member for the reason `http-ng-h3` is not a feature of
 `http-ng-native`: features are additive, and one on either would put the
 whole QUIC stack into every build in any graph that switched it on.
 
-**Discovery has two tiers and the race is neither, so only the fast tier is
-built.** Browsers do not race an unknown origin; first contact is TCP unless
-something said otherwise *before* the connection. An HTTPS record says so at
-resolution time (the fast tier — this); `Alt-Svc` is a response header and
-can only help the *next* connection (the slow tier — not built, and it is
-the one that needs storage); racing the two stacks is a third thing, a hedge
-against a network that blocks UDP/443, and v0.3 W2 recorded that the size of
-the cost it pays is unverified. A measurement comes before a policy.
-`docs/v04-w1-acceptance.md` §7 says what each of the two would need.
+**Discovery has two tiers and the race is neither.** Browsers do not race an
+unknown origin; first contact is TCP unless something said otherwise
+*before* the connection. An HTTPS record says so at resolution time — the
+fast tier — and `Alt-Svc` is a response header, so it can only help the
+*next* connection: the slow tier, and the one that needs storage. **Both are
+built.** Racing the two stacks is a third thing, a hedge against a network
+that blocks UDP/443, and it is **not** built: v0.3 W2 recorded that the size
+of the cost it pays is unverified, and a measurement comes before a policy.
+
+The slow tier is where a cache became honest, and the reason inverts the
+fast tier's. There is deliberately no cache for HTTPS records here, because
+`SvcbEndpoint` carries no TTL and inventing a lifetime for someone else's
+answer is how a resolver's cache and ours drift apart. RFC 7838 §3.1's `ma`
+**is** that lifetime, given by the origin for exactly this advertisement —
+so the cache that would have been dishonest for SVCB is the right shape for
+Alt-Svc.
+
+The order between them is a rule rather than an accident: **the record
+first, the cache only where there is no record.** So an origin that
+publishes an HTTPS record never touches the cache, and the slow tier adds no
+query and no lock to the fast tier's path — measured, the DNS cost table is
+unchanged. A record saying `h3` is absent is also not overruled by an
+advertisement, which is the mutation that rule exists to fail.
+
+**Scope is a correctness question and the RFC says so.** §2.2 conditions its
+own SHOULD on *"when information about network state is available"*, and to
+a `Transport` it is not: a cache surviving a laptop's move between networks
+advertises an alt-authority that was reachable somewhere else. So nothing is
+persisted, and `Selecting::network_changed()` is the only entry point —
+public, for the caller who can see what the transport cannot. Until it is
+called every entry behaves as `persist=1`, which is the unsafe direction and
+is said where the setter is.
+
+**The negative half is missing rather than misplaced**, which took reading
+to establish: `http-ng-native`'s `NegativeCache` is a different fact — a TCP
+connect through a discovered endpoint failed — and it never sees an h3
+attempt, because when `Selecting` routes to `H3` the native transport is not
+called at all. `http-ng-h3` has no failure memory of any kind. Building it
+is blocked on the same two things as the race.
+
+`docs/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
+the slow tier does and does not check.
 
 **The part that was not mechanical is the capability set, and it is not the
 race.** `Transport::capabilities` returns a `&Capabilities`, so the pair's
 answer is stored at construction, and it is decided field by field by one
 rule: **the stored value must be true whichever member serves the request.**
-Six fields disagree today — measured, not taken from the design document,
+Seven fields disagree today — measured, not taken from the design document,
 whose two examples had both been fixed under it while it was being written.
-Five take the weaker claim, `full_duplex` among them, which is the same
+Six take the weaker claim, `full_duplex` among them, which is the same
 answer `http-ng-native` already gives one level down for the same reason: an
 over-claimed `full_duplex` deadlocks a caller and an under-claimed one costs
 a buffered copy. Where the two values are *different claims* rather than a

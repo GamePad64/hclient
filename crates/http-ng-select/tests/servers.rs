@@ -31,10 +31,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// resolver is handed.
 pub const ORIGIN: &str = "both-stacks.test";
 
+/// What both servers put in an `Alt-Svc` response header field, or `None`
+/// for a response that carries none.
+///
+/// Shared by the two servers and settable **between** requests, which is
+/// what makes the slow tier testable at all: an origin advertises `h3` in
+/// the answer to request 1, and the test can then have it withdraw the
+/// advertisement, or change its `ma`, before request 2 — the same origin,
+/// the same connection story, a different thing said.
+type AltSvc = Arc<std::sync::Mutex<Option<String>>>;
+
 /// Two servers, one port number, one certificate.
 pub struct Pair {
     pub port: u16,
     pub cert_der: rustls::pki_types::CertificateDer<'static>,
+    alt_svc: AltSvc,
     /// HTTP/1.1 requests answered over TLS on TCP.
     tcp_answered: Arc<AtomicUsize>,
     /// TCP connections accepted, whether or not a request was ever read —
@@ -68,6 +79,20 @@ impl Pair {
     }
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
+    }
+
+    /// What both servers advertise from now on. `None` sends no field at
+    /// all, which is not the same instruction as an empty one.
+    pub fn set_alt_svc(&self, value: Option<&str>) {
+        *self.alt_svc.lock().expect("alt-svc fixture") = value.map(str::to_owned);
+    }
+
+    /// The advertisement a server built on this pair's own port —
+    /// `h3=":<port>"`, which is the only alt-authority this transport can
+    /// act on, since the request keeps the origin's authority whatever the
+    /// field names.
+    pub fn h3_here(&self, params: &str) -> String {
+        format!("h3=\":{}\"{params}", self.port)
     }
 }
 
@@ -115,6 +140,7 @@ pub fn start() -> Pair {
     let tcp_answered = Arc::new(AtomicUsize::new(0));
     let tcp_accepted = Arc::new(AtomicUsize::new(0));
     let quic_answered = Arc::new(AtomicUsize::new(0));
+    let alt_svc: AltSvc = Arc::default();
 
     let tcp_thread = start_tcp(
         tcp_sock,
@@ -122,12 +148,20 @@ pub fn start() -> Pair {
         key_der.clone_key(),
         tcp_answered.clone(),
         tcp_accepted.clone(),
+        alt_svc.clone(),
     );
-    let quic_thread = start_quic(udp_sock, cert_der.clone(), key_der, quic_answered.clone());
+    let quic_thread = start_quic(
+        udp_sock,
+        cert_der.clone(),
+        key_der,
+        quic_answered.clone(),
+        alt_svc.clone(),
+    );
 
     Pair {
         port,
         cert_der,
+        alt_svc,
         tcp_answered,
         tcp_accepted,
         quic_answered,
@@ -150,6 +184,7 @@ fn start_tcp(
     key: rustls::pki_types::PrivateKeyDer<'static>,
     answered: Arc<AtomicUsize>,
     accepted: Arc<AtomicUsize>,
+    alt_svc: AltSvc,
 ) -> std::thread::JoinHandle<()> {
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -171,7 +206,8 @@ fn start_tcp(
                     return;
                 };
                 accepted.fetch_add(1, Ordering::SeqCst);
-                let (acceptor, answered) = (acceptor.clone(), answered.clone());
+                let (acceptor, answered, alt_svc) =
+                    (acceptor.clone(), answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let Ok(mut stream) = acceptor.accept(sock).await else {
@@ -188,8 +224,21 @@ fn start_tcp(
                     // Counted before the write, so a test that sees the
                     // response has certainly seen this increment.
                     answered.fetch_add(1, Ordering::SeqCst);
+                    // Read at answer time rather than at start time, so a
+                    // test can change what this origin says between two
+                    // requests — which is the whole shape of the slow
+                    // tier.
+                    let advertisement = match &*alt_svc.lock().expect("alt-svc fixture") {
+                        Some(v) => format!("alt-svc: {v}\r\n"),
+                        None => String::new(),
+                    };
                     let _ = stream
-                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nh1")
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n{advertisement}\r\nh1"
+                            )
+                            .as_bytes(),
+                        )
                         .await;
                     let _ = stream.flush().await;
                     // `shutdown` rather than a drop: it writes TLS
@@ -217,6 +266,7 @@ fn start_quic(
     cert: rustls::pki_types::CertificateDer<'static>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
     answered: Arc<AtomicUsize>,
+    alt_svc: AltSvc,
 ) -> std::thread::JoinHandle<()> {
     let mut tls = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
@@ -241,7 +291,7 @@ fn start_quic(
             )
             .expect("the socket is already bound");
             while let Some(incoming) = endpoint.accept().await {
-                let answered = answered.clone();
+                let (answered, alt_svc) = (answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {
                     let Ok(conn) = incoming.await else { return };
                     let Ok(mut h3) =
@@ -250,16 +300,31 @@ fn start_quic(
                         return;
                     };
                     while let Ok(Some(resolver)) = h3.accept().await {
-                        let answered = answered.clone();
+                        let (answered, alt_svc) = (answered.clone(), alt_svc.clone());
                         tokio::spawn(async move {
                             let Ok((_req, mut stream)) = resolver.resolve_request().await else {
                                 return;
                             };
                             answered.fetch_add(1, Ordering::SeqCst);
-                            let resp = http::Response::builder()
-                                .status(http::StatusCode::OK)
-                                .body(())
-                                .expect("a 200 with no body");
+                            // The QUIC server advertises too. An origin
+                            // that could only withdraw an advertisement
+                            // over TCP could never withdraw one at all
+                            // once a client had moved to HTTP/3.
+                            let advertisement = alt_svc.lock().expect("alt-svc fixture").clone();
+                            let mut resp = http::Response::builder().status(http::StatusCode::OK);
+                            // `from_maybe_shared` rather than `header(..)`
+                            // so that a value only the TCP arm can write —
+                            // a repeated field line, which is two `\r\n`
+                            // separated lines on that wire and nothing at
+                            // all on this one — leaves this server sending
+                            // no field instead of failing to build a
+                            // response.
+                            if let Some(v) = advertisement
+                                .and_then(|v| http::HeaderValue::from_maybe_shared(v).ok())
+                            {
+                                resp = resp.header("alt-svc", v);
+                            }
+                            let resp = resp.body(()).expect("a 200 with no body");
                             if stream.send_response(resp).await.is_err() {
                                 return;
                             }

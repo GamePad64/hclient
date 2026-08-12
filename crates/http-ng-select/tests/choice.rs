@@ -39,6 +39,7 @@ type Selector = Selecting<TokioHandle, http_ng_tls_rustls::Rustls, FakeDns>;
 fn selector(pair: &Pair, dns: FakeDns) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     Selecting::new(
+        rt.clone(),
         Native::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone()),
         H3::new(rt, servers::client_tls(&pair.cert_der), dns.clone()).expect("H3::new does no I/O"),
         dns,

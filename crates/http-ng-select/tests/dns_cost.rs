@@ -11,7 +11,7 @@
 //! for `https://` at the default port. That function is `pub(crate)`, no
 //! record can cross the `Transport` seam, and this crate treats its members
 //! as read-only — so at the default port the type-65 query is made twice
-//! for a request that ends up on TCP. Three arms below, and between them
+//! for a request that ends up on TCP. The first three arms below, and between them
 //! they say exactly where the cost is:
 //!
 //! | request | queries |
@@ -23,6 +23,30 @@
 //! What would remove the duplicate is a way to hand an already-fetched
 //! record to a member, which is a change to `http-ng-native` and therefore
 //! a finding rather than an edit — see `docs/v04-w1-acceptance.md`.
+//!
+//! # The slow tier adds nothing to any of them (v0.4 W1 deliverable 4)
+//!
+//! `Alt-Svc` is a **response** header, so learning from it costs no query
+//! at all, and acting on it costs whatever the request was already going
+//! to cost. The last two arms measure that:
+//!
+//! | request | queries |
+//! |---|---|
+//! | one advertised onto QUIC, at a non-default port | **1** — the same one the hop before it paid, and no more |
+//! | any request, where the resolver cannot do SVCB | **0** — including the one the advertisement puts on QUIC |
+//!
+//! The second is the row worth reading twice: an origin behind a resolver
+//! with no SVCB support is unreachable by the fast tier at any price, and
+//! the slow tier reaches it for nothing.
+//!
+//! One row is **not** measured here and is inferred from two that are: a
+//! request the slow tier puts on QUIC at an origin's *default* port costs
+//! **1** rather than the 2 the same request costs on TCP, because the
+//! duplicate is `http-ng-native`'s and `http-ng-h3` makes no lookup (both
+//! measured, in the first two arms). It is not measured directly for the
+//! reason the first two arms cannot connect at all: an advertisement has
+//! to arrive in a response, and this process cannot put a server on port
+//! 443 to send one.
 //!
 //! # Why two of these arms do not connect to anything
 //!
@@ -37,6 +61,7 @@ mod fakedns;
 mod servers;
 
 use fakedns::{FakeDns, service_record};
+use http_body_util::BodyExt;
 use http_ng_core::unversioned::Transport;
 use http_ng_core::{RequestBody, Timeouts};
 use http_ng_h3::H3;
@@ -70,6 +95,7 @@ fn tls() -> http_ng_tls_rustls::Rustls {
 fn selector(dns: FakeDns, tls: impl Fn() -> http_ng_tls_rustls::Rustls) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     Selecting::new(
+        rt.clone(),
         Native::new(rt.clone(), tls(), dns.clone()),
         H3::new(rt, tls(), dns.clone()).expect("H3::new does no I/O"),
         dns,
@@ -150,4 +176,76 @@ async fn away_from_the_default_port_only_this_transport_asks() {
         dns.svcb_names(),
         [format!("_{}._https.{ORIGIN}", pair.port)]
     );
+}
+
+/// A request the **slow** tier puts on QUIC costs the same single query
+/// the hop before it paid — Alt-Svc adds none of its own.
+///
+/// Two hops at a non-default port, where `http-ng-native` does no
+/// discovery, so the only queries in the log are this transport's own: one
+/// per request, before and after the origin advertised. The second hop is
+/// on QUIC, which is what makes the count a fact about the slow tier
+/// rather than about two identical TCP requests.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_advertised_onto_quic_asks_no_more_than_the_one_before_it() {
+    let pair = servers::start();
+    pair.set_alt_svc(Some(&pair.h3_here("; ma=86400")));
+    let dns = FakeDns::new();
+    let t = selector(dns.clone(), || servers::client_tls(&pair.cert_der));
+    let uri = format!("https://{ORIGIN}:{}/hello", pair.port);
+
+    for expected in ["h1", "h3"] {
+        let resp = tokio::time::timeout(BOUND, t.execute(get(uri.clone())))
+            .await
+            .expect("inside the bound")
+            .expect("one of the two servers answered");
+        assert_eq!(resp.status(), 200);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("a complete body")
+            .to_bytes();
+        assert_eq!(body.as_ref(), expected.as_bytes());
+    }
+
+    let prefixed = format!("_{}._https.{ORIGIN}", pair.port);
+    assert_eq!(
+        dns.svcb_names(),
+        [prefixed.clone(), prefixed],
+        "one query per request, and the second one is the advertised hop"
+    );
+    assert_eq!(pair.tcp_answered(), 1);
+    assert_eq!(pair.quic_answered(), 1);
+}
+
+/// The slow tier costs **zero** queries where the resolver cannot do SVCB
+/// — and it is the only tier that can serve such an origin at all.
+///
+/// The fast tier stops at `Resolve::supports_svcb`, so an origin behind a
+/// resolver with no SVCB support could never be chosen onto QUIC before
+/// this tier existed. Now it can be, and the resolver is still not asked
+/// anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resolver_that_cannot_ask_is_still_never_asked_and_still_reaches_quic() {
+    let pair = servers::start();
+    pair.set_alt_svc(Some(&pair.h3_here("; ma=86400")));
+    let dns = FakeDns::cannot_ask_but_would_have_said(Vec::new());
+    let t = selector(dns.clone(), || servers::client_tls(&pair.cert_der));
+    let uri = format!("https://{ORIGIN}:{}/hello", pair.port);
+
+    for _ in 0..2 {
+        let resp = tokio::time::timeout(BOUND, t.execute(get(uri.clone())))
+            .await
+            .expect("inside the bound")
+            .expect("one of the two servers answered");
+        assert_eq!(resp.status(), 200);
+        // Drained, so the exchange is finished before the next hop reads
+        // the counters.
+        let _ = resp.into_body().collect().await.expect("a complete body");
+    }
+
+    assert_eq!(dns.svcb_lookups(), 0);
+    assert_eq!(pair.tcp_answered(), 1);
+    assert_eq!(pair.quic_answered(), 1, "advertised onto QUIC with no DNS");
 }
