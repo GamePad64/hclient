@@ -305,3 +305,52 @@ every write once a close frame has gone out (`SendAfterClosing`) and RFC
 6455 makes a ping after a close meaningless, so no probe follows one — a
 probe already in flight keeps its deadline. The closing handshake is
 therefore still unbounded, the same gap `poll_close` records for itself.
+
+## 8. The framing belongs in its own crate — and the rejected seam is right one level down
+
+`tungstenite` lives inside `http-ng-native` behind a `websocket` feature.
+**That is the one pluggable thing in this workspace that is not its own
+crate**, and it is inconsistent with the rule every other seam follows:
+`http-ng-tls-rustls` and `http-ng-tls-native-tls` behind `TlsConnect`,
+`http-ng-dns-system`/`-hickory`/`-doh` behind `Resolve`, `http-ng-rt-tokio`/
+`-smol`/`-embassy` behind the runtime seams. Cargo's features are additive,
+so a `websocket` feature on `http-ng-native` puts `tungstenite` into every
+build in any graph that switches it on — which is the argument that kept
+`http-ng-h3` out of `http-ng-native` and `http-ng-tls-quic` out of
+`http-ng-tls`, applied to the one place it was not.
+
+**The split is already most of the way there.** `NativeWebSocket<I, Tm>` is
+generic over the IO and the clock; it names `Native` nowhere. What genuinely
+needs `Native` is the other half: a connection of its own (its connector,
+its TLS, `http/1.1` alone on the ALPN list, and deliberately never the
+pool), and the h1 upgrade — `poll_without_shutdown` + `into_parts`, which
+needs hyper.
+
+**So the seam between them is "here is an upgraded byte stream, plus the
+`read_buf` hyper had already read past" — and that is exactly the shape §2
+rejected.** The rejection stands and is not weakened: as the *public* seam
+it excludes three of four backends, the browser among them. But as an
+**internal** seam between `http-ng-native` and a framing crate it is
+correct, because it is only ever asked of the backend that can answer it.
+A shape can be wrong at one level and right at the next; §2's argument was
+about which level, not about the shape.
+
+**The asymmetry with `http-ng-fetch` is what proves the arrangement.** The
+browser hands back *messages*, so `http-ng-fetch` implements
+`WebSocketConnect` directly and needs no adapter at all. The adapter exists
+exactly where the platform hands back *bytes*. If both needed one, the seam
+would be in the wrong place.
+
+**What this does not change**: `WebSocket`, `WebSocketConnect` and `Message`
+stay in `http-ng-core::unversioned` — the seam was never the problem. And
+`WebSocketKeepAlive` moves with the framing, because pings and pongs are
+frames; it was never `Native`'s business, and the fact that its knob is
+spelled `Native::websocket_keep_alive` today is a symptom of the same
+misplacement.
+
+Open, for whoever builds it: who implements `WebSocketConnect` afterwards.
+The framing crate cannot on its own — it has no connector — so it is either
+a composing type over something that can upgrade (the `Selecting` shape), or
+`Native` keeps the impl and delegates the framing. The second is less
+machinery and the first is more honest about what depends on what; measure
+the difference in what a caller has to write before choosing.
