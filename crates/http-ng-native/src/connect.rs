@@ -128,7 +128,7 @@
 //! `Inner`/`OutgoingBody` a year earlier in the same vertical).
 #![allow(clippy::too_many_arguments)]
 
-use crate::discovery::{self, Endpoint, NegativeCache, Origin};
+use crate::discovery::{self, Endpoint, NegativeCache, Origin, Prefetched};
 use crate::{mark, since};
 use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -855,6 +855,21 @@ where
 /// mechanism — and neither is spawned, so a dropped connect drops all
 /// three.
 ///
+/// # The record may already have been fetched, and then it is not fetched
+/// again
+///
+/// `prefetched` is [`Prefetched::NotConsulted`] for every caller that has
+/// not asked, which is the behaviour this function had before the
+/// parameter existed. A caller that *has* asked — through
+/// [`crate::Native::prepare`], for **this request's own authority**, with
+/// this transport's own resolver and this transport's own negative cache —
+/// hands the answer over instead, and no query goes out here.
+///
+/// The two states of "already asked" are both carried: `Looked(Some(..))`
+/// and `Looked(None)` are different instructions, and conflating the
+/// second with "not asked" would re-query precisely the origins that
+/// publish nothing (see [`Prefetched`]).
+///
 /// # The record is consulted once, and its failure is paid for once
 ///
 /// A discovered endpoint moves the connection: a different port, a
@@ -899,6 +914,7 @@ pub(crate) async fn connect<R, D, L, H>(
     alpn: &[&[u8]],
     discovery_cache: &NegativeCache,
     now: Duration,
+    prefetched: Prefetched,
 ) -> Result<
     (
         Conn<R::Stream, L::Stream<R::Stream>>,
@@ -925,12 +941,24 @@ where
     let mut v6 = Answers::new(dns.lookup_ipv6(host));
     let mut v4 = Answers::new(dns.lookup_ipv4(host));
 
-    let endpoint = alongside_address_lookups(
-        &mut v6,
-        &mut v4,
-        discovered_endpoint(dns, host, use_tls, port, discovery_cache, now),
-    )
-    .await;
+    let found = match prefetched {
+        // Nobody asked, so this connector asks — and the query goes out
+        // beside the address lookups rather than in front of them, which
+        // is what `alongside_address_lookups` is for.
+        Prefetched::NotConsulted => {
+            alongside_address_lookups(
+                &mut v6,
+                &mut v4,
+                discovered_endpoint(dns, host, use_tls, port, discovery_cache, now),
+            )
+            .await
+        }
+        // Already asked, for this request's own authority. No second
+        // query — and no second chance to ask, because `Looked(None)` is
+        // an answer.
+        already => already,
+    };
+    let endpoint = found.actionable();
 
     let first = attempt::<R, L, H>(
         rt,
@@ -985,26 +1013,35 @@ where
 /// effect.
 ///
 /// A record that contributes nothing (`Endpoint::is_inert`) is dropped to
-/// `None` here too, so that the caller's "was a record in play" test is
-/// the same question as "could this attempt have gone differently".
-async fn discovered_endpoint<D>(
+/// `None` by [`Prefetched::actionable`], so that the caller's "was a
+/// record in play" test is the same question as "could this attempt have
+/// gone differently".
+///
+/// **What it returns is three-valued, and this is the only place the three
+/// are told apart.** A condition that stopped the lookup is
+/// [`Prefetched::NotConsulted`] — nobody has an answer, and anyone who
+/// wants one must ask elsewhere; a lookup that happened is
+/// `Looked(..)`, whatever it found. [`crate::Native::prepare`] calls this
+/// function rather than a copy of it, so the rule about where discovery
+/// applies is written once and cannot drift between the two callers.
+pub(crate) async fn discovered_endpoint<D>(
     dns: &D,
     host: &str,
     use_tls: bool,
     port: u16,
     cache: &NegativeCache,
     now: Duration,
-) -> Option<Endpoint>
+) -> Prefetched
 where
     D: Resolve,
 {
     if !use_tls || port != HTTPS_DEFAULT_PORT {
-        return None;
+        return Prefetched::NotConsulted;
     }
     if cache.suppressed(&Origin::new(host, port), now) {
-        return None;
+        return Prefetched::NotConsulted;
     }
-    discovery::lookup(dns, host).await.filter(|e| !e.is_inert())
+    Prefetched::Looked(discovery::lookup(dns, host).await)
 }
 
 /// The port `https` means when a URI does not say otherwise — and the only
@@ -2059,6 +2096,7 @@ mod tests {
             &[],
             &cache,
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("nothing answers");
 
@@ -2107,6 +2145,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("nothing answers");
 
@@ -2282,6 +2321,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("nothing answers");
 
@@ -2338,6 +2378,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("nothing answers");
 
@@ -2467,6 +2508,7 @@ mod tests {
                 &[],
                 &cache,
                 Duration::ZERO,
+                Prefetched::NotConsulted,
             ));
             let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(
@@ -2564,6 +2606,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect("the v4 address must win the race");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -2594,6 +2637,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect("connect");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -2620,6 +2664,7 @@ mod tests {
             &alpn,
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect("connect");
         assert!(matches!(conn, Conn::Tls(_)));
@@ -2642,6 +2687,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("ftp isn't supported");
         assert_eq!(err.kind(), &ErrorKind::Unsupported);
@@ -2671,6 +2717,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ));
         let log = rt.log.borrow();
         assert_eq!(log.len(), 1);
@@ -2694,6 +2741,7 @@ mod tests {
             &[],
             &NegativeCache::default(),
             Duration::ZERO,
+            Prefetched::NotConsulted,
         ))
         .expect_err("no host — nowhere to connect to");
         assert_eq!(err.kind(), &ErrorKind::Connect);

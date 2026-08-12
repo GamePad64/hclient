@@ -1079,6 +1079,11 @@ where
             &[b"http/1.1"],
             &self.svcb_failures,
             now,
+            // Nothing prepared, and no way to prepare one: `Prepared`
+            // holds an `http::Request<RequestBody>` and a WebSocket
+            // handshake is not one. The connector does its own discovery
+            // here, exactly as it did before that type existed.
+            crate::discovery::Prefetched::NotConsulted,
         );
         let (conn, _tls_info, _facts) =
             crate::with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;

@@ -52,7 +52,7 @@ mod websocket;
 
 pub use body::UndeclaredRequestTrailers;
 pub use connect::Conn;
-pub use discovery::SVCB_FAILURE_TTL;
+pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 #[cfg(feature = "websocket")]
@@ -1114,42 +1114,138 @@ fn is_h2(protocol: Option<Protocol>) -> bool {
     }
 }
 
-/// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
-/// is the one bound this impl gained for it. `between_bytes` is enforced
-/// by a sleep held **inside the response body**, which outlives `execute`
-/// and therefore cannot borrow this transport's clock — it needs one of
-/// its own. Every runtime in this workspace was already `Clone` (both
-/// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
-/// pointers and says in its own doc that `Native` wants to clone it), so
-/// this pins down a fact rather than adding a restriction.
-impl<R, T, D, H> Transport for Native<R, T, D, H>
+/// The exchange itself, and the two entry points into it.
+///
+/// Inherent rather than on [`Transport`], which is the decision this pair
+/// of methods rests on: `Transport` is the seam every backend fills in,
+/// and "hand me the HTTPS record you already fetched" is a thing exactly
+/// one backend in this workspace can act on — a `fetch`-shaped transport
+/// has no DNS to save. Widening the seam for it would make every other
+/// backend answer a question it cannot have. `http-ng-select` reaches
+/// these because it names its members concretely, which is a decision it
+/// already made for its own reasons.
+///
+/// The bounds are the [`Transport`] impl's below, repeated because an
+/// inherent method cannot inherit them.
+impl<R, T, D, H> Native<R, T, D, H>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
-    D: Resolve,
-    // `H: Clone` for the same reason `R: Clone` is here: the response
-    // body outlives `execute` and reports the connection's end from
-    // `poll_frame`, so it needs a hook of its own rather than a borrow of
-    // this transport's. `H: Unpin` is argued where the sibling impl
-    // above declares it.
     H: Hooks + Clone + Unpin,
 {
-    /// The pooled body, with the `between_bytes` bound wrapped round it.
+    /// Do now the HTTPS-record lookup this transport would otherwise do
+    /// inside [`Transport::execute`], and hand the request back with the
+    /// answer attached.
     ///
-    /// The order matters and is the mirror of `http_ng::ClientBody`'s: the
-    /// idle bound is the **innermost** wrapper, next to the socket, so it
-    /// measures the gap between reads on the wire. Outside it the client
-    /// may add its own `Deadline` and decompression, neither of which can
-    /// hide a silent peer from this one.
-    type Body = NativeBody<R, T, H>;
-    type Error = Error;
+    /// # Who this is for
+    ///
+    /// A caller that is going to ask the same question anyway. RFC 9460's
+    /// `alpn` says which protocols an origin speaks, and a caller owning a
+    /// second protocol stack (`http-ng-select`) has to read it *before* it
+    /// can decide which stack a request belongs to — after which this
+    /// transport, left to itself, would ask for the very same record a
+    /// second time. Measured, that was two type-65 queries for one request
+    /// (`crates/http-ng-select/tests/dns_cost.rs`).
+    ///
+    /// # What it does not become
+    ///
+    /// **Not a way to tell this transport something.** The answer is
+    /// fetched here, by this transport, with its own resolver and its own
+    /// negative cache, for the authority of the request handed in — so
+    /// there is no version of this call in which a caller supplies the
+    /// record. See [`Prepared`] for why that is the whole point, and
+    /// `docs/v04-w1-acceptance.md` §3 for the shape that was rejected.
+    ///
+    /// **Not a cache.** What comes back is good for the one request it
+    /// travels with; nothing here remembers it, for [`crate::discovery`]'s
+    /// reason — `SvcbEndpoint` carries no TTL.
+    ///
+    /// # What it costs, and when it costs nothing
+    ///
+    /// Exactly what discovery costs inside `execute`, which for a URI
+    /// discovery does not apply to (`http://`, a port other than 443, an
+    /// origin held off by the negative cache) is **no query at all** —
+    /// [`Discovered::NotConsulted`] comes back and nothing was asked.
+    ///
+    /// One difference in *timing* is worth knowing. Inside `execute` the
+    /// record is fetched only when a connection is opened, and beside the
+    /// address lookups; here it is fetched before either, so a request
+    /// this transport would have served from its pool still pays for the
+    /// query. That is the caller's trade, and for the caller this exists
+    /// for it is not a new cost: it is the query that caller was about to
+    /// make itself.
+    pub async fn prepare(&self, req: http::Request<RequestBody>) -> Prepared
+    where
+        D: Resolve,
+    {
+        // The same reading of the same clock the negative cache's window
+        // is measured on — see the `epoch` field. `execute` takes its own
+        // for the pool's bookkeeping; these are two questions, and a
+        // request that never reaches `execute` must not need the second.
+        let now = self.rt.elapsed_since(self.epoch);
+        let uri = req.uri();
+        let found = match (connect::host(uri), connect::wants_tls(uri)) {
+            (Ok(host), Ok(use_tls)) => {
+                let port = connect::port(uri, use_tls);
+                // The connector's own function, not a copy of its rule:
+                // where discovery applies is decided in one place, so
+                // this cannot drift into asking where `execute` would
+                // not, or into staying silent where it would.
+                connect::discovered_endpoint(
+                    &self.dns,
+                    host,
+                    use_tls,
+                    port,
+                    &self.svcb_failures,
+                    now,
+                )
+                .await
+            }
+            // A URI with no host, or a scheme this transport refuses.
+            // Nothing is looked up and nothing is reported: the error is
+            // this request's to meet where it always met it, in
+            // `execute`, with the same type and the same message. Failing
+            // here would move a typed error to a method a caller need
+            // never have called.
+            _ => discovery::Prefetched::NotConsulted,
+        };
+        Prepared { req, found }
+    }
 
-    async fn execute(
+    /// [`Transport::execute`], for a request whose HTTPS record has
+    /// already been fetched by [`Self::prepare`].
+    ///
+    /// Identical in every other respect — same pool, same timeouts, same
+    /// errors. What it does not do is ask DNS for a record a moment after
+    /// somebody else asked for the same one.
+    pub async fn execute_prepared(
         &self,
-        req: http::Request<RequestBody>,
-    ) -> Result<http::Response<Self::Body>, Error> {
+        prepared: Prepared,
+    ) -> Result<http::Response<NativeBody<R, T, H>>, Error>
+    where
+        D: Resolve,
+    {
+        self.run(prepared).await
+    }
+
+    /// The whole of an exchange, from a request that may or may not have
+    /// been prepared.
+    ///
+    /// One body for both entry points rather than two that must be kept
+    /// in step: `Transport::execute` is this with
+    /// [`Prepared::new`] — nothing looked up — and
+    /// [`Self::execute_prepared`] is this with whatever
+    /// [`Self::prepare`] found.
+    async fn run(&self, prepared: Prepared) -> Result<http::Response<NativeBody<R, T, H>>, Error>
+    where
+        D: Resolve,
+    {
+        let Prepared {
+            req,
+            found: prefetched,
+        } = prepared;
         let (parts, body) = req.into_parts();
 
         // Branch final review, finding F1 (blocking): `Capabilities`
@@ -1318,6 +1414,12 @@ where
             alpn,
             &self.svcb_failures,
             now,
+            // Whatever `prepare` found, or `NotConsulted` for a request
+            // that came through `Transport::execute`. This is the only
+            // way a record reaches the connector from outside this
+            // function, and it was fetched for this request's own
+            // authority — see `Prepared`.
+            prefetched,
         );
         let (conn, tls_info, attempted) =
             with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
@@ -1405,6 +1507,50 @@ where
             .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, &uri, began);
         Ok(self.bound_body(resp, timeouts.between_bytes))
+    }
+}
+
+/// `R: Clone` is new as of the `first_byte`/`between_bytes` work, and it
+/// is the one bound this impl gained for it. `between_bytes` is enforced
+/// by a sleep held **inside the response body**, which outlives `execute`
+/// and therefore cannot borrow this transport's clock — it needs one of
+/// its own. Every runtime in this workspace was already `Clone` (both
+/// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
+/// pointers and says in its own doc that `Native` wants to clone it), so
+/// this pins down a fact rather than adding a restriction.
+impl<R, T, D, H> Transport for Native<R, T, D, H>
+where
+    R: TcpConnect + Timer + Clone,
+    R::Stream: 'static,
+    T: TlsConnect,
+    T::Stream<R::Stream>: 'static,
+    D: Resolve,
+    // `H: Clone` for the same reason `R: Clone` is here: the response
+    // body outlives `execute` and reports the connection's end from
+    // `poll_frame`, so it needs a hook of its own rather than a borrow of
+    // this transport's. `H: Unpin` is argued where the sibling impl
+    // above declares it.
+    H: Hooks + Clone + Unpin,
+{
+    /// The pooled body, with the `between_bytes` bound wrapped round it.
+    ///
+    /// The order matters and is the mirror of `http_ng::ClientBody`'s: the
+    /// idle bound is the **innermost** wrapper, next to the socket, so it
+    /// measures the gap between reads on the wire. Outside it the client
+    /// may add its own `Deadline` and decompression, neither of which can
+    /// hide a silent peer from this one.
+    type Body = NativeBody<R, T, H>;
+    type Error = Error;
+
+    /// [`Native::run`] with nothing looked up — which is what every
+    /// request through this seam is, because the seam has no way to carry
+    /// an answer and [deliberately does not gain one](Native::prepare).
+    /// The record is fetched inside, when and if a connection is opened.
+    async fn execute(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Self::Body>, Error> {
+        self.run(Prepared::new(req)).await
     }
 
     /// Identity: `Self::Error` is already `http_ng_core::Error`, and its
