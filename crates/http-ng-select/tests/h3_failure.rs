@@ -363,6 +363,20 @@ async fn a_demand_for_http_3_does_not_fall_back_but_still_teaches_the_memory() {
         (0, "h1"),
         "the failure a demanded request met is the same fact about the origin"
     );
+
+    // And the demand still outranks the memory, which is the other half of
+    // the same rule: a demand is answered before the resolver and the cache
+    // are asked, so it is answered before this transport's memory of
+    // failures too. Without this hop the pair reads as "a demand happens to
+    // go first"; with it, the two directions are one decision.
+    let mut req = request(&pair, None);
+    req.extensions_mut()
+        .insert(http_ng_core::RequireVersion(http::Version::HTTP_3));
+    let demanded_again = hop(&t, &pair, req).await;
+    assert!(
+        demanded_again.quic_tried >= 1,
+        "a suppressed origin must still be tried when the caller demands HTTP/3"
+    );
 }
 
 // --- what it costs ------------------------------------------------------
