@@ -606,6 +606,52 @@ async fn m2c_a_tcp_connect_that_is_refused() {
     summarise("TCP -> closed port", xs);
 }
 
+/// Where the forty milliseconds are, since a headline number that turned
+/// out to be an artefact of the fixture would be worse than no number.
+///
+/// `execute` returning a head and the body arriving after it are timed
+/// separately, with Nagle on and off on the same runtime — so the delay is
+/// attributed to a phase rather than to the transport in general.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "measurement"]
+async fn m2d_which_phase_the_delay_is_in() {
+    let (tcp_sock, udp_sock) = bind_pair();
+    let port = tcp_sock.local_addr().expect("local_addr").port();
+    let (cert, key) = identity();
+    let _tcp_server = start_tcp(tcp_sock, cert.clone(), key.clone_key());
+    let _quic_answered = start_quic(udp_sock, cert.clone(), key);
+
+    println!("\nM2d — head and body, timed apart");
+    for (label, nodelay) in [("Nagle on ", false), ("nodelay  ", true)] {
+        let mut heads = Vec::new();
+        let mut bodies = Vec::new();
+        for _ in 0..10 {
+            let t = tcp_on_unit_runtime(&cert, nodelay);
+            let started = Instant::now();
+            let resp = t.execute(get(port)).await.expect("the TCP server answered");
+            let head = started.elapsed();
+            let body_started = Instant::now();
+            let _ = resp.into_body().collect().await.expect("a complete body");
+            heads.push(head);
+            bodies.push(body_started.elapsed());
+        }
+        summarise(&format!("TCP {label} — `execute` to head"), heads);
+        summarise(&format!("TCP {label} — head to end of body"), bodies);
+    }
+    let mut heads = Vec::new();
+    for _ in 0..10 {
+        let t = quic(&cert);
+        let started = Instant::now();
+        let resp = t
+            .execute(get(port))
+            .await
+            .expect("the QUIC server answered");
+        heads.push(started.elapsed());
+        let _ = resp.into_body().collect().await;
+    }
+    summarise("QUIC — `execute` to head", heads);
+}
+
 // =========================================================================
 // M3 — what a race costs when QUIC wins
 // =========================================================================
@@ -626,33 +672,51 @@ async fn m3_a_race_that_quic_wins() {
     let quic_answered = start_quic(udp_sock, cert.clone(), key);
 
     println!("\nM3 — a race against a working QUIC origin");
-    for head_start in [
-        Duration::ZERO,
-        Duration::from_millis(1),
-        Duration::from_millis(50),
-        Duration::from_millis(300),
-    ] {
-        let before = (
-            tcp_server.accepted(),
-            tcp_server.answered(),
-            quic_answered.load(Ordering::SeqCst),
-        );
-        let q = quic(&cert);
-        let n = tcp(&cert);
-        let started = Instant::now();
-        let winner = race(&q, &n, port, head_start).await;
-        let took = started.elapsed();
-        // The losing arm's future is already dropped — `race` returns by
-        // value and the loser goes out of scope inside it. Give the
-        // server a moment to observe anything it was going to observe.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        println!(
-            "  head start {head_start:>8.3?}: winner {winner:<5} in {took:>9.3?} \
-             | tcp accepted +{} answered +{} | quic answered +{}",
-            tcp_server.accepted() - before.0,
-            tcp_server.answered() - before.1,
-            quic_answered.load(Ordering::SeqCst) - before.2,
-        );
+    // Both Nagle settings, because the first run of this measurement
+    // found the losing TCP arm delivering a complete request to the
+    // origin **after** its future had been dropped, and the obvious
+    // suspicion was that the bytes had been sitting in a Nagle-held
+    // kernel buffer. With `nodelay` the same thing happens sooner rather
+    // than not at all, which is what makes it a finding about the race
+    // and not about the option.
+    for nodelay in [false, true] {
+        println!("  --- TCP arm with nodelay = {nodelay} ---");
+        for head_start in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(50),
+            Duration::from_millis(300),
+        ] {
+            let before = (
+                tcp_server.accepted(),
+                tcp_server.answered(),
+                quic_answered.load(Ordering::SeqCst),
+            );
+            let q = quic(&cert);
+            let n = tcp_on_unit_runtime(&cert, nodelay);
+            let started = Instant::now();
+            let winner = race(&q, &n, port, head_start).await;
+            let took = started.elapsed();
+            // The losing arm's future is already dropped — `race` returns by
+            // value and the loser goes out of scope inside it. The counters
+            // are read TWICE for that reason: what the server had already
+            // seen at the instant of the drop, and what it saw in the second
+            // after it. The difference between the two readings is the only
+            // thing that can distinguish "the loser had got that far" from
+            // "the loser kept going".
+            let at_drop = (tcp_server.accepted(), tcp_server.answered());
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            println!(
+                "  head start {head_start:>8.3?}: winner {winner:<5} in {took:>9.3?} \
+                 | at the drop: tcp accepted +{} answered +{} \
+                 | 1 s later: +{} / +{} | quic answered +{}",
+                at_drop.0 - before.0,
+                at_drop.1 - before.1,
+                tcp_server.accepted() - before.0,
+                tcp_server.answered() - before.1,
+                quic_answered.load(Ordering::SeqCst) - before.2,
+            );
+        }
     }
 }
 
@@ -773,6 +837,9 @@ async fn m5_dropping_an_in_flight_quic_connect() {
             assert!(outcome.is_err(), "the black hole cannot have answered");
         }
         let at_drop = arrivals.count();
+        // The clock the "after the drop" figures are relative to is the
+        // bound just expired, not a second reading — `after` is exact and
+        // an `Instant::now()` here would add the print path to it.
         let dropped_at = Instant::now();
         tokio::time::sleep(Duration::from_secs(5)).await;
         let after_drop = arrivals.since_reset();
@@ -784,13 +851,20 @@ async fn m5_dropping_an_in_flight_quic_connect() {
             if late.is_empty() {
                 String::new()
             } else {
+                // The size matters more than the count. A retransmitted
+                // Initial is padded to 1200 bytes (RFC 9000 §14.1); a
+                // short one is not a retransmission but a goodbye — an
+                // Initial-level CONNECTION_CLOSE, which is what a
+                // cancellation *should* look like.
                 format!(
-                    " (first at +{:.3?}, i.e. {:.3?} past the drop)",
+                    " — {:?}, first at +{:.3?} ({:.3?} after the drop was issued)",
+                    late.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
                     late[0].0,
-                    late[0].0.saturating_sub(dropped_at.elapsed())
+                    late[0].0.saturating_sub(after),
                 )
             }
         );
+        let _ = dropped_at;
         // Whether the transport itself is still holding anything: a second
         // request through the SAME `H3` would reuse the endpoint. Dropped
         // here instead, so the next iteration is cold.
@@ -832,7 +906,11 @@ async fn m5b_dropping_the_transport_as_well_as_the_future() {
 /// is no shared budget, no capability check and no pool interaction. It is
 /// the smallest thing that produces the numbers, and it lives in a test
 /// file for exactly that reason.
-async fn race(q: &Quic, n: &Tcp, port: u16, head_start: Duration) -> &'static str {
+async fn race<N>(q: &Quic, n: &N, port: u16, head_start: Duration) -> &'static str
+where
+    N: Transport<Error = http_ng_core::Error>,
+    <N::Body as http_body::Body>::Error: std::fmt::Display,
+{
     let quic_arm = std::pin::pin!(exchange(q, get(port)));
     let tcp_arm = std::pin::pin!(async {
         if !head_start.is_zero() {
