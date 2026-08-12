@@ -466,7 +466,9 @@ cargo nextest run -p http-ng-select --test race_cost --run-ignored all \
 ```
 
 No CI job runs it and none should; it takes about three minutes, almost all
-of it spent waiting for quinn to give up.
+of it spent waiting for quinn to give up. One verbatim run is kept in
+`docs/measurements/v04-race-cost/`, as a receipt for the tables below and
+explicitly not as a baseline anything compares against.
 
 The fixture is two real servers behind one authority on the same port
 number, the shape `tests/servers.rs` already established — and duplicated
@@ -496,8 +498,9 @@ functions of the path at all.
 
 **M1 — what a QUIC connect to a black hole costs today, end to end.**
 `http_ng_h3::H3::execute` with no `Timeouts::connect` set, three runs:
-**30.005 s, 30.003 s, 30.005 s** (debug), **30.002 s** (release). v0.3's
-30 s is confirmed for this shape rather than reused.
+**30.005 s, 30.003 s, 30.005 s** (debug), **30.002 s, 30.002 s, 30.006 s**
+(release) — a spread of 4 milliseconds across six runs on two profiles.
+v0.3's 30 s is confirmed for this shape rather than reused.
 
 The mechanism, read after measuring: `quinn_proto::TransportConfig::default()`
 carries `max_idle_timeout: Some(VarInt(30_000))`, and `H3` never sets it —
@@ -511,15 +514,17 @@ attempt**, from the ladder below.
 **M2 — how early is the earliest honest signal.** Two different questions,
 and only one of them has an answer that scales with the network.
 
-The Initial retransmission ladder, read off the black hole (release):
+The Initial retransmission ladder, read off the black hole (release; the
+debug ladder is the same to three decimal places, which is the point —
+these are timers, not work):
 
 ```
-+  1.299ms  1200 bytes      the ClientHello
-+  1.001s   1200 bytes  ×2  PTO 1
-+  3.000s   1200 bytes  ×2  PTO 2
++674.360µs  1200 bytes      the ClientHello
++  1.002s   1200 bytes  ×2  PTO 1
++  3.001s   1200 bytes  ×2  PTO 2
 +  6.998s   1200 bytes  ×2  PTO 3
 + 14.991s   1200 bytes  ×2  PTO 4
-  gave up after 30.002s
+  gave up after 30.005s
 ```
 
 **The first PTO is at 1.001 s and it is a constant.** A client with no RTT
@@ -531,28 +536,35 @@ everything before it is the client waiting exactly as it would on a slow but
 working path. **A race cannot derive a head start shorter than 1 s from any
 signal the QUIC stack produces**, because there is none.
 
-Against that, what a working exchange costs, cold, release medians:
+Against that, what a working exchange costs, cold. Each row is n=10 within
+a run; the range is the **median across three separate release runs**,
+which is quoted rather than one run's figure because these move by a factor
+of two between runs and the failure numbers above do not move at all — that
+contrast is itself the point:
 
-| exchange | median | min | max |
-|---|---|---|---|
-| QUIC by name — UDP + TLS 1.3 + h3 SETTINGS + GET + body | **1.766 ms** | 0.671 ms | 5.963 ms |
-| QUIC by IP literal (no resolution) | 2.505 ms | 1.060 ms | 6.093 ms |
-| TCP by name — SYN + TLS 1.3 + GET + body | **41.767 ms** | 40.520 ms | 42.763 ms |
-| TCP by IP literal (no resolution) | 41.638 ms | 40.770 ms | 42.833 ms |
-| TCP with `TcpOpts { nodelay: true }` | **0.464 ms** | 0.383 ms | 1.813 ms |
-| TCP connect to a closed port (RST) | 0.132 ms | 0.122 ms | 0.296 ms |
+| exchange | median across three runs |
+|---|---|
+| QUIC by name — UDP + TLS 1.3 + h3 SETTINGS + GET + body | **1.8 – 3.3 ms** (best single sample 0.67 ms) |
+| QUIC by IP literal (no resolution) | 2.1 – 3.0 ms |
+| TCP by name — SYN + TLS 1.3 + GET + body | **41.8 – 42.5 ms** |
+| TCP by IP literal (no resolution) | 41.6 – 42.7 ms |
+| TCP with `TcpOpts { nodelay: true }` | **0.46 – 1.3 ms** |
+| TCP connect to a closed port (RST) | 0.02 – 0.16 ms |
 
-So the gap the policy is choosing against is **1.77 ms against 30.002 s** —
-four orders of magnitude, and the larger one does not move with the path.
+So the gap the policy is choosing against is **a couple of milliseconds
+against 30.002 s** — four orders of magnitude, and only the small one moves
+at all: with the run, and on a real network with the path.
 
-**The 41 ms in the TCP rows is a finding and not a floor.** It is entirely
-in the head — `execute`-to-head 43.4 ms, head-to-end-of-body 10 µs — it is
-unchanged by an IP literal, so it is not RFC 8305's `resolution_delay`, and
-it is unchanged between debug and release, so it is not crypto. It is
-**Nagle meeting the peer's delayed ACK**: `http_ng_rt::TcpOpts::default()`
-is all-off — *"the user turns nodelay on, not us"*, `caps.rs` — so every
+**The 41 ms in the TCP rows is a finding and not a floor**, and it is the
+one figure here that does not move: 40.5 to 45.5 ms in every sample of
+every run, debug and release alike. It is entirely in the head —
+`execute`-to-head 42.9 ms, head-to-end-of-body 8.7 µs — it is unchanged by
+an IP literal, so it is not RFC 8305's `resolution_delay`, and it is
+unchanged between debug and release, so it is not crypto. It is **Nagle
+meeting the peer's delayed ACK**: `http_ng_rt::TcpOpts::default()` is
+all-off — *"the user turns nodelay on, not us"*, `caps.rs` — so every
 `Native` connection this workspace makes carries Nagle, and turning it off
-takes the same exchange to 0.464 ms. Recorded in §8 as a finding for
+takes the same head to 0.72 ms. Recorded in §8 as a finding for
 `http-ng-native`'s neighbourhood rather than fixed here.
 
 **M3 — what a race costs when QUIC wins.** The hedge's whole justification.
@@ -561,33 +573,41 @@ read **twice** — at the instant the loser is dropped and one second later,
 because only the difference between the two readings distinguishes "the
 loser had already got that far" from "the loser kept going" (release):
 
-| head start | winner | in | TCP sockets accepted | TCP requests answered |
-|---|---|---|---|---|
-| 0 ms | quic | 7.6 ms | **1** | **1**, and it arrived *after* the drop |
-| 1 ms | quic | 5.0 ms | **1** | **1**, likewise |
-| 50 ms | quic | 3.4 ms | 0 | 0 |
-| 300 ms | quic | 3.3 ms | 0 | 0 |
+Six arms — three runs (one debug, two release) × Nagle on and off, because
+one run's row would read as deterministic and this is the one measurement
+here that is not:
+
+| head start | TCP socket opened at the origin | origin got a complete request | TCP arm won outright |
+|---|---|---|---|
+| **0 ms** | **6 of 6** | **5 of 6** | 2 of 6 |
+| **1 ms** | 5 of 6 | 4 of 6 | 1 of 6 |
+| 50 ms | **0 of 6** | 0 of 6 | 0 of 6 |
+| 300 ms | **0 of 6** | 0 of 6 | 0 of 6 |
+
+The QUIC arm answered in every one of the twenty-four, in 1.1 to 7.7 ms.
 
 **With no head start the losing arm delivers a complete, well-formed HTTP
-request to the origin.** At the moment the future was dropped the server had
-accepted a socket and read no request; one second later it had read and
-answered one. Nagle is not the explanation — it is the reason the request
-arrives *late* rather than the reason it arrives at all. The same table with
-`nodelay: true` on the TCP arm has the request answered *before* the drop
-instead of after it, and at a zero head start **the TCP arm wins outright**
-against a QUIC origin that was available and answering.
+request to the origin**, and the counters read twice are what establish it
+rather than infer it. With Nagle on, the server had accepted a socket and
+read no request at the instant of the drop, and had read and answered one a
+second later: the bytes were in the kernel before the future died and the
+close could not recall them. With `nodelay: true` the request is answered
+*before* the drop instead of after it — so Nagle is the reason it arrives
+late, not the reason it arrives.
 
-At 50 ms and above, the TCP arm opens no socket at all. The boundary
-between "cost nothing" and "sent the request twice" is sharp, and it sits
-between 1 ms and 50 ms on a machine where a QUIC handshake takes 1.8 ms.
+At 50 ms and above the TCP arm opens no socket at all, in every run. The
+boundary between "cost nothing" and "sent the request twice" is sharp, and
+it sits between 1 ms and 50 ms on a machine where a QUIC handshake takes a
+couple of milliseconds — which is to say it sits at roughly *one QUIC
+handshake*, wherever that happens to be.
 
 **M4 — what it costs when QUIC loses.** Both failures, and the premise that
 they are different ones is wrong.
 
 | origin | QUIC arm alone, unbounded | race, head start 0 | race, head start 300 ms |
 |---|---|---|---|
-| UDP black hole (`DROP`) | 30.002 s | tcp wins in 44.1 ms | tcp wins in 344.2 ms |
-| nothing bound on UDP (`REJECT`, ICMP) | **30.003 s** | tcp wins in 45.7 ms | tcp wins in 343.6 ms |
+| UDP black hole (`DROP`) | 30.002 s | tcp wins in 42.9 – 45.5 ms | tcp wins in 343.5 – 344.3 ms |
+| nothing bound on UDP (`REJECT`, ICMP) | **30.001 – 30.003 s** | tcp wins in 45.0 – 50.9 ms | tcp wins in 343.6 – 347.2 ms |
 
 **Both time out, at the same 30 s.** An origin with no HTTP/3 server at all
 is indistinguishable to `http-ng-h3` from a firewall dropping every packet
@@ -597,7 +617,7 @@ signal to build a policy on; a race, or a memory, or nothing.
 With the race, the caller's cost is `head start + the TCP exchange`, which
 is exactly additive: 44.1 ms at zero, 344.2 ms at 300 ms, 1.044 s at 1 s.
 The bound is `Timeouts::connect`, and it is honoured tightly — M1b, the
-same black hole with a bound set, overshoots by **0.5 to 1.3 ms** at 100 ms,
+same black hole with a bound set, overshoots by **0.5 to 2.0 ms** at 100 ms,
 300 ms, 1 s and 3 s.
 
 #### 7.4 The delay
@@ -654,7 +674,7 @@ arithmetic the measurements allow:
   fallback is not a budget. The fix is `nodelay`, not a larger constant.
 - Nothing needs to be reserved for tearing the loser down. Both directions
   measured: the QUIC arm's goodbye is one datagram 1.3 ms after the drop,
-  and `Timeouts::connect` itself overshoots by 0.5–1.3 ms.
+  and `Timeouts::connect` itself overshoots by 0.5–2.0 ms.
 
 #### 7.6 Cancellation
 
