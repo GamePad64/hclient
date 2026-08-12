@@ -822,7 +822,7 @@ graph-idn-backend:
 # feature of either is a build the crate deliberately refuses, so those two
 # keep the targeted checks they already have.
 
-# every feature combination compiles (56 of them)
+# every feature combination compiles (58 of them)
 features:
     cargo hack --workspace \
         --exclude http-ng-idn --exclude http-ng-rt-embassy \
