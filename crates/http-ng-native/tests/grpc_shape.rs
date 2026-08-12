@@ -8,7 +8,7 @@
 //! framer, no status enum and no `grpc-*` helper: the five-byte
 //! length-prefix, the status codes and the percent-decoding of
 //! `grpc-message` are a caller's job and stay a caller's job. What is under
-//! test is the seven things the *client* owes such a caller —
+//! test is the eight things the *client* owes such a caller —
 //!
 //! 1. `te: trailers` reaches the wire, and the HTTP/1-only headers beside
 //!    it do not (RFC 9113 §8.2.2, and the spec's *"used to detect
@@ -30,6 +30,11 @@
 //!    decompression — leave an `application/grpc` exchange alone, and its
 //!    timeouts stay out of the way of a stream that is idle for a long
 //!    time, which for gRPC is normal rather than suspicious.
+//! 8. **Connection management**: a call's trailers do not cost its
+//!    connection, a `GOAWAY` does not cost the *next* call, and two
+//!    concurrent calls take two connections — the last of which is the
+//!    real gap between this client and a gRPC one, and is measured here
+//!    rather than argued.
 //!
 //! # Everything is read from the server
 //!
@@ -134,15 +139,31 @@ enum Ending {
     Nothing,
 }
 
-struct Fixture {
-    addr: SocketAddr,
-    accepted: Arc<AtomicUsize>,
-    seen: Arc<Mutex<Vec<Seen>>>,
-    endings: Arc<Mutex<Vec<Ending>>>,
-    /// Shut until a test opens it. `/sink` reads not one byte of the
+/// Everything the connection tasks and the test both look at. One value
+/// rather than five `Arc`s threaded through three functions, which is what
+/// it was until the fifth arrived.
+#[derive(Default)]
+struct Shared {
+    /// TCP connections accepted. Every claim about pooling and
+    /// multiplexing is this number.
+    accepted: AtomicUsize,
+    /// Connections whose accept loop has ended — a server-side close,
+    /// observed rather than waited out.
+    closed: AtomicUsize,
+    seen: Mutex<Vec<Seen>>,
+    endings: Mutex<Vec<Ending>>,
+    /// Shut until a test opens it. `/g.S/Sink` reads not one byte of the
     /// request body before this is `true`, which is what makes the
     /// back-pressure bound causal rather than a race.
-    gate: Arc<AtomicBool>,
+    gate: AtomicBool,
+    /// How many requests have arrived at `/g.S/Pair`, which answers none
+    /// of them until two have.
+    paired: AtomicUsize,
+}
+
+struct Fixture {
+    addr: SocketAddr,
+    shared: Arc<Shared>,
 }
 
 impl Fixture {
@@ -151,35 +172,38 @@ impl Fixture {
     }
 
     fn seen(&self) -> Vec<Seen> {
-        self.seen.lock().unwrap().clone()
+        self.shared.seen.lock().unwrap().clone()
     }
 
     fn accepted(&self) -> usize {
-        self.accepted.load(Ordering::SeqCst)
+        self.shared.accepted.load(Ordering::SeqCst)
     }
 
     fn open_the_gate(&self) {
-        self.gate.store(true, Ordering::SeqCst);
+        self.shared.gate.store(true, Ordering::SeqCst);
     }
 
     /// Waits for the server to have finished with `n` request streams.
     /// Returning `false` rather than hanging is what makes a missing
     /// record a failed assertion instead of a stuck suite.
     async fn wait_for_seen(&self, n: usize, within: Duration) -> bool {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if self.seen().len() >= n {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        false
+        self.wait_until(within, || self.seen().len() >= n).await
     }
 
     async fn wait_for_endings(&self, n: usize, within: Duration) -> bool {
+        self.wait_until(within, || self.shared.endings.lock().unwrap().len() >= n)
+            .await
+    }
+
+    async fn wait_for_closed(&self, n: usize, within: Duration) -> bool {
+        self.wait_until(within, || self.shared.closed.load(Ordering::SeqCst) >= n)
+            .await
+    }
+
+    async fn wait_until(&self, within: Duration, mut done: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + within;
         while Instant::now() < deadline {
-            if self.endings.lock().unwrap().len() >= n {
+            if done() {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -188,7 +212,7 @@ impl Fixture {
     }
 
     fn endings(&self) -> Vec<Ending> {
-        self.endings.lock().unwrap().clone()
+        self.shared.endings.lock().unwrap().clone()
     }
 }
 
@@ -214,15 +238,9 @@ fn spawn_server() -> Fixture {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let seen: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
-    let endings: Arc<Mutex<Vec<Ending>>> = Arc::new(Mutex::new(Vec::new()));
-    let gate = Arc::new(AtomicBool::new(false));
+    let shared = Arc::new(Shared::default());
 
-    let accepted_t = Arc::clone(&accepted);
-    let seen_t = Arc::clone(&seen);
-    let endings_t = Arc::clone(&endings);
-    let gate_t = Arc::clone(&gate);
+    let shared_t = Arc::clone(&shared);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -234,24 +252,17 @@ fn spawn_server() -> Fixture {
                 let Ok((tcp, _)) = listener.accept().await else {
                     continue;
                 };
-                accepted_t.fetch_add(1, Ordering::SeqCst);
-                let seen = Arc::clone(&seen_t);
-                let endings = Arc::clone(&endings_t);
-                let gate = Arc::clone(&gate_t);
+                shared_t.accepted.fetch_add(1, Ordering::SeqCst);
+                let shared = Arc::clone(&shared_t);
                 tokio::spawn(async move {
-                    let _ = serve(tcp, seen, endings, gate).await;
+                    let _ = serve(tcp, Arc::clone(&shared)).await;
+                    shared.closed.fetch_add(1, Ordering::SeqCst);
                 });
             }
         });
     });
 
-    Fixture {
-        addr,
-        accepted,
-        seen,
-        endings,
-        gate,
-    }
+    Fixture { addr, shared }
 }
 
 /// One connection's worth of HTTP/2.
@@ -260,21 +271,23 @@ fn spawn_server() -> Fixture {
 /// `tests/http2.rs` gives: in `h2`'s server API it is `Connection::accept`
 /// that drives the connection's IO, so a handler awaited inside the accept
 /// loop would stall the very connection it is reading a body from.
-async fn serve(
-    tcp: tokio::net::TcpStream,
-    seen: Arc<Mutex<Vec<Seen>>>,
-    endings: Arc<Mutex<Vec<Ending>>>,
-    gate: Arc<AtomicBool>,
-) -> Result<(), h2::Error> {
+async fn serve(tcp: tokio::net::TcpStream, shared: Arc<Shared>) -> Result<(), h2::Error> {
     let mut conn = h2::server::handshake(tcp).await?;
     while let Some(accepted) = conn.accept().await {
         let (req, respond) = accepted?;
-        let seen = Arc::clone(&seen);
-        let endings = Arc::clone(&endings);
-        let gate = Arc::clone(&gate);
+        // RFC 9113 §6.8 / the spec's §"GOAWAY Frame": *"servers should send
+        // GOAWAY before terminating a connection to reliably inform
+        // clients which work has been accepted"*. Sent after this stream
+        // has been handed to its handler, so the stream it names is this
+        // one and the response still goes out.
+        let goaway = req.uri().path().ends_with("Goaway");
+        let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            handle(req, respond, seen, endings, gate).await;
+            handle(req, respond, shared).await;
         });
+        if goaway {
+            conn.graceful_shutdown();
+        }
     }
     Ok(())
 }
@@ -288,9 +301,7 @@ fn head(content_type: &str) -> http::response::Builder {
 async fn handle(
     req: http::Request<h2::RecvStream>,
     mut respond: h2::server::SendResponse<Bytes>,
-    seen: Arc<Mutex<Vec<Seen>>>,
-    endings: Arc<Mutex<Vec<Ending>>>,
-    gate: Arc<AtomicBool>,
+    shared: Arc<Shared>,
 ) {
     let (parts, mut body) = req.into_parts();
     let mut record = Seen {
@@ -323,7 +334,7 @@ async fn handle(
                 .body(())
                 .unwrap();
             let _ = respond.send_response(resp, true);
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── Response-Headers, *Length-Prefixed-Message, Trailers. The one
@@ -342,7 +353,7 @@ async fn handle(
             let _ = send.send_data(Bytes::copy_from_slice(a), false);
             let _ = send.send_data(Bytes::copy_from_slice(b), false);
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── Bidirectional: every request DATA frame is echoed back the
@@ -358,20 +369,20 @@ async fn handle(
             while let Some(chunk) = body.data().await {
                 let Ok(chunk) = chunk else {
                     record.complete = false;
-                    seen.lock().unwrap().push(record);
+                    shared.seen.lock().unwrap().push(record);
                     return;
                 };
                 record.frames.push(chunk.len());
                 record.body.extend_from_slice(&chunk);
                 let _ = body.flow_control().release_capacity(chunk.len());
                 if send.send_data(chunk, false).is_err() {
-                    seen.lock().unwrap().push(record);
+                    shared.seen.lock().unwrap().push(record);
                     return;
                 }
             }
             record.complete = true;
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── A response bigger than one flow-control window, ending in
@@ -393,7 +404,7 @@ async fn handle(
                 }
             }
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── The head goes out BEFORE a byte of the request is read, and
@@ -406,13 +417,13 @@ async fn handle(
             else {
                 return;
             };
-            while !gate.load(Ordering::SeqCst) {
+            while !shared.gate.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             drain(&mut body, &mut record).await;
             let _ = send.send_data(Bytes::from(framed(b"ok")), false);
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── The head goes out and then nothing ever does. What this
@@ -423,17 +434,39 @@ async fn handle(
             else {
                 return;
             };
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
             let ending = tokio::time::timeout(
                 Duration::from_secs(5),
                 std::future::poll_fn(|cx| send.poll_reset(cx)),
             )
             .await;
-            endings.lock().unwrap().push(match ending {
+            shared.endings.lock().unwrap().push(match ending {
                 Ok(Ok(reason)) => Ending::Reset(reason.to_string()),
                 Ok(Err(_)) => Ending::ConnectionGone,
                 Err(_) => Ending::Nothing,
             });
+        }
+
+        // ── A barrier: nobody is answered until two requests are in
+        // flight at once. If the client serialised them the first would
+        // never be answered, so the test's ceiling is what would fail —
+        // and how many CONNECTIONS the two took is then a fact about the
+        // pool rather than about the scheduler.
+        "/g.S/Pair" => {
+            drain(&mut body, &mut record).await;
+            shared.paired.fetch_add(1, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while shared.paired.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let Ok(mut send) =
+                respond.send_response(head("application/grpc+proto").body(()).unwrap(), false)
+            else {
+                return;
+            };
+            let _ = send.send_data(Bytes::from(framed(b"pong")), false);
+            let _ = send.send_trailers(grpc_trailers("0"));
+            shared.seen.lock().unwrap().push(record);
         }
 
         // ── A stream that says nothing for a while and then finishes
@@ -449,7 +482,7 @@ async fn handle(
             tokio::time::sleep(IDLE_GAP).await;
             let _ = send.send_data(Bytes::from(framed(b"late")), false);
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
 
         _ => {
@@ -461,7 +494,7 @@ async fn handle(
             };
             let _ = send.send_data(Bytes::from(framed(b"pong")), false);
             let _ = send.send_trailers(grpc_trailers("0"));
-            seen.lock().unwrap().push(record);
+            shared.seen.lock().unwrap().push(record);
         }
     }
 }
@@ -1379,4 +1412,155 @@ async fn an_idle_stream_survives_by_default_and_is_cut_only_when_asked() {
         "the same gap the unbounded arm rode out, cut by the knob the \
          caller reached for: {err}"
     );
+}
+
+// ── 9. Connection management ────────────────────────────────────────────
+
+/// **Two calls with trailers reuse one connection.**
+///
+/// The check-in happens on exactly one path in `H2Body::poll_frame` — the
+/// arm where `poll_trailers` answers `None` — and a response *with*
+/// trailers reaches that arm one poll later than a response without,
+/// because the trailers frame is handed to the caller first. A gRPC call
+/// always has trailers, so if that extra step lost the connection, every
+/// RPC would pay a handshake. It does not: the server accepted one socket
+/// for both calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_calls_with_trailers_share_one_connection() {
+    let server = spawn_server();
+    let client = client();
+
+    for _ in 0..2 {
+        let resp = tokio::time::timeout(
+            BOUND,
+            client.execute(call(
+                &server,
+                "/g.S/Unary",
+                RequestBody::Full(Bytes::from(framed(b"ping"))),
+            )),
+        )
+        .await
+        .expect("must not hang")
+        .expect("the call must succeed");
+        let (_, mut body) = resp.into_parts();
+        let (data, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+            .await
+            .expect("must not hang");
+        assert_eq!(data, framed(b"pong"));
+        assert!(trailers.is_some(), "every gRPC call ends in trailers");
+    }
+
+    assert!(server.wait_for_seen(2, BOUND).await);
+    assert_eq!(
+        server.accepted(),
+        1,
+        "the trailers frame is delivered before the body ends, and the \
+         check-in is on the other side of that — a connection lost here \
+         would cost a handshake per RPC"
+    );
+}
+
+/// **Two calls in flight at once take two connections, not two streams.**
+///
+/// This is the gap between this client and a gRPC one, measured rather
+/// than argued: gRPC's whole transport model is many concurrent calls
+/// multiplexed over one HTTP/2 connection, and an h2 connection here is
+/// **checked out of the pool exclusively** (`pool.rs`'s module doc, and
+/// `http2.rs`'s "One stream per connection"). The reason is `Spawn`:
+/// without a background task the only thing driving a connection is the
+/// in-flight request futures, so a caller that stopped polling one stream
+/// would stall its neighbours.
+///
+/// The barrier is what makes the count meaningful. `/g.S/Pair` answers
+/// nobody until two requests have arrived, so the two calls provably
+/// overlapped at the server; a client that had serialised them would hang
+/// and fail on the ceiling rather than quietly report `1`.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_concurrent_calls_take_two_connections_rather_than_two_streams() {
+    let server = spawn_server();
+    let client = client();
+
+    let one = client.execute(call(&server, "/g.S/Pair", RequestBody::Empty));
+    let two = client.execute(call(&server, "/g.S/Pair", RequestBody::Empty));
+    let (a, b) = tokio::time::timeout(BOUND, futures_util::future::join(one, two))
+        .await
+        .expect("both calls must be in flight at once — the server answers neither alone");
+    assert_eq!(a.expect("first call").status(), 200);
+    assert_eq!(b.expect("second call").status(), 200);
+
+    assert!(server.wait_for_seen(2, BOUND).await);
+    assert_eq!(
+        server.accepted(),
+        2,
+        "one connection per concurrent call: the pool hands an h2 \
+         connection out exclusively, so this client does not multiplex. \
+         A recorded limitation with `Spawn` behind it, not a defect — but \
+         a gRPC caller with many concurrent RPCs pays a connection for each"
+    );
+}
+
+/// **A `GOAWAY` is not raced: the next call opens a new connection and
+/// succeeds.**
+///
+/// The spec's §"GOAWAY Frame" puts the duty on the client — *"clients
+/// should consider any stream initiated after the last successfully
+/// accepted stream as UNAVAILABLE and retry the call elsewhere"*. Here
+/// "elsewhere" is a new connection, and the client never has to consider
+/// anything unavailable because it never initiates that stream:
+/// `http2::is_reusable` polls the pooled `Connection` once before offering
+/// it, which is the only moment a `GOAWAY` on an otherwise idle socket can
+/// be noticed, and `exchange` polls it once more while the request is
+/// still ours — a `Failed::NotSent`, which is the verdict that permits the
+/// retry.
+///
+/// Causal: the test waits for the server's connection task to have ENDED
+/// before making the second call, so the second call provably faces a
+/// pooled entry the peer has finished with, rather than racing the GOAWAY
+/// across the wire.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_goaway_costs_a_connection_and_not_the_next_call() {
+    let server = spawn_server();
+    let client = client();
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        client.execute(call(&server, "/g.S/Goaway", RequestBody::Empty)),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the call the GOAWAY names must still be answered");
+    let (_, mut body) = resp.into_parts();
+    let (_, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert!(
+        trailers.is_some(),
+        "GOAWAY does not cut the stream it names"
+    );
+
+    assert!(
+        server.wait_for_closed(1, BOUND).await,
+        "the server's connection task must have finished — that is what \
+         makes the next call face a dead pool entry rather than race one"
+    );
+
+    let again = tokio::time::timeout(
+        BOUND,
+        client.execute(call(
+            &server,
+            "/g.S/Unary",
+            RequestBody::Full(Bytes::from(framed(b"ping"))),
+        )),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the call after a GOAWAY must go elsewhere, not fail");
+    assert_eq!(again.status(), 200);
+    let (_, mut body) = again.into_parts();
+    let (data, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert_eq!(data, framed(b"pong"));
+    assert!(trailers.is_some());
+    assert_eq!(server.accepted(), 2, "elsewhere is a second connection");
 }
