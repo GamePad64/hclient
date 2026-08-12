@@ -156,6 +156,16 @@ impl<R: Timer> SeamTimer<R> {
 /// already in the past is ordinary (a timer armed for a moment that elapsed
 /// while the loop was busy) and must become a zero-length sleep, not a
 /// panic.
+///
+/// **The sentence above used to imply that `deadline - Instant::now()`
+/// panics, and on 1.97 it does not** — a mutation swapping one for the
+/// other survived the whole suite, and `past - Instant::now()` measured
+/// `0ns` rather than an abort. `impl Sub<Instant> for Instant` calls
+/// `duration_since`, which has saturated since 1.60. The call stays as it
+/// is for the reason std's own doc gives beside that change — *"future
+/// versions may reintroduce the panic in some circumstances"* — so this is
+/// a choice about a guarantee rather than about today's behaviour, and the
+/// mutation is recorded as a second control rather than as a gap.
 fn until(deadline: Instant) -> std::time::Duration {
     deadline.saturating_duration_since(Instant::now())
 }
@@ -463,6 +473,77 @@ mod tests {
         let n = |c: &Arc<Counter>| c.0.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(n(&a), 1, "the first poller must not be forgotten");
         assert_eq!(n(&b), 1, "the second poller must be woken too");
+    }
+
+    /// A socket that is Pending once and writable ever after — the shape a
+    /// real one has the moment its send buffer drains.
+    #[derive(Debug, Default)]
+    struct ReadyOnSecondPoll {
+        polls: Mutex<usize>,
+    }
+
+    impl UdpDatagrams for ReadyOnSecondPoll {
+        fn try_send(&self, _: &http_ng_rt::Datagrams<'_>) -> io::Result<()> {
+            Ok(())
+        }
+        fn poll_writable(&self, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let mut n = self.polls.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+        fn poll_recv(
+            &self,
+            _: &mut Context<'_>,
+            _: &mut [IoSliceMut<'_>],
+            _: &mut [http_ng_rt::RecvMeta],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok(SocketAddr::from(([127, 0, 0, 1], 0)))
+        }
+    }
+
+    #[test]
+    fn a_ready_answer_wakes_the_pollers_it_did_not_answer() {
+        // The other half of the fan-out, and the half that had no test until
+        // a mutation deleting `wake_all()` from the `Ready` arm survived the
+        // whole suite.
+        //
+        // `poll_writable` returning `Ready` CONSUMES the inner socket's one
+        // registration — the fan-out waker it was given is spent, and the
+        // socket is holding nothing. Every other poller on the list is then
+        // waiting on a wake-up that can no longer come from anywhere, which
+        // is the same stall `WakeAll` exists to prevent, arriving through
+        // the success path instead of the failure one.
+        let sock = Arc::new(SeamSocket::new(ReadyOnSecondPoll::default()));
+
+        let stranded = Arc::new(Counter::default());
+        let w = Waker::from(stranded.clone());
+        assert!(
+            sock.poll_writable_shared(&mut Context::from_waker(&w))
+                .is_pending(),
+            "the first poll must register and wait"
+        );
+
+        // A second poller gets the socket's `Ready`. The first is not its
+        // business and is not told anything by the socket.
+        let lucky = Waker::from(Arc::new(Counter::default()));
+        assert!(
+            sock.poll_writable_shared(&mut Context::from_waker(&lucky))
+                .is_ready()
+        );
+
+        assert_eq!(
+            stranded.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a poller left on the list after someone else took the readiness \
+             must be woken to re-poll and re-register"
+        );
     }
 
     #[test]
