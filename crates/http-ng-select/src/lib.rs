@@ -147,7 +147,7 @@ use futures_util::StreamExt;
 use http_ng_core::{Capabilities, Error, RequestBody, RequireVersion, unversioned::Transport};
 use http_ng_dns::Resolve;
 use http_ng_h3::H3;
-use http_ng_native::Native;
+use http_ng_native::{Discovered, Native, Prefetch, Prepared};
 use http_ng_rt::{TcpConnect, Timer};
 use http_ng_tls::TlsConnect;
 use std::time::Duration;
@@ -254,18 +254,40 @@ where
     }
 }
 
-/// Which stack a request goes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stack {
-    Tcp,
-    Quic,
+/// Which stack a request goes to, carrying the request itself — and, on
+/// the TCP arm, whatever the TCP stack has already been asked.
+///
+/// **A `Stack` and a request used to be two values**, and the request was
+/// handed to the chosen member afterwards. They are one now because the
+/// TCP arm may carry a [`Prepared`], which is a request *with* the HTTPS
+/// record that was fetched for it — the pairing that makes the record
+/// impossible to misdirect (see [`http_ng_native::Prepared`]) is exactly
+/// the pairing that stops them being separable here.
+enum Route {
+    /// The QUIC stack. Nothing prepared travels here: `http-ng-h3` reads
+    /// no HTTPS record at all, so there is nothing to hand it.
+    Quic(http::Request<RequestBody>),
+    /// The TCP stack, with whatever [`Native::prepare`] found for this
+    /// request — including "nothing was looked up", for the requests this
+    /// transport does not ask about (a `RequireVersion` demand, `http://`,
+    /// an IP literal, a resolver that cannot ask). Those get
+    /// [`Prepared::new`], which asserts nothing and leaves the connector's
+    /// own discovery exactly as it was.
+    Tcp(Prepared),
 }
 
+/// `R: Clone` is `Native`'s and not this crate's — it is the bound
+/// `Native`'s own exchange impl declares (its response body outlives
+/// `execute` and needs a clock of its own), and [`Native::prepare`] and
+/// [`Native::execute_prepared`] are inherent methods on that impl, so
+/// calling them means repeating it. Every runtime in this workspace is
+/// already `Clone`, and `Selecting` could not be constructed by a caller
+/// whose `Native` did not satisfy it in any case.
 impl<R, T, D> Selecting<R, T, D>
 where
-    R: TcpConnect + Timer,
+    R: TcpConnect + Timer + Clone,
     T: TlsConnect,
-    Native<R, T, D>: Transport,
+    Native<R, T, D>: Prefetch,
     H3<R, T, D>: Transport,
     D: Resolve,
 {
@@ -417,6 +439,32 @@ where
     /// endpoint is HTTP/2-only has asked for HTTP/2, and an `Alt-Svc`
     /// header heard on an earlier request does not overrule that.
     ///
+    /// # The connector is asked first, because it was going to ask anyway
+    ///
+    /// [`Native::prepare`] does the lookup this transport needs *and* the
+    /// one the TCP stack was about to make inside its own connector, and
+    /// hands back both the answer and the request. Before it, the same
+    /// record was fetched twice for one request chosen onto TCP at an
+    /// origin's default port — counted, in `tests/dns_cost.rs`.
+    ///
+    /// Three things follow, and none of them is a policy of this crate's:
+    ///
+    /// - **Where the connector does not look, this transport looks for
+    ///   itself.** [`Discovered::NotConsulted`] is not an answer; it is
+    ///   the connector saying discovery does not apply to this request (a
+    ///   port other than 443 — where the record lives under a prefixed
+    ///   name only *this* transport constructs — or an origin its own
+    ///   negative cache is holding off). The fallback is the lookup this
+    ///   crate has always made, and it costs exactly what it did before.
+    /// - **Where the connector does look, its answer is the answer.** One
+    ///   query per request, and the record that chose the stack is the
+    ///   record the connection is made under, which two independent
+    ///   lookups could not promise.
+    /// - **The rule about where discovery applies is not copied here.**
+    ///   This transport asks and is told. A copy would be a second place
+    ///   for that rule to live, and the two would drift into asking twice
+    ///   again or into never asking at all.
+    ///
     /// # And only then the cache — the slow tier
     ///
     /// Reached exactly when there is no record to read: none published,
@@ -425,40 +473,72 @@ where
     /// no answer, so nothing the fast tier decides pays for this — no
     /// extra query, and the cache's lock is not taken on a path a record
     /// settled.
-    async fn choose(&self, req: &http::Request<RequestBody>) -> Stack {
+    async fn route(&self, req: http::Request<RequestBody>) -> Route {
         if let Some(RequireVersion(v)) = req.extensions().get::<RequireVersion>() {
             return if *v == http::Version::HTTP_3 {
-                Stack::Quic
+                Route::Quic(req)
             } else {
-                Stack::Tcp
+                Route::Tcp(Prepared::new(req))
             };
         }
         if req.uri().scheme() != Some(&http::uri::Scheme::HTTPS) {
-            return Stack::Tcp;
+            return Route::Tcp(Prepared::new(req));
         }
         let Some(host) = req.uri().host() else {
-            return Stack::Tcp;
+            return Route::Tcp(Prepared::new(req));
         };
-        let port = req.uri().port_u16().unwrap_or(HTTPS_DEFAULT_PORT);
+        let (host, port) = (
+            host.to_owned(),
+            req.uri().port_u16().unwrap_or(HTTPS_DEFAULT_PORT),
+        );
 
-        if !is_ip_literal(host) && self.dns.supports_svcb() {
-            let name = Self::record_name(host, port);
-            match self.origin_offers_h3(&name).await {
-                Some(true) => return Stack::Quic,
-                Some(false) => return Stack::Tcp,
-                // No record at all: the slow tier is what this case is
-                // for, and it is the common case on today's web.
-                None => {}
-            }
+        // The two requests this transport asks nothing about. Neither is
+        // prepared, so the TCP stack behaves for them exactly as it does
+        // for a request that never met this crate — in particular an IP
+        // literal keeps paying its record lookup once per *connection*
+        // inside the connector, rather than once per request out here.
+        if is_ip_literal(&host) || !self.dns.supports_svcb() {
+            return self.by_advertisement(Prepared::new(req), &host, port);
         }
 
+        let prepared = self.tcp.prepare(req).await;
+        let offers_h3 = match prepared.discovered() {
+            Discovered::Record { alpn } => Some(alpn.iter().any(|a| a.as_slice() == ALPN_H3)),
+            // An answer, and the reason `Discovered` has three variants:
+            // the connector looked and there is no record, so this
+            // transport must not look again — and the slow tier is what
+            // this case is for, which is the common case on today's web.
+            Discovered::NoRecord => None,
+            // Not an answer. The connector does not do discovery here, so
+            // nobody has asked yet, and the question is still this
+            // transport's to ask.
+            Discovered::NotConsulted => {
+                self.origin_offers_h3(&Self::record_name(&host, port)).await
+            }
+        };
+        match offers_h3 {
+            Some(true) => Route::Quic(prepared.into_request()),
+            Some(false) => Route::Tcp(prepared),
+            None => self.by_advertisement(prepared, &host, port),
+        }
+    }
+
+    /// The slow tier's answer for a request the fast tier could not
+    /// settle, with the prepared request carried through either way.
+    ///
+    /// Split out of [`Self::route`] because it is reached from two places
+    /// — a request with no record, and a request this transport asks no
+    /// record for — and one of them is the IP literal, which is served by
+    /// this tier and not by the fast one (`altsvc`'s doc says why that is
+    /// not an exception).
+    fn by_advertisement(&self, prepared: Prepared, host: &str, port: u16) -> Route {
         if self
             .alt_svc
             .advertises_h3(&Origin::new(host, port), self.now())
         {
-            Stack::Quic
+            Route::Quic(prepared.into_request())
         } else {
-            Stack::Tcp
+            Route::Tcp(prepared)
         }
     }
 
@@ -593,9 +673,11 @@ fn is_ip_literal(host: &str) -> bool {
 
 impl<R, T, D> Transport for Selecting<R, T, D>
 where
-    R: TcpConnect + Timer,
+    // `Clone` for the reason given above the inherent impl: it is
+    // `Native`'s bound, and this impl calls `Native`'s inherent methods.
+    R: TcpConnect + Timer + Clone,
     T: TlsConnect,
-    Native<R, T, D>: Transport<Error = Error>,
+    Native<R, T, D>: Prefetch + Transport<Error = Error>,
     H3<R, T, D>: Transport<Error = Error>,
     <Native<R, T, D> as Transport>::Body:
         http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
@@ -615,6 +697,13 @@ where
     /// it is the only transport. This is what keeps the two members'
     /// behaviour a fact about them rather than a fact about this crate.
     ///
+    /// The TCP arm goes through `Native::execute_prepared` rather than
+    /// `Transport::execute`, which is the same exchange with one thing
+    /// added: the HTTPS record the choice was made from, so the connector
+    /// does not fetch it a second time. Nothing about the request itself
+    /// changes — the record travels *with* it, in a `Prepared` that
+    /// [`Native::prepare`] built out of this very request.
+    ///
     /// The response is likewise handed back unchanged — the `Alt-Svc`
     /// field is *read* on the way past and is not removed, because a
     /// caller inspecting its own response is entitled to see what the
@@ -629,18 +718,17 @@ where
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Self::Body>, Error> {
-        let stack = self.choose(&req).await;
-        // Before the request is moved into the member. A redirect chain
+        // Before the request is moved into `route`. A redirect chain
         // re-enters `execute` per hop with that hop's own URI, so each
         // origin in it hears its own advertisement and no other's.
         let origin = Self::alt_svc_origin(req.uri());
-        let resp = match stack {
-            Stack::Tcp => self
+        let resp = match self.route(req).await {
+            Route::Tcp(prepared) => self
                 .tcp
-                .execute(req)
+                .execute_prepared(prepared)
                 .await
                 .map(|r| r.map(SelectedBody::Tcp)),
-            Stack::Quic => self
+            Route::Quic(req) => self
                 .quic
                 .execute(req)
                 .await
