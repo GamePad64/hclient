@@ -85,27 +85,42 @@
 //!
 //! # What the choice costs, in queries
 //!
-//! At most one `Resolve::lookup_svcb` per request, and it is **not** shared
-//! with the one `http-ng-native` makes inside its own connector: that one
-//! is `pub(crate)`, there is no way to hand a record across the
-//! `Transport` seam, and this crate treats its members as read-only. So at
-//! an origin's **default port**, where `http-ng-native` also does
-//! discovery, an HTTP/1.1 or HTTP/2 request through this transport issues
-//! the type-65 query **twice**; an HTTP/3 one issues it once, because
-//! `http-ng-h3` does no SVCB lookup at all. At a non-default port
-//! `http-ng-native` skips discovery entirely and the count is one either
-//! way. Both counts are measured rather than reasoned —
-//! `tests/dns_cost.rs` counts the calls a resolver received.
+//! **At most one `Resolve::lookup_svcb` per request, whichever stack
+//! answers**, and it is the *same* one `http-ng-native` makes inside its
+//! own connector rather than a second like it. At an origin's default port
+//! this transport does not make the query itself: it asks the TCP member
+//! to make it — `http_ng_native::Prefetch::prepare` — reads the answer,
+//! and hands both the answer and the request back, so the connector does
+//! not ask again. An HTTP/3 request costs the same one, because
+//! `http-ng-h3` does no SVCB lookup at all and the query has already been
+//! made by then.
+//!
+//! It used to be **two** on the TCP path, which is what that seam was
+//! built for; `docs/v04-w1-acceptance.md` §3.1 is the whole argument,
+//! including why the record is fetched *by* the member rather than handed
+//! *to* it. Both counts are measured rather than reasoned —
+//! `tests/dns_cost.rs` counts the calls a resolver received, and
+//! `tests/record_handover.rs` watches the connection, which is the half a
+//! count cannot see.
+//!
+//! Away from the default port the member does no discovery at all — the
+//! record lives under `_<port>._https.<host>`, a name only this transport
+//! constructs — so it answers `Discovered::NotConsulted` and this
+//! transport asks its own resolver, exactly as it always did. The rule is
+//! *ask the member, because it was going to ask; where it did not look,
+//! look for yourself*, and this crate keeps no copy of the member's rule
+//! about where discovery applies.
 //!
 //! **Alt-Svc adds none of them.** A request chosen onto QUIC by a
 //! remembered advertisement pays the same single lookup an origin with no
-//! record already paid — and one *fewer* than the same request would have
-//! paid on TCP, because `http-ng-native`'s duplicate goes with it. Where
-//! the resolver cannot do SVCB at all the count stays zero and the choice
-//! is still available.
+//! record already paid. Where the resolver cannot do SVCB at all the count
+//! stays zero and the choice is still available.
 //!
 //! A `RequireVersion` demand costs **nothing**: it is answered before the
-//! resolver and the cache are asked at all.
+//! resolver and the cache are asked at all. So does `http://`, and so does
+//! an IP literal — for a literal the member is not asked to prepare
+//! either, because the query it would make on a *connection* would become
+//! one per *request*.
 //!
 //! # No cache for the record, deliberately — and one for the header,
 //! deliberately
@@ -303,6 +318,15 @@ where
     /// built with; handing a different one here does not redirect their
     /// connections, it only changes what this transport believes about an
     /// origin's protocols.
+    ///
+    /// **And it is not asked at all where the TCP member is asked
+    /// instead**, which is at an origin's default port — see the crate
+    /// doc's cost section. That is the one place a caller who hands three
+    /// different resolvers in can see the difference, and it is the
+    /// honest direction: the record that chooses the stack is then the
+    /// record the connection is made under, where two independent lookups
+    /// could disagree. `dns` is still what answers away from the default
+    /// port, where the member does not look.
     ///
     /// `rt` is a third handle for the same reason `dns` is, and it is used
     /// for one thing: the slow tier's clock. Both members take one of

@@ -214,39 +214,177 @@ origin.
 Counted, not reasoned about — `crates/http-ng-select/tests/dns_cost.rs`
 counts the calls a resolver received.
 
-| request | type-65 queries |
-|---|---|
-| `https://origin/` chosen onto TCP | **2** — this transport's, and then `http-ng-native`'s own connector's |
-| `https://origin/` chosen onto QUIC | **1** — `http-ng-h3` does no SVCB lookup at all |
-| `https://origin:port/` | **1** — `http-ng-native` skips discovery away from the default port |
-| any request carrying `RequireVersion` | **0** |
-| `http://` or an IP literal | **0** |
+| request | type-65 queries | |
+|---|---|---|
+| `https://origin/` chosen onto TCP | **1** | **was 2**, see §3.1 — one for the choice and one for the connection, and they are the same one now |
+| `https://origin/` chosen onto QUIC | **1** | unchanged — `http-ng-h3` does no SVCB lookup at all |
+| `https://origin:port/` | **1** | unchanged — the connector does no discovery away from the default port, so this transport asks for the prefixed record itself |
+| any request carrying `RequireVersion` | **0** | unchanged |
+| `http://` or an IP literal | **0** | unchanged |
 
-§W1's *"costs no new discovery at all — only the acting"* is true of the
-**mechanism** and not of the count. **The duplicate is a finding, not a
-defect of this crate, and closing it is a change to `http-ng-native`:**
-`discovery::lookup` is `pub(crate)`, `Endpoint` is a private type, and no
-record can cross the `Transport` seam. Three shapes would close it, and
-none of them is this crate's to make:
+The first row is the only one that moved, and that is the whole of the
+claim: **one type-65 query per request that has a name to ask about,
+whichever stack answers.** What decides the count is no longer which member
+serves the request.
 
-- a way to hand `Native` an already-fetched `SvcbEndpoint` for this request
-  (a request extension would fit the existing vocabulary — `Timeouts`,
-  `AllowEarlyData` and `RequireVersion` all travel that way);
-- `Native` skipping its own discovery when told the caller has done it;
-- a memoising `Resolve` adapter, which is the one a *user* can already build
-  today without any crate here changing, and the reason there is none in
-  this crate is in the next paragraph.
+§W1's *"costs no new discovery at all — only the acting"* was true of the
+**mechanism** and not of the count; it is true of both now.
 
-**There is no cache here, deliberately.** One remembered answer per origin
-would turn one query per request into one per origin, and the reason not to
-is `http-ng-native`'s own, about the other half of the same problem: *"this
-origin has no HTTPS record" is a DNS answer with a TTL of its own, which
-`SvcbEndpoint` does not carry, and inventing a lifetime for someone else's
-answer is how a resolver's cache and ours drift apart.* A resolver that
-caches (`http-ng-dns-hickory`, with the real TTLs) already removes the cost;
-one that does not (`http-ng-dns-doh`, by an explicit decision of its own)
-would not have it removed by a second cache here that no caller can turn
-off.
+**There is still no cache here, deliberately.** One remembered answer per
+origin would turn one query per request into one per origin, and the reason
+not to is `http-ng-native`'s own, about the other half of the same problem:
+*"this origin has no HTTPS record" is a DNS answer with a TTL of its own,
+which `SvcbEndpoint` does not carry, and inventing a lifetime for someone
+else's answer is how a resolver's cache and ours drift apart.* A resolver
+that caches (`http-ng-dns-hickory`, with the real TTLs) already removes the
+cost; one that does not (`http-ng-dns-doh`, by an explicit decision of its
+own) would not have it removed by a second cache here that no caller can
+turn off. **Nothing below needed one:** not asking twice *within one
+request* needs no lifetime at all, which is what makes it a different
+problem from the one that has no honest answer.
+
+### 3.1 The duplicate, and the shape that closed it
+
+Written up as a finding when this section was first written — *"closing it
+is a change to `http-ng-native`"* — with three candidate shapes. It is
+closed now, and this is which one and why the other two lost.
+
+**What was built: `http_ng_native::Prefetch`**, a trait with two methods,
+implemented by `Native` alone.
+
+```rust
+let prepared = native.prepare(req).await;   // the connector's own lookup, now
+match prepared.discovered() {               // three states, see below
+    Discovered::Record { alpn } => …,       // and then either
+    …
+}
+native.execute_prepared(prepared).await     // …the same request, with the answer
+```
+
+`Selecting::route` calls it, reads the one bit it needs (`h3` in the ALPN
+list), and hands the same value back on the TCP arm. The connector then
+does not look again, because it is holding what it would have found.
+
+**The record never crosses the seam as data.** `prepare` *fetches* it —
+with `Native`'s own resolver, under `Native`'s own rule about where
+discovery applies, gated by `Native`'s own negative cache, for the
+authority of the request handed in. `Prepared` then owns that request, and
+there is no method that replaces it and no constructor that pairs a record
+with a request it was not fetched for (the fields are `pub(crate)`;
+`Prepared::new` exists and sets *nothing looked up*). So **the wrong-origin
+question is not answered by a check — it cannot be asked**, which is the
+first of the four things this work was to be judged on.
+
+That distinction is the reason the request-extension shape lost, and it is
+not a stylistic one:
+
+- **A request extension is the caller's channel.** `Timeouts`,
+  `AllowEarlyData` and `RequireVersion` are all statements a *caller* makes
+  about their own request, which a transport reads and may refuse. A record
+  is evidence a transport would otherwise have fetched, and evidence in the
+  caller's channel is evidence anyone who can build a request can forge.
+- **And an HTTPS record is not only a protocol list.** `SvcbEndpoint`
+  carries `port`, `ipv4hint`, `ipv6hint` and `ech_config_list`. An
+  extension carrying one would let any code that can build a request send
+  the connection to another port and another address — a thing nothing in
+  this workspace can do today except DNS. The check that would be needed to
+  stop it (carry the origin inside the extension, compare it with the URI)
+  is exactly the shape the brief asked to avoid, and it would still be a
+  check against a value the caller chose.
+- **It would also have to live in `http-ng-core`**, beside the other three
+  extension types, where every transport that never resolves a name would
+  meet it.
+
+**"`Native` skipping its own discovery when told" is the same change seen
+from the other end — but only if "told" carries the record.** A bare skip
+is a *worse* thing wearing the same number: the record contributes a port,
+address hints, an ALPN restriction and an ECH slot to the connection, so a
+connector that skipped discovery because someone else had done it would
+connect to the origin's own endpoint and silently lose all four. The count
+would improve by dropping a capability. That failure has a test of its own
+(`the_record_this_transport_fetched_is_the_one_the_connection_is_made_under`
+in `crates/http-ng-select/tests/record_handover.rs`) precisely because
+`dns_cost.rs` cannot see it: a connector that took the answer and threw it
+away asks exactly as few questions as one that used it. M49 in §3.3 is that
+mutation.
+
+**The memoising `Resolve` adapter loses on all three counts.** It changes a
+*user's graph* rather than the library's behaviour, so the duplicate stays
+in the library for everyone who does not know to wrap their resolver; it
+cannot tell one request from the next, because `Resolve` has no notion of a
+request, so a memo is either unbounded or needs a lifetime this workspace
+has written down twice that it will not invent (the third judged point:
+*do not build a cache*); and it is the wrong unit — the problem was one
+request asking the same question twice, and a per-origin memory is an
+answer to a different question.
+
+### 3.2 "There is no record" is an answer, and it travels as one
+
+The second judged point, and the half a plain `Option` gets wrong.
+`Prefetched` (internal) and `Discovered` (what a caller reads) both have
+**three** states, not two:
+
+| state | what it means | what the connector does |
+|---|---|---|
+| `NotConsulted` | nobody looked, and nothing is ruled out | looks, exactly as it did before this existed |
+| `NoRecord` | looked, and there is none to act on — none published, the resolver cannot ask, the lookup failed, every answer was AliasMode | **does not look** |
+| `Record { alpn }` | the first-ranked ServiceMode record's ALPN list | uses it, and does not look |
+
+Collapsed into one `None`, the connector would re-query exactly the origins
+whose answer cost the most to get: the ones that publish nothing, where a
+resolver has to reach an authoritative answer to say so. That is M46 in
+§3.3, and it is killed by one test and only one, which is the point of
+having written it.
+
+`NotConsulted` is load-bearing in the other direction too, and it is what
+keeps `http-ng-select` from owning a copy of `http-ng-native`'s rule about
+where discovery applies. The rule in the caller is now: **ask the
+connector, because it was going to ask anyway; where it did not look, look
+for yourself.** At a non-default port the connector answers `NotConsulted`
+— the record there lives under `_<port>._https.<host>`, a name only
+`http-ng-select` constructs — and this transport then makes exactly the
+lookup it always made. A copy of the gate would have been a second place
+for it to live, and the two would have drifted into asking twice again or
+into never asking at all (M51).
+
+### 3.3 Mutation testing
+
+Anchor **312 tests** — `cargo nextest run --no-fail-fast -p http-ng-select
+-p http-ng-native --all-features`, 100 + 209 as they stood, plus the three
+new arms in `record_handover.rs` — verified before the run **and again
+after every restore**. Each patch had to match exactly once or the mutation
+was not run. The harness reads the **names** of the failing tests and
+refuses to score a run whose name count disagrees with nextest's own
+`Summary`; restores are `git checkout` followed by `os.utime`, because a
+restore that preserves mtime leaves cargo holding the mutant.
+
+**Nine applied: eight killed, one control survived as intended, none
+survived unintentionally.**
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| M45 | the handed-over record is ignored, so the connector queries again | **killed** (3) | `a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_once`, `an_origin_that_publishes_no_record_is_not_asked_about_twice`, `the_record_this_transport_fetched_is_the_one_the_connection_is_made_under` |
+| M46 | `Looked(None)` conflated with `NotConsulted` — "no record" read as "nobody looked" | **killed** (1) | `an_origin_that_publishes_no_record_is_not_asked_about_twice` |
+| M47 | the record is fetched for the wrong origin: the port gate goes, so the default-port record is used at a URI that named its own port | **killed** (8) | `a_record_is_not_applied_to_a_uri_that_named_its_own_port` (`http-ng-native`), `a_record_this_transport_fetched_under_a_prefixed_name_does_not_move_the_connection`, `away_from_the_default_port_only_this_transport_asks`, `an_ip_literal_has_no_record_to_look_up_and_is_served_over_tcp`, and 4 more |
+| M48 | discovery is skipped when nothing was handed over — a plain `Native::execute` never looks | **killed** (14) | `the_port_from_the_record_is_where_the_connection_goes`, `the_address_hints_reach_happy_eyeballs`, `the_record_narrows_the_alpn_offer`, `a_failed_discovery_is_not_repeated_by_the_next_request`, `the_record_and_the_addresses_are_asked_at_once`, and 9 more |
+| M49 | the record is dropped on the way over: `prepare` reports what it found and hands over nothing | **killed** (1) | `the_record_this_transport_fetched_is_the_one_the_connection_is_made_under` |
+| M50 | `http-ng-select` asks its own resolver instead of the connector, so the duplicate comes back | **killed** (3) | the three M45 killed |
+| M51 | `NotConsulted` is read as an answer, so this transport never asks where the connector does not | **killed** (11) | `away_from_the_default_port_only_this_transport_asks`, `a_record_offering_h3_puts_the_request_on_the_quic_server`, `an_origin_with_no_record_is_served_over_tcp`, `the_first_request_is_tcp_and_the_second_is_quic`, and 7 more |
+| M52 | an inert record counts as one in play (the `is_inert` filter moved and could have been lost with it) | **killed** (1) | `a_record_that_sets_nothing_does_not_buy_a_second_race` |
+| **M53** | **CONTROL** — `Prepared`'s `Debug` reports a constant instead of what was discovered | **survived, as intended** (0) | nothing, and nothing should: no test formats a `Prepared` and no code path reads that `Debug`. Without a control, eight kills would be indistinguishable from a harness that reports "killed" unconditionally |
+
+Two of them are worth reading twice. **M46 and M49 are each killed by
+exactly one test**, and neither test existed before this work: the suite
+that counted queries could not see either, because both leave the count at
+one. And **M47 is the wrong-origin mutation in the only form it can take**
+— there is no way to construct a `Prepared` whose record belongs to another
+request, so the nearest reachable defect is a connector that *fetches* the
+wrong origin's record, which is what dropping the port gate does. The
+structural claim itself is not a test and is not written as one: it is that
+`Prepared`'s fields are `pub(crate)`, its only record-bearing constructor is
+`Prefetch::prepare`, and it has no `request_mut`. That is checkable by
+reading three declarations, and it is stated here rather than claimed to be
+pinned.
 
 ---
 
@@ -270,10 +408,12 @@ mutation that turns a choice into a hang is red rather than eternal.
 `dns_cost.rs` (3), `body.rs` (3), plus the two fixtures. **28 tests.**
 
 > As of deliverable 4 the crate has **100**, and `dns_cost.rs` has 5 —
-> §9.7 for the census and §9.6 for the arms added there. The counts in this
-> section and the anchor below are the ones the run in §5 was made against
-> and are left as they were, because a mutation table is only readable
-> beside the suite it was run over.
+> §9.7 for the census and §9.6 for the arms added there. As of §3.1's
+> handover it has **103**: `record_handover.rs` (3), which watches the
+> connection rather than the query count. The counts in this section and
+> the anchor below are the ones the run in §5 was made against and are left
+> as they were, because a mutation table is only readable beside the suite
+> it was run over.
 
 ---
 
@@ -353,6 +493,33 @@ to do with the tests.
   reported `Supported` and the reasoning is in §2, but no test marks a
   request with `AllowEarlyData` and watches it enter early data through
   `Selecting`. `http-ng-h3`'s own suite does that for the member.
+
+And four about the handover (§3.1), each of which is a claim this document
+makes and a measurement it does not:
+
+- **That a record cannot be paired with a request it was not fetched for is
+  a property of the type, not a test.** `Prepared`'s fields are
+  `pub(crate)`, its only record-bearing constructor is `Prefetch::prepare`,
+  and it has no `request_mut`. Three declarations, checkable by reading
+  them; no mutation can be applied to a constructor that does not exist.
+  M47 is the nearest reachable defect (the *connector* fetching the wrong
+  origin's record) and it is killed, which is a different claim.
+- **The timing change is reasoned, not measured.** `prepare` fetches the
+  record before the pool is consulted, where `execute` fetches it only when
+  a connection is opened and does so beside the address lookups. Through
+  `Selecting` that costs nothing new — this transport already made a query
+  per request, and now it is that one — but a *direct* `Prefetch` user with
+  a warm pool pays one query per request where `execute` would have paid
+  one per connection. It is written where the method is; no benchmark
+  stands behind it, and the ~400 ms figure v0.3 W2 measured for serialising
+  discovery in front of the addresses is about a different arrangement.
+- **The negative cache is read by `prepare` and not re-read at connect
+  time.** A record fetched microseconds before another request's failure
+  marks the origin will still be used for this one. Self-correcting and
+  bounded by one request; not tested.
+- **A caller that prepares and then never executes is not exercised.** The
+  `Prepared` is simply dropped; there is nothing to clean up (no query is
+  outstanding by then, and nothing was spawned), but no test drops one.
 
 ---
 
@@ -438,9 +605,14 @@ the measurement above. One vertical, one claim.
 Both are in read-only territory for this workstream and are recorded here
 rather than fixed.
 
-1. **`http-ng-native` has no way to be told a record has already been
+1. ~~**`http-ng-native` has no way to be told a record has already been
    fetched**, so the type-65 query is made twice on the TCP path at the
-   default port (§3). Three possible shapes are listed there.
+   default port (§3). Three possible shapes are listed there.~~
+   **Closed** — §3.1. The shape is `http_ng_native::Prefetch`, and it is
+   not any of the three as they were stated: the record is not *handed to*
+   the connector, it is fetched **by** the connector and handed back
+   attached to the request it was fetched for, which is what keeps a
+   caller from supplying one. The kept row of the DNS table is 1.
 2. **`http-ng-h3`'s doc example does not compile on its own.** `cargo test
    --doc -p http-ng-h3 --all-features` fails: the example calls
    `Rustls::with_webpki_roots()`, which lives behind
@@ -688,7 +860,7 @@ measured before this deliverable are unchanged**, re-run on this branch:
 
 | request | type-65 queries | |
 |---|---|---|
-| `https://origin/` chosen onto TCP | **2** | unchanged — this transport's, then `http-ng-native`'s own connector's |
+| `https://origin/` chosen onto TCP | **2** | unchanged *by this deliverable* — this transport's, then `http-ng-native`'s own connector's. **It is 1 now**, and §3.1 is where that happened; nothing in this section moved it |
 | `https://origin/` chosen onto QUIC | **1** | unchanged — `http-ng-h3` does no SVCB lookup at all |
 | `https://origin:port/` | **1** | unchanged — `http-ng-native` skips discovery away from the default port |
 | any request carrying `RequireVersion` | **0** | unchanged |
@@ -725,7 +897,9 @@ TCP and request 2 on QUIC), `altsvc_parse.rs` (31 — the parser, no socket
 and no clock), `altsvc_cache.rs` (19 — the cache, `now` handed in), and two
 more arms in `dns_cost.rs` (3 → 5). With the 25 that stand unchanged
 (`choice.rs` 12, `capabilities.rs` 10, `body.rs` 3): **100 tests**, all
-passing, `cargo nextest run -p http-ng-select --all-features`.
+passing, `cargo nextest run -p http-ng-select --all-features`. (**103**
+since §3.1 added `record_handover.rs`; this section's count is the one
+§9.8's table was run against.)
 
 Every assertion is causal. Nothing waits for a duration and concludes; the
 observations are "this server answered and that one did not", read as
