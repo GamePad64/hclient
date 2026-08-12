@@ -47,6 +47,7 @@ mod h1;
 mod http2;
 mod idle;
 mod pool;
+mod staged;
 mod upgrade;
 
 pub use body::UndeclaredRequestTrailers;
@@ -55,6 +56,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
+pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
 
 use http_ng_core::unversioned::{
