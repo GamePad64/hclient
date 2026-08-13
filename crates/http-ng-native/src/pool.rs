@@ -95,6 +95,18 @@
 //!    and **300.6 ms** on the shipped `Smol`, against a control differing
 //!    in that one call which still held the socket 1200 ms later
 //!    (`tests/reaper.rs`).
+//!
+//!    **This stops applying to a shared entry, and the reason is not a
+//!    reaper** ([`crate::Native::multiplexed`], v0.4). A shared entry is a
+//!    `SendRequest` clone, and h2 ends a connection's driver when the last
+//!    clone of its sender is dropped — so **dropping the pooled entry is
+//!    the close**, and [`Pool::take`]'s existing "drop the expired entries
+//!    you walk past" therefore closes a socket rather than merely
+//!    declining to offer it. It still takes a request to that origin to
+//!    walk past them, which is what a reaper is still for. The sentence
+//!    this inverts is worth keeping in view: a pooled *exclusive*
+//!    connection is inert and a request revives it, where a shared one is
+//!    running and the pool entry is its owner.
 //! 3. **A race remains.** A server may close between our check and our
 //!    write. That window cannot be closed by any HTTP/1 pool — hyper's own
 //!    has it too — so it is handled rather than prevented: see the retry in
@@ -171,10 +183,13 @@
 //!
 //! # What an h2 connection is checked out for
 //!
-//! **One stream at a time — an h2 connection is handed out exclusively,
-//! exactly as an h1 one is.** HTTP/2 multiplexes and this pool does not
-//! use that, which is a decision rather than an omission, and this is
-//! where it is written down.
+//! **One stream at a time by default — an h2 connection is handed out
+//! exclusively, exactly as an h1 one is, unless
+//! [`crate::Native::multiplexed`] was asked for.** HTTP/2 multiplexes and
+//! this pool does not use that by default, which is a decision rather than
+//! an omission, and this is where it is written down. The opt-in is v0.4's
+//! and is described at the end of this section; everything between here
+//! and there is about the default, which did not move.
 //!
 //! The reason is the same `Spawn` that shapes everything else here.
 //! Multiplexing means several requests share one `h2::client::Connection`,
@@ -194,29 +209,41 @@
 //! build that opts into a spawner could multiplex; it would then owe W1's
 //! rule an implementation, which today it gets for free.
 //!
-//! **That sentence has since been investigated rather than left as an
-//! aside, and `docs/h2-multiplexing.md` is the result.** Three things it
-//! settled that are worth knowing before touching this file. The opt-in is
-//! **expressible without a `Spawn` bound anywhere a spawn-less runtime can
-//! see it** — compiled, including against this crate's real `Native`: the
-//! spawner is captured as a `fn(&R, ..)` on a constructor that carries the
-//! bound, so `Transport::execute` needs none. This module's `take` verb is
-//! what would have to change — a shared entry is **borrowed**, never taken,
-//! so [`CheckIn`] is unused on that path. And the sentence above about a
-//! lock is very slightly stronger than it needs to be: while *any* holder
-//! is being polled the connection moves, so the lock shape fails only when
-//! every caller stalls at once. It is still the wrong shape, for a reason
-//! that is about what it cannot do — an idle connection has no holder at
-//! all, so it fixes neither the unanswered `PING` nor the unsent
-//! `RST_STREAM`; §7 there.
+//! **That sentence has been investigated and then built, and
+//! `docs/h2-multiplexing.md` is both.** [`crate::Native::multiplexed`] is
+//! the opt-in; what it changes about *this* file is three things.
 //!
-//! Two of this pool's own sentences would stop being true under sharing,
-//! and both change for the better: liveness stops being a checkout-time
-//! poll (a `GOAWAY` reached an untouched pooled `SendRequest` clone
-//! 20 µs after the first poll, measured), and consequence 2's *"by
-//! default the idle timeout is a filter, not a reaper"* stops applying,
-//! because dropping the pooled clone **is** the close — the driver ends
-//! when the last `SendRequest` goes.
+//! **The verb.** `take` is right for an exclusive connection and wrong for
+//! a shared one: a shared entry is **borrowed**, never taken — the pool
+//! keeps it and hands out a clone — so [`CheckIn`] is not used on that
+//! path at all, and `H2Body::hand_back_to_pool` is a no-op there because
+//! `exchange_shared` builds a body with no `reuse` to hand back. That is a
+//! subtraction: the whole `Reuse { checkin, sender }` dance in `http2.rs`
+//! exists to survive an exclusive check-out. [`Pool::take`] is where both
+//! verbs live, decided by the entry rather than by a flag, and
+//! [`Pool::forget_shared`] is the other half — a borrowed clone that turns
+//! out to be dead leaves its entry behind, and a checkout that only
+//! dropped the clone would borrow the same dead connection for ever.
+//!
+//! **Liveness stops being a checkout-time poll.** The paragraph above says
+//! one poll is the only moment a `GOAWAY` is noticed *because nothing
+//! polls an idle connection*; on a shared entry something does, and a
+//! `GOAWAY` that had arrived 100 µs — 100 ms, measured — earlier is
+//! reported by the first `poll_ready` 20 µs later. So
+//! `http2::shared_is_reusable` is one `poll_ready` and no `Connection`
+//! poll.
+//!
+//! **A connect becomes single-flight**, and that is not an optimisation:
+//! a burst of N concurrent requests to a cold origin has no first request
+//! to share from, so without [`Pool::begin_connect`] all N connect and
+//! each shared connection is shared with nobody.
+//!
+//! One sentence above is also very slightly stronger than it needs to be,
+//! and it is the one about a lock: while *any* holder is being polled the
+//! connection moves, so the lock shape fails only when every caller stalls
+//! at once. It is still the wrong shape, for a reason that is about what
+//! it cannot do — an idle connection has no holder at all, so it fixes
+//! neither the unanswered `PING` nor the unsent `RST_STREAM`; §7 there.
 //!
 //! Two things follow, and the second one has to be said out loud because
 //! it is a consequence of *this policy* rather than of the h2 code:
@@ -229,7 +256,12 @@
 //!   others. **That is this policy's guarantee, not `http2.rs`'s.**
 //!   Whoever makes check-out non-exclusive takes the rule with them; see
 //!   `crate::http2`'s module doc, which says the same thing from the other
-//!   end.
+//!   end. Under [`crate::Native::multiplexed`] there *are* others, so the
+//!   rule stops holding for free and is a test instead —
+//!   `tests/http2.rs`'s
+//!   `dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connection`,
+//!   which is the same request pair as its exclusive sibling with
+//!   `accepted == 1`.
 //!
 //! # `http-ng-h3` does the opposite, and that is not a disagreement
 //!
