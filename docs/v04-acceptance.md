@@ -72,7 +72,16 @@ each fail at a rate near 1 in 40 full
 workspace runs under load, and neither has been captured. Both crates'
 own suites are clean run alone. Whether the rate moved with v0.4's added
 load or is noise is **not distinguishable at these sample sizes**, which
-is why this paragraph says so rather than picking a side. The project's
+is why this paragraph says so rather than picking a side.
+
+A further **80 full workspace runs on the merged tree failed 0 times**,
+and that is reported for what it is worth rather than as a refutation:
+against a rate of 1 in 40, a clean run of 80 happens about 13% of the
+time, so it rules out a *higher* rate here and rules out nothing else.
+The one asymmetry worth recording is the machine — the 3-in-39 runs
+were taken while other work was in flight and these were not, which
+fits "timing-sensitive race" and is the next thing to vary if anyone
+sets out to capture it. The project's
 record argues for capturing rather than reasoning: the three flakes
 chased this way each turned out to be a real defect, one of them an RFC
 9114 violation that took three sightings.
