@@ -422,8 +422,7 @@ demanded request first, where nothing was suppressed yet.
   HTTP/3 and that the next request will want.
 
 
-## ~~The flake this branch may have introduced~~ — settled, and it was
-## neither this branch's nor a flake
+## ~~The flake this branch may have introduced~~ — settled, and it was neither
 
 **It was a real defect, older than this branch by 292 commits**, and
 [`docs/v04-h3-0rtt-control-stream.md`](v04-h3-0rtt-control-stream.md) is the

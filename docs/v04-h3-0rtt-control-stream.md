@@ -1,5 +1,4 @@
-# The 0-RTT flake was a defect, and it is older than the branch that
-# recorded it
+# The 0-RTT flake was a defect, older than the branch that recorded it
 
 `docs/v04-staged-connect.md` §"The flake this branch may have introduced"
 recorded a failure of
