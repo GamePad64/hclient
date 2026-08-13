@@ -87,7 +87,7 @@
 //! session addresses its datagrams to the wrong one. Measured rather than
 //! read: `docs/v04-w2-datagrams.md` §3. Beyond that, this crate already
 //! owns the QUIC varint for the stream header, for the reason on
-//! [`put_varint`], and the datagram header is the same two lines.
+//! `put_varint`, and the datagram header is the same two lines.
 //!
 //! # What is deliberately not here
 //!

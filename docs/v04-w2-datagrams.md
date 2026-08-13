@@ -39,7 +39,7 @@ buffer sizes, is quinn's default. **A connection made by `http-ng-h3`
 carries datagrams**, and nothing in this task had to ask it to.
 
 It is still the caller's connection, so the crate reports the answer
-rather than assuming it: [`Session::max_datagram_size`] is `None` when the
+rather than assuming it: `Session::max_datagram_size` is `None` when the
 connection cannot carry one.
 
 **(b) The client can announce the setting — and this is where datagrams
@@ -243,7 +243,7 @@ deliberately not the shape `docs/v04-w2-webtransport.md` §1 calls the
 sharpest fact, where two states of a three-state question were collapsed:
 there is no third state here, and no *"has not answered yet"* to hide,
 because SETTINGS have already arrived by the time a `Session` exists.
-[`DatagramsUnavailable`] has the two variants, because at the point of a
+`DatagramsUnavailable` has the two variants, because at the point of a
 send the reason is actionable — a caller who owns the endpoint can fix the
 second and can do nothing about the first.
 
