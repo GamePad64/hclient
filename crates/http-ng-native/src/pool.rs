@@ -194,6 +194,30 @@
 //! build that opts into a spawner could multiplex; it would then owe W1's
 //! rule an implementation, which today it gets for free.
 //!
+//! **That sentence has since been investigated rather than left as an
+//! aside, and `docs/h2-multiplexing.md` is the result.** Three things it
+//! settled that are worth knowing before touching this file. The opt-in is
+//! **expressible without a `Spawn` bound anywhere a spawn-less runtime can
+//! see it** — compiled, including against this crate's real `Native`: the
+//! spawner is captured as a `fn(&R, ..)` on a constructor that carries the
+//! bound, so `Transport::execute` needs none. This module's `take` verb is
+//! what would have to change — a shared entry is **borrowed**, never taken,
+//! so [`CheckIn`] is unused on that path. And the sentence above about a
+//! lock is very slightly stronger than it needs to be: while *any* holder
+//! is being polled the connection moves, so the lock shape fails only when
+//! every caller stalls at once. It is still the wrong shape, for a reason
+//! that is about what it cannot do — an idle connection has no holder at
+//! all, so it fixes neither the unanswered `PING` nor the unsent
+//! `RST_STREAM`; §7 there.
+//!
+//! Two of this pool's own sentences would stop being true under sharing,
+//! and both change for the better: liveness stops being a checkout-time
+//! poll (a `GOAWAY` reached an untouched pooled `SendRequest` clone
+//! 20 µs after the first poll, measured), and consequence 2's *"by
+//! default the idle timeout is a filter, not a reaper"* stops applying,
+//! because dropping the pooled clone **is** the close — the driver ends
+//! when the last `SendRequest` goes.
+//!
 //! Two things follow, and the second one has to be said out loud because
 //! it is a consequence of *this policy* rather than of the h2 code:
 //!
