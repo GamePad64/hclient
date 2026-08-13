@@ -40,11 +40,14 @@ measurements can be re-run rather than believed.
    (the reaper's failure mode, already written down) into "every request on
    that connection hangs for ever" — measured.
 
-**Recommendation: build it, and settle §9's two open questions by
-measurement first.** The work is a week with this project's mutation
-discipline, and it changes a policy that is written down in three module
-docs, `AGENTS.md` and the yardstick, so it should not be done as a side
-effect of something else.
+**Recommendation: build it, and settle §9.1 by measurement first** — the
+second-connection policy is the one open question that is not an
+implementation decision, because sharing everything is measurably worse
+than today at a low peer stream limit. The work is a week with this
+project's mutation discipline, and it changes a policy stated in
+`pool.rs`, in `http2.rs`, in `http-ng-h3`'s module doc that mirrors them,
+in `AGENTS.md` and in the yardstick — five places that agree on purpose —
+so it should not be done as a side effect of something else.
 
 ## 1. Premises, and how each is known
 
