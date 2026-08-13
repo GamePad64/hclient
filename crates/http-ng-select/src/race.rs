@@ -80,8 +80,8 @@
 //!
 //! `Timeouts::connect` is **one** deadline, `C`, for one request, and
 //! handing each arm a copy of it is how a caller who wrote `Some(C)` is
-//! made to wait `2C` — `http_ng::Client`'s `425` rule, and
-//! [`crate::spend_connect_budget`]'s, one shape simpler.
+//! made to wait `2C` — `http_ng::Client`'s `425` rule, and the sequential
+//! fallback's `spend_connect_budget`, one shape simpler.
 //!
 //! Three statements, in the order they are made here:
 //!
@@ -474,7 +474,7 @@ where
     /// say whether there is anything left to make a *fresh* connect with.
     ///
     /// The winner does not need the answer — it has a connection — and the
-    /// refusal does: see [`crate::spend_connect_budget`].
+    /// refusal does: see `crate::spend_connect_budget`.
     fn charge(&self, req: &mut http::Request<RequestBody>, began: Duration) -> bool {
         spend_connect_budget(req, self.now().saturating_sub(began))
     }

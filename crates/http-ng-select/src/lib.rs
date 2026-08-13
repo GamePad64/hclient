@@ -56,10 +56,19 @@
 //!   record, which is most of the web — the fast tier alone works for a
 //!   minority of it.
 //!
-//! **Racing the two stacks is a third thing and is not here.** It is a
-//! hedge against a network that blocks UDP/443, applied *after* the choice
-//! rather than in place of it, and v0.3 W2 recorded that the size of the
-//! cost it pays is unverified. A measurement comes before a policy.
+//! **Racing the two stacks is a third thing, it is here, and it is off
+//! until it is asked for** ([`race`], v0.4). It is a hedge against a
+//! network that blocks UDP/443, applied *after* the choice rather than in
+//! place of it: [`Selecting::hedging`] starts a TCP connect beside an
+//! outstanding QUIC one, and whichever produces a connection first carries
+//! the request. **Neither arm sends anything until the race is over**,
+//! which is what the staged connect changed and is the whole reason this
+//! could be built — before it, a race made of two `Transport::execute`
+//! calls delivered the losing arm's request to the origin as well.
+//!
+//! v0.3 W2 recorded that the size of the cost it pays was unverified, and
+//! a measurement came before the policy: `docs/v04-w1-acceptance.md` §7
+//! and `docs/v04-race.md`.
 //!
 //! # The record decides where there is one, and the header only where
 //! there is not
@@ -1040,10 +1049,18 @@ where
     /// over. See [`Selecting::over_quic`] for the two things that buys and
     /// the one thing it costs.
     ///
+    /// **And where [`Selecting::hedging`] was called, it is raced**: a TCP
+    /// connect is started `head_start` later and whichever arm produces a
+    /// connection first carries the request, which is still handed to
+    /// neither of them until the race is over. [`race`] is the whole of
+    /// that, and it changes nothing about the two arms below it —
+    /// including the one place this crate rewrites an extension, which is
+    /// still `Timeouts::connect` and is still spent once.
+    ///
     /// A failed *exchange* still teaches nothing: there is no response
     /// head to read, and a failure after the connect is not a fact about
     /// the origin's HTTP/3. A failed **connect** is, and is remembered —
-    /// see [`failures`].
+    /// see [`failures`], which the race widened by one case and no more.
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
