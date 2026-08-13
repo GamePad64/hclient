@@ -74,6 +74,23 @@ pub enum Quic {
     BlackHole,
 }
 
+/// What the TCP half of the pair does.
+///
+/// The second mode exists for the same reason [`Quic::Rejecting`] does, one
+/// protocol over: a test of what happens when an arm **fails** needs it to
+/// fail causally and at once, or the assertion becomes a clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcp {
+    /// A real HTTP/1.1-over-TLS server that answers.
+    Working,
+    /// Accepts the connection and closes it without a byte, so the client's
+    /// TLS handshake fails on EOF in one round trip.
+    ///
+    /// It still counts the accept, which is what makes *"the request did not
+    /// try TCP a second time"* a number rather than an absence.
+    Rejecting,
+}
+
 /// Two servers, one port number, one certificate.
 pub struct Pair {
     pub port: u16,
@@ -192,8 +209,13 @@ pub fn start() -> Pair {
     start_with_quic(Quic::Working)
 }
 
-/// Start both. Returns once both are bound, so no test races them.
+/// Start both, varying only the QUIC half.
 pub fn start_with_quic(quic: Quic) -> Pair {
+    start_with(quic, Tcp::Working)
+}
+
+/// Start both. Returns once both are bound, so no test races them.
+pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
     let (tcp_sock, udp_sock) = bind_pair();
     let port = tcp_sock.local_addr().expect("local_addr").port();
     let (cert_der, key_der) = identity();
@@ -212,6 +234,7 @@ pub fn start_with_quic(quic: Quic) -> Pair {
         tcp_answered.clone(),
         tcp_accepted.clone(),
         alt_svc.clone(),
+        tcp,
     );
     let quic_thread = match quic {
         // The socket is held by a thread that answers nothing, so the port
@@ -277,6 +300,7 @@ fn start_tcp(
     answered: Arc<AtomicUsize>,
     accepted: Arc<AtomicUsize>,
     alt_svc: AltSvc,
+    mode: Tcp,
 ) -> std::thread::JoinHandle<()> {
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -298,6 +322,14 @@ fn start_tcp(
                     return;
                 };
                 accepted.fetch_add(1, Ordering::SeqCst);
+                // Counted first, then dropped: a refusal a test cannot see
+                // is not a fixture. The drop closes the socket before a
+                // single TLS byte is written, which the client meets as an
+                // EOF in the handshake — causal, and one round trip.
+                if mode == Tcp::Rejecting {
+                    drop(sock);
+                    continue;
+                }
                 let (acceptor, answered, alt_svc) =
                     (acceptor.clone(), answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {

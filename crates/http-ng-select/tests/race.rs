@@ -42,7 +42,7 @@ use http_ng_h3::H3;
 use http_ng_native::Native;
 use http_ng_rt_tokio::TokioHandle;
 use http_ng_select::{DEFAULT_HEAD_START, Selecting};
-use servers::{ORIGIN, Pair, Quic};
+use servers::{ORIGIN, Pair, Quic, Tcp};
 use std::time::Duration;
 
 /// Never an assertion — it turns a mutation that hangs into a red test
@@ -455,6 +455,45 @@ async fn a_head_start_that_does_not_fit_the_bound_leaves_the_sequential_fallback
         "and the bound was the caller's, not the caller's plus a head start; \
          this hop took {:?}",
         one.elapsed
+    );
+}
+
+/// **The race is one connect phase and is charged for once**, and this is
+/// where that is visible: both arms fail, so the request reaches the end of
+/// the race with nothing left of `Timeouts::connect` and the QUIC arm's own
+/// failure is the answer.
+///
+/// The hedge is refused causally — one round trip, a TLS handshake that
+/// meets EOF — so it is the QUIC arm that spends the bound, exactly as in
+/// `h3_failure::the_fallback_spends_what_is_left_of_the_connect_bound_and_no_more`
+/// one layer up. **`tcp_accepted == 1` is the assertion**: a race that
+/// handed the request a fresh copy of the bound would go on to make a
+/// second TCP connect, which this server would refuse in its turn and which
+/// the caller's bound never had room for.
+///
+/// It is also the only test here that reaches the arm where the **hedge**
+/// resolves first and loses: a hedge that failed is not an answer, so the
+/// QUIC arm is awaited alone rather than the race ending on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_race_spends_the_connect_bound_once_when_both_arms_fail() {
+    let pair = servers::start_with(Quic::BlackHole, Tcp::Rejecting);
+    let t = hedged(&pair, offers_h3(), Duration::from_millis(50));
+
+    let one = hop(
+        &t,
+        &pair,
+        request(&pair, Some(bound(Duration::from_millis(300)))),
+    )
+    .await;
+
+    assert_eq!(
+        one.tcp_accepted, 1,
+        "the hedge connected once; there was no bound left for a second attempt"
+    );
+    assert_eq!(
+        *one.got.expect_err("both arms failed").kind(),
+        ErrorKind::Timeout(Phase::Connect),
+        "and the answer is the arm that spent the bound"
     );
 }
 
