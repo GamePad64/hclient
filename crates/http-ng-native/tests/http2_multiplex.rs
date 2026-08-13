@@ -70,6 +70,8 @@ struct Shared {
     /// answered.
     expect: AtomicUsize,
     arrived: AtomicUsize,
+    /// Request body bytes the server counted, across every stream.
+    body_bytes: AtomicUsize,
 }
 
 struct Fixture {
@@ -92,6 +94,10 @@ impl Fixture {
 
     fn most_open(&self) -> usize {
         self.shared.most_open.load(Ordering::SeqCst)
+    }
+
+    fn body_bytes(&self) -> usize {
+        self.shared.body_bytes.load(Ordering::SeqCst)
     }
 
     fn expect(&self, n: usize) {
@@ -179,9 +185,31 @@ async fn handle(
 
     let path = req.uri().path().to_owned();
     let (_, mut body) = req.into_parts();
+
+    // `/duplex` answers BEFORE it reads a byte of the request, which is
+    // what lets a caller's body depend on the head having arrived.
+    let mut duplex = (path == "/duplex")
+        .then(|| {
+            let head = http::Response::builder().status(200).body(()).unwrap();
+            respond.send_response(head, false).ok()
+        })
+        .flatten();
+
+    let mut got = 0usize;
     while let Some(chunk) = body.data().await {
         let Ok(chunk) = chunk else { break };
+        got += chunk.len();
         let _ = body.flow_control().release_capacity(chunk.len());
+    }
+    shared.body_bytes.fetch_add(got, Ordering::SeqCst);
+
+    if let Some(send) = duplex.as_mut() {
+        // The count is the server's, and it is the whole response: a
+        // request body that did not all cross is a different number.
+        let _ = send.send_data(Bytes::from(format!("{got} bytes")), true);
+        shared.open.fetch_sub(1, Ordering::SeqCst);
+        shared.served.fetch_add(1, Ordering::SeqCst);
+        return;
     }
 
     if path == "/pair" {
@@ -1024,4 +1052,131 @@ async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
             );
         }
     }
+}
+
+// ── request bodies on a shared connection ───────────────────────────────
+
+/// **A request body crosses a shared connection in frames the server
+/// counts.**
+///
+/// `exchange_shared` runs the same `Pump` the exclusive path does, and it
+/// is the one part of that path with no `Connection` beside it to poll: the
+/// DATA frames the pump queues reach the socket from inside the **driver**,
+/// woken by the queueing itself. More than one flow-control window's worth,
+/// so the capacity loop is exercised rather than skipped.
+///
+/// It is also the reason this test exists rather than being assumed: every
+/// other test in this file sends a `GET`, so without it the pump on the
+/// shared path would be entirely unexercised.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_body_crosses_a_shared_connection_whole() {
+    let server = spawn_server(None);
+    let client = shared_client();
+
+    let payload = vec![b'x'; 128 * 1024];
+    let resp = tokio::time::timeout(
+        BOUND,
+        client
+            .post(&server.url("/upload"))
+            .body(RequestBody::Full(payload.clone().into()))
+            .send(),
+    )
+    .await
+    .expect("must not hang")
+    .expect("request must succeed");
+    assert_eq!(resp.status(), 200);
+    resp.collect().await.expect("body");
+
+    assert_eq!(
+        server.body_bytes(),
+        payload.len(),
+        "every byte of the body must have crossed, which needs more than one \
+         DATA frame and therefore a working capacity loop on a connection \
+         this exchange does not poll"
+    );
+    assert_eq!(server.accepted(), 1);
+}
+
+/// A body that hands out what it is given and nothing else, counting the
+/// frames taken off it.
+struct Feed {
+    rx: tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+}
+
+impl http_body::Body for Feed {
+    type Data = Bytes;
+    type Error = http_ng_core::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        match self.rx.poll_recv(cx) {
+            std::task::Poll::Ready(Some(b)) => {
+                std::task::Poll::Ready(Some(Ok(http_body::Frame::data(b))))
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+/// **A shared connection is full duplex, and the proof is causal rather
+/// than timed.**
+///
+/// The caller's body holds one chunk; the second is put into its channel
+/// only **after** `send()` has returned a head. A transport that wrote the
+/// whole request before reading the response would be waiting for a chunk
+/// that is waiting for it, at any speed. `/duplex` answers before it reads
+/// a byte, which is what makes the head available that early.
+///
+/// What this pins on the shared path specifically is the duplex line — a
+/// pump that cannot proceed must not stop the response from arriving — and
+/// the leftover pump moving into `H2Body`, which is what finishes the
+/// upload once the response body is read. Neither is shared with
+/// `exchange`: `exchange_shared` is its own loop, because the connection
+/// poll that loop is built around belongs to the driver here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_connection_carries_a_duplex_exchange() {
+    const A: usize = 4096;
+    const B: usize = 8192;
+
+    let server = spawn_server(None);
+    let client = shared_client();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(Bytes::from(vec![b'a'; A])).unwrap();
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        client
+            .post(&server.url("/duplex"))
+            .body(RequestBody::Streaming(Box::new(Feed { rx })))
+            .send(),
+    )
+    .await
+    .expect(
+        "the head is on the wire and the second chunk is not: a transport \
+         that waits for the body before reading the head deadlocks here",
+    )
+    .expect("request must succeed");
+    assert_eq!(resp.status(), 200);
+
+    // Only now does the rest of the request body exist.
+    tx.send(Bytes::from(vec![b'b'; B])).unwrap();
+    drop(tx);
+
+    // Collecting the response is what drives the remaining upload: the pump
+    // moved into the body, and nothing else polls it.
+    let text = tokio::time::timeout(BOUND, resp.collect())
+        .await
+        .expect("the rest of the upload rides on the response body being read")
+        .expect("the body must arrive")
+        .text()
+        .unwrap();
+    assert_eq!(
+        text,
+        format!("{} bytes", A + B),
+        "the count is the server's: both chunks crossed"
+    );
+    assert_eq!(server.accepted(), 1);
 }
