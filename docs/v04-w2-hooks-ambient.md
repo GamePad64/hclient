@@ -181,6 +181,12 @@ own instruction was to stop and report if a new variant were needed; none
 is.** What would help is not a variant but two smaller things, and both
 are listed in §8 as owed rather than done.
 
+> **Superseded by §9.** Both were taken up, and the two answers came out
+> **different**: `id` was never a debt and §8's first bullet was wrong,
+> while `version` was one and is now `Option<http::Version>`. §4.1 and
+> §4.2 are left as they were written, because §9 is an argument about
+> them and an argument needs its subject intact.
+
 ---
 
 ## 5. Zero cost when nobody is watching
@@ -396,13 +402,13 @@ read, invisible to a `now()` needle.
 
 ## 8. What is not done, and what it would need
 
-- **A `ConnectionId` value meaning "there is no connection".**
+- ~~**A `ConnectionId` value meaning "there is no connection".**
   `UNWATCHED` is being borrowed for it, against its own doc. This is a
   `http-ng-core` change and therefore not this task's; §4.1 is the
-  argument for it.
-- **`Head::version` as an `Option`,** or an `http::Version`-shaped
+  argument for it.~~ **Withdrawn — this was not a debt.** §9.1.
+- ~~**`Head::version` as an `Option`,** or an `http::Version`-shaped
   "unknown". Two of four backends have no honest value. Also
-  `http-ng-core`'s.
+  `http-ng-core`'s.~~ **Done.** §9.2.
 - **The cross-origin half of §2.1, measured.** Needs a second origin in
   the browser harness — a `wasm-bindgen-test-runner` change.
 - **A counting clock for `http-ng-wasi`.** Needs a clock seam on
