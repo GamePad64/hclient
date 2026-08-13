@@ -421,3 +421,219 @@ read, invisible to a `now()` needle.
   engines agree on every anchor count and on every assertion, so the
   mutations are expected to score identically, and that expectation is
   untested.
+
+---
+
+## 9. The two debts of §8, taken up — and they came out different ways
+
+§8's first two bullets were both written as "a `http-ng-core` change, and
+therefore not this task's". They were taken up together, on the assumption
+they were one finding with two faces — *the seam has no word for what these
+backends know* — and they are not. **`id` was never a debt. `version` was,
+and is paid.**
+
+The rule they were tested against is this workspace's own, and it is not
+"is the value inaccurate": it is **does a caller decision turn on it**. That
+is the rule `UpgradeSupport` was deleted under (four variants, nothing
+branched on any of them), the rule two `RedirectSupport` variants went under,
+and the rule `Capabilities::version_select` was measured against and survived
+only because `RequireVersion` arrived to be its first reader. Applied here it
+separates the two fields cleanly, and the thing it separates them on is
+**whether the ambiguity is reachable by a reader at all**.
+
+### 9.1 `id`: not a debt, and §8's first bullet is withdrawn
+
+§4.1 says `UNWATCHED`'s "own doc says it is *the id of a connection nobody
+asked about*" and that using it here is a borrowing. The doc said that. The
+value never meant it.
+
+**A hook can only ever meet `UNWATCHED` in one sense.** Two things produce
+it:
+
+1. `Hooks::WATCHING == false`, where `http-ng-native`'s `connection_id::<H>`
+   and `http-ng-h3`'s `ConnState::new::<H>` skip the counter rather than pay
+   an atomic per connection for nobody;
+2. a transport with no connection to mint one for — `http-ng-fetch`,
+   `http-ng-wasi`.
+
+The first can never be observed, and that is a fact about the seam rather
+than about a backend: `WATCHING`'s own documented question is *"whether
+anything reads these events"*. A build that answers `false` has declared it
+has no reader, so an event carrying `UNWATCHED` for reason (1) is being
+delivered to something that, by its own declaration, is not reading. (The
+two connection-owning backends do still *call* `on` in that build — the const
+gates the measuring, not the emission — which is why this is an argument
+about the contract rather than about the control flow.)
+
+So the question "what does a caller do differently when told *there is no
+connection* rather than *you are not watching*" has no answer, because the
+caller asking it is never in the second case. A second `ConnectionId` value
+would be a distinction with a reachable side and an unreachable one — the
+exact shape `UpgradeSupport`'s four variants had, and the reason they went.
+
+What **is** load bearing is that a reader can act on the value, and it can:
+`UNWATCHED` is the only id `ConnectionId::next` never returns, so looking it
+up in a table of live connections misses, always. That property was
+undocumented and untested — the counter starting at `1` was a line nobody
+had watched fail. `crates/http-ng-core/tests/shape.rs`'s
+`the_id_that_names_no_connection_is_one_the_counter_never_hands_out` is now
+that test, and mutation C1 is what it is worth.
+
+**What actually changed: the doc comment.** It named a producer where it
+should have named the meaning. It now says *the id an event carries when no
+id was minted for it*, lists both producers, and says why a reader only ever
+meets the second.
+
+**The name stays `UNWATCHED`,** and that is a decision rather than laziness.
+Any name names one of the two producers; a `NO_CONNECTION` would be exactly
+as inaccurate for the unwatched build as `UNWATCHED` is for the ambient
+ones — it would move the inaccuracy, at the cost of a public rename across
+four backends and the `http-ng` facade. No caller decision turns on the
+spelling either.
+
+### 9.2 `version`: a real debt, and the fix is `Option<http::Version>`
+
+`Head::version` is now `Option<http::Version>`. `http-ng-native` and
+`http-ng-h3` report `Some(resp.version())`; `http-ng-fetch` and
+`http-ng-wasi` report `None`.
+
+The difference from §9.1 is that **the ambiguity is fully reachable by a
+watching caller**. `ConnectionId::UNWATCHED` is a sentinel — no real
+connection can wear it. `HTTP/1.1` is an ordinary value: an HTTP/1.1
+exchange that really happened produces exactly the same bytes in a caller's
+log as `http::response::Builder`'s default standing in for a fact nobody
+learned. A hook counting protocol mix over a browser build reported 100%
+HTTP/1.1 for traffic that was very likely h2 or h3 — a **wrong** answer, not
+a missing one, which is the "capability that lies" shape one level down.
+
+This is `ConnectTiming::tls`'s rule one field over, and that field is in the
+same struct: *`None` for a connection that has none — a zero would read as an
+instant handshake*. `http::Version` has no variant meaning "not observed" and
+is not ours to give one, so the `Option` is where the distinction can live.
+
+**The obvious objection is that `Capabilities::version_reported` already
+answers this, and the answer is that it answers it somewhere else.** That
+field is `false` on both ambient backends and `true` on both connection-owning
+ones — it is the same fact, and the two now have to agree by documentation
+and by test. But `Capabilities` is reachable from whoever *built* the
+transport, and a `Hooks` impl is handed an `Event` and nothing else. The same
+hook is written once and installed on whichever backend the target gave you;
+this project's whole premise is that the application code does not change
+between native, browser and WASI. A hook that had to know which transport it
+was inside in order not to record a falsehood is exactly the `#[cfg]` this
+workspace exists to not need.
+
+Three alternatives were weighed and are worth their lines:
+
+- **Leave it and point at the capability.** Rejected above — the pointer does
+  not reach the reader.
+- **Delete `Head::version`.** It looks redundant: on the two backends where
+  it is true, every `Head` is preceded by a `Connected` or a `Reused` with the
+  same `id`, and both of those carry a version. It is not: `Connected::version`
+  is what the *connection* speaks (`spoken_version(protocol)`, off ALPN) and
+  `Head::version` is what *this response* is (off the status line) — an
+  `HTTP/1.0` answer on an HTTP/1.1 connection is a real and different fact, and
+  deleting the field would lose it.
+- **`Connected::version` and `Reused::version` as `Option` too.** Rejected,
+  and the reason is what keeps this change from being one backend's
+  convenience: only a transport that owns a connection can emit either of
+  those, and owning one means having negotiated its protocol. There is no
+  backend for which they could be `None`, so an `Option` there would be a
+  variant with no emitter — the defect this document's §1 is about.
+
+### 9.3 What the seam change cost the other two backends
+
+**One line each, plus one assertion in a test.**
+
+- `http-ng-native/src/lib.rs`: `report_head`'s `version: resp.version()` →
+  `Some(resp.version())`, with a comment tying it to `version_reported: true`.
+- `http-ng-native/tests/hooks.rs`: `Seen::Head::version` is an
+  `Option<http::Version>` (a type error otherwise), and the one assertion that
+  reads it now reads `Some(http::Version::HTTP_11)`. Forced by the compiler.
+- `http-ng-h3/src/lib.rs`: the same one line.
+- `http-ng-h3/tests/hooks.rs`: the same field type — and **one assertion that
+  was not forced**. `Head::version` was read by nothing in that crate, so
+  `Some(..)` → `None` there survived every test. It is asserted inside
+  `Recorder::only_head`, through which every head in the file passes, because
+  the alternative was leaving a mutation alive on a line this work wrote.
+  That is the one place this change went past "whatever the seam change
+  forces" in a crate it was told not to touch, and it is three lines.
+
+Nothing else in the workspace reads `Head`: `http-ng-select` does not
+implement or consume `Hooks` at all, `http-ng-core/tests/shape.rs` builds a
+`Closed` and not a `Head`, and `http-ng/tests/facade.rs` reads `status` and
+`elapsed` off the facade's re-export and not `version`.
+
+### 9.4 Mutations
+
+**Eleven applied, eight killed, three survived** — two deliberate controls
+and one that survived in one crate's harness and was killed in another's,
+which is the interesting row.
+
+Anchors taken immediately before each run and restored after with `git
+checkout` plus a `touch` (a restore that preserves mtime leaves cargo using
+the mutated artifact, which has mis-scored a run in this workspace before):
+`http-ng-core` **34**, `http-ng-native --test hooks` **16**, `http-ng-h3
+--test hooks` **17**, `http-ng-wasi --all-features` **70** (host + the 16
+live wasip2 tests, wasmtime present), `http-ng-fetch` on Firefox `hooks`
+**11**, `hooks_cost` **4**, `hooks_timing` **4**, whole crate **119**.
+
+| # | crate | mutation | outcome |
+|---|---|---|---|
+| C1 | core | `NEXT_CONNECTION_ID: AtomicU64::new(1)` → `new(0)` | **killed** — 33/34, `the_id_that_names_no_connection_is_one_the_counter_never_hands_out` |
+| C2 | core | *control:* `Ordering::Relaxed` → `SeqCst` in `ConnectionId::next` | **SURVIVED as intended** — 34/34 |
+| C3 | core | `UNWATCHED = ConnectionId(0)` → `ConnectionId(u64::MAX)` | **survived in core** (34/34), **killed in `http-ng-wasi`** (69/70) |
+| N1 | native | `report_head`: `Some(resp.version())` → `None` | **killed** — 15/16, `the_head_reports_the_status_the_server_sent` |
+| H1 | h3 | `report_head`: `Some(resp.version())` → `None` | **killed** — 13/17, four tests through `only_head` |
+| W1 | wasi | the `Head`'s `version: None` → `Some(out.version())` | **killed** — 69/70, the live transcript's `version=None` |
+| W2 | wasi | `caps.version_reported = true` added to `WasiHttp::new` | **killed** — 69/70, the live transcript's `CAPS version_reported=false` |
+| W3 | wasi | *control:* `saturating_duration_since` → `duration_since` in `hooks::since` | **SURVIVED as intended** — 70/70 |
+| F1 | fetch | the `Head`'s `version: None` → `Some(out.version())` | **killed** — `hooks` 9/11 (both new version tests) |
+| F2 | fetch | `c.version_reported = true` added to `caps::probe` | **killed** — `hooks` 10/11, and `caps` 8/10 |
+| F3 | fetch | *control:* `.max(0.0)` → `.max(-1.0)` in `hooks::since` | **SURVIVED as intended** — `hooks` 11/11, `hooks_cost` 4/4, `hooks_timing` 4/4 |
+
+**C3 is the row worth reading.** Changing the sentinel's *literal value*
+cannot be seen by `http-ng-core` at all — its own new test asserts the
+property (`next()` never returns it) rather than the number, and
+`http-ng-fetch`'s `the_id_names_no_connection_because_there_is_none_to_name`
+is written against `ConnectionId::UNWATCHED` rather than against `0`, on
+purpose. What kills it is `http-ng-wasi`'s guest transcript, which compares
+`id=0` as text because a guest prints and a harness greps. Two ways of
+writing the same assertion, and only one of them is sensitive to this — worth
+knowing before someone "tidies" either.
+
+**C2 and W3 are the deliberate controls, F3 is the third.** C2: the counter
+orders nothing, it only has to hand out distinct numbers, so `SeqCst` and
+`Relaxed` are indistinguishable to every test. W3: `Instant` is monotonic, and
+`duration_since` saturates rather than panics, so the `saturating_` prefix
+this crate chose for spelling reasons cannot be observed — and it keeps the
+`Instant::now` count at two, so it does not accidentally trip
+`the_clock_is_read_in_exactly_one_place`. F3: `performance.now()` is monotonic
+by specification, so the clamp never fires and weakening it changes nothing —
+the same subject as the original F9 control, mutated rather than deleted.
+
+**F2 is why the new pairing test exists.** It changes no event at all, only
+the capability, and the `hooks` suite still fails — because
+`the_event_says_no_version_exactly_where_the_capability_does` reads both. Two
+spellings of one fact are worth having only while something checks they still
+say the same thing; `http-ng-wasi` gets the same check through W2, from the
+`CAPS version_reported=false` line the guest now prints beside its event.
+
+### 9.5 What was not verified
+
+- **Chrome was not run.** `wasm-pack test --headless --chrome` cannot acquire
+  a driver on this machine: chromedriver 152.0.7977.42 starts and the session
+  request returns `Error: http status: 404`, reproducibly, on `main` as well
+  as on this branch. Everything in §9.4's fetch rows and the 118 → 119
+  minimum is **Firefox 153 only**. §8's last bullet already recorded the
+  mirror image of this — the original table was Chrome only — so the two
+  engines have now each been the sole witness for one half of this work, and
+  neither half has been checked on both.
+- **The `Some` on `http-ng-h3` is pinned by this work's own assertion and by
+  nothing older.** H1 survived before that assertion was added; it is killed
+  now, but the test came with the mutation rather than before it.
+- **No backend has a per-request split.** The rule "`Head::version` is `Some`
+  exactly when `version_reported`" is stated per transport, which is the
+  granularity every backend here has. A future transport that could observe
+  the protocol on some exchanges and not others would satisfy the `Option`
+  and break the biconditional, and nothing would notice.
