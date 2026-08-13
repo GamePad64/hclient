@@ -731,12 +731,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// remaining gap between this client and a gRPC one
     /// (`docs/grpc-yardstick.md`'s L1). With it, they cost one.
     ///
-    /// ```no_run
+    /// ```
     /// # use http_ng_native::Native;
     /// # use http_ng_rt_tokio::Tokio;
-    /// # fn f<T: http_ng_tls::TlsConnect, D>(tls: T, dns: D) {
-    /// let transport = Native::new(Tokio, tls, dns).multiplexed();
-    /// # }
+    /// let transport = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .multiplexed();
     /// ```
     ///
     /// # Why this is not what [`Native::new`] does
@@ -814,6 +813,130 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// machine. `docs/h2-multiplexing.md` §9.1 records what it would take;
     /// `tests/http2_multiplex.rs` measures what queueing costs today so
     /// that the decision is a reading rather than a hope.
+    ///
+    /// # The two refusals, each beside the control that differs in one token
+    ///
+    /// A `compile_fail` doctest passes for **any** compile error, including
+    /// a typo, so the pairing below is the discipline: each refusal sits
+    /// next to a version of itself that differs in one thing and compiles.
+    /// The messages were also read once, by building the same two calls as
+    /// an ordinary test — `the trait bound `NoSpawn: Spawn<H2Driver<Conn<
+    /// TokioIo, NoStream>, NoHooks>>` is not satisfied` and
+    /// ``Rc<Cell<usize>>` cannot be sent between threads safely`, both
+    /// pointing at the `multiplexed()` call and at this method's bound.
+    /// (`compile_fail,E0277` would say so in the fence, but rustdoc's
+    /// error-code annotation is unstable and is **not** enforced on
+    /// stable — measured: the same block passes annotated `E0432`.)
+    ///
+    /// **A runtime with no `Spawn` impl at all** builds this transport and
+    /// runs requests on it — that is the property
+    /// `http-ng/tests/two_runtimes.rs` and `tests/h1.rs`'s
+    /// `works_on_a_bare_futures_executor_with_no_spawn` exist to hold — and
+    /// is refused **here**, at the line where the caller asked for
+    /// something it cannot do:
+    ///
+    /// ```compile_fail
+    /// use http_ng_native::Native;
+    /// use http_ng_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{future::Future, net::SocketAddr, time::Duration};
+    ///
+    /// #[derive(Clone)]
+    /// struct NoSpawn;
+    /// impl Timer for NoSpawn {
+    ///     type Instant = <Tokio as Timer>::Instant;
+    ///     type Sleep = <Tokio as Timer>::Sleep;
+    ///     fn sleep(&self, d: Duration) -> Self::Sleep { Tokio.sleep(d) }
+    ///     fn now(&self) -> Self::Instant { Timer::now(&Tokio) }
+    ///     fn elapsed_since(&self, e: Self::Instant) -> Duration { Tokio.elapsed_since(e) }
+    /// }
+    /// impl TcpConnect for NoSpawn {
+    ///     type Stream = <Tokio as TcpConnect>::Stream;
+    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
+    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    /// }
+    ///
+    /// // Builds, and would run: no bound anywhere on this line.
+    /// let plain = Native::new(NoSpawn, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly);
+    /// // Does not build: `NoSpawn: Spawn<H2Driver<..>>` is not satisfied.
+    /// let shared = plain.multiplexed();
+    /// ```
+    ///
+    /// The control is the same file with a `Spawn` impl added and nothing
+    /// else changed:
+    ///
+    /// ```
+    /// use http_ng_native::Native;
+    /// use http_ng_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{future::Future, net::SocketAddr, time::Duration};
+    ///
+    /// #[derive(Clone)]
+    /// struct CanSpawn;
+    /// impl Timer for CanSpawn {
+    ///     type Instant = <Tokio as Timer>::Instant;
+    ///     type Sleep = <Tokio as Timer>::Sleep;
+    ///     fn sleep(&self, d: Duration) -> Self::Sleep { Tokio.sleep(d) }
+    ///     fn now(&self) -> Self::Instant { Timer::now(&Tokio) }
+    ///     fn elapsed_since(&self, e: Self::Instant) -> Duration { Tokio.elapsed_since(e) }
+    /// }
+    /// impl TcpConnect for CanSpawn {
+    ///     type Stream = <Tokio as TcpConnect>::Stream;
+    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
+    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    /// }
+    /// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for CanSpawn {
+    ///     fn spawn(&self, f: F) { Tokio.spawn(f) }
+    /// }
+    ///
+    /// let shared = Native::new(CanSpawn, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .multiplexed();
+    /// ```
+    ///
+    /// **A hook holding an `Rc`** is the third price, and it is refused in
+    /// the same place. The `!Send` allowance on the hook seam is real —
+    /// `http-ng-fetch`'s hook is an `Rc<RefCell<..>>` — and the driver
+    /// carries the hook, so a spawner that wants `Send` meets it here:
+    ///
+    /// ```compile_fail
+    /// use http_ng_core::unversioned::{Event, Hooks};
+    /// use http_ng_native::Native;
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{cell::Cell, rc::Rc};
+    ///
+    /// #[derive(Clone)]
+    /// struct Counting(Rc<Cell<usize>>);
+    /// impl Hooks for Counting {
+    ///     fn on(&self, _e: Event<'_>) { self.0.set(self.0.get() + 1) }
+    /// }
+    ///
+    /// // Builds, and works: this transport reports events and is `!Send`.
+    /// let watched = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .hooks(Counting(Rc::new(Cell::new(0))));
+    /// // Does not build: `Rc<Cell<usize>>` cannot be sent between threads.
+    /// let shared = watched.multiplexed();
+    /// ```
+    ///
+    /// The control is the same hook behind an `Arc`:
+    ///
+    /// ```
+    /// use http_ng_core::unversioned::{Event, Hooks};
+    /// use http_ng_native::Native;
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    ///
+    /// #[derive(Clone)]
+    /// struct Counting(Arc<AtomicUsize>);
+    /// impl Hooks for Counting {
+    ///     fn on(&self, _e: Event<'_>) { self.0.fetch_add(1, Ordering::Relaxed); }
+    /// }
+    ///
+    /// let shared = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .hooks(Counting(Arc::new(AtomicUsize::new(0))))
+    ///     .multiplexed();
+    /// ```
     ///
     /// # What it does not change
     ///
