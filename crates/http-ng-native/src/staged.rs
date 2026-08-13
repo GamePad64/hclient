@@ -274,8 +274,18 @@ where
     /// connection the pool would have held if this request had never been
     /// staged. With reuse off there is no check-in and the drop closes the
     /// socket, which is what `without_pool()` means.
+    ///
+    /// **A shared connection is dropped rather than checked in**, and the
+    /// two are opposites here rather than variations: a
+    /// [`crate::established::Established::H2Shared`] was *borrowed* from
+    /// the pool and never left it, so putting it back would leave two
+    /// entries naming one connection — and the pool would then be holding
+    /// a connection open one entry longer than the origin's traffic
+    /// justifies. Dropping the clone is exactly right: the pool's own copy
+    /// is what keeps the connection alive.
     fn drop(&mut self) {
         if let Some(held) = self.held.take()
+            && held.est.borrowed().is_none()
             && let Some(checkin) = held.checkin
         {
             checkin.put(held.est);

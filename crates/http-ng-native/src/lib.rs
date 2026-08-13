@@ -53,6 +53,10 @@ mod upgrade;
 pub use body::UndeclaredRequestTrailers;
 pub use connect::Conn;
 pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
+/// The future [`Native::multiplexed`] spawns — public because that
+/// constructor's `Spawn` bound has to name it, and for no other reason.
+#[cfg(feature = "http2")]
+pub use http2::H2Driver;
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
@@ -74,6 +78,17 @@ use pool::{CheckIn, Pool, PoolKey, Protocol, Security};
 use std::future::Future;
 use std::task::Poll;
 use std::time::Duration;
+
+/// How a shared HTTP/2 connection's driver gets onto the runtime: the
+/// spawner, captured as a plain function pointer.
+///
+/// **A type alias for a reason beyond the lint.** What it says is that the
+/// only thing [`Native`] keeps of `R: Spawn<..>` is a pointer — no bound,
+/// no trait object, nothing that reaches any other signature — which is
+/// the whole mechanism behind [`Native::multiplexed`] and is easy to lose
+/// sight of when the type is spelled out inline.
+#[cfg(feature = "http2")]
+type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H>);
 
 /// The IO a [`Native`] speaks HTTP/1 over: a plain socket from the runtime,
 /// or that same socket wrapped by the TLS backend.
@@ -204,6 +219,25 @@ where
     /// transport's clones (and the response bodies that outlive a call)
     /// all see the same one.
     svcb_failures: discovery::NegativeCache,
+    /// How to spawn an HTTP/2 connection driver, or `None` for a transport
+    /// that has not been asked to share connections — which is every
+    /// transport this crate builds unless [`Native::multiplexed`] was
+    /// called.
+    ///
+    /// **A function pointer, and that is the whole mechanism.**
+    /// [`http_ng_rt::Spawn`] declares no bounds at all, so
+    /// `<R as Spawn<F>>::spawn` is an ordinary function item and coerces
+    /// to `fn(&R, F)`; a field of that type is well-formed whatever `R`
+    /// is, so **no signature a `Spawn`-less runtime meets gains a bound**.
+    /// The bound lives on `multiplexed()` alone, which is what lets
+    /// `Transport::execute` — a trait method, whose impl cannot carry an
+    /// extra bound — reach a spawner without demanding one.
+    ///
+    /// `None` is today's transport exactly, down to the code path: the
+    /// shared arm is not entered, the pool is `take`n rather than
+    /// borrowed, and no task is created.
+    #[cfg(feature = "http2")]
+    share_h2: Option<SpawnH2<R, T, H>>,
 }
 
 /// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
@@ -516,6 +550,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             caps,
             pool,
             svcb_failures: discovery::NegativeCache::default(),
+            // Not shared. `Native::multiplexed` is the only thing that
+            // ever sets this, and it carries the `Spawn` bound that makes
+            // it possible.
+            #[cfg(feature = "http2")]
+            share_h2: None,
         }
     }
 }
@@ -542,6 +581,18 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
     /// working (P13; `crates/http-ng-core/tests/shape.rs`).
+    ///
+    /// # It turns [`Native::multiplexed`] back off, and the type is why
+    ///
+    /// The spawner `multiplexed()` captures is a
+    /// `fn(&R, H2Driver<_, H>)` — it **names the hook**, because the
+    /// driver carries it — so a method whose whole purpose is to change
+    /// `H` cannot carry that pointer across. Write `.hooks(..)` first and
+    /// `.multiplexed()` last; the other order compiles and shares no
+    /// connections, which is the same cost, stated the same way, as
+    /// [`Native::tcp_opts`] replacing the whole option set. Pinned by
+    /// `tests/http2_multiplex.rs`'s pair of orders, so the rule is
+    /// measured rather than only written here.
     pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2> {
         Native {
             rt: self.rt,
@@ -553,6 +604,14 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             epoch: self.epoch,
             pool: self.pool,
             svcb_failures: self.svcb_failures,
+            // Dropped rather than carried, and the compiler is why: the
+            // spawner's type names `H`, and this method's whole purpose
+            // is to change `H`. A caller who wants both writes
+            // `.hooks(..)` first — which is the order that type-checks,
+            // and the order that makes the driver carry the hook it is
+            // supposed to report through.
+            #[cfg(feature = "http2")]
+            share_h2: None,
         }
     }
 
@@ -659,6 +718,243 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             config.idle_timeout,
         );
         self.rt.spawn(reaper);
+        self
+    }
+
+    /// **Share one HTTP/2 connection between concurrent requests**, by
+    /// spawning its driver on `R` (v0.4).
+    ///
+    /// Without this, an h2 connection is checked out of the pool
+    /// exclusively and two concurrent requests to one origin cost two
+    /// connections and two handshakes — measured at 8× the sockets and 8×
+    /// the TLS handshakes for a concurrency of 8, and the largest
+    /// remaining gap between this client and a gRPC one
+    /// (`docs/grpc-yardstick.md`'s L1). With it, they cost one.
+    ///
+    /// ```
+    /// # use http_ng_native::Native;
+    /// # use http_ng_rt_tokio::Tokio;
+    /// let transport = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .multiplexed();
+    /// ```
+    ///
+    /// # Why this is not what [`Native::new`] does
+    ///
+    /// [`Native::with_reaper`]'s reason exactly, and it is the rule this
+    /// crate is built on: `Native` is generic over `R`, and **not every
+    /// `R` has a `Spawn` impl at all** — `connect.rs`'s own `FakeRt` has
+    /// none, W7's embassy backend expects none, and
+    /// `http-ng/tests/two_runtimes.rs` runs this transport on a bare
+    /// `futures_executor::block_on`. A default that spawned would be a
+    /// default stronger than the truth.
+    ///
+    /// The bound is therefore on this method and on nothing else. What
+    /// makes that possible is that [`http_ng_rt::Spawn`] declares **no
+    /// bounds**, so `<R as Spawn<F>>::spawn` coerces to `fn(&R, F)` and
+    /// can be stored in a field that demands nothing of `R` — see
+    /// [`Native`]'s `share_h2`. `Transport::execute` is a trait method and
+    /// cannot carry an extra bound; it does not need one.
+    ///
+    /// # Three prices, none of them hidden
+    ///
+    /// **1. A spawner nobody drives hangs requests, where a reaper's would
+    /// only leak sockets.** `Spawn::spawn` returns `()`: an executor that
+    /// is never run accepts the driver, drops it, and has no way to say
+    /// so. `pool.rs`'s module doc already names this as the thing no bound
+    /// can catch — and here it is worse than there. Measured
+    /// (`docs/h2-multiplexing.md` P8): a driver **dropped** fails its
+    /// requests with a broken pipe, a driver **held and never polled**
+    /// leaves them with no verdict at all. `Timeouts::first_byte` is the
+    /// only bound that cuts it and it is not a default. **A shared
+    /// connection is at most as good as the executor under it.**
+    ///
+    /// **2. Beyond the peer's `MAX_CONCURRENT_STREAMS`, requests queue.**
+    /// h2 accepts them and opens the streams as capacity frees up:
+    /// measured at a server limit of 2, six concurrent calls finished at
+    /// 203/203/405/405/607/607 ms on one connection, where today the fifth
+    /// and sixth would open sockets of their own and finish in ~200 ms. No
+    /// second connection is opened at any concurrency, and that is a
+    /// decision rather than an omission — see "When a shared connection is
+    /// full" below.
+    ///
+    /// **3. A hook holding an `Rc` cannot multiplex.** The driver carries
+    /// `H` so that a shared connection's `Closed` has an emitter at all,
+    /// and `Tokio`'s `Spawn` impl wants `Send + 'static`; the seam's
+    /// `!Send` allowance therefore meets `Spawn`'s bound here. It is a
+    /// **compile error at this call**, naming the missing bound, and it
+    /// costs such a build nothing but the multiplexing: the transport it
+    /// had goes on working. `http-ng-h3` met the same collision from the
+    /// other side and could not close it — `CloseReason::Ended` has no
+    /// emitter there — because its bound is on the transport rather than
+    /// on an opt-in.
+    ///
+    /// # Reuse has to be on
+    ///
+    /// There is nowhere to share a connection without a pool, so this has
+    /// no effect on a transport built with [`Native::without_pool`] —
+    /// whichever order the two are written in, because the shared path is
+    /// entered only where a pool exists. That is
+    /// [`Native::with_reaper`]'s third bullet, one seam over. `.hooks(..)`
+    /// is the other ordering rule and is a stronger one: it turns this
+    /// back off, and [`Native::hooks`] says why.
+    ///
+    /// # When a shared connection is full
+    ///
+    /// **Nothing: it queues, and no second connection is opened.** The
+    /// alternative needs a number nobody here can choose honestly.
+    /// `SendRequest::poll_ready` is a **liveness** check and not a
+    /// capacity one — it answers from a connection error, the next stream
+    /// id and this clone's own pending stream, never from the peer's
+    /// `MAX_CONCURRENT_STREAMS` — so a second-connection policy would have
+    /// to count live streams in our own code, and the threshold depends on
+    /// the peer's limit (which h2 will not report to us) and on the
+    /// handshake cost, which is a network property and not a loopback one.
+    /// A number measured on loopback would be a number about this
+    /// machine. `docs/h2-multiplexing.md` §9.1 records what it would take;
+    /// `tests/http2_multiplex.rs` measures what queueing costs today so
+    /// that the decision is a reading rather than a hope.
+    ///
+    /// # The two refusals, each beside the control that differs in one token
+    ///
+    /// A `compile_fail` doctest passes for **any** compile error, including
+    /// a typo, so the pairing below is the discipline: each refusal sits
+    /// next to a version of itself that differs in one thing and compiles.
+    /// The messages were also read once, by building the same two calls as
+    /// an ordinary test — `the trait bound `NoSpawn: Spawn<H2Driver<Conn<
+    /// TokioIo, NoStream>, NoHooks>>` is not satisfied` and
+    /// ``Rc<Cell<usize>>` cannot be sent between threads safely`, both
+    /// pointing at the `multiplexed()` call and at this method's bound.
+    /// (`compile_fail,E0277` would say so in the fence, but rustdoc's
+    /// error-code annotation is unstable and is **not** enforced on
+    /// stable — measured: the same block passes annotated `E0432`.)
+    ///
+    /// **A runtime with no `Spawn` impl at all** builds this transport and
+    /// runs requests on it — that is the property
+    /// `http-ng/tests/two_runtimes.rs` and `tests/h1.rs`'s
+    /// `works_on_a_bare_futures_executor_with_no_spawn` exist to hold — and
+    /// is refused **here**, at the line where the caller asked for
+    /// something it cannot do:
+    ///
+    /// ```compile_fail
+    /// use http_ng_native::Native;
+    /// use http_ng_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{future::Future, net::SocketAddr, time::Duration};
+    ///
+    /// #[derive(Clone)]
+    /// struct NoSpawn;
+    /// impl Timer for NoSpawn {
+    ///     type Instant = <Tokio as Timer>::Instant;
+    ///     type Sleep = <Tokio as Timer>::Sleep;
+    ///     fn sleep(&self, d: Duration) -> Self::Sleep { Tokio.sleep(d) }
+    ///     fn now(&self) -> Self::Instant { Timer::now(&Tokio) }
+    ///     fn elapsed_since(&self, e: Self::Instant) -> Duration { Tokio.elapsed_since(e) }
+    /// }
+    /// impl TcpConnect for NoSpawn {
+    ///     type Stream = <Tokio as TcpConnect>::Stream;
+    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
+    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    /// }
+    ///
+    /// // Builds, and would run: no bound anywhere on this line.
+    /// let plain = Native::new(NoSpawn, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly);
+    /// // Does not build: `NoSpawn: Spawn<H2Driver<..>>` is not satisfied.
+    /// let shared = plain.multiplexed();
+    /// ```
+    ///
+    /// The control is the same file with a `Spawn` impl added and nothing
+    /// else changed:
+    ///
+    /// ```
+    /// use http_ng_native::Native;
+    /// use http_ng_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport, Timer};
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{future::Future, net::SocketAddr, time::Duration};
+    ///
+    /// #[derive(Clone)]
+    /// struct CanSpawn;
+    /// impl Timer for CanSpawn {
+    ///     type Instant = <Tokio as Timer>::Instant;
+    ///     type Sleep = <Tokio as Timer>::Sleep;
+    ///     fn sleep(&self, d: Duration) -> Self::Sleep { Tokio.sleep(d) }
+    ///     fn now(&self) -> Self::Instant { Timer::now(&Tokio) }
+    ///     fn elapsed_since(&self, e: Self::Instant) -> Duration { Tokio.elapsed_since(e) }
+    /// }
+    /// impl TcpConnect for CanSpawn {
+    ///     type Stream = <Tokio as TcpConnect>::Stream;
+    ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
+    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    /// }
+    /// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for CanSpawn {
+    ///     fn spawn(&self, f: F) { Tokio.spawn(f) }
+    /// }
+    ///
+    /// let shared = Native::new(CanSpawn, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .multiplexed();
+    /// ```
+    ///
+    /// **A hook holding an `Rc`** is the third price, and it is refused in
+    /// the same place. The `!Send` allowance on the hook seam is real —
+    /// `http-ng-fetch`'s hook is an `Rc<RefCell<..>>` — and the driver
+    /// carries the hook, so a spawner that wants `Send` meets it here:
+    ///
+    /// ```compile_fail
+    /// use http_ng_core::unversioned::{Event, Hooks};
+    /// use http_ng_native::Native;
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::{cell::Cell, rc::Rc};
+    ///
+    /// #[derive(Clone)]
+    /// struct Counting(Rc<Cell<usize>>);
+    /// impl Hooks for Counting {
+    ///     fn on(&self, _e: Event<'_>) { self.0.set(self.0.get() + 1) }
+    /// }
+    ///
+    /// // Builds, and works: this transport reports events and is `!Send`.
+    /// let watched = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .hooks(Counting(Rc::new(Cell::new(0))));
+    /// // Does not build: `Rc<Cell<usize>>` cannot be sent between threads.
+    /// let shared = watched.multiplexed();
+    /// ```
+    ///
+    /// The control is the same hook behind an `Arc`:
+    ///
+    /// ```
+    /// use http_ng_core::unversioned::{Event, Hooks};
+    /// use http_ng_native::Native;
+    /// use http_ng_rt_tokio::Tokio;
+    /// use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    ///
+    /// #[derive(Clone)]
+    /// struct Counting(Arc<AtomicUsize>);
+    /// impl Hooks for Counting {
+    ///     fn on(&self, _e: Event<'_>) { self.0.fetch_add(1, Ordering::Relaxed); }
+    /// }
+    ///
+    /// let shared = Native::new(Tokio, http_ng_tls::NoTls, http_ng_dns::IpLiteralOnly)
+    ///     .hooks(Counting(Arc::new(AtomicUsize::new(0))))
+    ///     .multiplexed();
+    /// ```
+    ///
+    /// # What it does not change
+    ///
+    /// `Capabilities` are untouched, and that is checked rather than
+    /// asserted: `ReuseSupport::Supported` means *"a second request to an
+    /// origin need not pay for a TCP and TLS handshake again"*, which
+    /// stays exactly true, and `CancelSupport::Supported` is a duty owed
+    /// on a dropped future, which goes on being owed — what changes is
+    /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
+    /// the socket close. `full_duplex` and `response_trailers` still
+    /// report the HTTP/1.1 floor for [`Native::new`]'s reason.
+    #[cfg(feature = "http2")]
+    pub fn multiplexed(mut self) -> Self
+    where
+        R: Spawn<http2::H2Driver<NativeIo<R, T>, H>>,
+        H: Hooks + Unpin,
+    {
+        self.share_h2 = Some(<R as Spawn<http2::H2Driver<NativeIo<R, T>, H>>>::spawn);
         self
     }
 
@@ -958,6 +1254,103 @@ where
         }));
     }
 
+    /// Whether this transport shares HTTP/2 connections — the spawner is
+    /// set **and** there is a pool to keep a shared connection in.
+    ///
+    /// **What the second conjunct actually buys is narrower than it
+    /// looks**, and a mutation is what said so. It does *not* make
+    /// [`Native::multiplexed`] and [`Native::without_pool`]
+    /// order-independent: `share_if_multiplexing` reads the pool's
+    /// configuration for the deadline it has to stamp, so a transport with
+    /// no pool shares nothing whichever order the two were written in, with
+    /// or without this conjunct. What it buys is that such a transport also
+    /// does no **single-flight** work: without it, a pool-less multiplexed
+    /// transport would take the connect mark and make seven of a burst of
+    /// eight wait once for a connection that is never published. No test
+    /// asserts that, because what it costs is a wait rather than an
+    /// outcome; it is recorded as a surviving mutation in
+    /// `docs/h2-multiplexing.md` §11.5 rather than claimed as pinned.
+    #[cfg(feature = "http2")]
+    fn shares_connections(&self) -> bool {
+        self.share_h2.is_some() && self.pool.config().is_some()
+    }
+
+    /// Waits for somebody else's connect to this origin, and reports what
+    /// is left of `Timeouts::connect`.
+    ///
+    /// **The budget is spent once**, which is the arithmetic
+    /// `http-ng-select`'s h3 fallback does one layer up and `Client`'s
+    /// `425` replay does one layer down: a caller who set
+    /// `connect: Some(C)` must not be made to wait `C` for a neighbour and
+    /// then `C` again for a connect of their own. Where the wait uses it
+    /// all up, `with_connect_timeout` fails the request with the same
+    /// `Timeout(Connect)` a connect of our own would have.
+    ///
+    /// The clock is read only when there is a bound to spend, so a request
+    /// that set none costs no `Timer::now`.
+    #[cfg(feature = "http2")]
+    async fn wait_for_a_shared_connect(
+        &self,
+        key: &PoolKey,
+        budget: Option<Duration>,
+    ) -> Result<Option<Duration>, Error> {
+        let waited_from = budget.map(|_| self.rt.now());
+        let wait = self.pool.wait_for_connect(key);
+        with_connect_timeout(&self.rt, budget, async move {
+            wait.await;
+            Ok(())
+        })
+        .await?;
+        Ok(match (budget, waited_from) {
+            (Some(d), Some(at)) => Some(d.saturating_sub(self.rt.elapsed_since(at))),
+            _ => None,
+        })
+    }
+
+    /// Turns a freshly handshaken HTTP/2 connection into a shared one, on
+    /// a transport that asked for that and nowhere else.
+    ///
+    /// Three things happen together and must: the connection is split into
+    /// a `SendRequest` and a driver, the driver is spawned, and a clone of
+    /// the sender is published to the pool. Published *here* rather than
+    /// when the response body ends, because the pool's copy is what keeps
+    /// the connection alive and what every concurrent request borrows —
+    /// the check-in an exclusive connection makes at the end of its body
+    /// would be a connection shared with nobody until then.
+    ///
+    /// The [`CheckIn`] comes back as `None` for the same reason, and that
+    /// is `docs/h2-multiplexing.md` §3.1's *"the whole `Reuse { checkin,
+    /// sender }` dance exists to survive an exclusive check-out"*: nothing
+    /// on this path has anything to hand back.
+    ///
+    /// Everything else — HTTP/1, an exclusive h2 connection, a transport
+    /// that never asked — comes back exactly as it went in.
+    #[cfg(feature = "http2")]
+    fn share_if_multiplexing(
+        &self,
+        est: established::Established<NativeIo<R, T>>,
+        checkin: &mut Option<CheckIn<NativeIo<R, T>>>,
+        now: Duration,
+        parts_of_key: &KeyParts,
+    ) -> established::Established<NativeIo<R, T>> {
+        let (Some(spawn), Some(cfg)) = (self.share_h2, self.pool.config()) else {
+            return est;
+        };
+        match est {
+            established::Established::H2(h2) => {
+                let (shared, driver) = http2::share(*h2, self.hooks.clone());
+                spawn(&self.rt, driver);
+                self.pool.put(
+                    parts_of_key.key(Protocol::H2),
+                    established::Established::H2Shared(shared.clone()),
+                    now.saturating_add(cfg.idle_timeout),
+                );
+                *checkin = None;
+                established::Established::H2Shared(shared)
+            }
+            other => other,
+        }
+    }
     /// A pooled connection that is still worth a request, or `None`.
     ///
     /// Dead candidates are dropped as they are found — dropping closes the
@@ -966,6 +1359,13 @@ where
     /// than a failed request. It terminates because every iteration removes
     /// one entry from the pool and `take` returns `None` on an empty
     /// bucket.
+    ///
+    /// **A shared entry is borrowed rather than taken** (see
+    /// [`crate::pool::Pool::take`]), which is what makes the termination
+    /// argument above need a second half: the entry a rejected clone came
+    /// from is still in the pool, so it is removed here by name before the
+    /// loop goes round. Without that line this function would borrow the
+    /// same dead connection for ever.
     async fn checkout(
         &self,
         key: &PoolKey,
@@ -975,6 +1375,10 @@ where
             let mut est = self.pool.take(key, now)?;
             if established::is_reusable(&mut est).await {
                 return Some(est);
+            }
+            #[cfg(feature = "http2")]
+            if let Some(slot) = est.shared_slot() {
+                self.pool.forget_shared(key, slot);
             }
             // Reported here rather than at the drop below, and outside
             // the pool's mutex rather than inside it — the two rules the
@@ -1303,6 +1707,41 @@ where
         // could silently break.
         let began = mark::<H, R>(&self.rt);
 
+        // 0. Only when connections are shared: if somebody is already
+        //    opening one to this origin, wait for it rather than opening a
+        //    second. Sharing is what makes this necessary — a burst of N
+        //    concurrent requests to a cold origin has no first request to
+        //    share from, so without single-flight all N connect and each
+        //    shared connection is shared with nobody.
+        //
+        //    The mark is taken here rather than immediately before the
+        //    connect so that the window between "the pool is empty" and
+        //    "I am connecting" is not a window at all, and it is released
+        //    the moment there is a connection to find — see
+        //    `pool::Connecting`. `budget` is what is left of
+        //    `Timeouts::connect` afterwards, because a bound a waiter can
+        //    be made to pay twice is not a bound.
+        #[cfg(feature = "http2")]
+        let mut connect_guard = None;
+        #[cfg(feature = "http2")]
+        let mut budget = timeouts.connect;
+        #[cfg(feature = "http2")]
+        if self.shares_connections() && self.may_speak_h2(&parts_of_key) {
+            let shared_key = parts_of_key.key(Protocol::H2);
+            connect_guard = self.pool.begin_connect(&shared_key);
+            if connect_guard.is_none() {
+                budget = self.wait_for_a_shared_connect(&shared_key, budget).await?;
+                // Whoever we waited for is done. If they published a
+                // connection the loop below finds it; if they failed,
+                // taking the mark now makes this request the one the next
+                // arrivals wait for rather than leaving the herd
+                // uncoalesced for ever.
+                connect_guard = self.pool.begin_connect(&shared_key);
+            }
+        }
+        #[cfg(not(feature = "http2"))]
+        let budget = timeouts.connect;
+
         // 1. Connections somebody else already opened, if any are still
         //    alive. `checkout` polls each candidate before offering it, and
         //    that poll is the only thing standing between us and handing
@@ -1347,6 +1786,13 @@ where
                 version: spoken_version(Some(protocol)),
             }));
             let checkin = self.checkin_for(&key, now);
+            // Nobody waiting for a connect should wait for this exchange:
+            // what they are waiting for is a connection to exist, and one
+            // does. Released here rather than at the end of `run` for the
+            // reason `pool::Connecting`'s own doc gives — a slow server
+            // must not become a queue.
+            #[cfg(feature = "http2")]
+            drop(connect_guard.take());
             let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
             match self.within_first_byte(timeouts.first_byte, attempt).await {
                 Ok(resp) => {
@@ -1425,8 +1871,11 @@ where
             // authority — see `Prepared`.
             prefetched,
         );
+        // `budget` rather than `timeouts.connect`: on the shared path it
+        // is what a wait for somebody else's connect left, and on every
+        // other path it *is* `timeouts.connect`.
         let (conn, tls_info, attempted) =
-            with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
+            with_connect_timeout(&self.rt, budget, connect_fut).await?;
         // The whole connect, measured from the same mark `Head::elapsed`
         // uses, so the two are comparable — which is the pair that
         // answers "was it the connection or was it the server".
@@ -1498,12 +1947,22 @@ where
         // here, unpooled, which is right: nothing was spoken on it.
         check_version(req.extensions(), spoken_version(protocol))?;
 
-        let checkin = match protocol {
+        #[cfg_attr(not(feature = "http2"), allow(unused_mut))]
+        let mut checkin = match protocol {
             Some(p) => self.checkin_for(&parts_of_key.key(p), now),
             None => None,
         };
 
         let est = handshake_for(conn, protocol, id).await?;
+        // The one place a connection becomes a *shared* one. It happens
+        // before the exchange, so what this request holds is a clone like
+        // any other and the pool's copy owns the connection from the first
+        // instant — which is also what lets the waiters released two lines
+        // below find it.
+        #[cfg(feature = "http2")]
+        let est = self.share_if_multiplexing(est, &mut checkin, now, &parts_of_key);
+        #[cfg(feature = "http2")]
+        drop(connect_guard.take());
         let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
         let resp = self
             .within_first_byte(timeouts.first_byte, attempt)

@@ -479,8 +479,13 @@ async fn without_a_pool_each_http2_request_gets_its_own_connection() {
 /// take two connections here — a connection is handed out exclusively,
 /// which is why a dropped exchange has no neighbour on its connection to
 /// tear down (see `pool.rs`'s "What an h2 connection is checked out for").
-/// The day that number becomes 1, this test's *other* assertion is what
-/// has to keep holding, and it will not hold for free.
+///
+/// **That day came, on request** (v0.4). `Native::multiplexed()` makes the
+/// number `1`, and the test below is this one with that single call added:
+/// its *other* assertion — the survivor's — is what has to keep holding
+/// there, and it does not hold for free, because the two calls really are
+/// on one connection. This test is the default's, and the default did not
+/// change.
 #[tokio::test]
 async fn dropping_one_exchange_leaves_a_concurrent_one_alone() {
     let server = spawn_h2_server();
@@ -508,6 +513,52 @@ async fn dropping_one_exchange_leaves_a_concurrent_one_alone() {
         "an h2 connection is checked out exclusively, so two concurrent \
          requests are two connections — which is what makes the survivor's \
          connection unreachable from the cancelled request"
+    );
+}
+
+/// **The same pair with `multiplexed()`: one connection, and the
+/// survivor's assertion is now the whole point.**
+///
+/// The test above says in as many words that the day `accepted` becomes
+/// `1` its *other* assertion is what has to keep holding. This is that
+/// day, and it is one call's difference in the client and no difference at
+/// all in the request pair: the slow request is dropped by a timeout while
+/// its neighbour is in flight **on the same connection**, and the
+/// neighbour must still get its `200`.
+///
+/// `accepted == 1` is what makes the claim non-vacuous — it is the proof
+/// that there was a neighbour to tear down.
+#[tokio::test]
+async fn dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connection() {
+    let server = spawn_h2_server();
+    let client = Client::builder(
+        Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio)).multiplexed(),
+    )
+    .build()
+    .unwrap();
+
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(500),
+        client.get(&server.url("/slow")).send(),
+    );
+    let survivor = client.get(&server.url("/fast")).send();
+    let (cancelled, survivor) = tokio::join!(cancelled, survivor);
+
+    assert!(
+        cancelled.is_err(),
+        "the slow request must still have been waiting when its future was dropped"
+    );
+    let survivor = survivor.expect("the concurrent request must be unaffected by the cancellation");
+    assert_eq!(survivor.status(), 200);
+    assert_eq!(survivor.version(), http::Version::HTTP_2);
+    assert_eq!(survivor.collect().await.unwrap().text().unwrap(), "ok");
+
+    assert_eq!(
+        server.accepted.load(Ordering::SeqCst),
+        1,
+        "one connection carried both, so the cancelled request's stream had \
+         a neighbour — which is what W1's rule is about and what the \
+         exclusive check-out used to make vacuous"
     );
 }
 

@@ -43,11 +43,11 @@ Every row was run. "Where" names the test in
 | 10 | **Bidirectional streaming** on one stream, indefinitely | 16 rounds, each request message caused by the previous response message, one stream, one connection | same |
 | 11 | **Flow control, receive** | 524 328 bytes — eight 64 KiB messages over a 65 535-byte window — arrive whole, with the trailers behind them | `a_response_past_the_window_arrives_whole_with_its_trailers` |
 | 12 | **Flow control, send** | back-pressured: with the server provably reading nothing, **2 of 16** 32 KiB chunks had been taken from the caller's body when the head arrived — one window's worth | `a_request_past_the_window_is_backpressured_rather_than_buffered` |
-| 13 | **Cancellation** — *"immediate full-closure of the stream"* | the call ends at the server, and the next call is unaffected. **Not as `RST_STREAM`** — see limitation L2 | `cancelling_a_call_ends_it_at_the_server_and_leaves_the_next_one_alone` |
+| 13 | **Cancellation** — *"immediate full-closure of the stream"* | the call ends at the server, and the next call is unaffected. **Not as `RST_STREAM`** by default — see limitation L2 — and **as `RST_STREAM(CANCEL)`** with `multiplexed()` | `cancelling_a_call_ends_it_at_the_server_and_leaves_the_next_one_alone`, `a_multiplexed_cancellation_resets_the_stream_and_leaves_its_neighbour_alone` |
 | 14 | **GOAWAY** — *"retry the call elsewhere"* | the next call opens a fresh connection and succeeds; the call the GOAWAY names is still answered | `a_goaway_costs_a_connection_and_not_the_next_call` |
-| 15 | **PING** — *"the peer must respond"* | answered — by the next call. Nothing polls a pooled connection, so a ping arriving on one waits. See limitation L3 | `a_ping_to_a_pooled_connection_waits_for_the_next_call` |
+| 15 | **PING** — *"the peer must respond"* | answered — by the next call by default, because nothing polls a pooled connection (limitation L3); **while idle** with `multiplexed()`, because the driver does | `a_ping_to_a_pooled_connection_waits_for_the_next_call`, `a_ping_to_a_shared_connection_is_answered_while_it_is_idle` |
 | 16 | Connection reuse across calls | one connection for two sequential calls: a call's trailers do not cost it its socket | `two_calls_with_trailers_share_one_connection` |
-| 17 | Multiplexing | **two** connections for two concurrent calls. See limitation L1 | `two_concurrent_calls_take_two_connections_rather_than_two_streams` |
+| 17 | Multiplexing | **two** connections for two concurrent calls by default (limitation L1); **one**, with eight streams open at once for eight calls, with `multiplexed()` | `two_concurrent_calls_take_two_connections_rather_than_two_streams`, `multiplexing_turns_those_two_connections_into_two_streams`, `eight_concurrent_calls_travel_over_one_connection` |
 | 18 | `Client`'s own stages must not interfere | no `Cookie` (no jar was asked for), one hop (a `200` stops the redirect stage before any counting), body and trailers byte-identical | `the_clients_own_stages_leave_a_grpc_exchange_alone` |
 | 19 | …including `Accept-Encoding` | with `gzip` + `brotli` compiled in the client advertises **`gzip, br`**, and never a coding it cannot reverse | same |
 | 20 | …and the caller can take it back | a caller-set `Accept-Encoding: identity` reaches the wire exactly, in every build | `a_caller_who_sets_accept_encoding_keeps_it_exactly` |
@@ -58,19 +58,28 @@ Every row was run. "Where" names the test in
 None of these is new, and none was found by this audit — what the audit
 adds is a number and a test.
 
-**All three have since been investigated together, and the investigation
-is `docs/h2-multiplexing.md`.** Three of its findings belong here rather
-than only there. This section's own framing — L2 and L3 hang off L1 — is
-**confirmed by measurement**: with the connection driver spawned, the
-`RST_STREAM(CANCEL)` arrives and a `PING` is answered in 0 ms, neither
-needing any code of its own. L1's cost is now a count rather than a
-sentence: 1, 2, 4 and 8 concurrent calls cost 1, 2, 4 and 8 TCP
-connections and the same number of h2 handshakes, and over real TLS, 480
-requests at a concurrency of 8 cost **480** accepts where a shared
-connection needs 60. And it is **not** a pure win: at the peer's
-`MAX_CONCURRENT_STREAMS` a shared connection queues where today's opens a
-second socket — six concurrent calls against a limit of two finished in
-three waves at 203/405/607 ms, where today the sixth finishes in ~200 ms.
+**All three have since been investigated together and then closed, on
+request** (v0.4) — `docs/h2-multiplexing.md`, and `Native::multiplexed()`
+is the opt-in. This section's own framing — L2 and L3 hang off L1 — turned out to
+be exactly right: **neither needed a line of code of its own**, and both
+are now tests rather than limitations.
+
+The default did not move, and that is why each row below still reads as it
+did. A spawner is opt-in for the reason `pool.rs`'s module doc gives — not
+every `R` has a `Spawn` impl at all, and this workspace runs this transport
+on a bare `futures_executor::block_on` — so a client that has not asked
+pays a connection per concurrent RPC exactly as before. Each limitation
+below therefore ends with what asking changes, and where that is measured.
+
+L1's cost, measured through the real transport in both arms: 480 requests
+at a concurrency of 8 cost **480** TCP accepts and 480 TLS+h2 handshakes
+exclusively against **60** shared, for ~3× the CPU (550 ms against 180 ms,
+medians of nine, ranges 540–600 and 160–210). It is **not** a pure win: at
+the peer's `MAX_CONCURRENT_STREAMS` a shared connection queues where the
+default opens a second socket, and in steady state on loopback — a warm
+pool, no handshake left to save — sharing costs *more* CPU (110 ms against
+70 ms) and saves the sockets (0 against 7). `docs/h2-multiplexing.md`
+§11.4.
 
 ### L1. No multiplexing: one concurrent call, one connection
 
@@ -87,12 +96,23 @@ polling one stream would stall its neighbours. It is the same question
 connection nobody polls is dying, so it *must* spawn a driver, and once it
 has, exclusivity has no subject.
 
-**Classification: recorded limitation.** The cost for a gRPC caller is one
-TCP connection and one TLS handshake per concurrent RPC. What it is *not*
-is a correctness problem: W1's rule that cancelling one stream must not
-tear down the others holds here because there are never any others, which
-is a property of the pool policy rather than of the h2 code, and is written
-down in both places.
+**Classification: default behaviour, and closable on request.** The cost
+for a gRPC caller who does not ask is one TCP connection and one TLS
+handshake per concurrent RPC. What it is *not* is a correctness problem:
+W1's rule that cancelling one stream must not tear down the others holds
+here because there are never any others, which is a property of the pool
+policy rather than of the h2 code, and is written down in both places.
+
+**With `Native::multiplexed()` the number inverts**, and the test that
+says so is this row's own with one call added to the client:
+`multiplexing_turns_those_two_connections_into_two_streams`, one accept
+for two concurrent calls behind the same barrier. Eight concurrent calls
+on one connection, with the server's own high-water mark of open streams
+at eight, is `tests/http2_multiplex.rs`'s
+`eight_concurrent_calls_travel_over_one_connection`. W1's rule then stops
+holding for free, which is what
+`dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connection`
+is for.
 
 ### L2. Cancellation closes the connection; it does not send `RST_STREAM`
 
@@ -107,11 +127,19 @@ unobservable today and is kept for the day L1 changes; this audit is where
 "unobservable" stopped being an assertion and became a measurement
 (`Ending::ConnectionGone`, never `Ending::Reset`).
 
-**Classification: recorded limitation, downstream of L1.** For a transport
+**Classification: downstream of L1, and closed with it.** For a transport
 that carries one stream per connection, the server learns the same fact at
 the same instant: the call is over. It is only under multiplexing that the
-difference — one stream cancelled, or all of them — becomes visible, and
-that is exactly the day L1 changes.
+difference — one stream cancelled, or all of them — becomes visible.
+
+**With `Native::multiplexed()` the frame reaches the wire, and nothing was
+written for it.** The connection outlives the stream because a spawned
+driver owns it, so the `RST_STREAM(CANCEL)` `Pump`'s `Drop` has queued
+since v0.2 W3 is finally written.
+`a_multiplexed_cancellation_resets_the_stream_and_leaves_its_neighbour_alone`
+asserts `Ending::Reset(Reason::CANCEL)` — this file's `Ending` enum had
+that variant with nothing to produce it — and, on the same connection, a
+neighbour in flight that must finish with its trailers.
 
 ### L3. A `PING` on a pooled connection waits for the next call
 
@@ -122,7 +150,7 @@ same sentence covers it, and the A/B in row 15 measures both halves:
 nothing within 750 ms while pooled, answered by the next call, on the same
 connection.
 
-**Classification: recorded limitation with a bounded cost.** A server
+**Classification: a bounded cost, and closed on request.** A server
 enforcing a keepalive deadline against an idle pooled connection will drop
 it; this client discovers that at the next checkout and opens a fresh one.
 A wasted socket, never a failed call — a connection with no call on it has
@@ -130,6 +158,12 @@ no call to fail. There is deliberately no keepalive knob on `Native`; the
 WebSocket seam has one for the *opposite* reason, that an open WebSocket
 has no request future behind it at all and is therefore bounded by nothing
 else.
+
+**With `Native::multiplexed()` the ping is answered while the connection
+is idle**, and again nothing was written for it: something is polling.
+`a_ping_to_a_shared_connection_is_answered_while_it_is_idle` is this row's
+A/B with the assertion the other way round — the same fixture, the same
+750 ms window, the pong arriving without a second call being made.
 
 ## What is the caller's job, and stays the caller's job
 
