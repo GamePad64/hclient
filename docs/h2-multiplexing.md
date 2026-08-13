@@ -115,7 +115,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     pub fn multiplexed(mut self) -> Self
     where R: Spawn<http2::H2Driver<NativeIo<R, T>, H>>
     {
-        self.share_h2 = Some(<R as Spawn<_>>::spawn);
+        self.share_h2 =
+            Some(<R as Spawn<http2::H2Driver<NativeIo<R, T>, H>>>::spawn);
         self
     }
 }
@@ -295,12 +296,18 @@ rustls on both ends with ALPN `h2`, a self-signed IP-SAN certificate,
 wall time hides the whole cost and CPU does not. **Both ends run in this
 process**, so a figure covers the client's handshakes *and* the server's.
 
-| row | shape | accepts | requests | cpu (median of 5) | wall |
+Eight runs, on a host shared with other work. **D0 is the instrument's own
+check and it earned its place**: on a ninth run it read 10 ms instead of
+0 ms — the host was busy — and that run's D1 read 2.01 s against a median
+of 790 ms. That run is excluded, by the rule "D0 must be zero", decided
+from the reading rather than from the outlier.
+
+| row | shape | accepts | requests | cpu (median of 8) | cpu (range) |
 |---|---|---|---|---|---|
-| D0 | both runtimes up, nothing asked of them, 400 ms | — | — | **0 ms** | 400 ms |
-| D1 | `Native`, 60 **cold** bursts of 8 concurrent | **480** | 480 | 730 ms (690–820) | 663–731 ms |
-| D3 | shared connection, 60 **cold** bursts of 8 concurrent | **60** | 480 | 420 ms (270–510) | 530–673 ms |
-| D4 | `Native`, **warm** pool, 60 bursts of 8 concurrent | 8 | 488 | 230 ms (200–280) | 455–505 ms |
+| D0 | both runtimes up, nothing asked of them, 400 ms | — | — | **0 ms** | 0 ms in all eight |
+| D1 | `Native`, 60 **cold** bursts of 8 concurrent | **480** | 480 | **790 ms** | 690–850 |
+| D3 | shared connection, 60 **cold** bursts of 8 concurrent | **60** | 480 | **325 ms** | 220–510 |
+| D4 | `Native`, **warm** pool, 60 bursts of 8 concurrent | 8 | 488 | **235 ms** | 170–330 |
 
 Read it this way, and only this way:
 
@@ -308,11 +315,12 @@ Read it this way, and only this way:
   eight times the TLS+h2 handshakes, for the same 480 requests, at a
   concurrency of 8. D1's 480 accepts against D3's 60 is `N` versus `1` per
   burst, measured rather than reasoned.
-- **The CPU is directional, not precise.** D3's spread (270–510 ms) is
-  wider than the gap it is being used to demonstrate, so the honest
-  statement is "roughly 1.7× less CPU for 8× fewer handshakes", not a
-  ratio. D0 rules out idle spin as the source: **0 ms** over a comparable
-  window with both runtimes alive.
+- **The CPU is directional, not precise.** D3's spread (220–510 ms) is
+  half its own median, so the honest statement is "roughly 2× less CPU for
+  8× fewer handshakes", not a ratio to two figures. The ranges do not
+  overlap (690–850 against 220–510), which is what makes the direction
+  safe to state at all. D0 rules out idle spin as the source: **0 ms** over
+  a comparable window with both runtimes alive.
 - **D4 is the row that keeps this honest.** A warm pool pays no handshake
   at all: 8 accepts for 60 bursts. So in steady state L1's cost is
   **sockets held open**, not CPU — 8 connections and 8 server-side
@@ -629,7 +637,11 @@ C1  Native+http2, 8 concurrent: accepts=8 h2-handshakes=8 requests=8
 C2  Native+http2, 8 SEQUENTIAL: accepts=1 h2-handshakes=1 requests=8
 
 D0  idle baseline, both runtimes up, 400ms wall: cpu=0ns
-D1  Native / real TLS, 60 COLD bursts of 8 concurrent: accepts=480 requests=480 cpu=730ms
-D3  shared connection, 60 COLD bursts of 8 concurrent:  accepts=60  requests=480 cpu=420ms
-D4  Native / real TLS, WARM pool, 60 bursts of 8:       accepts=8   requests=488 cpu=230ms
+D1  Native / real TLS, 60 COLD bursts of 8 concurrent: accepts=480 requests=480 cpu=790ms
+D3  shared connection, 60 COLD bursts of 8 concurrent:  accepts=60  requests=480 cpu=325ms
+D4  Native / real TLS, WARM pool, 60 bursts of 8:       accepts=8   requests=488 cpu=235ms
 ```
+
+The accept counts are the same on every run; the CPU figures are medians
+of eight, and a run whose `D0` is not `0ns` is a run on a busy host and is
+not one of the eight.
