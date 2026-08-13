@@ -542,8 +542,12 @@ test-doc:
       echo "::error::no doctest summary at all — the run did not happen"
       exit 1
     fi
-    ign="$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9][0-9]*\) ignored;.*/\1/p' | paste -sd+ - | bc)"
-    if [ "${ign:-0}" -ne 0 ]; then
+    # awk rather than `paste | bc`: `bc` is not guaranteed present, and a
+    # missing one would leave this empty, which `${ign:-0}` would read as
+    # zero — a guard that passes when its own arithmetic is unavailable is
+    # the defect this recipe exists to stop.
+    ign="$(printf '%s\n' "$out" | awk -F'[;.]' '/test result:/ {for (i=1;i<=NF;i++) if ($i ~ /ignored/) n+=$i} END {print n+0}')"
+    if [ "$ign" -ne 0 ]; then
       printf '%s\n' "$out" | grep -E '\.\.\. ignored$' || true
       echo "::error::$ign doctest(s) are \`ignore\`d — rustdoc compiles none of them, so they rot unwatched. Use \`no_run\` with hidden setup lines, or \`text\` if the block is quoted code rather than an example."
       exit 1
