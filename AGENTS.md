@@ -502,9 +502,15 @@ That is the mirror of HTTP/3, where a spawned driver turned out to be
 necessary and not sufficient; here there is no driver at all.
 
 See [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
-deliberately does not do, and
+deliberately does not do,
 [`docs/v03-acceptance.md`](docs/v03-acceptance.md) for what v0.3 does,
-does not, and has not checked.
+does not, and has not checked, and
+[`docs/v04-acceptance.md`](docs/v04-acceptance.md) for v0.4 — which is
+the shortest of the four on purpose, because v0.4's arguments were
+written down one document per topic as they were made, and it indexes
+them rather than copying them. What it does carry, because no per-topic
+document can, is the *deliberately not done* and *not checked* lists:
+each of those knows only its own half.
 
 ### HTTP/3: four things that are not obvious from the outside
 
