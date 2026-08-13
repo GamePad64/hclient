@@ -370,14 +370,14 @@ on disk, on the same machine and against the same suite.
 |---|---|---|
 | before the fix | **277** | **2** — `live::a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it`, both times |
 | deterministic reproduction, before the fix | 2 | **2** — and both 0-RTT tests, including the one the record names |
-| after the fix | **526** | **0** |
+| after the fix | **846** | **0** |
 
-The 526 is two campaigns, 280 and 246, and neither is clean of *everything*:
-the first cost 1 failure and the second 3, all four in the new tests' own
-premise and none in the library — §3.1. Both fixture defects are fixed and a
-third campaign follows them.
+The 846 is three campaigns — 280, 246 and 320 — and the first two are not
+clean of *everything*: one failure and then three, all four in the new tests'
+own premise and none in the library (§3.1). **The last campaign, with both
+fixture defects fixed, is 320 runs and completely green.**
 
-**What this is not.** 526 runs at 2-in-277 would be about four expected
+**What this is not.** 846 runs at 2-in-277 would be about six expected
 failures, so the absence is evidence and not proof; what carries the claim is
 §3 and §5, where the failure is produced on demand and six mutations are
 scored against it. The rate is here because a fix that made the flake rarer
