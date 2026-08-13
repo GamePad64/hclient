@@ -21,7 +21,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LIB = "crates/http-ng-webtransport/src/lib.rs"
-ANCHOR = 14
+ANCHOR = 33
 
 # (id, file, old, new, note)
 MUTATIONS = [
@@ -49,8 +49,8 @@ MUTATIONS = [
     (
         "M4",
         LIB,
-        "id: SessionId(stream.id().into_inner()),",
-        "id: SessionId(stream.id().index()),",
+        "let id = SessionId(stream.id().into_inner());",
+        "let id = SessionId(stream.id().index());",
         "the session id is h3's `index()` — the ID without its two type bits",
     ),
     (
@@ -200,6 +200,138 @@ MUTATIONS = [
         '    #[error("the QUIC connection carries no datagrams")]',
         '    #[error("nope")]',
         "CONTROL — an error's Display, which nothing in the suite reads",
+    ),
+    # --- v0.4, the capsule protocol and the end of a session -------------
+    (
+        "C1",
+        LIB,
+        "const CLOSE_WEBTRANSPORT_SESSION: u64 = 0x2843;",
+        "const CLOSE_WEBTRANSPORT_SESSION: u64 = 0x2844;",
+        "the capsule type is one off, so nothing on either side is a close",
+    ),
+    (
+        "C2",
+        LIB,
+        "    put_varint(&mut capsule, payload as u64);\n",
+        "",
+        "RFC 9297 §3's Capsule Length is not written",
+    ),
+    (
+        "C3",
+        LIB,
+        "capsule.extend_from_slice(&error_code.to_be_bytes());",
+        "capsule.extend_from_slice(&error_code.to_le_bytes());",
+        "the application error code goes out little-endian",
+    ),
+    (
+        "C4",
+        LIB,
+        "    capsule.extend_from_slice(reason.as_bytes());\n",
+        "",
+        "the reason is not written, only its length claimed",
+    ),
+    (
+        "C5",
+        LIB,
+        "        drop(writer);",
+        "        std::mem::forget(writer);",
+        "the capsule goes out and the CONNECT stream is never finished",
+    ),
+    (
+        "C6",
+        LIB,
+        "        if reason.len() > BadCloseCapsule::MAX_REASON {",
+        "        if false {",
+        "an over-long reason is sent rather than refused",
+    ),
+    (
+        "C7",
+        LIB,
+        "        if reason.len() > BadCloseCapsule::MAX_REASON {",
+        "        if reason.len() >= BadCloseCapsule::MAX_REASON {",
+        "the limit is off by one, so a reason of exactly 1024 is refused",
+    ),
+    (
+        "C8",
+        LIB,
+        "            return Err(Error::new(ErrorKind::Unsupported, AlreadyClosed));",
+        "            return Ok(());",
+        "a second close answers Ok for a capsule that never left",
+    ),
+    (
+        "C9",
+        LIB,
+        """                Poll::Ready(Err(e)) => {
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::Body,
+                        std::io::Error::other(e.to_string()),
+                    )));
+                }""",
+        """                Poll::Ready(Err(_e)) => {
+                    return Poll::Ready(Ok(SessionClose::ENDED_WITHOUT_A_CAPSULE));
+                }""",
+        "a reset stream and a lost connection are reported as a clean close",
+    ),
+    (
+        "C10",
+        LIB,
+        "                        Ok(SessionClose::ENDED_WITHOUT_A_CAPSULE)",
+        "                        Err(Error::new(ErrorKind::Body, BadCloseCapsule::Truncated { have: 0 }))",
+        "a bare FIN is reported as unclean, against draft §5",
+    ),
+    (
+        "C11",
+        LIB,
+        "    let taken = if kind == CLOSE_WEBTRANSPORT_SESSION {",
+        "    let taken = if true {",
+        "every capsule type is read as a close",
+    ),
+    (
+        "C12",
+        LIB,
+        "        code: u32::from_be_bytes(code.try_into().expect(",
+        "        code: u32::from_le_bytes(code.try_into().expect(",
+        "the peer's error code is read little-endian",
+    ),
+    (
+        "C13",
+        LIB,
+        "        read_close(&buf[start..end])",
+        "        read_close(&buf[start..])",
+        "the Capsule Length is ignored on receipt, so the reason runs on",
+    ),
+    (
+        "C14",
+        LIB,
+        """        if let Some(ended) = &self.ended {
+            return Poll::Ready(ended.clone());
+        }
+""",
+        "",
+        "the end is read again rather than remembered",
+    ),
+    (
+        "C15",
+        LIB,
+        "                        self.buf.extend_from_slice(chunk);",
+        "                        self.buf = chunk.to_vec();",
+        "each DATA frame is taken for a whole capsule",
+    ),
+    (
+        "C16",
+        LIB,
+        "    let payload = 4 + reason.len();",
+        "    let payload = reason.len();",
+        "the Capsule Length leaves out the four bytes of the error code",
+    ),
+    (
+        "C17",
+        LIB,
+        """    let mut capsule = Vec::with_capacity(
+        varint_len(CLOSE_WEBTRANSPORT_SESSION) + varint_len(payload as u64) + payload,
+    );""",
+        "    let mut capsule = Vec::new();",
+        "CONTROL — an allocation hint, observable by nothing",
     ),
 ]
 
