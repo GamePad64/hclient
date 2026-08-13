@@ -763,6 +763,18 @@ fn client() -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
     Client::builder(transport()).build().unwrap()
 }
 
+/// The same client with `Native::multiplexed()` — one h2 connection shared
+/// between concurrent calls, which is gRPC's own transport model.
+///
+/// Off by default, so this is a **second** client rather than a change to
+/// the one above: the three tests below each sit beside the assertion they
+/// invert, and both readings are true — of a client that did not ask and
+/// of one that did. `tests/http2_multiplex.rs` has the opt-in's own shape
+/// and its prices.
+fn multiplexed_client() -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
+    Client::builder(transport().multiplexed()).build().unwrap()
+}
+
 /// A unary call as the spec's Call-Definition describes one, minus the
 /// pseudo-headers h2 derives from the URI itself.
 fn call(server: &Fixture, path: &str, body: RequestBody) -> http::Request<RequestBody> {
@@ -1352,6 +1364,12 @@ async fn a_request_past_the_window_is_backpressured_rather_than_buffered() {
 /// stream must not tear down the others* — holds here vacuously and for a
 /// reason worth restating: there are no others. The second request below
 /// gets its own connection and its own answer.
+///
+/// **Under `multiplexed()` both halves change, and the sibling below is
+/// where** (v0.4): the server sees `Ending::Reset(CANCEL)` because the
+/// driver outlives the stream, and W1's rule stops being vacuous because
+/// there *is* a neighbour on that connection. This test is the default's,
+/// and the default did not move.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_call_ends_it_at_the_server_and_leaves_the_next_one_alone() {
     let server = spawn_server();
@@ -1652,6 +1670,13 @@ async fn two_calls_with_trailers_share_one_connection() {
 /// nobody until two requests have arrived, so the two calls provably
 /// overlapped at the server; a client that had serialised them would hang
 /// and fail on the ceiling rather than quietly report `1`.
+///
+/// **The gap is closed, on request** (v0.4): `Native::multiplexed()` makes
+/// this `1`, and the sibling below asserts it on this same fixture. What
+/// this test still measures is the **default**, which did not change —
+/// a spawner is opt-in for the reason `pool.rs`'s module doc gives, so a
+/// client that has not asked pays a connection per concurrent call exactly
+/// as it did.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_concurrent_calls_take_two_connections_rather_than_two_streams() {
     let server = spawn_server();
@@ -1703,6 +1728,11 @@ async fn two_concurrent_calls_take_two_connections_rather_than_two_streams() {
 /// keepalive knob on `Native`; the WebSocket seam has one for the
 /// opposite reason, that an open WebSocket has no request future behind
 /// it at all.
+///
+/// **`Native::multiplexed()` inverts arm A** (v0.4) — a driven connection
+/// answers while it is idle, and the sibling below is the same fixture and
+/// the same `QUIET` window with the assertion the other way round. Nothing
+/// was written for it: it falls out of the connection having a poller.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_ping_to_a_pooled_connection_waits_for_the_next_call() {
     let server = spawn_server();
@@ -1767,6 +1797,155 @@ async fn a_ping_to_a_pooled_connection_waits_for_the_next_call() {
 /// driving. Generous against the answer's own cost, which is one poll of
 /// `Connection` inside `is_reusable` — microseconds once a call arrives.
 const QUIET: Duration = Duration::from_millis(750);
+
+/// **The same two calls with `multiplexed()`: one connection, two
+/// streams.** L1 closed, and the name of the test above is what inverts.
+///
+/// The barrier is what makes it causal in the direction that matters:
+/// `/g.S/Pair` answers nobody until both have arrived, so a client that
+/// had one connection and used it serially would deadlock and fail on the
+/// ceiling rather than report `1` for the wrong reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn multiplexing_turns_those_two_connections_into_two_streams() {
+    let server = spawn_server();
+    let client = multiplexed_client();
+
+    let one = client.execute(call(&server, "/g.S/Pair", RequestBody::Empty));
+    let two = client.execute(call(&server, "/g.S/Pair", RequestBody::Empty));
+    let (a, b) = tokio::time::timeout(BOUND, futures_util::future::join(one, two))
+        .await
+        .expect("both calls must be in flight at once — the server answers neither alone");
+    assert_eq!(a.expect("first call").status(), 200);
+    assert_eq!(b.expect("second call").status(), 200);
+
+    assert!(server.wait_for_seen(2, BOUND).await);
+    assert_eq!(
+        server.accepted(),
+        1,
+        "two concurrent calls on one connection is gRPC's transport model, \
+         and `Native::multiplexed()` is what asks for it"
+    );
+}
+
+/// **With `multiplexed()`, a cancelled call is a `RST_STREAM(CANCEL)` and
+/// its neighbour on the same connection survives.** L2 closed, and by
+/// nothing written for it.
+///
+/// `http2::Pump`'s `Drop` has queued this frame since v0.2 W3 and its own
+/// doc comment says why it was unobservable: the connection was owned by
+/// the same future as the stream and went with it. A driver outlives the
+/// stream, so the frame reaches the wire — and h2's own `maybe_cancel`
+/// does the same for a request that had no body to pump.
+///
+/// **The neighbour is the point, and it is in flight rather than
+/// afterwards.** W1's rule — cancelling one stream must not tear down the
+/// others sharing its connection — held vacuously while there were no
+/// others; here there is one, waiting out `/g.S/Idle`'s silence when the
+/// cancellation happens, and it has to finish with its trailers on the
+/// same connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_multiplexed_cancellation_resets_the_stream_and_leaves_its_neighbour_alone() {
+    let server = spawn_server();
+    let client = multiplexed_client();
+
+    // The doomed call: its head arrives and then nothing does.
+    let doomed = tokio::time::timeout(
+        BOUND,
+        client.execute(call(&server, "/g.S/Cancel", RequestBody::Empty)),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the head arrives, then nothing does");
+    assert_eq!(doomed.status(), 200);
+
+    // The neighbour, on the same connection and still in flight: the
+    // server says nothing for `IDLE_GAP` before answering it.
+    let survivor = client.execute(call(&server, "/g.S/Idle", RequestBody::Empty));
+    let survivor = std::pin::pin!(survivor);
+
+    // The caller walks away with the first call in progress.
+    drop(doomed);
+
+    let survivor = tokio::time::timeout(BOUND, survivor)
+        .await
+        .expect("must not hang")
+        .expect("a cancelled stream must not take its neighbour with it");
+    assert_eq!(survivor.status(), 200);
+    let (_, mut body) = survivor.into_parts();
+    let (_, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert!(
+        trailers.is_some(),
+        "the survivor's stream ran to its trailers"
+    );
+
+    assert!(
+        server.wait_for_endings(1, BOUND).await,
+        "the server must learn the cancelled call is over"
+    );
+    assert_eq!(
+        server.endings(),
+        vec![Ending::Reset(h2::Reason::CANCEL.to_string())],
+        "the frame a gRPC client sends to cancel a call, and the variant \
+         this fixture's `Ending` enum has had since the yardstick with \
+         nothing to produce it. Written as `Reason::CANCEL` rather than as \
+         the string h2 prints for it (\"stream no longer needed\"), so \
+         the assertion names the code on the wire"
+    );
+    assert_eq!(
+        server.accepted(),
+        1,
+        "one connection throughout — which is what makes the survivor's \
+         stream a neighbour of the cancelled one rather than a stranger"
+    );
+}
+
+/// **With `multiplexed()`, a server's `PING` is answered while the
+/// connection is idle.** L3 closed, and by nothing written for it either.
+///
+/// The A/B is the test above: there, `QUIET` passes with no `PONG` because
+/// nothing polls a pooled connection; here the driver does, so the same
+/// ping on the same fixture comes back inside the same window and without
+/// a second call being made.
+///
+/// Causal in the arm that matters: the gate is opened only after the
+/// call's body has been read to its end, so the ping provably goes out on
+/// a connection the client has finished with.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ping_to_a_shared_connection_is_answered_while_it_is_idle() {
+    let server = spawn_server();
+    let client = multiplexed_client();
+
+    let resp = tokio::time::timeout(
+        BOUND,
+        client.execute(call(&server, "/g.S/Ping", RequestBody::Empty)),
+    )
+    .await
+    .expect("must not hang")
+    .expect("the call must succeed");
+    let (_, mut body) = resp.into_parts();
+    let (_, _, trailers) = tokio::time::timeout(BOUND, read_to_end(&mut body))
+        .await
+        .expect("must not hang");
+    assert!(
+        trailers.is_some(),
+        "the call is over, so the connection is idle"
+    );
+
+    server.open_the_gate();
+    assert!(
+        server.wait_for_pongs(1, QUIET).await,
+        "a driven connection answers a PING while nobody is making a \
+         request on it — which is what an idle pooled connection cannot do"
+    );
+    assert_eq!(server.pongs(), vec![Pinged::Answered]);
+    assert_eq!(
+        server.accepted(),
+        1,
+        "and no second call and no second connection were needed to do it"
+    );
+}
 
 /// **A `GOAWAY` is not raced: the next call opens a new connection and
 /// succeeds.**
