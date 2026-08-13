@@ -27,6 +27,34 @@ use std::sync::Arc;
 /// A TLS backend with an empty trust store. Nothing here connects, and an
 /// empty `RootCertStore` keeps `webpki-roots` out of this crate's
 /// dev-dependencies for a value no assertion reads.
+/// A resolver that owns no key and says it has one, which is all
+/// `presents_client_certs` reads. A real certificate would need `rcgen`
+/// and a signer here to prove a property about *reporting*.
+#[derive(Debug)]
+struct HasCerts;
+
+impl rustls::client::ResolvesClientCert for HasCerts {
+    fn resolve(
+        &self,
+        _: &[&[u8]],
+        _: &[rustls::SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        None
+    }
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+/// The same backend as [`tls`], differing in the one field under test.
+fn tls_with_client_cert() -> Rustls {
+    let mut cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    cfg.client_auth_cert_resolver = Arc::new(HasCerts);
+    Rustls::from_config(Arc::new(cfg))
+}
+
 fn tls() -> Rustls {
     let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(rustls::RootCertStore::empty())
@@ -58,7 +86,7 @@ fn stacks() -> (Tcp, Quic) {
 /// arrives here as a red test rather than as a silent change of what this
 /// transport promises.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_two_stacks_disagree_on_exactly_seven_fields_today() {
+async fn the_two_stacks_disagree_on_exactly_six_fields_today() {
     let (tcp, quic) = stacks();
     let (t, q) = (tcp.capabilities(), quic.capabilities());
 
@@ -134,7 +162,6 @@ async fn the_two_stacks_disagree_on_exactly_seven_fields_today() {
             "request_trailers",
             "response_trailers",
             "early_data",
-            "client_certs",
             "timeouts.first_byte",
             "timeouts.between_bytes",
         ],
@@ -174,7 +201,16 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     assert!(t.request_trailers && !q.request_trailers);
     assert!(!c.request_trailers);
 
-    assert!(q.client_certs && !t.client_certs);
+    // `client_certs` was the seventh row here and is gone, because the
+    // disagreement was never real: `http-ng-h3` said `true` from a
+    // constant and `http-ng-native` took `Capabilities::none()`'s `false`,
+    // so one TLS backend gave two answers depending on which stack held
+    // it. Both read `TlsIdentity::presents_client_certs` now, and this
+    // fixture's config says `with_no_client_auth()`, so the two agree —
+    // asserted here rather than dropped, since "the row disappeared"
+    // and "the field stopped being reported" look the same from a
+    // shortened list.
+    assert!(!t.client_certs && !q.client_certs);
     assert!(!c.client_certs);
 
     assert!(t.timeouts.first_byte && !q.timeouts.first_byte);
@@ -517,4 +553,26 @@ fn top_level_fields(printed: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// **The field follows the TLS backend on both stacks**, which is the
+/// claim the removed disagreement row was hiding: the same connector
+/// carrying a client certificate is reported by the TCP member, by the
+/// QUIC member and by the composite alike. The control is the fixture
+/// three lines up — an identical config differing only in its resolver,
+/// where all three say `false`.
+#[tokio::test]
+async fn a_client_certificate_is_reported_by_both_stacks_and_by_the_pair() {
+    let rt = TokioHandle::current().expect("inside #[tokio::test]");
+    let tcp = Native::new(rt.clone(), tls_with_client_cert(), IpLiteralOnly);
+    let quic =
+        H3::new(rt.clone(), tls_with_client_cert(), IpLiteralOnly).expect("H3::new does no I/O");
+    assert!(tcp.capabilities().client_certs, "the TCP member");
+    assert!(quic.capabilities().client_certs, "the QUIC member");
+
+    let pair = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect("the two agree");
+    assert!(
+        pair.capabilities().client_certs,
+        "and the conjunction, which is only true because neither member is a constant"
+    );
 }

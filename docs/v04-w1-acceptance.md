@@ -67,12 +67,17 @@ naming the field.
 
 Measured in this tree, `Native::new(rt, Rustls, dns)` against
 `H3::new(rt, Rustls, dns)`, and pinned by
-`the_two_stacks_disagree_on_exactly_seven_fields_today` — **seven fields,
-not the two the design document's examples name.** It was six when this
-section was written; `request_trailers` joined in v0.4 Appendix C, when
-`http-ng-native` stopped under-declaring what it sends, and that seventh
-runs the *other* way from the six — there the TCP member is the one that
-can. The stored answer is still the weaker claim. Two of its examples were
+`the_two_stacks_disagree_on_exactly_six_fields_today` — **six fields, not
+the two the design document's examples name.** The count has moved twice
+and in both directions. It was six when this section was written;
+`request_trailers` joined in v0.4 Appendix C, when `http-ng-native`
+stopped under-declaring what it sends, and that one runs the *other* way
+from the rest — there the TCP member is the one that can. Then
+`client_certs` **left**, and that is the more interesting of the two: the
+row below records it as "same shape" as `full_duplex`, and it was not a
+disagreement between two protocol stacks at all but between two
+constants, one in each member, over a question neither was asking its
+TLS backend. The stored answer is still the weaker claim. Two of its examples were
 fixed under it while it was being written (`RedirectSupport::Configurable`
 deleted in `b2289c4`; `version_select` turned on for both in `4e9805f`), and
 four of the six were never in it.
@@ -81,7 +86,7 @@ four of the six were never in it.
 |---|---|---|---|---|
 | `full_duplex` | `false` | `true` | **`false`** | `false` asks the caller to assume less and forbids nothing. This is the answer `http-ng-native` already gives one level down for the same question — HTTP/1.1 cannot do duplex, HTTP/2 can, one transport reports one value — beside the cost that decided it: over-claiming deadlocks a caller structured for bidirectional streaming, under-claiming costs a buffered copy. The rule is imported from the crate that already had to make it |
 | `response_trailers` | `false` | `true` | **`false`** | same shape: `false` costs a caller trailers it would not have looked for, `true` would have it look for trailers on a connection that cannot carry them |
-| `client_certs` | `false` | `true` | **`false`** | same shape |
+| ~~`client_certs`~~ | ~~`false`~~ | ~~`true`~~ | — | **Not a disagreement, and the row is struck rather than deleted because "same shape" was the wrong reading and is worth not repeating.** Neither member asked the component that knows: `http-ng-h3` set `true` unconditionally — two lines under its own comment reading *"Read from the TLS backend, never from a constant"* — and `http-ng-native` had no line, so it took `Capabilities::none()`'s `false`. Both were wrong, in opposite directions: `http-ng-tls-native-tls` has an `identity()` setter and `Rustls::from_config` accepts a config built `with_client_auth_cert`, so the TCP path can present one; and the QUIC path claimed it for every `T`, including one that cannot. `TlsIdentity::presents_client_certs` is where it is answered now, and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` is the test that could not have existed while this row did |
 | `timeouts.first_byte` | `true` | `false` | **`false`** | and this is the field where the two disagree in the *other* direction. Declaring a bound one stack silently ignores is the exact no-op v0.2 W4 created `TimeoutSupport` to prevent |
 | `timeouts.between_bytes` | `true` | `false` | **`false`** | same |
 | `early_data` | `None` | `Supported` | **`Supported`** | the one field whose *stronger* value is the true one — see below |

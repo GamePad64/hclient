@@ -110,6 +110,16 @@ impl TlsIdentity for NativeTls {
     fn config_id(&self) -> TlsConfigId {
         self.config_id
     }
+
+    /// The one thing this backend reports *more* of than
+    /// `http-ng-tls-rustls` does by default. Its module doc is a list of
+    /// what it cannot say back — the negotiated ALPN above all — and this
+    /// is the other direction: `identity()` is the whole point of reaching
+    /// for the platform's stack, since a smartcard or an OS-held key is
+    /// exactly what a caller cannot hand to rustls as bytes.
+    fn presents_client_certs(&self) -> bool {
+        self.identity.is_some()
+    }
 }
 
 impl TlsConnect for NativeTls {

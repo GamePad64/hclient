@@ -694,6 +694,55 @@ impl http_ng_tls::TlsIdentity for NoOpTls {
     }
 }
 
+/// `NoOpTls`'s twin, differing in the one answer under test — the shape
+/// `http-ng-h3`'s `StubTls` uses one crate over, and the reason the
+/// assertion below is a pair rather than a single `true`.
+struct CertTls;
+impl http_ng_tls::TlsIdentity for CertTls {
+    fn config_id(&self) -> http_ng_tls::TlsConfigId {
+        static ID: std::sync::OnceLock<http_ng_tls::TlsConfigId> = std::sync::OnceLock::new();
+        *ID.get_or_init(http_ng_tls::TlsConfigId::new_unique)
+    }
+    fn presents_client_certs(&self) -> bool {
+        true
+    }
+}
+
+impl http_ng_tls::TlsConnect for CertTls {
+    type Stream<S>
+        = S
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    async fn connect<S>(
+        &self,
+        _: S,
+        _: http_ng_tls::TlsRequest<'_>,
+    ) -> Result<(Self::Stream<S>, http_ng_tls::TlsInfo), http_ng_core::Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
+        unreachable!("this stub never connects")
+    }
+}
+
+/// **`client_certs` is the TLS backend's answer, not this transport's.**
+///
+/// It was `Capabilities::none()`'s `false` for every `T`, which understated
+/// two backends that can present one: `http-ng-tls-native-tls` through its
+/// `identity()` setter, and `http-ng-tls-rustls` through a `from_config`
+/// whose config was built with `with_client_auth_cert`. The `true` arm is
+/// the one no constant here could have produced.
+#[test]
+fn client_certs_is_read_from_the_tls_backend_not_from_a_constant() {
+    use http_ng_core::unversioned::Transport;
+    let rt = http_ng_rt_tokio::Tokio;
+    let plain = Native::new(rt, NoOpTls, http_ng_dns::IpLiteralOnly);
+    let certs = Native::new(rt, CertTls, http_ng_dns::IpLiteralOnly);
+    assert!(!plain.capabilities().client_certs);
+    assert!(certs.capabilities().client_certs);
+}
+
 impl http_ng_tls::TlsConnect for NoOpTls {
     type Stream<S>
         = S

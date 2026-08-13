@@ -326,12 +326,13 @@ where
         } else {
             EarlyDataSupport::None
         };
+        let client_certs = tls.presents_client_certs();
         Ok(Self {
             rt,
             tls,
             dns,
             hooks: NoHooks,
-            caps: capabilities(early_data),
+            caps: capabilities(early_data, client_certs),
             keep_alive: Some(DEFAULT_KEEP_ALIVE),
             shared: Arc::new(Shared {
                 endpoints: Mutex::new(HashMap::new()),
@@ -412,7 +413,7 @@ where
 /// consequence is the one that matters here: a field added to the struct
 /// later arrives at this transport as the conservative default rather than
 /// as a compile error somebody silences by copying the neighbouring value.
-fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
+fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilities {
     let mut c = Capabilities::none();
     // Both are `true` because `one_attempt` does both, not because HTTP/3
     // does. They were `false` for as long as `execute` wrote the whole
@@ -452,7 +453,12 @@ fn capabilities(early_data: EarlyDataSupport) -> Capabilities {
     // `None` in the trait for a reason whose cost is replay exposure.
     c.early_data = early_data;
     c.tls_config = TlsSupport::Full;
-    c.client_certs = true;
+    // The same rule as `early_data` three lines up, and it took until v0.4
+    // to obey it here: this was `true` unconditionally, which over-claimed
+    // for every `T` that presents no certificate — including the one this
+    // module's own tests use. `TlsIdentity::presents_client_certs` is
+    // where the component that knows now answers.
+    c.client_certs = client_certs;
     // One version — and honouring a demand is not the same as choosing
     // one. `execute` reads `RequireVersion` before it does anything else:
     // `HTTP_3` proceeds, everything else is `VersionNotAvailable` with not
@@ -1201,14 +1207,38 @@ where
 mod tests {
     use super::*;
 
-    /// Never called: `H3::new` reads `offers_early_data` and nothing else,
-    /// so a stub is enough to construct one and look at what it decided.
-    #[derive(Debug)]
-    struct StubTls(bool);
+    /// Never called: `H3::new` reads `offers_early_data` and
+    /// `presents_client_certs` and nothing else, so a stub is enough to
+    /// construct one and look at what it decided.
+    #[derive(Debug, Default)]
+    struct StubTls {
+        early: bool,
+        certs: bool,
+    }
+
+    impl StubTls {
+        /// Named constructors rather than a two-`bool` tuple, so each test
+        /// says which axis it is varying and the other is visibly at rest.
+        fn early(v: bool) -> Self {
+            Self {
+                early: v,
+                ..Self::default()
+            }
+        }
+        fn certs(v: bool) -> Self {
+            Self {
+                certs: v,
+                ..Self::default()
+            }
+        }
+    }
 
     impl http_ng_tls::TlsIdentity for StubTls {
         fn config_id(&self) -> TlsConfigId {
             TlsConfigId::no_tls()
+        }
+        fn presents_client_certs(&self) -> bool {
+            self.certs
         }
     }
 
@@ -1220,7 +1250,7 @@ mod tests {
             unreachable!("this stub never connects")
         }
         fn offers_early_data(&self) -> bool {
-            self.0
+            self.early
         }
     }
 
@@ -1240,10 +1270,18 @@ mod tests {
         // connection that nobody pings dies between requests, and a
         // transport that pooled connections and did not keep them alive
         // would pay for a pool it could not use.
-        assert_eq!(h3(StubTls(false)).keep_alive, Some(DEFAULT_KEEP_ALIVE));
-        assert!(h3(StubTls(false)).without_keep_alive().keep_alive.is_none());
         assert_eq!(
-            h3(StubTls(false))
+            h3(StubTls::early(false)).keep_alive,
+            Some(DEFAULT_KEEP_ALIVE)
+        );
+        assert!(
+            h3(StubTls::early(false))
+                .without_keep_alive()
+                .keep_alive
+                .is_none()
+        );
+        assert_eq!(
+            h3(StubTls::early(false))
                 .keep_alive_interval(std::time::Duration::from_millis(7))
                 .keep_alive,
             Some(std::time::Duration::from_millis(7))
@@ -1262,7 +1300,7 @@ mod tests {
         // connections too.
         let h3: H3<_, _, http_ng_dns::IpLiteralOnly> = H3::new(
             http_ng_rt_tokio::TokioHandle::current().unwrap(),
-            StubTls(false),
+            StubTls::early(false),
             http_ng_dns::IpLiteralOnly,
         )
         .unwrap();
@@ -1300,9 +1338,21 @@ mod tests {
         // and this is the capability whose over-claim costs replay
         // exposure rather than a lost optimisation.
         assert_eq!(
-            h3(StubTls(true)).caps.early_data,
+            h3(StubTls::early(true)).caps.early_data,
             EarlyDataSupport::Supported
         );
-        assert_eq!(h3(StubTls(false)).caps.early_data, EarlyDataSupport::None);
+        assert_eq!(
+            h3(StubTls::early(false)).caps.early_data,
+            EarlyDataSupport::None
+        );
+    }
+
+    #[test]
+    fn client_certs_is_read_from_the_tls_backend_not_from_a_constant() {
+        // This was `c.client_certs = true` unconditionally, two lines
+        // under the comment stating the rule it broke — so the arm that
+        // matters is the `false` one, which no constant can produce.
+        assert!(!h3(StubTls::certs(false)).caps.client_certs);
+        assert!(h3(StubTls::certs(true)).caps.client_certs);
     }
 }

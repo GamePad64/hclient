@@ -252,6 +252,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let pool = Pool::new(Some(PoolConfig::default()));
         let mut caps = Capabilities::none();
+        // Asked of the TLS backend rather than left at
+        // `Capabilities::none()`'s `false`, which understated: both
+        // backends in this workspace can present one —
+        // `http-ng-tls-native-tls` through its `identity()` setter, and
+        // `http-ng-tls-rustls` through a `from_config` whose
+        // `rustls::ClientConfig` was built with `with_client_auth_cert`.
+        caps.client_certs = tls.presents_client_certs();
         // Honest: no upgrade — the
         // remaining fields stay at the conservative baseline of
         // `Capabilities::none()` (see `tests/transport.rs`'s

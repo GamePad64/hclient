@@ -1105,9 +1105,18 @@ the slow tier does and does not check.
 race.** `Transport::capabilities` returns a `&Capabilities`, so the pair's
 answer is stored at construction, and it is decided field by field by one
 rule: **the stored value must be true whichever member serves the request.**
-Seven fields disagree today — measured, not taken from the design document,
+Six fields disagree today — measured, not taken from the design document,
 whose two examples had both been fixed under it while it was being written.
-Six take the weaker claim, `full_duplex` among them, which is the same
+It was seven until the seventh turned out not to be a disagreement at all:
+`client_certs` was `true` from a constant in `http-ng-h3` and
+`Capabilities::none()`'s `false` in `http-ng-native`, so **one** TLS backend
+gave two answers depending on which stack was holding it, and the v0.4
+table recorded the row as "same shape" as `full_duplex`. Both read
+`TlsIdentity::presents_client_certs` now — a defaulted-false constant on
+the seam the two connect traits share, `reports_alpn`'s shape — and the
+same connector carrying a client certificate is reported by both members
+and by the pair. Five take the weaker claim, `full_duplex` among them,
+which is the same
 answer `http-ng-native` already gives one level down for the same reason: an
 over-claimed `full_duplex` deadlocks a caller and an under-claimed one costs
 a buffered copy. Where the two values are *different claims* rather than a

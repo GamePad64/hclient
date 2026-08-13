@@ -321,6 +321,41 @@ pub trait TlsIdentity {
     /// not a field to be wrong about by silence — so every implementation
     /// answers, and adding one is a compile error until it does.
     fn config_id(&self) -> TlsConfigId;
+
+    /// Whether this connector presents a **client certificate** when a
+    /// server asks for one.
+    ///
+    /// Defaulted to the understating value, exactly as
+    /// [`TlsConnect::reports_alpn`] and [`TlsConnect::applies_ech`] are and
+    /// for the same reason: a backend that says nothing costs a caller an
+    /// opportunity, where one that over-claims costs them a handshake they
+    /// were told would work.
+    ///
+    /// # Why it lives on `TlsIdentity` and not on either connect trait
+    ///
+    /// Because it is the same fact on both paths. `TlsConnect` and
+    /// [`QuicTlsConnect`](https://docs.rs/http-ng-tls-quic) share this
+    /// trait precisely because a connector has **one** configuration
+    /// identity rather than two, and for `http-ng-tls-rustls` the QUIC
+    /// config is a clone of the TCP one — so a method on each would be two
+    /// places to answer one question, and the second place is where the
+    /// answer goes stale.
+    ///
+    /// # This replaced a constant, and the code that held it stated the
+    /// rule it broke
+    ///
+    /// `http-ng-h3` set `Capabilities::client_certs = true` two lines
+    /// under a comment reading *"Read from the TLS backend, never from a
+    /// constant: the capability has to come from the component that
+    /// knows"* — while `http-ng-native` had no line at all, so it took
+    /// `Capabilities::none()`'s `false`. Both were wrong and in opposite
+    /// directions: `http-ng-tls-native-tls` has an `identity` setter, and
+    /// `Rustls::from_config` accepts a `rustls::ClientConfig` built with
+    /// `with_client_auth_cert`, so the TCP path *can* present one; and the
+    /// QUIC path claimed it whatever `T` was, including a `T` that cannot.
+    fn presents_client_certs(&self) -> bool {
+        false
+    }
 }
 
 /// A pluggable TLS handshake over an arbitrary transport.

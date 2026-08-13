@@ -236,6 +236,19 @@ impl TlsIdentity for Rustls {
     fn config_id(&self) -> TlsConfigId {
         self.config_id
     }
+
+    /// Asked of the config rather than remembered from a constructor, so
+    /// a `from_config` caller who built their own
+    /// `with_client_auth_cert(..)` is answered for correctly — which is
+    /// the only way to get a client certificate onto this backend, since
+    /// the two convenience constructors here both say
+    /// `with_no_client_auth()`.
+    ///
+    /// The QUIC path is covered by the same line: `quic_config_for` clones
+    /// this same `base`, so the cert resolver it carries is this one.
+    fn presents_client_certs(&self) -> bool {
+        self.base.client_auth_cert_resolver.has_certs()
+    }
 }
 
 impl TlsConnect for Rustls {
