@@ -42,14 +42,20 @@
 //! is boxed, so auto traits keep reaching the response body, and no bound
 //! anywhere in this crate's public shape changes when the feature is on.
 //!
-//! # One stream per connection, and what W1 is resting on
+//! # One stream per connection by default, and what W1 is resting on
 //!
-//! HTTP/2 multiplexes; this transport does not use that, and the omission
-//! is deliberate rather than pending. A connection is **checked out of the
-//! pool exclusively**, exactly as an HTTP/1 one is, and carries one stream
-//! at a time — see [`crate::pool`]'s module doc, section "What an h2
+//! HTTP/2 multiplexes; this transport does not use that **unless
+//! [`crate::Native::multiplexed`] was asked for** (v0.4), and the default
+//! is deliberate rather than pending. A connection is then **checked out of
+//! the pool exclusively**, exactly as an HTTP/1 one is, and carries one
+//! stream at a time — see [`crate::pool`]'s module doc, section "What an h2
 //! connection is checked out for", which is where that policy is written
-//! down and where it would have to be changed.
+//! down.
+//!
+//! Everything in this section is about that default. What the opt-in
+//! changes is at the end of it, and the code it adds is below the
+//! `Sharing one connection between concurrent requests` line in this file:
+//! [`H2Driver`], [`Shared`], [`exchange_shared`].
 //!
 //! Two consequences, and the second one is a load-bearing coincidence that
 //! must not be mistaken for a proof:
@@ -72,16 +78,24 @@
 //!    means somebody has to keep polling it, which is the `Spawn` question
 //!    again.
 //!
-//! **`docs/h2-multiplexing.md` is that question answered**, and the part
-//! that belongs in this file is what happens to [`Pump`]'s `Drop`. Its own
-//! doc comment says the `RST_STREAM(CANCEL)` it queues is unobservable
-//! today and is kept for the day the exclusivity is lifted; with the
-//! connection driven by a spawned task **the frame reaches the wire** —
-//! measured, a server recording `CANCEL` for the cancelled call and
-//! answering its neighbour on the same connection. So W1's rule stops
-//! holding vacuously and starts needing a test, and
-//! `tests/grpc_shape.rs`'s `Ending::Reset` variant, which nothing produces
-//! today, is what that test would assert.
+//! **`docs/h2-multiplexing.md` is that question answered, and then
+//! built.** [`crate::Native::multiplexed`] lifts the exclusivity, and the
+//! two consequences above are exactly what it costs:
+//!
+//! 1. Dropping an exchange no longer closes the connection — the driver
+//!    owns it — so [`Pump`]'s `Drop` becomes the thing the peer sees. Its
+//!    own doc comment said the `RST_STREAM(CANCEL)` it queues was
+//!    unobservable and was kept for this day; it is observed now, in
+//!    `tests/grpc_shape.rs`'s
+//!    `a_multiplexed_cancellation_resets_the_stream_and_leaves_its_neighbour_alone`,
+//!    which is where that file's `Ending::Reset` variant finally has a
+//!    producer.
+//! 2. There **are** neighbours, so W1's rule stops holding vacuously and
+//!    is a test instead:
+//!    `tests/http2.rs`'s
+//!    `dropping_one_exchange_leaves_a_concurrent_one_alone_on_a_shared_connection`
+//!    is its exclusive sibling with one call added to the client and
+//!    `accepted == 1`.
 //!
 //! # Full duplex, and why `Capabilities::full_duplex` still reports `false`
 //!

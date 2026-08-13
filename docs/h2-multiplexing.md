@@ -1,4 +1,11 @@
-# Sharing an h2 connection on `http-ng-native` — investigated
+# Sharing an h2 connection on `http-ng-native` — investigated, then built
+
+> **Built in v0.4.** §0–§10 are the investigation, kept as they were
+> written and not retro-fitted. **§11 is what it became**, including the
+> three places the investigation was short of the mechanism, the
+> re-measured cost, the mutation table and the answers to §9's open
+> questions. `Native::multiplexed()` is the opt-in.
+
 
 `docs/grpc-yardstick.md` found no defects and three limitations, and said
 that the second and third hang off the first:
@@ -648,3 +655,540 @@ D4  Native / real TLS, WARM pool, 60 bursts of 8:       accepts=8   requests=488
 The accept counts are the same on every run; the CPU figures are medians
 of eight, and a run whose `D0` is not `0ns` is a run on a busy host and is
 not one of the eight.
+
+## 11. Built (v0.4)
+
+Everything above is the investigation, kept as it was written. This
+section is what it became, and where it differs from what §0–§9 predicted.
+
+`crates/http-ng-native/src/{lib,pool,http2,established,staged}.rs`;
+`crates/http-ng-native/tests/http2_multiplex.rs` plus siblings in
+`tests/http2.rs` and `tests/grpc_shape.rs`.
+
+### 11.1 The opt-in, and what it does not touch
+
+```rust
+let transport = Native::new(Tokio, tls, dns).multiplexed();
+```
+
+`Native::multiplexed()`, bounded on
+`R: Spawn<H2Driver<NativeIo<R, T>, H>>` and on nothing else. The spawner
+is stored as `Option<fn(&R, H2Driver<NativeIo<R, T>, H>)>` — §2.2's shape,
+unchanged from the probe — so **no signature a `Spawn`-less runtime meets
+gains a bound**. `crates/http-ng/tests/two_runtimes.rs` and
+`tests/h1.rs::works_on_a_bare_futures_executor_with_no_spawn` are green
+and untouched, which is the property this whole shape exists for.
+
+The refusals are `compile_fail` doctests on the constructor, each next to
+a control that differs in one token — a `Spawn`-less runtime beside the
+same runtime with a `Spawn` impl added, and an `Rc` hook beside the same
+hook behind an `Arc`. The messages were read once by building the two
+calls as an ordinary test: ``the trait bound `NoSpawn: Spawn<H2Driver<Conn<
+TokioIo, NoStream>, NoHooks>>` is not satisfied`` and
+``` `Rc<Cell<usize>>` cannot be sent between threads safely ```, both
+pointing at the `multiplexed()` call. (`compile_fail,E0277` would say so
+in the fence, but rustdoc's error-code annotation is unstable and is not
+enforced on stable — measured: the same block passes annotated `E0432`.)
+
+**One ordering rule was not foreseen and is a real cost.** The spawner's
+type names `H`, because the driver carries the hook, so `Native::hooks`
+cannot carry that pointer across a change of `H`: `.hooks(..)` must come
+**before** `.multiplexed()`, and the other order compiles and shares
+nothing. That is the same shape, stated the same way, as `tcp_opts`
+replacing the whole option set, and it is pinned by a pair of orders
+(`hooks_before_multiplexed_shares_and_hooks_after_it_does_not`) rather
+than only written down.
+
+### 11.2 Single-flight connect, which §3 did not predict
+
+**Sharing needs the connect to be single-flight, and this is not an
+optimisation.** A burst of N concurrent requests to a **cold** origin has
+no first request to share from: all N find the pool empty, all N connect,
+and each shared connection is then shared with nobody. Without it the
+headline row is unreachable and `grpc_shape.rs`'s
+`two_concurrent_calls_take_two_connections_rather_than_two_streams` does
+not invert, because both of its calls start cold.
+
+So `Pool::begin_connect` hands out a mark per origin, `Connecting`'s
+`Drop` releases it and wakes everyone waiting, and a waiter **waits once**:
+after the wake it looks in the pool again, and if there is still nothing
+there it takes the mark itself and connects. That bounds the cost of a
+failed connect to one extra wait per waiter, where a loop would let a
+permanently unreachable origin hold a request for ever
+(`a_failed_shared_connect_releases_everyone_waiting_for_it`).
+
+Two things about it are decisions:
+
+- **The mark is taken before the pooled lookup, not before the connect**,
+  so that the window between "the pool is empty" and "I am connecting" is
+  not a window at all. It is released the moment there is a connection to
+  find — on the pooled path as well as after a fresh connect — because a
+  waiter is waiting for a connection to *exist*, and making it wait for
+  somebody else's response as well would turn one slow server into a
+  queue. Both releases are load-bearing: removing the pooled one deadlocks
+  the eight-call burst against a barrier server.
+- **`Timeouts::connect` is spent once.** The wait is bounded by the
+  caller's connect bound and what is left of it is what the waiter's own
+  connect gets — the arithmetic `http-ng-select`'s h3 fallback does one
+  layer up and `Client`'s `425` replay does one layer down. Pinned by an
+  A/B in which neither arm asserts on a duration
+  (`waiting_for_a_shared_connect_spends_the_callers_connect_bound`), and
+  the first version of that test was **wrong**: its two sleeps left no
+  margin the mutation could show, so it passed with a fresh budget too.
+
+Coalescing is asked for only when the transport shares connections *and*
+`may_speak_h2` — so `http://`, an IP-literal-only build without TLS, a
+backend that cannot report ALPN and a `RequireVersion(HTTP_1_1)` demand
+never pay for it.
+
+### 11.3 What the pool became
+
+§3 was right about the shape and one sentence short of the mechanism.
+
+- **`take` borrows a shared entry and takes everything else**, decided by
+  the entry (`Established::borrowed`) rather than by a flag on the pool,
+  because a bucket can hold both kinds. `CheckIn` is not used on the
+  shared path at all, and `H2Body::hand_back_to_pool` is a no-op there
+  because `exchange_shared` builds a body with no `reuse`.
+- **A borrowed entry's deadline is restamped**, which §3 does not mention
+  and which is `PoolConfig::idle_timeout`'s own rule rather than an
+  exception to it: the deadline is measured *"from when the connection was
+  last handed out"*, and borrowing is handing out. Without it a shared
+  connection under continuous load is dropped one idle timeout after the
+  traffic *started*.
+- **`Pool::forget_shared` is the other half of borrowing**, and §3 does
+  not have it. A clone that `is_reusable` rejects leaves the entry it was
+  cloned from in the pool, so a checkout that only dropped the clone would
+  borrow the same dead connection **for ever** — not a failed test, a spin.
+  It is keyed on a private `SharedId` counter and deliberately **not** on
+  `ConnectionId`: in a build with no hook every connection wears
+  `ConnectionId::UNWATCHED`, so an eviction keyed on it would empty the
+  bucket instead of removing one entry, in exactly the builds with no way
+  of noticing.
+- **`PoolKey` needs nothing new**, as §3.1 says — but the entry still has
+  to go into the right bucket, and only one thing notices. An ordinary
+  request would not: `pooled_candidates` offers `[H2, Http11]` and
+  `established::exchange` dispatches on the connection rather than on the
+  key. A `RequireVersion(HTTP_2)` demand skips the `Http11` bucket
+  outright, and the `Reused` event reads its version off the bucket. Both
+  are asserted in `a_demand_for_http2_is_served_by_the_shared_connection`,
+  which is what killed the misfiled-bucket mutation that everything else
+  survived.
+- **`max_idle_per_key` did not have to change** (§3.4 left it open). With
+  sharing there is normally one entry per key, and the bound goes on
+  meaning what it says about the entries there are.
+- **`Staged::drop` does not check a borrowed clone back in.** A staged
+  connect that is never spent hands its connection back to the pool; a
+  shared one was never taken out of it, so putting it back would leave two
+  entries naming one connection. `crates/http-ng-select` reaches this path
+  and nothing there opts in, so the guard is correctness-by-construction
+  rather than something a test can see — recorded as a survivor in §11.5.
+
+### 11.4 The cost, re-measured — and the fixture was measuring Nagle
+
+Same shape as §5.2 and the same instrument (`/proc/self/stat` user+system,
+both ends in this process), but D3 is now the **real** transport with
+`multiplexed()` rather than a hand-built shared connection, and there is a
+fifth row. `Native<Tokio, Rustls, IpLiteralOnly>` against a
+`tokio-rustls` + `h2::server` on loopback with ALPN `h2` and a generated
+IP-SAN certificate; 60 bursts of 8 concurrent calls = 480 requests.
+**Nine runs; `D0` read `0 ms` in all nine.** Medians, with ranges.
+
+| row | shape | accepts | requests | cpu | wall |
+|---|---|---|---|---|---|
+| D0 | both runtimes up, nothing asked of them, 400 ms | — | — | **0 ms** (0 in all nine) | — |
+| D1 | exclusive, 60 **cold** bursts of 8 | **480** | 480 | **550 ms** (540–600) | 280 ms |
+| D3 | shared, 60 **cold** bursts of 8 | **60** | 480 | **180 ms** (160–210) | 108 ms |
+| D4 | exclusive, **warm** pool, 60 bursts of 8 | 7 | 480 | **70 ms** (60–80) | 39 ms |
+| D5 | shared, **warm** pool, 60 bursts of 8 | **0** | 480 | **110 ms** (90–130) | 48 ms |
+
+Read it this way, and only this way:
+
+- **The counts are exact and are the claim.** 480 accepts against 60 for
+  the same 480 requests: eight times the sockets and eight times the
+  TLS+h2 handshakes at a concurrency of 8, measured through the real
+  transport in both arms. §5.1's prediction holds.
+- **Cold CPU is ~3× less**, and the ranges do not overlap (540–600
+  against 160–210). §5.2's "roughly 2× less" was measured on a
+  hand-built arm and a Nagle-padded fixture; this is the same direction,
+  larger.
+- **In steady state sharing costs CPU and saves sockets, and that is the
+  new row.** D5 against D4 is 110 ms against 70 ms of CPU and 0 accepts
+  against 7 — one connection serialises eight streams' framing through
+  one task with a cross-thread wake per frame, where eight connections
+  frame in parallel with no hand-off. On loopback there is no RTT and no
+  handshake to win back, which is exactly where sharing has nothing to
+  gain; on a real network D1/D3's 8× handshake difference is the term
+  that dominates.
+- **D2 is still deliberately not in the table**, for §5.2's reason.
+
+**The fixture had to be fixed first, and the finding is worth more than
+the milliseconds.** The first version did not set `TCP_NODELAY` on the
+accepted socket, and every *shared* burst then cost **41.8 ms** where the
+exclusive ones cost nothing — D5's wall was 2.5 s rather than 48 ms.
+Nagle only delays a second small unacknowledged write, and eight responses
+on one connection is that pattern where eight responses on eight
+connections is not. That is `docs/v04-w1-acceptance.md` §7.3's lesson
+arriving from the other direction — *"the fixture had been handing QUIC a
+free 40 ms head start, so the earlier row measured Nagle rather than the
+protocols"* — and it also explains §5.2's wall figures, which were taken
+against a fixture with the same gap.
+
+### 11.5 Mutations
+
+Anchor verified before each run and printed by each run's own `Summary`
+line: **240** tests for the first batch, **241** after
+`a_demand_for_http2_is_served_by_the_shared_connection` was added; every
+run `--no-fail-fast`, restored with `git checkout` plus a fresh mtime. The
+five survivors were re-run at 241.
+
+| # | mutation | result | what killed it |
+|---|---|---|---|
+| M1 | `Pool::take` never borrows — every entry is taken | **killed** (3) | `eight_concurrent_calls_travel_over_one_connection`, `beyond_the_peers_stream_limit_…`, `a_shared_connection_that_keeps_being_used_…` |
+| M2 | a borrowed entry's deadline is not restamped | **killed** (1) | `a_shared_connection_that_keeps_being_used_is_not_dropped_for_age` |
+| M3 | `checkout` does not `forget_shared` a rejected clone | **killed — by hang** | `a_dead_shared_entry_is_removed_rather_than_borrowed_for_ever` spins; the suite never finished |
+| M4 | the shared entry is never published to the pool | **killed** (8) | `eight_concurrent_…`, `multiplexing_turns_those_two_connections_…`, `dropping_one_exchange_…_on_a_shared_connection`, +5 |
+| M5 | the driver is never spawned | **killed** (15) | `a_request_body_crosses_a_shared_connection_whole`, `a_shared_connection_carries_a_duplex_exchange`, +13 |
+| M6 | **control** — the `CheckIn` is not cleared on the shared path | **survived, as intended** | — |
+| M7 | `shares_connections` drops the "there is a pool" conjunct | **survived** | — |
+| M8 | no single-flight: the connect mark is never taken | **killed** (6) | `eight_concurrent_…`, `multiplexing_turns_…`, `waiting_for_a_shared_connect_…`, +3 |
+| M9 | the wait hands back a fresh `Timeouts::connect` | **killed** (1) | `waiting_for_a_shared_connect_spends_the_callers_connect_bound` |
+| M10 | the driver reports `Stale` where it reports `Ended` | **killed** (1) | `the_driver_reports_the_end_of_a_shared_connection` |
+| M11 | `shared_is_reusable` always answers `true` | **killed** (1) | `a_dead_shared_entry_is_removed_rather_than_borrowed_for_ever` |
+| M12 | a dead shared `poll_ready` is `Failed::Sent`, not `NotSent` | **survived** | — |
+| M14 | the connect mark is released *before* the entry is published | **survived** | — |
+| M15 | `Staged::drop` checks a borrowed clone back in | **survived** | — |
+| M16 | the duplex line returns the pump's `Pending` as its own | **killed** (1) | `a_shared_connection_carries_a_duplex_exchange` |
+| M17 | the leftover pump is dropped instead of moving into `H2Body` | **killed** (1) | `a_shared_connection_carries_a_duplex_exchange` |
+| M18 | the connect mark is not released on a pooled hit | **killed** (1) | `eight_concurrent_calls_travel_over_one_connection` (deadlock, then the ceiling) |
+| M19 | the driver reports nothing at all | **killed** (1) | `the_driver_reports_the_end_of_a_shared_connection` |
+| M20 | the shared entry is filed under `Protocol::Http11` | **killed** (1) | `a_demand_for_http2_is_served_by_the_shared_connection` |
+
+**14 killed, 5 survived**, and the survivors are worth reading rather than
+counting.
+
+**M6 is the control and was written to be one.** `*checkin = None` in
+`share_if_multiplexing` says in code what the shared path is: no check-in.
+It cannot be observed, because `established::exchange`'s `H2Shared` arm
+ignores its `checkin` argument outright and `exchange_shared` builds a
+body with `reuse: None` whatever it is handed. Belt to braces that are
+already structural.
+
+**M14 is a control by accident and is worth naming as one.** The two
+statements it swaps — publish the shared entry, release the connect mark —
+are separated by no `await`, so a woken waiter would have to preempt
+within a few hundred nanoseconds of synchronous work to see the
+difference. The order is still the right one and costs nothing.
+
+**M7 narrowed a sentence.** The conjunct does *not* make `multiplexed()`
+and `without_pool()` order-independent, which is what its doc comment
+originally claimed: `share_if_multiplexing` reads the pool's configuration
+for the deadline it stamps, so a pool-less transport shares nothing with
+or without it. What it buys is that such a transport does no single-flight
+work either — the difference is a wait rather than an outcome, so no test
+asserts it. The doc comment now says that instead.
+
+**M12 is the residual pooled-reuse race, one protocol over.** With
+`forget_shared` doing its job, `exchange_shared` meets a dead `poll_ready`
+only when the connection dies between `is_reusable` and `send_request` —
+the window `h1.rs` already records as the one no pool can close. No
+fixture here creates it. `NotSent` is the conservative answer (it permits
+the retry `Native::run` already has) and is what the exclusive path
+answers in the same place.
+
+**M15 is a resource property with no observer.** A staged connect that is
+dropped unspent would check a borrowed clone back in, leaving two entries
+naming one connection — both live, both removed by the same
+`forget_shared`, and `max_idle_per_key` bounds the bucket either way. It
+is kept because it is right, not because a test says so.
+
+One mutation is missing from the table because it **changed the code**
+rather than surviving it: `exchange_shared`'s loop had a `continue` after
+the pump finished, copied from `exchange`, and removing it left the whole
+suite green. It is genuinely not owed here — the frames the pump queues
+are written by the driver, woken by the queueing — so the loop is gone and
+the function is straight-line, with the difference from `exchange`
+written where the `continue` used to be.
+
+### 11.6 §9's open questions, answered
+
+**§9.1 — when to open a second connection.** *Never: a full connection
+queues.* The number §9.1 asks for cannot be chosen honestly here.
+`poll_ready` is a liveness check and not a capacity one, so the count
+would have to be ours; and the threshold depends on the peer's
+`MAX_CONCURRENT_STREAMS` (which h2 will not report) and on the handshake
+cost, which is a network property and not a loopback one — a number
+measured on this machine would be a number about this machine. What is
+measured instead is what queueing costs, and it is asserted as the
+server's own high-water mark rather than as a clock: at a limit of 2, six
+concurrent calls all succeed on **one** connection with never more than
+two streams open
+(`beyond_the_peers_stream_limit_requests_queue_on_one_connection`). The
+price is stated on `Native::multiplexed` with §6.2's 203/405/607 ms
+beside it.
+
+**§9.2 — what a `Closed` event says for a shared connection.**
+`http-ng-core` did not have to change, which is the half §9.2 doubted.
+The driver emits `CloseReason::Ended` when h2 resolves the connection
+`Ok` — a clean close or a `GOAWAY` carrying no error, which is exactly
+the variant's *"nothing went wrong — there is simply no second request to
+be had on it"* — and `CloseReason::Failed` otherwise. This is also the
+first `Closed` an h2 connection in this crate has ever emitted:
+`established::Inner::H2`'s doc records that the h2 body emits none
+because the end can arrive in three places there, and a driver is one
+place.
+
+**§9.3 — `without_pool()` and `multiplexed()` together.** Neither a
+refusal nor last-call-wins: **the pair does what the weaker of the two
+says, whichever order it is written in**, because the shared path is
+entered only where a pool exists rather than remembered as a flag. Pinned
+in both orders.
+
+**§9.4 — an h2 connection at a network change.** Not done, and now
+sharper than it was: a shared connection's driver goes on polling a socket
+that will never carry anything again, where an idle pooled one merely
+sits. What it needs is what `Selecting::network_changed()` needed — a
+public entry point on `Native`, because a `Transport` cannot see what its
+caller can.
+
+### 11.7 What this did not check
+
+- **No `RequireVersion` interaction beyond the pool bucket.** The demand
+  narrowing the ALPN offer, and the refusal, are `tests/require_version.rs`'s
+  and are untouched by sharing.
+- **Nothing about `http-ng-select`.** `Selecting` never calls
+  `multiplexed()`, and `StagedConnect::connect` does not turn the
+  connection it makes into a shared one — it uses one if the pool has one,
+  which is a defensible half and is not measured here.
+- **No second `Native` sharing one pool.** `PoolKey`'s TLS-identity
+  component is still the field kept for the day a pool is shared across
+  clients, and sharing connections does not bring that day nearer.
+- **The peer's `MAX_CONCURRENT_STREAMS` is only exercised at 2.** The
+  waves at higher limits, and what a server that *lowers* the limit
+  mid-connection does, are unmeasured.
+- **No measurement over a real network.** Every figure in §11.4 is
+  loopback, where the handshake saving is the whole of the win and the
+  RTT saving is zero.
+
+### 11.8 The cost harness, to re-run
+
+Not kept as a test, for §10's reason: it is a measurement rather than a
+claim about this code, it depends on `h2`, `rcgen`, `rustls` and
+`tokio-rustls` directly, and an `#[ignore]`d test nothing runs is the
+defect `just test-doc` was fixed for. Recorded here so the table in §11.4
+can be re-taken rather than believed. Drop it in as
+`crates/http-ng-native/tests/zz_cost.rs`, run
+`cargo nextest run -p http-ng-native --all-features --test zz_cost
+--no-capture`, and delete it again; every dependency it names is already a
+dev-dependency of that crate.
+
+**`tcp.set_nodelay(true)` on the accepted socket is the line that took a
+diagnosis.** Without it every shared burst costs 41.8 ms and every
+exclusive one costs nothing, for the reason §11.4 gives; the per-burst
+timings that showed it were `Instant::now()` around each `burst(..)` call,
+and they are what turned "the shared arm is slow" into "the fixture is
+measuring Nagle".
+
+```rust
+//! What sharing costs and saves, over real TLS. Temporary harness.
+#![cfg(all(feature = "http2", not(target_family = "wasm")))]
+
+use bytes::Bytes;
+use http_ng::Client;
+use http_ng_dns::IpLiteralOnly;
+use http_ng_native::Native;
+use http_ng_rt_tokio::Tokio;
+use http_ng_tls_rustls::Rustls;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+const BURSTS: usize = 60;
+const CONC: usize = 8;
+
+fn cpu() -> Duration {
+    let s = std::fs::read_to_string("/proc/self/stat").unwrap();
+    // `comm` may contain spaces; everything after the closing paren is
+    // space separated, and utime/stime are fields 14 and 15 (1-based).
+    let after = &s[s.rfind(')').unwrap() + 2..];
+    let f: Vec<&str> = after.split_whitespace().collect();
+    let ticks: u64 = f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap();
+    Duration::from_secs_f64(ticks as f64 / 100.0)
+}
+
+fn identity() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    (
+        CertificateDer::from(cert.cert.der().to_vec()),
+        PrivateKeyDer::try_from(cert.signing_key.serialize_der()).unwrap(),
+    )
+}
+
+struct Fx {
+    addr: SocketAddr,
+    accepted: Arc<AtomicUsize>,
+    served: Arc<AtomicUsize>,
+    cert: CertificateDer<'static>,
+}
+
+fn spawn_tls_h2() -> Fx {
+    let (cert_der, key_der) = identity();
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let served = Arc::new(AtomicUsize::new(0));
+    let (a, s) = (Arc::clone(&accepted), Arc::clone(&served));
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    continue;
+                };
+                // Without this the shared rows measure Nagle. See above.
+                let _ = tcp.set_nodelay(true);
+                a.fetch_add(1, Ordering::SeqCst);
+                let acceptor = acceptor.clone();
+                let s = Arc::clone(&s);
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let Ok(mut conn) = h2::server::handshake(tls).await else {
+                        return;
+                    };
+                    while let Some(Ok((req, mut respond))) = conn.accept().await {
+                        let s = Arc::clone(&s);
+                        tokio::spawn(async move {
+                            let (_, mut body) = req.into_parts();
+                            while let Some(Ok(c)) = body.data().await {
+                                let _ = body.flow_control().release_capacity(c.len());
+                            }
+                            let r = http::Response::builder().status(200).body(()).unwrap();
+                            if let Ok(mut send) = respond.send_response(r, false) {
+                                let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                            }
+                            s.fetch_add(1, Ordering::SeqCst);
+                        });
+                    }
+                });
+            }
+        });
+    });
+
+    Fx { addr, accepted, served, cert: cert_der }
+}
+
+fn client_tls(cert: &CertificateDer<'static>) -> Rustls {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.clone()).unwrap();
+    let cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Rustls::from_config(Arc::new(cfg))
+}
+
+type C = Client<Native<Tokio, Rustls, IpLiteralOnly>>;
+
+fn client(fx: &Fx, shared: bool) -> C {
+    let t = Native::new(Tokio, client_tls(&fx.cert), IpLiteralOnly);
+    let t = if shared { t.multiplexed() } else { t };
+    Client::builder(t).build().unwrap()
+}
+
+async fn burst(client: &C, url: &str, n: usize) {
+    let calls = (0..n).map(|_| async {
+        let r = client.get(url).send().await.expect("request");
+        assert_eq!(r.status(), 200);
+        r.collect().await.expect("body");
+    });
+    futures_util::future::join_all(calls).await;
+}
+
+/// `(accepts, requests, cpu, wall)` for `BURSTS` bursts of `CONC`.
+macro_rules! measure {
+    ($fx:expr, $body:block) => {{
+        let (a0, s0, t0, w0) = (
+            $fx.accepted.load(Ordering::SeqCst),
+            $fx.served.load(Ordering::SeqCst),
+            cpu(),
+            Instant::now(),
+        );
+        $body
+        (
+            $fx.accepted.load(Ordering::SeqCst) - a0,
+            $fx.served.load(Ordering::SeqCst) - s0,
+            cpu() - t0,
+            w0.elapsed(),
+        )
+    }};
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cost() {
+    let fx = spawn_tls_h2();
+    let url = format!("https://{}/x", fx.addr);
+
+    // D0 — the instrument's own check. A run whose D0 is not zero is a
+    // run on a busy host and is not one of the nine.
+    let t0 = cpu();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let d0 = cpu() - t0;
+
+    let d1 = measure!(fx, {
+        for _ in 0..BURSTS {
+            let c = client(&fx, false);
+            burst(&c, &url, CONC).await;
+        }
+    });
+    let d3 = measure!(fx, {
+        for _ in 0..BURSTS {
+            let c = client(&fx, true);
+            burst(&c, &url, CONC).await;
+        }
+    });
+    let c4 = client(&fx, false);
+    burst(&c4, &url, 1).await;
+    let d4 = measure!(fx, {
+        for _ in 0..BURSTS {
+            burst(&c4, &url, CONC).await;
+        }
+    });
+    let c5 = client(&fx, true);
+    burst(&c5, &url, 1).await;
+    let d5 = measure!(fx, {
+        for _ in 0..BURSTS {
+            burst(&c5, &url, CONC).await;
+        }
+    });
+
+    println!("D0 idle 400ms                     cpu={d0:?}");
+    for (name, d) in [
+        ("D1 exclusive, 60 COLD bursts of 8", d1),
+        ("D3 shared,    60 COLD bursts of 8", d3),
+        ("D4 exclusive, 60 WARM bursts of 8", d4),
+        ("D5 shared,    60 WARM bursts of 8", d5),
+    ] {
+        println!(
+            "{name} accepts={} requests={} cpu={:?} wall={:?}",
+            d.0, d.1, d.2, d.3
+        );
+    }
+}
+```

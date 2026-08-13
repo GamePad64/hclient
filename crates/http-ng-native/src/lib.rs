@@ -1257,11 +1257,19 @@ where
     /// Whether this transport shares HTTP/2 connections — the spawner is
     /// set **and** there is a pool to keep a shared connection in.
     ///
-    /// The second conjunct is what makes [`Native::multiplexed`] and
-    /// [`Native::without_pool`] order-independent rather than
-    /// last-call-wins: there is nowhere to share a connection without a
-    /// pool, so a transport told both does what the weaker of the two
-    /// says, whichever was written first.
+    /// **What the second conjunct actually buys is narrower than it
+    /// looks**, and a mutation is what said so. It does *not* make
+    /// [`Native::multiplexed`] and [`Native::without_pool`]
+    /// order-independent: `share_if_multiplexing` reads the pool's
+    /// configuration for the deadline it has to stamp, so a transport with
+    /// no pool shares nothing whichever order the two were written in, with
+    /// or without this conjunct. What it buys is that such a transport also
+    /// does no **single-flight** work: without it, a pool-less multiplexed
+    /// transport would take the connect mark and make seven of a burst of
+    /// eight wait once for a connection that is never published. No test
+    /// asserts that, because what it costs is a wait rather than an
+    /// outcome; it is recorded as a surviving mutation in
+    /// `docs/h2-multiplexing.md` §11.5 rather than claimed as pinned.
     #[cfg(feature = "http2")]
     fn shares_connections(&self) -> bool {
         self.share_h2.is_some() && self.pool.config().is_some()
