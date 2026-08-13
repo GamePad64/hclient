@@ -270,6 +270,43 @@ impl Wire {
         }
     }
 
+    /// End the hold as soon as the client has actually put **something into
+    /// early data**, on a thread of the relay's own.
+    ///
+    /// The event this releases on is the second one this file supports, and
+    /// it exists for the same reason as the first: an ordering that a clock
+    /// can only make likely. `docs/v04-h3-0rtt-control-stream.md`'s subject
+    /// is a rejection that has to land on h3's control stream *after* the
+    /// stream was opened and *before* its write finished — a window of
+    /// microseconds on loopback, and a test that waits for one is the flake
+    /// it was written to replace. Held, it is not a window at all: a client
+    /// whose connection cannot learn of the rejection opens early-data
+    /// streams whenever the scheduler next gives it a core, so a 0-RTT
+    /// packet on this wire **is** "the streams are open and written to",
+    /// whatever the machine was doing in between.
+    ///
+    /// A 0-RTT packet exists only to carry application data sent before the
+    /// handshake completed, which is what makes it the right signal and not
+    /// merely a convenient one.
+    ///
+    /// The returned handle is joinable but need not be joined; the thread
+    /// gives up after `patience` so a test that never sends early data
+    /// fails on its own backstop rather than on this one.
+    pub fn release_on_early_data(&self, patience: Duration) -> std::thread::JoinHandle<bool> {
+        let (seen, hold_until) = (self.seen.clone(), self.hold_until.clone());
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + patience;
+            while Instant::now() < deadline {
+                if seen.lock().unwrap().iter().any(|p| p.kind == Kind::ZeroRtt) {
+                    *hold_until.lock().unwrap() = None;
+                    return true;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            false
+        })
+    }
+
     /// What the current hold actually did — see [`Held`].
     ///
     /// This exists because "the hold happened" has to be checkable, and the

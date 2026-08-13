@@ -35,6 +35,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod server;
+mod wire;
 
 use http_body_util::BodyExt;
 use http_ng_core::unversioned::{Event, Hooks, Transport};
@@ -969,9 +970,13 @@ async fn a_replayed_0_rtt_request_reports_one_head_and_one_connection() {
 /// fallback is inside `H3::connect`, beneath it. The assertions are here
 /// so that moving either one fails a line.
 ///
-/// The server-side counts are `live.rs`'s and are not repeated; what is
-/// repeated is `b.accepted()`, because without it "one `Connected`" would
-/// also be what a transport that never fell back reported.
+/// The two fixtures that take the luck out of it — the relay holding the
+/// server's flight until the client has sent early data, and the 8-byte
+/// flow-control window that keeps the control-stream write open across the
+/// rejection — are argued at length beside the sibling and not repeated
+/// here. What is repeated is `b.dialled()`, because without it "one
+/// `Connected`" would also be what a transport that never fell back
+/// reported.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close() {
     let (a, b) = server::start_two_sharing_a_certificate_and_a_tiny_window(Behaviour::Echo, 8);
@@ -988,12 +993,20 @@ async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_
     tokio::time::sleep(Duration::from_millis(200)).await;
     rec.seen.lock().unwrap().clear();
 
-    let mut marked = get(b.addr, "/replayed");
+    let wire = wire::Wire::in_front_of(b.addr);
+    wire.hold_server_flight(Duration::from_millis(800));
+    let watcher = wire.release_on_early_data(Duration::from_secs(5));
+
+    let mut marked = get(wire.addr, "/replayed");
     marked.extensions_mut().insert(http_ng_core::AllowEarlyData);
     let r = t.execute(marked).await.expect("the fallback served it");
     assert_eq!(r.status(), 200);
     let _ = r.into_body().collect().await.expect("body");
 
+    assert!(
+        watcher.join().expect("the relay's watcher thread"),
+        "the premise: the client really did put something into early data"
+    );
     assert_eq!(
         b.dialled(),
         2,

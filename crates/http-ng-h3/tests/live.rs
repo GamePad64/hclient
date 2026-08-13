@@ -8,6 +8,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod server;
+mod wire;
 
 use http_body_util::BodyExt;
 use http_ng_core::unversioned::Transport;
@@ -301,17 +302,34 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
 ///
 /// It was found as a flake — **2 failures in 277 concurrent runs of this
 /// suite** — and `docs/v04-h3-0rtt-control-stream.md` is the capture, the
-/// mechanism and the numbers. What makes it deterministic here is the
-/// server pair's 8-byte flow-control window: h3's SETTINGS frame does not
-/// fit, so the control-stream write is parked in the gap between opening
-/// the stream and finishing the write, which is where the failure lives.
-/// See `server::start_two_sharing_a_certificate_and_a_tiny_window`.
+/// mechanism and the numbers.
 ///
-/// A delay in the obvious place — between `into_0rtt()` and `build()` —
-/// does *not* reproduce it, and that is the measurement that located the
-/// gap: `quinn_proto`'s `zero_rtt_rejected` resets the next-stream-id
-/// counters, so an h3 client that opens its streams after the rejection
-/// opens ordinary 1-RTT ones and everything works.
+/// # Two fixtures, and each removes one half of the luck
+///
+/// The failure needs the rejection to arrive **after** h3 opened its
+/// control stream and **before** its write finished. Each end of that is
+/// arranged rather than waited for, and neither is a duration:
+///
+/// - **After the open** is [`wire::Wire`], holding the server's flight
+///   until the relay has seen a 0-RTT packet from the client. While the
+///   flight is held the client's connection *cannot* learn of the
+///   rejection, so whenever the scheduler next gives it a core it opens
+///   early-data streams; a 0-RTT packet on the wire is that having
+///   happened. Without it the client can be descheduled between
+///   `into_0rtt()` and h3's first `poll_open_send`, the rejection lands
+///   first, and `quinn_proto`'s `zero_rtt_rejected` — which resets the
+///   next-stream-id counters — leaves h3 opening ordinary 1-RTT streams
+///   and everything working. Measured: a 50 ms delay in exactly that place
+///   makes both 0-RTT tests pass on the **unfixed** library, and the
+///   preemption is the same thing at microsecond scale — 3 failures in 246
+///   concurrent runs of this suite while this test relied on losing that
+///   race being unlikely.
+/// - **Before the write finishes** is the server pair's 8-byte
+///   flow-control window: h3's SETTINGS frame does not fit, so the write
+///   parks for credit that a discarded early-data stream will never be
+///   given. Without it the write completes locally, h3 never notices the
+///   rejection at all, and the exchange takes the *request* stream's path
+///   above. See `server::start_two_sharing_a_certificate_and_a_tiny_window`.
 ///
 /// # What the assertions are, and why the server makes them
 ///
@@ -349,7 +367,17 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
     // passes vacuously through `into_0rtt`'s refusal path.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let mut marked = get(b.addr, "/replayed");
+    // The relay goes in front of `b` only, and only for the marked request:
+    // the ticket above is an ordinary exchange and has nothing to order.
+    let wire = wire::Wire::in_front_of(b.addr);
+    // A backstop rather than the plan — the hold ends on the client's first
+    // 0-RTT packet. Reaching it means the client put nothing into early
+    // data, which is a failure worth seeing rather than one to wait out, and
+    // it stays well under quinn's first PTO (~1 s) so nothing retransmits.
+    wire.hold_server_flight(std::time::Duration::from_millis(800));
+    let watcher = wire.release_on_early_data(std::time::Duration::from_secs(5));
+
+    let mut marked = get(wire.addr, "/replayed");
     marked.extensions_mut().insert(AllowEarlyData);
     let r = t
         .execute(marked)
@@ -357,6 +385,13 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
         .expect("a 0-RTT rejection is not a connect failure, wherever it lands");
     assert_eq!(r.status(), 200);
     assert_eq!(body_of(r).await, "hello over h3");
+    assert!(
+        watcher.join().expect("the relay's watcher thread"),
+        "the premise: the client really did put something into early data, \
+         so there really was an early-data control stream for the rejection \
+         to destroy. Without this the test could pass on a client that \
+         quietly did an ordinary handshake"
+    );
     assert_eq!(
         b.dialled(),
         2,
