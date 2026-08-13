@@ -48,6 +48,13 @@ thiserror    = { workspace = true }
 tungstenite  = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
+# For the module doc's example alone, and it is the reason the borrow
+# exists: `Tungstenite` borrows a `Native` a `Client` already owns, so the
+# example that shows why cannot be written without naming `Client`. The
+# same dev-dependency `http-ng-h3` carries for the same reason. No cycle —
+# `http-ng` does not depend on this crate, and cannot: the framing is a
+# choice a caller makes.
+http-ng            = { workspace = true }
 futures-executor   = { version = "0.3", default-features = false, features = ["std"] }
 # `sink` on top of the library's own feature set: `SinkExt::send`/`close`
 # live there, and `tests/websocket.rs` drives the seam the way a caller

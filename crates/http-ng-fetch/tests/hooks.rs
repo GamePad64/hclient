@@ -34,7 +34,12 @@ enum Seen {
         id: u64,
         uri: String,
         status: u16,
-        version: String,
+        /// The `Option` `Head::version` actually is, not a `String` of
+        /// it. It used to be a `String` because the assertion was about
+        /// what the value *printed as*; the claim now is that there is no
+        /// value, and `None` is a thing to compare against rather than to
+        /// format.
+        version: Option<http::Version>,
     },
 }
 
@@ -80,7 +85,7 @@ impl Hooks for Recorder {
                     id: h.id.get(),
                     uri: h.uri.to_string(),
                     status: h.status.as_u16(),
-                    version: format!("{:?}", h.version),
+                    version: h.version,
                 }
             }
         };
@@ -231,16 +236,22 @@ async fn the_status_is_the_one_the_server_sent() {
     assert_eq!(status, sent, "the event's status is the response's");
 }
 
-/// **`id` is `ConnectionId::UNWATCHED`, and that is a borrowed value
-/// rather than an observation.**
+/// **`id` is `ConnectionId::UNWATCHED`, which is the seam's value for
+/// *this event names no connection*.**
 ///
 /// There is no connection object in the Fetch Standard, so there is
 /// nothing to take an id from and nothing a later event could match it
 /// against. `UNWATCHED` is the only value `ConnectionId::next` never
 /// returns, so it cannot collide with a real connection from another
-/// transport in the same process — which is the whole of what it buys
-/// here. `src/hooks.rs` records that the seam has no value meaning *there
-/// is no connection here*.
+/// transport in the same process, and a hook looking it up in a table of
+/// live connections cannot hit one.
+///
+/// This used to be recorded as a value being *borrowed* against its own
+/// doc, and it is not: the other thing that produces it is a build with
+/// `Hooks::WATCHING == false`, whose events by that const's own definition
+/// nobody reads. `docs/v04-w2-hooks-ambient.md` §9 is the argument and the
+/// constant's doc comment now carries the meaning rather than one
+/// producer.
 ///
 /// The assertion is written against `ConnectionId::UNWATCHED` rather than
 /// against `0` so that it stays true if the constant moves, and it is
@@ -264,41 +275,84 @@ async fn the_id_names_no_connection_because_there_is_none_to_name() {
     );
 }
 
-/// **`version` is not a fact about the wire, and the event agrees with the
-/// response rather than knowing better.**
+/// **`version` is `None`, and it is the response's `HTTP/1.1` that the
+/// event refuses to repeat.**
 ///
 /// The Fetch Standard's `Response` has no protocol member: the browser
 /// knows whether it spoke HTTP/1.1, h2 or h3 to this origin and does not
-/// tell a page. So the event reports what the response reports, and the
-/// response reports `http`'s builder default. Two assertions, because the
-/// pair is the decision:
+/// tell a page. The value on the response is therefore
+/// `http::response::Builder`'s default, and this transport used to report
+/// it — an `HTTP/1.1` in a caller's log that nothing distinguishes from an
+/// exchange somebody watched happen over HTTP/1.1.
 ///
-/// - the event and the response say the same thing — a transport that
-///   guessed separately could disagree with the response in a caller's
-///   own log;
-/// - and what they say is `HTTP/1.1`, on a page the harness serves over
-///   HTTP/1.1 today. That second line is the one that will fail on the day
-///   `http-ng-fetch` learns to read a real version from somewhere, and
-///   failing is what it is for.
+/// Two assertions, because the pair is the decision and either alone
+/// passes for the wrong reason. `version == None` alone would also pass on
+/// a transport whose responses carried no version either; the second
+/// assertion is what makes the first a *refusal* — there is a value right
+/// there, it is `HTTP/1.1`, and the event does not take it.
 #[wasm_bindgen_test]
-async fn the_version_agrees_with_the_response_and_neither_observed_it() {
+async fn the_version_is_none_and_not_the_builder_default_on_the_response() {
     let rec = Recorder::default();
     let t = Fetch::new().hooks(rec.clone());
 
     let resp = t.execute(get(&page_url())).await.expect("the harness page");
-    let on_the_response = format!("{:?}", resp.version());
+    let on_the_response = resp.version();
 
     let Seen::Head { version, .. } = rec.head() else {
         panic!("the one event is a head");
     };
     assert_eq!(
-        version, on_the_response,
-        "the event must not carry a version the response does not"
+        version, None,
+        "a browser will not say which protocol it spoke, so the event says \
+         nothing rather than something — see `Head::version` in \
+         `http-ng-core`"
     );
     assert_eq!(
-        version, "HTTP/1.1",
-        "which is `http::response::Builder`'s default, not something this \
-         transport read off the wire — see `src/hooks.rs`"
+        on_the_response,
+        http::Version::HTTP_11,
+        "and the value the event declined is right here on the response: \
+         `http::response::Builder`'s default, not something this transport \
+         read off the wire"
+    );
+}
+
+/// **The event and the capability are one fact spelled twice, and they
+/// have to agree.**
+///
+/// `Head::version`'s doc states the rule for all four backends: `Some`
+/// exactly when `Capabilities::version_reported`. Both spellings exist
+/// because they are reachable from different places — the capability from
+/// whoever built the transport, the event from a hook that is handed an
+/// `Event` and nothing else — and two spellings of one fact are worth
+/// having only while something checks that they still say the same thing.
+///
+/// It sits here rather than in `tests/caps.rs`, where the `false` is also
+/// asserted, because what is being pinned is the *pair*: a future
+/// `http-ng-fetch` that learned to read a real protocol from somewhere
+/// must change both lines in this one test, and cannot change one of them
+/// alone and stay green.
+#[wasm_bindgen_test]
+async fn the_event_says_no_version_exactly_where_the_capability_does() {
+    let rec = Recorder::default();
+    let t = Fetch::new().hooks(rec.clone());
+
+    let reported = t.capabilities().version_reported;
+
+    t.execute(get(&page_url())).await.expect("the harness page");
+    let Seen::Head { version, .. } = rec.head() else {
+        panic!("the one event is a head");
+    };
+
+    assert!(
+        !reported,
+        "this backend cannot observe the protocol, and the capability is \
+         where it says so to whoever built it"
+    );
+    assert_eq!(
+        version.is_some(),
+        reported,
+        "`Head::version` is `Some` exactly when `version_reported` — the \
+         rule in `http-ng-core`, checked on the one backend in this crate"
     );
 }
 

@@ -1640,6 +1640,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body-util",
+ "http-ng",
  "http-ng-core",
  "http-ng-dns",
  "http-ng-dns-system",

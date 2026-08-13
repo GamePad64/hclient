@@ -507,6 +507,11 @@ impl http_ng_core::unversioned::Hooks for Recorder {
             Event::Connected(c) => format!("EVENT connected id={}", c.id),
             Event::Reused(r) => format!("EVENT reused id={}", r.id),
             Event::Closed(c) => format!("EVENT closed id={}", c.id),
+            // `version` is printed through the same `{:?}` as before, and
+            // it is an `Option` now, so an emitter that started reporting
+            // a version prints `Some(HTTP/1.1)` where the test expects
+            // `None` — the difference reaches the transcript as a word
+            // rather than as a value that has to be compared.
             Event::Head(h) => format!(
                 "EVENT head id={} uri={} status={} version={:?} elapsed_ns={}",
                 h.id,
@@ -543,6 +548,19 @@ async fn hooks_head(port: u16) -> Result<(), ()> {
         .uri(uri)
         .body(RequestBody::Empty)
         .expect("request");
+
+    // Printed from the guest, beside the event, because it is the other
+    // spelling of one fact: `Head::version` is `Some` exactly when
+    // `Capabilities::version_reported`, and this backend can observe no
+    // protocol at all. Both halves have to be in one transcript or a
+    // future host that did report a version could move one and leave the
+    // other, which is the drift
+    // `the_reuse_the_event_set_cannot_report_is_the_reuse_the_capability_denies`
+    // exists to stop one field over.
+    println!(
+        "CAPS version_reported={}",
+        transport.capabilities().version_reported
+    );
 
     let resp = transport.execute(req).await.map_err(|e| {
         eprintln!("execute failed: {e}");

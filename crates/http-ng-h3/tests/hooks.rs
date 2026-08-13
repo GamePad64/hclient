@@ -72,8 +72,12 @@ enum Seen {
     Head {
         id: u64,
         uri: String,
+        /// `Option`, because `Head::version` is one: `None` is what a
+        /// transport that could not observe the protocol reports, and
+        /// this one always can — it speaks HTTP/3 and refuses every
+        /// other demand.
+        version: Option<http::Version>,
         status: u16,
-        version: http::Version,
         elapsed: Duration,
     },
     Closed {
@@ -177,9 +181,26 @@ impl Recorder {
             Seen::Head {
                 id,
                 status,
+                version,
                 elapsed,
-                ..
-            } => (*id, *status, *elapsed),
+                uri: _,
+            } => {
+                // Asserted here rather than in one test, because every
+                // head this file looks at comes through this helper and
+                // the claim is about all of them. `Head::version` is an
+                // `Option` so that `http-ng-fetch` and `http-ng-wasi` can
+                // say *not observed*; this transport speaks HTTP/3 and
+                // nothing else and reports `version_reported: true`, so
+                // `None` here would be that field's other kind of lie —
+                // and nothing in this crate would otherwise notice.
+                assert_eq!(
+                    *version,
+                    Some(http::Version::HTTP_3),
+                    "a transport whose capabilities say `version_reported: \
+                     true` owes the event a version"
+                );
+                (*id, *status, *elapsed)
+            }
             other => unreachable!("{other:?}"),
         }
     }

@@ -75,24 +75,26 @@ by hand where nextest prints one `Summary`. Nextest also runs each test in
 its own process, which matters here because mutation testing is this
 project's primary review technique.
 
-Two things nextest does not cover. Doctests: it cannot run them
-(`cargo test --doc` does), and **the condition this paragraph used to be
-waiting on has been met.** `cargo test --doc --workspace --all-features`
-runs three and ignores three today — `http-ng-cookie`'s `CookieJar`,
-`http-ng-h3`'s and `http-ng-select`'s module examples, against
-`http-ng-dns-doh`'s one and `http-ng-rt-embassy`'s two, which are fenced
-`ignore`.
-**No CI job runs any of them**, so the `--doc` step this sentence promised
-is now owed rather than hypothetical.
+Two things nextest does not cover. Doctests: it cannot run them, so
+`just test-doc` does — `cargo test --doc --workspace --all-features`, four
+of them today, and **a CI job calls that recipe**.
 
-It is owed for a measured reason and not a tidy one. `cargo test --doc -p
-http-ng-h3 --all-features` **fails** on its own: the example calls
-`Rustls::with_webpki_roots()`, which lives behind
-`http-ng-tls-rustls`'s `webpki-roots` feature, and that crate's own
-dev-dependency on it enables `quic` alone. It compiles under `--workspace`
-only because another member's dev-dependency turns `webpki-roots` on and
-Cargo unifies features across the graph — so the workspace-wide run is
-green over an example that does not build the way a reader would build it.
+That job is younger than the recipe, and the gap between them is the point.
+`test-doc` existed and nothing called it — not `just ci`, not any workflow
+step — which is worse than no recipe at all, because it is the one people
+trust before pushing. Two examples were broken the whole time it was
+unwatched. `http-ng-h3`'s called `Rustls::with_webpki_roots()`, which lives
+behind `http-ng-tls-rustls`'s `webpki-roots` feature while that crate's own
+dev-dependency enabled `quic` alone; it compiled under `--workspace` only
+because another member turned the feature on and Cargo unifies features
+across the graph, so the workspace-wide run was green over an example that
+did not build the way a reader would build it. The second broke the day the
+WebSocket framing became its own crate — its example names `http_ng::Client`,
+because borrowing a transport a `Client` already owns is the whole reason
+`Tungstenite` borrows — and the job caught it rather than a reader.
+
+Both are fixed by giving each crate the dev-dependency its own example
+needs, which is what "builds the way a reader would build it" means.
 
 Browser tests: those go through `wasm-pack test --headless
 --chrome|--firefox` regardless, see the `browser` job.
@@ -708,13 +710,39 @@ the head — 0 entries, 1 after the body drains — and nothing on it says
 which request it belongs to (`requestId`, `id`, `connectionId`,
 `transferId` all `undefined`). Either fact alone kills `Connected`.
 
-**Two of `Head`'s five fields have no source, and they are the same two on
-both backends.** `id` borrows `ConnectionId::UNWATCHED`, because the seam
-has no value meaning *there is no connection*; `version` is read off the
-response rather than observed, because a browser will not say and
-`wasi:http` has no version concept. Both are recorded as debts owed by
-`http-ng-core` rather than papered over — and neither needed a new variant,
-which is why the event set still fits unchanged.
+**Two of `Head`'s five fields had no source, and they are the same two on
+both backends — and the two answers came out different, which is the part
+worth knowing.** `id` and `version` were recorded together as debts owed by
+`http-ng-core`; taken up together, they separated on one question: **is the
+ambiguity reachable by a reader at all?**
+
+`id` was **not** a debt, and `ConnectionId::UNWATCHED` was not being
+borrowed. Its other producer is a build with `Hooks::WATCHING == false`,
+whose own documented question is *whether anything reads these events* — so
+a hook can only ever meet the value in the ambient sense, *this event names
+no connection*. A second value would be a distinction with one reachable
+side, which is the shape `UpgradeSupport`'s four variants had when they were
+deleted. What was wrong was the constant's doc comment, which named a
+producer as if it were the meaning. The property it rests on — the counter
+starts at `1`, so `next()` never returns it — was undocumented and untested
+and now is both.
+
+`version` **was** a debt, and `Head::version` is now
+`Option<http::Version>`. The difference is that `UNWATCHED` is a sentinel no
+real connection can wear, where `HTTP/1.1` is an ordinary value: a hook
+counting protocol mix reported a browser's h2 and h3 traffic as HTTP/1.1, a
+*wrong* answer rather than a missing one. `Capabilities::version_reported`
+says the same thing and is the wrong place to say it — it is reachable from
+whoever built the transport, and a `Hooks` impl is handed an `Event` and
+nothing else, so a portable hook would have to know which backend it was
+inside. **The rule is now a biconditional**: `Head::version` is `Some`
+exactly when `version_reported`, checked on both ambient backends by tests
+that read the event and the capability in one place. `Connected::version`
+and `Reused::version` stay plain, which is what keeps this from being a
+change made for one backend: only a transport that owns a connection emits
+either, and owning one means having negotiated its protocol. The cost to
+the other two backends was one line each plus the assertions the compiler
+demanded. `docs/v04-w2-hooks-ambient.md` §9.
 
 The bounds went down again: `H: Hooks` alone here, one fewer than h3 and
 two fewer than native, because the only event fires while `execute` still

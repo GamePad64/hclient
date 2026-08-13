@@ -442,12 +442,16 @@ impl<H: Hooks> Transport for WasiHttp<H> {
         // above is exactly `H::WATCHING`, and two places that have to
         // agree is one more than is safe.
         //
-        // `version` and `status` come off the response this function is
-        // about to return, not from anything read separately — the same
-        // discipline `http-ng-native`'s `report_head` follows, and here it
-        // is load bearing rather than tidy: `wasi:http` has no version
-        // concept at all (see `crate::hooks`), so the event's job is to
-        // agree with the response rather than to know better.
+        // `status` comes off the response this function is about to
+        // return, not from anything read separately — the same discipline
+        // `http-ng-native`'s `report_head` follows.
+        //
+        // `version` is `None`, and here that is stronger than a browser's
+        // silence: `wasi:http@0.3.0` has no version concept at all, so
+        // there is nothing for a host to withhold. `capabilities()` says
+        // so with `version_reported: false`, and the `HTTP/1.1` on the
+        // response is what `http_from_wasi_response` builds rather than
+        // anything observed — see `Head::version` in `http-ng-core`.
         //
         // Nothing is reported on any of the error paths above, including
         // the undeclared-trailers refusal, which is the one that fires
@@ -459,7 +463,7 @@ impl<H: Hooks> Transport for WasiHttp<H> {
                 id: ConnectionId::UNWATCHED,
                 uri: &parts.uri,
                 status: out.status(),
-                version: out.version(),
+                version: None,
                 elapsed: hooks::since(began),
             }));
         }

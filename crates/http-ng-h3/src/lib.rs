@@ -859,7 +859,11 @@ where
             id,
             uri,
             status: resp.status(),
-            version: resp.version(),
+            // `Some`, because this transport knows: it speaks HTTP/3 and
+            // refuses every other demand. That is the same claim
+            // `capabilities()` makes with `version_reported: true`, and
+            // `Head::version`'s doc says the two must agree.
+            version: Some(resp.version()),
             elapsed: since::<R>(&self.rt, began),
         }));
     }
