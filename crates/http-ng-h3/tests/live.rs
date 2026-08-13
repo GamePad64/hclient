@@ -366,9 +366,11 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
 /// `AllowEarlyData` is on the request and there has been no prior visit, so
 /// there is no ticket, `into_0rtt` refuses and the handshake is an ordinary
 /// one — which is the state in which a fallback would be a plain retry of a
-/// failing connect. A caller who set `Timeouts::connect` would then be made
-/// to wait twice for it, which is `docs/connect-only-seam.md`'s *"a bound a
-/// server can double is not a bound"* arriving from the other direction.
+/// failing connect: the same arguments to the same `connect_with`, arriving
+/// at the error it already had, having spent the caller's `Timeouts::
+/// connect` on the way. The bound itself cannot be doubled — `H3::stage`
+/// wraps both dials in one `within_connect` — which is why the assertion
+/// below is a dial count and not a duration.
 ///
 /// The server is the one fixture here that makes `build` fail without any
 /// early data being involved — see [`server::Behaviour::CloseOnAccept`] for
