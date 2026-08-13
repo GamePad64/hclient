@@ -1156,17 +1156,56 @@ sixteen rounds of bidirectional streaming on one stream — which is the first
 consumer-shaped exercise of the duplex h2 landed in v0.4.
 `docs/grpc-yardstick.md` is the row-by-row report.
 
-**Three limitations, none new, and two of them are one.** There is **no
-multiplexing**: an h2 connection is checked out exclusively, so two
-concurrent calls cost two connections and two handshakes. That is v0.2 W3's
-decision, and its reason is still live — without `Spawn` there is nobody to
-drive a shared connection but the in-flight request futures, so a caller
-that stopped polling would stall its neighbours. **Cancellation therefore
-closes the connection rather than sending `RST_STREAM(CANCEL)`**: the pump's
+**Three limitations, none new, two of them one — and all three closed on
+request in v0.4.** By default there is **no multiplexing**: an h2
+connection is checked out exclusively, so two concurrent calls cost two
+connections and two handshakes. That is v0.2 W3's decision, and its reason
+is still live for the *default* — without `Spawn` there is nobody to drive
+a shared connection but the in-flight request futures, so a caller that
+stopped polling would stall its neighbours. **Cancellation therefore closes
+the connection rather than sending `RST_STREAM(CANCEL)`**: the pump's
 `Drop` does queue the reset, but the `Connection` is dropped in the same
 breath. And a `PING` on a pooled connection is answered by the next call
 rather than promptly. The first costs a handshake per concurrent RPC; none
 of the three costs a failed call.
+
+**`Native::multiplexed()` closes all three, and the second and third cost
+no code of their own** — which is what `docs/grpc-yardstick.md` predicted
+when it classified them as downstream of the first. It spawns the h2
+connection's driver, so the connection outlives the stream (the queued
+`RST_STREAM(CANCEL)` reaches the wire) and outlives the request (a `PING`
+is answered while idle), and concurrent requests share it: eight
+concurrent calls, **one** accept, eight streams open at once by the
+server's own count.
+
+**The bound sits on that constructor and nowhere else, which is the whole
+of the design.** `http_ng_rt::Spawn` declares zero bounds, so
+`<R as Spawn<F>>::spawn` coerces to `fn(&R, F)` and lives in a field that
+demands nothing of `R` — no signature a `Spawn`-less runtime meets
+changes, and `two_runtimes.rs` still runs `Native` on a bare
+`futures_executor::block_on`. A runtime with no `Spawn` gets `E0277` where
+it wrote `multiplexed()`, and so does a hook holding an `Rc`, because the
+driver carries `H` so that a shared connection's `Closed` has an emitter
+at all — the collision `http-ng-h3` met from the other side and could not
+close.
+
+**Three prices, and each is said where a caller meets them.** A spawner
+nobody drives turns "sockets stay open" into "requests **hang**", which is
+worse than the reaper's version of the same mistake and is cut only by
+`Timeouts::first_byte`. Beyond the peer's `MAX_CONCURRENT_STREAMS`
+requests **queue** — no second connection is opened, because
+`SendRequest::poll_ready` is a liveness check and not a capacity one, so
+the threshold would have to be ours and depends on a handshake cost that
+is a network property rather than a loopback one. And `.hooks(..)` must
+come **before** `.multiplexed()`: the spawner's type names the hook, so
+the other order compiles and shares nothing.
+
+Measured through the real transport in both arms, 480 requests at a
+concurrency of 8: **480** TCP accepts and 480 TLS+h2 handshakes exclusive
+against **60** shared, for ~3× the CPU. In steady state — a warm pool,
+loopback, no handshake left to save — sharing costs *more* CPU and saves
+the sockets, which is the honest shape of the trade.
+`docs/h2-multiplexing.md` §11.
 
 Also worth knowing before reading `capabilities()`: with `http2` on,
 `full_duplex` and `response_trailers` still report the HTTP/1.1 **floor**, so
