@@ -68,11 +68,29 @@
 //! ending the CONNECT stream. Both are recorded as not-done in
 //! `docs/v04-w2-webtransport.md` §6, with what each would need.
 //!
+//! # Datagrams
+//!
+//! [`Session::send_datagram`] and [`Session::recv_datagram`] carry
+//! RFC 9297 HTTP Datagrams over the QUIC DATAGRAM extension (RFC 9221),
+//! which is the feature WebTransport exists for that streams do not
+//! already give: unreliable, unordered, no head-of-line blocking. The wire
+//! format is the Quarter Stream ID — this session's CONNECT stream ID
+//! divided by four — as a variable-length integer, then the payload; the
+//! draft adds no framing of its own.
+//!
+//! **Neither `h3-datagram` nor `h3-quinn`'s `datagram` feature is used**,
+//! and that is not a preference. `h3-datagram` 0.0.2's `Datagram::encode`
+//! encodes the Quarter Stream ID into a local buffer and then builds its
+//! `EncodedDatagram` from a **freshly zeroed array**, discarding it — so
+//! every datagram it writes carries a Quarter Stream ID of zero, of the
+//! right length. A session on stream 0 is unaffected and every other
+//! session addresses its datagrams to the wrong one. Measured rather than
+//! read: `docs/v04-w2-datagrams.md` §3. Beyond that, this crate already
+//! owns the QUIC varint for the stream header, for the reason on
+//! [`put_varint`], and the datagram header is the same two lines.
+//!
 //! # What is deliberately not here
 //!
-//! - **Datagrams.** `h3-quinn` has a `datagram` feature and `h3-datagram`
-//!   exists; the session layer for them does not, and neither does a
-//!   reason to add one before a caller has asked.
 //! - **The capsule protocol** — `CLOSE_WEBTRANSPORT_SESSION` and
 //!   `DRAIN_WEBTRANSPORT_SESSION`. Dropping a [`Session`] ends it the
 //!   other way the draft allows, by closing the CONNECT stream, which is
@@ -178,6 +196,53 @@ pub struct NotHttps {
     pub scheme: String,
 }
 
+/// Datagrams cannot be sent on this session.
+///
+/// Two reasons rather than one flag, because they are two different things
+/// to fix: the first is the peer's HTTP/3 answer and the second is the
+/// QUIC connection underneath it, and a caller that owns the endpoint can
+/// act on the second alone. Both are reachable — a `h3` server can
+/// announce WebTransport without `SETTINGS_H3_DATAGRAM`, and a `quinn`
+/// endpoint with `datagram_receive_buffer_size(None)` sends no
+/// `max_datagram_frame_size` — and both are exercised in this crate's
+/// tests, which is the standard the WebTransport work set for a variant
+/// existing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DatagramsUnavailable {
+    /// The peer's SETTINGS carried no `SETTINGS_H3_DATAGRAM`, so
+    /// RFC 9297 §2.1 forbids sending it HTTP Datagrams.
+    ///
+    /// This is a fact about the session, fixed when it was established:
+    /// SETTINGS arrive once and cannot be revised.
+    #[error("the peer's SETTINGS did not announce SETTINGS_H3_DATAGRAM")]
+    NotAnnouncedByPeer,
+    /// The QUIC connection carries no datagrams — the peer sent no
+    /// `max_datagram_frame_size` transport parameter (RFC 9221 §3), or the
+    /// local endpoint has them disabled.
+    ///
+    /// The two are one variant because quinn reports them as one: its
+    /// `max_datagram_size` is `None` for either, and a client that does
+    /// not own the endpoint cannot tell which applies.
+    #[error("the QUIC connection carries no datagrams")]
+    NotOnTheConnection,
+}
+
+/// The payload does not fit in a datagram.
+///
+/// Not a truncation and not a fragmentation: RFC 9221 datagrams are one
+/// QUIC packet each, so a payload that does not fit has no smaller form
+/// this crate could invent for it. The budget is what
+/// [`Session::max_datagram_size`] would have answered at the same moment,
+/// and it moves with the path MTU estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a {payload}-byte datagram payload does not fit; the budget is {budget} bytes")]
+pub struct DatagramTooLarge {
+    /// The payload the caller offered.
+    pub payload: usize,
+    /// The largest payload that would have fitted.
+    pub budget: usize,
+}
+
 /// An open WebTransport session: a multiplexer over one QUIC connection.
 ///
 /// # What it holds, and why each of the three is not dead weight
@@ -202,6 +267,11 @@ pub struct Session {
     /// this is here and `h3` is not asked to open them.
     conn: quinn::Connection,
     id: SessionId,
+    /// What the peer's SETTINGS said about `SETTINGS_H3_DATAGRAM`, read
+    /// once at establishment because that is when the frame arrives and
+    /// SETTINGS cannot be changed afterwards. It is not a third flag on
+    /// the gate — see [`Session::max_datagram_size`].
+    peer_datagrams: bool,
     // The three anchors. Named with a leading underscore because they are
     // never read: their whole job is to not be dropped. See the type doc.
     _connect: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
@@ -260,13 +330,21 @@ impl Session {
 
         let (mut driver, mut send) = h3::client::builder()
             .enable_extended_connect(true)
+            // The client's half of RFC 9297 §2.1: an endpoint may not
+            // *receive* HTTP Datagrams it never said it understood, so this
+            // line is what lets the peer send any at all. It is the setter
+            // §3 of `docs/v04-w2-webtransport.md` found missing for
+            // WebTransport and present for datagrams — the whole reason
+            // datagrams could be built here and the session announcement
+            // could not.
+            .enable_datagram(true)
             .build::<h3_quinn::Connection, h3_quinn::OpenStreams, Bytes>(h3_quinn::Connection::new(
                 conn.clone(),
             ))
             .await
             .map_err(connect_error)?;
 
-        settings_announce_webtransport(&mut driver.inner, &send).await?;
+        let peer_datagrams = settings_announce_webtransport(&mut driver.inner, &send).await?;
 
         // `Protocol` in the request's extensions is the whole of the
         // extended-CONNECT mechanism from this side: `h3`'s
@@ -303,6 +381,7 @@ impl Session {
             // fact about that crate's server side rather than one this
             // client can copy.
             id: SessionId(stream.id().into_inner()),
+            peer_datagrams,
             _connect: stream,
             _send: send,
             _driver: driver,
@@ -338,6 +417,162 @@ impl Session {
             .map_err(|e| Error::new(ErrorKind::Body, e))?;
         Ok((send, recv))
     }
+
+    /// The largest datagram payload that can be sent **right now**, or
+    /// `None` if datagrams cannot be sent on this session at all.
+    ///
+    /// The number is quinn's own limit for the QUIC DATAGRAM frame minus
+    /// this session's header — the Quarter Stream ID varint, 1 to 8 bytes
+    /// depending on the session — so it is a budget for the caller's own
+    /// bytes and not for the frame. It moves with the path MTU estimate,
+    /// which is why it is a method rather than a field.
+    ///
+    /// # `None` has two causes and they are one answer
+    ///
+    /// Either the peer's SETTINGS carried no `SETTINGS_H3_DATAGRAM`
+    /// (RFC 9297 §2.1 forbids sending HTTP Datagrams to an endpoint that
+    /// did not ask for them), or the QUIC connection carries no datagrams
+    /// — the peer sent no `max_datagram_frame_size` transport parameter,
+    /// or the local endpoint disabled them. Both mean *you cannot send*,
+    /// which is the whole question this method asks, so they share an
+    /// answer here; [`send_datagram`](Self::send_datagram) tells them
+    /// apart, because there the caller has already decided to send and the
+    /// reason is actionable.
+    ///
+    /// Note that this is a claim about **sending**. Receiving is governed
+    /// by what *this* endpoint announced, which [`Session::connect`]
+    /// always sets, so a session whose `max_datagram_size` is `None` can
+    /// still have datagrams arrive on it.
+    pub fn max_datagram_size(&self) -> Option<usize> {
+        if !self.peer_datagrams {
+            return None;
+        }
+        self.conn
+            .max_datagram_size()?
+            .checked_sub(varint_len(self.quarter_stream_id()))
+    }
+
+    /// Send one datagram. It may be lost, and that is the point.
+    ///
+    /// WebTransport datagrams are the feature streams do not already give:
+    /// unreliable, unordered, and free of head-of-line blocking. Nothing
+    /// here retransmits, acknowledges or orders them, and a caller that
+    /// needs any of those wants [`open_bi`](Self::open_bi) instead.
+    ///
+    /// It is not `async`, and that is the shape rather than an oversight:
+    /// there is no flush to await and no delivery to wait for. A datagram
+    /// that does not fit in the send buffer displaces an older one — see
+    /// `quinn::Connection::send_datagram` — which is the same trade a UDP
+    /// socket makes and the reason the method can answer immediately.
+    ///
+    /// # On the wire
+    ///
+    /// The QUIC DATAGRAM frame's payload is an HTTP/3 Datagram
+    /// (RFC 9297 §2.1): the Quarter Stream ID — this session's ID divided
+    /// by four — as a variable-length integer, then the payload
+    /// unchanged. draft-ietf-webtrans-http3 adds no framing of its own, so
+    /// there is no context ID and no length: the datagram *is* the
+    /// remainder of the frame.
+    ///
+    /// **A stream and a datagram name the same session differently**, and
+    /// the asymmetry is RFC 9297's rather than ours: a stream header
+    /// carries the session's full stream ID after the `0x41` signal, a
+    /// datagram carries it shifted right by two. Getting that shift wrong
+    /// addresses the datagram to a session that is not this one.
+    ///
+    /// # Errors
+    ///
+    /// [`DatagramsUnavailable`] when the session cannot send at all, and
+    /// [`DatagramTooLarge`] when this particular payload does not fit —
+    /// the second carries the budget that
+    /// [`max_datagram_size`](Self::max_datagram_size) would have reported.
+    pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
+        if !self.peer_datagrams {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                DatagramsUnavailable::NotAnnouncedByPeer,
+            ));
+        }
+        let Some(frame_budget) = self.conn.max_datagram_size() else {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                DatagramsUnavailable::NotOnTheConnection,
+            ));
+        };
+        let quarter = self.quarter_stream_id();
+        let budget = frame_budget.saturating_sub(varint_len(quarter));
+        if payload.len() > budget {
+            return Err(Error::new(
+                ErrorKind::Body,
+                DatagramTooLarge {
+                    payload: payload.len(),
+                    budget,
+                },
+            ));
+        }
+
+        let mut frame = Vec::with_capacity(varint_len(quarter) + payload.len());
+        put_varint(&mut frame, quarter);
+        frame.extend_from_slice(&payload);
+        self.conn
+            .send_datagram(Bytes::from(frame))
+            .map_err(send_datagram_error)
+    }
+
+    /// Wait for the next datagram addressed to this session.
+    ///
+    /// What comes back is the payload alone: the Quarter Stream ID has
+    /// been read off and checked. Nothing is spawned — the returned future
+    /// is the only thing reading datagrams, so a caller that stops calling
+    /// this stops receiving, and quinn's own receive buffer drops the
+    /// oldest when it fills.
+    ///
+    /// # What it silently drops, and why silence is right
+    ///
+    /// A datagram whose Quarter Stream ID is not this session's, and one
+    /// too short to carry a Quarter Stream ID at all, are discarded and
+    /// the wait continues. RFC 9297 §2.1 says a receiver "SHALL either
+    /// drop that datagram silently or buffer it temporarily" when the ID
+    /// names a stream it does not know, so an error here would be
+    /// inventing a failure the RFC forbids — and this crate holds one
+    /// session per connection, so *not this session* is the only
+    /// unknown-stream case that exists.
+    ///
+    /// The one thing it does not do is the RFC's other arm: an ID above
+    /// `2^60 - 1` is illegal and "MUST be treated as an HTTP/3 connection
+    /// error of type H3_DATAGRAM_ERROR". Such an ID cannot equal this
+    /// session's, so it is dropped rather than escalated; closing the
+    /// connection from here is recorded as not done in
+    /// `docs/v04-w2-datagrams.md` rather than half-done.
+    pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
+        let quarter = self.quarter_stream_id();
+        loop {
+            let frame = self
+                .conn
+                .read_datagram()
+                .await
+                .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+            let Some((id, header)) = get_varint(&frame) else {
+                continue;
+            };
+            if id != quarter {
+                continue;
+            }
+            return Ok(frame.slice(header..));
+        }
+    }
+
+    /// This session's Quarter Stream ID — RFC 9297 §2.1's "the value of
+    /// the client-initiated bidirectional stream that this datagram is
+    /// associated with divided by four".
+    ///
+    /// A shift rather than a division because it is two bits of stream
+    /// type, and exact rather than lossy because a client-initiated
+    /// bidirectional stream ID is a multiple of four by construction —
+    /// which the CONNECT stream always is.
+    fn quarter_stream_id(&self) -> u64 {
+        self.id.0 >> 2
+    }
 }
 
 /// The signal value that begins a client-initiated bidirectional
@@ -356,10 +591,19 @@ const WEBTRANSPORT_STREAM: u64 = 0x41;
 /// is that arrival; `h3` has already enforced by then that it was the
 /// first frame on the control stream (RFC 9114 §6.2.1) and has already
 /// stored it, so the read below is of the peer's real answer.
+///
+/// Returns what the same frame said about `SETTINGS_H3_DATAGRAM`, which is
+/// read here because this is the only moment it is readable and because
+/// the answer is fixed for the connection's life. It is deliberately
+/// **not** a third condition on the gate: a server may honestly announce
+/// WebTransport and not datagrams, `h3`'s own server builder can be
+/// configured into exactly that state, and a caller that only ever opens
+/// streams would be refused a session that works. What it does instead is
+/// decide [`Session::max_datagram_size`].
 async fn settings_announce_webtransport(
     inner: &mut ConnectionInner<h3_quinn::Connection, Bytes>,
     send: &h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     match poll_fn(|cx| inner.poll_control(cx)).await {
         Ok(Frame::Settings(_)) => {}
         // Unreachable rather than impossible, and typed rather than
@@ -381,7 +625,7 @@ async fn settings_announce_webtransport(
         extended_connect: settings.enable_extended_connect(),
     };
     if announced.webtransport && announced.extended_connect {
-        Ok(())
+        Ok(settings.enable_datagram())
     } else {
         Err(Error::new(ErrorKind::Unsupported, announced))
     }
@@ -412,6 +656,62 @@ fn put_varint(buf: &mut Vec<u8>, v: u64) {
     }
 }
 
+/// The number of bytes [`put_varint`] will write for `v`.
+///
+/// A second statement of the same branch points, which is why the test
+/// beside `varints_match_rfc_9000_a1` checks the two agree over the same
+/// corpus rather than checking this one alone: a datagram whose header
+/// length is computed here and written there would put the payload at the
+/// wrong offset if they ever disagreed.
+fn varint_len(v: u64) -> usize {
+    if v < (1 << 6) {
+        1
+    } else if v < (1 << 14) {
+        2
+    } else if v < (1 << 30) {
+        4
+    } else {
+        8
+    }
+}
+
+/// Read one QUIC variable-length integer, and say how many bytes it took.
+///
+/// `None` when the buffer is empty or ends inside the integer — which for
+/// a datagram means a frame too short to be an HTTP Datagram at all. The
+/// caller decides what that means; see [`Session::recv_datagram`].
+fn get_varint(buf: &[u8]) -> Option<(u64, usize)> {
+    let first = *buf.first()?;
+    let len = 1usize << (first >> 6);
+    if buf.len() < len {
+        return None;
+    }
+    let mut v = u64::from(first & 0x3f);
+    for b in &buf[1..len] {
+        v = (v << 8) | u64::from(*b);
+    }
+    Some((v, len))
+}
+
+fn send_datagram_error(e: quinn::SendDatagramError) -> Error {
+    match e {
+        // quinn's own `max_datagram_size` conflates these two into a
+        // `None`, so this crate conflates them into one variant rather
+        // than making the error and the budget disagree about how many
+        // answers there are.
+        quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled => {
+            Error::new(
+                ErrorKind::Unsupported,
+                DatagramsUnavailable::NotOnTheConnection,
+            )
+        }
+        // Reachable only as a race against the path MTU estimate: the size
+        // was checked against `max_datagram_size` a few instructions ago.
+        quinn::SendDatagramError::TooLarge => Error::new(ErrorKind::Body, e),
+        quinn::SendDatagramError::ConnectionLost(_) => Error::new(ErrorKind::Connect, e),
+    }
+}
+
 fn connect_error(e: h3::error::ConnectionError) -> Error {
     Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string()))
 }
@@ -430,32 +730,79 @@ mod tests {
     /// encoder that took the short branch for it would put a single byte
     /// on the wire and every WebTransport stream this crate opens would be
     /// unreadable.
+    /// RFC 9000 §A.1's examples, the boundaries between encoded lengths,
+    /// and the one constant this crate has of its own.
+    const CASES: &[(u64, &[u8])] = &[
+        (0x41, &[0x40, 0x41]),
+        (0, &[0x00]),
+        (37, &[0x25]),
+        (63, &[0x3f]),
+        (64, &[0x40, 0x40]),
+        (15293, &[0x7b, 0xbd]),
+        (16383, &[0x7f, 0xff]),
+        (16384, &[0x80, 0x00, 0x40, 0x00]),
+        (494_878_333, &[0x9d, 0x7f, 0x3e, 0x7d]),
+        (1_073_741_823, &[0xbf, 0xff, 0xff, 0xff]),
+        (
+            1_073_741_824,
+            &[0xc0, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00],
+        ),
+        (
+            151_288_809_941_952_652,
+            &[0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c],
+        ),
+    ];
+
     #[test]
     fn varints_match_rfc_9000_a1() {
-        let cases: &[(u64, &[u8])] = &[
-            (0x41, &[0x40, 0x41]),
-            (0, &[0x00]),
-            (37, &[0x25]),
-            (63, &[0x3f]),
-            (64, &[0x40, 0x40]),
-            (15293, &[0x7b, 0xbd]),
-            (16383, &[0x7f, 0xff]),
-            (16384, &[0x80, 0x00, 0x40, 0x00]),
-            (494_878_333, &[0x9d, 0x7f, 0x3e, 0x7d]),
-            (1_073_741_823, &[0xbf, 0xff, 0xff, 0xff]),
-            (
-                1_073_741_824,
-                &[0xc0, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00],
-            ),
-            (
-                151_288_809_941_952_652,
-                &[0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c],
-            ),
-        ];
-        for (value, expected) in cases {
+        for (value, expected) in CASES {
             let mut buf = Vec::new();
             put_varint(&mut buf, *value);
             assert_eq!(&buf[..], *expected, "encoding {value}");
+        }
+    }
+
+    /// The two must agree, because a datagram's payload begins where the
+    /// header ends: [`varint_len`] decides where
+    /// [`Session::recv_datagram`]'s budget arithmetic thinks that is, and
+    /// [`put_varint`] decides where it actually is. A disagreement is a
+    /// datagram whose payload is short by a byte or carries one of the
+    /// header's, and neither end would report an error.
+    #[test]
+    fn varint_len_agrees_with_the_encoder() {
+        for (value, expected) in CASES {
+            assert_eq!(varint_len(*value), expected.len(), "length of {value}");
+        }
+    }
+
+    /// The decoder reads back what the encoder wrote, says how much it
+    /// consumed, and refuses a buffer that ends inside the integer.
+    ///
+    /// The `consumed` half is the one that matters on the receive side: it
+    /// is the offset the payload starts at, so a decoder that read the
+    /// right value and reported the wrong length would hand the caller a
+    /// payload with header bytes still on the front.
+    #[test]
+    fn get_varint_reads_back_what_put_varint_wrote() {
+        for (value, encoded) in CASES {
+            let mut frame = encoded.to_vec();
+            frame.extend_from_slice(b"payload");
+            assert_eq!(
+                get_varint(&frame),
+                Some((*value, encoded.len())),
+                "decoding {value}"
+            );
+            assert_eq!(&frame[encoded.len()..], b"payload");
+            // Every prefix that stops inside the integer is a refusal, not
+            // a smaller number — a datagram truncated to fewer bytes than
+            // its own header claims is not an HTTP Datagram at all.
+            for short in 0..encoded.len() {
+                assert_eq!(
+                    get_varint(&encoded[..short]),
+                    None,
+                    "{value} cut to {short}"
+                );
+            }
         }
     }
 }
