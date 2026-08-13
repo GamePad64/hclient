@@ -86,9 +86,10 @@
 //! §3.2 carries capsules in the payload of HTTP/3 DATA frames, and that
 //! layer is `h3`'s — `RequestStream::send_data` and `poll_recv_data`, on
 //! the CONNECT stream this crate has held since v0.4 W2 without reading it.
-//! The capsule itself is fifteen lines here, because **`h3` 0.0.8 has no
-//! capsule code at all** and neither does `h3-datagram` 0.0.2 or the
-//! crate named `h3-webtransport` 0.1.2. See `close_capsule`.
+//! The capsule itself is fifty-nine lines here, encoder and decoder
+//! together, because **`h3` 0.0.8 has no capsule code at all** and neither
+//! does `h3-datagram` 0.0.2 or the crate named `h3-webtransport` 0.1.2.
+//! See `close_capsule`.
 //!
 //! # Datagrams
 //!

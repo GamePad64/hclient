@@ -139,7 +139,7 @@ big-endian bytes and then UTF-8, and `wtransport-proto` enforces the same
 1024-byte limit. Neither shares code with the other, and neither shares any
 with `h3`.
 
-## 3. Why the framing is fifteen lines here, measured
+## 3. Why the capsule codec is fifty-nine lines here, measured
 
 There is exactly one crate in the ecosystem that would supply this:
 **`web-transport-proto` 0.6.0**, and unlike `h3-datagram` its encoder is
@@ -160,7 +160,9 @@ back the exact dependency `http-ng-proto` spent a task removing —
 Against that: this crate already owns the QUIC varint, for the reason on
 `put_varint` — *"the two bytes this crate puts in front of every stream are
 the whole of its wire format"* — and RFC 9297's capsule header is that
-varint twice.
+varint twice. What it does not already own is fifty-nine lines: eleven to
+encode, six for what a decoded capsule can be, twenty-five to take one off
+a buffer and seventeen to read a close out of it.
 
 ## 4. Proved against peers that share no code
 
@@ -372,7 +374,7 @@ crates, this tree:
 | `tokio` | `[bytes, default, io-util, sync]` | unchanged |
 
 **Capsules cost nothing in the graph**, for the same reason datagrams did:
-the framing is fifteen lines beside two that were already here, and the
+the codec is fifty-nine lines beside the varints that were already here, and the
 layer under it is a method on a stream this crate already held. §3 is what
 the alternative would have cost.
 
@@ -382,7 +384,7 @@ unlike when `docs/v04-w2-datagrams.md` §7 was written.
 
 ## 9. Mutations
 
-Anchor verified before the first and after the last: **33 tests, 33
+Anchor verified before the first and after the last: **34 tests, 34
 passed** (14 before this work). Restore is `git checkout` plus an explicit
 `os.utime`, `--no-fail-fast`, and the harness re-runs the anchor at the end
 and refuses to report if it does not come back —
@@ -449,7 +451,7 @@ is bigger than the datagram work's.** Three of them gained killers:
   varint, so every capsule test now reads a header whose length the mutant
   gets wrong, and the payload arrives one byte short with a header byte on
   the front.
-- **M8** goes from 10 of 14 to **25 of 33**, which is arithmetic rather than
+- **M8** goes from 10 of 14 to **25 of 34**, which is arithmetic rather than
   insight: almost every new test establishes a session first.
 - **M5** goes from 3 to 4, for D9's reason from the encoding side: `0x2843`
   is over `1<<6`, so a short branch that took one value too many would put
