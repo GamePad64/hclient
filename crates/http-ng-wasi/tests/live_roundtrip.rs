@@ -1036,11 +1036,24 @@ fn a_successful_request_reports_one_head_and_no_connection_event_at_all() {
          hard-coded `StatusCode::OK` cannot pass this line",
     );
     ok(
-        head.contains("version=HTTP/1.1"),
-        "the version the response carries, which `wasi:http` did not \
-         observe and neither did this transport — the event's job is to \
-         agree with the response rather than to know better, and this line \
-         is what makes a separately guessed version a failure",
+        head.contains("version=None"),
+        "`wasi:http@0.3.0` has no version concept at all, so the event says \
+         nothing rather than something. The response this transport hands \
+         back carries `HTTP/1.1` — `http_from_wasi_response` builds it — \
+         and reporting that would be an observation in a caller's log that \
+         nobody made: see `Head::version` in `http-ng-core`, which is an \
+         `Option` because of exactly this",
+    );
+    // The other spelling of the same fact, in the same transcript. Either
+    // line alone can be moved by a change that leaves the other stale; the
+    // pair is the claim, and it is the shape
+    // `the_reuse_the_event_set_cannot_report_is_the_reuse_the_capability_denies`
+    // already gives `Reused` one field over.
+    ok(
+        stdout.contains("CAPS version_reported=false"),
+        "and the capability must say the same thing — `Head::version` is \
+         `Some` exactly when `version_reported`, so a host that started \
+         reporting a protocol has to move both of these lines together",
     );
     ok(
         head.contains("id=0"),

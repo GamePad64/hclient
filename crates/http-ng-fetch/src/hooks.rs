@@ -58,31 +58,36 @@
 //! So there is no honest `Connected` to emit, and without one there is no
 //! connection for a `Closed` to close or a `Reused` to name.
 //!
-//! # [`Head`] is the one, and two of its five fields have no source
+//! # [`Head`] is the one, and two of its five fields had no source
 //!
 //! `uri`, `status` and `elapsed` are this transport's own facts and are
-//! reported as such. The other two are not:
+//! reported as such. The other two were recorded as debts owed by the seam
+//! (`docs/v04-w2-hooks-ambient.md` §8) and have since been answered, one
+//! each way — §9 of that document is the working:
 //!
-//! - **`id` is [`ConnectionId::UNWATCHED`]**, whose own doc says it is
-//!   "the id of a connection nobody asked about" and ties it to
-//!   `Hooks::WATCHING == false`. Here somebody *is* watching and there is
-//!   no connection to name. It is the only value the type offers that
-//!   [`ConnectionId::next`] never returns, so an event carrying it still
-//!   cannot collide with a real connection — but the seam has no value
-//!   meaning *there is no connection here*, and this is it being borrowed.
-//! - **`version` is not observed.** The Fetch Standard's `Response` has
-//!   no protocol member at all; the browser knows whether it spoke
-//!   HTTP/1.1, h2 or h3 and does not say. The value reported is
-//!   `resp.version()` — read off the very response this transport is about
-//!   to hand back, so the event and the response cannot disagree — and
-//!   that value is `http`'s builder default, `HTTP/1.1`, on every
-//!   response this crate has ever produced. It is a placeholder in both
-//!   places, not a measurement in either.
+//! - **`id` is [`ConnectionId::UNWATCHED`], and that is not a borrowing.**
+//!   The value means *this event names no connection*. Its other producer
+//!   is a build with `Hooks::WATCHING == false`, whose events by that
+//!   const's own definition nobody reads — so a hook can only ever meet
+//!   this value in the sense used here, and a second value distinguishing
+//!   the two would be one no caller decision turns on. What was wrong was
+//!   the constant's doc comment, which named a producer as if it were the
+//!   meaning; it says the meaning now, and nothing changed shape.
+//! - **`version` is `None`, and the field is an `Option` because of
+//!   this.** The Fetch Standard's `Response` has no protocol member at
+//!   all; the browser knows whether it spoke HTTP/1.1, h2 or h3 and does
+//!   not say. This crate used to report `resp.version()`, which is
+//!   `http`'s builder default, `HTTP/1.1`, on every response it has ever
+//!   produced — a value a caller cannot tell from an HTTP/1.1 exchange
+//!   somebody watched happen. `Capabilities::version_reported` is `false`
+//!   here and says the same thing, but a [`Hooks`] impl is handed an
+//!   [`Event`](http_ng_core::unversioned::Event) and no capabilities, so
+//!   the honest value has to be in the event.
 //!
-//! Both are defects in the seam's wording rather than in this backend, and
-//! both are written down in `docs/v04-w2-hooks-ambient.md` rather than
-//! fixed by editing `http-ng-core` for one backend's benefit — the same
-//! treatment `http-ng-h3` gave `ConnectTiming::tls`.
+//! `Connected::version` and `Reused::version` stayed plain, which is the
+//! line that keeps this from being a change made for one backend: only a
+//! transport that owns a connection emits either, and owning one means
+//! having negotiated its protocol.
 //!
 //! # Zero cost when nobody is watching
 //!

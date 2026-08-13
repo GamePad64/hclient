@@ -305,12 +305,19 @@ impl<H: Hooks> Transport for Fetch<H> {
         // exactly `H::WATCHING`, and two places that have to agree is one
         // more than is safe.
         //
-        // `version` and `status` come off the response this function is
-        // about to return, not from anything read separately — the same
-        // discipline `http-ng-native`'s `report_head` follows, and here it
-        // is load bearing rather than tidy: neither `version` is a fact
-        // about the wire (see `crate::hooks`), so the event's job is to
-        // agree with the response rather than to know better.
+        // `status` comes off the response this function is about to
+        // return, not from anything read separately — the same discipline
+        // `http-ng-native`'s `report_head` follows.
+        //
+        // `version` is `None`, and that is the whole of what this backend
+        // has to say about the protocol: a browser will not tell a page
+        // which one it spoke, `capabilities()` says so with
+        // `version_reported: false`, and `out.version()` here is
+        // `http::response::Builder`'s default rather than an observation.
+        // Reporting that default would be indistinguishable, in a caller's
+        // log, from an HTTP/1.1 exchange this transport had watched happen
+        // — see `Head::version` in `http-ng-core`, which changed shape for
+        // exactly this.
         //
         // Nothing is reported on the error path: no head arrived, and a
         // `Head` for a request that got none would be the loudest
@@ -320,7 +327,7 @@ impl<H: Hooks> Transport for Fetch<H> {
                 id: ConnectionId::UNWATCHED,
                 uri,
                 status: out.status(),
-                version: out.version(),
+                version: None,
                 elapsed: hooks::since(Some(*began)),
             }));
         }

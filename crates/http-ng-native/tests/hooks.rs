@@ -60,8 +60,12 @@ enum Seen {
     Head {
         id: u64,
         uri: String,
+        /// `Option`, because `Head::version` is one: `None` is what a
+        /// transport that could not observe the protocol reports, and
+        /// this one always can — so every assertion below reads `Some`,
+        /// which is the shape of the claim.
+        version: Option<http::Version>,
         status: u16,
-        version: http::Version,
         elapsed: Duration,
     },
     Closed {
@@ -514,7 +518,7 @@ async fn the_head_reports_the_status_the_server_sent() {
             _ => None,
         })
         .collect();
-    assert_eq!(heads, vec![(200, http::Version::HTTP_11)]);
+    assert_eq!(heads, vec![(200, Some(http::Version::HTTP_11))]);
 }
 
 // ── why a connection ended ──────────────────────────────────────────────

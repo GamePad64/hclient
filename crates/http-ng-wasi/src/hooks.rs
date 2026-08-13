@@ -46,31 +46,38 @@
 //! [`ConnectionId::UNWATCHED`](http_ng_core::unversioned::ConnectionId::UNWATCHED),
 //! to a caller who is about to be handed the same error anyway.
 //!
-//! # [`Head`] is the one, and two of its five fields have no source
+//! # [`Head`] is the one, and two of its five fields had no source
 //!
 //! `uri`, `status` and `elapsed` are this transport's own facts. The other
-//! two are not, and they are the *same two* `http-ng-fetch` cannot fill:
+//! two were not, and they are the *same two* `http-ng-fetch` cannot fill.
+//! Both were recorded as debts owed by the seam
+//! (`docs/v04-w2-hooks-ambient.md` §8); both have since been answered, and
+//! **the two answers are different** — §9 of that document is the working:
 //!
-//! - **`id` is `ConnectionId::UNWATCHED`**, whose own doc ties that value
-//!   to `Hooks::WATCHING == false`. Here somebody is watching and there is
-//!   no connection to name. It is the only value
-//!   `ConnectionId::next` never returns, so it cannot collide with a real
-//!   one — but the seam has no value meaning *there is no connection
-//!   here*, and this is it being borrowed.
-//! - **`version` is not observed**, and here that is stronger than a
-//!   browser's silence: `wasi:http` has **no HTTP version concept at
-//!   all**. Neither `request` nor `response` has a version accessor, by
-//!   design — the host decides what to speak and the guest is
-//!   version-agnostic. The value reported is `resp.version()`, read off
-//!   the very response this transport is about to hand back, so the event
-//!   and the response cannot disagree; that value is
-//!   `http`'s default, `HTTP/1.1`, because that is what
-//!   `wasip3::http_compat::http_from_wasi_response` builds.
+//! - **`id` is `ConnectionId::UNWATCHED`, and that is not a borrowing.**
+//!   The value means *this event names no connection*. Its other producer
+//!   is a build with `Hooks::WATCHING == false`, whose events by that
+//!   const's own definition nobody reads, so a hook can only ever meet
+//!   this value in the sense used here. A second value telling the two
+//!   apart is one no caller decision turns on; what was wrong was the
+//!   constant's doc comment, and nothing changed shape.
+//! - **`version` is `None`, and the field is an `Option` because of
+//!   this.** `wasi:http` has **no HTTP version concept at all** — neither
+//!   `request` nor `response` has a version accessor, by design, because
+//!   the host decides what to speak and the guest is version-agnostic.
+//!   This crate used to report `resp.version()`, which is `http`'s
+//!   default, `HTTP/1.1`, because that is what
+//!   `wasip3::http_compat::http_from_wasi_response` builds — a value a
+//!   caller cannot tell from an HTTP/1.1 exchange somebody watched happen.
+//!   `Capabilities::version_reported` is `false` here and says the same
+//!   thing, but a [`Hooks`] impl is handed an
+//!   [`Event`](http_ng_core::unversioned::Event) and no capabilities, so
+//!   the honest value has to be in the event.
 //!
-//! Both are defects in the seam's wording rather than in this backend,
-//! recorded in `docs/v04-w2-hooks-ambient.md` rather than fixed by editing
-//! `http-ng-core` for one backend's benefit — the treatment `http-ng-h3`
-//! gave `ConnectTiming::tls`.
+//! `Connected::version` and `Reused::version` stayed plain, which is the
+//! line that keeps this from being a change made for one backend: only a
+//! transport that owns a connection emits either, and owning one means
+//! having negotiated its protocol.
 //!
 //! # Zero cost when nobody is watching, and what this crate cannot prove
 //!

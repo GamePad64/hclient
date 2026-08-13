@@ -175,22 +175,63 @@ pub enum Event<'a> {
 /// it exists. Without it a close event says "a connection ended" and a
 /// caller holding several has no way to learn which.
 ///
-/// [`ConnectionId::UNWATCHED`] is what a transport uses when
-/// [`Hooks::WATCHING`] is `false`: the counter is not touched, because
-/// touching it would be an atomic per connection bought for nobody.
+/// [`ConnectionId::UNWATCHED`] is what an event carries when there was no
+/// id to mint for it — because nobody is watching, or because there is no
+/// connection. See that constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConnectionId(u64);
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 impl ConnectionId {
-    /// The id of a connection nobody asked about. Never returned by
-    /// [`ConnectionId::next`], so an event carrying it is unambiguous
-    /// rather than colliding with the first real connection.
+    /// The id an event carries when no id was minted for it.
+    ///
+    /// Two things produce it, and **a reader can only ever meet the
+    /// second**:
+    ///
+    /// - **Nobody is watching.** [`Hooks::WATCHING`] is `false`, so a
+    ///   transport that owns connections leaves the counter alone rather
+    ///   than paying an atomic per connection for nobody. That const's
+    ///   own question is *whether anything reads these events*, so a
+    ///   build producing this value for this reason has, by its own
+    ///   declaration, no reader for the event carrying it.
+    /// - **There is no connection to name.** `http-ng-fetch` and
+    ///   `http-ng-wasi` own none — the Fetch Standard exposes no
+    ///   connection object, and there is no connection resource anywhere
+    ///   in `wasi:http@0.3.0` — so their one event, [`Head`], carries
+    ///   this.
+    ///
+    /// To a hook that reads events it therefore means exactly one thing,
+    /// *this event names no connection*, and that is something a portable
+    /// hook can act on rather than a gap it has to guess at: it is the
+    /// only id [`ConnectionId::next`] never returns, so looking it up in
+    /// a table of live connections cannot hit one.
+    ///
+    /// # It is not a value being borrowed, and the name is not the meaning
+    ///
+    /// `docs/v04-w2-hooks-ambient.md` §8 recorded the second use above as
+    /// a debt owed by this seam — a missing value meaning *there is no
+    /// connection*. It is not one, and §9 of that document is the
+    /// argument: such a value would differ from this one only in a build
+    /// whose events nobody reads, so no caller decision turns on the
+    /// difference — which is this workspace's test for whether a
+    /// distinction earns a name of its own.
+    ///
+    /// The spelling stays `UNWATCHED` because it names one of the two
+    /// producers, and any name would: renaming it after the other moves
+    /// the inaccuracy rather than removing it, at the cost of a public
+    /// rename in four backends. What was actually wrong is this comment,
+    /// which used to read *"the id of a connection nobody asked about"* —
+    /// a sentence with a connection in it.
     pub const UNWATCHED: ConnectionId = ConnectionId(0);
 
     /// The next id. `Relaxed`: this counter orders nothing, it only has
     /// to hand out distinct numbers.
+    ///
+    /// It starts at `1`, and that is load bearing rather than tidy: it is
+    /// what makes [`UNWATCHED`](Self::UNWATCHED) mean *this event names no
+    /// connection* rather than *this event names connection zero*.
+    /// `crates/http-ng-core/tests/shape.rs` pins it.
     pub fn next() -> Self {
         Self(NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
     }
@@ -283,7 +324,42 @@ pub struct Head<'a> {
     pub id: ConnectionId,
     pub uri: &'a http::Uri,
     pub status: http::StatusCode,
-    pub version: http::Version,
+    /// What was spoken — or `None` where the transport could not observe
+    /// it.
+    ///
+    /// `Some` exactly when the transport reports
+    /// [`version_reported`](crate::Capabilities::version_reported).
+    /// `http-ng-native` reads it off the status line, and off ALPN with
+    /// the `http2` feature; `http-ng-h3` speaks HTTP/3 and nothing else;
+    /// both say `true`. `http-ng-fetch` and `http-ng-wasi` say `false` and
+    /// report `None` here: the Fetch Standard's `Response` has no protocol
+    /// member, and `wasi:http@0.3.0` has no version concept at all.
+    ///
+    /// # Why an `Option`, and not `http`'s builder default
+    ///
+    /// Because `HTTP/1.1` is an ordinary value. Nothing distinguishes it
+    /// from an HTTP/1.1 exchange that really happened, so a hook counting
+    /// protocol mix records a browser's h2 and h3 traffic as HTTP/1.1 — a
+    /// **wrong** answer rather than a missing one. That is
+    /// [`ConnectTiming::tls`]'s rule one field over: *a zero would read as
+    /// an instant handshake*. `http::Version` has no variant meaning "not
+    /// observed" and is not ours to give one, so the `Option` is where the
+    /// distinction can live.
+    ///
+    /// The capability asks the same question and does not answer it in the
+    /// same place. [`Capabilities`](crate::Capabilities) is reachable from
+    /// whoever built the transport; a [`Hooks`] impl is handed an
+    /// [`Event`] and nothing else, and the same hook is written once and
+    /// installed on whichever backend the target got. A hook that had to
+    /// know which transport it was inside in order not to record a
+    /// falsehood is exactly the `#[cfg]` this workspace exists to not
+    /// need.
+    ///
+    /// [`Connected::version`] and [`Reused::version`] stay plain, and that
+    /// is structural rather than an oversight: only a transport that owns
+    /// a connection emits either of those, and owning one means having
+    /// negotiated its protocol.
+    pub version: Option<http::Version>,
     /// From the transport receiving the request to the head being read.
     ///
     /// It contains the connect when there was one, which is the point:

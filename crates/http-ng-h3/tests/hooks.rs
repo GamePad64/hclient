@@ -72,8 +72,12 @@ enum Seen {
     Head {
         id: u64,
         uri: String,
+        /// `Option`, because `Head::version` is one: `None` is what a
+        /// transport that could not observe the protocol reports, and
+        /// this one always can — it speaks HTTP/3 and refuses every
+        /// other demand.
+        version: Option<http::Version>,
         status: u16,
-        version: http::Version,
         elapsed: Duration,
     },
     Closed {

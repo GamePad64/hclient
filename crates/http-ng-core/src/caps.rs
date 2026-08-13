@@ -746,6 +746,20 @@ pub struct Capabilities {
     /// but the rule stands, and it is the reason the demand and this
     /// field's first `true` land in one change.
     pub version_select: bool,
+    /// Whether `Response::version()` is something the transport observed.
+    ///
+    /// `false` says the value on the response is `http`'s builder default
+    /// standing in for a fact the backend never learned — the browser will
+    /// not tell a page which protocol it spoke, and `wasi:http@0.3.0` has
+    /// no version concept at all.
+    ///
+    /// The observability seam asks the same question one field over and
+    /// answers it in the event rather than here, because a
+    /// [`Hooks`](crate::unversioned::Hooks) impl is handed an
+    /// [`Event`](crate::unversioned::Event) and no capabilities:
+    /// [`Head::version`](crate::unversioned::Head::version) is `Some`
+    /// exactly when this field is `true`. Two spellings of one fact, in
+    /// the two places that can each be read on their own.
     pub version_reported: bool,
     pub timeouts: TimeoutSupport,
     pub informational_1xx: bool,

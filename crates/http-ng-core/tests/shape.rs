@@ -545,3 +545,53 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
     // no-hook build reading them for nobody.
     const { assert!(!NoHooks::WATCHING) };
 }
+
+/// **`ConnectionId::UNWATCHED` is a value no connection can ever have**,
+/// which is the whole of what makes it mean *this event names no
+/// connection* rather than *this event names connection zero*.
+///
+/// Two of the four backends carry it on every `Head` they emit —
+/// `http-ng-fetch` and `http-ng-wasi` own no connection to take an id from
+/// — and a hook that reads it looks it up in whatever table it keeps of
+/// the connections it was told about. That lookup has to miss, always, on
+/// every id the counter has handed out or ever will. So the counter
+/// starting at `1` is not cosmetic, and this is the line that says so:
+/// `AtomicU64::new(0)` there compiles, passes every hook test in the four
+/// backends, and quietly makes the first connection of the process
+/// indistinguishable from no connection at all.
+///
+/// The loop is short on purpose. `next()` is a process-wide counter and
+/// nothing here owns it, so what is asserted is the property — *never
+/// `UNWATCHED`, and never twice* — rather than any particular number.
+///
+/// `docs/v04-w2-hooks-ambient.md` §9 is the argument this pins down: it is
+/// why a second value meaning "there is no connection" is not owed by this
+/// seam.
+#[test]
+fn the_id_that_names_no_connection_is_one_the_counter_never_hands_out() {
+    use http_ng_core::unversioned::ConnectionId;
+
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..64 {
+        let id = ConnectionId::next();
+        assert_ne!(
+            id,
+            ConnectionId::UNWATCHED,
+            "the counter handed out the one id that is supposed to mean \
+             *no connection* — every hook matching a `Head` against the \
+             connections it was told about would now find one"
+        );
+        assert_ne!(
+            id.get(),
+            ConnectionId::UNWATCHED.get(),
+            "and the same through `get()`, which is what a log line prints \
+             and what `http-ng-wasi`'s guest transcript compares"
+        );
+        assert!(
+            seen.insert(id),
+            "ids must be distinct, or a `Closed` cannot be matched to the \
+             `Connected` that opened the same socket — which is the only \
+             reason this type exists"
+        );
+    }
+}
