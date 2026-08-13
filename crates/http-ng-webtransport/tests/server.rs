@@ -96,8 +96,12 @@ pub enum AfterResponse {
     Fin,
     /// Reset the CONNECT stream. The session is over and the peer never
     /// said why: this is the "vanished" half of the distinction.
+    ///
+    /// Waits for [`Server::abandon_the_session`] first — see there.
     Reset,
     /// Close the whole QUIC connection out from under the session.
+    ///
+    /// Waits for [`Server::abandon_the_session`] first — see there.
     AbortConnection,
 }
 
@@ -196,6 +200,8 @@ struct State {
     datagrams: Mutex<Vec<SeenDatagram>>,
     client_settings: Mutex<Option<SeenClientSettings>>,
     capsules: Mutex<Vec<SeenCapsule>>,
+    /// Released by [`Server::abandon_the_session`].
+    abandon: tokio::sync::Notify,
     /// Whether the client's half of the CONNECT stream ended with a FIN.
     ///
     /// Recorded because draft §5 asks for the FIN *as well as* the capsule,
@@ -216,6 +222,23 @@ impl Server {
     /// Every request the server has resolved so far.
     pub fn requests(&self) -> Vec<SeenRequest> {
         self.state.requests.lock().unwrap().clone()
+    }
+
+    /// Let the fixture destroy the session, for the two `AfterResponse`
+    /// variants that do.
+    ///
+    /// A gate rather than a delay, and it is there for a reason found by
+    /// running it: `quinn::SendStream::reset` and `Connection::close` both
+    /// abandon data that is written but not yet delivered, so a fixture
+    /// that reset the CONNECT stream immediately after answering could
+    /// destroy the **response** — and the client then fails in
+    /// `Session::connect`, before the thing under test exists. Called after
+    /// `Session::connect` has returned, this makes the order causal rather
+    /// than lucky.
+    pub fn abandon_the_session(&self) {
+        // `notify_one` rather than `notify_waiters`: the permit is stored,
+        // so this works whether or not the fixture is already waiting.
+        self.state.abandon.notify_one();
     }
 
     /// Every capsule the server has read off the CONNECT stream.
@@ -489,6 +512,7 @@ async fn connect_stream(
         }
         AfterResponse::Fin => return,
         AfterResponse::Reset => {
+            state.abandon.notified().await;
             stream.stop_stream(h3::error::Code::H3_NO_ERROR);
             // Held so the reset is not immediately followed by the whole
             // connection going away, which would be a different fact.
@@ -496,6 +520,7 @@ async fn connect_stream(
             return;
         }
         AfterResponse::AbortConnection => {
+            state.abandon.notified().await;
             quic.close(0u32.into(), b"gone");
             return;
         }

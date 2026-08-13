@@ -1291,6 +1291,102 @@ mod tests {
         }
     }
 
+    /// The capsule this crate writes, byte for byte, against a vector
+    /// written by somebody else.
+    ///
+    /// `[0x68, 0x43, 0x04, 0, 0, 0, 0]` is `wtransport-proto` 0.7.2's own
+    /// unit test for `CloseWebTransportSession` — `Frame::new_data(vec![104,
+    /// 67, 4, 0, 0, 0, 0u8])`, which it asserts parses to error code 0 and
+    /// an empty reason. It is quoted here rather than re-derived because
+    /// its value as a check is precisely that this crate did not compute
+    /// it: `0x68 0x43` is the two-byte QUIC varint for `0x2843`, `0x04` is
+    /// the length, and the four zeroes are the error code with no reason
+    /// after them.
+    #[test]
+    fn a_close_capsule_matches_another_implementations_own_vector() {
+        assert_eq!(close_capsule(0, ""), vec![0x68, 0x43, 0x04, 0, 0, 0, 0]);
+    }
+
+    /// The four bytes of the error code are big-endian, and the reason
+    /// follows them unchanged.
+    #[test]
+    fn a_close_capsule_is_the_drafts_payload() {
+        assert_eq!(
+            close_capsule(0x1234_5678, "bye"),
+            vec![0x68, 0x43, 0x07, 0x12, 0x34, 0x56, 0x78, b'b', b'y', b'e'],
+        );
+    }
+
+    /// What the encoder writes, the decoder reads back — including the
+    /// lengths that decide where the payload starts.
+    #[test]
+    fn take_capsule_reads_back_what_close_capsule_wrote() {
+        for (code, reason) in [
+            (0u32, ""),
+            (1, "x"),
+            (u32::MAX, "the whole thing"),
+            (
+                42,
+                "a reason of sixty-four bytes, which is where a varint grows: ok!",
+            ),
+        ] {
+            let mut buf = close_capsule(code, reason);
+            let trailing = b"and the next capsule's first byte".to_vec();
+            buf.extend_from_slice(&trailing);
+            assert_eq!(
+                take_capsule(&mut buf),
+                Taken::Close(SessionClose {
+                    code,
+                    reason: reason.to_owned(),
+                }),
+                "capsule for {code}/{reason:?}"
+            );
+            // Exactly one capsule is consumed: what follows it is
+            // untouched, which is what lets two capsules share a DATA
+            // frame.
+            assert_eq!(buf, trailing);
+        }
+    }
+
+    /// Every prefix of a capsule is "not yet", never a capsule.
+    ///
+    /// A reader that guessed at a short buffer would report a close the
+    /// peer had not finished writing — the same defect as
+    /// `BadCloseCapsule::Truncated`, but silent.
+    #[test]
+    fn take_capsule_waits_for_a_whole_capsule() {
+        let whole = close_capsule(7, "seven");
+        for short in 0..whole.len() {
+            let mut buf = whole[..short].to_vec();
+            assert_eq!(take_capsule(&mut buf), Taken::More, "cut to {short}");
+            assert_eq!(buf.len(), short, "nothing is consumed at {short}");
+        }
+    }
+
+    /// An unknown capsule type is skipped over by its length, and what
+    /// follows is read as its own capsule.
+    ///
+    /// RFC 9297 §3.2 requires the skip, and the length field is what makes
+    /// it possible: a reader without one could only give up.
+    #[test]
+    fn take_capsule_skips_an_unknown_type_by_its_length() {
+        // `DRAIN_WEBTRANSPORT_SESSION`, whose payload is empty in the
+        // draft but is not here — a reader that ignored the length would
+        // take the bytes after it for the drain's own.
+        let mut buf = vec![0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0xae, 0x05];
+        buf.extend_from_slice(b"drain");
+        buf.extend_from_slice(&close_capsule(3, "three"));
+        assert_eq!(take_capsule(&mut buf), Taken::Skipped);
+        assert_eq!(
+            take_capsule(&mut buf),
+            Taken::Close(SessionClose {
+                code: 3,
+                reason: "three".to_owned(),
+            })
+        );
+        assert!(buf.is_empty());
+    }
+
     /// The decoder reads back what the encoder wrote, says how much it
     /// consumed, and refuses a buffer that ends inside the integer.
     ///
