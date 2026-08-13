@@ -904,8 +904,8 @@ impl Default for SlowTls {
 /// spends before succeeding. Both are this stub's own sleeps rather than a
 /// property of the network, so the arms below are causal in everything
 /// except the sleeps they name.
-const FIRST_TLS: Duration = Duration::from_millis(200);
-const LATER_TLS: Duration = Duration::from_millis(250);
+const FIRST_TLS: Duration = Duration::from_millis(300);
+const LATER_TLS: Duration = Duration::from_millis(150);
 
 impl TlsIdentity for SlowTls {
     fn config_id(&self) -> TlsConfigId {
@@ -980,15 +980,17 @@ fn bounded(url: &str, connect: Duration) -> http::Request<RequestBody> {
 /// **An A/B, and neither arm asserts on a duration.** Same fixture, same
 /// two requests, same failing-then-slow TLS; what differs is the bound:
 ///
-/// - `FIRST_TLS + LATER_TLS` is more than enough, so the waiter's own
-///   connect fits in what is left and it gets its `200`;
-/// - a bound that has room for the first handshake and not for a second one
-///   leaves the waiter with nothing to connect with, and the honest answer
-///   is its own `Timeout(Connect)`.
+/// - `FIRST_TLS + LATER_TLS` and more is enough for both, so the waiter's
+///   own connect fits in what is left and it gets its `200`;
+/// - a bound with room for the first handshake and 50 ms over — less than
+///   `LATER_TLS` — leaves the waiter with nothing to connect with, and the
+///   honest answer is its own `Timeout(Connect)`.
 ///
 /// A wait handed a fresh copy of the bound passes the first arm and fails
-/// the second — it would connect and succeed where the caller's bound had
-/// no room for it.
+/// the second: 350 ms is more than the 150 ms its own handshake needs, so
+/// it would connect and succeed where the caller's bound had no room for
+/// it. The margins are the reason those two numbers are what they are —
+/// 50 ms against 150 ms one way and 350 ms against 150 ms the other.
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
     // Arm A — room for both handshakes: the waiter succeeds.
@@ -1028,6 +1030,12 @@ async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
         let client = slow_client(tls.clone());
         let url = server.url("/b");
         let bound = FIRST_TLS + Duration::from_millis(50);
+        assert!(
+            bound - FIRST_TLS < LATER_TLS && bound > LATER_TLS,
+            "the arm is only a discriminator between these two: what is \
+             LEFT of the bound must be too little for a second handshake, \
+             and the WHOLE bound must be enough for one"
+        );
         let (first, second) = tokio::time::timeout(
             BOUND,
             futures_util::future::join(
