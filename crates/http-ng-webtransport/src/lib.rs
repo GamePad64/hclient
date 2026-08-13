@@ -1291,30 +1291,48 @@ mod tests {
         }
     }
 
-    /// The capsule this crate writes, byte for byte, against a vector
+    /// The capsule this crate writes, byte for byte, against vectors
     /// written by somebody else.
     ///
-    /// `[0x68, 0x43, 0x04, 0, 0, 0, 0]` is `wtransport-proto` 0.7.2's own
-    /// unit test for `CloseWebTransportSession` — `Frame::new_data(vec![104,
-    /// 67, 4, 0, 0, 0, 0u8])`, which it asserts parses to error code 0 and
-    /// an empty reason. It is quoted here rather than re-derived because
-    /// its value as a check is precisely that this crate did not compute
-    /// it: `0x68 0x43` is the two-byte QUIC varint for `0x2843`, `0x04` is
-    /// the length, and the four zeroes are the error code with no reason
-    /// after them.
+    /// The first row is `wtransport-proto` 0.7.2's own unit test for
+    /// `CloseWebTransportSession` — `Frame::new_data(vec![104, 67, 4, 0, 0,
+    /// 0, 0u8])`, which it asserts parses to error code 0 and an empty
+    /// reason. The other three were **produced** by `web-transport-proto`
+    /// 0.6.0's encoder and copied out of its output, which is the
+    /// technique `http-ng-proto`'s 96-pair URI corpus uses: measured
+    /// first, pinned second. Neither crate is in this workspace's graph
+    /// (`web-transport-proto` alone is 48 crates, ten of them `url` and
+    /// ICU), and neither shares any code with `h3` or with this file.
+    ///
+    /// What the rows are for: `0x68 0x43` is the two-byte QUIC varint for
+    /// capsule type `0x2843`, the byte after it is the Capsule Length, and
+    /// the four after **that** are draft §5's application error code, big
+    /// endian, with the reason's UTF-8 behind them.
     #[test]
-    fn a_close_capsule_matches_another_implementations_own_vector() {
-        assert_eq!(close_capsule(0, ""), vec![0x68, 0x43, 0x04, 0, 0, 0, 0]);
-    }
-
-    /// The four bytes of the error code are big-endian, and the reason
-    /// follows them unchanged.
-    #[test]
-    fn a_close_capsule_is_the_drafts_payload() {
-        assert_eq!(
-            close_capsule(0x1234_5678, "bye"),
-            vec![0x68, 0x43, 0x07, 0x12, 0x34, 0x56, 0x78, b'b', b'y', b'e'],
-        );
+    fn close_capsules_match_two_other_implementations() {
+        const VECTORS: &[(u32, &str, &[u8])] = &[
+            (0, "", &[0x68, 0x43, 0x04, 0x00, 0x00, 0x00, 0x00]),
+            (1, "x", &[0x68, 0x43, 0x05, 0x00, 0x00, 0x00, 0x01, 0x78]),
+            (
+                0x1234_5678,
+                "so long, and thanks",
+                &[
+                    0x68, 0x43, 0x17, 0x12, 0x34, 0x56, 0x78, 0x73, 0x6f, 0x20, 0x6c, 0x6f, 0x6e,
+                    0x67, 0x2c, 0x20, 0x61, 0x6e, 0x64, 0x20, 0x74, 0x68, 0x61, 0x6e, 0x6b, 0x73,
+                ],
+            ),
+            (
+                u32::MAX,
+                "the whole thing",
+                &[
+                    0x68, 0x43, 0x13, 0xff, 0xff, 0xff, 0xff, 0x74, 0x68, 0x65, 0x20, 0x77, 0x68,
+                    0x6f, 0x6c, 0x65, 0x20, 0x74, 0x68, 0x69, 0x6e, 0x67,
+                ],
+            ),
+        ];
+        for (code, reason, expected) in VECTORS {
+            assert_eq!(&close_capsule(*code, reason), expected, "{code}/{reason:?}");
+        }
     }
 
     /// What the encoder writes, the decoder reads back — including the
