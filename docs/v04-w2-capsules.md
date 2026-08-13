@@ -309,6 +309,19 @@ once and does not compile. Neither lock is held across an `await`:
 `close()` **takes** the send half out from under its lock, which is also
 what makes a second `close` an `AlreadyClosed` rather than a deadlock.
 
+The two mutexes also made `Session` **`Sync`**, which it was not before —
+`h3`'s `RequestStream` is not — and that is the property the `&self` is
+*for* rather than a side effect: an `Arc<Session>` in two tasks is what
+"wait for the peer's close while opening streams" actually looks like.
+`a_session_can_be_spawned_and_shared` asserts both auto-traits, and it
+lives in `tests/` rather than beside the code because
+`scripts/no-send-or-sync-in-the-core-surface.sh` scans `crates/*/src` and
+demands a `send-bound-exception: amendment-C…` marker on every declared
+`Send` or `Sync` bound it finds. Those markers name a spec amendment that
+excuses a **seam** bound; none of them excuses a test, and spending one on
+this would be the marker convention lying about what it excuses. A test
+directory is not the core surface.
+
 **A second `close` is refused rather than silently `Ok`.** `close` carries
 an application error code the peer acts on, so answering `Ok` to a second
 call with a *different* code would tell a caller that code reached the peer
@@ -404,7 +417,7 @@ assumed, because the capsule code shares `put_varint`, `varint_len` and
 | M5 | varint short branch `1<<6` → `1<<7` | killed | **4** tests — was 3 |
 | M6 | the SETTINGS gate always passes | killed | both gate tests |
 | M7 | the gate takes `\|\|` instead of `&&` | killed | both gate tests |
-| M8 | the peer's SETTINGS are never awaited | killed | **25** of 33 — was 10 of 14 |
+| M8 | the peer's SETTINGS are never awaited | killed | **25** of 34 — was 10 of 14 |
 | M9 | `!resp.status().is_success()` → `false` | killed | the refusal test |
 | M10 | our own `enable_extended_connect(true)` → `(false)` | killed | the premise test |
 | M11 | **control** — `Vec::with_capacity(16)` → `Vec::new()` | **survived, as intended** | nothing; an allocation hint |
@@ -547,7 +560,8 @@ Four things to know before repeating it, three of which cost time here:
   whose payloads the tests write out byte by byte.
 - **A capsule larger than one DATA frame's worth of anything.** The split
   test cuts a capsule in two on purpose, but the largest capsule any test
-  sends is 1028 bytes and no test sends one across more than two frames.
+  sends has a 1028-byte value — four of error code and the limit's 1024 —
+  and no test sends one across more than two frames.
 - **Anything at volume, and any interleaving.** No test sends a capsule
   while a stream or a datagram is in flight, so the claim that `close` and
   `closed` take `&self` *so that* they can run beside `open_bi` is
