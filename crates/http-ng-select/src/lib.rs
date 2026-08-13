@@ -56,10 +56,19 @@
 //!   record, which is most of the web — the fast tier alone works for a
 //!   minority of it.
 //!
-//! **Racing the two stacks is a third thing and is not here.** It is a
-//! hedge against a network that blocks UDP/443, applied *after* the choice
-//! rather than in place of it, and v0.3 W2 recorded that the size of the
-//! cost it pays is unverified. A measurement comes before a policy.
+//! **Racing the two stacks is a third thing, it is here, and it is off
+//! until it is asked for** ([`race`], v0.4). It is a hedge against a
+//! network that blocks UDP/443, applied *after* the choice rather than in
+//! place of it: [`Selecting::hedging`] starts a TCP connect beside an
+//! outstanding QUIC one, and whichever produces a connection first carries
+//! the request. **Neither arm sends anything until the race is over**,
+//! which is what the staged connect changed and is the whole reason this
+//! could be built — before it, a race made of two `Transport::execute`
+//! calls delivered the losing arm's request to the origin as well.
+//!
+//! v0.3 W2 recorded that the size of the cost it pays was unverified, and
+//! a measurement came before the policy: `docs/v04-w1-acceptance.md` §7
+//! and `docs/v04-race.md`.
 //!
 //! # The record decides where there is one, and the header only where
 //! there is not
@@ -154,10 +163,12 @@ pub mod altsvc;
 mod body;
 mod caps;
 pub mod failures;
+pub mod race;
 
 pub use body::SelectedBody;
 pub use caps::{Disagreement, combine};
 pub use failures::{H3_FAILURE_TTL, H3Failures};
+pub use race::DEFAULT_HEAD_START;
 
 use altsvc::{AltSvcCache, Origin};
 use futures_util::StreamExt;
@@ -166,7 +177,7 @@ use http_ng_core::{
 };
 use http_ng_dns::Resolve;
 use http_ng_h3::{H3, StagedConnect};
-use http_ng_native::{Discovered, Native, Prefetch, Prepared};
+use http_ng_native::{Discovered, Native, Prefetch, Prepared, StagedConnect as TcpStagedConnect};
 use http_ng_rt::{TcpConnect, Timer};
 use http_ng_tls::TlsConnect;
 use std::time::Duration;
@@ -258,6 +269,18 @@ where
     /// negative half of the slow tier, and see [`failures`] for why it is
     /// here rather than in either member.
     h3_failures: H3Failures,
+    /// How long the QUIC arm runs alone before a TCP connect is started
+    /// beside it, or `None` — which is the value a freshly constructed
+    /// `Selecting` has — for a transport that does not race at all.
+    ///
+    /// **`None` is the default and that is a decision about what a plain
+    /// client does**, not an omission: a transport that opened a UDP
+    /// socket and a TCP one for the same request would be deciding, on
+    /// every caller's behalf, what to spend on a network that blocks
+    /// UDP/443. `docs/v04-design.md` §W1 says the same thing about
+    /// `DefaultTransport`, which does not become this type either. See
+    /// [`race`] and [`Selecting::hedging`].
+    hedge: Option<Duration>,
 }
 
 /// Hand-written rather than derived, for `H3`'s reason: a derive would
@@ -274,6 +297,7 @@ where
             .field("timeouts", &self.caps.timeouts)
             .field("alt_svc", &self.alt_svc)
             .field("h3_failures", &self.h3_failures)
+            .field("hedge", &self.hedge)
             .finish_non_exhaustive()
     }
 }
@@ -370,6 +394,7 @@ where
             epoch,
             alt_svc: AltSvcCache::default(),
             h3_failures: H3Failures::default(),
+            hedge: None,
         })
     }
 
@@ -403,6 +428,52 @@ where
     pub fn network_changed(&self) {
         self.alt_svc.network_changed();
         self.h3_failures.network_changed();
+    }
+
+    /// Hedge every request this transport sends to QUIC with a TCP connect
+    /// started `head_start` later — the race, and it is off until this is
+    /// called.
+    ///
+    /// **It is a hedge and not a chooser** (`docs/v04-design.md` §W1 P12).
+    /// The record and the advertisement decide which stack an origin
+    /// speaks; this decides nothing, and only stops a request waiting out
+    /// quinn's 30 s `max_idle_timeout` at an origin whose UDP does not get
+    /// through. A request the two tiers sent to TCP is not raced, and
+    /// neither is a `RequireVersion(HTTP_3)` demand — a TCP connection
+    /// opened for a request that can never be sent over TCP is a
+    /// connection opened for nothing.
+    ///
+    /// # What the head start is, and what to pass
+    ///
+    /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
+    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
+    /// already this workspace's answer to the same question one layer
+    /// down. [`race`] has what the staged connect changed about that
+    /// number's justification — and about its floor, which is now
+    /// [`Duration::ZERO`]: with no head start both stacks connect at once,
+    /// **and the losing arm still sends nothing**, which is the property
+    /// that made this worth building.
+    ///
+    /// Bigger is not free and smaller is not unsafe. A head start below
+    /// one QUIC handshake costs a TCP connect and TLS handshake the
+    /// request will probably not use — checked into the pool warm rather
+    /// than thrown away. A head start above it is paid, in full, by the
+    /// first request to an origin whose HTTP/3 cannot be reached, and by
+    /// no other one for [`H3_FAILURE_TTL`] afterwards, because a QUIC arm
+    /// that loses the race teaches [`failures`].
+    ///
+    /// # And it is spent inside `Timeouts::connect`, not beside it
+    ///
+    /// The QUIC arm carries the caller's whole `connect` bound and the
+    /// hedge carries what is left after the head start, so the pair costs
+    /// one bound rather than two. A caller whose bound has no room for two
+    /// connects in it — `head_start` at or above `Timeouts::connect` —
+    /// gets the sequential fallback instead, unchanged, rather than a
+    /// refusal or a doubled bound.
+    #[must_use]
+    pub fn hedging(mut self, head_start: Duration) -> Self {
+        self.hedge = Some(head_start);
+        self
     }
 
     /// Elapsed on the runtime's own clock, from this transport's epoch.
@@ -772,7 +843,7 @@ impl<R, T, D> Selecting<R, T, D>
 where
     R: TcpConnect + Timer + Clone,
     T: TlsConnect,
-    Native<R, T, D>: Prefetch + Transport<Error = Error>,
+    Native<R, T, D>: Prefetch + Transport<Error = Error> + TcpStagedConnect<Error = Error>,
     H3<R, T, D>: StagedConnect<Error = Error>,
     <Native<R, T, D> as Transport>::Body:
         http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
@@ -839,14 +910,38 @@ where
         // expires — are one instant, and two reads would be two facts where
         // there is one.
         let now = self.now();
-        let (error, mut req) = refused.into_parts();
+        let (error, req) = refused.into_parts();
         if let Some(origin) = origin {
             self.h3_failures.note(origin, now);
         }
         if !fallback {
             return Err(error);
         }
-        if !spend_connect_budget(&mut req, now.saturating_sub(began)) {
+        self.after_quic_failed(req, error, now.saturating_sub(began))
+            .await
+    }
+
+    /// The tail of [`Self::over_quic`], from *"the QUIC connect failed and
+    /// this request may go over TCP"* onwards.
+    ///
+    /// A function of its own because [`race`] reaches the same place by a
+    /// different road — a race whose QUIC arm failed outright is the
+    /// sequential fallback's own case arriving through the race — and two
+    /// spellings of the budget rule is exactly the drift this crate keeps
+    /// out of `route`.
+    ///
+    /// `spent` is what has already gone against `Timeouts::connect`: the
+    /// connect, or the whole race. The failure memory is **not** written
+    /// here, because the two callers know different things about which
+    /// origin (and whether) to blame.
+    async fn after_quic_failed(
+        &self,
+        mut req: http::Request<RequestBody>,
+        error: Error,
+        spent: Duration,
+    ) -> Result<http::Response<SelectedBody<NativeBodyOf<R, T, D>, QuicBodyOf<R, T, D>>>, Error>
+    {
+        if !spend_connect_budget(&mut req, spent) {
             return Err(error);
         }
         self.tcp
@@ -858,8 +953,8 @@ where
 
 /// The two member bodies, named once each so that [`Selecting::over_quic`]
 /// and the [`Transport`] impl cannot spell them differently.
-type NativeBodyOf<R, T, D> = <Native<R, T, D> as Transport>::Body;
-type QuicBodyOf<R, T, D> = <H3<R, T, D> as Transport>::Body;
+pub(crate) type NativeBodyOf<R, T, D> = <Native<R, T, D> as Transport>::Body;
+pub(crate) type QuicBodyOf<R, T, D> = <H3<R, T, D> as Transport>::Body;
 
 /// Take `spent` off the request's `Timeouts::connect`, and say whether
 /// there is anything left to connect with.
@@ -888,14 +983,18 @@ fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: Duration) -
         return true;
     };
     let left = connect.saturating_sub(spent);
-    if left.is_zero() {
-        return false;
-    }
+    // Written before the answer, not after it, because the two callers
+    // want different things from `false`. The sequential fallback stops
+    // and never sends this request, so the write it does not read is
+    // harmless; the race's *winner* has a connection already and needs
+    // what is left — including nothing at all, which is a bound the
+    // member will answer with its own `Timeout(Connect)` one instant
+    // before it would have anyway.
     req.extensions_mut().insert(Timeouts {
         connect: Some(left),
         ..timeouts
     });
-    true
+    !left.is_zero()
 }
 
 impl<R, T, D> Transport for Selecting<R, T, D>
@@ -904,7 +1003,11 @@ where
     // `Native`'s bound, and this impl calls `Native`'s inherent methods.
     R: TcpConnect + Timer + Clone,
     T: TlsConnect,
-    Native<R, T, D>: Prefetch + Transport<Error = Error>,
+    // `StagedConnect` on **both** members since the race (deliverable 5):
+    // the QUIC arm has gone through the staged pair since the failure
+    // memory landed, and the hedge is the TCP one's first consumer in this
+    // workspace. See [`race`].
+    Native<R, T, D>: Prefetch + Transport<Error = Error> + TcpStagedConnect<Error = Error>,
     // `StagedConnect` rather than `Transport` alone — it is a supertrait of
     // it, so this is the same bound plus the staged pair the QUIC arm goes
     // through. See [`Selecting::over_quic`].
@@ -946,10 +1049,18 @@ where
     /// over. See [`Selecting::over_quic`] for the two things that buys and
     /// the one thing it costs.
     ///
+    /// **And where [`Selecting::hedging`] was called, it is raced**: a TCP
+    /// connect is started `head_start` later and whichever arm produces a
+    /// connection first carries the request, which is still handed to
+    /// neither of them until the race is over. [`race`] is the whole of
+    /// that, and it changes nothing about the two arms below it —
+    /// including the one place this crate rewrites an extension, which is
+    /// still `Timeouts::connect` and is still spent once.
+    ///
     /// A failed *exchange* still teaches nothing: there is no response
     /// head to read, and a failure after the connect is not a fact about
     /// the origin's HTTP/3. A failed **connect** is, and is remembered —
-    /// see [`failures`].
+    /// see [`failures`], which the race widened by one case and no more.
     async fn execute(
         &self,
         req: http::Request<RequestBody>,
@@ -964,7 +1075,9 @@ where
                 .execute_prepared(prepared)
                 .await
                 .map(|r| r.map(SelectedBody::Tcp)),
-            Route::Quic { req, fallback } => self.over_quic(req, fallback, origin.as_ref()).await,
+            // One call site, hedged or not — see [`race::Raced`] for why
+            // that is load-bearing rather than tidy.
+            Route::Quic { req, fallback } => self.serve_quic(req, fallback, origin.as_ref()).await,
         };
         if let (Ok(r), Some(origin)) = (&resp, &origin) {
             self.note_alt_svc(origin, r.headers());

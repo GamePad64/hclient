@@ -611,7 +611,21 @@ needs, and none of it is in this crate:
   at nothing in it. That is one match on `alt-svc` in the response head, and
   it is the smallest part of the work.
 
-### The race — a hedge, not a chooser (deliverable 5) — **measured, still not built**
+### The race — a hedge, not a chooser (deliverable 5) — **measured, and since built**
+
+> **Built.** [`docs/v04-race.md`](v04-race.md) is the work.
+> `http_ng_select::Selecting::hedging(head_start)`, off until it is called.
+> Everything below is what this section predicted and argued for **before**
+> the staged connect existed, and it is kept because one of its central
+> claims has since stopped being true — §7.6's *"a race made of two
+> `Transport::execute` calls races requests, not connections"*, which was
+> the reason nobody had built this. The race is not made of two `execute`
+> calls; it is made of two `StagedConnect::connect` calls, neither of which
+> writes a request byte. `docs/v04-race.md` §1 is how that was established
+> and §2 is what it did to the head start (its floor moved to zero; its
+> value did not move at all). §3 there also re-measures the TCP rows of
+> §7.3 below, which predate `TCP_NODELAY`, and finds the two stacks'
+> loopback order **reversed**.
 
 P12 is emphatic that it is a **third** thing: applied *after* the choice, as
 a hedge against a network that blocks UDP/443, not as a way of choosing.
@@ -938,8 +952,23 @@ make. That is the strongest argument that the answer is the seam.
    (§7.4), and an origin-keyed RTT observation as the honest form. Nothing
    in this crate observes an RTT today, and the Alt-Svc cache is not the
    place for one.
+
+   **Since built at 250 ms, and the number stayed while its argument
+   changed** — `docs/v04-race.md` §2. Its *floor* moved to zero, because a
+   head start below one QUIC handshake now costs a warm pooled TCP
+   connection rather than a duplicated request. The RTT store is still
+   unbuilt and still the honest form.
 2. **A budget rule that subtracts.** `H < C` checked rather than assumed,
    and `C − H` for the fallback arm (§7.5).
+
+   **Since built, and two thirds of it turn out to be unwitnessable** —
+   `docs/v04-race.md` §5. The QUIC arm carries `C` from an earlier start
+   than any hedge, so it always reaches its deadline first and the race ends
+   when it does: a hedge handed `C` instead of `C − H`, and an `H >= C` that
+   raced anyway, are both **mutations that survive**, predicted and
+   confirmed. The third statement — the race is charged against
+   `Timeouts::connect` once — is witnessed, and getting a witness for it
+   needed a TCP arm that can fail (`Tcp::Rejecting`).
 3. **Either a connect-only seam or an idempotence gate** (§7.6). Without
    one of the two the race duplicates requests, and `RetryKind` alone does
    not close it.
@@ -978,6 +1007,14 @@ from the design document, but the reason has moved. It was *"it wants the
 measurement above"*; the measurement is now here, and what it says is that
 a race in the shape the members allow would send some requests twice. One
 vertical, one claim.
+
+> **Half of that reason expired with the shape.** A race made of two staged
+> connects sends nothing on the losing arm at any head start, so *"would
+> send some requests twice"* is no longer true of the built one. What is
+> unchanged and is the whole of the reason now: **a default that opens UDP
+> sockets is a decision about what a plain `Client::new()` does on a network
+> that blocks UDP/443**, and `Selecting::hedging` is off until a caller
+> turns it on. `docs/v04-race.md` §2.
 
 ---
 

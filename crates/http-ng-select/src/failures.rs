@@ -57,8 +57,28 @@
 //!
 //! # What counts as a failure
 //!
-//! Any failure of `http_ng_h3::StagedConnect::connect`, and the *reason* is
-//! deliberately not read. Every reason a connect fails is a reason not to
+//! Any failure of `http_ng_h3::StagedConnect::connect`, and — since the
+//! race ([`crate::race`]) — **a QUIC connect that a hedge started `H` later
+//! beat to a connection**. The second is a deliberate widening of the
+//! first, and the honest name for what is stored is now *"HTTP/3 did not
+//! produce a connection in time to be worth using"* rather than *"an
+//! `H3::connect` failed"*.
+//!
+//! It is not an over-reach, and the arithmetic is the argument. A QUIC
+//! handshake is one round trip where TCP-plus-TLS-1.3 is two, so an arm
+//! that is still connecting when a TCP connect started a whole head start
+//! later has finished is not a slow HTTP/3 — it is one that is not getting
+//! through. And the alternative is the cost that made the race not worth
+//! building at all: without it the head start is paid again on every
+//! request to a blocked origin, which is `docs/v04-w1-acceptance.md`
+//! §7.7's item 4 in full.
+//!
+//! What is *not* stored is the mirror of it, which is the half that keeps
+//! the rule from reading as *"the hedge suppresses HTTP/3"*: a QUIC arm
+//! that **won** teaches this nothing, so the next request to that origin
+//! goes to QUIC exactly as this one did.
+//!
+//! Beyond that the *reason* is deliberately not read. Every reason a connect fails is a reason not to
 //! spend the next request's time trying again immediately, and the
 //! alternative — a list of `ErrorKind`s to admit — would be a third place
 //! that has to be kept in step with two crates' error vocabularies for a

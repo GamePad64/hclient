@@ -74,6 +74,23 @@ pub enum Quic {
     BlackHole,
 }
 
+/// What the TCP half of the pair does.
+///
+/// The second mode exists for the same reason [`Quic::Rejecting`] does, one
+/// protocol over: a test of what happens when an arm **fails** needs it to
+/// fail causally and at once, or the assertion becomes a clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tcp {
+    /// A real HTTP/1.1-over-TLS server that answers.
+    Working,
+    /// Accepts the connection and closes it without a byte, so the client's
+    /// TLS handshake fails on EOF in one round trip.
+    ///
+    /// It still counts the accept, which is what makes *"the request did not
+    /// try TCP a second time"* a number rather than an absence.
+    Rejecting,
+}
+
 /// Two servers, one port number, one certificate.
 pub struct Pair {
     pub port: u16,
@@ -95,6 +112,15 @@ pub struct Pair {
     /// Always zero under [`Quic::BlackHole`], which has no endpoint to
     /// accept anything.
     quic_attempted: Arc<AtomicUsize>,
+    /// UDP datagrams that arrived at a [`Quic::BlackHole`], and nothing
+    /// else — the working and rejecting servers hand their socket to
+    /// `quinn`, which does its own reading.
+    ///
+    /// This is the only thing a black hole can be observed by, and it is
+    /// what makes *"this request did not try QUIC"* an assertion where
+    /// [`Pair::quic_attempted`] cannot be: a hole has no endpoint, so it
+    /// accepts nothing however many `ClientHello`s it swallows.
+    quic_datagrams: Arc<AtomicUsize>,
     _threads: (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>),
 }
 
@@ -120,6 +146,9 @@ impl Pair {
     }
     pub fn quic_attempted(&self) -> usize {
         self.quic_attempted.load(Ordering::SeqCst)
+    }
+    pub fn quic_datagrams(&self) -> usize {
+        self.quic_datagrams.load(Ordering::SeqCst)
     }
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
@@ -180,8 +209,13 @@ pub fn start() -> Pair {
     start_with_quic(Quic::Working)
 }
 
-/// Start both. Returns once both are bound, so no test races them.
+/// Start both, varying only the QUIC half.
 pub fn start_with_quic(quic: Quic) -> Pair {
+    start_with(quic, Tcp::Working)
+}
+
+/// Start both. Returns once both are bound, so no test races them.
+pub fn start_with(quic: Quic, tcp: Tcp) -> Pair {
     let (tcp_sock, udp_sock) = bind_pair();
     let port = tcp_sock.local_addr().expect("local_addr").port();
     let (cert_der, key_der) = identity();
@@ -190,6 +224,7 @@ pub fn start_with_quic(quic: Quic) -> Pair {
     let tcp_accepted = Arc::new(AtomicUsize::new(0));
     let quic_answered = Arc::new(AtomicUsize::new(0));
     let quic_attempted = Arc::new(AtomicUsize::new(0));
+    let quic_datagrams = Arc::new(AtomicUsize::new(0));
     let alt_svc: AltSvc = Arc::default();
 
     let tcp_thread = start_tcp(
@@ -199,18 +234,32 @@ pub fn start_with_quic(quic: Quic) -> Pair {
         tcp_answered.clone(),
         tcp_accepted.clone(),
         alt_svc.clone(),
+        tcp,
     );
     let quic_thread = match quic {
-        // The socket is held by a thread that never reads it, so the port
-        // stays bound and nothing is ever answered. Parking rather than
+        // The socket is held by a thread that answers nothing, so the port
+        // stays bound and nothing is ever replied to. Holding rather than
         // dropping: a dropped socket is an *unbound* port, which is the
         // other failure and costs the same 30 s for a different reason.
-        Quic::BlackHole => std::thread::spawn(move || {
-            let _held = udp_sock;
-            loop {
-                std::thread::park();
-            }
-        }),
+        //
+        // It **reads**, and counting what it read is the only observation
+        // a hole can offer. Reading changes nothing a client can see —
+        // nothing is ever sent back either way — and it is what turns
+        // *"that hop did not try QUIC"* from an absence into a delta.
+        Quic::BlackHole => {
+            let seen = quic_datagrams.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 2048];
+                loop {
+                    match udp_sock.recv_from(&mut buf) {
+                        Ok(_) => {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(_) => return,
+                    }
+                }
+            })
+        }
         _ => start_quic(
             udp_sock,
             cert_der.clone(),
@@ -230,6 +279,7 @@ pub fn start_with_quic(quic: Quic) -> Pair {
         tcp_accepted,
         quic_answered,
         quic_attempted,
+        quic_datagrams,
         _threads: (tcp_thread, quic_thread),
     }
 }
@@ -250,6 +300,7 @@ fn start_tcp(
     answered: Arc<AtomicUsize>,
     accepted: Arc<AtomicUsize>,
     alt_svc: AltSvc,
+    mode: Tcp,
 ) -> std::thread::JoinHandle<()> {
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -271,6 +322,14 @@ fn start_tcp(
                     return;
                 };
                 accepted.fetch_add(1, Ordering::SeqCst);
+                // Counted first, then dropped: a refusal a test cannot see
+                // is not a fixture. The drop closes the socket before a
+                // single TLS byte is written, which the client meets as an
+                // EOF in the handshake — causal, and one round trip.
+                if mode == Tcp::Rejecting {
+                    drop(sock);
+                    continue;
+                }
                 let (acceptor, answered, alt_svc) =
                     (acceptor.clone(), answered.clone(), alt_svc.clone());
                 tokio::spawn(async move {

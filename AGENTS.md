@@ -911,27 +911,43 @@ unknown origin; first contact is TCP unless something said otherwise
 fast tier — and `Alt-Svc` is a response header, so it can only help the
 *next* connection: the slow tier, and the one that needs storage. **Both are
 built.** Racing the two stacks is a third thing, a hedge against a network
-that blocks UDP/443, and it is **not** built — but the measurement it was
-waiting on is done, and it moved the question. v0.3 W2 recorded the cost as
-unverified; §7 and §8 of `docs/v04-w1-acceptance.md` now carry the numbers.
+that blocks UDP/443, and it **is** built now (v0.4), off by default, because
+a default that opens UDP sockets is a decision about what a plain client does
+on a network that blocks them.
 
-**The reason to build it carefully is no longer latency.** A race made of
-two `Transport::execute` calls races *requests*, not connections — the seam
-has no connect-only entry point — so with no head start the losing arm's
-request reaches the origin, measured in 5 of 6 arms. That contradicts, more
-plainly than 0-RTT did, the sentence `http-ng-native` leans on for needing
-no idempotency judgement: *"this is not a second request, it is the first
-one, which never left."* Here both leave, at once, and neither is a retry.
-So a head start is a **safety** mechanism before it is a latency one, and
-at 250 ms — `HeConfig::default()`'s `attempt_delay`, this codebase's answer
-to the same question one layer down — no socket is opened at all.
+**The measurement that preceded it reframed it, and then the staged connect
+un-framed it again.** §7 recorded the danger: a race made of two
+`Transport::execute` calls races *requests*, not connections, so with no head
+start the losing arm's request reached the origin — measured, 5 arms of 6.
+That contradicted the sentence `http-ng-native` leans on for needing no
+idempotency judgement. The staged connect removed the cause rather than
+mitigating it: **neither `stage` writes a request byte**, and the property is
+structural rather than promised — the request is never handed to a stream
+inside a `connect`, not even in the 0-RTT path, which only stores quinn's
+verdict. The built race asserts the negation of that 5-of-6 row at the same
+setting: at zero head start, both stacks connect and **exactly one request is
+sent**.
 
-Neither failure signal can shape that number, which is the other half of
+So the head start stopped being a safety mechanism and became a cost knob:
+`Duration::ZERO` is now a setting rather than a bug, and the default of 250 ms
+— `HeConfig::default()`'s `attempt_delay`, this codebase's answer to the same
+question one layer down — is kept because without one the hedge overrules the
+chooser. Its cost is bounded by something that did not exist when it was
+chosen: the race feeds `H3Failures`, so a head start is paid once per origin
+per TTL rather than once per request.
+
+**Re-measuring flipped the order of the stacks, and the reason is our own
+defect.** With `nodelay` landed, TCP by name is min 1.4 / median 2.6 ms
+against QUIC's 2.5 / 7.8, and with `nodelay` off the old 42 ms reproduces
+exactly. §7.3's fixture had been handing QUIC a free 40 ms head start, so the
+earlier row measured Nagle rather than the protocols.
+
+Neither failure signal can shape the head start, which is the other half of
 the measurement: a black hole costs **30 s**, and so does an origin with no
 h3 server, because both are `quinn`'s `max_idle_timeout` rather than a
 refusal — quinn contains no `ECONNREFUSED` path. The earliest honest signal
 is **1.0 s**, and it too is a constant: PTO₀ off RFC 9002's guessed 333 ms
-`initial_rtt`. Against a QUIC success floor of 1.8–3.3 ms.
+`initial_rtt`.
 
 The slow tier is where a cache became honest, and the reason inverts the
 fast tier's. There is deliberately no cache for HTTPS records here, because
