@@ -21,7 +21,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LIB = "crates/http-ng-webtransport/src/lib.rs"
-ANCHOR = 7
+ANCHOR = 14
 
 # (id, file, old, new, note)
 MUTATIONS = [
@@ -56,8 +56,8 @@ MUTATIONS = [
     (
         "M5",
         LIB,
-        "    if v < (1 << 6) {",
-        "    if v < (1 << 7) {",
+        "    if v < (1 << 6) {\n        buf.push(v as u8);",
+        "    if v < (1 << 7) {\n        buf.push(v as u8);",
         "the varint short branch takes one value too many, so 0x41 is one byte",
     ),
     (
@@ -115,6 +115,91 @@ MUTATIONS = [
         "        let mut header = Vec::with_capacity(16);",
         "        let mut header = Vec::new();",
         "CONTROL — an allocation hint, observable by nothing",
+    ),
+    # --- v0.4, datagrams -------------------------------------------------
+    (
+        "D1",
+        LIB,
+        "        self.id.0 >> 2\n",
+        "        self.id.0\n",
+        "the Quarter Stream ID is the stream ID itself, unshifted",
+    ),
+    (
+        "D2",
+        LIB,
+        "        self.id.0 >> 2\n",
+        "        0\n",
+        "the Quarter Stream ID is hard-coded zero",
+    ),
+    (
+        "D3",
+        LIB,
+        "        Ok(settings.enable_datagram())",
+        "        Ok(true)",
+        "the peer is taken to support HTTP Datagrams whatever it announced",
+    ),
+    (
+        "D4",
+        LIB,
+        "        Ok(settings.enable_datagram())",
+        "        Ok(false)",
+        "the peer is taken to support none, whatever it announced",
+    ),
+    (
+        "D5",
+        LIB,
+        "            && payload.len() > budget",
+        "            && false",
+        "the budget check never fires; an oversized payload goes to quinn",
+    ),
+    (
+        "D6",
+        LIB,
+        "            .max_datagram_size()?\n            .checked_sub(varint_len(self.quarter_stream_id()))",
+        "            .max_datagram_size()\n            .filter(|_| varint_len(self.quarter_stream_id()) > 0)",
+        "the header is not subtracted, so the budget is a byte too generous",
+    ),
+    (
+        "D7",
+        LIB,
+        "            if id != quarter {\n                continue;\n            }",
+        "            if false {\n                continue;\n            }",
+        "a datagram addressed to another session is delivered as this one's",
+    ),
+    (
+        "D8",
+        LIB,
+        "            let Some((id, header)) = get_varint(&frame) else {\n                continue;\n            };",
+        "            let (id, header) = get_varint(&frame).unwrap_or((quarter, 0));",
+        "a frame too short to carry a Quarter Stream ID is delivered as payload",
+    ),
+    (
+        "D9",
+        LIB,
+        "    Some((v, len))\n}",
+        "    Some((v, 1))\n}",
+        "the decoder reports a one-byte header whatever it read",
+    ),
+    (
+        "D10",
+        LIB,
+        "    if v < (1 << 6) {\n        1\n",
+        "    if v < (1 << 6) {\n        2\n",
+        "varint_len disagrees with put_varint about a one-byte value",
+    ),
+    (
+        "D11",
+        LIB,
+        "            .enable_datagram(true)",
+        "            .enable_datagram(false)",
+        "our own SETTINGS no longer announce SETTINGS_H3_DATAGRAM",
+    ),
+    (
+        "D12",
+        LIB,
+        '    #[error("the QUIC connection carries no datagrams")]',
+        '    #[error("nope")]',
+        "CONTROL — an error's Display, which nothing in the suite reads",
     ),
 ]
 
