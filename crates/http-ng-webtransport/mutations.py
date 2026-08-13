@@ -21,7 +21,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LIB = "crates/http-ng-webtransport/src/lib.rs"
-ANCHOR = 33
+ANCHOR = 34
 
 # (id, file, old, new, note)
 MUTATIONS = [
