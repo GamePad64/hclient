@@ -283,6 +283,82 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
     );
 }
 
+/// The same rejection, landing one step earlier — **on h3's control stream,
+/// while the client is still setting itself up** — and it is not the
+/// caller's either.
+///
+/// # This is a flake with the luck taken out of it
+///
+/// The test above replays a rejection that arrives on the *request* stream,
+/// which is the case `crate::early`'s table describes. A rejection that
+/// arrives a few microseconds earlier lands on the **control** stream
+/// instead, and RFC 9114 §6.2.1 obliges h3 to treat that as
+/// `H3_CLOSED_CRITICAL_STREAM` and close the QUIC connection — so
+/// `h3::client::builder().build(..)` fails and there is no request yet for
+/// a replay to be made of. The caller was handed
+/// `ErrorKind::Connect(H3_CLOSED_CRITICAL_STREAM .. 0-RTT rejected)`,
+/// which is exactly the rejection this crate promises it will never see.
+///
+/// It was found as a flake — **2 failures in 277 concurrent runs of this
+/// suite** — and `docs/v04-h3-0rtt-control-stream.md` is the capture, the
+/// mechanism and the numbers. What makes it deterministic here is the
+/// server pair's 8-byte flow-control window: h3's SETTINGS frame does not
+/// fit, so the control-stream write is parked in the gap between opening
+/// the stream and finishing the write, which is where the failure lives.
+/// See `server::start_two_sharing_a_certificate_and_a_tiny_window`.
+///
+/// A delay in the obvious place — between `into_0rtt()` and `build()` —
+/// does *not* reproduce it, and that is the measurement that located the
+/// gap: `quinn_proto`'s `zero_rtt_rejected` resets the next-stream-id
+/// counters, so an h3 client that opens its streams after the rejection
+/// opens ordinary 1-RTT ones and everything works.
+///
+/// # What the assertions are, and why the server makes them
+///
+/// `b.accepted() == 2` is the whole fix seen from the far side of the
+/// wire: the early-data connection was destroyed and a second, ordinary
+/// one was dialled to the same server. `b.requests() == 1` is the other
+/// half — the fallback is a second **connection**, never a second request,
+/// which is what keeps this out of `RetryKind`'s territory. Nothing of the
+/// caller's request had been written when the first connection died.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
+    // Small enough that h3's SETTINGS frame cannot be written in one go,
+    // large enough that an ordinary connection recovers through
+    // `MAX_STREAM_DATA` — the ticket-issuing exchange below is the control
+    // that says so, because it is an ordinary connection and it succeeds.
+    let (a, b) = server::start_two_sharing_a_certificate_and_a_tiny_window(Behaviour::Echo, 8);
+    let tls = server::client_tls(&a.cert_der);
+    let t = H3::new(TokioHandle::current().unwrap(), tls, IpLiteralOnly).unwrap();
+
+    let _ = body_of(t.execute(get(a.addr, "/ticket")).await.unwrap()).await;
+    // As above: `NewSessionTicket` arrives on its own schedule, and without
+    // this the second connection has nothing to resume from and the test
+    // passes vacuously through `into_0rtt`'s refusal path.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut marked = get(b.addr, "/replayed");
+    marked.extensions_mut().insert(AllowEarlyData);
+    let r = t
+        .execute(marked)
+        .await
+        .expect("a 0-RTT rejection is not a connect failure, wherever it lands");
+    assert_eq!(r.status(), 200);
+    assert_eq!(body_of(r).await, "hello over h3");
+    assert_eq!(
+        b.accepted(),
+        2,
+        "the early-data connection was destroyed by the rejection and a \
+         second, ordinary one was dialled — the server counts both"
+    );
+    assert_eq!(
+        b.requests(),
+        1,
+        "and the request went out exactly once, on the second: this is a \
+         second CONNECTION, not a second request"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_425_reaches_the_caller_untouched() {
     // RFC 8470 §5.2's third failure path, and the one this layer does not

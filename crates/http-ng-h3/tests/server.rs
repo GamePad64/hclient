@@ -269,6 +269,41 @@ pub fn start_two_sharing_a_certificate(behaviour: Behaviour) -> (Server, Server)
     )
 }
 
+/// The pair above, with a **flow-control window too small to hold h3's
+/// SETTINGS frame** — which is how a client's control-stream write is held
+/// open across the instant a server refuses its early data.
+///
+/// `quinn::TransportConfig::stream_receive_window` is what this endpoint
+/// sends as `initial_max_stream_data_uni`
+/// (`quinn-proto-0.11.16/src/transport_parameters.rs:160`), and a client
+/// resuming with 0-RTT writes against the value it remembered from the
+/// ticket — so setting it on **both** servers is what puts the window in
+/// force on the resumed connection as well as on the one that issued the
+/// ticket.
+///
+/// Nothing else changes. On a connection whose handshake is ordinary the
+/// peer's h3 layer reads the control stream, `MAX_STREAM_DATA` comes back
+/// and the write finishes; the ticket-issuing exchange below is that case
+/// and it is unremarkable. It is only on a connection whose early data is
+/// **discarded** that the credit never arrives, because the write itself
+/// was discarded with it — and the write is then parked in exactly the gap
+/// `docs/v04-h3-0rtt-control-stream.md` §2.1 measures, instead of having to
+/// be caught there by luck.
+pub fn start_two_sharing_a_certificate_and_a_tiny_window(
+    behaviour: Behaviour,
+    window: u64,
+) -> (Server, Server) {
+    let id = identity();
+    (
+        start_windowed(behaviour, id.clone(), window),
+        start_windowed(behaviour, id, window),
+    )
+}
+
+fn start_windowed(behaviour: Behaviour, id: Identity, window: u64) -> Server {
+    start_inner(behaviour, None, id, false, v4(), Some(window)).expect("a v4 loopback bind")
+}
+
 pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
     start_full(behaviour, idle, identity())
 }
@@ -288,11 +323,11 @@ pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Dur
 /// h3 layer before the handshake finished for every other test in this
 /// suite — changing what they measure for the benefit of one that needs it.
 pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
-    start_inner(behaviour, None, identity(), true, v4()).expect("a v4 loopback bind")
+    start_inner(behaviour, None, identity(), true, v4(), None).expect("a v4 loopback bind")
 }
 
 pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
-    start_inner(behaviour, idle, id, false, v4()).expect("a v4 loopback bind")
+    start_inner(behaviour, idle, id, false, v4(), None).expect("a v4 loopback bind")
 }
 
 /// The address every other server in this suite binds.
@@ -314,6 +349,7 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
         identity(),
         false,
         "[::1]:0".parse().unwrap(),
+        None,
     )
 }
 
@@ -323,6 +359,9 @@ fn start_inner(
     id: Identity,
     watch_early_data: bool,
     bind: SocketAddr,
+    // See `start_two_sharing_a_certificate_and_a_tiny_window`. `None`
+    // leaves quinn's default, which is what every other server here uses.
+    stream_window: Option<u64>,
 ) -> Option<Server> {
     let Identity { cert_der, key_der } = id;
 
@@ -345,6 +384,11 @@ fn start_inner(
         // Deliberately NOT a keep-alive: the point of the idle test is that
         // something has to drive the connection, and a keep-alive on the
         // server would hide whether the client's driver is running.
+        cfg.transport_config(Arc::new(t));
+    }
+    if let Some(w) = stream_window {
+        let mut t = quinn::TransportConfig::default();
+        t.stream_receive_window(w.try_into().expect("a window that fits a varint"));
         cfg.transport_config(Arc::new(t));
     }
 
