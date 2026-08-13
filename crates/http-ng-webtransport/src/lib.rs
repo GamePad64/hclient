@@ -1292,22 +1292,6 @@ mod tests {
         }
     }
 
-    /// A `Session` can be spawned, and it can be shared.
-    ///
-    /// `Send` was true before the capsule protocol and is asserted here
-    /// because the two `Mutex`es could have taken it away. `Sync` is new
-    /// with them, and it is the property the `&self` on
-    /// [`Session::close`] and [`Session::closed`] exists for: waiting for
-    /// the peer's close in one task while another opens streams means an
-    /// `Arc<Session>` in two places, which needs both.
-    #[test]
-    fn a_session_can_be_spawned_and_shared() {
-        fn is_send<T: Send>() {}
-        fn is_sync<T: Sync>() {}
-        is_send::<Session>();
-        is_sync::<Session>();
-    }
-
     /// The capsule this crate writes, byte for byte, against vectors
     /// written by somebody else.
     ///

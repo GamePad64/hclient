@@ -1054,3 +1054,30 @@ async fn closing_twice_is_refused_rather_than_silently_dropped() {
     expected.extend_from_slice(b"first");
     assert_eq!(server.capsules()[0].payload, expected);
 }
+
+/// A `Session` can be spawned, and it can be shared.
+///
+/// `Send` was true before the capsule protocol; it is asserted because the
+/// two `Mutex`es the CONNECT stream now sits behind could have taken it
+/// away. `Sync` is **new** with them, and it is the property the `&self` on
+/// `close` and `closed` exists for: waiting for the peer's close in one
+/// task while another opens streams means an `Arc<Session>` in two places,
+/// which needs both.
+///
+/// # Why it is here rather than beside the code
+///
+/// `scripts/no-send-or-sync-in-the-core-surface.sh` scans `crates/*/src`
+/// for a declared `Send` or `Sync` bound and demands a
+/// `send-bound-exception: amendment-C…` marker on every one — and that
+/// marker names a spec amendment that excuses a **seam** bound. None of
+/// them excuses a test, so writing this in `src/` would mean spending a
+/// marker on something no amendment covers. A test directory is not the
+/// core surface, and this is a property of the public API as a consumer
+/// meets it.
+#[test]
+fn a_session_can_be_spawned_and_shared() {
+    fn is_send<T: Send>() {}
+    fn is_sync<T: Sync>() {}
+    is_send::<Session>();
+    is_sync::<Session>();
+}
