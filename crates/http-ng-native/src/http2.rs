@@ -1461,41 +1461,42 @@ where
     };
 
     let mut pump = (!eos).then(|| Pump::new(outgoing, send_stream));
+    // **Not a loop, where [`exchange`] is one**, and the difference is the
+    // whole of what a driver changes. There, the frames the pump just
+    // queued reach the socket only from inside the `Connection::poll` at
+    // the top of the same loop, so a pump that finished has to round the
+    // loop rather than leave its end-of-stream frame for the next wake-up.
+    // Here that poll belongs to the driver, and what wakes the driver is
+    // the queueing itself.
+    //
+    // Written this way because a mutation said so: with the `continue`
+    // this function used to have, the whole suite is green either way, and
+    // clippy then points out that the loop never loops. The code now says
+    // what the tests can see.
     let resp = std::future::poll_fn(|cx| {
-        loop {
-            if let Some(p) = pump.as_mut() {
-                match p.poll(cx) {
-                    Poll::Ready(Ok(_)) => {
-                        pump = None;
-                        // Round the loop rather than falling through, for
-                        // [`exchange`]'s reason one level removed: the
-                        // frames the pump queued reach the socket from
-                        // inside the driver's `Connection::poll`, and what
-                        // wakes the driver is the queueing itself.
-                        continue;
-                    }
-                    Poll::Ready(Err(e)) => {
-                        pump = None;
-                        return Poll::Ready(Err(Failed::Sent(e)));
-                    }
-                    // The duplex line, unchanged: a write that cannot
-                    // proceed must not stop the response from arriving.
-                    Poll::Pending => {}
-                }
-            }
-            return match Pin::new(&mut resp_fut).poll(cx) {
-                Poll::Ready(Ok(r)) => Poll::Ready(Ok(r)),
+        if let Some(p) = pump.as_mut() {
+            match p.poll(cx) {
+                Poll::Ready(Ok(_)) => pump = None,
                 Poll::Ready(Err(e)) => {
-                    Poll::Ready(Err(Failed::Sent(from_h2_error(e, ErrorKind::Connect))))
+                    pump = None;
+                    return Poll::Ready(Err(Failed::Sent(e)));
                 }
-                // No `conn_done` arm, and none is owed. [`exchange`] needs
-                // one because it is the only thing polling the connection,
-                // so a connection that ended while it waited would leave it
-                // waiting for ever; here the driver is still polling, and
-                // h2 resolves every live stream with the connection's error
-                // when it ends.
-                Poll::Pending => Poll::Pending,
-            };
+                // The duplex line, unchanged: a write that cannot proceed
+                // must not stop the response from arriving.
+                Poll::Pending => {}
+            }
+        }
+        match Pin::new(&mut resp_fut).poll(cx) {
+            Poll::Ready(Ok(r)) => Poll::Ready(Ok(r)),
+            Poll::Ready(Err(e)) => {
+                Poll::Ready(Err(Failed::Sent(from_h2_error(e, ErrorKind::Connect))))
+            }
+            // No `conn_done` arm, and none is owed. [`exchange`] needs one
+            // because it is the only thing polling the connection, so a
+            // connection that ended while it waited would leave it waiting
+            // for ever; here the driver is still polling, and h2 resolves
+            // every live stream with the connection's error when it ends.
+            Poll::Pending => Poll::Pending,
         }
     })
     .await;

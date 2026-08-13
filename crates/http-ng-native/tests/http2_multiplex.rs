@@ -553,7 +553,7 @@ impl Hooks for Counting {
     fn on(&self, event: Event<'_>) {
         let line = match event {
             Event::Connected(_) => "connected".to_owned(),
-            Event::Reused(_) => "reused".to_owned(),
+            Event::Reused(r) => format!("reused:{:?}", r.version),
             Event::Closed(c) => match c.reason {
                 CloseReason::Ended => "closed:ended".to_owned(),
                 CloseReason::Stale => "closed:stale".to_owned(),
@@ -1187,4 +1187,68 @@ async fn a_shared_connection_carries_a_duplex_exchange() {
         "the count is the server's: both chunks crossed"
     );
     assert_eq!(server.accepted(), 1);
+}
+
+/// **A shared connection is in the bucket a `RequireVersion(HTTP_2)`
+/// request looks in.**
+///
+/// `PoolKey` needs nothing new for sharing — a `Native` either shares its
+/// h2 connections or does not, decided once at construction — but the
+/// entry still has to go into the **right** bucket, and this is the one
+/// thing that notices. An ordinary request would not: `pooled_candidates`
+/// offers `[H2, Http11]` and `established::exchange` dispatches on the
+/// connection rather than on the key, so a shared entry filed under
+/// `Http11` is found and spoken to correctly anyway. A **demand** is
+/// different: `protocol_admissible` skips the `Http11` bucket outright, so
+/// a misfiled entry costs a connection every time.
+///
+/// The `Reused` event is the second half and the reason it is asserted
+/// here rather than taken on trust: its `version` is read off the bucket
+/// the connection came out of, so a misfiled shared connection would
+/// report a browser's h2 traffic as HTTP/1.1 — the same wrong-answer shape
+/// `Head::version` became an `Option` for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_demand_for_http2_is_served_by_the_shared_connection() {
+    let server = spawn_server(None);
+    let hook = Counting::default();
+    let transport = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+        .hooks(hook.clone())
+        .multiplexed();
+    let client = Client::builder(transport).build().unwrap();
+
+    // Warm it: one ordinary call makes the shared connection.
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/warm")))
+            .await
+            .expect("must not hang")
+            .expect("must succeed"),
+        200
+    );
+
+    let mut req = http::Request::builder()
+        .method("GET")
+        .uri(server.url("/demand"))
+        .body(RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut()
+        .insert(http_ng_core::RequireVersion(http::Version::HTTP_2));
+    let resp = tokio::time::timeout(BOUND, client.execute(req))
+        .await
+        .expect("must not hang")
+        .expect("h2 was negotiated and shared, so the demand is satisfied");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    drop(resp);
+
+    assert_eq!(
+        server.accepted(),
+        1,
+        "the demanding request found the shared connection, which it can \
+         only do if the entry is in the HTTP/2 bucket"
+    );
+    assert_eq!(
+        hook.lines(),
+        vec!["connected", "reused:HTTP/2.0"],
+        "and the reuse names the protocol the connection actually speaks"
+    );
 }
