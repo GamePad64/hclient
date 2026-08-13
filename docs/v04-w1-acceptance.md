@@ -91,6 +91,25 @@ four of the six were never in it.
 | `timeouts.between_bytes` | `true` | `false` | **`false`** | same |
 | `early_data` | `None` | `Supported` | **`Supported`** | the one field whose *stronger* value is the true one — see below |
 
+#### The struck row's own mutations
+
+Five applied against an anchor of **1500**, `--no-fail-fast`, restored
+with `git checkout` and a fresh mtime. The point of the table is the last
+row: without a control, four kills are indistinguishable from a harness
+that reports killed unconditionally.
+
+| # | mutation | verdict | killed |
+|---|---|---|---|
+| M1 | `Rustls::presents_client_certs` returns `true` always | killed | 2 |
+| M2 | …returns `false` always | killed | 1 |
+| M3 | `http-ng-h3` back to `c.client_certs = true` | killed | 3 |
+| M4 | `http-ng-native` drops its line, taking `Capabilities::none()`'s `false` | killed | 2 — `client_certs_is_read_from_the_tls_backend_not_from_a_constant` and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` |
+| M5 | **control** — `NoTls` overrides the method with the value it already defaults to | **survived, as intended** | 0 |
+
+M2 kills one where M1 kills two, and that asymmetry is the shape of the
+defect rather than a gap: `false` is what three of the four fixtures
+already expect, so only the fixture built to differ can see it.
+
 `timeouts.connect` is `true` on both and stays `true` on the pair; a
 conjunction that returned `false` for everything would satisfy every row
 above, so `the_stored_answer_holds_whichever_stack_serves_the_request`
