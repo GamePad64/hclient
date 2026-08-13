@@ -160,12 +160,53 @@ complete in one go:
 - on an **ordinary** connection the server's h3 layer reads the control stream,
   `MAX_STREAM_DATA` arrives and the write finishes. Nothing changes;
 - on a **0-RTT** connection to a server that refuses the early data, the write
-  is parked exactly in the A–B gap when the refusal lands. Every time.
+  is parked in the A–B gap, and stays parked: the credit it is waiting for can
+  only come from a stream the server has discarded.
 
 So the fixture takes a `stream_receive_window`
 (`server::start_two_sharing_a_certificate_and_a_tiny_window`), and
 `crates/http-ng-h3/tests/live.rs` carries the test, next to the sibling that
 covers the same rejection arriving one stream later.
+
+### 3.1 That was half of it, and the other half was found the same way
+
+The window fixes the **end** of the A–B gap. It does nothing about the
+**start**, and the test's own premise — that there was an early-data control
+stream at all — turned out to be the same race one step back: *nothing stops
+the rejection arriving before A*. There is no `await` between `into_0rtt()`
+and h3's first `poll_open_send`, but there is a thread, and a kernel that can
+take its core away for a millisecond; quinn's connection driver runs on
+another one. When it loses that race, `zero_rtt_rejected`'s counter reset
+means h3 opens ordinary 1-RTT streams, the write completes, and nothing fails
+at all.
+
+Measured, twice: the 50 ms delay of §2.1 is that ordering forced, and it makes
+both 0-RTT tests pass on the **unfixed** library; and the test as first
+written — window only — failed **3 times in 246 concurrent suite runs**, each
+time on its premise (`dialled() == 1`), never on the property.
+
+The second fixture is [`wire::Wire`], the UDP relay `tests/zero_rtt.rs`
+already uses, holding the server's flight until the relay has seen a **0-RTT
+packet from the client**. That is not a longer window; it removes the window.
+While the flight is held the client's connection *cannot* learn of the
+rejection, so whenever the scheduler next gives it a core it opens early-data
+streams — and a 0-RTT packet exists only to carry application data sent before
+the handshake completed, so seeing one *is* "A has happened and the write has
+started". The release is on that event and the duration is only a backstop,
+which is the rule that file's own `release` doc had already argued for a
+different ordering: *"releasing on the event removes the race rather than
+shrinking it."*
+
+The premise is then asserted rather than assumed — `watcher.join()` returns
+whether early data was ever seen — so a run in which the client quietly did an
+ordinary handshake fails a line instead of passing.
+
+**The fixture being wrong twice is worth its own line**, because both were
+the same mistake in different places: a fact that the code makes *likely* was
+asserted as though the code made it *certain*. First `accepted()`, which the
+server increments only after a handshake the client tears down immediately (1
+failure in 280 runs); then the premise itself. The `dialled()` counter and the
+hold are each the causal form of the thing that was being hoped for.
 
 Reproduction rate, `-E` on the two 0-RTT tests, on the code as it stood:
 **2 of 2, in every run** — with the identical assertion and the identical
@@ -318,3 +359,49 @@ number of names it scraped against nextest's own `N failed` on the `Summary`
 line and refuses to score a run where they disagree. **A mutation harness with
 no self-check reports what it wishes were true**, and the check that catches it
 has to be one it cannot satisfy by scraping nothing.
+
+
+## 6. Reproduction rate, before and after
+
+One recipe throughout: **8 concurrent `cargo nextest run -p http-ng-h3
+--all-features` processes** on a 28-core host, each run's complete output kept
+on disk, on the same machine and against the same suite.
+
+| | runs | failures with `H3_CLOSED_CRITICAL_STREAM` |
+|---|---|---|
+| before the fix | **277** | **2** — `live::a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it`, both times |
+| deterministic reproduction, before the fix | 2 | **2** — and both 0-RTT tests, including the one the record names |
+| after the fix | **526** | **0** |
+
+The 526 is two campaigns, 280 and 246, and neither is clean of *everything*:
+the first cost 1 failure and the second 3, all four in the new tests' own
+premise and none in the library — §3.1. Both fixture defects are fixed and a
+third campaign follows them.
+
+**What this is not.** 526 runs at 2-in-277 would be about four expected
+failures, so the absence is evidence and not proof; what carries the claim is
+§3 and §5, where the failure is produced on demand and six mutations are
+scored against it. The rate is here because a fix that made the flake rarer
+rather than absent would show up in it.
+
+
+## 7. What is not verified
+
+- **That this is the only place a 0-RTT rejection can be surfaced.** Three
+  streams go out in early data — the control stream and QPACK's two — and h3
+  tolerates a failure of the QPACK pair (`.ok()`) while treating the control
+  stream as critical. A rejection landing on a *request* stream is
+  `H3::finish`'s replay and is covered. Nothing here enumerates the rest of
+  `h3`'s setup.
+- **The 1-RTT half of the same window.** After a rejection quinn has discarded
+  the SETTINGS the client thought it sent, and h3 does not resend them, so a
+  connection that survives a rejection — which is exactly the sibling test's
+  replay path — speaks HTTP/3 to a server that never received its SETTINGS
+  frame. RFC 9114 §7.2.4.2 permits a peer to proceed without it and both
+  servers here do; that this is *benign* is an observation about two
+  implementations rather than a claim about the protocol, and no test pins it.
+- **M5**, §5.
+- **Anything outside `http-ng-h3`.** `http-ng-select` was in the mutation
+  anchor because it drives `H3::connect` through `StagedConnect`, but no test
+  there marks a request for early data, so the fallback is unexercised from
+  that side.
