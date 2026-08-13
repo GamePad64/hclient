@@ -70,7 +70,7 @@ check: && test
 # the workspace suite, minus the one test that needs a runner to itself
 test-workspace:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     rc=0
     out="$(cargo nextest run --workspace --all-features --color never --no-fail-fast \
       -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
@@ -90,7 +90,7 @@ test-workspace:
 # the SSE complexity test, alone
 test-sse-complexity:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     rc=0
     out="$(cargo nextest run -p http-ng-proto --all-features --color never \
       -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
@@ -160,7 +160,7 @@ test-embassy-live:
 # http-ng-rt-embassy's tests must link under a strict linker
 embassy-strict-link:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     export RUSTFLAGS="-C link-arg=-Wl,--no-gc-sections"
     for features in "" "--all-features"; do
       rc=0
@@ -210,7 +210,7 @@ embassy-strict-link:
 # the DoH suite against real public resolvers (needs the internet; not in CI)
 test-doh-live:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     export HTTP_NG_LIVE_DOH=1
     rc=0
     out="$(cargo nextest run -p http-ng-dns-doh --test live \
@@ -243,7 +243,7 @@ build-wasi-example:
 # the wasi suite under wasmtime (runner comes from .cargo/config.toml)
 test-wasi:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     cargo nextest run -p http-ng-wasi --target wasm32-wasip2 || exit $?
     rc=0
     out="$(cargo nextest run -p http-ng-wasi --test live_roundtrip \
@@ -282,7 +282,7 @@ test-wasi:
 # one browser suite: `just test-browser firefox`
 test-browser BROWSER="chrome":
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     if ! command -v wasm-pack >/dev/null 2>&1; then
       if [ -n "${HTTP_NG_REQUIRE_BROWSERS:-}" ]; then
         echo "::error::wasm-pack is not on PATH, and this job promised to install it — the browser suites must run, not skip"
@@ -327,7 +327,7 @@ build-three-targets:
 # the unsafe Send must be rejected when wasm atomics are on
 fetch-must-fail-under-atomics:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     # `rust-toolchain.toml` pins stable and outranks the installed channel;
     # `-Z build-std` needs nightly.
     export RUSTUP_TOOLCHAIN=nightly
@@ -384,7 +384,7 @@ autobahn-parser-selftest:
 # the WebSocket client against the Autobahn TestSuite (needs docker)
 test-autobahn: autobahn-parser-selftest
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     agent=http-ng-ws-tungstenite
     reports="$PWD/target/autobahn"
     container=http-ng-autobahn
@@ -472,7 +472,12 @@ test-autobahn: autobahn-parser-selftest
 # the feature-off builds, which --all-features can never exercise
 test-no-default:
     #!/usr/bin/env bash
-    set -uo pipefail
+    # `-e`, and it is load-bearing: the four clippy lines at the end are
+    # unguarded, so without it the recipe's exit code is the LAST one's and a
+    # failure in any earlier step is reported as success. That is how three
+    # dead-code errors under `--no-default-features` sat on `main` while this
+    # recipe — and the CI job that calls it — stayed green.
+    set -euo pipefail
     for args in "-p http-ng-proto --no-default-features" \
                 "-p http-ng-native --no-default-features" \
                 "-p http-ng-rt-embassy" \
@@ -503,7 +508,7 @@ test-no-default:
 # the IDN differential corpus, on both feature settings
 test-idn:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     for args in "" "--all-features"; do
       rc=0
       out="$(cargo nextest run -p http-ng-idn $args --color never --no-fail-fast 2>&1)" || rc=$?
@@ -540,7 +545,7 @@ fuzz TARGET="sse" SECONDS="60":
 # the short fuzz runs CI does on every push
 fuzz-smoke:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     export RUSTUP_TOOLCHAIN=nightly
     if ! rustc --version 2>/dev/null | grep -q nightly || ! cargo fuzz --version >/dev/null 2>&1; then
       if [ -n "${HTTP_NG_REQUIRE_NIGHTLY:-}" ]; then
@@ -600,7 +605,7 @@ unsafe-policy:
 # every `run:` in ci.yml is a call to a recipe in this file
 ci-mirrors-just:
     #!/usr/bin/env bash
-    set -uo pipefail
+    set -euo pipefail
     python3 -c "import yaml" 2>/dev/null \
       || python3 -m pip install --quiet --break-system-packages pyyaml \
       || python3 -m pip install --quiet pyyaml \

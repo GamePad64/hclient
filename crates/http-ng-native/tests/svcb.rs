@@ -142,6 +142,7 @@ fn tls_record_complete(buf: &[u8]) -> bool {
 /// (RFC 8446 §4.1.2 for the message, RFC 7301 §3.1 for the extension) and
 /// returns `None` for anything it cannot read, so a malformed flight is a
 /// failed assertion rather than a false one.
+#[cfg(feature = "http2")]
 fn alpn_offer(flight: &[u8]) -> Option<Vec<Vec<u8>>> {
     let mut p = Cursor::new(flight);
     p.skip(5)?; // TLS record header
@@ -178,11 +179,13 @@ fn alpn_offer(flight: &[u8]) -> Option<Vec<Vec<u8>>> {
     None
 }
 
+#[cfg(feature = "http2")]
 struct Cursor<'a> {
     buf: &'a [u8],
     at: usize,
 }
 
+#[cfg(feature = "http2")]
 impl<'a> Cursor<'a> {
     fn new(buf: &'a [u8]) -> Self {
         Self { buf, at: 0 }
