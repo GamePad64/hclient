@@ -369,9 +369,19 @@ demanded request first, where nothing was suppressed yet.
   `max_idle_timeout` rather than anything of ours, and it is a
   `Timeouts::connect` question rather than this memory's.
 - **The default-port DNS row** — §3.4. Inferred, for §9.6's reason.
-- **`http-ng-native`'s staged pair has no consumer in this workspace.** It
-  is implemented, tested and green, and the thing that would use it is the
-  race, which is not built. Two implementations is not decoration here: it
+- **`http-ng-native`'s staged pair has no consumer for its `exchange`**,
+  and the race — since built, `docs/v04-race.md` — did not give it one.
+  It uses `connect`, which is the half that carries the trait's whole
+  argument, and then routes the winner through `Prefetch::execute_prepared`.
+  The reason is a fact about the trait rather than about the race: `connect`
+  takes the request **by value** and hands it back only through `Refused`,
+  so an arm that has neither failed nor finished cannot be abandoned without
+  the request going with it — and a racer must be able to abandon one. So
+  both arms are handed a *probe*, and the winner's connection is spent
+  through the pool. `docs/v04-race.md` §6.
+
+  The paragraph below is what this bullet said before that, and it stands
+  for `connect`: Two implementations is not decoration here: it
   is what shows the trait was not shaped to one member — the same evidence
   `WebSocketConnect` got when the browser fitted it unchanged — and it is
   what answered §10's *"that shape H compiles"* and §7's questions about
@@ -394,11 +404,17 @@ demanded request first, where nothing was suppressed yet.
 - **A `Staged` whose connection dies while the caller holds it.** The
   behaviour is decided (§2.3) and no test produces the window, because
   producing it means closing a connection between a checkout and a write.
-- **The race is still not built**, and nothing here unblocks it beyond what
-  §7.7 already said: item 3 is discharged, items 1 (an origin-keyed RTT
-  store), 2 (a budget rule that subtracts — now built for the *sequential*
-  case, in `spend_connect_budget`, which is the same arithmetic one shape
-  simpler) and 4 (a failure memory — built, here) are where they were.
+- ~~**The race is still not built**~~ — **built**,
+  [`docs/v04-race.md`](v04-race.md), out of exactly this seam and out of the
+  half of it §2.2 below said mattered *"to a race, which is not built"*.
+  Of §7.7's items: 3 was discharged here, 4 is this memory, 2 is built and
+  two thirds of it turn out to be unwitnessable, and **1 — an origin-keyed
+  RTT store — is still where it was**, so the head start is still a constant.
+
+  §2.2's sentence about a declined QUIC connection pinging for ever now has
+  its subject, and is milder than it reads there: the race only declines a
+  QUIC connection that **succeeded**, which is one to an origin that speaks
+  HTTP/3 and that the next request will want.
 
 
 ## The flake this branch may have introduced

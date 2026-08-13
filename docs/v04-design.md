@@ -229,6 +229,24 @@ was made.
    is a latency one, and the seam has no connect-only entry point to make
    it anything else.
 
+   **Built, and the shape is what changed rather than the policy** —
+   [`docs/v04-race.md`](v04-race.md). The connect-only entry point arrived
+   for a different customer (`StagedConnect`, deliverable 4's negative
+   half), and the race is made of two `connect` calls rather than two
+   `execute` ones. Neither writes a request byte, so **the losing arm sends
+   nothing at any head start, zero included**, and the head start stops
+   being a safety mechanism. It stays at 250 ms anyway, for a new reason:
+   without one the hedge overrules the chooser, which the re-measured TCP
+   floor made sharper rather than weaker — with `TCP_NODELAY` on, TCP now
+   *wins* a no-head-start race on loopback.
+
+   It is `Selecting::hedging(head_start)`, off until called. Two of the
+   three budget statements §7.5 asks for turn out to be **unwitnessable**,
+   predicted and confirmed by mutation, because the QUIC arm holds the same
+   deadline from an earlier start; and the first draft of it doubled
+   `execute`'s future and overflowed two `Client` tests' stacks, which is
+   why the race hands back a decision rather than doing its own routing.
+
 **Deliberately not in it.** `DefaultTransport` does **not** become this
 type. Making a default that opens UDP sockets is a decision about what
 a plain `Client::new()` does on a network that blocks UDP/443, and it wants
