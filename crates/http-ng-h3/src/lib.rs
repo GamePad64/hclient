@@ -643,7 +643,7 @@ where
         })
     }
 
-    /// Make one.
+    /// Make one — with the **one fallback the early-data path owes**.
     ///
     /// The fourth element of the answer is what [`ConnectTiming`]'s `tcp`
     /// field holds here: **the attempt itself**, from `connect_with` to a
@@ -653,11 +653,88 @@ where
     /// phase — which is exactly what `ConnectTiming` means by "three
     /// measurements, not a decomposition". `crate::hooks` says why there is
     /// no `tls` figure to go with it.
+    ///
+    /// # A 0-RTT rejection can land on h3's control stream, and it did
+    ///
+    /// [`crate::early`]'s table says a server rejecting the 0-RTT keys is
+    /// *"replayed on the same connection once the handshake completes; the
+    /// caller sees a normal response"*, and [`Self::finish`] is where that
+    /// happens. It covers a rejection that arrives on the **request**
+    /// stream. One that arrives a few microseconds earlier arrives on the
+    /// **control** stream instead — h3 opens it in early data like every
+    /// other stream on a connection `into_0rtt` handed back — and RFC 9114
+    /// §6.2.1 obliges h3 to answer that with `H3_CLOSED_CRITICAL_STREAM`,
+    /// which **closes the QUIC connection**. [`Self::finish`] never runs;
+    /// there is no request stream for it to replay.
+    ///
+    /// So the rejection reached the caller as an `ErrorKind::Connect`, on a
+    /// request whose only sin was carrying [`http_ng_core::AllowEarlyData`].
+    /// It was found as a flake — 2 failures in 277 concurrent runs of this
+    /// crate's suite — and `docs/v04-h3-0rtt-control-stream.md` is the
+    /// capture, the mechanism and the numbers.
+    ///
+    /// The fallback below is the first row of that same table, one step
+    /// later, and its sentence holds verbatim: *"nothing was sent, so
+    /// falling through to a full handshake risks nothing"*. Nothing had been
+    /// sent — the request has not been formed at this point, let alone
+    /// written — so this is not a retry and needs no `RetryKind`.
+    ///
+    /// Three things about it are decisions rather than mechanics:
+    ///
+    /// - **The condition is "we took the shortcut and the h3 client could
+    ///   not be built on it", and not the 0-RTT verdict.** Awaiting
+    ///   `quinn::ZeroRttAccepted` here would not discriminate: it resolves
+    ///   `false` for a rejection *and* for a connection that died some other
+    ///   way, because `terminate` sends `false` on a connection lost before
+    ///   the handshake (`quinn-0.11.11/src/connection.rs:1224`). A condition
+    ///   whose two arms cannot be told apart is one no test can pin, so this
+    ///   asks the question it can answer.
+    /// - **Exactly one extra dial, and only for a marked request.** Every
+    ///   other failure — the crypto configuration, the endpoint, the
+    ///   `connect_with`, the full handshake on the refusal path — returns
+    ///   as it always did, because doubling a failing connect is how a
+    ///   caller's `Timeouts::connect` gets spent twice.
+    /// - **One mark for both attempts.** `ConnectTiming::tcp` is "the
+    ///   attempt", and an attempt that spent a discarded early-data
+    ///   connection spent it. Re-marking would report the fallback's
+    ///   handshake as the whole cost.
     async fn connect(
         &self,
         key: &PoolKey,
         addr: SocketAddr,
     ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), Error> {
+        // The attempt's launch — see this function's doc comment. Under
+        // `NoHooks` this is a compile-time `None` and no clock is read.
+        let launched = mark::<H, R>(&self.rt);
+        if key.early_data {
+            match self.dial(key, addr, launched, true).await {
+                Ok(made) => return Ok(made),
+                Err(DialFailed::EarlyDataLost(_)) => {}
+                Err(DialFailed::Fatal(e)) => return Err(e),
+            }
+        }
+        self.dial(key, addr, launched, false)
+            .await
+            .map_err(DialFailed::into_error)
+    }
+
+    /// One dial, with the 0-RTT shortcut taken or not taken.
+    ///
+    /// `early` is *not* `key.early_data`: the key says what kind of
+    /// connection this is (and is what a later request has to match to
+    /// reuse it), while this says whether **this attempt** may put anything
+    /// into early data. [`Self::connect`]'s fallback is the one place they
+    /// differ, and the difference is the whole of RFC 8470's *"MUST NOT be
+    /// sent in early data"* here: the only way application data can reach a
+    /// 0-RTT packet is through a `Connection` that `into_0rtt` handed back,
+    /// so not calling it is not a promise but an absence.
+    async fn dial(
+        &self,
+        key: &PoolKey,
+        addr: SocketAddr,
+        launched: Option<R::Instant>,
+        early: bool,
+    ) -> Result<(SendRequest, quinn::Connection, Option<ZeroRtt>, Duration), DialFailed> {
         let crypto = self.tls.quic_client_config(QuicTlsRequest {
             alpn: &[ALPN_H3],
             ech: None,
@@ -684,9 +761,6 @@ where
         // second request has to do to be reused. Normalising twice, once
         // for the key and once here, would be the two-places-drifting
         // problem `bare_host`'s doc is about.
-        // The attempt's launch — see this function's doc comment. Under
-        // `NoHooks` this is a compile-time `None` and no clock is read.
-        let launched = mark::<H, R>(&self.rt);
         let connecting = endpoint
             .connect_with(cfg, addr, http_ng_core::bare_host(&key.host))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
@@ -700,9 +774,10 @@ where
         // the only free one: nothing was sent, so falling through to a full
         // handshake risks nothing and tells the caller nothing.
         //
-        // It is reached only when `key.early_data` is set, which is only
-        // when the caller marked this request — see `crate::early`.
-        let (conn, zero_rtt) = if key.early_data {
+        // It is reached only when `early` is set, which is only when the
+        // caller marked this request — see `crate::early` — and only on the
+        // first of this connect's at most two attempts.
+        let (conn, zero_rtt) = if early {
             match connecting.into_0rtt() {
                 Ok((conn, accepted)) => (conn, Some(futures_util::FutureExt::shared(accepted))),
                 Err(connecting) => (
@@ -727,10 +802,24 @@ where
         // one: there is no completed handshake yet to have timed.
         let handshake = since::<R>(&self.rt, launched);
 
-        let (mut driver, send) = h3::client::builder()
+        // The control stream, and the failure [`Self::connect`]'s fallback
+        // exists for. `zero_rtt.is_some()` is exactly "this connection's
+        // streams went out in early data", so it is the whole condition:
+        // on any other connection an h3 client that cannot be built is a
+        // connect failure and nothing else.
+        let (mut driver, send) = match h3::client::builder()
             .build(h3_quinn::Connection::new(conn.clone()))
             .await
-            .map_err(|e| Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string())))?;
+        {
+            Ok(built) => built,
+            Err(e) => {
+                let e = Error::new(ErrorKind::Connect, std::io::Error::other(e.to_string()));
+                return Err(match zero_rtt {
+                    Some(_) => DialFailed::EarlyDataLost(e),
+                    None => DialFailed::Fatal(e),
+                });
+            }
+        };
 
         // The driver, spawned. This is the whole reason for the `Spawn`
         // bound: an h3 connection whose control streams nobody polls stops
@@ -1028,6 +1117,41 @@ where
 
     fn capabilities(&self) -> &Capabilities {
         &self.caps
+    }
+}
+
+/// Why one [`H3::dial`] did not produce a connection, and whether
+/// [`H3::connect`] may try again without early data.
+///
+/// Two variants rather than a `bool` beside an `Error`, because the
+/// distinction is the fallback's whole precondition and a `bool` would let
+/// a caller ignore it by accident. It never leaves this module: `connect`
+/// resolves it into an `Error`.
+enum DialFailed {
+    /// The h3 client could not be built on a connection whose streams went
+    /// out in early data — see [`H3::connect`]. Nothing of the caller's
+    /// request exists yet, so this is the connect's to absorb.
+    EarlyDataLost(Error),
+    /// Everything else, including every failure of a dial that never
+    /// offered early data.
+    Fatal(Error),
+}
+
+impl DialFailed {
+    fn into_error(self) -> Error {
+        match self {
+            Self::EarlyDataLost(e) | Self::Fatal(e) => e,
+        }
+    }
+}
+
+/// So that `dial`'s ordinary `?`s stay ordinary. The conversion is to
+/// [`DialFailed::Fatal`] deliberately: `EarlyDataLost` is claimed at
+/// exactly one site, which is what keeps the fallback from widening by
+/// accident into a retry of every failing connect.
+impl From<Error> for DialFailed {
+    fn from(e: Error) -> Self {
+        Self::Fatal(e)
     }
 }
 

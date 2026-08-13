@@ -547,8 +547,28 @@ request that must never enter early data. "Can I resend this" and "may an
 attacker resend this" are different questions and only the caller can
 answer the second. The acceptance verdict is never a field: in QUIC it
 resolves *after* the response body (8.63 ms against 8.58 ms, measured), so
-it is a `Shared` future, and a rejection is replayed by the transport
-rather than surfaced. `425 Too Early` is the third failure path and is not
+it is a `Shared` future, and a a rejection is replayed by the transport
+rather than surfaced.
+
+**That was true of one of the two streams a rejection can land on, and the
+other took three sightings to catch.** `h3` opens its **control stream in
+early data** on a connection `into_0rtt()` hands back, so a server refusing
+early data while `build()` is still writing SETTINGS gets the stream reset,
+RFC 9114 §6.2.1 obliges h3 to close the connection with
+`H3_CLOSED_CRITICAL_STREAM`, and `connect` surfaced that as
+`ErrorKind::Connect` — the one outcome this paragraph says a caller never
+sees. The replay covers a rejection on the **request** stream; on the
+control stream there is no request yet to replay. `connect` now dials at
+most twice, the second time without the shortcut, and that is not a retry
+in the sense `RetryKind` governs: nothing was sent, so falling through to a
+full handshake risks nothing.
+
+It reached `main` as a flake — 2 failures in 277 concurrent runs of the h3
+suite, 0 in 846 after — and was found the way the two before it were, by
+capturing the failure rather than reasoning about it. The suspicion that
+the recent `stage`/`finish` split had caused it was **wrong and checked**:
+`connect` was last touched 85 commits earlier, and the 0-RTT shortcut
+arrived 292 commits back. `425 Too Early` is the third failure path and is not
 the transport's: a `425` leaves `http-ng-h3` untouched, with a test pinning
 it. The one line it owed back — `AllowEarlyData` removed from the replayed
 request, because the mark is part of the pool key, so a marked replay would

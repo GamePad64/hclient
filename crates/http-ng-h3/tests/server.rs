@@ -28,6 +28,22 @@ pub enum Behaviour {
     Slow(std::time::Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
+    /// Complete the QUIC handshake and then **close the connection at
+    /// once**, before any HTTP/3 layer exists on it.
+    ///
+    /// The only server here that makes a client's
+    /// `h3::client::builder().build(..)` fail — and only in company with
+    /// [`start_two_sharing_a_certificate_and_a_tiny_window`], because
+    /// without a window the client's SETTINGS write completes locally
+    /// before the close arrives and `build` succeeds. Paired with the
+    /// window it is deterministic: the write is parked for credit that a
+    /// closing server never sends.
+    ///
+    /// It exists for the negative half of `H3::connect`'s fallback — a
+    /// connect that failed with **nothing** in early data must not be
+    /// dialled a second time, or a caller's `Timeouts::connect` is spent
+    /// twice.
+    CloseOnAccept,
     /// Send the response **head**, wait, and then tear the whole QUIC
     /// connection down — so the failure arrives while the caller is reading
     /// the body rather than while it is waiting for a head.
@@ -121,7 +137,25 @@ pub struct Server {
     /// How many QUIC connections the server has accepted. The observer is
     /// the server, never the client's own bookkeeping — the rule every
     /// pooling test in this workspace follows.
+    ///
+    /// **Counted after the handshake**, which is what makes it the right
+    /// number for a pool test and the wrong one for a test whose client
+    /// tears a connection down the instant it is up: `Incoming::await`
+    /// yields an error rather than a connection if the peer's
+    /// `CONNECTION_CLOSE` arrives before this thread gets round to polling
+    /// it, so a connection the client certainly made can go uncounted. See
+    /// [`Server::dialled`].
     pub accepted: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many QUIC connections were **offered** to this endpoint —
+    /// incremented where `Endpoint::accept` yields, before the handshake
+    /// and before anything can go wrong with it.
+    ///
+    /// This is the honest observer for *"the client dialled twice"*, and it
+    /// is honest for a structural reason rather than a probabilistic one:
+    /// the accept loop is sequential on one thread, so a test that has been
+    /// answered on the second connection is a test whose first connection
+    /// was already counted.
+    pub dialled: Arc<std::sync::atomic::AtomicUsize>,
     /// How many HTTP/3 requests it has answered.
     pub requests: Arc<std::sync::atomic::AtomicUsize>,
     /// One entry per accepted connection, in accept order — see
@@ -182,6 +216,9 @@ impl std::fmt::Debug for Server {
 impl Server {
     pub fn accepted(&self) -> usize {
         self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn dialled(&self) -> usize {
+        self.dialled.load(std::sync::atomic::Ordering::SeqCst)
     }
     pub fn requests(&self) -> usize {
         self.requests.load(std::sync::atomic::Ordering::SeqCst)
@@ -269,6 +306,47 @@ pub fn start_two_sharing_a_certificate(behaviour: Behaviour) -> (Server, Server)
     )
 }
 
+/// The pair above, with a **flow-control window too small to hold h3's
+/// SETTINGS frame** — which is how a client's control-stream write is held
+/// open across the instant a server refuses its early data.
+///
+/// `quinn::TransportConfig::stream_receive_window` is what this endpoint
+/// sends as `initial_max_stream_data_uni`
+/// (`quinn-proto-0.11.16/src/transport_parameters.rs:160`), and a client
+/// resuming with 0-RTT writes against the value it remembered from the
+/// ticket — so setting it on **both** servers is what puts the window in
+/// force on the resumed connection as well as on the one that issued the
+/// ticket.
+///
+/// Nothing else changes. On a connection whose handshake is ordinary the
+/// peer's h3 layer reads the control stream, `MAX_STREAM_DATA` comes back
+/// and the write finishes; the ticket-issuing exchange below is that case
+/// and it is unremarkable. It is only on a connection whose early data is
+/// **discarded** that the credit never arrives, because the write itself
+/// was discarded with it — and the write is then parked in exactly the gap
+/// `docs/v04-h3-0rtt-control-stream.md` §2.1 measures, instead of having to
+/// be caught there by luck.
+pub fn start_two_sharing_a_certificate_and_a_tiny_window(
+    behaviour: Behaviour,
+    window: u64,
+) -> (Server, Server) {
+    let id = identity();
+    (
+        start_windowed(behaviour, id.clone(), window),
+        start_windowed(behaviour, id, window),
+    )
+}
+
+fn start_windowed(behaviour: Behaviour, id: Identity, window: u64) -> Server {
+    start_inner(behaviour, None, id, false, v4(), Some(window)).expect("a v4 loopback bind")
+}
+
+/// One server with the same window, for the behaviour that needs the write
+/// parked and has no ticket to resume — see [`Behaviour::CloseOnAccept`].
+pub fn start_with_a_tiny_window(behaviour: Behaviour, window: u64) -> Server {
+    start_windowed(behaviour, identity(), window)
+}
+
 pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
     start_full(behaviour, idle, identity())
 }
@@ -288,11 +366,11 @@ pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Dur
 /// h3 layer before the handshake finished for every other test in this
 /// suite — changing what they measure for the benefit of one that needs it.
 pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
-    start_inner(behaviour, None, identity(), true, v4()).expect("a v4 loopback bind")
+    start_inner(behaviour, None, identity(), true, v4(), None).expect("a v4 loopback bind")
 }
 
 pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
-    start_inner(behaviour, idle, id, false, v4()).expect("a v4 loopback bind")
+    start_inner(behaviour, idle, id, false, v4(), None).expect("a v4 loopback bind")
 }
 
 /// The address every other server in this suite binds.
@@ -314,6 +392,7 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
         identity(),
         false,
         "[::1]:0".parse().unwrap(),
+        None,
     )
 }
 
@@ -323,6 +402,9 @@ fn start_inner(
     id: Identity,
     watch_early_data: bool,
     bind: SocketAddr,
+    // See `start_two_sharing_a_certificate_and_a_tiny_window`. `None`
+    // leaves quinn's default, which is what every other server here uses.
+    stream_window: Option<u64>,
 ) -> Option<Server> {
     let Identity { cert_der, key_der } = id;
 
@@ -347,16 +429,23 @@ fn start_inner(
         // server would hide whether the client's driver is running.
         cfg.transport_config(Arc::new(t));
     }
+    if let Some(w) = stream_window {
+        let mut t = quinn::TransportConfig::default();
+        t.stream_receive_window(w.try_into().expect("a window that fits a varint"));
+        cfg.transport_config(Arc::new(t));
+    }
 
     let (tx, rx) = std::sync::mpsc::channel();
     let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dialled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let bodies: Arc<std::sync::Mutex<Vec<BodyReport>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    let (a, r, ts, bs) = (
+    let (a, d, r, ts, bs) = (
         accepted.clone(),
+        dialled.clone(),
         requests.clone(),
         timings.clone(),
         bodies.clone(),
@@ -380,6 +469,8 @@ fn start_inner(
             };
             tx.send(Some(endpoint.local_addr().unwrap())).unwrap();
             while let Some(incoming) = endpoint.accept().await {
+                // Before the handshake, deliberately — see `Server::dialled`.
+                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (a, r, ts, bs) = (a.clone(), r.clone(), ts.clone(), bs.clone());
                 tokio::spawn(async move {
                     let started = std::time::Instant::now();
@@ -408,6 +499,13 @@ fn start_inner(
                         conn
                     };
                     a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if behaviour == Behaviour::CloseOnAccept {
+                        // Before the h3 layer exists, deliberately: this
+                        // behaviour is about the client's `build`, not
+                        // about any request.
+                        conn.close(0u32.into(), b"nothing here");
+                        return;
+                    }
                     // Kept beside the h3 layer, for `DieAfterHead`: closing
                     // the QUIC connection is not something the h3 API
                     // exposes, and it is the point of that behaviour.
@@ -551,6 +649,7 @@ fn start_inner(
             .expect("the server thread binds before it answers")?,
         cert_der,
         accepted,
+        dialled,
         requests,
         timings,
         bodies,

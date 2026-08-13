@@ -8,10 +8,11 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod server;
+mod wire;
 
 use http_body_util::BodyExt;
 use http_ng_core::unversioned::Transport;
-use http_ng_core::{AllowEarlyData, EarlyDataSupport, RequestBody};
+use http_ng_core::{AllowEarlyData, EarlyDataSupport, ErrorKind, RequestBody};
 use http_ng_dns::IpLiteralOnly;
 use http_ng_h3::H3;
 use http_ng_rt_tokio::TokioHandle;
@@ -280,6 +281,172 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
         1,
         "the replay is a second STREAM, not a second request the server sees \
          answered twice"
+    );
+}
+
+/// The same rejection, landing one step earlier — **on h3's control stream,
+/// while the client is still setting itself up** — and it is not the
+/// caller's either.
+///
+/// # This is a flake with the luck taken out of it
+///
+/// The test above replays a rejection that arrives on the *request* stream,
+/// which is the case `crate::early`'s table describes. A rejection that
+/// arrives a few microseconds earlier lands on the **control** stream
+/// instead, and RFC 9114 §6.2.1 obliges h3 to treat that as
+/// `H3_CLOSED_CRITICAL_STREAM` and close the QUIC connection — so
+/// `h3::client::builder().build(..)` fails and there is no request yet for
+/// a replay to be made of. The caller was handed
+/// `ErrorKind::Connect(H3_CLOSED_CRITICAL_STREAM .. 0-RTT rejected)`,
+/// which is exactly the rejection this crate promises it will never see.
+///
+/// It was found as a flake — **2 failures in 277 concurrent runs of this
+/// suite** — and `docs/v04-h3-0rtt-control-stream.md` is the capture, the
+/// mechanism and the numbers.
+///
+/// # Two fixtures, and each removes one half of the luck
+///
+/// The failure needs the rejection to arrive **after** h3 opened its
+/// control stream and **before** its write finished. Each end of that is
+/// arranged rather than waited for, and neither is a duration:
+///
+/// - **After the open** is [`wire::Wire`], holding the server's flight
+///   until the relay has seen a 0-RTT packet from the client. While the
+///   flight is held the client's connection *cannot* learn of the
+///   rejection, so whenever the scheduler next gives it a core it opens
+///   early-data streams; a 0-RTT packet on the wire is that having
+///   happened. Without it the client can be descheduled between
+///   `into_0rtt()` and h3's first `poll_open_send`, the rejection lands
+///   first, and `quinn_proto`'s `zero_rtt_rejected` — which resets the
+///   next-stream-id counters — leaves h3 opening ordinary 1-RTT streams
+///   and everything working. Measured: a 50 ms delay in exactly that place
+///   makes both 0-RTT tests pass on the **unfixed** library, and the
+///   preemption is the same thing at microsecond scale — 3 failures in 246
+///   concurrent runs of this suite while this test relied on losing that
+///   race being unlikely.
+/// - **Before the write finishes** is the server pair's 8-byte
+///   flow-control window: h3's SETTINGS frame does not fit, so the write
+///   parks for credit that a discarded early-data stream will never be
+///   given. Without it the write completes locally, h3 never notices the
+///   rejection at all, and the exchange takes the *request* stream's path
+///   above. See `server::start_two_sharing_a_certificate_and_a_tiny_window`.
+///
+/// # What the assertions are, and why the server makes them
+///
+/// `b.dialled() == 2` is the whole fix seen from the far side of the wire:
+/// the early-data connection was destroyed and a second, ordinary one was
+/// dialled to the same server. `b.requests() == 1` is the other half — the
+/// fallback is a second **connection**, never a second request, which is
+/// what keeps this out of `RetryKind`'s territory. Nothing of the caller's
+/// request had been written when the first connection died.
+///
+/// **`dialled` and not `accepted`, and that was this test's own bug.** It
+/// first asserted `b.accepted() == 2`, which counts connections *after*
+/// their handshakes; this client closes the first one the instant its
+/// handshake completes, so under load the server's `Incoming::await` loses
+/// that race and yields an error rather than a connection — 1 failure in
+/// 280 concurrent runs of this suite, the fixture being wrong rather than
+/// the transport. `dialled` is incremented where `Endpoint::accept` yields,
+/// before the handshake, and is right for a structural reason rather than a
+/// probabilistic one: the accept loop is sequential on one thread, so a
+/// test answered on the second connection is a test whose first connection
+/// was already counted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
+    // Small enough that h3's SETTINGS frame cannot be written in one go,
+    // large enough that an ordinary connection recovers through
+    // `MAX_STREAM_DATA` — the ticket-issuing exchange below is the control
+    // that says so, because it is an ordinary connection and it succeeds.
+    let (a, b) = server::start_two_sharing_a_certificate_and_a_tiny_window(Behaviour::Echo, 8);
+    let tls = server::client_tls(&a.cert_der);
+    let t = H3::new(TokioHandle::current().unwrap(), tls, IpLiteralOnly).unwrap();
+
+    let _ = body_of(t.execute(get(a.addr, "/ticket")).await.unwrap()).await;
+    // As above: `NewSessionTicket` arrives on its own schedule, and without
+    // this the second connection has nothing to resume from and the test
+    // passes vacuously through `into_0rtt`'s refusal path.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // The relay goes in front of `b` only, and only for the marked request:
+    // the ticket above is an ordinary exchange and has nothing to order.
+    let wire = wire::Wire::in_front_of(b.addr);
+    // A backstop rather than the plan — the hold ends on the client's first
+    // 0-RTT packet. Reaching it means the client put nothing into early
+    // data, which is a failure worth seeing rather than one to wait out, and
+    // it stays well under quinn's first PTO (~1 s) so nothing retransmits.
+    wire.hold_server_flight(std::time::Duration::from_millis(800));
+    let watcher = wire.release_on_early_data(std::time::Duration::from_secs(5));
+
+    let mut marked = get(wire.addr, "/replayed");
+    marked.extensions_mut().insert(AllowEarlyData);
+    let r = t
+        .execute(marked)
+        .await
+        .expect("a 0-RTT rejection is not a connect failure, wherever it lands");
+    assert_eq!(r.status(), 200);
+    assert_eq!(body_of(r).await, "hello over h3");
+    assert!(
+        watcher.join().expect("the relay's watcher thread"),
+        "the premise: the client really did put something into early data, \
+         so there really was an early-data control stream for the rejection \
+         to destroy. Without this the test could pass on a client that \
+         quietly did an ordinary handshake"
+    );
+    assert_eq!(
+        b.dialled(),
+        2,
+        "the early-data connection was destroyed by the rejection and a \
+         second, ordinary one was dialled — the server counts both offered \
+         to its endpoint"
+    );
+    assert_eq!(
+        b.requests(),
+        1,
+        "and the request went out exactly once, on the second: this is a \
+         second CONNECTION, not a second request"
+    );
+}
+
+/// The other half of that fallback, and the reason it is conditional: a
+/// connect that failed with **nothing** in early data is not dialled a
+/// second time.
+///
+/// `AllowEarlyData` is on the request and there has been no prior visit, so
+/// there is no ticket, `into_0rtt` refuses and the handshake is an ordinary
+/// one — which is the state in which a fallback would be a plain retry of a
+/// failing connect: the same arguments to the same `connect_with`, arriving
+/// at the error it already had, having spent the caller's `Timeouts::
+/// connect` on the way. The bound itself cannot be doubled — `H3::stage`
+/// wraps both dials in one `within_connect` — which is why the assertion
+/// below is a dial count and not a duration.
+///
+/// The server is the one fixture here that makes `build` fail without any
+/// early data being involved — see [`server::Behaviour::CloseOnAccept`] for
+/// why it needs the window too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_that_put_nothing_in_early_data_is_not_dialled_twice() {
+    let s = server::start_with_a_tiny_window(Behaviour::CloseOnAccept, 8);
+    let t = h3(&s.cert_der);
+
+    let mut marked = get(s.addr, "/marked");
+    marked.extensions_mut().insert(AllowEarlyData);
+    let e = t
+        .execute(marked)
+        .await
+        .map(|_| ())
+        .expect_err("the server closed the connection under h3's setup");
+
+    assert_eq!(
+        *e.kind(),
+        ErrorKind::Connect,
+        "and it is the connect's failure, reported as such: {e:?}"
+    );
+    assert_eq!(
+        s.dialled(),
+        1,
+        "one dial, not two — the request was marked, so the fallback was \
+         reachable; what makes it unreachable is that nothing went out in \
+         early data for the rejection to have destroyed"
     );
 }
 

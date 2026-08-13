@@ -35,6 +35,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod server;
+mod wire;
 
 use http_body_util::BodyExt;
 use http_ng_core::unversioned::{Event, Hooks, Transport};
@@ -946,6 +947,89 @@ async fn a_replayed_0_rtt_request_reports_one_head_and_one_connection() {
         tls, None,
         "and there is still no handshake duration to report: this \
          connection carried a request BEFORE its handshake completed"
+    );
+}
+
+/// The same, when the rejection **destroys** the early-data connection and
+/// the transport dials a second one — still one `Connected`, and still no
+/// `Closed`.
+///
+/// This is the event-level half of
+/// `live::a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either`,
+/// and it exists because the fix for that could have been made observable
+/// in two wrong ways. Announcing the discarded connection would mean two
+/// `Connected` for one request, so a caller counting connections would
+/// count a connection it can never see again; announcing its death would
+/// be worse, because `Closed` names an `id` and this connection never had
+/// one — the same rule `http-ng-wasi` reasons its way to from the other
+/// end, that *a `Closed` built from one would announce the end of a
+/// connection whose beginning was never announced*.
+///
+/// What makes both automatic rather than remembered is where the events
+/// are emitted: `H3::stage` reports after `checkout` returns, and the
+/// fallback is inside `H3::connect`, beneath it. The assertions are here
+/// so that moving either one fails a line.
+///
+/// The two fixtures that take the luck out of it — the relay holding the
+/// server's flight until the client has sent early data, and the 8-byte
+/// flow-control window that keeps the control-stream write open across the
+/// rejection — are argued at length beside the sibling and not repeated
+/// here. What is repeated is `b.dialled()`, because without it "one
+/// `Connected`" would also be what a transport that never fell back
+/// reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close() {
+    let (a, b) = server::start_two_sharing_a_certificate_and_a_tiny_window(Behaviour::Echo, 8);
+    let rec = Recorder::default();
+    let t = H3::new(
+        TokioHandle::current().expect("inside #[tokio::test]"),
+        server::client_tls(&a.cert_der),
+        IpLiteralOnly,
+    )
+    .expect("H3::new does no I/O")
+    .hooks(rec.clone());
+
+    ok(&t, a.addr, "/ticket").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    rec.seen.lock().unwrap().clear();
+
+    let wire = wire::Wire::in_front_of(b.addr);
+    wire.hold_server_flight(Duration::from_millis(800));
+    let watcher = wire.release_on_early_data(Duration::from_secs(5));
+
+    let mut marked = get(wire.addr, "/replayed");
+    marked.extensions_mut().insert(http_ng_core::AllowEarlyData);
+    let r = t.execute(marked).await.expect("the fallback served it");
+    assert_eq!(r.status(), 200);
+    let _ = r.into_body().collect().await.expect("body");
+
+    assert!(
+        watcher.join().expect("the relay's watcher thread"),
+        "the premise: the client really did put something into early data"
+    );
+    assert_eq!(
+        b.dialled(),
+        2,
+        "the premise: the early-data connection really was destroyed and a \
+         second one really was dialled — without this the assertions below \
+         are also what a transport that never fell back would report. \
+         `dialled` rather than `accepted` for the reason its sibling in \
+         `live.rs` gives at length: this client closes the first connection \
+         the instant it is up, and a server counting after the handshake \
+         can lose that race"
+    );
+    assert_eq!(
+        rec.connects().len(),
+        1,
+        "one request, one connection a caller can hold: the discarded one \
+         is how the second was reached and not a connection anyone can use"
+    );
+    assert_eq!(rec.heads().len(), 1, "one request, one response, one head");
+    assert_eq!(
+        rec.closes(),
+        vec![],
+        "and nothing closed: `Closed` names an `id`, and the connection \
+         that died never had one"
     );
 }
 
