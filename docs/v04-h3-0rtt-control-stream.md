@@ -162,8 +162,10 @@ complete in one go:
 - on a **0-RTT** connection to a server that refuses the early data, the write
   is parked exactly in the A–B gap when the refusal lands. Every time.
 
-So the fixture takes a `stream_receive_window`, and
-`crates/http-ng-h3/tests/zero_rtt.rs` carries the test.
+So the fixture takes a `stream_receive_window`
+(`server::start_two_sharing_a_certificate_and_a_tiny_window`), and
+`crates/http-ng-h3/tests/live.rs` carries the test, next to the sibling that
+covers the same rejection arriving one stream later.
 
 Reproduction rate, `-E` on the two 0-RTT tests, on the code as it stood:
 **2 of 2, in every run** — with the identical assertion and the identical
@@ -186,3 +188,133 @@ being one.** It does not invent a failure the code does not have: it holds the
 write open across the instant that already breaks it, which is the same instant
 the two captured failures were killed at, reached by a mechanism a test can
 schedule instead of hope for.
+
+
+## 4. The fix, and why it is at this layer
+
+`H3::connect` now dials **at most twice**, and the second dial does not take
+the 0-RTT shortcut. The dial itself moved into `H3::dial(key, addr, launched,
+early)`, whose `early` is deliberately *not* `key.early_data`: the key says
+what kind of connection this is and is what a later request must match to
+reuse it, while the parameter says whether **this attempt** may put anything
+into early data.
+
+```rust
+let launched = mark::<H, R>(&self.rt);
+if key.early_data {
+    match self.dial(key, addr, launched, true).await {
+        Ok(made) => return Ok(made),
+        Err(DialFailed::EarlyDataLost(_)) => {}
+        Err(DialFailed::Fatal(e)) => return Err(e),
+    }
+}
+self.dial(key, addr, launched, false).await.map_err(DialFailed::into_error)
+```
+
+**It is the first row of `crate::early`'s own table, one step later.** That
+row — `into_0rtt()` handing the `Connecting` back for want of key material —
+already falls through to a full handshake, and its sentence holds here
+verbatim: *"nothing was sent, so falling through to a full handshake risks
+nothing and tells the caller nothing."* Nothing had been sent. The request has
+not been formed at this point, let alone written, so this is **not a retry**
+and needs no `RetryKind` — the same distinction `http-ng-native` draws with
+*"this is not a second request, it is the first one, which never left."*
+
+Four decisions inside it are worth reading, because three of them are the
+places a wider fix would have gone wrong.
+
+**The condition is "we took the shortcut and the h3 client could not be built
+on it", and not the 0-RTT verdict.** Awaiting `quinn::ZeroRttAccepted` looks
+like the precise question and is not: it resolves `false` for a rejection
+*and* for a connection lost any other way, because `terminate` sends `false`
+on `on_connected` when it has not already fired
+(`quinn-0.11.11/src/connection.rs:1224`). A condition whose two arms cannot be
+told apart is one no test can pin, so `dial` asks the question it can answer —
+`zero_rtt.is_some()`, which is exactly *this connection's streams went out in
+early data*.
+
+**Exactly one extra dial, and only for a marked request.** Every other failure
+returns as it always did. The bound is not what is at stake — `stage` wraps
+this whole function in `within_connect`, so `Timeouts::connect` covers both
+dials and cannot be doubled by it. What a wider condition would cost is a
+second attempt that is a *deterministic repeat of the first*: the same
+arguments to the same `connect_with`, the same peer refusing the same
+handshake, spending a caller's bound to arrive at the error it already had.
+`live::a_connect_that_put_nothing_in_early_data_is_not_dialled_twice` is that
+half, and it needs a fixture of its own — `Behaviour::CloseOnAccept`, the one
+server here that makes `build` fail with no early data anywhere near it.
+
+**One mark for both attempts.** `ConnectTiming::tcp` is *the attempt*, and an
+attempt that spent a discarded early-data connection spent it. This is the one
+decision that was expected to be untestable and turned out not to be — see M6
+below.
+
+**The discarded connection is announced to nobody.** `Connected` is emitted by
+`H3::stage`, after `checkout` returns, and the fallback lives beneath it in
+`connect` — so a caller counting connections still sees one per request rather
+than one it can never use again. `Closed` is not emitted either, and that is
+the same rule `http-ng-wasi` reaches from the far end of the workspace: the
+discarded connection never had a `ConnectionId`, and *a `Closed` built from one
+would announce the end of a connection whose beginning was never announced*.
+`hooks::a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close`
+pins both, with `b.accepted() == 2` beside them so that "one `Connected`" is
+not also what a transport that never fell back would report.
+
+
+## 5. Mutation testing
+
+Anchor **213 tests**, `cargo nextest run -p http-ng-h3 -p http-ng-select
+--all-features --no-fail-fast`, verified before the run and after every
+restore. Each patch had to match exactly once. Restores are `git checkout`
+followed by `os.utime`, and the tests were committed before the first mutation.
+
+**Six applied: five killed, one survived and is recorded below; one control
+survived as intended.**
+
+| # | mutation | verdict | killed by |
+|---|---|---|---|
+| **M1** | the fallback is not taken — a 0-RTT rejection that killed the control stream is handed to the caller, i.e. **the defect itself** | **killed** (2) | `h3::live::a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either`, `h3::hooks::a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close` |
+| **M2** | a build failure on a connection that **did** go out in early data is classified fatal | **killed** (2) | the same two |
+| **M3** | a build failure on a connection that did **not** go out in early data is classified recoverable, so a failing connect is dialled twice | **killed** (1) | `h3::live::a_connect_that_put_nothing_in_early_data_is_not_dialled_twice` |
+| **M4** | the fallback dial takes the 0-RTT shortcut again — `early` ignored, the key's flag decides | **killed** (2) | the same two as M1 |
+| **M5** | every failure of a marked request's dial is recoverable (`From<Error> for DialFailed` yields `EarlyDataLost`), so a failing connect is dialled twice | **survived** | nothing — see below |
+| **M6** | the fallback gets its own mark, so `ConnectTiming::tcp` reports only the second attempt | **killed** (1) | `h3::hooks_cost::the_same_two_requests_with_a_hook_do_read_it` |
+| **C1** | **CONTROL** — `Staged`'s `Debug` reports nothing instead of what it holds | **survived, as intended** | nothing, and nothing should: no test asserts on that `Debug` and no code path reads it. Without a control, five kills would be indistinguishable from a harness that reports "killed" unconditionally |
+
+Three are worth reading twice.
+
+**M6 was expected to survive and did not, which is the best kind of surprise.**
+The claim it attacks is a `Duration` — that `ConnectTiming::tcp` covers both
+attempts — and this workspace has learned three times over that asserting on
+one turns a one-bit question into a benchmark. What killed it is
+`hooks_cost::the_same_two_requests_with_a_hook_do_read_it`, which counts
+**clock reads**: a second `mark::<H, R>` is a second `rt.now()`, and a test
+built to prove that a hook costs a clock read notices one that nothing asked
+for. A cost test standing in for a correctness one is the same shape as
+`docs/v04-staged-connect.md` §5's S6, where a DNS test caught a timeout
+arithmetic error.
+
+**M5 survived, and the honest statement is that it is close to unobservable
+rather than merely untested.** The variant it changes is only ever consulted
+for a request the caller marked, and the failures it would widen to are the
+ones before `build`: the crypto configuration, the endpoint, `connect_with`,
+and the full handshake on `into_0rtt`'s refusal path. Every one of them is a
+deterministic function of arguments the second dial would repeat exactly, so
+the caller gets the identical error either way; what a fixture would have to
+observe is the extra dial, and a dial that fails before the handshake is one
+the server never counts. The bound cannot be doubled (§4). The blast radius is
+therefore one wasted dial on a connect that was already failing — recorded
+rather than dressed up, and the reason the `From` impl carries a comment
+saying the recoverable variant is claimed at exactly one site.
+
+**The first scoring run of this harness was wrong, again, and differently.**
+`docs/v04-staged-connect.md` §5 records a run in which every mutation came
+back "survived" because `--no-fail-fast` was missing. This one had the flag
+and still scored seven survivals, because the regex scraping nextest's `FAIL`
+lines did not allow for the `(61/213)` progress counter — and for its
+right-aligned form, `( 24/213)`, which is a *second* bug in the same regex and
+was caught only after the first was fixed. The harness now cross-checks the
+number of names it scraped against nextest's own `N failed` on the `Summary`
+line and refuses to score a run where they disagree. **A mutation harness with
+no self-check reports what it wishes were true**, and the check that catches it
+has to be one it cannot satisfy by scraping nothing.
