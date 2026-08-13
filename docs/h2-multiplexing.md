@@ -438,6 +438,28 @@ rather than as a way of avoiding an opt-in.
    others* — stops holding vacuously and starts needing a test; P6 is that
    test's shape.
 
+### 8.1 Which assertions encode the policy
+
+Grepped rather than guessed, and the pleasant surprise is that **three of
+the five already say they are the ones that would change** — the discipline
+of writing the reason next to the assertion is what makes this list short.
+
+| test | today | under sharing |
+|---|---|---|
+| `http2.rs::dropping_one_exchange_leaves_a_concurrent_one_alone` | `accepted == 2`, *"which is what makes the survivor's connection unreachable from the cancelled request"* | `1`. Its own doc already says: *"The day that number becomes 1, this test's other assertion is what has to keep holding, and it will not hold for free"* — W1's rule, no longer vacuous |
+| `grpc_shape.rs::two_concurrent_calls_take_two_connections_rather_than_two_streams` | `accepted == 2`, *"a recorded limitation with `Spawn` behind it"* | inverts, name included |
+| `grpc_shape.rs::cancelling_a_call_ends_it_at_the_server_and_leaves_the_next_one_alone` | `vec![Ending::ConnectionGone]`, and `accepted == 2` because *"the cancelled one was not returned to the pool"* | `Ending::Reset("CANCEL")` — the enum already has the variant and nothing produces it — and `1`, the connection surviving its cancelled stream |
+| `grpc_shape.rs::a_ping_to_a_pooled_connection_waits_for_the_next_call` | an A/B: nothing within 750 ms while pooled, answered by the next call | inverts (L3) |
+| `http2.rs`, two **sequential** requests reuse one connection (`accepted == 1`) | unchanged | unchanged — sharing does not change what pooling already did |
+| `grpc_shape.rs::a_goaway_costs_a_connection_and_not_the_next_call` | `accepted == 2` | unchanged: a `GOAWAY` costs the connection either way |
+
+The new test the change owes is the one
+`dropping_one_exchange_leaves_a_concurrent_one_alone` names: **cancelling
+one stream must not tear down its neighbour on the same connection**. P6 is
+its shape — a survivor and a doomed call on one connection, the server
+recording a `CANCEL` and answering the survivor, `accepted == 1` so that
+the two provably shared.
+
 ## 9. What is deliberately left open
 
 ### 9.1 When to open a second connection — needs measuring first
