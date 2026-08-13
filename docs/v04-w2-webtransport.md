@@ -293,19 +293,32 @@ the control stream, and a control stream that ends is
   here beside the stream header's, the graph is unchanged at 49 crates,
   and the "demultiplexer keyed by session ID" is a filter with one
   subject, because a `Session` still owns the h3 client.
-- **The capsule protocol** — `CLOSE_WEBTRANSPORT_SESSION` and
-  `DRAIN_WEBTRANSPORT_SESSION`. Dropping a `Session` ends it the other way
-  the draft allows, by closing the CONNECT stream. A `close()` method that
-  did no more than `drop` would be a second name for one behaviour; a real
-  one carries an application error code and a reason string on the CONNECT
-  stream, and needs the *reading* half below to observe the peer's.
-- **Observing the session's end.** Nothing polls the CONNECT stream after
-  the response, so a peer that closes the session is not noticed until a
-  stream operation fails. Needs a driver — and that is the one place a
-  future version might have to spawn, because "the caller's poll" has no
-  natural home once `Session` has no `poll_next`.
-- **`GOAWAY`.** Same cause: the h3 driver is not polled after
-  establishment.
+- **The capsule protocol and observing the session's end — since done,
+  and they were one item rather than two**:
+  [`docs/v04-w2-capsules.md`](v04-w2-capsules.md). The sentence below that
+  said a real `close()` *"needs the reading half"* was the join.
+  `Session::close(code, reason)` writes a `CLOSE_WEBTRANSPORT_SESSION`
+  capsule and `Session::closed()` reads the peer's, so a clean close is
+  `Ok` and a connection that vanished is `Err` — `http-ng-fetch`'s
+  `wasClean`, for a session. `DRAIN_WEBTRANSPORT_SESSION` is skipped along
+  with every other unknown capsule type, which is what RFC 9297 §3.2 asks
+  of a receiver; surfacing it needs a second observation channel, since a
+  drain is not an end.
+
+  **The guess below about a driver was wrong, and that is the finding.**
+  Nothing has to be spawned: `h3`'s `RequestStream::poll_recv_data` reads
+  the CONNECT stream straight off its own `quinn::RecvStream`, and the
+  driver owns the *control* stream and nothing else. So `closed()` is the
+  caller's own future, exactly like `recv_datagram`, and a caller that
+  never awaits it never learns the session ended. The graph is unchanged at
+  49 crates: `h3` 0.0.8 has no capsule code, nor has `h3-datagram` 0.0.2,
+  nor has the crate named `h3-webtransport` 0.1.2 — and the one crate that
+  does, `web-transport-proto` 0.6.0, is 48 crates with `url` and ICU among
+  them.
+- **`GOAWAY`.** Same cause, and unlike the two items above it really is
+  the driver's: `GOAWAY` arrives on the h3 **control** stream, which the
+  driver owns and nobody polls. The CONNECT stream being readable says
+  nothing about it.
 - **Server-initiated streams.** Unidirectional ones are unreachable
   without a change inside `h3` (§3b). Bidirectional ones are reachable —
   `quinn::Connection::accept_bi`, read the `0x41` and the session ID, match
