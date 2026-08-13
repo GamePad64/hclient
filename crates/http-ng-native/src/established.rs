@@ -67,6 +67,20 @@ where
     H1(crate::h1::Established<I>),
     #[cfg(feature = "http2")]
     H2(Box<crate::http2::Established<I>>),
+    /// An HTTP/2 connection **somebody else is driving** — a
+    /// `SendRequest` clone and no `Connection`, because the connection is
+    /// inside the task [`crate::Native::multiplexed`] spawned. See
+    /// [`crate::http2::Shared`].
+    ///
+    /// It carries no `I`, which is the visible shape of the difference:
+    /// the other two variants *are* a connection and this one is a claim
+    /// on one. The two never coexist under a single [`crate::Native`] for
+    /// a given origin — whether connections are shared is decided once, at
+    /// construction — but they can be found in one pool for different
+    /// origins, and the enum is what keeps that from needing a fourth
+    /// component in [`crate::pool::PoolKey`].
+    #[cfg(feature = "http2")]
+    H2Shared(crate::http2::Shared),
 }
 
 impl<I> Established<I>
@@ -86,6 +100,43 @@ where
             Established::H1(e) => e.id,
             #[cfg(feature = "http2")]
             Established::H2(e) => e.id,
+            #[cfg(feature = "http2")]
+            Established::H2Shared(s) => s.id,
+        }
+    }
+
+    /// A clone of this entry when it is a **shared** connection, and
+    /// `None` for one that is checked out exclusively.
+    ///
+    /// This is the whole of the `take` -> `borrow` difference, and it is
+    /// asked of the value rather than of the transport on purpose: a pool
+    /// can hold both kinds — a `Native` that starts sharing does not
+    /// retire the exclusive entries an earlier configuration left — and
+    /// "which verb applies" is a property of the connection, not of the
+    /// caller's intent. See [`crate::pool::Pool::take`].
+    #[cfg(feature = "http2")]
+    pub(crate) fn borrowed(&self) -> Option<Established<I>> {
+        match self {
+            Established::H2Shared(s) => Some(Established::H2Shared(s.clone())),
+            _ => None,
+        }
+    }
+
+    /// Without the feature there is no shared variant to be, so every
+    /// entry is taken — the verb this pool had before v0.4.
+    #[cfg(not(feature = "http2"))]
+    pub(crate) fn borrowed(&self) -> Option<Established<I>> {
+        None
+    }
+
+    /// Which shared connection this is, for the one operation that has to
+    /// name one — see [`crate::http2::SharedId`] and
+    /// [`crate::pool::Pool::forget_shared`].
+    #[cfg(feature = "http2")]
+    pub(crate) fn shared_slot(&self) -> Option<crate::http2::SharedId> {
+        match self {
+            Established::H2Shared(s) => Some(s.slot),
+            _ => None,
         }
     }
 }
@@ -99,6 +150,8 @@ where
             Established::H1(e) => e.fmt(f),
             #[cfg(feature = "http2")]
             Established::H2(e) => e.fmt(f),
+            #[cfg(feature = "http2")]
+            Established::H2Shared(s) => s.fmt(f),
         }
     }
 }
@@ -155,6 +208,8 @@ where
         Established::H1(e) => crate::h1::is_reusable(e).await,
         #[cfg(feature = "http2")]
         Established::H2(e) => crate::http2::is_reusable(e).await,
+        #[cfg(feature = "http2")]
+        Established::H2Shared(s) => crate::http2::shared_is_reusable(s).await,
     }
 }
 
@@ -207,6 +262,18 @@ where
         }
         #[cfg(feature = "http2")]
         Established::H2(e) => crate::http2::exchange(*e, req, checkin).await.map(|r| {
+            r.map(|b| NativeBody {
+                inner: Inner::H2(Box::new(b)),
+            })
+        }),
+        // The `checkin` is dropped here, unused, and that is the shape
+        // rather than an oversight: a shared connection was never taken
+        // out of the pool, so there is nothing to put back. It is still
+        // *made* by the caller, because the caller cannot tell which
+        // variant it holds without a second `match` that would then have
+        // to agree with this one. See `crate::http2::exchange_shared`.
+        #[cfg(feature = "http2")]
+        Established::H2Shared(s) => crate::http2::exchange_shared(s, req).await.map(|r| {
             r.map(|b| NativeBody {
                 inner: Inner::H2(Box::new(b)),
             })

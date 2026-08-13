@@ -1101,7 +1101,8 @@ mod tests {
         {
             crate::established::Established::H1(e) => e,
             #[cfg(feature = "http2")]
-            crate::established::Established::H2(_) => {
+            crate::established::Established::H2(_)
+            | crate::established::Established::H2Shared(_) => {
                 panic!("an HTTP/1.1 key must not hand back an HTTP/2 connection")
             }
         };

@@ -134,11 +134,12 @@ use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
-use http_ng_core::unversioned::ConnectionId;
+use http_ng_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use http_ng_core::{Error, ErrorKind};
 use hyper::rt::{Read, Write};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 /// The one conversion point from [`h2::Error`] to [`http_ng_core::Error`]
@@ -1192,4 +1193,327 @@ where
     fn size_hint(&self) -> SizeHint {
         SizeHint::default()
     }
+}
+
+// ── Sharing one connection between concurrent requests (v0.4) ───────────
+//
+// Everything below this line is reached only from
+// [`crate::Native::multiplexed`], and a build that never calls it runs the
+// code above exactly as it did before. `docs/h2-multiplexing.md` is the
+// investigation this implements and §8 is its decision list.
+
+/// Which shared connection a pool entry is, for the one operation that
+/// needs to name one: removing the entry a borrowed clone came from when
+/// that clone turns out to be dead.
+///
+/// **Not [`ConnectionId`]**, and the difference is the whole reason this
+/// exists. `ConnectionId` is the observability seam's name for a
+/// connection, and in a build with no hook every connection wears
+/// `ConnectionId::UNWATCHED` — so an eviction keyed on it would empty the
+/// bucket rather than remove one entry, in precisely the builds that have
+/// no way of noticing. This counter is unconditional and private, and
+/// costs one relaxed increment per **shared connection**, never per
+/// request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SharedId(u64);
+
+impl SharedId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// A shared HTTP/2 connection, as the pool holds it and as an exchange
+/// borrows it.
+///
+/// **A `SendRequest` clone and no `Connection`** — the connection is
+/// inside the spawned [`H2Driver`], which is what makes this cheap to
+/// clone and what makes the pooled copy the connection's *owner*: h2 ends
+/// the driver when the last `SendRequest` for it is dropped, so dropping
+/// the pooled entry closes the socket. That is the property
+/// [`crate::pool`]'s "the idle timeout is a filter, not a reaper" stops
+/// applying to.
+#[derive(Clone)]
+pub(crate) struct Shared {
+    sender: h2::client::SendRequest<Bytes>,
+    /// The connection's id for [`Hooks`], carried so that a `Reused` names
+    /// the same connection its `Connected` did — exactly as
+    /// [`Established::id`] does for an exclusive one.
+    pub(crate) id: ConnectionId,
+    /// See [`SharedId`].
+    pub(crate) slot: SharedId,
+}
+
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("h2::Shared")
+            .field("slot", &self.slot.0)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Splits a freshly handshaken connection into the half the pool keeps and
+/// the half a spawned task drives.
+///
+/// One function rather than a struct literal at each call site, because
+/// the two halves must be made in the same breath: a [`Shared`] published
+/// without its driver being spawned is a connection nobody will ever
+/// poll — which is [`H2Driver`]'s first failure mode, arrived at by
+/// accident instead of by a caller's mistake.
+pub(crate) fn share<I, H>(est: Established<I>, hooks: H) -> (Shared, H2Driver<I, H>)
+where
+    I: Read + Write + Unpin,
+{
+    let Established { sender, conn, id } = est;
+    (
+        Shared {
+            sender,
+            id,
+            slot: SharedId::next(),
+        },
+        H2Driver { conn, hooks, id },
+    )
+}
+
+/// The future [`crate::Native::multiplexed`] spawns: one HTTP/2
+/// connection, polled by nobody's request.
+///
+/// # Why this is a hand-written struct and not an `async` block
+///
+/// [`crate::pool::Reaper`]'s reason, verbatim:
+/// [`http_ng_rt::Spawn<F>`](http_ng_rt::Spawn) makes the future a type
+/// parameter **of the trait**, so a bound has to name it, and an `async`
+/// block has no name.
+///
+/// # What it is for, beyond multiplexing
+///
+/// Three separate facts follow from a connection being polled by
+/// something that is not a request future, and only the first is what the
+/// feature is named after:
+///
+/// 1. Several requests can be in flight on it at once.
+/// 2. The `RST_STREAM(CANCEL)` [`Pump`]'s `Drop` queues **reaches the
+///    wire**: the connection outlives the stream, so there is still
+///    something to write it. Its own doc comment records that it was
+///    unobservable until this existed.
+/// 3. A `PING` is answered while the connection is idle, which nothing in
+///    this transport could do before — an idle pooled connection has no
+///    holder at all.
+///
+/// # It is at most as good as the executor under it
+///
+/// `Spawn::spawn` returns `()`. An executor that is never run accepts this
+/// task, drops it, and cannot say so — and here that is **worse than the
+/// reaper's version of the same mistake**, which costs file descriptors:
+/// a request on a connection whose driver is never polled does not fail,
+/// it **hangs**. Measured (`docs/h2-multiplexing.md` P8): dropped on the
+/// floor, requests fail with a broken pipe; held and never polled, no
+/// verdict in 500 ms. `Timeouts::first_byte` is the only bound that cuts
+/// it, and it is not a default. Said again on
+/// [`crate::Native::multiplexed`], which is where a caller meets it.
+pub struct H2Driver<I, H>
+where
+    I: Read + Write + Unpin,
+{
+    conn: h2::client::Connection<TokioIo<I>, Bytes>,
+    /// **The driver carries the hook, and that is what makes `Closed`
+    /// reachable at all for a shared connection.** It dies inside this
+    /// future, so nothing else is in a position to report it — the
+    /// response bodies that used to own the connection do not, and
+    /// `crate::established::Inner::H2`'s doc records that gap. The price
+    /// is `H: Send + 'static` wherever the spawner demands it, which is
+    /// paid on `multiplexed()` and nowhere else.
+    hooks: H,
+    id: ConnectionId,
+}
+
+impl<I, H> std::fmt::Debug for H2Driver<I, H>
+where
+    I: Read + Write + Unpin,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Driver")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<I, H> Future for H2Driver<I, H>
+where
+    I: Read + Write + Unpin,
+    H: Hooks + Unpin,
+{
+    /// `()`, and reached exactly once: when the connection ends. There is
+    /// nothing for a driver to hand back — every error it can see belongs
+    /// to a stream, which learns of it through [`h2`] itself, or to the
+    /// connection, whose end is what this reports.
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.conn).poll(cx) {
+            Poll::Ready(Ok(())) => {
+                // `Ended` rather than `Failed`: h2 resolves the connection
+                // future with `Ok` for a clean close and for a `GOAWAY`
+                // carrying no error, which is exactly the seam's *"nothing
+                // went wrong — there is simply no second request to be had
+                // on it"*.
+                this.hooks.on(Event::Closed(Closed {
+                    id: this.id,
+                    reason: CloseReason::Ended,
+                }));
+                Poll::Ready(())
+            }
+            Poll::Ready(Err(e)) => {
+                let error = from_h2_error(e, ErrorKind::Connect);
+                this.hooks.on(Event::Closed(Closed {
+                    id: this.id,
+                    reason: CloseReason::Failed(&error),
+                }));
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Whether a **shared** entry is still worth a request.
+///
+/// One `poll_ready` and no poll of a `Connection`, because there is no
+/// `Connection` here to poll and because there no longer needs to be:
+/// [`is_reusable`]'s contract says one poll is the only moment a `GOAWAY`
+/// is noticed *"because nothing polls an idle connection"*, and on this
+/// path something does. Measured (`docs/h2-multiplexing.md` P11): a
+/// `GOAWAY` that had arrived 100 ms earlier, while nothing touched the
+/// pooled clone, was reported by the first `poll_ready` 20 µs later.
+///
+/// **`Pending` is not "the connection is full".** h2's `poll_ready`
+/// answers from a connection error, the next stream id, and *this clone's
+/// own* pending stream — never from the peer's `MAX_CONCURRENT_STREAMS`
+/// (P10, read from `h2-0.4.15/src/proto/streams/streams.rs`'s
+/// `poll_pending_open` and then measured). A full connection answers
+/// `Ready(Ok)` and queues the stream, so treating `Pending` as "not worth
+/// a request" — which is [`is_reusable`]'s existing rule — stays right
+/// here rather than turning a busy connection into a fresh socket.
+pub(crate) async fn shared_is_reusable(shared: &mut Shared) -> bool {
+    std::future::poll_fn(|cx| {
+        Poll::Ready(matches!(shared.sender.poll_ready(cx), Poll::Ready(Ok(()))))
+    })
+    .await
+}
+
+/// One request over a connection somebody else is driving.
+///
+/// [`exchange`] with the two things a shared connection does not have
+/// taken out, and nothing else changed:
+///
+/// - **No `Connection` to poll.** Every poll of it in [`exchange`] — the
+///   liveness check before the head, the one beside `poll_ready`, the one
+///   at the top of the response loop — belongs to the driver now. What
+///   made those polls necessary was that nothing else would do them.
+/// - **No [`CheckIn`].** The pool never gave this connection away, so
+///   there is nothing to hand back: the entry stayed where it was and this
+///   function holds a clone of it. [`H2Body::hand_back_to_pool`] is
+///   consequently a no-op here, because `reuse` is `None`.
+///
+/// The `Failed` split is the same one, drawn in the same place. A
+/// `poll_ready` that answers `Err` is a connection that went away before
+/// the head was handed over, so the request is still ours and comes back
+/// as [`Failed::NotSent`](crate::established::Failed::NotSent) — which is
+/// what lets `Native::run` retry it on a fresh connection, exactly as it
+/// does for a pooled exclusive one.
+pub(crate) async fn exchange_shared<I>(
+    shared: Shared,
+    req: http::Request<OutgoingBody>,
+) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
+where
+    I: Read + Write + Unpin,
+{
+    use crate::established::Failed;
+
+    let Shared { mut sender, id, .. } = shared;
+
+    // The request is still OURS until `send_request`, and this is the one
+    // question that can be asked while it is: is this connection alive.
+    let ready = std::future::poll_fn(|cx| match sender.poll_ready(cx) {
+        Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+        Poll::Ready(Err(e)) => Poll::Ready(Err(from_h2_error(e, ErrorKind::Connect))),
+        Poll::Pending => Poll::Pending,
+    })
+    .await;
+    if let Err(error) = ready {
+        return Err(Failed::NotSent {
+            error,
+            request: Box::new(req),
+        });
+    }
+
+    let (mut parts, outgoing) = req.into_parts();
+    strip_connection_headers(&mut parts.headers);
+    parts.version = http::Version::HTTP_2;
+    let eos = outgoing.is_end_stream();
+    let head = http::Request::from_parts(parts, ());
+
+    let (mut resp_fut, send_stream) = match sender.send_request(head, eos) {
+        Ok(pair) => pair,
+        Err(e) => return Err(Failed::Sent(from_h2_error(e, ErrorKind::Connect))),
+    };
+
+    let mut pump = (!eos).then(|| Pump::new(outgoing, send_stream));
+    let resp = std::future::poll_fn(|cx| {
+        loop {
+            if let Some(p) = pump.as_mut() {
+                match p.poll(cx) {
+                    Poll::Ready(Ok(_)) => {
+                        pump = None;
+                        // Round the loop rather than falling through, for
+                        // [`exchange`]'s reason one level removed: the
+                        // frames the pump queued reach the socket from
+                        // inside the driver's `Connection::poll`, and what
+                        // wakes the driver is the queueing itself.
+                        continue;
+                    }
+                    Poll::Ready(Err(e)) => {
+                        pump = None;
+                        return Poll::Ready(Err(Failed::Sent(e)));
+                    }
+                    // The duplex line, unchanged: a write that cannot
+                    // proceed must not stop the response from arriving.
+                    Poll::Pending => {}
+                }
+            }
+            return match Pin::new(&mut resp_fut).poll(cx) {
+                Poll::Ready(Ok(r)) => Poll::Ready(Ok(r)),
+                Poll::Ready(Err(e)) => {
+                    Poll::Ready(Err(Failed::Sent(from_h2_error(e, ErrorKind::Connect))))
+                }
+                // No `conn_done` arm, and none is owed. [`exchange`] needs
+                // one because it is the only thing polling the connection,
+                // so a connection that ended while it waited would leave it
+                // waiting for ever; here the driver is still polling, and
+                // h2 resolves every live stream with the connection's error
+                // when it ends.
+                Poll::Pending => Poll::Pending,
+            };
+        }
+    })
+    .await;
+    let resp = resp?;
+
+    let (parts, recv) = resp.into_parts();
+    Ok(http::Response::from_parts(
+        parts,
+        H2Body {
+            recv,
+            // Both `None`, and they are the two fields this whole variant
+            // is about — see this function's doc comment.
+            conn: None,
+            reuse: None,
+            id,
+            pump,
+            data_done: false,
+            ended: false,
+        },
+    ))
 }

@@ -463,6 +463,16 @@ where
     /// drift from the behaviour.
     config: Option<PoolConfig>,
     idle: Mutex<HashMap<PoolKey, Vec<Idle<I>>>>,
+    /// Which origins have a connect in flight, and who is waiting for it —
+    /// see [`Pool::begin_connect`]. Empty, and never looked at, unless
+    /// [`crate::Native::multiplexed`] was asked for.
+    ///
+    /// A second `Mutex` rather than a second field under the first: the
+    /// two are locked at different moments and never together, and one
+    /// lock held across both would put a checkout behind a connect that
+    /// has not finished.
+    #[cfg(feature = "http2")]
+    connecting: Mutex<HashMap<PoolKey, Vec<std::task::Waker>>>,
 }
 
 /// Hand-written: `#[derive(Clone)]` would demand `I: Clone`, which no IO
@@ -502,6 +512,8 @@ where
             inner: Arc::new(Inner {
                 config,
                 idle: Mutex::new(HashMap::new()),
+                #[cfg(feature = "http2")]
+                connecting: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -567,21 +579,81 @@ where
     /// is the seam through which time enters this crate, and a
     /// `std::time::Instant::now()` here would quietly disagree with a test
     /// running under `tokio::time::pause()`.
+    /// # `take` is the verb for an exclusive connection and `borrow` for a
+    /// shared one
+    ///
+    /// A [`crate::established::Established::H2Shared`] entry is a
+    /// `SendRequest` clone, not a connection, so there is nothing
+    /// exclusive to hand over: this **leaves the entry where it is** and
+    /// returns a clone of it, and no [`CheckIn`] is minted for the way
+    /// home because there is no way home to mint. Which of the two happens
+    /// is asked of the entry ([`Established::borrowed`]) rather than of a
+    /// flag on the pool, so a bucket that holds both kinds — a `Native`
+    /// that starts sharing does not retire what an earlier configuration
+    /// checked in — cannot be read wrong.
+    ///
+    /// **A borrowed entry's deadline is restamped**, and that is
+    /// [`PoolConfig::idle_timeout`]'s own rule rather than an exception to
+    /// it: the deadline is measured *"from when the connection was last
+    /// handed out"*, and borrowing is handing out. Without the restamp a
+    /// shared connection under continuous load would be dropped one idle
+    /// timeout after the first request that ever used it.
     pub(crate) fn take(&self, key: &PoolKey, now: Duration) -> Option<Established<I>> {
+        let renewed = self
+            .inner
+            .config
+            .map(|cfg| now.saturating_add(cfg.idle_timeout));
         let mut idle = self.inner.idle.lock().expect("connection pool poisoned");
         let bucket = idle.get_mut(key)?;
         let taken = loop {
-            let entry = bucket.pop()?;
-            if entry.expires_at > now {
-                break entry.est;
+            let entry = bucket.last()?;
+            if entry.expires_at <= now {
+                // Dropped here, holding the lock: dropping a connection
+                // closes a socket, which does not block. On a shared entry
+                // that drop is the whole of the close — the driver ends
+                // when the last `SendRequest` goes — where on an exclusive
+                // one it drops a socket nobody was polling.
+                bucket.pop();
+                continue;
             }
-            // Dropped here, holding the lock: dropping a connection closes a
-            // socket, which does not block.
+            let Some(borrowed) = entry.est.borrowed() else {
+                break bucket.pop().expect("the entry just looked at").est;
+            };
+            if let Some(expires_at) = renewed {
+                bucket
+                    .last_mut()
+                    .expect("the entry just looked at")
+                    .expires_at = expires_at;
+            }
+            break borrowed;
         };
         if bucket.is_empty() {
             idle.remove(key);
         }
         Some(taken)
+    }
+
+    /// Removes the shared entry a borrowed clone came from.
+    ///
+    /// The other half of borrowing, and it is not optional: a clone that
+    /// [`crate::established::is_reusable`] rejects leaves the entry it was
+    /// cloned from still in the pool, so a checkout loop that only dropped
+    /// the clone would borrow the same dead connection for ever.
+    ///
+    /// Keyed on [`crate::http2::SharedId`] rather than on
+    /// [`http_ng_core::unversioned::ConnectionId`], because every
+    /// connection in a build with no hook wears the same `UNWATCHED` id —
+    /// see `SharedId`'s own doc.
+    #[cfg(feature = "http2")]
+    pub(crate) fn forget_shared(&self, key: &PoolKey, slot: crate::http2::SharedId) {
+        let mut idle = self.inner.idle.lock().expect("connection pool poisoned");
+        let Some(bucket) = idle.get_mut(key) else {
+            return;
+        };
+        bucket.retain(|e| e.est.shared_slot() != Some(slot));
+        if bucket.is_empty() {
+            idle.remove(key);
+        }
     }
 
     /// Offers a connection back to the pool.
@@ -791,6 +863,154 @@ where
             drop(pool);
             this.sleep = Some(Box::pin(this.rt.sleep(wake.max(MIN_REAP_INTERVAL))));
         }
+    }
+}
+
+// ── One connect per origin at a time (v0.4, multiplexing only) ──────────
+
+/// The single-flight half of sharing, and it is not an optimisation.
+///
+/// Sharing a connection means a *second* request finds the first one's
+/// connection in the pool — and a burst of N concurrent requests to a cold
+/// origin has no first one: all N look, all N find nothing, and all N
+/// connect. The pool would then hold N shared connections and share each
+/// with nobody, which is today's behaviour with a spawned task added.
+///
+/// So one request connects and the others wait for it. What they wait on
+/// is this: a mark under the origin's [`PoolKey`], taken before the
+/// connect and released by [`Connecting`]'s `Drop` — so a connect that
+/// fails, or a request whose future is dropped mid-connect, releases the
+/// herd rather than stranding it.
+///
+/// **A waiter waits once.** After the wake it looks in the pool again, and
+/// if there is still nothing there it takes the mark itself and connects.
+/// That bounds the cost of a failed connect to one extra wait per waiter,
+/// where a loop would let a permanently unreachable origin hold a request
+/// for ever.
+#[cfg(feature = "http2")]
+impl<I> Pool<I>
+where
+    I: Read + Write + Unpin,
+{
+    /// Claim the right to open the connection for `key`, or `None` if
+    /// somebody else already has it.
+    pub(crate) fn begin_connect(&self, key: &PoolKey) -> Option<Connecting<I>> {
+        let mut connecting = self
+            .inner
+            .connecting
+            .lock()
+            .expect("connection pool poisoned");
+        if connecting.contains_key(key) {
+            return None;
+        }
+        connecting.insert(key.clone(), Vec::new());
+        Some(Connecting {
+            pool: self.clone(),
+            key: key.clone(),
+        })
+    }
+
+    /// Resolves when the in-flight connect for `key` is over — at once
+    /// when there is none, which is what makes this safe to call after a
+    /// `begin_connect` that came back `None` and lost its race in between.
+    pub(crate) fn wait_for_connect<'a>(&'a self, key: &'a PoolKey) -> WaitForConnect<'a, I> {
+        WaitForConnect { pool: self, key }
+    }
+
+    /// Releases the mark and wakes everyone waiting on it — [`Connecting`]'s
+    /// `Drop`, and nothing else.
+    fn finish_connect(&self, key: &PoolKey) {
+        let wakers = {
+            let mut connecting = self
+                .inner
+                .connecting
+                .lock()
+                .expect("connection pool poisoned");
+            connecting.remove(key)
+        };
+        // Woken outside the lock, for the reason every other wake in this
+        // workspace is: a waker may run arbitrary code, and running it
+        // under a lock a woken task then wants is how a deadlock is
+        // written.
+        for w in wakers.into_iter().flatten() {
+            w.wake();
+        }
+    }
+}
+
+/// The right to be the one opening a connection to an origin — see
+/// [`Pool::begin_connect`].
+///
+/// Held across the connect and dropped as soon as the connection is in the
+/// pool, **not** for the rest of the request: what a waiter is waiting for
+/// is a connection to exist, and making it wait for somebody else's
+/// response as well would turn one slow server into a queue.
+#[cfg(feature = "http2")]
+pub(crate) struct Connecting<I>
+where
+    I: Read + Write + Unpin,
+{
+    pool: Pool<I>,
+    key: PoolKey,
+}
+
+#[cfg(feature = "http2")]
+impl<I> Drop for Connecting<I>
+where
+    I: Read + Write + Unpin,
+{
+    fn drop(&mut self) {
+        self.pool.finish_connect(&self.key);
+    }
+}
+
+#[cfg(feature = "http2")]
+impl<I> std::fmt::Debug for Connecting<I>
+where
+    I: Read + Write + Unpin,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Connecting")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+/// Waits for whoever holds the mark for one origin to be done with it.
+#[cfg(feature = "http2")]
+pub(crate) struct WaitForConnect<'a, I>
+where
+    I: Read + Write + Unpin,
+{
+    pool: &'a Pool<I>,
+    key: &'a PoolKey,
+}
+
+#[cfg(feature = "http2")]
+impl<I> Future for WaitForConnect<'_, I>
+where
+    I: Read + Write + Unpin,
+{
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut connecting = self
+            .pool
+            .inner
+            .connecting
+            .lock()
+            .expect("connection pool poisoned");
+        let Some(wakers) = connecting.get_mut(self.key) else {
+            return Poll::Ready(());
+        };
+        // `will_wake` rather than an unconditional push: a spurious
+        // re-poll of this future would otherwise add a second waker for
+        // the same task on every wake-up, and the list is only emptied
+        // when the connect ends.
+        if !wakers.iter().any(|w| w.will_wake(cx.waker())) {
+            wakers.push(cx.waker().clone());
+        }
+        Poll::Pending
     }
 }
 
