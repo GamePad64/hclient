@@ -949,6 +949,73 @@ async fn a_replayed_0_rtt_request_reports_one_head_and_one_connection() {
     );
 }
 
+/// The same, when the rejection **destroys** the early-data connection and
+/// the transport dials a second one — still one `Connected`, and still no
+/// `Closed`.
+///
+/// This is the event-level half of
+/// `live::a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either`,
+/// and it exists because the fix for that could have been made observable
+/// in two wrong ways. Announcing the discarded connection would mean two
+/// `Connected` for one request, so a caller counting connections would
+/// count a connection it can never see again; announcing its death would
+/// be worse, because `Closed` names an `id` and this connection never had
+/// one — the same rule `http-ng-wasi` reasons its way to from the other
+/// end, that *a `Closed` built from one would announce the end of a
+/// connection whose beginning was never announced*.
+///
+/// What makes both automatic rather than remembered is where the events
+/// are emitted: `H3::stage` reports after `checkout` returns, and the
+/// fallback is inside `H3::connect`, beneath it. The assertions are here
+/// so that moving either one fails a line.
+///
+/// The server-side counts are `live.rs`'s and are not repeated; what is
+/// repeated is `b.accepted()`, because without it "one `Connected`" would
+/// also be what a transport that never fell back reported.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close() {
+    let (a, b) = server::start_two_sharing_a_certificate_and_a_tiny_window(Behaviour::Echo, 8);
+    let rec = Recorder::default();
+    let t = H3::new(
+        TokioHandle::current().expect("inside #[tokio::test]"),
+        server::client_tls(&a.cert_der),
+        IpLiteralOnly,
+    )
+    .expect("H3::new does no I/O")
+    .hooks(rec.clone());
+
+    ok(&t, a.addr, "/ticket").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    rec.seen.lock().unwrap().clear();
+
+    let mut marked = get(b.addr, "/replayed");
+    marked.extensions_mut().insert(http_ng_core::AllowEarlyData);
+    let r = t.execute(marked).await.expect("the fallback served it");
+    assert_eq!(r.status(), 200);
+    let _ = r.into_body().collect().await.expect("body");
+
+    assert_eq!(
+        b.accepted(),
+        2,
+        "the premise: the early-data connection really was destroyed and a \
+         second one really was dialled — without this the assertions below \
+         are also what a transport that never fell back would report"
+    );
+    assert_eq!(
+        rec.connects().len(),
+        1,
+        "one request, one connection a caller can hold: the discarded one \
+         is how the second was reached and not a connection anyone can use"
+    );
+    assert_eq!(rec.heads().len(), 1, "one request, one response, one head");
+    assert_eq!(
+        rec.closes(),
+        vec![],
+        "and nothing closed: `Closed` names an `id`, and the connection \
+         that died never had one"
+    );
+}
+
 // ── the two rules the seam is built on ──────────────────────────────────
 
 /// A panicking hook unwinds to the caller and leaves the transport usable —
