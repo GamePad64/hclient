@@ -28,6 +28,22 @@ pub enum Behaviour {
     Slow(std::time::Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
+    /// Complete the QUIC handshake and then **close the connection at
+    /// once**, before any HTTP/3 layer exists on it.
+    ///
+    /// The only server here that makes a client's
+    /// `h3::client::builder().build(..)` fail — and only in company with
+    /// [`start_two_sharing_a_certificate_and_a_tiny_window`], because
+    /// without a window the client's SETTINGS write completes locally
+    /// before the close arrives and `build` succeeds. Paired with the
+    /// window it is deterministic: the write is parked for credit that a
+    /// closing server never sends.
+    ///
+    /// It exists for the negative half of `H3::connect`'s fallback — a
+    /// connect that failed with **nothing** in early data must not be
+    /// dialled a second time, or a caller's `Timeouts::connect` is spent
+    /// twice.
+    CloseOnAccept,
     /// Send the response **head**, wait, and then tear the whole QUIC
     /// connection down — so the failure arrives while the caller is reading
     /// the body rather than while it is waiting for a head.
@@ -304,6 +320,12 @@ fn start_windowed(behaviour: Behaviour, id: Identity, window: u64) -> Server {
     start_inner(behaviour, None, id, false, v4(), Some(window)).expect("a v4 loopback bind")
 }
 
+/// One server with the same window, for the behaviour that needs the write
+/// parked and has no ticket to resume — see [`Behaviour::CloseOnAccept`].
+pub fn start_with_a_tiny_window(behaviour: Behaviour, window: u64) -> Server {
+    start_windowed(behaviour, identity(), window)
+}
+
 pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
     start_full(behaviour, idle, identity())
 }
@@ -452,6 +474,13 @@ fn start_inner(
                         conn
                     };
                     a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if behaviour == Behaviour::CloseOnAccept {
+                        // Before the h3 layer exists, deliberately: this
+                        // behaviour is about the client's `build`, not
+                        // about any request.
+                        conn.close(0u32.into(), b"nothing here");
+                        return;
+                    }
                     // Kept beside the h3 layer, for `DieAfterHead`: closing
                     // the QUIC connection is not something the h3 API
                     // exposes, and it is the point of that behaviour.

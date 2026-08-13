@@ -11,7 +11,7 @@ mod server;
 
 use http_body_util::BodyExt;
 use http_ng_core::unversioned::Transport;
-use http_ng_core::{AllowEarlyData, EarlyDataSupport, RequestBody};
+use http_ng_core::{AllowEarlyData, EarlyDataSupport, ErrorKind, RequestBody};
 use http_ng_dns::IpLiteralOnly;
 use http_ng_h3::H3;
 use http_ng_rt_tokio::TokioHandle;
@@ -356,6 +356,45 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
         1,
         "and the request went out exactly once, on the second: this is a \
          second CONNECTION, not a second request"
+    );
+}
+
+/// The other half of that fallback, and the reason it is conditional: a
+/// connect that failed with **nothing** in early data is not dialled a
+/// second time.
+///
+/// `AllowEarlyData` is on the request and there has been no prior visit, so
+/// there is no ticket, `into_0rtt` refuses and the handshake is an ordinary
+/// one — which is the state in which a fallback would be a plain retry of a
+/// failing connect. A caller who set `Timeouts::connect` would then be made
+/// to wait twice for it, which is `docs/connect-only-seam.md`'s *"a bound a
+/// server can double is not a bound"* arriving from the other direction.
+///
+/// The server is the one fixture here that makes `build` fail without any
+/// early data being involved — see [`server::Behaviour::CloseOnAccept`] for
+/// why it needs the window too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_that_put_nothing_in_early_data_is_not_dialled_twice() {
+    let s = server::start_with_a_tiny_window(Behaviour::CloseOnAccept, 8);
+    let t = h3(&s.cert_der);
+
+    let mut marked = get(s.addr, "/marked");
+    marked.extensions_mut().insert(AllowEarlyData);
+    let e = t
+        .execute(marked)
+        .await
+        .map(|_| ())
+        .expect_err("the server closed the connection under h3's setup");
+
+    assert_eq!(
+        *e.kind(),
+        ErrorKind::Connect,
+        "and it is the connect's failure, reported as such: {e:?}"
+    );
+    assert_eq!(
+        s.accepted(),
+        1,
+        "one dial, not two — the request was marked, so the fallback was          reachable; what makes it unreachable is that nothing went out in          early data for the rejection to have destroyed"
     );
 }
 
