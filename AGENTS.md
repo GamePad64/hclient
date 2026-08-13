@@ -840,9 +840,41 @@ announced in SETTINGS at handshake and `http-ng-h3` announces it nowhere, so
 making pooled connections capable would change what **every** build puts on
 the wire; and `PoolKey` has no field to tell the two apart.
 
-Deliberately not done, each with what it needs: datagrams, the capsule
-protocol, observing session end, `GOAWAY`, server-initiated streams, and
-more than one session per connection.
+**Datagrams work, and the premise broke into four links each measured
+separately.** quinn derives `max_datagram_frame_size` from a
+`TransportConfig` default `http-ng-h3` never touches, so the connection
+already carries them; `h3::client::Builder::enable_datagram` **exists on the
+client**, which is exactly where `enable_webtransport` does not, so this was
+not the same finding one feature over; the peer's answer is readable through
+a public getter, unlike `max_webtransport_sessions`; and none of it goes
+through `h3` at all, which has no datagram path — the transport is
+`quinn::Connection::{send_datagram, read_datagram}`.
+
+The wire format is `varint(session_id >> 2) || payload`, RFC 9297's Quarter
+Stream ID with nothing added, so **a stream and a datagram name the same
+session differently** — the stream header carries the full id after `0x41`,
+three lines away in the same file.
+
+**`h3-datagram` 0.0.2 is not used, and the reason is a bug found by
+executing it rather than reading it.** Its `Datagram::encode` writes the
+quarter id into a local buffer and then constructs `EncodedDatagram {
+stream_id: [0; MAX_SIZE], .. }`, discarding it — so the id on the wire is
+always zero. Correct on stream 0 alone, wrong for 4, 8, 400, 1000000. A
+session usually *is* stream 0, which is the trap; the interop test here runs
+on **stream 4** so the shift is exercised rather than accidentally right.
+Cost was never the argument — it would have been one crate.
+
+Proved against `wtransport` 0.7.2 again, which shares no code with `h3`: our
+header decoded by `wtransport-proto`, its echo decoded by us. The graph is
+unchanged at 49 crates.
+
+What is asserted about loss is *what* arrives, never *that* it arrives — the
+arrival bound is a hang guard rather than a claim, and the one ordering
+dependence is checked by mutation instead of assumed.
+
+Deliberately not done, each with what it needs: the capsule protocol,
+observing session end, `GOAWAY`, server-initiated streams, and more than one
+session per connection.
 
 ### A connect can be asked for on its own, and the first thing that wanted one was not the race (v0.4)
 

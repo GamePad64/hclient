@@ -35,6 +35,21 @@ pub struct Options {
     pub announce_webtransport: bool,
     /// `SETTINGS_ENABLE_CONNECT_PROTOCOL`.
     pub announce_extended_connect: bool,
+    /// `SETTINGS_H3_DATAGRAM`. Separate from the two above because a
+    /// server can honestly announce WebTransport and not datagrams, and
+    /// the client is required to notice: RFC 9297 §2.1 forbids sending
+    /// HTTP Datagrams to an endpoint that did not ask for them.
+    pub announce_datagram: bool,
+    /// Whether the server's QUIC endpoint offers datagrams at all —
+    /// `quinn::TransportConfig::datagram_receive_buffer_size`, which is
+    /// what puts (or leaves out) RFC 9221's `max_datagram_frame_size`
+    /// transport parameter. A *different* switch from the one above, one
+    /// layer down, and the client must tell the two apart.
+    pub quic_datagrams: bool,
+    /// Send two datagrams the client must discard before each echo: one
+    /// too short to carry a Quarter Stream ID, and one carrying a Quarter
+    /// Stream ID that is not the session's.
+    pub noise_before_echo: bool,
     /// The status the extended CONNECT is answered with.
     pub answer: http::StatusCode,
 }
@@ -44,6 +59,9 @@ impl Default for Options {
         Self {
             announce_webtransport: true,
             announce_extended_connect: true,
+            announce_datagram: true,
+            quic_datagrams: true,
+            noise_before_echo: false,
             answer: http::StatusCode::OK,
         }
     }
@@ -64,6 +82,17 @@ pub struct SeenRequest {
     /// The QUIC stream ID the request arrived on. This is what the session
     /// ID on every WebTransport stream must equal.
     pub stream_id: u64,
+}
+
+/// One WebTransport datagram as the server saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenDatagram {
+    /// The first varint in the QUIC DATAGRAM frame — RFC 9297 §2.1's
+    /// Quarter Stream ID, which for a WebTransport datagram is the
+    /// session's CONNECT stream ID divided by four.
+    pub quarter_stream_id: u64,
+    /// Everything after it.
+    pub payload: Vec<u8>,
 }
 
 /// One WebTransport stream as the server saw it.
@@ -88,12 +117,18 @@ pub struct SeenStream {
 pub struct SeenClientSettings {
     pub extended_connect: bool,
     pub webtransport: bool,
+    /// `SETTINGS_H3_DATAGRAM`, as the client sent it. Here for the same
+    /// reason as the other two: nothing on the wire forces a client to
+    /// announce it, so without this the line that does could be deleted
+    /// and every other test would stay green.
+    pub datagram: bool,
 }
 
 #[derive(Debug, Default)]
 struct State {
     requests: Mutex<Vec<SeenRequest>>,
     streams: Mutex<Vec<SeenStream>>,
+    datagrams: Mutex<Vec<SeenDatagram>>,
     client_settings: Mutex<Option<SeenClientSettings>>,
 }
 
@@ -113,6 +148,29 @@ impl Server {
     /// Every WebTransport stream the server has read to its end so far.
     pub fn streams(&self) -> Vec<SeenStream> {
         self.state.streams.lock().unwrap().clone()
+    }
+
+    /// Every datagram the server has read so far.
+    pub fn datagrams(&self) -> Vec<SeenDatagram> {
+        self.state.datagrams.lock().unwrap().clone()
+    }
+
+    /// Wait until `n` datagrams have been read, or give up.
+    ///
+    /// Unlike [`Server::wait_for_streams`] this one has no causal
+    /// alternative: a datagram is not acknowledged, so nothing the client
+    /// can observe proves the server saw one. It is used only where the
+    /// test's own claim is about arrival, and a `false` is that claim
+    /// failing.
+    pub async fn wait_for_datagrams(&self, n: usize, within: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while std::time::Instant::now() < deadline {
+            if self.state.datagrams.lock().unwrap().len() >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        false
     }
 
     /// The client's SETTINGS, or `None` if none had arrived when the
@@ -161,7 +219,17 @@ pub fn start(opts: Options) -> Server {
 
     let quic_tls = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
         .expect("TLS 1.3 with a ring provider always has the initial suite");
-    let cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_tls));
+    let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_tls));
+    if !opts.quic_datagrams {
+        // `None` is what makes quinn leave `max_datagram_frame_size` out of
+        // the transport parameters, which is RFC 9221 §3's way of saying
+        // "do not send me datagrams". The default is `Some(..)`, so a
+        // connection made against this fixture carries datagrams unless a
+        // test asks otherwise.
+        let mut transport = quinn::TransportConfig::default();
+        transport.datagram_receive_buffer_size(None);
+        cfg.transport_config(Arc::new(transport));
+    }
 
     let state = Arc::new(State::default());
     let for_thread = state.clone();
@@ -205,7 +273,7 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
     let Ok(mut h3) = h3::server::builder()
         .enable_webtransport(opts.announce_webtransport)
         .enable_extended_connect(opts.announce_extended_connect)
-        .enable_datagram(true)
+        .enable_datagram(opts.announce_datagram)
         .max_webtransport_sessions(1)
         .build::<h3_quinn::Connection, Bytes>(h3_quinn::Connection::new(conn))
         .await
@@ -241,6 +309,7 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
     *state.client_settings.lock().unwrap() = Some(SeenClientSettings {
         extended_connect: h3.settings().enable_extended_connect(),
         webtransport: h3.settings().enable_webtransport(),
+        datagram: h3.settings().enable_datagram(),
     });
     state.requests.lock().unwrap().push(SeenRequest {
         method: req.method().clone(),
@@ -260,9 +329,20 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
         return;
     }
 
+    // The session ID, which is what every WebTransport stream and every
+    // WebTransport datagram on this connection must name.
+    let session_id = stream.id().into_inner();
+
     // Held, not dropped: the session lives exactly as long as the CONNECT
     // stream, and `quinn::SendStream::drop` calls `finish()`.
     let _connect = stream;
+
+    tokio::spawn(echo_datagrams(
+        quic.clone(),
+        session_id,
+        opts,
+        state.clone(),
+    ));
 
     while let Ok((send, recv)) = quic.accept_bi().await {
         let state = state.clone();
@@ -270,6 +350,67 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
             echo_webtransport_stream(send, recv, state).await;
         });
     }
+}
+
+/// Read every datagram on the connection, record it, and echo it back.
+///
+/// # It encodes with `h3`'s varint and decodes with its own
+///
+/// The Quarter Stream ID it writes comes from `h3::proto::varint::VarInt`
+/// — a third implementation, neither the crate under test's encoder nor
+/// this file's decoder — so a client that reads the header wrongly gets a
+/// mismatch here rather than a matching pair of bugs. What it reads is
+/// decoded by [`VarintReader`], written from RFC 9000 §16.
+///
+/// Note what is *not* here: no check that the client announced
+/// `SETTINGS_H3_DATAGRAM`. This side is raw `quinn`, so nothing at the
+/// HTTP/3 layer gates it, which is precisely why the client's own
+/// announcement has to be asserted from [`SeenClientSettings`] instead of
+/// being inferred from a datagram arriving.
+async fn echo_datagrams(
+    conn: quinn::Connection,
+    session_id: u64,
+    opts: Options,
+    state: Arc<State>,
+) {
+    let quarter = session_id >> 2;
+    while let Ok(frame) = conn.read_datagram().await {
+        let mut reader = VarintReader {
+            buf: frame.to_vec(),
+            at: 0,
+        };
+        let Some(quarter_stream_id) = reader.try_decode() else {
+            continue;
+        };
+        let payload = reader.drain();
+        state.datagrams.lock().unwrap().push(SeenDatagram {
+            quarter_stream_id,
+            payload: payload.clone(),
+        });
+        if opts.noise_before_echo {
+            // Too short to carry a Quarter Stream ID at all.
+            let _ = conn.send_datagram(Bytes::new());
+            // A well-formed HTTP Datagram for a session that is not this
+            // one. `+ 1` rather than an arbitrary number so that the
+            // header is the same length as the real one and the two
+            // differ in value alone.
+            let _ = conn.send_datagram(datagram(quarter + 1, b"stray"));
+        }
+        let _ = conn.send_datagram(datagram(quarter, &payload));
+    }
+}
+
+/// An HTTP/3 datagram: RFC 9297 §2.1's Quarter Stream ID varint, then the
+/// payload. Encoded with `h3`'s `VarInt`, deliberately — see
+/// [`echo_datagrams`].
+fn datagram(quarter_stream_id: u64, payload: &[u8]) -> Bytes {
+    use h3::proto::varint::VarInt;
+    let mut frame = Vec::new();
+    VarInt::from_u64(quarter_stream_id)
+        .expect("a quarter stream id is a varint by construction")
+        .encode(&mut frame);
+    frame.extend_from_slice(payload);
+    Bytes::from(frame)
 }
 
 /// Read one WebTransport stream's header and payload, record both, and

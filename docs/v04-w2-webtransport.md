@@ -281,10 +281,18 @@ the control stream, and a control stream that ends is
 
 ## 6. Deliberately not done, with what each would need
 
-- **Datagrams.** `h3-quinn` has a `datagram` feature and `h3-datagram`
-  exists. Needs: that feature, `enable_datagram(true)` on the client
-  builder (which `h3` does expose), and a demultiplexer keyed by session
-  ID. Nothing about the shape here is in the way.
+- **Datagrams — since done, and the note above was wrong about how**:
+  [`docs/v04-w2-datagrams.md`](v04-w2-datagrams.md). `enable_datagram(true)`
+  on the client builder was right, and it is the link that made this the
+  one item on the list whose blocker is not §3a. The `h3-quinn` feature
+  was not: it is `dep:h3-datagram` and nothing else, and **`h3-datagram`
+  0.0.2's `Datagram::encode` writes a Quarter Stream ID of zero, always** —
+  it encodes the varint into a local buffer and then builds its
+  `EncodedDatagram` from a freshly zeroed array. Measured over five
+  session IDs, correct on stream 0 alone. So the framing is fifteen lines
+  here beside the stream header's, the graph is unchanged at 49 crates,
+  and the "demultiplexer keyed by session ID" is a filter with one
+  subject, because a `Session` still owns the h3 client.
 - **The capsule protocol** — `CLOSE_WEBTRANSPORT_SESSION` and
   `DRAIN_WEBTRANSPORT_SESSION`. Dropping a `Session` ends it the other way
   the draft allows, by closing the CONNECT stream. A `close()` method that
@@ -316,6 +324,10 @@ the control stream, and a control stream that ends is
 |---|---|---|---|
 | `http-ng-webtransport` | **49** | `[bytes, default, io-util, sync]` | no reactor — the same `h3`/`h3-quinn` leaf `http-ng-h3` has |
 | `http-ng-h3`, for comparison | 57 | same | it also carries DNS, TLS and the runtime seam |
+
+Both rows are unchanged by the datagram work: it added no crate and no
+feature, because the transport is a method on the `quinn::Connection` this
+crate already holds — `docs/v04-w2-datagrams.md` §7.
 
 `quinn` arrives with the feature set **`futures-io` alone** — no `ring`.
 That is the visible consequence of owning no endpoint: `http-ng-h3`'s
@@ -357,6 +369,12 @@ unless something in the table must survive.
 
 **Ten killed, one control survived.** Every mutant compiled, so no verdict
 is a build failure wearing a kill's clothes.
+
+**All eleven were re-run after datagrams landed**, and two of them gained
+killers: M4 goes from one test to four and M5 from two to three, because a
+datagram carries the same session ID in a second encoding and through the
+same `put_varint`. The current table is `docs/v04-w2-datagrams.md` §8,
+twenty-three mutations with two controls.
 
 Two of them are worth a sentence each.
 
@@ -439,7 +457,8 @@ after the echo has been received.
   `wtransport` 0.7.2 evidently still sends the first — our gate requires it
   and the session established — but that is an inference from one run, not
   a reading of `wtransport-proto`.
-- **Anything under load.** One stream, four bytes, loopback. Flow control,
+- **Anything under load.** One stream, four bytes, loopback — and one
+  datagram, four bytes, loopback. Flow control,
   many concurrent streams and large transfers are untested, and
   `open_bi`'s eager header write in particular has never met a connection
   whose stream credit was exhausted.
