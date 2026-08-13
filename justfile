@@ -269,10 +269,15 @@ test-wasi:
 # (twenty-one for the browser's WebSocket behind `WebSocketConnect`),
 # 100 -> 118 in v0.4 W2 (eighteen for the observability hook: ten for the one
 # event this backend can emit, four counting the browser's own clock, four
-# measuring why `Connected` cannot be built out of `PerformanceResourceTiming`).
+# measuring why `Connected` cannot be built out of `PerformanceResourceTiming`),
+# 118 -> 119 when `Head::version` became an `Option` (one test pairing the
+# event's `None` with the `version_reported: false` that says the same thing
+# to whoever built the transport — see docs/v04-w2-hooks-ambient.md §9).
 # Measured by running both engines, not inferred from the attribute count:
 # several `#[wasm_bindgen_test]`s are cfg-gated, so the two numbers do not
-# agree. Chrome 151 and Firefox 153 both report 118 today.
+# agree. Firefox 153 reports 119; Chrome was NOT run for this change —
+# `wasm-pack` cannot acquire a chromedriver on the machine it was made on
+# (`http status: 404`), reproducibly and independently of any branch.
 
 # one browser suite: `just test-browser firefox`
 test-browser BROWSER="chrome":
@@ -302,7 +307,7 @@ test-browser BROWSER="chrome":
       fi
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
-    run_browser_suite crates/http-ng-fetch 118
+    run_browser_suite crates/http-ng-fetch 119
     run_browser_suite crates/http-ng 6 --features default-transport,test-util
 
 # both browser suites, on both engines — CI runs one engine per matrix leg
