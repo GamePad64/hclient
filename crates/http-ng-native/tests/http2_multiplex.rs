@@ -693,7 +693,11 @@ async fn the_driver_reports_the_end_of_a_shared_connection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dead_shared_entry_is_removed_rather_than_borrowed_for_ever() {
     let server = spawn_server(None);
-    let client = shared_client();
+    let hook = Counting::default();
+    let transport = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+        .hooks(hook.clone())
+        .multiplexed();
+    let client = Client::builder(transport).build().unwrap();
 
     assert_eq!(
         tokio::time::timeout(BOUND, call(&client, server.url("/goaway")))
@@ -716,6 +720,13 @@ async fn a_dead_shared_entry_is_removed_rather_than_borrowed_for_ever() {
         200
     );
     assert_eq!(server.accepted(), 2, "elsewhere is a second connection");
+    assert!(
+        hook.lines().iter().any(|l| l == "closed:stale"),
+        "and checkout said why it walked past it — `Stale` is the same \
+         reason an exclusive entry the peer closed while idle gets, and a \
+         checkout that never rejected the clone would report nothing: {:?}",
+        hook.lines()
+    );
 }
 
 // ── the pool's own bookkeeping ──────────────────────────────────────────
@@ -834,5 +845,183 @@ async fn a_failed_shared_connect_releases_everyone_waiting_for_it() {
         .expect("a failed connect must not strand the requests waiting on it");
     for r in results {
         assert!(r.is_err(), "there is nothing there to answer");
+    }
+}
+
+// ── the budget the wait spends ──────────────────────────────────────────
+
+/// A `TlsConnect` whose handshake takes time, and whose **first** handshake
+/// fails.
+///
+/// The two together are what make the arithmetic below observable at all:
+/// the request that holds the connect mark has to spend a measurable part
+/// of `Timeouts::connect` and then **fail**, so that the request waiting
+/// behind it still needs a connect of its own and has only what is left.
+#[derive(Clone)]
+struct SlowTls {
+    id: TlsConfigId,
+    handshakes: Arc<AtomicUsize>,
+}
+
+impl Default for SlowTls {
+    fn default() -> Self {
+        Self {
+            id: TlsConfigId::new_unique(),
+            handshakes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+/// What the first handshake spends before failing, and what every later one
+/// spends before succeeding. Both are this stub's own sleeps rather than a
+/// property of the network, so the arms below are causal in everything
+/// except the sleeps they name.
+const FIRST_TLS: Duration = Duration::from_millis(200);
+const LATER_TLS: Duration = Duration::from_millis(250);
+
+impl TlsIdentity for SlowTls {
+    fn config_id(&self) -> TlsConfigId {
+        self.id
+    }
+}
+
+impl TlsConnect for SlowTls {
+    type Stream<S>
+        = S
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    fn reports_alpn(&self) -> bool {
+        true
+    }
+
+    async fn connect<S>(
+        &self,
+        io: S,
+        _req: TlsRequest<'_>,
+    ) -> Result<(S, TlsInfo), http_ng_core::Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
+        let nth = self.handshakes.fetch_add(1, Ordering::SeqCst);
+        if nth == 0 {
+            tokio::time::sleep(FIRST_TLS).await;
+            return Err(http_ng_core::Error::new(
+                http_ng_core::ErrorKind::Connect,
+                std::io::Error::other("the first handshake fails, slowly"),
+            ));
+        }
+        tokio::time::sleep(LATER_TLS).await;
+        Ok((
+            io,
+            TlsInfo {
+                alpn: Some(b"h2".to_vec()),
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+fn slow_client(tls: SlowTls) -> Client<Native<Tokio, SlowTls, SystemDns<Tokio>>> {
+    Client::builder(Native::new(Tokio, tls, SystemDns::new(Tokio)).multiplexed())
+        .build()
+        .unwrap()
+}
+
+fn bounded(url: &str, connect: Duration) -> http::Request<RequestBody> {
+    let mut req = http::Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut().insert(Timeouts {
+        connect: Some(connect),
+        ..Timeouts::default()
+    });
+    req
+}
+
+/// **`Timeouts::connect` is one bound for one request, and waiting for
+/// somebody else's connect spends it.**
+///
+/// The same arithmetic `http-ng-select`'s h3 fallback does one layer up and
+/// `Client`'s `425` replay does one layer down: a caller who set
+/// `connect: Some(C)` must not be made to wait `C` for a neighbour and then
+/// be given a fresh `C` for a connect of their own.
+///
+/// **An A/B, and neither arm asserts on a duration.** Same fixture, same
+/// two requests, same failing-then-slow TLS; what differs is the bound:
+///
+/// - `FIRST_TLS + LATER_TLS` is more than enough, so the waiter's own
+///   connect fits in what is left and it gets its `200`;
+/// - a bound that has room for the first handshake and not for a second one
+///   leaves the waiter with nothing to connect with, and the honest answer
+///   is its own `Timeout(Connect)`.
+///
+/// A wait handed a fresh copy of the bound passes the first arm and fails
+/// the second — it would connect and succeed where the caller's bound had
+/// no room for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_for_a_shared_connect_spends_the_callers_connect_bound() {
+    // Arm A — room for both handshakes: the waiter succeeds.
+    {
+        let server = spawn_server(None);
+        let tls = SlowTls::default();
+        let client = slow_client(tls.clone());
+        let url = server.url("/a");
+        let (first, second) = tokio::time::timeout(
+            BOUND,
+            futures_util::future::join(
+                client.execute(bounded(
+                    &url,
+                    FIRST_TLS + LATER_TLS + Duration::from_millis(300),
+                )),
+                client.execute(bounded(
+                    &url,
+                    FIRST_TLS + LATER_TLS + Duration::from_millis(300),
+                )),
+            ),
+        )
+        .await
+        .expect("must not hang");
+        assert!(
+            first.is_err() != second.is_err(),
+            "exactly one of the two met the failing handshake; the other \
+             waited for it and then connected for itself"
+        );
+        assert!(tls.handshakes.load(Ordering::SeqCst) >= 2);
+    }
+
+    // Arm B — room for the first handshake and not for a second: the
+    // waiter has nothing left.
+    {
+        let server = spawn_server(None);
+        let tls = SlowTls::default();
+        let client = slow_client(tls.clone());
+        let url = server.url("/b");
+        let bound = FIRST_TLS + Duration::from_millis(50);
+        let (first, second) = tokio::time::timeout(
+            BOUND,
+            futures_util::future::join(
+                client.execute(bounded(&url, bound)),
+                client.execute(bounded(&url, bound)),
+            ),
+        )
+        .await
+        .expect("must not hang");
+        for r in [first, second] {
+            let e = r.expect_err(
+                "the caller's connect bound has room for one handshake, and \
+                 the first one failed",
+            );
+            assert!(
+                matches!(
+                    e.kind(),
+                    http_ng_core::ErrorKind::Connect
+                        | http_ng_core::ErrorKind::Timeout(http_ng_core::Phase::Connect)
+                ),
+                "the failure is the connect's, not something further on: {e:?}"
+            );
+        }
     }
 }
