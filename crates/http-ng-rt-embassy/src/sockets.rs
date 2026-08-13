@@ -11,7 +11,7 @@
 //! one line of embassy-net's own source
 //! (`embassy-net-0.9.1/src/tcp.rs:466`):
 //!
-//! ```ignore
+//! ```text
 //! impl<'a> Drop for TcpSocket<'a> {
 //!     fn drop(&mut self) {
 //!         self.io.stack.with_mut(|i| i.sockets.remove(self.io.handle));

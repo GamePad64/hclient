@@ -604,12 +604,15 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
             epoch: self.epoch,
             pool: self.pool,
             svcb_failures: self.svcb_failures,
-            // Dropped rather than carried, and the compiler is why: the
-            // spawner's type names `H`, and this method's whole purpose
-            // is to change `H`. A caller who wants both writes
-            // `.hooks(..)` first — which is the order that type-checks,
-            // and the order that makes the driver carry the hook it is
-            // supposed to report through.
+            // Dropped rather than carried, and the type is why: the
+            // spawner names `H`, and this method's whole purpose is to
+            // change `H`. A caller who wants both writes `.hooks(..)`
+            // first — the order that makes the driver carry the hook it
+            // is supposed to report through. The other order **compiles**
+            // and silently shares nothing; the compiler does not catch it
+            // and this comment must not say it does. What catches it is
+            // `tests/http2_multiplex.rs`'s pair of orders, and the doc
+            // above says the cost out loud.
             #[cfg(feature = "http2")]
             share_h2: None,
         }

@@ -1,9 +1,28 @@
 //! `quinn::Runtime` over this workspace's runtime seam.
 //!
-//! ```ignore
-//! // Any `R` a runtime crate here supplies: `TokioHandle`, `Smol`, ...
-//! let endpoint = http_ng_rt_quinn::endpoint(&rt, "0.0.0.0:0".parse()?)?;
+//! `rt` is any `R` a runtime crate here supplies — `Tokio`, `Smol`, ... —
+//! and the bounds below are [`endpoint`]'s own, spelled out because a
+//! doctest cannot infer them from a sketch.
+//!
+//! ```no_run
+//! # use std::fmt;
+//! # use http_ng_rt::{Spawn, Timer, UdpAdoptStd};
+//! # use http_ng_rt_quinn::QuinnTask;
+//! # async fn example<R>(
+//! #     rt: &R,
+//! #     client_cfg: quinn::ClientConfig,
+//! #     addr: std::net::SocketAddr,
+//! # ) -> Result<(), Box<dyn std::error::Error>>
+//! # where
+//! #     R: Timer + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static,
+//! #     R::Sleep: Send + 'static,
+//! #     R::Socket: fmt::Debug + Send + Sync + 'static,
+//! # {
+//! let endpoint = http_ng_rt_quinn::endpoint(rt, "0.0.0.0:0".parse()?)?;
 //! let conn = endpoint.connect_with(client_cfg, addr, "example.com")?.await?;
+//! # let _ = conn;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! This crate is the whole reason QUIC is reachable here at all. quinn

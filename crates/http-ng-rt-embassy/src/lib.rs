@@ -3,11 +3,21 @@
 //! thing runs under `embassy_executor::Executor` with no thread, no
 //! reactor and no `std::net` socket anywhere on the client path.
 //!
-//! ```ignore
+//! ```no_run
+//! # use embassy_net::Stack;
+//! # use http_ng_rt_embassy::{Embassy, SocketPool};
+//! # fn example(stack: Stack<'static>) {
 //! let pool = SocketPool::<2, 1536, 1536>::leak(stack);
 //! let rt = Embassy::new(stack, pool);
-//! let client = Client::builder(Native::new(rt, NoTls, IpLiteralOnly)).build()?;
+//! # let _ = rt;
+//! # }
 //! ```
+//!
+//! `rt` is then the `R` of a transport — `Client::builder(Native::new(rt,
+//! NoTls, IpLiteralOnly))` — which is not checked here for the reason
+//! `http-ng-dns-doh`'s example is not: it would cost a dev-dependency on
+//! `http-ng-native` and `http-ng` to compile one line. This crate's own
+//! half is checked.
 //!
 //! Nothing above [`Embassy`] changes: `http_ng_native::Native` takes it as
 //! its `R` exactly as it takes `Tokio` or `Smol`, and the W7 research

@@ -1,12 +1,19 @@
 //! WebTransport sessions over this workspace's HTTP/3.
 //!
-//! ```ignore
-//! // `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see
-//! // "Where the connection comes from" below, which is the part that is
-//! // missing rather than the part that is here.
+//! `conn` is a `quinn::Connection` that negotiated ALPN `h3` — see "Where
+//! the connection comes from" below, which is the part that is missing
+//! rather than the part that is here.
+//!
+//! ```no_run
+//! # async fn example(
+//! #     conn: quinn::Connection,
+//! #     uri: http::Uri,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
 //! let session = http_ng_webtransport::Session::connect(conn, &uri).await?;
-//! let (mut send, mut recv) = session.open_bi().await?;
+//! let (mut send, mut _recv) = session.open_bi().await?;
 //! send.write_all(b"ping").await?;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Why this is not the WebSocket seam

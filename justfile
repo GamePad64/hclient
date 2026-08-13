@@ -527,7 +527,27 @@ lint-idn:
 
 # the doctests, which nextest cannot run
 test-doc:
-    cargo test --workspace --all-features --doc
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rc=0
+    out="$(cargo test --workspace --all-features --doc --color never 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    # Fail closed, twice, because this recipe's whole failure mode is
+    # reporting `ok` over nothing. A run with no `test result:` line at all
+    # did not happen; an `ignored` doctest is a fenced code block rustdoc
+    # never compiles, which is the permanently-unwatched example this
+    # project has already been bitten by twice.
+    if ! printf '%s\n' "$out" | grep -qE 'test result:'; then
+      echo "::error::no doctest summary at all — the run did not happen"
+      exit 1
+    fi
+    ign="$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9][0-9]*\) ignored;.*/\1/p' | paste -sd+ - | bc)"
+    if [ "${ign:-0}" -ne 0 ]; then
+      printf '%s\n' "$out" | grep -E '\.\.\. ignored$' || true
+      echo "::error::$ign doctest(s) are \`ignore\`d — rustdoc compiles none of them, so they rot unwatched. Use \`no_run\` with hidden setup lines, or \`text\` if the block is quoted code rather than an example."
+      exit 1
+    fi
 
 # nightly is not optional here (sanitizer flags), and `RUSTUP_TOOLCHAIN` is
 # how it survives rust-toolchain.toml. The explicit `--target` is not

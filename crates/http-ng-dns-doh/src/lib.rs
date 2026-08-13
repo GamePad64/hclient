@@ -1,9 +1,19 @@
 //! DNS over HTTPS (RFC 8484) behind [`http_ng_dns::Resolve`].
 //!
-//! ```ignore
+//! ```no_run
+//! # use http_ng_dns_doh::Doh;
+//! # fn example<C>(transport: C) -> Result<(), Box<dyn std::error::Error>> {
 //! let doh = Doh::pinned(transport, "https://1.1.1.1/dns-query".parse()?)?;
-//! let client = Client::builder(Native::new(rt, tls, doh)).build()?;
+//! # let _ = doh;
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! `doh` is then the `D` of a transport — `Client::builder(Native::new(rt,
+//! tls, doh))` — which is not checked here because it would cost this
+//! crate a dev-dependency on `http-ng-native` and `http-ng` for one line
+//! of prose. What *is* checked is this crate's own half: that `pinned`
+//! takes a client and a `Uri` and hands back a resolver.
 //!
 //! # The bootstrap is the design problem, not the protocol
 //!
