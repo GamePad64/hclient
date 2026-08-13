@@ -1058,15 +1058,9 @@ where
                 .execute_prepared(prepared)
                 .await
                 .map(|r| r.map(SelectedBody::Tcp)),
-            // The hedge, where one was asked for and where this request
-            // is allowed to go over TCP at all. Both halves are conditions
-            // rather than one: a `RequireVersion(HTTP_3)` demand carries
-            // `fallback: false`, and racing it would open a TCP connection
-            // for a request that could never be sent on it. See [`race`].
-            Route::Quic { req, fallback } => match self.hedge.filter(|_| fallback) {
-                Some(head_start) => self.raced(req, origin.as_ref(), head_start).await,
-                None => self.over_quic(req, fallback, origin.as_ref()).await,
-            },
+            // One call site, hedged or not — see [`race::Raced`] for why
+            // that is load-bearing rather than tidy.
+            Route::Quic { req, fallback } => self.serve_quic(req, fallback, origin.as_ref()).await,
         };
         if let (Ok(r), Some(origin)) = (&resp, &origin) {
             self.note_alt_svc(origin, r.headers());

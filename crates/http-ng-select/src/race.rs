@@ -247,27 +247,38 @@ fn probe_body(like: &RequestBody) -> RequestBody {
     }
 }
 
-/// The request a connect is made for: this one's head, and a body that
-/// answers the one question a connect asks of one.
+/// The request a connect is made for: everything of this one that reaches a
+/// connector, and nothing else.
 ///
 /// # This is the shape of the finding, and it is worth reading twice
 ///
 /// Both staged pairs take the request **by value** and hand it back only
-/// through `Refused` — that is, only when the connect *fails*. A race has
-/// to be able to abandon an arm that has neither failed nor finished, and
-/// an arm holding the caller's request cannot be abandoned, because the
-/// request would go with it. So the race cannot give either arm the real
-/// request, and what it gives them instead is this: the same URI, the same
-/// extensions, and a body that is empty and agrees about `retry_kind`.
+/// through `Refused` — that is, only when the connect *fails*. A race has to
+/// be able to abandon an arm that has neither failed nor finished, and an
+/// arm holding the caller's request cannot be abandoned, because the request
+/// would go with it. So the race cannot give either arm the real request,
+/// and what it gives them instead is this: the same method, URI, version,
+/// headers and extensions, and a body that is empty and agrees about
+/// `retry_kind`.
 ///
-/// What follows from that is the whole of §4 in `docs/v04-race.md`: the
-/// race's product is two warm connections and a decision, the request is
-/// sent afterwards through the ordinary routing, and the hand-off from the
-/// winning arm to the request goes through the **pool** rather than through
-/// the handle. `exchange` is therefore reached on the QUIC side (through
-/// [`Selecting::over_quic`]) and not on the TCP one.
-fn probe(parts: &http::request::Parts, body: &RequestBody) -> http::Request<RequestBody> {
-    http::Request::from_parts(parts.clone(), probe_body(body))
+/// Written field by field rather than through `http::request::Parts` so that
+/// what a probe copies is a list a reader can check against what a connector
+/// reads: `key_parts` and `admit` take the URI, `protocol_admissible`,
+/// `check_version` and the early-data gate take the extensions, and neither
+/// member looks at a header or a body byte before `exchange`.
+///
+/// What follows from all this is `docs/v04-race.md` §4: the race's product is
+/// two warm connections and a decision, the request is sent afterwards
+/// through the ordinary routing, and the hand-off from the winning arm to the
+/// request goes through the **pool** rather than through the handle.
+fn probe(req: &http::Request<RequestBody>) -> http::Request<RequestBody> {
+    let mut probe = http::Request::new(probe_body(req.body()));
+    *probe.method_mut() = req.method().clone();
+    *probe.uri_mut() = req.uri().clone();
+    *probe.version_mut() = req.version();
+    *probe.headers_mut() = req.headers().clone();
+    *probe.extensions_mut() = req.extensions().clone();
+    probe
 }
 
 /// Give this probe a connect bound of its own, replacing whatever the
@@ -284,13 +295,13 @@ fn set_connect(req: &mut http::Request<RequestBody>, connect: Duration) {
     });
 }
 
-/// What the caller's `Timeouts::connect` leaves for a second connect
-/// started `head_start` late.
+/// What the caller's `Timeouts::connect` leaves for a second connect started
+/// `head_start` late.
 #[derive(Debug, PartialEq, Eq)]
 enum Room {
-    /// No `Timeouts::connect` was set, so neither arm is bounded and
-    /// neither has anything to subtract from. That is what a caller who set
-    /// no bound asked for, and against a black hole it is quinn's 30 s
+    /// No `Timeouts::connect` was set, so neither arm is bounded and neither
+    /// has anything to subtract from. That is what a caller who set no bound
+    /// asked for, and against a black hole it is quinn's 30 s
     /// `max_idle_timeout` on the QUIC arm — which is the number the hedge
     /// exists to stop anybody waiting for.
     Unbounded,
@@ -302,7 +313,7 @@ enum Room {
 }
 
 /// The rule, as a pure function, so it can be read without the six `where`
-/// clauses the method below carries.
+/// clauses the methods below carry.
 fn room(budget: Option<Duration>, head_start: Duration) -> Room {
     let Some(connect) = budget else {
         return Room::Unbounded;
@@ -313,16 +324,28 @@ fn room(budget: Option<Duration>, head_start: Duration) -> Room {
     }
 }
 
-/// Which arm produced the connection the request will be sent on.
-enum Won {
-    /// The QUIC arm, and the request goes over HTTP/3.
+/// Which stack now holds a connection for this request — the race's whole
+/// output, and deliberately not a response.
+///
+/// A decision rather than an answer is what keeps the routing in one place:
+/// [`Selecting::serve_quic`] sends the request the same way whether a race
+/// happened or not, and there is exactly one call site for each of the two
+/// members. That is not only tidiness. `execute` is an `async fn`, so every
+/// future it may await is a field of one state machine; an earlier draft in
+/// which the race did its own routing put a second copy of the whole QUIC arm
+/// inside `execute` and **overflowed the stack** of two `http_ng::Client`
+/// tests in a debug build. `docs/v04-race.md` §7 has the measurement.
+enum Raced {
+    /// Send it over HTTP/3 — either because the QUIC arm won, or because no
+    /// race was run at all and this is the ordinary sequential path.
     Quic,
-    /// The hedge, and the QUIC arm was abandoned rather than beaten — see
-    /// the module doc's §3 for why that teaches the failure memory.
+    /// Send it over TCP: the hedge won, or the QUIC connect failed and there
+    /// is bound left to try TCP with.
     Tcp,
-    /// Neither: the QUIC connect failed outright, and this is the sequential
-    /// fallback's own case arriving through the race.
-    QuicRefused(Error),
+    /// Neither. The QUIC connect failed and the caller's whole connect bound
+    /// went with it, so the honest answer is that failure rather than a
+    /// second attempt there is no room for.
+    Failed(Error),
 }
 
 impl<R, T, D> Selecting<R, T, D>
@@ -335,104 +358,133 @@ where
     <H3<R, T, D> as Transport>::Body: http_body::Body<Data = Bytes, Error = Error> + Unpin,
     D: Resolve,
 {
-    /// Two connects, one request, and the head start between them.
+    /// Everything the QUIC arm of `Transport::execute` does, hedged or not.
     ///
-    /// Reached only from [`Transport::execute`]'s QUIC arm, only when
-    /// [`Selecting::hedging`] has been called, and only for a request that
-    /// is allowed to fall back — see the module doc.
+    /// The hedge runs when one was asked for **and** this request may go over
+    /// TCP at all. Both are conditions rather than one: a
+    /// `RequireVersion(HTTP_3)` demand arrives with `fallback: false`, and a
+    /// TCP connection opened for a request that could never be sent on it is
+    /// a connection opened for nothing.
+    ///
+    /// What the race hands back is a decision and a request whose
+    /// `Timeouts::connect` has been charged for it. The two ways out of here
+    /// — [`Self::over_quic`] and the TCP member's `execute_prepared` — are
+    /// each written once, which is what stops a raced request and an unraced
+    /// one from becoming two transports, and is also why this function exists
+    /// at all rather than the race doing its own routing (see [`Raced`]).
+    pub(crate) async fn serve_quic(
+        &self,
+        mut req: http::Request<RequestBody>,
+        fallback: bool,
+        origin: Option<&Origin>,
+    ) -> Result<http::Response<SelectedBody<NativeBodyOf<R, T, D>, QuicBodyOf<R, T, D>>>, Error>
+    {
+        if let Some(head_start) = self.hedge.filter(|_| fallback) {
+            match self.race_connects(&mut req, origin, head_start).await {
+                Raced::Quic => {}
+                Raced::Tcp => {
+                    return self
+                        .tcp
+                        .execute_prepared(Prepared::new(req))
+                        .await
+                        .map(|r| r.map(SelectedBody::Tcp));
+                }
+                Raced::Failed(e) => return Err(e),
+            }
+        }
+        self.over_quic(req, fallback, origin).await
+    }
+
+    /// Two connects, one head start between them, and no request on either.
     ///
     /// The QUIC arm is started first and the hedge sleeps for `head_start`
     /// before it connects, so a QUIC handshake that is going to succeed
     /// normally does so before a TCP socket is opened at all. Whichever arm
-    /// produces a connection first ends the race; the other is dropped,
-    /// which cancels it, and the connection it may have left behind is warm
-    /// in its own member's pool rather than closed.
+    /// produces a connection first ends the race; the other is dropped, which
+    /// cancels it, and whatever connection it may have left behind is warm in
+    /// its own member's pool rather than closed.
     ///
-    /// Then the caller's request — which never entered the race, and could
-    /// not have, see [`probe`] — is routed over the winning stack through
-    /// the ordinary path, with what is left of `Timeouts::connect`.
-    pub(crate) async fn raced(
+    /// `req` is **borrowed and not sent**: what this writes back into it is
+    /// what is left of `Timeouts::connect` after the race, because the race
+    /// *is* the connect phase and is charged for once. See the module doc's
+    /// §2 for the arithmetic and §3 for what a losing arm costs.
+    async fn race_connects(
         &self,
-        req: http::Request<RequestBody>,
+        req: &mut http::Request<RequestBody>,
         origin: Option<&Origin>,
         head_start: Duration,
-    ) -> Result<http::Response<SelectedBody<NativeBodyOf<R, T, D>, QuicBodyOf<R, T, D>>>, Error>
-    {
+    ) -> Raced {
         let began = self.now();
         let budget = req.extensions().get::<Timeouts>().and_then(|t| t.connect);
         let hedge_bound = match room(budget, head_start) {
             Room::Unbounded => None,
             Room::Left(left) => Some(left),
-            // No room for two connects inside one bound. The hedge does not
-            // run and this is the sequential fallback, unchanged — see the
-            // module doc's §2.
-            Room::None => return self.over_quic(req, true, origin).await,
+            // No room for two connects inside one bound. Nothing is raced,
+            // nothing is charged, and the caller gets the sequential fallback
+            // unchanged — the module doc's §2.
+            Room::None => return Raced::Quic,
         };
 
-        // The caller's request is taken apart here and put back together
-        // below. Neither arm ever holds it: see [`probe`], and
-        // `docs/v04-race.md` §4 for what follows from that.
-        let (parts, body) = req.into_parts();
-        let mut hedge_probe = probe(&parts, &body);
+        let mut hedge_probe = probe(req);
         if let Some(left) = hedge_bound {
             set_connect(&mut hedge_probe, left);
         }
+        let quic_probe = probe(req);
 
-        let won = {
-            let quic = pin!(self.quic.connect(probe(&parts, &body)));
+        let refused = {
+            let quic = pin!(self.quic.connect(quic_probe));
             let hedge = pin!(async {
                 self.rt.sleep(head_start).await;
                 self.tcp.connect(Prepared::new(hedge_probe)).await
             });
             // Every arm below drops the loser by letting it fall out of
-            // scope, which is what cancels it. The handles are dropped the
-            // same way, and that is where the connections go: back to their
-            // own member's pool, warm.
+            // scope, which is what cancels it. The handles go the same way,
+            // and that is where the connections go: back to their own
+            // member's pool, warm.
             match select(quic, hedge).await {
-                Either::Left((Ok(_quic_connection), _hedge)) => Won::Quic,
-                Either::Left((Err(refused), _hedge)) => Won::QuicRefused(refused.into_error()),
-                Either::Right((Ok(_tcp_connection), _quic)) => Won::Tcp,
-                // The hedge failed. That is not an answer to the question
-                // the race is asking — the QUIC arm is still the request's
-                // best chance and is still running — so it is awaited
-                // alone, under the bound it has carried all along.
+                Either::Left((Ok(_quic_connection), _hedge)) => return Raced::Quic,
+                Either::Left((Err(refused), _hedge)) => refused.into_error(),
+                Either::Right((Ok(_tcp_connection), _quic)) => {
+                    // The QUIC arm was abandoned rather than beaten, and that
+                    // is what the memory is told — module doc §3.
+                    self.note_h3_failure(origin);
+                    self.charge(req, began);
+                    return Raced::Tcp;
+                }
+                // The hedge failed. That is not an answer to the question the
+                // race is asking — the QUIC arm is still the request's best
+                // chance and is still running — so it is awaited alone, under
+                // the bound it has carried all along.
                 Either::Right((Err(_), quic)) => match quic.await {
-                    Ok(_quic_connection) => Won::Quic,
-                    Err(refused) => Won::QuicRefused(refused.into_error()),
+                    Ok(_quic_connection) => return Raced::Quic,
+                    Err(refused) => refused.into_error(),
                 },
             }
         };
 
-        // Read once, after the race and before anything else, for
-        // `over_quic`'s reason: how much of the bound is gone and when a
-        // failure expires are one instant.
-        let now = self.now();
-        let spent = now.saturating_sub(began);
-        let mut req = http::Request::from_parts(parts, body);
-        match won {
-            Won::Quic => {
-                // The connection is in `H3`'s pool, so `over_quic`'s connect
-                // finds it rather than dialling. The budget is charged for
-                // the race whether or not it does.
-                let _ = spend_connect_budget(&mut req, spent);
-                self.over_quic(req, true, origin).await
-            }
-            Won::Tcp => {
-                if let Some(origin) = origin {
-                    self.h3_failures.note(origin, now);
-                }
-                let _ = spend_connect_budget(&mut req, spent);
-                self.tcp
-                    .execute_prepared(Prepared::new(req))
-                    .await
-                    .map(|r| r.map(SelectedBody::Tcp))
-            }
-            Won::QuicRefused(error) => {
-                if let Some(origin) = origin {
-                    self.h3_failures.note(origin, now);
-                }
-                self.after_quic_failed(req, error, spent).await
-            }
+        self.note_h3_failure(origin);
+        if self.charge(req, began) {
+            Raced::Tcp
+        } else {
+            Raced::Failed(refused)
+        }
+    }
+
+    /// Take what the race spent off the request's `Timeouts::connect`, and
+    /// say whether there is anything left to make a *fresh* connect with.
+    ///
+    /// The winner does not need the answer — it has a connection — and the
+    /// refusal does: see [`crate::spend_connect_budget`].
+    fn charge(&self, req: &mut http::Request<RequestBody>, began: Duration) -> bool {
+        spend_connect_budget(req, self.now().saturating_sub(began))
+    }
+
+    /// One line, written once, because a memory written at two of the three
+    /// exits and not at the third is the shape of mutation this crate has
+    /// already been bitten by.
+    fn note_h3_failure(&self, origin: Option<&Origin>) {
+        if let Some(origin) = origin {
+            self.h3_failures.note(origin, self.now());
         }
     }
 }
@@ -469,21 +521,62 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_body_agrees_with_the_caller_s_about_retrying_and_about_nothing_else() {
+    fn a_probe_body_agrees_with_the_callers_about_retrying_and_nothing_else() {
         for like in [
             RequestBody::Empty,
             RequestBody::Full(Bytes::from_static(b"hello")),
             RequestBody::rewindable(|| RequestBody::Full(Bytes::from_static(b"hello"))),
             RequestBody::Streaming(Box::new(NoBody)),
         ] {
-            let probe = probe_body(&like);
+            let body = probe_body(&like);
             assert_eq!(
-                probe.retry_kind(),
+                body.retry_kind(),
                 like.retry_kind(),
-                "the pool key is computed from this"
+                "http-ng-h3's pool key is computed from this"
             );
             // And carries none of the caller's bytes.
-            assert!(matches!(probe.size_hint(), Some(0) | None));
+            assert!(matches!(body.size_hint(), Some(0) | None));
         }
+    }
+
+    /// A probe is the request a connector would have been handed, minus the
+    /// body — so everything a connector reads has to survive the copy.
+    #[test]
+    fn a_probe_carries_everything_a_connector_reads() {
+        let mut req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("https://example.test:8443/path?q=1")
+            .body(RequestBody::Full(Bytes::from_static(b"hello")))
+            .expect("a well-formed request");
+        req.extensions_mut()
+            .insert(http_ng_core::RequireVersion(http::Version::HTTP_3));
+        req.extensions_mut().insert(Timeouts {
+            connect: Some(Duration::from_millis(300)),
+            ..Default::default()
+        });
+
+        let probe = probe(&req);
+
+        assert_eq!(probe.method(), req.method());
+        assert_eq!(probe.uri(), req.uri());
+        assert_eq!(probe.version(), req.version());
+        assert_eq!(
+            probe
+                .extensions()
+                .get::<http_ng_core::RequireVersion>()
+                .map(|v| v.0),
+            Some(http::Version::HTTP_3),
+            "the version demand decides whether a connect is attempted at all"
+        );
+        assert_eq!(
+            probe.extensions().get::<Timeouts>().and_then(|t| t.connect),
+            Some(Duration::from_millis(300)),
+            "and the bound the arm is spending"
+        );
+        assert_eq!(
+            probe.body().size_hint(),
+            Some(0),
+            "but not one byte of the caller's body"
+        );
     }
 }
