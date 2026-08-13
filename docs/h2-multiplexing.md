@@ -969,6 +969,19 @@ caller can.
 - **No measurement over a real network.** Every figure in §11.4 is
   loopback, where the handshake saving is the whole of the win and the
   RTT saving is zero.
+- **Two workspace-level flakes were seen and could not be attributed.**
+  `http-ng-native`'s own suite is 12 clean runs at `-j16`, but the full
+  `--workspace --all-features` run failed 3 times in 39 on this branch —
+  once in `http-ng-h3::zero_rtt::early_data_is_accepted_…` and twice in
+  `http-ng-select::race::with_no_head_start_both_stacks_connect_…`, both
+  timing-sensitive races in crates this work does not touch. **The base
+  commit flakes too**, 1 in 42, in the same `http-ng-select` test; and the
+  select test alone is 30 clean runs on each tree. So the flake is
+  pre-existing; whether the higher rate here is the extra load of 19 new
+  tests (each spawning a server with its own runtime) or noise is **not
+  distinguishable at these sample sizes**, and is written down rather than
+  claimed either way. The h3 one has a precedent: `docs/v04-*` records the
+  same suite at 2 failures in 277 concurrent runs.
 
 ### 11.8 The cost harness, to re-run
 
