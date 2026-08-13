@@ -13,9 +13,26 @@ mod server;
 use bytes::Bytes;
 use http_ng_core::ErrorKind;
 use http_ng_webtransport::{
-    DatagramTooLarge, DatagramsUnavailable, NotHttps, NotSupportedByPeer, Session, SessionRefused,
+    AlreadyClosed, BadCloseCapsule, DatagramTooLarge, DatagramsUnavailable, NotHttps,
+    NotSupportedByPeer, Session, SessionClose, SessionRefused,
 };
-use server::Options;
+use server::{AfterResponse, Options};
+
+/// The bound on "the peer acts on the CONNECT stream".
+///
+/// A hang guard, like [`ARRIVAL`], and not a claim about speed — but
+/// unlike a datagram, everything it waits for is *ordered and reliable*:
+/// a capsule and a FIN travel on one QUIC stream, so what this bound
+/// actually catches is a client that never writes the FIN or a server that
+/// never reads the capsule, not a slow machine.
+const ACTED: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Await `f`, and fail rather than hang if the session's end never comes.
+async fn ended(session: &Session) -> Result<SessionClose, http_ng_core::Error> {
+    tokio::time::timeout(ACTED, session.closed())
+        .await
+        .expect("the session ends, one way or the other")
+}
 
 /// The bound on "a datagram sent on loopback arrives".
 ///
@@ -556,4 +573,511 @@ async fn the_datagram_budget_is_the_payload_the_wire_accepts() {
     assert_eq!(seen.len(), 1, "the over-budget one never left");
     assert_eq!(seen[0].payload.len(), budget);
     assert_eq!(seen[0].quarter_stream_id * 4, session.id().value());
+}
+
+// ---------------------------------------------------------------------------
+// The capsule protocol, and the end of a session
+// ---------------------------------------------------------------------------
+
+/// **The close premise.** A `CLOSE_WEBTRANSPORT_SESSION` capsule leaves
+/// this stack, carrying the caller's application error code and reason, and
+/// the CONNECT stream ends behind it.
+///
+/// `docs/v04-w2-webtransport.md` §6 recorded the capsule protocol as not
+/// done and gave it a condition — *"a real one carries an application error
+/// code and a reason string on the CONNECT stream"*. This is that,
+/// executed: the bytes asserted are the ones the server's own varint
+/// decoder took off the wire, and the payload is compared **unparsed**, so
+/// the two sides cannot agree by sharing a decoder.
+///
+/// # The ordering is causal
+///
+/// The fixture reads the capsule, records it, waits for the client's FIN,
+/// records that, and only then lets its own half of the stream drop. Bytes
+/// on one QUIC stream are ordered, so a client that has seen this side
+/// close has causally already had both recorded. Nothing here waits on a
+/// duration except the hang guard.
+#[tokio::test]
+async fn a_close_capsule_carries_the_code_and_the_reason_to_the_peer() {
+    let server = server::start(Options::default());
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    session
+        .close(0x1234_5678, "so long")
+        .await
+        .expect("the CONNECT stream is open and the reason is short");
+
+    // The fixture closes its half only after reading ours to its end.
+    let end = ended(&session).await.expect("the fixture FINs cleanly");
+    assert_eq!(
+        end,
+        SessionClose {
+            code: 0,
+            reason: String::new()
+        }
+    );
+
+    // draft-ietf-webtrans-http3 §5's payload, spelled out: four big-endian
+    // bytes of application error code, then the reason as UTF-8.
+    let mut expected = vec![0x12, 0x34, 0x56, 0x78];
+    expected.extend_from_slice(b"so long");
+    assert_eq!(
+        server.capsules(),
+        vec![server::SeenCapsule {
+            kind: 0x2843,
+            payload: expected,
+        }]
+    );
+    // The FIN is the draft's second half, and it is a separate line in the
+    // client from the capsule.
+    assert!(
+        server.client_fin(),
+        "the CONNECT stream is finished behind the capsule"
+    );
+}
+
+/// The peer's close capsule is the session's end, with its code and its
+/// reason.
+#[tokio::test]
+async fn the_peers_close_capsule_is_the_sessions_end() {
+    let server = server::start(Options {
+        after_response: AfterResponse::Close {
+            code: 42,
+            reason: "server done".into(),
+        },
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let end = ended(&session).await.expect("a capsule is a clean close");
+    assert_eq!(
+        end,
+        SessionClose {
+            code: 42,
+            reason: "server done".into()
+        }
+    );
+}
+
+/// A CONNECT stream that simply ends is a clean close with zeroes.
+///
+/// draft-ietf-webtrans-http3 §5: *"Cleanly terminating a CONNECT stream
+/// without sending a `CLOSE_WEBTRANSPORT_SESSION` capsule SHALL be
+/// semantically equivalent to terminating it with a
+/// `CLOSE_WEBTRANSPORT_SESSION` capsule that has an error code of 0 and an
+/// empty error string."* So this is `Ok`, not `Err`, and it is the reason
+/// the clean/unclean distinction cannot be "did a capsule arrive".
+#[tokio::test]
+async fn a_bare_fin_is_a_clean_close_with_zeroes() {
+    let server = server::start(Options {
+        after_response: AfterResponse::Fin,
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let end = ended(&session).await.expect("a FIN is a clean close");
+    assert_eq!(
+        end,
+        SessionClose {
+            code: 0,
+            reason: String::new()
+        }
+    );
+}
+
+/// **The distinction.** A reset CONNECT stream is not a clean close.
+///
+/// This is the test the whole feature exists for. A session that ends
+/// because the peer said so and a session that ends because the peer went
+/// away are the same event to everything else in this crate — the next
+/// `open_bi` fails either way — and telling them apart is what
+/// [`Session::closed`] adds. It is `http-ng-fetch`'s `wasClean` for a
+/// WebSocket, and the error kind agrees with that one on purpose.
+///
+/// The fixture holds the connection open after the reset, so what is
+/// observed here is a *stream* ending abruptly and not a connection
+/// disappearing — the two are separate tests because a client could get one
+/// right and the other wrong.
+#[tokio::test]
+async fn a_reset_connect_stream_is_not_a_clean_close() {
+    let server = server::start(Options {
+        after_response: AfterResponse::Reset,
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+    // Causal, not timed: the reset cannot happen before this line, so it
+    // cannot destroy the response the line above is still reading.
+    server.abandon_the_session();
+
+    let e = ended(&session)
+        .await
+        .expect_err("a reset stream is not the peer saying it is done");
+    assert_eq!(e.kind(), &ErrorKind::Body);
+    // And deliberately not a `BadCloseCapsule`: nothing was malformed,
+    // there was simply nothing.
+    assert!(
+        std::error::Error::source(&e)
+            .and_then(|s| s.downcast_ref::<BadCloseCapsule>())
+            .is_none()
+    );
+}
+
+/// **The distinction, one layer down.** A connection that vanishes is not a
+/// clean close either.
+#[tokio::test]
+async fn a_connection_that_vanishes_is_not_a_clean_close() {
+    let server = server::start(Options {
+        after_response: AfterResponse::AbortConnection,
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+    server.abandon_the_session();
+
+    let e = ended(&session)
+        .await
+        .expect_err("a connection closed under the session is not a close");
+    assert_eq!(e.kind(), &ErrorKind::Body);
+}
+
+/// An unknown capsule is skipped, and the close behind it is still read.
+///
+/// RFC 9297 §3.2: *"An endpoint that receives a capsule with an unknown
+/// Capsule Type MUST silently skip over that capsule."* The fixture sends
+/// `DRAIN_WEBTRANSPORT_SESSION` — the draft's other capsule, and the one
+/// this client deliberately does not surface — with a **non-empty**
+/// payload, so a reader that ignored the length field would take the drain
+/// for the close, or the close for part of the drain.
+#[tokio::test]
+async fn an_unknown_capsule_is_skipped_and_the_close_behind_it_is_read() {
+    let server = server::start(Options {
+        after_response: AfterResponse::UnknownThenClose {
+            code: 7,
+            reason: "after the drain".into(),
+        },
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let end = ended(&session)
+        .await
+        .expect("the second capsule is a close");
+    assert_eq!(
+        end,
+        SessionClose {
+            code: 7,
+            reason: "after the drain".into()
+        }
+    );
+}
+
+/// A capsule cut across two DATA frames is one capsule.
+///
+/// RFC 9297 §3.2 puts capsules in the payload of DATA frames and says
+/// nothing about aligning the two, so a frame boundary is not a capsule
+/// boundary. The cut here is at **two bytes** — inside the capsule's own
+/// type field, not merely inside its payload — so a reader that treated
+/// each DATA frame as a whole capsule sees a type of `0x68`, a length it
+/// never gets, and no close at all.
+#[tokio::test]
+async fn a_capsule_split_across_two_data_frames_is_one_capsule() {
+    let server = server::start(Options {
+        after_response: AfterResponse::CloseInTwoFrames {
+            code: 9,
+            reason: "in two".into(),
+            at: 2,
+        },
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let end = ended(&session)
+        .await
+        .expect("two frames carrying one capsule are one close");
+    assert_eq!(
+        end,
+        SessionClose {
+            code: 9,
+            reason: "in two".into()
+        }
+    );
+}
+
+/// A close capsule with no room for an error code is not a close.
+#[tokio::test]
+async fn a_close_capsule_without_an_error_code_is_not_a_clean_close() {
+    // Capsule type 0x2843 as a two-byte varint, a length of 2, and two
+    // bytes — one short of half the error code the draft requires.
+    let server = server::start(Options {
+        after_response: AfterResponse::Raw(vec![0x68, 0x43, 0x02, 0x00, 0x2a]),
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let e = ended(&session).await.expect_err("two bytes are not a code");
+    assert_eq!(e.kind(), &ErrorKind::Body);
+    assert_eq!(
+        source_of::<BadCloseCapsule>(&e),
+        &BadCloseCapsule::NoErrorCode { payload: 2 }
+    );
+}
+
+/// A close reason that is not UTF-8 is not a close.
+#[tokio::test]
+async fn a_close_reason_that_is_not_utf8_is_not_a_clean_close() {
+    let server = server::start(Options {
+        // 0x2843, length 6, error code 0, then two bytes no UTF-8 decoder
+        // accepts.
+        after_response: AfterResponse::Raw(vec![
+            0x68, 0x43, 0x06, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfe,
+        ]),
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let e = ended(&session).await.expect_err("0xff 0xfe is not UTF-8");
+    assert_eq!(
+        source_of::<BadCloseCapsule>(&e),
+        &BadCloseCapsule::ReasonNotUtf8
+    );
+}
+
+/// A close reason over the draft's limit is not a close, in either
+/// direction — and the limit is the same number both ways.
+///
+/// The receiving half is here; the sending half is
+/// `a_reason_over_the_limit_is_refused_before_anything_is_sent`. One type,
+/// `BadCloseCapsule::ReasonTooLong`, because it is one sentence of the
+/// draft.
+#[tokio::test]
+async fn a_close_reason_over_the_limit_is_not_a_clean_close() {
+    let over = BadCloseCapsule::MAX_REASON + 1;
+    let mut raw = vec![0x68, 0x43];
+    // The capsule length, as a four-byte QUIC varint: 4 + 1025 = 1029.
+    raw.extend_from_slice(&((4 + over as u32) | (0b10 << 30)).to_be_bytes());
+    raw.extend_from_slice(&0u32.to_be_bytes());
+    raw.extend(std::iter::repeat_n(b'x', over));
+    let server = server::start(Options {
+        after_response: AfterResponse::Raw(raw),
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let e = ended(&session).await.expect_err("1025 bytes is over 1024");
+    assert_eq!(
+        source_of::<BadCloseCapsule>(&e),
+        &BadCloseCapsule::ReasonTooLong { len: over }
+    );
+}
+
+/// A stream that ends part way through a capsule is not a clean close.
+///
+/// The difference from `a_bare_fin_is_a_clean_close_with_zeroes` is the
+/// four bytes left over: there the stream ended *at* a capsule boundary,
+/// here it ended inside one, and what the peer meant to say went with the
+/// rest of it. A reader that answered "clean, code 0" to both would be
+/// reporting a truncated close as a deliberate one.
+#[tokio::test]
+async fn a_stream_that_ends_inside_a_capsule_is_not_a_clean_close() {
+    // 0x2843, a length of 8, and only four bytes of payload before the FIN.
+    let server = server::start(Options {
+        after_response: AfterResponse::Raw(vec![0x68, 0x43, 0x08, 0x00, 0x00, 0x00, 0x01]),
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let e = ended(&session)
+        .await
+        .expect_err("half a capsule is not a close");
+    assert_eq!(
+        source_of::<BadCloseCapsule>(&e),
+        &BadCloseCapsule::Truncated { have: 7 }
+    );
+}
+
+/// The end is remembered, not read again.
+///
+/// A second `closed()` on a session that ended with code 42 must not answer
+/// `{ code: 0 }` — which is exactly what re-reading an already-ended stream
+/// gives, because an ended stream is at EOF and EOF is draft §5's bare-FIN
+/// close. The same trap applies to an unclean end: read twice, a reset
+/// session reports itself clean the second time.
+#[tokio::test]
+async fn the_end_is_remembered_rather_than_read_again() {
+    let server = server::start(Options {
+        after_response: AfterResponse::Close {
+            code: 42,
+            reason: "once".into(),
+        },
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let first = ended(&session).await.expect("a capsule is a clean close");
+    let second = ended(&session).await.expect("and it stays one");
+    assert_eq!(first, second);
+    assert_eq!(
+        second,
+        SessionClose {
+            code: 42,
+            reason: "once".into()
+        }
+    );
+}
+
+/// The same, for an end that was not clean: a reset session stays reset.
+#[tokio::test]
+async fn an_unclean_end_is_remembered_too() {
+    let server = server::start(Options {
+        after_response: AfterResponse::Reset,
+        ..Options::default()
+    });
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+    server.abandon_the_session();
+
+    ended(&session).await.expect_err("a reset is not clean");
+    let again = ended(&session)
+        .await
+        .expect_err("and asking twice does not make it clean");
+    assert_eq!(again.kind(), &ErrorKind::Body);
+}
+
+/// A reason over the draft's limit is refused **before anything is sent**,
+/// and the session is still open afterwards.
+///
+/// Refusing rather than truncating is the point: a peer that enforces the
+/// limit — `wtransport` 0.7.2 does — treats an over-long reason as a
+/// protocol error and closes the *connection*, so a client that sent it
+/// would turn a clean close into the one outcome a clean close exists to
+/// avoid. That nothing was sent is asserted causally rather than by
+/// absence: the session is used afterwards, and the fixture records the
+/// stream that use opens.
+#[tokio::test]
+async fn a_reason_over_the_limit_is_refused_before_anything_is_sent() {
+    let server = server::start(Options::default());
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    let over = "x".repeat(BadCloseCapsule::MAX_REASON + 1);
+    let e = session
+        .close(0, &over)
+        .await
+        .expect_err("1025 bytes is over the draft's 1024");
+    assert_eq!(e.kind(), &ErrorKind::Unsupported);
+    assert_eq!(
+        source_of::<BadCloseCapsule>(&e),
+        &BadCloseCapsule::ReasonTooLong {
+            len: BadCloseCapsule::MAX_REASON + 1
+        }
+    );
+
+    // Exactly the limit is not over it — the boundary, in the direction a
+    // `>=` would get wrong.
+    session
+        .close(0, &"y".repeat(BadCloseCapsule::MAX_REASON))
+        .await
+        .expect("1024 bytes is the limit, not one past it");
+    let _ = ended(&session).await;
+    assert_eq!(server.capsules().len(), 1, "the refusal sent nothing");
+    assert_eq!(
+        server.capsules()[0].payload.len(),
+        4 + BadCloseCapsule::MAX_REASON
+    );
+}
+
+/// Closing twice is refused, rather than silently reporting a code that
+/// never left.
+///
+/// `close` carries an application error code the peer acts on, so an `Ok`
+/// to a second call with a different code would be a lie about the wire.
+/// There is one capsule per session because the stream it travels on is
+/// finished by the first.
+#[tokio::test]
+async fn closing_twice_is_refused_rather_than_silently_dropped() {
+    let server = server::start(Options::default());
+    let conn = server::dial(&server).await;
+    let session = Session::connect(conn, &uri(server.addr, "/bye"))
+        .await
+        .expect("the fixture announces WebTransport");
+
+    session.close(1, "first").await.expect("the first close");
+    let e = session
+        .close(2, "second")
+        .await
+        .expect_err("there is only one CONNECT stream to finish");
+    assert_eq!(e.kind(), &ErrorKind::Unsupported);
+    assert_eq!(source_of::<AlreadyClosed>(&e), &AlreadyClosed);
+
+    let _ = ended(&session).await;
+    assert_eq!(server.capsules().len(), 1);
+    let mut expected = vec![0, 0, 0, 1];
+    expected.extend_from_slice(b"first");
+    assert_eq!(server.capsules()[0].payload, expected);
+}
+
+/// A `Session` can be spawned, and it can be shared.
+///
+/// `Send` was true before the capsule protocol; it is asserted because the
+/// two `Mutex`es the CONNECT stream now sits behind could have taken it
+/// away. `Sync` is **new** with them, and it is the property the `&self` on
+/// `close` and `closed` exists for: waiting for the peer's close in one
+/// task while another opens streams means an `Arc<Session>` in two places,
+/// which needs both.
+///
+/// # Why it is here rather than beside the code
+///
+/// `scripts/no-send-or-sync-in-the-core-surface.sh` scans `crates/*/src`
+/// for a declared `Send` or `Sync` bound and demands a
+/// `send-bound-exception: amendment-C…` marker on every one — and that
+/// marker names a spec amendment that excuses a **seam** bound. None of
+/// them excuses a test, so writing this in `src/` would mean spending a
+/// marker on something no amendment covers. A test directory is not the
+/// core surface, and this is a property of the public API as a consumer
+/// meets it.
+#[test]
+fn a_session_can_be_spawned_and_shared() {
+    fn is_send<T: Send>() {}
+    fn is_sync<T: Sync>() {}
+    is_send::<Session>();
+    is_sync::<Session>();
 }

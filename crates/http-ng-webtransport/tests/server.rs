@@ -23,13 +23,13 @@
 #![cfg(not(target_family = "wasm"))]
 #![allow(dead_code)]
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 /// What the server announces and how it answers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Options {
     /// `SETTINGS_ENABLE_WEBTRANSPORT`.
     pub announce_webtransport: bool,
@@ -52,6 +52,57 @@ pub struct Options {
     pub noise_before_echo: bool,
     /// The status the extended CONNECT is answered with.
     pub answer: http::StatusCode,
+    /// What the server does with the CONNECT stream once it has answered.
+    pub after_response: AfterResponse,
+}
+
+/// What the fixture does with the CONNECT stream after the response.
+///
+/// The CONNECT stream is where the capsule protocol lives
+/// (draft-ietf-webtrans-http3 §5, RFC 9297 §3), so every way a session can
+/// end is a variant here — and the point of having them all is that a test
+/// asserting "the session ended" would pass against every one of them,
+/// where the feature under test is telling them apart.
+#[derive(Debug, Clone)]
+pub enum AfterResponse {
+    /// Hold the stream, read whatever capsules the client sends, record
+    /// them, and close this side once the client's half has ended.
+    ///
+    /// The closing is what makes the client's own `closed()` a **causal**
+    /// signal that its capsule arrived: bytes on one QUIC stream are
+    /// ordered, so a FIN that only happens after the capsule was read
+    /// cannot be observed before it.
+    ReadCapsules,
+    /// Send a `CLOSE_WEBTRANSPORT_SESSION` capsule, then FIN.
+    Close { code: u32, reason: String },
+    /// The same capsule, cut in two and sent as two DATA frames.
+    ///
+    /// `at` is how many bytes of the capsule go in the first frame, so a
+    /// value under three cuts inside the capsule's own header rather than
+    /// inside its payload.
+    CloseInTwoFrames {
+        code: u32,
+        reason: String,
+        at: usize,
+    },
+    /// An unknown capsule type, then the close. RFC 9297 §3.2 requires a
+    /// receiver to skip the first and act on the second.
+    UnknownThenClose { code: u32, reason: String },
+    /// Send these bytes as one DATA frame and then FIN. For the capsules
+    /// no honest encoder would produce.
+    Raw(Vec<u8>),
+    /// FIN with no capsule at all — draft §5's *"semantically equivalent
+    /// to … an error code of 0 and an empty error string"*.
+    Fin,
+    /// Reset the CONNECT stream. The session is over and the peer never
+    /// said why: this is the "vanished" half of the distinction.
+    ///
+    /// Waits for [`Server::abandon_the_session`] first — see there.
+    Reset,
+    /// Close the whole QUIC connection out from under the session.
+    ///
+    /// Waits for [`Server::abandon_the_session`] first — see there.
+    AbortConnection,
 }
 
 impl Default for Options {
@@ -63,6 +114,7 @@ impl Default for Options {
             quic_datagrams: true,
             noise_before_echo: false,
             answer: http::StatusCode::OK,
+            after_response: AfterResponse::ReadCapsules,
         }
     }
 }
@@ -92,6 +144,23 @@ pub struct SeenDatagram {
     /// session's CONNECT stream ID divided by four.
     pub quarter_stream_id: u64,
     /// Everything after it.
+    pub payload: Vec<u8>,
+}
+
+/// One capsule as the server read it off the CONNECT stream.
+///
+/// Raw on purpose: the type and the length are decoded with this file's own
+/// varint reader, and everything after them is handed to the test
+/// **unparsed**. So a test asserting on a close capsule spells out
+/// draft-ietf-webtrans-http3 §5's payload — four big-endian bytes of error
+/// code, then UTF-8 — byte by byte, rather than through a decoder that
+/// could be wrong in the same direction as the encoder under test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenCapsule {
+    /// RFC 9297 §3's Capsule Type. `0x2843` is
+    /// `CLOSE_WEBTRANSPORT_SESSION`.
+    pub kind: u64,
+    /// The Capsule Value, exactly as many bytes as the Capsule Length said.
     pub payload: Vec<u8>,
 }
 
@@ -130,6 +199,16 @@ struct State {
     streams: Mutex<Vec<SeenStream>>,
     datagrams: Mutex<Vec<SeenDatagram>>,
     client_settings: Mutex<Option<SeenClientSettings>>,
+    capsules: Mutex<Vec<SeenCapsule>>,
+    /// Released by [`Server::abandon_the_session`].
+    abandon: tokio::sync::Notify,
+    /// Whether the client's half of the CONNECT stream ended with a FIN.
+    ///
+    /// Recorded because draft §5 asks for the FIN *as well as* the capsule,
+    /// and because the two are separate lines in the client: a close that
+    /// wrote the capsule and left the stream open would satisfy every
+    /// assertion about capsule bytes.
+    client_fin: Mutex<bool>,
 }
 
 #[derive(Debug)]
@@ -143,6 +222,33 @@ impl Server {
     /// Every request the server has resolved so far.
     pub fn requests(&self) -> Vec<SeenRequest> {
         self.state.requests.lock().unwrap().clone()
+    }
+
+    /// Let the fixture destroy the session, for the two `AfterResponse`
+    /// variants that do.
+    ///
+    /// A gate rather than a delay, and it is there for a reason found by
+    /// running it: `quinn::SendStream::reset` and `Connection::close` both
+    /// abandon data that is written but not yet delivered, so a fixture
+    /// that reset the CONNECT stream immediately after answering could
+    /// destroy the **response** — and the client then fails in
+    /// `Session::connect`, before the thing under test exists. Called after
+    /// `Session::connect` has returned, this makes the order causal rather
+    /// than lucky.
+    pub fn abandon_the_session(&self) {
+        // `notify_one` rather than `notify_waiters`: the permit is stored,
+        // so this works whether or not the fixture is already waiting.
+        self.state.abandon.notify_one();
+    }
+
+    /// Every capsule the server has read off the CONNECT stream.
+    pub fn capsules(&self) -> Vec<SeenCapsule> {
+        self.state.capsules.lock().unwrap().clone()
+    }
+
+    /// Whether the client ended its half of the CONNECT stream with a FIN.
+    pub fn client_fin(&self) -> bool {
+        *self.state.client_fin.lock().unwrap()
     }
 
     /// Every WebTransport stream the server has read to its end so far.
@@ -246,6 +352,7 @@ pub fn start(opts: Options) -> Server {
             tx.send(endpoint.local_addr().unwrap()).unwrap();
             while let Some(incoming) = endpoint.accept().await {
                 let state = for_thread.clone();
+                let opts = opts.clone();
                 tokio::spawn(async move {
                     let Ok(conn) = incoming.await else { return };
                     serve(conn, opts, state).await;
@@ -333,14 +440,21 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
     // WebTransport datagram on this connection must name.
     let session_id = stream.id().into_inner();
 
-    // Held, not dropped: the session lives exactly as long as the CONNECT
-    // stream, and `quinn::SendStream::drop` calls `finish()`.
-    let _connect = stream;
+    // The CONNECT stream is *moved* into its own task rather than held and
+    // ignored. That task is what keeps the session alive — it owns the
+    // stream, and `quinn::SendStream::drop` finishes it — and it is also
+    // the whole of the capsule protocol on this side.
+    tokio::spawn(connect_stream(
+        stream,
+        quic.clone(),
+        opts.clone(),
+        state.clone(),
+    ));
 
     tokio::spawn(echo_datagrams(
         quic.clone(),
         session_id,
-        opts,
+        opts.clone(),
         state.clone(),
     ));
 
@@ -350,6 +464,134 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
             echo_webtransport_stream(send, recv, state).await;
         });
     }
+}
+
+/// The capsule protocol, on the server's side of the CONNECT stream.
+///
+/// # It encodes with `h3`'s varint and decodes with its own
+///
+/// The same arrangement as [`echo_datagrams`], and for the same reason: the
+/// capsule headers it writes come from `h3::proto::varint::VarInt`, a third
+/// implementation that is neither the crate under test's encoder nor this
+/// file's decoder, and what it reads is decoded by [`VarintReader`], written
+/// from RFC 9000 §16. The capsule *payload* it never decodes at all — see
+/// [`SeenCapsule`].
+async fn connect_stream(
+    mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    quic: quinn::Connection,
+    opts: Options,
+    state: Arc<State>,
+) {
+    match opts.after_response.clone() {
+        AfterResponse::ReadCapsules => {}
+        AfterResponse::Close { code, reason } => {
+            let _ = stream.send_data(close_capsule(code, &reason)).await;
+            // Dropping the stream is the FIN, which is draft §5's second
+            // half of a clean close.
+            return;
+        }
+        AfterResponse::CloseInTwoFrames { code, reason, at } => {
+            let whole = close_capsule(code, &reason);
+            let _ = stream.send_data(whole.slice(..at)).await;
+            let _ = stream.send_data(whole.slice(at..)).await;
+            return;
+        }
+        AfterResponse::UnknownThenClose { code, reason } => {
+            // `DRAIN_WEBTRANSPORT_SESSION`, the draft's other capsule and
+            // the one this client deliberately does not act on. Its
+            // payload is empty, so a receiver that ignored the length
+            // field would still get the next capsule right — which is why
+            // the payload here is not empty.
+            let _ = stream.send_data(capsule(0x78ae, b"drain")).await;
+            let _ = stream.send_data(close_capsule(code, &reason)).await;
+            return;
+        }
+        AfterResponse::Raw(bytes) => {
+            let _ = stream.send_data(Bytes::from(bytes)).await;
+            return;
+        }
+        AfterResponse::Fin => return,
+        AfterResponse::Reset => {
+            state.abandon.notified().await;
+            stream.stop_stream(h3::error::Code::H3_NO_ERROR);
+            // Held so the reset is not immediately followed by the whole
+            // connection going away, which would be a different fact.
+            std::future::pending::<()>().await;
+            return;
+        }
+        AfterResponse::AbortConnection => {
+            state.abandon.notified().await;
+            quic.close(0u32.into(), b"gone");
+            return;
+        }
+    }
+
+    let mut buf = Vec::new();
+    loop {
+        match stream.recv_data().await {
+            Ok(Some(mut data)) => {
+                while data.has_remaining() {
+                    let chunk = data.chunk();
+                    buf.extend_from_slice(chunk);
+                    let read = chunk.len();
+                    data.advance(read);
+                }
+                // Recorded as they are decoded, and before the FIN below,
+                // so a client that has observed this side closing has
+                // causally already had its capsule recorded.
+                while let Some(seen) = take_capsule(&mut buf) {
+                    state.capsules.lock().unwrap().push(seen);
+                }
+            }
+            // The client's half ended. Record it and let the stream drop,
+            // which FINs this half in turn.
+            Ok(None) => {
+                *state.client_fin.lock().unwrap() = true;
+                return;
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+/// RFC 9297 §3's framing: a capsule type and a length, both QUIC
+/// variable-length integers, then the value.
+fn capsule(kind: u64, payload: &[u8]) -> Bytes {
+    use h3::proto::varint::VarInt;
+    let mut buf = Vec::new();
+    VarInt::from_u64(kind)
+        .expect("a capsule type is a varint")
+        .encode(&mut buf);
+    VarInt::from_u64(payload.len() as u64)
+        .expect("a test payload is short")
+        .encode(&mut buf);
+    buf.extend_from_slice(payload);
+    Bytes::from(buf)
+}
+
+/// A `CLOSE_WEBTRANSPORT_SESSION` capsule: draft §5's 32-bit application
+/// error code, big-endian, then the reason as UTF-8.
+fn close_capsule(code: u32, reason: &str) -> Bytes {
+    let mut payload = code.to_be_bytes().to_vec();
+    payload.extend_from_slice(reason.as_bytes());
+    capsule(0x2843, &payload)
+}
+
+/// Take one whole capsule off the front of `buf`, if there is one.
+fn take_capsule(buf: &mut Vec<u8>) -> Option<SeenCapsule> {
+    let mut reader = VarintReader {
+        buf: buf.clone(),
+        at: 0,
+    };
+    let kind = reader.try_decode()?;
+    let length = reader.try_decode()? as usize;
+    let start = reader.at;
+    if buf.len() < start + length {
+        return None;
+    }
+    let payload = buf[start..start + length].to_vec();
+    buf.drain(..start + length);
+    Some(SeenCapsule { kind, payload })
 }
 
 /// Read every datagram on the connection, record it, and echo it back.

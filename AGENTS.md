@@ -872,9 +872,39 @@ What is asserted about loss is *what* arrives, never *that* it arrives — the
 arrival bound is a hang guard rather than a claim, and the one ordering
 dependence is checked by mutation instead of assumed.
 
-Deliberately not done, each with what it needs: the capsule protocol,
-observing session end, `GOAWAY`, server-initiated streams, and more than one
-session per connection.
+**A session ends cleanly now, and telling that from a session that vanished
+is the whole feature.** `Session::close(code, reason)` writes RFC 9297's
+`CLOSE_WEBTRANSPORT_SESSION` capsule on the CONNECT stream and FINs;
+`Session::closed()` answers `Ok` for a clean end — a capsule, or a bare FIN,
+which the draft makes `{code: 0, reason: ""}` — and `Err` for a reset stream,
+a lost connection or an unreadable capsule. `ErrorKind::Body`, agreeing with
+`http-ng-fetch`'s treatment of a `wasClean == false` close rather than
+inventing a second vocabulary.
+
+**It needed nothing spawned, and that disproves this workspace's own guess.**
+`docs/v04-w2-webtransport.md` §6 said observing session end *"needs a driver
+— and that is the one place a future version might have to spawn"*. It does
+not: `h3`'s `RequestStream::poll_recv_data` reads through its own
+`FrameStream` straight off the `quinn::RecvStream`, and the connection driver
+owns the **control** stream and nothing else.
+
+**The capsule is ours, and the crate whose name promises it does not have
+it.** Measured rather than assumed: `h3` 0.0.8 has no capsule code,
+`h3-datagram` 0.0.2 has none, and **`h3-webtransport` 0.1.2** has none. The
+one crate that does is `web-transport-proto` 0.6.0 — executed rather than
+read, after the `h3-datagram` lesson, and it is **correct**; the reason not to
+take it is cost, 48 crates with `url`, `idna` and ICU among them, against
+this crate's 49 in total. Ours is 59 lines.
+
+Two facts about the peers, found and not patched around: neither `wtransport`
+0.7.2 nor `web-transport-quinn` 0.8.1 *sends* a close capsule — both close the
+QUIC connection — so the receive direction has no third-party encoder to be
+checked against over a socket; and `wtransport::Connection::closed()` awaits
+the **QUIC** connection and reports `LocallyClosed` for a session ended by a
+capsule, which is exactly the confusion this distinction removes.
+
+Deliberately not done, each with what it needs: `GOAWAY`, server-initiated
+streams, and more than one session per connection.
 
 ### A connect can be asked for on its own, and the first thing that wanted one was not the race (v0.4)
 

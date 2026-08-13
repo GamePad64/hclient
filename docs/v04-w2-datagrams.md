@@ -328,6 +328,13 @@ eleven from `docs/v04-w2-webtransport.md` §8 were re-run rather than
 assumed, because the datagram code shares `put_varint` and the session ID
 with them.
 
+**All twenty-three were re-run again after the capsule protocol landed**,
+and three gained killers — D9 most of all, from **one** test to ten,
+because a capsule type is a *two*-byte varint where this session's Quarter
+Stream ID is one. The current table is
+[`docs/v04-w2-capsules.md`](v04-w2-capsules.md) §9, forty mutations with
+three controls.
+
 | # | mutation | verdict | killed by |
 |---|---|---|---|
 | M1 | `Protocol::WEB_TRANSPORT` → `CONNECT_UDP` | killed | 2 tests |
