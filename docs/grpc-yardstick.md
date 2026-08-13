@@ -58,6 +58,20 @@ Every row was run. "Where" names the test in
 None of these is new, and none was found by this audit — what the audit
 adds is a number and a test.
 
+**All three have since been investigated together, and the investigation
+is `docs/h2-multiplexing.md`.** Three of its findings belong here rather
+than only there. This section's own framing — L2 and L3 hang off L1 — is
+**confirmed by measurement**: with the connection driver spawned, the
+`RST_STREAM(CANCEL)` arrives and a `PING` is answered in 0 ms, neither
+needing any code of its own. L1's cost is now a count rather than a
+sentence: 1, 2, 4 and 8 concurrent calls cost 1, 2, 4 and 8 TCP
+connections and the same number of h2 handshakes, and over real TLS, 480
+requests at a concurrency of 8 cost **480** accepts where a shared
+connection needs 60. And it is **not** a pure win: at the peer's
+`MAX_CONCURRENT_STREAMS` a shared connection queues where today's opens a
+second socket — six concurrent calls against a limit of two finished in
+three waves at 203/405/607 ms, where today the sixth finishes in ~200 ms.
+
 ### L1. No multiplexing: one concurrent call, one connection
 
 gRPC's transport model is many concurrent calls on one HTTP/2 connection.

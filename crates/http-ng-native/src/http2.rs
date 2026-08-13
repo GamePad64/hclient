@@ -72,6 +72,17 @@
 //!    means somebody has to keep polling it, which is the `Spawn` question
 //!    again.
 //!
+//! **`docs/h2-multiplexing.md` is that question answered**, and the part
+//! that belongs in this file is what happens to [`Pump`]'s `Drop`. Its own
+//! doc comment says the `RST_STREAM(CANCEL)` it queues is unobservable
+//! today and is kept for the day the exclusivity is lifted; with the
+//! connection driven by a spawned task **the frame reaches the wire** —
+//! measured, a server recording `CANCEL` for the cancelled call and
+//! answering its neighbour on the same connection. So W1's rule stops
+//! holding vacuously and starts needing a test, and
+//! `tests/grpc_shape.rs`'s `Ending::Reset` variant, which nothing produces
+//! today, is what that test would assert.
+//!
 //! # Full duplex, and why `Capabilities::full_duplex` still reports `false`
 //!
 //! [`exchange`] used to write the whole request body before it waited for
