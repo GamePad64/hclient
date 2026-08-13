@@ -137,7 +137,25 @@ pub struct Server {
     /// How many QUIC connections the server has accepted. The observer is
     /// the server, never the client's own bookkeeping — the rule every
     /// pooling test in this workspace follows.
+    ///
+    /// **Counted after the handshake**, which is what makes it the right
+    /// number for a pool test and the wrong one for a test whose client
+    /// tears a connection down the instant it is up: `Incoming::await`
+    /// yields an error rather than a connection if the peer's
+    /// `CONNECTION_CLOSE` arrives before this thread gets round to polling
+    /// it, so a connection the client certainly made can go uncounted. See
+    /// [`Server::dialled`].
     pub accepted: Arc<std::sync::atomic::AtomicUsize>,
+    /// How many QUIC connections were **offered** to this endpoint —
+    /// incremented where `Endpoint::accept` yields, before the handshake
+    /// and before anything can go wrong with it.
+    ///
+    /// This is the honest observer for *"the client dialled twice"*, and it
+    /// is honest for a structural reason rather than a probabilistic one:
+    /// the accept loop is sequential on one thread, so a test that has been
+    /// answered on the second connection is a test whose first connection
+    /// was already counted.
+    pub dialled: Arc<std::sync::atomic::AtomicUsize>,
     /// How many HTTP/3 requests it has answered.
     pub requests: Arc<std::sync::atomic::AtomicUsize>,
     /// One entry per accepted connection, in accept order — see
@@ -198,6 +216,9 @@ impl std::fmt::Debug for Server {
 impl Server {
     pub fn accepted(&self) -> usize {
         self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn dialled(&self) -> usize {
+        self.dialled.load(std::sync::atomic::Ordering::SeqCst)
     }
     pub fn requests(&self) -> usize {
         self.requests.load(std::sync::atomic::Ordering::SeqCst)
@@ -416,13 +437,15 @@ fn start_inner(
 
     let (tx, rx) = std::sync::mpsc::channel();
     let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dialled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let bodies: Arc<std::sync::Mutex<Vec<BodyReport>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
-    let (a, r, ts, bs) = (
+    let (a, d, r, ts, bs) = (
         accepted.clone(),
+        dialled.clone(),
         requests.clone(),
         timings.clone(),
         bodies.clone(),
@@ -446,6 +469,8 @@ fn start_inner(
             };
             tx.send(Some(endpoint.local_addr().unwrap())).unwrap();
             while let Some(incoming) = endpoint.accept().await {
+                // Before the handshake, deliberately — see `Server::dialled`.
+                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (a, r, ts, bs) = (a.clone(), r.clone(), ts.clone(), bs.clone());
                 tokio::spawn(async move {
                     let started = std::time::Instant::now();
@@ -624,6 +649,7 @@ fn start_inner(
             .expect("the server thread binds before it answers")?,
         cert_der,
         accepted,
+        dialled,
         requests,
         timings,
         bodies,

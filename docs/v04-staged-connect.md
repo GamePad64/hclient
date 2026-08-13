@@ -393,14 +393,19 @@ demanded request first, where nothing was suppressed yet.
   they cannot rule out is a write the server has not yet read. The second
   half of each test is what makes them worth reading: the same counter that
   stays at zero across the connect reaches one across the exchange.
-- **One flake, seen once and not since.** In the first mutation pass
+- ~~**One flake, seen once and not since.**~~ **A defect, and an old one** —
+  [`docs/v04-h3-0rtt-control-stream.md`](v04-h3-0rtt-control-stream.md). In
+  the first mutation pass
   `http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_
   connection` failed under a mutation that cannot reach it — `S1`, in
   `http-ng-select`. It passed 15 times in isolation afterwards and did not
-  recur in the 21 full-suite runs of the second pass, so it is a
+  recur in the 21 full-suite runs of the second pass, so it read as a
   load-dependent flake rather than a defect this work introduced; but
   `H3::execute` was refactored into `stage` + `finish` in this branch, and
-  "not reproduced" is weaker than "not there".
+  "not reproduced" is weaker than "not there". Both halves of that turned
+  out to be the right instinct: it was not this branch's, and it was not a
+  flake — a 0-RTT rejection landing on h3's control stream instead of on the
+  request stream, which nothing had ever handled.
 - **A `Staged` whose connection dies while the caller holds it.** The
   behaviour is decided (§2.3) and no test produces the window, because
   producing it means closing a connection between a checkout and a write.
@@ -417,7 +422,24 @@ demanded request first, where nothing was suppressed yet.
   HTTP/3 and that the next request will want.
 
 
-## The flake this branch may have introduced
+## ~~The flake this branch may have introduced~~ — settled, and it was
+## neither this branch's nor a flake
+
+**It was a real defect, older than this branch by 292 commits**, and
+[`docs/v04-h3-0rtt-control-stream.md`](v04-h3-0rtt-control-stream.md) is the
+capture, the cause, the deterministic reproduction and the fix. The section
+below is what stood here before that, kept because the suspicion it records
+was right and its suspect was not.
+
+In one line: h3 opens its control stream **in early data** on a connection
+`into_0rtt` handed back, and a server refusing that early data while
+`h3::client::builder().build(..)` is still writing SETTINGS makes RFC 9114
+§6.2.1 close the QUIC connection — so the rejection reached the caller as
+`ErrorKind::Connect`, which is the one outcome `crate::early` says cannot
+happen. `H3::connect` now dials once more without the shortcut. `H3::execute`'s
+`stage`/`finish` split moved the call site and changed nothing inside it.
+
+---
 
 `http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection`
 failed once during the branch's own mutation run, under a mutation that
@@ -437,3 +459,7 @@ two real bugs rather than a fixture's impatience.
 
 What would settle it is what settled the pool flake: capture the failure
 with its own output rather than a `FAIL` line. Nobody has yet.
+
+**Somebody has now**, and the recipe was the one this section was pointing
+at: eight concurrent runs of the whole suite with every run's output kept —
+2 failures in 277 — rather than more runs of one test.

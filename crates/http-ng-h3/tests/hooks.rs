@@ -995,11 +995,15 @@ async fn a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_
     let _ = r.into_body().collect().await.expect("body");
 
     assert_eq!(
-        b.accepted(),
+        b.dialled(),
         2,
         "the premise: the early-data connection really was destroyed and a \
          second one really was dialled — without this the assertions below \
-         are also what a transport that never fell back would report"
+         are also what a transport that never fell back would report. \
+         `dialled` rather than `accepted` for the reason its sibling in \
+         `live.rs` gives at length: this client closes the first connection \
+         the instant it is up, and a server counting after the handshake \
+         can lose that race"
     );
     assert_eq!(
         rec.connects().len(),

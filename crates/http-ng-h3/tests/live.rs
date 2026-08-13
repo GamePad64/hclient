@@ -315,12 +315,24 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
 ///
 /// # What the assertions are, and why the server makes them
 ///
-/// `b.accepted() == 2` is the whole fix seen from the far side of the
-/// wire: the early-data connection was destroyed and a second, ordinary
-/// one was dialled to the same server. `b.requests() == 1` is the other
-/// half — the fallback is a second **connection**, never a second request,
-/// which is what keeps this out of `RetryKind`'s territory. Nothing of the
-/// caller's request had been written when the first connection died.
+/// `b.dialled() == 2` is the whole fix seen from the far side of the wire:
+/// the early-data connection was destroyed and a second, ordinary one was
+/// dialled to the same server. `b.requests() == 1` is the other half — the
+/// fallback is a second **connection**, never a second request, which is
+/// what keeps this out of `RetryKind`'s territory. Nothing of the caller's
+/// request had been written when the first connection died.
+///
+/// **`dialled` and not `accepted`, and that was this test's own bug.** It
+/// first asserted `b.accepted() == 2`, which counts connections *after*
+/// their handshakes; this client closes the first one the instant its
+/// handshake completes, so under load the server's `Incoming::await` loses
+/// that race and yields an error rather than a connection — 1 failure in
+/// 280 concurrent runs of this suite, the fixture being wrong rather than
+/// the transport. `dialled` is incremented where `Endpoint::accept` yields,
+/// before the handshake, and is right for a structural reason rather than a
+/// probabilistic one: the accept loop is sequential on one thread, so a
+/// test answered on the second connection is a test whose first connection
+/// was already counted.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
     // Small enough that h3's SETTINGS frame cannot be written in one go,
@@ -346,10 +358,11 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
     assert_eq!(r.status(), 200);
     assert_eq!(body_of(r).await, "hello over h3");
     assert_eq!(
-        b.accepted(),
+        b.dialled(),
         2,
         "the early-data connection was destroyed by the rejection and a \
-         second, ordinary one was dialled — the server counts both"
+         second, ordinary one was dialled — the server counts both offered \
+         to its endpoint"
     );
     assert_eq!(
         b.requests(),
@@ -394,9 +407,11 @@ async fn a_connect_that_put_nothing_in_early_data_is_not_dialled_twice() {
         "and it is the connect's failure, reported as such: {e:?}"
     );
     assert_eq!(
-        s.accepted(),
+        s.dialled(),
         1,
-        "one dial, not two — the request was marked, so the fallback was          reachable; what makes it unreachable is that nothing went out in          early data for the rejection to have destroyed"
+        "one dial, not two — the request was marked, so the fallback was \
+         reachable; what makes it unreachable is that nothing went out in \
+         early data for the rejection to have destroyed"
     );
 }
 
