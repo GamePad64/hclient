@@ -96,6 +96,35 @@ because borrowing a transport a `Client` already owns is the whole reason
 Both are fixed by giving each crate the dev-dependency its own example
 needs, which is what "builds the way a reader would build it" means.
 
+**That story has a third act, and both halves of it are about a check
+that could not fail.** `test-doc` counted five ```ignore fences as
+tests — rustdoc compiles none of them, so the recipe printed `ok` over
+five code blocks nothing had ever built. Four were real examples and
+are `no_run` now, with hidden setup lines; writing `http-ng-rt-quinn`'s
+found that `UdpAdoptStd` is `http_ng_rt`'s rather than that crate's, so
+a reader copying the sketch would have imported it from the wrong
+place. The fifth quotes `embassy-net`'s own `Drop for TcpSocket` as
+evidence and is ```text, because someone else's code cited in an
+argument was never our example. The recipe now fails closed on both
+shapes — no `test result:` line at all, and any `ignored` count — so
+13 doctests are checked where 9 were.
+
+And `test-no-default` **ran, printed `error:`, and exited zero**, for as
+long as it had existed. Its four trailing `cargo clippy` lines are
+unguarded under `set -uo pipefail` with no `-e`, so the recipe's status
+was the last line's and every earlier failure was invisible; the CI job
+calling it was green over three real dead-code errors under
+`--no-default-features`. This is worse than the missing job above,
+because it is the recipe people run before pushing. Both are the same
+rule: **a check that cannot fail is not a check**, and the way to know
+which kind you have is to break something on purpose and watch. Doing
+that here also showed how easily the wrong break proves nothing — a
+syntax error in an *example* fails the nextest step first, which *is*
+guarded, so both editions of the recipe scored 101 and discriminated
+nothing. `fuzz-smoke` shares the missing `-e` and is unaffected: every
+cargo group there is chained with `&&` inside a subshell ending
+`|| exit 1`.
+
 Browser tests: those go through `wasm-pack test --headless
 --chrome|--firefox` regardless, see the `browser` job.
 
