@@ -486,6 +486,9 @@ impl Session {
     /// [`DatagramTooLarge`] when this particular payload does not fit —
     /// the second carries the budget that
     /// [`max_datagram_size`](Self::max_datagram_size) would have reported.
+    /// The first has two variants and both are reachable from here: the
+    /// peer's SETTINGS are checked on this line, and the connection's own
+    /// answer arrives from quinn.
     pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
         if !self.peer_datagrams {
             return Err(Error::new(
@@ -493,15 +496,16 @@ impl Session {
                 DatagramsUnavailable::NotAnnouncedByPeer,
             ));
         }
-        let Some(frame_budget) = self.conn.max_datagram_size() else {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                DatagramsUnavailable::NotOnTheConnection,
-            ));
-        };
-        let quarter = self.quarter_stream_id();
-        let budget = frame_budget.saturating_sub(varint_len(quarter));
-        if payload.len() > budget {
+        // The size check is the only thing this crate can answer better
+        // than quinn: it knows the header it is about to add. Whether the
+        // connection carries datagrams at all is quinn's answer and is
+        // deliberately left to it — a second check here would be a branch
+        // no test could reach, because `max_datagram_size` being `None`
+        // and `send_datagram` answering `UnsupportedByPeer` are the same
+        // connection saying the same thing.
+        if let Some(budget) = self.max_datagram_size()
+            && payload.len() > budget
+        {
             return Err(Error::new(
                 ErrorKind::Body,
                 DatagramTooLarge {
@@ -511,6 +515,7 @@ impl Session {
             ));
         }
 
+        let quarter = self.quarter_stream_id();
         let mut frame = Vec::with_capacity(varint_len(quarter) + payload.len());
         put_varint(&mut frame, quarter);
         frame.extend_from_slice(&payload);
