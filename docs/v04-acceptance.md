@@ -53,6 +53,20 @@ connection. The threshold that would decide otherwise needs the peer's
 limit — `h2` will not report it — and a handshake cost that is a network
 property, so a loopback number would be a number about this machine.
 
+**`Capabilities::proxy` is inert, and this is a decision waiting rather
+than a finding acted on.** Measured: the field is set in exactly one
+place — `Capabilities::none()`'s `false` — no backend sets it, nothing
+in `http-ng` branches on it, and there is no proxy setting on `Client`,
+no seam on `Transport` and no implementation anywhere, so a caller
+cannot ask for a proxy and learning that the transport has none is not
+actionable. It has no doc comment, alone among its neighbours. That is
+the shape `UpgradeSupport`'s four variants had when they were deleted —
+*a variant exists only if a caller decision turns on it* — but unlike
+those, this one names a feature a general HTTP client is expected to
+have, so the two ways out are opposite: delete the field, or build
+proxy support and make the field mean something. Both are the owner's
+call; recorded here rather than taken.
+
 **Publishing.** Unchanged and not a v0.4 question: every crate still says
 `0.1.0`, and the trigger is the owner's.
 
@@ -74,14 +88,20 @@ own suites are clean run alone. Whether the rate moved with v0.4's added
 load or is noise is **not distinguishable at these sample sizes**, which
 is why this paragraph says so rather than picking a side.
 
-A further **80 full workspace runs on the merged tree failed 0 times**,
-and that is reported for what it is worth rather than as a refutation:
-against a rate of 1 in 40, a clean run of 80 happens about 13% of the
-time, so it rules out a *higher* rate here and rules out nothing else.
-The one asymmetry worth recording is the machine — the 3-in-39 runs
-were taken while other work was in flight and these were not, which
-fits "timing-sensitive race" and is the next thing to vary if anyone
-sets out to capture it. The project's
+A further **200 full workspace runs on the merged tree produced exactly
+one failure**, the select one — so the rate here is nearer 1 in 200 than
+1 in 40. The asymmetry worth recording is the machine: the 3-in-39 runs
+were taken while other work was in flight and these were not, which fits
+"timing-sensitive race" and is the first thing to vary if anyone sets out
+to capture it.
+
+**That one failure was not captured, and losing it was a method mistake
+rather than bad luck.** The run's output went through `tail -2` for the
+summary line, which discarded the failure detail that was the entire
+reason to be watching — in a project whose rule for flakes is *capture
+rather than reason about it*. The 120-run loop set up afterwards, which
+does keep the full output, did not reproduce it. Anyone resuming this
+should run the workspace under competing load and keep every byte. The project's
 record argues for capturing rather than reasoning: the three flakes
 chased this way each turned out to be a real defect, one of them an RFC
 9114 violation that took three sightings.
