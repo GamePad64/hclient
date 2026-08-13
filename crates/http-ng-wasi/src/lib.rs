@@ -7,11 +7,12 @@
 
 mod body;
 mod convert;
+mod hooks;
 
 pub use body::Body;
 
 use convert::{Payload, TrailerWatch};
-use http_ng_core::unversioned::Transport;
+use http_ng_core::unversioned::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use http_ng_core::{
     CancelSupport, Capabilities, Error, RedirectSupport, RequestBody, ReuseSupport, TimeoutSupport,
     Timeouts, TlsSupport,
@@ -52,9 +53,54 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
 
 /// Transport over the ambient `wasi:http/client.send` — the guest holds no
 /// socket of its own, all network interaction is delegated to the host.
+///
+/// # `H`, the observability hook (v0.4 W2)
+///
+/// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
+/// `false` — so `WasiHttp` still names the transport it always named, and
+/// a build that asks for nothing reads no clock. [`WasiHttp::hooks`] is
+/// how a caller asks; what comes back is a *different type*, because the
+/// hook is a type parameter rather than a `Box<dyn Hooks>`, which is the
+/// whole of the zero-cost claim.
+///
+/// **This backend emits exactly one of the four events**, and which one is
+/// the finding rather than an omission: `wasi:http@0.3.0` has no
+/// connection resource anywhere in it, so `Connected`, `Reused` and
+/// `Closed` have nothing to be about. See [`crate::hooks`].
 #[derive(Debug)]
-pub struct WasiHttp {
+pub struct WasiHttp<H = NoHooks> {
     caps: Capabilities,
+    /// Where the events go. `NoHooks` is a ZST, so this field costs a
+    /// build that wants nothing exactly nothing.
+    hooks: H,
+}
+
+impl<H> WasiHttp<H> {
+    /// Send this transport's events to `hooks` — see
+    /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
+    /// costs, and [`crate::hooks`] for the three quarters of the
+    /// vocabulary `wasi:http` cannot speak.
+    ///
+    /// **It returns a different type**, and that is the zero-cost
+    /// mechanism rather than an inconvenience: the hook is a type
+    /// parameter, so the `NoHooks` build monomorphises to code with no
+    /// clock reads in it at all, where a `Box<dyn Hooks>` field would
+    /// leave every no-hook build carrying a null check on the request
+    /// path.
+    ///
+    /// The hook may be `!Send`: nothing on this path declares it, so an
+    /// `Rc` inside a hook makes this transport `!Send` and leaves it
+    /// working (P13; `crates/http-ng-core/tests/shape.rs`). The cost is
+    /// visible and is the caller's to weigh — `tests/shape.rs` here pins
+    /// that a `Send` hook leaves `execute`'s future `Send`, which is what
+    /// the streaming-body path in this crate spends a
+    /// `send-bound-exception` marker on.
+    pub fn hooks<H2>(self, hooks: H2) -> WasiHttp<H2> {
+        WasiHttp {
+            caps: self.caps,
+            hooks,
+        }
+    }
 }
 
 impl WasiHttp {
@@ -212,7 +258,10 @@ impl WasiHttp {
         caps.connection_reuse = ReuseSupport::None;
         caps.tls_config = TlsSupport::None;
         caps.forbidden_request_headers = FORBIDDEN_REQUEST_HEADERS.as_slice();
-        Self { caps }
+        Self {
+            caps,
+            hooks: NoHooks,
+        }
     }
 }
 
@@ -222,7 +271,7 @@ impl Default for WasiHttp {
     }
 }
 
-impl Transport for WasiHttp {
+impl<H: Hooks> Transport for WasiHttp<H> {
     type Body = Body;
     type Error = Error;
 
@@ -230,6 +279,14 @@ impl Transport for WasiHttp {
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Body>, Error> {
+        // Gated on `H::WATCHING`, a `const` — see `crate::hooks`. Taken
+        // before anything else so that `Head::elapsed` covers the whole
+        // call, conversion included, exactly as `http-ng-native`'s does.
+        // No `Uri` has to be cloned beside it, unlike `http-ng-fetch`:
+        // `parts` outlives `send` here, so the request's own `Uri` is
+        // still there to borrow when the response arrives.
+        let began = hooks::mark::<H>();
+
         let (parts, body) = req.into_parts();
         let scheme = convert::scheme_of(&parts.uri)?;
 
@@ -378,10 +435,35 @@ impl Transport for WasiHttp {
         let (resp_parts, incoming) = http_from_wasi_response(wasi_response)
             .map_err(convert::wasi_err)?
             .into_parts();
-        Ok(http::Response::from_parts(
-            resp_parts,
-            Body::from_incoming(incoming),
-        ))
+        let out = http::Response::from_parts(resp_parts, Body::from_incoming(incoming));
+
+        // The one event this backend has. `if let Some(..)` on the mark is
+        // the gate rather than a second read of `H::WATCHING`: the `Some`
+        // above is exactly `H::WATCHING`, and two places that have to
+        // agree is one more than is safe.
+        //
+        // `version` and `status` come off the response this function is
+        // about to return, not from anything read separately — the same
+        // discipline `http-ng-native`'s `report_head` follows, and here it
+        // is load bearing rather than tidy: `wasi:http` has no version
+        // concept at all (see `crate::hooks`), so the event's job is to
+        // agree with the response rather than to know better.
+        //
+        // Nothing is reported on any of the error paths above, including
+        // the undeclared-trailers refusal, which is the one that fires
+        // *after* a real response arrived. That refusal is this crate
+        // saying the exchange did not succeed, and a `Head` beside it
+        // would tell a caller counting heads that it did.
+        if began.is_some() {
+            self.hooks.on(Event::Head(Head {
+                id: ConnectionId::UNWATCHED,
+                uri: &parts.uri,
+                status: out.status(),
+                version: out.version(),
+                elapsed: hooks::since(began),
+            }));
+        }
+        Ok(out)
     }
 
     /// Identity, not the default wrapping: `Self::Error` is already

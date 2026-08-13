@@ -690,6 +690,42 @@ deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
 is `RetryKind::Free` and is precisely what must never go into early data.
 `docs/h3-research.md` §3.5 has the three-row table.
 
+### Every backend now reports events, and two of them report one thing (v0.4 W2)
+
+Hooks landed on `http-ng-native`, then `http-ng-h3`, then the two that own
+no connections at all. **`http-ng-fetch` and `http-ng-wasi` emit exactly one
+of the four events — `Head` — and they reached that answer without sharing
+any reasoning.** `Connected`, `Reused` and `Closed` have no emitter in
+either, and for `wasi:http` that is checkable rather than argued: `client`
+is one function and there is **no connection resource anywhere in
+`wasi:http@0.3.0`**. `error-code`'s eleven `connection-*` variants are how
+`send` fails, not events — a `Closed::Failed` built from one would announce
+the end of a connection whose beginning was never announced.
+
+**The browser's `Performance` surface was the real question and it is
+measured, not assumed**: the entry does not exist when `execute` returns
+the head — 0 entries, 1 after the body drains — and nothing on it says
+which request it belongs to (`requestId`, `id`, `connectionId`,
+`transferId` all `undefined`). Either fact alone kills `Connected`.
+
+**Two of `Head`'s five fields have no source, and they are the same two on
+both backends.** `id` borrows `ConnectionId::UNWATCHED`, because the seam
+has no value meaning *there is no connection*; `version` is read off the
+response rather than observed, because a browser will not say and
+`wasi:http` has no version concept. Both are recorded as debts owed by
+`http-ng-core` rather than papered over — and neither needed a new variant,
+which is why the event set still fits unchanged.
+
+The bounds went down again: `H: Hooks` alone here, one fewer than h3 and
+two fewer than native, because the only event fires while `execute` still
+owns everything and no body holds a hook.
+
+**One CI gap fell out of it**, the same shape as the doctests nobody ran:
+`http-ng-wasi`'s live tests sat in a file `just test-wasi` did not name, so
+they printed a `NOTICE` and reported `ok` for ever — the exact defect the
+`HTTP_NG_REQUIRE_WASMTIME` marker exists to prevent. Moved: the recipe runs
+16 live tests where it ran 12.
+
 ### WebTransport runs on this h3, and the spec's reasons for not writing it are gone (v0.4 W2)
 
 `http-ng-webtransport` opens a session over `http-ng-h3`'s QUIC:

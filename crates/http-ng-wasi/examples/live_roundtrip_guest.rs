@@ -93,6 +93,9 @@ impl wasip3::exports::cli::run::Guest for Guest {
             "cancel-drop" => cancel_on_drop(port, CancelCase::Drop).await,
             "cancel-hold" => cancel_on_drop(port, CancelCase::Hold).await,
             "reuse-two-requests" => reuse_two_requests(port).await,
+            "hooks-head" => hooks_head(port).await,
+            "hooks-no-head" => hooks_no_head(port).await,
+            "hooks-quiet" => hooks_quiet(port).await,
             other => {
                 eprintln!("unknown mode: {other}");
                 Err(())
@@ -470,5 +473,160 @@ async fn cancel_on_drop(port: u16, case: CancelCase) -> Result<(), ()> {
             println!("CANCEL_HELD_OK");
         }
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// v0.4 W2: the observability hook, from inside a real guest.
+//
+// A hook is only worth having if it fires against a real host, so these
+// modes run `WasiHttp::execute` for real and print what the hook heard.
+// The verdict is the harness's: the guest reports, it does not assert
+// what the harness is there to check — the same division of labour the
+// cancellation modes above use, and the reason `observe_client_end` lives
+// on the native side.
+// ---------------------------------------------------------------------
+
+/// Every event the hook heard, flattened into a line the harness can read.
+///
+/// The lines live behind an `Rc<RefCell<..>>` — genuinely `!Send`, not a
+/// gesture — which is P13 exercised on this backend too: `Hooks` declares
+/// no `Send`, so a single-threaded guest can watch. If a `Send` bound ever
+/// appeared on that path, this file would stop compiling.
+#[derive(Clone, Default)]
+struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+impl http_ng_core::unversioned::Hooks for Recorder {
+    fn on(&self, event: http_ng_core::unversioned::Event<'_>) {
+        use http_ng_core::unversioned::Event;
+        let line = match event {
+            // Named individually rather than through a catch-all, so that
+            // a backend that started emitting one of them shows up in the
+            // harness's output as the word it is, instead of as a count
+            // that went up.
+            Event::Connected(c) => format!("EVENT connected id={}", c.id),
+            Event::Reused(r) => format!("EVENT reused id={}", r.id),
+            Event::Closed(c) => format!("EVENT closed id={}", c.id),
+            Event::Head(h) => format!(
+                "EVENT head id={} uri={} status={} version={:?} elapsed_ns={}",
+                h.id,
+                h.uri,
+                h.status.as_u16(),
+                h.version,
+                h.elapsed.as_nanos()
+            ),
+        };
+        self.0.borrow_mut().push(line);
+    }
+}
+
+impl Recorder {
+    fn report(&self) {
+        for line in self.0.borrow().iter() {
+            println!("{line}");
+        }
+        println!("EVENTS={}", self.0.borrow().len());
+    }
+}
+
+/// A successful exchange, watched: the harness asserts that what comes
+/// back is one `Head` and nothing else.
+async fn hooks_head(port: u16) -> Result<(), ()> {
+    let rec = Recorder::default();
+    let transport = http_ng_wasi::WasiHttp::new().hooks(rec.clone());
+
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/hooked?probe=1")
+        .parse()
+        .expect("uri");
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(uri)
+        .body(RequestBody::Empty)
+        .expect("request");
+
+    let resp = transport.execute(req).await.map_err(|e| {
+        eprintln!("execute failed: {e}");
+    })?;
+    // The head is what the event is about, so it is reported before the
+    // body is touched: an event that only arrived once the caller drained
+    // the response would be a different promise, and the harness could
+    // not tell the two apart if this drained first.
+    rec.report();
+
+    let mut body = resp.into_body();
+    while let Some(frame) = poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        if let Err(e) = frame {
+            eprintln!("body error: {e}");
+            return Err(());
+        }
+    }
+    // And again after the body, so the harness can check that draining it
+    // adds nothing: this backend has no body-level event, and a caller
+    // counting heads must not get a second one.
+    println!("AFTER_BODY");
+    rec.report();
+
+    println!("HOOKS_HEAD_OK");
+    Ok(())
+}
+
+/// The counterpart, and the reason the mode above is not vacuous: an
+/// exchange that never produced a head reports nothing at all.
+///
+/// The port is one the harness bound and released, so the connect is
+/// refused rather than hanging — the guest owns no socket and cannot
+/// arrange that for itself.
+async fn hooks_no_head(port: u16) -> Result<(), ()> {
+    let rec = Recorder::default();
+    let transport = http_ng_wasi::WasiHttp::new().hooks(rec.clone());
+
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/nobody-home")
+        .parse()
+        .expect("uri");
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(uri)
+        .body(RequestBody::Empty)
+        .expect("request");
+
+    match transport.execute(req).await {
+        Ok(_) => {
+            eprintln!("the port was supposed to be dead, but something answered");
+            return Err(());
+        }
+        Err(e) => println!("EXECUTE_FAILED {:?}", e.kind()),
+    }
+    rec.report();
+
+    println!("HOOKS_NO_HEAD_OK");
+    Ok(())
+}
+
+/// The default transport, unchanged by the type parameter that was added
+/// beside it: `WasiHttp::new()` is still `WasiHttp<NoHooks>` and still
+/// works. Nothing can be observed from inside a hookless build — that is
+/// the point of it — so this mode exists to catch the ordinary
+/// regression, not to measure the cost.
+async fn hooks_quiet(port: u16) -> Result<(), ()> {
+    let transport = http_ng_wasi::WasiHttp::new();
+    let uri: http::Uri = format!("http://127.0.0.1:{port}/quiet")
+        .parse()
+        .expect("uri");
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(uri)
+        .body(RequestBody::Empty)
+        .expect("request");
+
+    let resp = transport.execute(req).await.map_err(|e| {
+        eprintln!("execute failed: {e}");
+    })?;
+    // 203, matching `tests/hooks.rs`'s mock server — see `RESPONSE_STATUS`
+    // there for why that fixture does not answer 200.
+    if resp.status() != http::StatusCode::NON_AUTHORITATIVE_INFORMATION {
+        eprintln!("unexpected status: {}", resp.status());
+        return Err(());
+    }
+    println!("HOOKS_QUIET_OK");
     Ok(())
 }

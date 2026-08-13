@@ -964,3 +964,286 @@ fn build_guest() -> PathBuf {
         "cargo build did not report a .wasm artifact for live_roundtrip_guest; raw output:\n{stdout}"
     );
 }
+
+// ---------------------------------------------------------------------
+// v0.4 W2: the observability hook. These four live in this file rather
+// than beside the host-independent hook checks in `tests/hooks.rs` for
+// one reason: `just test-wasi` names `--test live_roundtrip`, and it is
+// the only recipe that runs with `wasmtime` installed. A live test in a
+// file no recipe names would print its `NOTICE` and report `ok` on
+// every CI runner — the exact defect `require_wasmtime` exists to stop,
+// one level up.
+// ---------------------------------------------------------------------
+
+/// Must match what the mock server for the `hooks-*` modes writes.
+const HOOKS_RESPONSE_BODY: &[u8] = b"watched";
+
+/// The status that server answers with, and deliberately not `200` — see
+/// the server itself for the mutation that made it a `203`.
+const HOOKS_RESPONSE_STATUS: u16 = 203;
+
+/// The whole finding, as one transcript: a successful request through this
+/// transport produces **exactly one** event, and it is a `Head`.
+///
+/// The guest's `Recorder` names `Connected`, `Reused` and `Closed`
+/// individually rather than counting them, so a backend that started
+/// emitting one shows up here as the word it is. `wasi:http@0.3.0` has no
+/// connection resource for any of them to be about — see `src/hooks.rs`.
+///
+/// The three field assertions are the three facts this transport actually
+/// has: the URI it was given (query and all — a `Head` built from
+/// anything the host handed back would not carry `?probe=1`), the status
+/// the server sent, and an `elapsed` that is a real interval rather than a
+/// zero.
+#[test]
+fn a_successful_request_reports_one_head_and_no_connection_event_at_all() {
+    let Some(wasmtime) =
+        require_wasmtime("a_successful_request_reports_one_head_and_no_connection_event_at_all")
+    else {
+        return;
+    };
+    let (stdout, stderr, status) = run_guest_against_status_server(&wasmtime, "hooks-head");
+    let ok = |cond: bool, what: &str| {
+        assert!(
+            cond,
+            "{what}\n--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}"
+        );
+    };
+    ok(status.success(), "the guest run itself failed");
+    ok(
+        stdout.contains("HOOKS_HEAD_OK"),
+        "the guest did not finish its exchange",
+    );
+
+    let head = stdout
+        .lines()
+        .find(|l| l.starts_with("EVENT head "))
+        .unwrap_or_else(|| {
+            panic!("no head event in the transcript\n--- guest stdout ---\n{stdout}")
+        });
+    ok(
+        head.contains("uri=http://127.0.0.1:"),
+        "the head must carry the URI the transport was given",
+    );
+    ok(
+        head.contains("/hooked?probe=1"),
+        "including its query — a `Head` assembled from anything but the \
+         caller's own `http::Uri` would have lost it",
+    );
+    ok(
+        head.contains(&format!("status={HOOKS_RESPONSE_STATUS}")),
+        "the status the server sent — and it is not 200, so an emitter that \
+         hard-coded `StatusCode::OK` cannot pass this line",
+    );
+    ok(
+        head.contains("version=HTTP/1.1"),
+        "the version the response carries, which `wasi:http` did not \
+         observe and neither did this transport — the event's job is to \
+         agree with the response rather than to know better, and this line \
+         is what makes a separately guessed version a failure",
+    );
+    ok(
+        head.contains("id=0"),
+        "`ConnectionId::UNWATCHED`, because there is no connection to name \
+         — an id from the counter would be a number no later event ever \
+         mentions again",
+    );
+    ok(
+        !head.contains("elapsed_ns=0 ") && !head.ends_with("elapsed_ns=0"),
+        "`elapsed` must be a measured interval, not a `Duration::ZERO` \
+         standing in for one",
+    );
+
+    for absent in ["EVENT connected", "EVENT reused", "EVENT closed"] {
+        ok(
+            !stdout.contains(absent),
+            &format!(
+                "`{absent}` has no subject in `wasi:http` — there is no \
+                 connection resource in the package for it to be about"
+            ),
+        );
+    }
+    ok(
+        stdout.contains("EVENTS=1"),
+        "one request, one event: a browser and a WASI host reach the same \
+         answer from different evidence",
+    );
+}
+
+/// The head is reported **when the head arrives**, not when the caller
+/// gets round to reading the body — and reading the body adds nothing.
+///
+/// Both halves are needed. A backend that emitted its `Head` at the end of
+/// the body would still print one event in the transcript above; a backend
+/// that emitted a second one per body would still print one before the
+/// body. The guest reports its tally twice, either side of draining the
+/// response, so the two are separable here and only here.
+#[test]
+fn the_head_is_reported_at_the_head_and_the_body_adds_nothing() {
+    let Some(wasmtime) =
+        require_wasmtime("the_head_is_reported_at_the_head_and_the_body_adds_nothing")
+    else {
+        return;
+    };
+    let (stdout, stderr, status) = run_guest_against_status_server(&wasmtime, "hooks-head");
+    assert!(
+        status.success() && stdout.contains("HOOKS_HEAD_OK"),
+        "the guest run itself failed\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+
+    let (before, after) = stdout
+        .split_once("AFTER_BODY")
+        .expect("the guest prints its tally either side of draining the body");
+    assert!(
+        before.contains("EVENTS=1"),
+        "the head must already have been reported before a single body \
+         frame was read\n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        after.contains("EVENTS=1"),
+        "and draining the body must add nothing — this backend has no \
+         body-level event\n--- stdout ---\n{stdout}"
+    );
+}
+
+/// The counterpart, and the reason the two above are not vacuous: a
+/// request that never got a head reports **nothing**.
+///
+/// A `Head` here would be the loudest lie available — a caller counting
+/// heads against requests would read every failure as a success. The port
+/// is bound and released by this test, so the connect is refused rather
+/// than hanging, and no server thread is started at all: there is nothing
+/// for one to accept.
+#[test]
+fn a_request_that_never_got_a_head_reports_nothing() {
+    let Some(wasmtime) = require_wasmtime("a_request_that_never_got_a_head_reports_nothing") else {
+        return;
+    };
+
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("local_addr").port()
+        // dropped here: the port is now free and nothing answers on it
+    };
+    let (stdout, stderr, status) = run_hooks_guest(&wasmtime, port, "hooks-no-head");
+
+    assert!(
+        status.success() && stdout.contains("HOOKS_NO_HEAD_OK"),
+        "the guest run itself failed\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        stdout.contains("EXECUTE_FAILED"),
+        "the exchange must have failed for this test to be about anything\
+         \n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        stdout.contains("EVENTS=0"),
+        "no head arrived, so no `Head` may be reported\n--- stdout ---\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("EVENT "),
+        "and no other event either — a failed connect is not a `Closed`, \
+         because nothing announced the connection it would be closing\
+         \n--- stdout ---\n{stdout}"
+    );
+}
+
+/// The default transport is unchanged by the type parameter added beside
+/// it: `WasiHttp::new()` is still `WasiHttp<NoHooks>`, and it still works
+/// against a real host.
+///
+/// Nothing can be observed from inside a hookless build — that is the
+/// point of one — so this is the ordinary regression check rather than the
+/// cost measurement. The cost measurement is `src/hooks.rs`'s own tests
+/// plus `the_clock_is_read_in_exactly_one_place` below, and that file's
+/// module doc says why it cannot be a counting clock here.
+#[test]
+fn the_hookless_transport_still_works_against_a_real_host() {
+    let Some(wasmtime) = require_wasmtime("the_hookless_transport_still_works_against_a_real_host")
+    else {
+        return;
+    };
+    let (stdout, stderr, status) = run_guest_against_status_server(&wasmtime, "hooks-quiet");
+    assert!(
+        status.success() && stdout.contains("HOOKS_QUIET_OK"),
+        "the default `WasiHttp` must still round-trip\n--- stdout ---\n{stdout}\
+         \n--- stderr ---\n{stderr}"
+    );
+}
+
+/// Bring up a mock server that answers one request with a plain 200, build
+/// the guest, and run it under `wasmtime` in `mode`.
+fn run_guest_against_status_server(
+    wasmtime: &Path,
+    mode: &str,
+) -> (String, String, std::process::ExitStatus) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("local_addr").port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 1024];
+        let mut head = Vec::new();
+        loop {
+            let n = stream.read(&mut buf).expect("reading the request head");
+            if n == 0 {
+                return;
+            }
+            head.extend_from_slice(&buf[..n]);
+            if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        // `Content-Length`, not the chunked+trailer response
+        // `live_roundtrip.rs` needs: nothing here is about
+        // `Body::is_end_stream`, and a plain response keeps the transcript
+        // about the event.
+        //
+        // `203`, not `200`, and that is the difference between a test and
+        // a coincidence: `Head::status` is read off the response, and a
+        // hard-coded `StatusCode::OK` in the emitter passes every
+        // assertion a 200-answering fixture can make. Measured — that
+        // mutation survived against a 200 server and dies against this
+        // one.
+        let mut out = format!(
+            "HTTP/1.1 {HOOKS_RESPONSE_STATUS} Non-Authoritative Information\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            HOOKS_RESPONSE_BODY.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(HOOKS_RESPONSE_BODY);
+        stream.write_all(&out).expect("write");
+        let _ = stream.flush();
+    });
+
+    let out = run_hooks_guest(wasmtime, port, mode);
+    server.join().expect("mock server thread panicked");
+    out
+}
+
+/// Run the guest under `wasmtime` against `port` in `mode`, with no server
+/// of our own — for the mode whose whole point is that nothing answers.
+fn run_hooks_guest(
+    wasmtime: &Path,
+    port: u16,
+    mode: &str,
+) -> (String, String, std::process::ExitStatus) {
+    let artifact = build_guest();
+    let output = Command::new(wasmtime)
+        .args([
+            "run",
+            "-S",
+            "http",
+            "--",
+            artifact.to_str().expect("utf8 path"),
+            &port.to_string(),
+            mode,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn wasmtime");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status,
+    )
+}

@@ -13,6 +13,7 @@
 mod body;
 mod caps;
 mod convert;
+mod hooks;
 mod promise;
 mod timer;
 mod websocket;
@@ -72,7 +73,7 @@ pub use timer::BrowserClock;
 // only type the module has to export.
 pub use websocket::FetchWebSocket;
 
-use http_ng_core::unversioned::Transport;
+use http_ng_core::unversioned::{ConnectionId, Event, Head, Hooks, NoHooks, Transport};
 use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};
 use wasm_bindgen::JsCast;
 
@@ -82,15 +83,62 @@ use wasm_bindgen::JsCast;
 /// `caps::probe`'s doc comment for why that's safe: capability probing
 /// never depends on anything that changes over the process's lifetime —
 /// the running browser is the running browser).
+///
+/// # `H`, the observability hook (v0.4 W2)
+///
+/// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
+/// `false` — so `Fetch` still names the transport it always named, and a
+/// build that asks for nothing reads no clock and clones no `Uri`.
+/// [`Fetch::hooks`] is how a caller asks; what comes back is a *different
+/// type*, because the hook is a type parameter rather than a
+/// `Box<dyn Hooks>`, which is the whole of the zero-cost claim.
+///
+/// **This backend emits exactly one of the four events**, and which one is
+/// the finding rather than an omission: see [`crate::hooks`]'s module doc
+/// for why a transport that owns no connection has nothing to put in
+/// `Connected`, `Reused` or `Closed`, and which two fields of `Head`
+/// itself it cannot fill either.
 #[derive(Debug)]
-pub struct Fetch {
+pub struct Fetch<H = NoHooks> {
     caps: Capabilities,
+    /// Where the events go. `NoHooks` is a ZST, so this field costs a
+    /// build that wants nothing exactly nothing.
+    hooks: H,
 }
 
 impl Fetch {
     pub fn new() -> Self {
         Self {
             caps: caps::probe(),
+            hooks: NoHooks,
+        }
+    }
+}
+
+impl<H> Fetch<H> {
+    /// Send this transport's events to `hooks` — see
+    /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
+    /// costs, and [`crate::hooks`] for the three quarters of the
+    /// vocabulary a browser cannot speak.
+    ///
+    /// **It returns a different type**, and that is the zero-cost
+    /// mechanism rather than an inconvenience: the hook is a type
+    /// parameter, so the `NoHooks` build monomorphises to code with no
+    /// clock reads in it at all, where a `Box<dyn Hooks>` field would
+    /// leave every no-hook build carrying a null check on the request
+    /// path.
+    ///
+    /// The hook may be `!Send`, and here that costs something a caller can
+    /// see: nothing on this path declares `Send`, so an `Rc` inside a hook
+    /// makes this transport `!Send` — and with it the future
+    /// [`Transport::execute`] returns, which `crate::promise::SendJsFuture`
+    /// otherwise keeps `Send`. Both halves compile and both halves work
+    /// (P13; `crates/http-ng-core/tests/shape.rs`, and `tests/hooks.rs`
+    /// here).
+    pub fn hooks<H2>(self, hooks: H2) -> Fetch<H2> {
+        Fetch {
+            caps: self.caps,
+            hooks,
         }
     }
 
@@ -153,7 +201,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-impl Transport for Fetch {
+impl<H: Hooks> Transport for Fetch<H> {
     type Body = Body;
     type Error = Error;
 
@@ -161,6 +209,27 @@ impl Transport for Fetch {
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Body>, Error> {
+        // One gate, once — the clock read and the one allocation this
+        // feature costs come out of the same `Option`, so `H::WATCHING`
+        // is read in exactly one place and a mutation that ignores it
+        // cannot take only the half no test can see.
+        //
+        // It used to be two `H::WATCHING`s, and the second one **survived
+        // a mutation run**: with the `Uri` gate removed, a `NoHooks` build
+        // clones a `Uri` and calls `NoHooks::on` for every request, and
+        // `tests/hooks_cost.rs` still reads 0 — because the clock is only
+        // read from the `Some` arm of `hooks::since`, and there is no
+        // allocator to count in a browser. One `Option` closes it: the
+        // same mutation now also ungates the clock, and the cost test
+        // dies.
+        //
+        // The `Uri` has to be taken now because `to_web_request` consumes
+        // the request, and it cannot be taken back off the
+        // `web_sys::Request` afterwards — its `url()` is the browser's
+        // serialisation, not the caller's `http::Uri`, and `Head::uri`
+        // promises the URI "as the transport received it".
+        let watched = hooks::mark::<H>().map(|at| (at, req.uri().clone()));
+
         let convert::Converted {
             request,
             abort,
@@ -227,9 +296,35 @@ impl Transport for Fetch {
             }
         }
         let body = Body::from_response(&resp)?;
-        builder
+        let out = builder
             .body(body)
-            .map_err(|e| Error::new(ErrorKind::Other, e))
+            .map_err(|e| Error::new(ErrorKind::Other, e))?;
+
+        // The one event this backend has. `if let Some(uri)` is the gate
+        // rather than a second read of `H::WATCHING`: the `Some` above is
+        // exactly `H::WATCHING`, and two places that have to agree is one
+        // more than is safe.
+        //
+        // `version` and `status` come off the response this function is
+        // about to return, not from anything read separately — the same
+        // discipline `http-ng-native`'s `report_head` follows, and here it
+        // is load bearing rather than tidy: neither `version` is a fact
+        // about the wire (see `crate::hooks`), so the event's job is to
+        // agree with the response rather than to know better.
+        //
+        // Nothing is reported on the error path: no head arrived, and a
+        // `Head` for a request that got none would be the loudest
+        // available lie.
+        if let Some((began, uri)) = &watched {
+            self.hooks.on(Event::Head(Head {
+                id: ConnectionId::UNWATCHED,
+                uri,
+                status: out.status(),
+                version: out.version(),
+                elapsed: hooks::since(Some(*began)),
+            }));
+        }
+        Ok(out)
     }
 
     /// Identity, not the default wrapping: `Self::Error` is already

@@ -84,6 +84,14 @@ web-sys       = { version = "0.3.103", features = [
     "BinaryType",
     "MessageEvent",
     "CloseEvent",
+    # v0.4 W2 (`src/hooks.rs`): `Head::elapsed` is a duration, and
+    # `Performance::now` is the browser's monotonic clock. `BrowserClock`'s
+    # `Date.now()` is the wrong instrument for one — it can step backwards
+    # mid-request and its resolution is a whole millisecond, which is
+    # longer than most of the requests this measurement exists to explain.
+    # No new crate: `web-sys` is already here, this is one more feature
+    # name on it.
+    "Performance",
 ] }
 # Task 4 (`src/body.rs`) is the first file in this crate to actually
 # implement `http_body::Body`, so `bytes`/`http-body`/`futures-core` move

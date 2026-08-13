@@ -591,7 +591,16 @@ impl Sink<Message> for FetchWebSocket {
 /// nothing would still cost something — the browser suite would need it
 /// spelled in one more place, which is the drift `justfile`'s own check
 /// warns about.
-impl WebSocketConnect for crate::Fetch {
+/// Generic in `H` so that a caller who asked for events keeps the seam —
+/// but **no event is emitted here**, for the reason `http-ng-native`'s own
+/// `WebSocketConnect` gives one seam over: the observability vocabulary is
+/// about HTTP requests, and a WebSocket is not one. There is no head to
+/// report beyond the handshake the browser consumes, nothing is pooled so
+/// no `Reused` can follow, and the socket's end is the `Stream`'s end,
+/// which the caller already sees. The `H` is threaded rather than pinned
+/// to `NoHooks` because a `Fetch<MyHook>` that could no longer open a
+/// WebSocket would be a capability lost to an unrelated setting.
+impl<H> WebSocketConnect for crate::Fetch<H> {
     type WebSocket = FetchWebSocket;
 
     async fn websocket(&self, req: http::Request<()>) -> Result<FetchWebSocket, Error> {
