@@ -1,0 +1,838 @@
+//! `Native::multiplexed()` — one HTTP/2 connection, several requests
+//! (v0.4), observed from outside the client.
+//!
+//! `docs/h2-multiplexing.md` is the investigation this file measures. What
+//! lives here is the **opt-in's own shape and its three prices**; the three
+//! yardstick limitations it closes are measured next to the assertions they
+//! invert, in `tests/grpc_shape.rs` and `tests/http2.rs`, so that a reader
+//! meets the old rule and the new one in one place.
+//!
+//! # Every count is the server's
+//!
+//! The observer is a real `h2::server` on a real socket: it performs the
+//! connection preface, decodes HPACK, counts the TCP connections it
+//! accepted and records the greatest number of request streams it ever had
+//! open at once. A client that spoke HTTP/1.1 into it would get no answer
+//! at all. **No test below reads anything off the client about itself.**
+//!
+//! The barrier is what makes an accept count mean anything: `/pair`
+//! answers nobody until the expected number of requests has arrived, so
+//! the calls provably overlapped at the server. A client that serialised
+//! them would hang and fail on a ceiling rather than quietly report `1`.
+//!
+//! The TLS stub is `tests/http2.rs`'s, for the reason that file's module
+//! doc argues at length: ALPN is the only route to HTTP/2 here and
+//! `TlsConnect` is what reports it, so the stub encrypts nothing, hands
+//! the stream through and reports `h2` — the bytes on the wire really are
+//! HTTP/2.
+#![cfg(all(feature = "http2", not(target_family = "wasm")))]
+
+use bytes::Bytes;
+use http_ng::Client;
+use http_ng_core::unversioned::{CloseReason, Event, Hooks};
+use http_ng_core::{RequestBody, Timeouts};
+use http_ng_dns_system::SystemDns;
+use http_ng_native::{Native, PoolConfig};
+use http_ng_rt::{Spawn, TcpConnect, TcpOpts, TcpOptsSupport};
+use http_ng_rt_tokio::Tokio;
+use http_ng_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
+use std::future::Future;
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Ceiling for anything that must not hang. Every failure mode in this
+/// file is a hang if the client gets it wrong, so this is what turns
+/// "wrong" into a named failure instead of a stuck run.
+const BOUND: Duration = Duration::from_secs(30);
+
+// ── the server ──────────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct Shared {
+    /// TCP connections accepted. Every claim in this file about sharing is
+    /// this number.
+    accepted: AtomicUsize,
+    /// Connections whose accept loop has ended — a close, observed rather
+    /// than waited out.
+    closed: AtomicUsize,
+    /// Request streams the server has finished with.
+    served: AtomicUsize,
+    /// Request streams open at this instant, and the greatest that number
+    /// has ever been. The second is what says whether a peer's
+    /// `MAX_CONCURRENT_STREAMS` was respected, and it is the server's
+    /// reading rather than the client's intention.
+    open: AtomicUsize,
+    most_open: AtomicUsize,
+    /// How many requests must arrive at `/pair` before any of them is
+    /// answered.
+    expect: AtomicUsize,
+    arrived: AtomicUsize,
+}
+
+struct Fixture {
+    addr: SocketAddr,
+    shared: Arc<Shared>,
+}
+
+impl Fixture {
+    fn url(&self, path: &str) -> String {
+        format!("https://{}{}", self.addr, path)
+    }
+
+    fn accepted(&self) -> usize {
+        self.shared.accepted.load(Ordering::SeqCst)
+    }
+
+    fn served(&self) -> usize {
+        self.shared.served.load(Ordering::SeqCst)
+    }
+
+    fn most_open(&self) -> usize {
+        self.shared.most_open.load(Ordering::SeqCst)
+    }
+
+    fn expect(&self, n: usize) {
+        self.shared.expect.store(n, Ordering::SeqCst);
+    }
+
+    async fn wait_for_closed(&self, n: usize, within: Duration) -> bool {
+        let deadline = std::time::Instant::now() + within;
+        while std::time::Instant::now() < deadline {
+            if self.shared.closed.load(Ordering::SeqCst) >= n {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+}
+
+/// An HTTP/2 server and nothing else.
+///
+/// `limit` is the `MAX_CONCURRENT_STREAMS` it announces — `None` for h2's
+/// own default, which is effectively unbounded for these tests.
+fn spawn_server(limit: Option<u32>) -> Fixture {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::new(Shared::default());
+
+    let shared_t = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    continue;
+                };
+                shared_t.accepted.fetch_add(1, Ordering::SeqCst);
+                let shared = Arc::clone(&shared_t);
+                tokio::spawn(async move {
+                    let _ = serve(tcp, Arc::clone(&shared), limit).await;
+                    shared.closed.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+    });
+
+    Fixture { addr, shared }
+}
+
+async fn serve(
+    tcp: tokio::net::TcpStream,
+    shared: Arc<Shared>,
+    limit: Option<u32>,
+) -> Result<(), h2::Error> {
+    let mut builder = h2::server::Builder::new();
+    if let Some(n) = limit {
+        builder.max_concurrent_streams(n);
+    }
+    let mut conn = builder.handshake(tcp).await?;
+    while let Some(accepted) = conn.accept().await {
+        let (req, respond) = accepted?;
+        let goaway = req.uri().path() == "/goaway";
+        let for_handler = Arc::clone(&shared);
+        tokio::spawn(async move {
+            handle(req, respond, for_handler).await;
+        });
+        if goaway {
+            conn.graceful_shutdown();
+        }
+    }
+    Ok(())
+}
+
+async fn handle(
+    req: http::Request<h2::RecvStream>,
+    mut respond: h2::server::SendResponse<Bytes>,
+    shared: Arc<Shared>,
+) {
+    let open = shared.open.fetch_add(1, Ordering::SeqCst) + 1;
+    shared.most_open.fetch_max(open, Ordering::SeqCst);
+
+    let path = req.uri().path().to_owned();
+    let (_, mut body) = req.into_parts();
+    while let Some(chunk) = body.data().await {
+        let Ok(chunk) = chunk else { break };
+        let _ = body.flow_control().release_capacity(chunk.len());
+    }
+
+    if path == "/pair" {
+        // Nobody is answered until the expected number of requests is in
+        // flight at once. A client that serialised them would hang here,
+        // and the test's ceiling is what would fail.
+        shared.arrived.fetch_add(1, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while shared.arrived.load(Ordering::SeqCst) < shared.expect.load(Ordering::SeqCst)
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    if path == "/queue" {
+        // Long enough that the waves a stream limit produces are visible
+        // as waves rather than as scheduling noise.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let resp = http::Response::builder().status(200).body(()).unwrap();
+    if let Ok(mut send) = respond.send_response(resp, false) {
+        let _ = send.send_data(Bytes::from_static(b"ok"), true);
+    }
+    shared.open.fetch_sub(1, Ordering::SeqCst);
+    shared.served.fetch_add(1, Ordering::SeqCst);
+}
+
+// ── the TLS stub ────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct FakeTls(TlsConfigId);
+
+impl Default for FakeTls {
+    fn default() -> Self {
+        Self(TlsConfigId::new_unique())
+    }
+}
+
+impl TlsIdentity for FakeTls {
+    fn config_id(&self) -> TlsConfigId {
+        self.0
+    }
+}
+
+impl TlsConnect for FakeTls {
+    type Stream<S>
+        = S
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin;
+
+    fn reports_alpn(&self) -> bool {
+        true
+    }
+
+    async fn connect<S>(
+        &self,
+        io: S,
+        _req: TlsRequest<'_>,
+    ) -> Result<(S, TlsInfo), http_ng_core::Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin,
+    {
+        Ok((
+            io,
+            TlsInfo {
+                alpn: Some(b"h2".to_vec()),
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+// ── clients ─────────────────────────────────────────────────────────────
+
+type Plain = Native<Tokio, FakeTls, SystemDns<Tokio>>;
+
+fn transport() -> Plain {
+    Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+}
+
+fn shared_client() -> Client<Plain> {
+    Client::builder(transport().multiplexed()).build().unwrap()
+}
+
+fn exclusive_client() -> Client<Plain> {
+    Client::builder(transport()).build().unwrap()
+}
+
+/// One `GET`, to the point where the server has answered and the body has
+/// been read to its end. Written out because "the call is over" is the
+/// premise of half the assertions here, and a response whose body was
+/// never drained is not over.
+async fn call<H>(
+    client: &Client<Native<Tokio, FakeTls, SystemDns<Tokio>, H>>,
+    url: String,
+) -> Result<http::StatusCode, http_ng::Error>
+where
+    H: Hooks + Clone + Unpin,
+{
+    let resp = client.get(&url).send().await?;
+    let status = resp.status();
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    resp.collect().await?;
+    Ok(status)
+}
+
+// ── the headline ────────────────────────────────────────────────────────
+
+/// **Eight concurrent calls, one connection.**
+///
+/// The barrier makes it causal: `/pair` answers nobody until all eight
+/// have arrived, so a client that had opened one connection and used it
+/// serially would deadlock and fail on the ceiling rather than report
+/// `accepted == 1` for the wrong reason. The server's own high-water mark
+/// of open streams is asserted too, because "one connection" and "eight
+/// streams at once" are two claims and only the pair is multiplexing.
+#[tokio::test(flavor = "multi_thread")]
+async fn eight_concurrent_calls_travel_over_one_connection() {
+    let server = spawn_server(None);
+    server.expect(8);
+    let client = shared_client();
+
+    let calls = (0..8).map(|_| call(&client, server.url("/pair")));
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("all eight must be in flight at once — the server answers none alone");
+    for r in results {
+        assert_eq!(r.expect("every call must succeed"), 200);
+    }
+
+    assert_eq!(
+        server.accepted(),
+        1,
+        "eight concurrent calls over one shared connection is the whole point"
+    );
+    assert_eq!(server.served(), 8);
+    assert_eq!(
+        server.most_open(),
+        8,
+        "and all eight streams were open at once, which is what makes it \
+         multiplexing rather than a very fast queue"
+    );
+}
+
+/// **The control, and it is this client one call earlier.** The same eight
+/// calls without `multiplexed()` take eight connections — the limitation
+/// `docs/grpc-yardstick.md` records as L1, measured here so that the test
+/// above is a difference rather than an observation.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_multiplexing_the_same_eight_calls_take_eight_connections() {
+    let server = spawn_server(None);
+    server.expect(8);
+    let client = exclusive_client();
+
+    let calls = (0..8).map(|_| call(&client, server.url("/pair")));
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("must not hang");
+    for r in results {
+        assert_eq!(r.expect("every call must succeed"), 200);
+    }
+
+    assert_eq!(
+        server.accepted(),
+        8,
+        "an h2 connection is checked out exclusively without the opt-in"
+    );
+    assert_eq!(server.most_open(), 8);
+}
+
+// ── price 1: a spawner nobody drives ────────────────────────────────────
+
+/// A runtime that is `tokio` in every respect except that its `Spawn`
+/// **keeps** what it is given and never polls it.
+///
+/// Not a contrived type: it is `async_executor::Executor` with no `run`,
+/// or a `TokioHandle` for a runtime that has been shut down — the mistake
+/// `pool.rs`'s module doc names as the third thing no bound can catch. The
+/// point of writing it here is that the failure it produces is different
+/// in kind from the reaper's.
+type HeldTasks = Arc<Mutex<Vec<Pin<Box<dyn Future<Output = ()> + Send>>>>>;
+
+#[derive(Clone, Default)]
+struct HoldsTasks(HeldTasks);
+
+impl http_ng_core::unversioned::Timer for HoldsTasks {
+    type Instant = <Tokio as http_ng_core::unversioned::Timer>::Instant;
+    type Sleep = <Tokio as http_ng_core::unversioned::Timer>::Sleep;
+    fn sleep(&self, d: Duration) -> Self::Sleep {
+        Tokio.sleep(d)
+    }
+    fn now(&self) -> Self::Instant {
+        http_ng_core::unversioned::Timer::now(&Tokio)
+    }
+    fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
+        Tokio.elapsed_since(earlier)
+    }
+}
+
+impl TcpConnect for HoldsTasks {
+    type Stream = <Tokio as TcpConnect>::Stream;
+    const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
+    fn connect(
+        &self,
+        addr: SocketAddr,
+        opts: &TcpOpts,
+    ) -> impl Future<Output = std::io::Result<Self::Stream>> {
+        Tokio.connect(addr, opts)
+    }
+}
+
+impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for HoldsTasks {
+    fn spawn(&self, f: F) {
+        // Held, not dropped. Dropping it would fail the request with a
+        // broken pipe; holding it is the worse of the two failures and the
+        // one an un-run executor actually produces.
+        self.0.lock().unwrap().push(Box::pin(f));
+    }
+}
+
+/// **A spawner nobody drives hangs the request, and `first_byte` is the
+/// only thing that cuts it.**
+///
+/// An A/B on one fixture. The arm with no bound is the price stated on
+/// `Native::multiplexed` — worse than the reaper's version of the same
+/// mistake, which only leaks sockets. The arm with a bound is the whole of
+/// the available mitigation, and it is not a default.
+///
+/// Causal rather than timed in the direction that matters: the driver is
+/// *provably* never polled, because the executor under it is a `Vec`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts_it() {
+    let server = spawn_server(None);
+    let rt = HoldsTasks::default();
+    let transport =
+        Native::new(rt.clone(), FakeTls::default(), SystemDns::new(Tokio)).multiplexed();
+    let client = Client::builder(transport).build().unwrap();
+
+    // A. No bound: no verdict at all.
+    let hung = tokio::time::timeout(
+        Duration::from_millis(500),
+        client.get(&format!("https://{}/a", server.addr)).send(),
+    )
+    .await;
+    assert!(
+        hung.is_err(),
+        "a request on a connection whose driver is never polled has nothing \
+         that can resolve it — not an error, no verdict"
+    );
+    assert_eq!(
+        rt.0.lock().unwrap().len(),
+        1,
+        "and the driver really was handed over and really was never polled"
+    );
+
+    // B. The same client, the same server, with `Timeouts::first_byte`.
+    let mut req = http::Request::builder()
+        .method("GET")
+        .uri(format!("https://{}/b", server.addr))
+        .body(RequestBody::Empty)
+        .unwrap();
+    req.extensions_mut().insert(Timeouts {
+        first_byte: Some(Duration::from_millis(200)),
+        ..Timeouts::default()
+    });
+    let err = tokio::time::timeout(BOUND, client.execute(req))
+        .await
+        .expect("the bound must turn the hang into an answer")
+        .expect_err("nothing can answer this request");
+    assert!(
+        matches!(
+            err.kind(),
+            http_ng_core::ErrorKind::Timeout(http_ng_core::Phase::FirstByte)
+        ),
+        "the one bound that reaches this failure must be the one that \
+         reports it: {err:?}"
+    );
+}
+
+// ── price 2: the peer's stream limit ────────────────────────────────────
+
+/// **Beyond the peer's `MAX_CONCURRENT_STREAMS` requests queue, and no
+/// second connection is opened.**
+///
+/// The decision, measured rather than argued. h2 accepts every request and
+/// opens the streams as capacity frees up, so six concurrent calls against
+/// a server allowing two run in three waves on one socket; without the
+/// opt-in the fifth and sixth would each get a connection of their own and
+/// finish in one wave.
+///
+/// The assertion is the server's high-water mark, not a clock: `most_open
+/// == 2` is what "the limit was respected" means, and `accepted == 1` is
+/// what "and no second connection was opened for the overflow" means.
+/// Timing is deliberately not asserted — `docs/h2-multiplexing.md`'s
+/// 203/405/607 ms is a measurement of this machine and three timing-based
+/// assertions in this workspace have already turned out to be flakes.
+#[tokio::test(flavor = "multi_thread")]
+async fn beyond_the_peers_stream_limit_requests_queue_on_one_connection() {
+    let server = spawn_server(Some(2));
+    let client = shared_client();
+
+    let calls = (0..6).map(|_| call(&client, server.url("/queue")));
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("queued requests must still finish");
+    for r in results {
+        assert_eq!(r.expect("every call must succeed"), 200);
+    }
+
+    assert_eq!(
+        server.accepted(),
+        1,
+        "a full connection does not get a second one — the policy is that \
+         requests queue, because `poll_ready` cannot be asked whether a \
+         connection is full and no honest threshold is measurable here"
+    );
+    assert_eq!(server.served(), 6);
+    assert_eq!(
+        server.most_open(),
+        2,
+        "the peer's limit was respected: six calls, never more than two \
+         streams open at once"
+    );
+}
+
+// ── price 3: an `Rc` hook cannot multiplex ──────────────────────────────
+//
+// The refusal is a compile error and lives where the compiler can be asked
+// about it: `Native::multiplexed`'s own `compile_fail` doctests, in
+// `src/lib.rs`. A runtime test cannot observe a program that does not
+// build.
+
+// ── the ordering rules ──────────────────────────────────────────────────
+
+/// Counts what it is told about, and nothing else.
+#[derive(Clone, Default)]
+struct Counting(Arc<Mutex<Vec<String>>>);
+
+impl Hooks for Counting {
+    fn on(&self, event: Event<'_>) {
+        let line = match event {
+            Event::Connected(_) => "connected".to_owned(),
+            Event::Reused(_) => "reused".to_owned(),
+            Event::Closed(c) => match c.reason {
+                CloseReason::Ended => "closed:ended".to_owned(),
+                CloseReason::Stale => "closed:stale".to_owned(),
+                CloseReason::Failed(_) => "closed:failed".to_owned(),
+            },
+            _ => return,
+        };
+        self.0.lock().unwrap().push(line);
+    }
+}
+
+impl Counting {
+    fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// **`.hooks(..)` must come before `.multiplexed()`, and the pair is what
+/// says so.**
+///
+/// The spawner is a `fn(&R, H2Driver<_, H>)` — it names the hook, because
+/// the driver carries it — so `hooks()` cannot carry that pointer across a
+/// change of `H`. Either half alone reads as an accident: a client that
+/// never multiplexed passes the second, and one that always did passes the
+/// first.
+#[tokio::test(flavor = "multi_thread")]
+async fn hooks_before_multiplexed_shares_and_hooks_after_it_does_not() {
+    for (order_shares, label) in [
+        (true, "hooks then multiplexed"),
+        (false, "multiplexed then hooks"),
+    ] {
+        let server = spawn_server(None);
+        server.expect(2);
+        let hook = Counting::default();
+        let base = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio));
+        let client = if order_shares {
+            Client::builder(base.hooks(hook.clone()).multiplexed())
+                .build()
+                .unwrap()
+        } else {
+            Client::builder(base.multiplexed().hooks(hook.clone()))
+                .build()
+                .unwrap()
+        };
+
+        let calls = (0..2).map(|_| call(&client, server.url("/pair")));
+        let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+            .await
+            .expect("must not hang");
+        for r in results {
+            assert_eq!(r.expect("every call must succeed"), 200);
+        }
+
+        assert_eq!(
+            server.accepted(),
+            if order_shares { 1 } else { 2 },
+            "{label}: the spawner names the hook, so a later `hooks()` \
+             cannot carry it — see `Native::hooks`"
+        );
+        assert!(
+            hook.lines().iter().any(|l| l == "connected"),
+            "{label}: and the hook is installed either way"
+        );
+    }
+}
+
+/// **There is nowhere to share a connection without a pool, whichever
+/// order the two are written in.**
+///
+/// `Native::with_reaper`'s third bullet, one seam over — except that this
+/// one is order-independent rather than last-call-wins, because the shared
+/// path is entered only where a pool exists rather than remembered as a
+/// flag.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_pool_there_is_nothing_to_share_in_either_order() {
+    for (label, build) in [
+        ("multiplexed then without_pool", 0),
+        ("without_pool then multiplexed", 1),
+    ] {
+        let server = spawn_server(None);
+        server.expect(2);
+        let base = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio));
+        let transport = if build == 0 {
+            base.multiplexed().without_pool()
+        } else {
+            base.without_pool().multiplexed()
+        };
+        let client = Client::builder(transport).build().unwrap();
+
+        let calls = (0..2).map(|_| call(&client, server.url("/pair")));
+        let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+            .await
+            .expect("must not hang");
+        for r in results {
+            assert_eq!(r.expect("every call must succeed"), 200);
+        }
+
+        assert_eq!(
+            server.accepted(),
+            2,
+            "{label}: reuse off means no shared entry to borrow"
+        );
+    }
+}
+
+// ── what the driver makes reportable ────────────────────────────────────
+
+/// **A shared connection's end is reported, and nothing else in this crate
+/// could report it.**
+///
+/// `established::Inner::H2`'s own doc records the gap: the h2 response body
+/// emits no `Closed`, because the end of an h2 connection can arrive in
+/// three places where HTTP/1's arrives in two. A shared connection dies
+/// inside its **driver**, which is one place, so the driver reports it —
+/// which is the whole reason it carries `H`.
+///
+/// Causal: the server sends `GOAWAY` after answering, and the test waits
+/// for the server's own connection task to have ended before looking.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_driver_reports_the_end_of_a_shared_connection() {
+    let server = spawn_server(None);
+    let hook = Counting::default();
+    let transport = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+        .hooks(hook.clone())
+        .multiplexed();
+    let client = Client::builder(transport).build().unwrap();
+
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/goaway")))
+            .await
+            .expect("must not hang")
+            .expect("the call the GOAWAY names must still be answered"),
+        200
+    );
+    assert!(
+        server.wait_for_closed(1, BOUND).await,
+        "the server's connection task must have finished"
+    );
+
+    let deadline = std::time::Instant::now() + BOUND;
+    while std::time::Instant::now() < deadline {
+        if hook.lines().iter().any(|l| l == "closed:ended") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "the driver must report the end of the connection it was driving: {:?}",
+        hook.lines()
+    );
+}
+
+/// **A shared entry the peer has finished with is removed, not borrowed
+/// again.**
+///
+/// The other half of borrowing rather than taking, and it is not optional:
+/// a clone that `is_reusable` rejects leaves the entry it came from in the
+/// pool, so a checkout that only dropped the clone would borrow the same
+/// dead connection for ever — this test would not fail, it would **hang**,
+/// which is why it has a ceiling.
+///
+/// Causal: the server's connection task must have ended before the second
+/// call is made, so that call provably faces a dead pool entry rather than
+/// racing the `GOAWAY` across the wire.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dead_shared_entry_is_removed_rather_than_borrowed_for_ever() {
+    let server = spawn_server(None);
+    let client = shared_client();
+
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/goaway")))
+            .await
+            .expect("must not hang")
+            .expect("the call the GOAWAY names must still be answered"),
+        200
+    );
+    assert!(
+        server.wait_for_closed(1, BOUND).await,
+        "the server's connection task must have finished — that is what \
+         makes the next call face a dead pool entry rather than race one"
+    );
+
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/next")))
+            .await
+            .expect("a dead shared entry must not be borrowed for ever")
+            .expect("the call after a GOAWAY must go elsewhere, not fail"),
+        200
+    );
+    assert_eq!(server.accepted(), 2, "elsewhere is a second connection");
+}
+
+// ── the pool's own bookkeeping ──────────────────────────────────────────
+
+/// The idle timeout these two tests are an A/B on. Short enough to be
+/// worth waiting for and far longer than a loopback exchange.
+const SHORT_IDLE: Duration = Duration::from_millis(300);
+
+/// **A shared connection under continuous load outlives its idle
+/// timeout.**
+///
+/// `PoolConfig::idle_timeout` is measured *"from when the connection was
+/// last handed out"*, and a borrow is a hand-out — so the deadline is
+/// restamped every time a request takes a clone. Without that, a shared
+/// entry is never checked in again (there is nothing to check in), so its
+/// deadline would be frozen at the first request's and the connection
+/// would be dropped one idle timeout after the traffic *started* rather
+/// than after it stopped.
+///
+/// Six calls 100 ms apart under a 300 ms timeout: one connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_connection_that_keeps_being_used_is_not_dropped_for_age() {
+    let server = spawn_server(None);
+    let transport = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+        .pool(PoolConfig {
+            idle_timeout: SHORT_IDLE,
+            ..PoolConfig::default()
+        })
+        .multiplexed();
+    let client = Client::builder(transport).build().unwrap();
+
+    for _ in 0..6 {
+        assert_eq!(
+            tokio::time::timeout(BOUND, call(&client, server.url("/tick")))
+                .await
+                .expect("must not hang")
+                .expect("every call must succeed"),
+            200
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        server.accepted(),
+        1,
+        "600 ms of traffic under a 300 ms idle timeout is one connection, \
+         because every borrow restamps the deadline"
+    );
+}
+
+/// The control: the same client, the same timeout, one gap longer than it.
+///
+/// Without this, the test above would also pass for a pool that ignored
+/// `idle_timeout` on shared entries altogether.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_connection_idle_past_its_deadline_is_not_handed_out_again() {
+    let server = spawn_server(None);
+    let transport = Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+        .pool(PoolConfig {
+            idle_timeout: SHORT_IDLE,
+            ..PoolConfig::default()
+        })
+        .multiplexed();
+    let client = Client::builder(transport).build().unwrap();
+
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/one")))
+            .await
+            .expect("must not hang")
+            .expect("must succeed"),
+        200
+    );
+    tokio::time::sleep(SHORT_IDLE + Duration::from_millis(200)).await;
+    assert_eq!(
+        tokio::time::timeout(BOUND, call(&client, server.url("/two")))
+            .await
+            .expect("must not hang")
+            .expect("must succeed"),
+        200
+    );
+
+    assert_eq!(
+        server.accepted(),
+        2,
+        "past its deadline a shared entry is dropped as it is walked past, \
+         exactly as an exclusive one is"
+    );
+}
+
+// ── the single flight this needed ───────────────────────────────────────
+
+/// **A connect that fails does not strand the requests waiting for it.**
+///
+/// Single-flight is what makes a cold burst one connection, and its
+/// failure mode is the one worth pinning: the mark is released by
+/// `Connecting`'s `Drop`, so a connect that fails wakes the herd instead of
+/// holding it. Against a port nothing is listening on, all eight calls must
+/// come back as errors rather than hanging.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_shared_connect_releases_everyone_waiting_for_it() {
+    // A port with nothing behind it: bound and dropped, so the connect is
+    // refused rather than black-holed.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let client = shared_client();
+
+    let client = &client;
+    let calls = (0..8).map(move |_| {
+        let url = format!("https://{dead}/x");
+        async move { client.get(&url).send().await }
+    });
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("a failed connect must not strand the requests waiting on it");
+    for r in results {
+        assert!(r.is_err(), "there is nothing there to answer");
+    }
+}
