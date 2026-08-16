@@ -4,6 +4,20 @@
 //! `#[cfg]`-switched trait alias. Send-ness is inferred by auto-traits.
 #![forbid(unsafe_code)]
 
+/// The response cache, re-exported from `http-ng-cache` — the `cache`
+/// feature.
+///
+/// Re-exported for the reason `cookie` is, and with the same arrangement:
+/// the cache is a leaf crate that knows nothing about this facade (nor
+/// about `http-ng-core`, nor about any transport), which is what makes
+/// "caching behaves the same behind every backend" structural. A consumer
+/// needs the names to call [`ClientBuilder::cache`], to read
+/// [`Client::cache`], and to set [`Limits`](http_ng_cache::Limits) or
+/// supply their own [`CacheStore`](http_ng_cache::CacheStore) — and should
+/// not have to take a second dependency for them.
+#[cfg(feature = "cache")]
+pub use http_ng_cache as cache;
+mod cached;
 mod client;
 mod config;
 /// The cookie jar, re-exported from `http-ng-cookie` — the `cookies`
@@ -33,30 +47,41 @@ mod response;
 mod sse;
 mod stages;
 
+pub use cached::Cached;
 pub use client::{Client, ClientBuilder};
 pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
 pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
 pub use decompress::{DecodeFailed, Decompressed};
 
 /// The response body a [`Client`] hands back: the transport's own body,
-/// with this client's two wrappers around it **in the order the client
+/// with this client's three wrappers around it **in the order the client
 /// applies them**.
 ///
-/// The order is not a formatting choice. [`Deadline`] goes on first,
-/// directly around the transport's body, so it is polled once for every
-/// frame that arrives off the wire; [`Decompressed`] goes outside it,
-/// because reversing a content coding can consume many compressed frames
-/// before it produces a single byte for the caller. Written the other way
-/// round, one poll of the decoder could pull an unbounded amount of
-/// traffic without the clock ever being consulted — a slow server sending
-/// well-compressing padding would be bounded by nothing. See
-/// `Client::execute` and the `decompress` module's doc comment.
+/// The order is not a formatting choice. [`Cached`] is innermost, because
+/// it is the one wrapper that can *replace* the transport's body — a cache
+/// hit had no exchange and so has no `B` at all — and because what it
+/// records must be what the wire carried. [`Deadline`] goes around that,
+/// so it is polled once for every frame that arrives off the wire;
+/// [`Decompressed`] goes outside both, because reversing a content coding
+/// can consume many compressed frames before it produces a single byte for
+/// the caller. Written the other way round, one poll of the decoder could
+/// pull an unbounded amount of traffic without the clock ever being
+/// consulted — a slow server sending well-compressing padding would be
+/// bounded by nothing. See `Client::execute`, the `decompress` module's
+/// doc comment, and `cached`'s.
 ///
-/// Both wrappers are always present, whether or not either is doing
+/// The cache being **below** the decompressor is the load-bearing half of
+/// that order: a stored response is decoded on the way out by the same
+/// call that decodes a fresh one, and a `Vary: Accept-Encoding` entry is
+/// keyed on the coding actually asked for.
+///
+/// All three wrappers are always present, whether or not any is doing
 /// anything: a type cannot appear and disappear with a runtime value. An
-/// unbounded, undecoded response pays one `Option` test and one enum test
-/// per frame for that.
-pub type ClientBody<B, Tm> = Decompressed<Deadline<B, Tm>>;
+/// unbounded, undecoded, uncached response pays two `Option` tests and one
+/// enum test per frame for that — and without the `cache` feature
+/// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
+/// exist, so the third wrapper costs nothing a build did not ask for.
+pub type ClientBody<B, Tm> = Decompressed<Deadline<Cached<B>, Tm>>;
 // Task 17 fix round 1: this list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `http-ng-core` type
 // reachable from the signature, a field, or a variant of something already

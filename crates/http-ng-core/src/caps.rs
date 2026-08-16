@@ -714,6 +714,43 @@ pub struct Capabilities {
     /// way [`RedirectSupport::Internal`] earned its variant: the setting,
     /// the variant and the `check_supported` arm arrive together.
     pub owns_cookie_jar: bool,
+    /// Whether the transport keeps its own HTTP response cache: serving a
+    /// stored response instead of sending, and storing what it fetches,
+    /// without being asked.
+    ///
+    /// `true` for `http-ng-fetch` — the browser has an HTTP cache and
+    /// applies it inside `fetch()`. `false` for `http-ng-native`,
+    /// `http-ng-h3` and `http-ng-wasi`, none of which stores a response
+    /// anywhere. `wasi:http`'s host may well have a cache; the guest
+    /// cannot see it, and a capability is a claim about what this code
+    /// does rather than about what is downstream of it — the same line
+    /// `owns_cookie_jar` holds for the same backend.
+    ///
+    /// # This field had no reader for four verticals
+    ///
+    /// It shipped in v0.1 as `false` everywhere but one backend, branched
+    /// on nowhere, and was on the same list `version_select` was rescued
+    /// from — *a variant exists only if a caller decision turns on it*. The
+    /// decision that arrived is `ClientBuilder::cache`, and a client-side
+    /// cache against a transport reporting `true` is an
+    /// [`UnsupportedCapability`] at `build()`, the same arm
+    /// `owns_cookie_jar` takes for a jar and [`RedirectSupport::Internal`]
+    /// takes for a redirect policy.
+    ///
+    /// # Why a `bool` and not an enum
+    ///
+    /// [`Self::owns_cookie_jar`]'s answer, one field up, applies verbatim:
+    /// this field settles exactly one decision — *do I run a cache of my
+    /// own for this transport?* — and it is binary. *Who* owns it is the
+    /// split [`CancelSupport`] rejected; storing versus serving could in
+    /// principle come apart and in practice never has.
+    ///
+    /// What it deliberately does **not** answer is whether a cache-owning
+    /// backend can be asked to bypass, revalidate or clear. There is no
+    /// portable setting for any of the three — `fetch()`'s `cache` option
+    /// is a browser API a `Transport` seam has no counterpart for — so
+    /// there is nothing to refuse. That is where a third state would
+    /// arrive if it ever arrives.
     pub owns_cache: bool,
     /// Whether the transport honours a per-request [`RequireVersion`]
     /// demand: reads it, and either serves the request over that version

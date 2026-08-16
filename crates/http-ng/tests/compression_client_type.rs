@@ -17,25 +17,28 @@
 //! implemented by wrapping the transport, or by giving `Client` a third
 //! type parameter for its decoder set.
 //!
-//! # 2. The two body wrappers are in the order the deadline needs
+//! # 2. The three body wrappers are in the order the deadline needs
 //!
-//! `Client::execute` returns `Decompressed<Deadline<T::Body, Tm>>` — the
-//! deadline INSIDE, so it is polled once per compressed frame off the
-//! wire. The other way round, one poll of the decoder could pull an
+//! `Client::execute` returns `Decompressed<Deadline<Cached<T::Body>, Tm>>`
+//! — the deadline INSIDE the decoder, so it is polled once per compressed
+//! frame off the wire, and the cache inside THAT, so what a response cache
+//! records is what the wire carried rather than what a decoder made of
+//! it. The other way round, one poll of the decoder could pull an
 //! unbounded number of frames without the clock being consulted at all,
 //! and a slow server sending well-compressing padding would walk straight
 //! around a `total_timeout`. See `src/decompress.rs`'s module doc comment
-//! for the long form.
+//! for the long form, and `src/cached.rs`'s for the cache's half.
 //!
 //! The order is pinned here as a TYPE, because that is what it is: the
-//! second test names `Decompressed<Deadline<..>>` explicitly, and
-//! `into_inner()` then reaches a value with `total_timeout()` on it, which
-//! only exists on the deadline. Swap the two wrappers in `execute` and
-//! neither line compiles. A behavioural test cannot reach this: both
-//! orders bound the operation for any body that ever returns `Pending`,
-//! and the case that separates them — a body that yields frame after
-//! frame without yielding to the executor — is not reproducible over a
-//! real socket.
+//! second test names `Decompressed<Deadline<Cached<..>, ..>>` explicitly,
+//! and `into_inner()` then reaches a value with `total_timeout()` on it,
+//! which only exists on the deadline. Swap any two of the three in
+//! `execute` and neither line compiles. A behavioural test cannot reach
+//! the decoder/deadline half: both orders bound the operation for any body
+//! that ever returns `Pending`, and the case that separates them — a body
+//! that yields frame after frame without yielding to the executor — is not
+//! reproducible over a real socket. The cache's half **is** reachable
+//! behaviourally, and `tests/cache.rs` reaches it with a gzip server.
 //!
 //! The gate on `default-transport` is `deadline_client_type.rs`'s, and for
 //! the same reason: `Client` with no parameter is what the first property
@@ -50,7 +53,7 @@
 ))]
 
 use http_ng::mock::{MockTransport, TestTimer};
-use http_ng::{Client, Deadline, Decompressed};
+use http_ng::{Cached, Client, Deadline, Decompressed};
 use std::time::Duration;
 
 /// The declaration the first half of this file exists for: a bare
@@ -95,14 +98,20 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
     let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
 
     // The annotation is the assertion: `Decompressed` outside, `Deadline`
-    // in, and `MockBody` — the transport's own — innermost.
-    let body: Decompressed<Deadline<http_ng::mock::MockBody, TestTimer>> = resp.into_parts().1;
+    // in, `Cached` inside that, and `MockBody` — the transport's own —
+    // innermost. The cache being BELOW the decoder is what lets a stored
+    // response be decoded on the way out by the same call that decodes a
+    // fresh one; above it, an entry would be stored decoded while still
+    // labelled `Content-Encoding`, and `Vary: Accept-Encoding` would key
+    // every variant on a coding the stored bytes no longer carried.
+    let body: Decompressed<Deadline<Cached<http_ng::mock::MockBody>, TestTimer>> =
+        resp.into_parts().1;
     assert_eq!(
         body.coding(),
         None,
         "this response carries no `Content-Encoding`, so nothing is being decoded"
     );
-    let deadline: Deadline<http_ng::mock::MockBody, TestTimer> = body.into_inner();
+    let deadline: Deadline<Cached<http_ng::mock::MockBody>, TestTimer> = body.into_inner();
     assert_eq!(
         deadline.total_timeout(),
         Some(Duration::from_secs(30)),

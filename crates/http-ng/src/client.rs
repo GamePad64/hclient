@@ -1,3 +1,4 @@
+use crate::cached::{Cached, Plan};
 use crate::config::{
     Config, check_redirect_supported, check_supported, check_timeouts_supported,
     check_version_demand_supported, effective_redirect, effective_timeouts, effective_uri,
@@ -28,6 +29,12 @@ pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
     /// two halves live apart.
     #[cfg(feature = "cookies")]
     jar: Option<http_ng_cookie::CookieJar>,
+    /// The cache itself, on its way to `Inner`, already behind the `Arc`
+    /// it will share with every clone of the client **and with every
+    /// recording response body** — see `cached::Cache`. `Config` carries
+    /// only the bit that says one was asked for.
+    #[cfg(feature = "cache")]
+    cache: Option<crate::cached::Cache>,
 }
 
 /// `Tm` fixed to [`crate::DefaultClock`], not generic: a `new` over any
@@ -44,6 +51,8 @@ impl<T: Transport> ClientBuilder<T, crate::DefaultClock> {
             config: Config::default(),
             #[cfg(feature = "cookies")]
             jar: None,
+            #[cfg(feature = "cache")]
+            cache: None,
         }
     }
 }
@@ -183,6 +192,9 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
             // `timeouts` were each caught being once.
             #[cfg(feature = "cookies")]
             jar: self.jar,
+            // Carried over for the reason the jar is, one line up.
+            #[cfg(feature = "cache")]
+            cache: self.cache,
         }
     }
 
@@ -235,6 +247,75 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
         self
     }
 
+    /// Keep an RFC 9111 response cache: serve a fresh stored response
+    /// without sending anything, revalidate a stale one conditionally, and
+    /// store what comes back.
+    ///
+    /// `.cache(HttpCache::new())` is the "just turn it on" form. The
+    /// argument is there because a cache is worth configuring — a body
+    /// bound ([`Limits`](http_ng_cache::Limits)), a store size
+    /// ([`MemoryStore::with_capacity`](http_ng_cache::MemoryStore::
+    /// with_capacity)), or a store of the caller's own
+    /// ([`CacheStore`](http_ng_cache::CacheStore)) — and a `bool` could
+    /// express none of it. The cache is shared by every clone of the built
+    /// client, and by every response body it hands out, because a body
+    /// that may be stored is recorded as the caller reads it and commits
+    /// when it ends. [`Client::cache`] is how to read it back out.
+    ///
+    /// **Against a transport that keeps its own cache this is an error at
+    /// [`build`](Self::build)**, not a setting that quietly does the work
+    /// twice — `config::check_cache_supported` says what "twice" costs,
+    /// and `http-ng-fetch` is the backend that reports it. That capability,
+    /// `Capabilities::owns_cache`, has existed since v0.1 with nothing
+    /// reading it; this method is what gave it a reader.
+    ///
+    /// The rules are `http-ng-cache`'s, sans-io and clockless. What this
+    /// crate adds is the three things a cache cannot do for itself:
+    /// deciding *when* (`Client::run`, once per redirect hop and
+    /// re-derived rather than carried, exactly as the jar is), deciding
+    /// *whether* (the capability gate above), and supplying a `now`.
+    ///
+    /// **The `now` is `SystemTime::now()`, and not the client's
+    /// [`Timer`].** The argument is [`Self::cookie_jar`]'s in full and it
+    /// is if anything sharper here: `Date`, `Expires` and `Age` are
+    /// calendar values and RFC 9111 §4.2.3's arithmetic subtracts one from
+    /// another, while `Timer::Instant` is a stopwatch with no epoch.
+    /// Anchoring a wall clock once and advancing it with
+    /// `Timer::elapsed_since` would freeze outright under
+    /// [`NoClock`](crate::NoClock), whose `elapsed_since` is
+    /// `Duration::ZERO` for ever — and a frozen clock in a cache does not
+    /// merely mis-age entries, it makes **every** stored response fresh
+    /// for ever. A clockless client can configure a cache, so that is not
+    /// hypothetical.
+    ///
+    /// The clock is read **only when a cache is configured**, and that
+    /// matters for one target: `SystemTime::now()` **panics on
+    /// `wasm32-unknown-unknown`**, where `std` has no clock at all. That
+    /// target is also the one whose transport is refused above, so the
+    /// combination that would reach the panic is a browser build driving
+    /// some transport other than the browser's own.
+    ///
+    /// # What a cache changes that a jar does not
+    ///
+    /// A cache can answer a request **without sending it**, so a hop that
+    /// hits does not reach the transport at all. Three consequences, each
+    /// pinned by a test:
+    ///
+    /// - hooks see nothing for that hop, because there was no exchange;
+    /// - a `Set-Cookie` on a stored response is **not** re-applied to the
+    ///   jar. The jar learned from it when it arrived, and replaying an
+    ///   old `Set-Cookie` on every hit would resurrect a cookie the server
+    ///   had since deleted;
+    /// - `Timeouts::connect`/`first_byte`/`between_bytes` bound nothing,
+    ///   there being nothing to bound. `total` still covers the operation,
+    ///   which now may consist of no I/O at all.
+    #[cfg(feature = "cache")]
+    pub fn cache(mut self, cache: http_ng_cache::HttpCache) -> Self {
+        self.config.cache = true;
+        self.cache = Some(std::sync::Arc::new(std::sync::Mutex::new(cache)));
+        self
+    }
+
     /// Checks the configuration against the transport's capabilities. Not
     /// a single silent no-op: an unsupported setting is an error, here and
     /// now.
@@ -250,6 +331,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
                 timer: self.timer,
                 #[cfg(feature = "cookies")]
                 cookies: self.jar.map(std::sync::Mutex::new),
+                #[cfg(feature = "cache")]
+                cache: self.cache,
             }),
             config: self.config,
         })
@@ -318,6 +401,16 @@ struct Inner<T, Tm> {
     /// sans-io shape of `http-ng-cookie` buys here.
     #[cfg(feature = "cookies")]
     cookies: Option<std::sync::Mutex<http_ng_cookie::CookieJar>>,
+    /// The response cache, if one was asked for.
+    ///
+    /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
+    /// beside it, and the difference is not cosmetic: a body that may be
+    /// stored is handed a clone of this handle and commits into it when it
+    /// ends, which can be long after the `Client` handle that made the
+    /// request has been dropped. The jar is only ever touched while a hop
+    /// is in flight.
+    #[cfg(feature = "cache")]
+    cache: Option<crate::cached::Cache>,
 }
 
 /// Cloning shares the transport and the clock; it does not duplicate them.
@@ -440,6 +533,32 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     #[cfg(feature = "cookies")]
     pub fn cookies(&self) -> Option<std::sync::MutexGuard<'_, http_ng_cookie::CookieJar>> {
         Some(lock(self.inner.cookies.as_ref()?))
+    }
+
+    /// This client's response cache, if it was given one — locked for as
+    /// long as the guard is held.
+    ///
+    /// `None` when no cache was configured. That is the same answer for
+    /// "caching was never switched on" and for "the transport keeps its
+    /// own", because the second case never gets past
+    /// [`ClientBuilder::build`] and so cannot reach this method at all —
+    /// the shape [`Client::cookies`] already has.
+    ///
+    /// **Holding this guard blocks more than this client's requests.** A
+    /// response body still being read holds the same lock's `Arc` and takes
+    /// it once, when the body ends; a guard held across an `.await` can
+    /// therefore stall a body belonging to a client handle that no longer
+    /// exists. Hold it to read or to clear, not to work.
+    ///
+    /// A poisoned lock is recovered rather than propagated
+    /// (`PoisonError::into_inner`), for the reason [`Client::cookies`]
+    /// gives: the store is a map of parsed responses, a panic while
+    /// holding it cannot leave it half-written in any sense this type can
+    /// observe, and a client that stopped caching because an unrelated
+    /// task panicked would be a worse answer than a slightly stale store.
+    #[cfg(feature = "cache")]
+    pub fn cache(&self) -> Option<std::sync::MutexGuard<'_, http_ng_cache::HttpCache>> {
+        Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 
     pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T, Tm> {
@@ -590,7 +709,10 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// this future on expiry drops whichever hop is in flight, and under
     /// `Transport::execute`'s contract (v0.2 W1) that stops the exchange
     /// instead of leaving it to finish unobserved.
-    async fn run(&self, req: http::Request<RequestBody>) -> Result<http::Response<T::Body>, Error>
+    async fn run(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<Cached<T::Body>>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -700,6 +822,23 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         // chain. The rule this decides is `attach_cookies`'.
         let caller_owns_the_cookie_header = hp.headers.contains_key(http::header::COOKIE);
 
+        // The same rule one header over, and it has to be the same rule.
+        // A caller who sent `If-None-Match` is asking the ORIGIN a
+        // question; a cache that answered it from a stored copy would be
+        // answering a different one, and a cache that *added* its own
+        // condition on top would be sending two.
+        //
+        // Read once, from the caller's request, exactly as the cookie line
+        // above is and for the same reason with the sign reversed: the
+        // conditions this client adds on hop 1 are cloned into hop 2 by
+        // `next_hop`, so a per-hop reading would see our own header and
+        // stand aside for the rest of the chain — while sending hop 1's
+        // validator for hop 2's resource. `cache_before` strips them
+        // instead, per hop, which is the `Cookie` header's *removed before
+        // it is set* one line further down.
+        let caller_owns_the_conditionals = hp.headers.contains_key(http::header::IF_NONE_MATCH)
+            || hp.headers.contains_key(http::header::IF_MODIFIED_SINCE);
+
         let mut hops: u8 = 0;
 
         loop {
@@ -722,94 +861,142 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             let replay = body.rewind();
             let sending = std::mem::replace(&mut body, RequestBody::Empty);
 
-            let mut resp = self.send_hop(&hp, sending).await?;
+            // The cache, per hop and re-derived, for the reason the jar is
+            // — and with one thing the jar cannot do: it may answer the
+            // hop outright, in which case nothing is sent at all.
+            //
+            // `Break` is that answer: a fresh stored response, or the
+            // `504` RFC 9111 §5.2.1.7 obliges for `only-if-cached` with
+            // nothing to serve. `sending` is dropped there, which is the
+            // whole point of a hit; and the redirect decision below runs
+            // on it exactly as on a live response, because a cached `301`
+            // is still a `301`.
+            //
+            // `Continue` carries whether this hop is a **revalidation**,
+            // which is what makes a `304` mean *serve the stored body*
+            // rather than *hand the caller a bodyless 304*.
+            let resp = match self.cache_before(&mut hp, caller_owns_the_conditionals) {
+                std::ops::ControlFlow::Break(answered) => answered,
+                std::ops::ControlFlow::Continue(plan) => {
+                    // **This is written out here rather than factored into
+                    // a method, and the reason is `Send`.** A helper taking
+                    // `replay: Option<&RequestBody>` holds that borrow for
+                    // the whole of its future, which makes the future
+                    // require `RequestBody: Sync` — and `RequestBody` holds
+                    // a `Box<dyn Body + Send + Unpin>`, which is
+                    // deliberately not `Sync`. `tests/shape.rs` caught it:
+                    // `Client::execute`'s future stopped being `Send`, so
+                    // `tokio::spawn(client.get(u).send())` would have
+                    // stopped compiling for every caller. Inlined, the
+                    // borrow is a temporary that ends before the `.await`.
+                    //
+                    // RFC 9111 §4.2.3's `request_time`, and it is read
+                    // **before** the request rather than after the response
+                    // for the reason the RFC gives in as many words: *"a
+                    // cache MUST interpret this value relative to the time
+                    // the request was initiated, not the time that the
+                    // response was received"*. The gap between the two is
+                    // `response_delay`, which is added to a received `Age`.
+                    let mut requested_at = self.cache_now();
+                    let mut resp = self.send_hop(&hp, sending).await?;
 
-            // **RFC 8470 §5.2 — `425 Too Early`: the third way a request
-            // that went into early data can fail, and the only one of the
-            // three a transport structurally cannot close.** The other two
-            // never reach this code: the handshake refusing early data
-            // (nothing was sent, so nothing is at risk) and the server
-            // rejecting the 0-RTT keys (`ZeroRttRejected`, which the
-            // transport replays on the same connection once the handshake
-            // completes). This one is a *status code* — the server got the
-            // data, declined to risk processing it, and asked for the
-            // request again outside early data. Deciding that belongs to
-            // whoever owns the operation, which is this loop and not a
-            // transport. The three-row table is `docs/h3-research.md` §3.5.
-            //
-            // **Once, and by construction rather than by a counter**: there
-            // is no loop around these two lines, so a server wedged on
-            // `425` gets two requests and the caller gets the second `425`.
-            // An unbounded retry against exactly that server is an infinite
-            // one.
-            //
-            // **Per hop, not per operation.** A `425` on hop 3 answers a
-            // different request than hop 1 sent, and declining to replay it
-            // because hop 1 was already replayed would make the behaviour
-            // depend on history. The count is bounded either way: at most
-            // two attempts per hop, and the hops are bounded by the
-            // redirect limit — and by the paragraph below.
-            //
-            // **The replay is inside `run`, and that is what puts it inside
-            // the operation's budget.** `execute` reads the clock once and
-            // wraps the whole of `run` in `within(..)`; a replay bolted on
-            // outside that — around `execute`, or in a caller — would give
-            // the second attempt a fresh `total`, and a `total` a server
-            // can double by answering `425` is not a bound.
-            //
-            // **"Outside early data" is what the replay owes RFC 8470, and
-            // today it is owed vacuously**: no transport in this workspace
-            // can put anything in early data. It stops being vacuous the
-            // moment one can, and the shape that keeps it true is already
-            // settled (`docs/h3-research.md` §3.5): admission is a
-            // per-request opt-in the CALLER sets, so a request carrying no
-            // mark cannot end up in early data. **Whoever adds that mark
-            // strips it from the replay built here** — this sentence is
-            // what the comment exists for.
-            //
-            // **The trap is not in this branch; it is in the one that will
-            // sit next to it.** `retry_kind()` below answers "can I send
-            // this body again", and for `425` that is the entire question:
-            // the server asked for the repeat itself, so there is nobody to
-            // protect the request from. Admission to early data asks the
-            // OTHER question — "may an attacker send this again" — which is
-            // method safety, a notion this codebase deliberately does not
-            // have (`http-ng-native`'s W2 retry documents why it never
-            // needed one: nothing had reached the wire). The two questions
-            // disagree on the same request: `POST /transfer` with
-            // `RequestBody::Full(..)` is `RetryKind::Free` and is precisely
-            // what must never enter early data. `RetryKind` is a
-            // precondition for 0-RTT, never a permission.
-            //
-            // **And no `else` carrying an error of ours.** A body that
-            // cannot be sent twice leaves the `425` standing as the answer:
-            // it is the server's answer, complete and typed already, and
-            // replacing it with an `Error` would hide a status the caller
-            // can act on behind a category it cannot.
-            if resp.status() == http::StatusCode::TOO_EARLY
-                && let Some(again) = replay_for_too_early(replay.as_ref())
-            {
-                // RFC 8470 §5.2: the retry MUST NOT itself be sent in early
-                // data. Owed vacuously when this branch was written — no
-                // transport could offer it — and owed for real since
-                // `http-ng-h3` landed, which is why the strip is here and
-                // not left as a comment.
-                //
-                // It is not enough that the handshake completed long ago.
-                // `AllowEarlyData` is part of h3's connection-pool key, so
-                // a marked retry asks for the early-data connection
-                // *specifically*; if that entry has been evicted or closed
-                // by the peer since, the retry opens a fresh connection and
-                // goes into early data again — against the very server that
-                // just refused to risk one. The connection that happens to
-                // still be pooled is an accident, not a guarantee.
-                //
-                // Stripped on a clone: the next hop is a different request
-                // and keeps whatever the caller asked for.
-                let mut retry = hp.clone();
-                retry.extensions.remove::<http_ng_core::AllowEarlyData>();
-                resp = self.send_hop(&retry, again).await?;
-            }
+                    // **RFC 8470 §5.2 — `425 Too Early`: the third way a
+                    // request that went into early data can fail, and the
+                    // only one of the three a transport structurally cannot
+                    // close.** The other two never reach this code: the
+                    // handshake refusing early data (nothing was sent, so
+                    // nothing is at risk) and the server rejecting the
+                    // 0-RTT keys (`ZeroRttRejected`, which the transport
+                    // replays on the same connection once the handshake
+                    // completes). This one is a *status code* — the server
+                    // got the data, declined to risk processing it, and
+                    // asked for the request again outside early data.
+                    // Deciding that belongs to whoever owns the operation,
+                    // which is this loop and not a transport. The three-row
+                    // table is `docs/h3-research.md` §3.5.
+                    //
+                    // **Once, and by construction rather than by a
+                    // counter**: there is no loop around these two lines,
+                    // so a server wedged on `425` gets two requests and the
+                    // caller gets the second `425`. An unbounded retry
+                    // against exactly that server is an infinite one.
+                    //
+                    // **Per hop, not per operation.** A `425` on hop 3
+                    // answers a different request than hop 1 sent, and
+                    // declining to replay it because hop 1 was already
+                    // replayed would make the behaviour depend on history.
+                    // The count is bounded either way: at most two attempts
+                    // per hop, and the hops are bounded by the redirect
+                    // limit — and by the paragraph below.
+                    //
+                    // **The replay is inside `run`, and that is what puts
+                    // it inside the operation's budget.** `execute` reads
+                    // the clock once and wraps the whole of `run` in
+                    // `within(..)`; a replay bolted on outside that —
+                    // around `execute`, or in a caller — would give the
+                    // second attempt a fresh `total`, and a `total` a
+                    // server can double by answering `425` is not a bound.
+                    //
+                    // **"Outside early data" is what the replay owes RFC
+                    // 8470**, and the strip below is that. It was owed
+                    // vacuously when this branch was written — no transport
+                    // here could put anything in early data — and has been
+                    // owed for real since `http-ng-h3` landed. Admission is
+                    // a per-request opt-in the CALLER sets, so a request
+                    // carrying no mark cannot end up in early data.
+                    //
+                    // **The trap is not in this branch; it is in the one
+                    // that sits next to it.** `retry_kind()` below answers
+                    // "can I send this body again", and for `425` that is
+                    // the entire question: the server asked for the repeat
+                    // itself, so there is nobody to protect the request
+                    // from. Admission to early data asks the OTHER question
+                    // — "may an attacker send this again" — which is method
+                    // safety, a notion this codebase deliberately does not
+                    // have (`http-ng-native`'s W2 retry documents why it
+                    // never needed one: nothing had reached the wire). The
+                    // two questions disagree on the same request: `POST
+                    // /transfer` with `RequestBody::Full(..)` is
+                    // `RetryKind::Free` and is precisely what must never
+                    // enter early data. `RetryKind` is a precondition for
+                    // 0-RTT, never a permission.
+                    //
+                    // **And no `else` carrying an error of ours.** A body
+                    // that cannot be sent twice leaves the `425` standing
+                    // as the answer: it is the server's answer, complete
+                    // and typed already, and replacing it with an `Error`
+                    // would hide a status the caller can act on behind a
+                    // category it cannot.
+                    if resp.status() == http::StatusCode::TOO_EARLY
+                        && let Some(again) = replay_for_too_early(replay.as_ref())
+                    {
+                        // It is not enough that the handshake completed
+                        // long ago. `AllowEarlyData` is part of h3's
+                        // connection-pool key, so a marked retry asks for
+                        // the early-data connection *specifically*; if that
+                        // entry has been evicted or closed by the peer
+                        // since, the retry opens a fresh connection and
+                        // goes into early data again — against the very
+                        // server that just refused to risk one. The
+                        // connection that happens to still be pooled is an
+                        // accident, not a guarantee.
+                        //
+                        // Stripped on a clone: the next hop is a different
+                        // request and keeps whatever the caller asked for.
+                        let mut retry = hp.clone();
+                        retry.extensions.remove::<http_ng_core::AllowEarlyData>();
+                        // Re-read, so an entry stored from a replay is aged
+                        // from the request that actually produced it.
+                        // Keeping the first attempt's stamp would fold the
+                        // whole of that attempt into `response_delay` and
+                        // hand the entry an age it never had.
+                        requested_at = self.cache_now();
+                        resp = self.send_hop(&retry, again).await?;
+                    }
+
+                    self.cache_after(&hp, plan, resp, requested_at)
+                }
+            };
 
             let location = resp
                 .headers()
@@ -960,6 +1147,200 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// The twin without the feature — see `attach_cookies`'.
     #[cfg(not(feature = "cookies"))]
     fn store_cookies(&self, _: &http::Uri, _: &http::HeaderMap) {}
+
+    /// `SystemTime::now()`, but only where something will read it.
+    ///
+    /// `SystemTime::now()` **panics on `wasm32-unknown-unknown`**, and a
+    /// client that never asked for a cache must not start requiring a
+    /// clock — the same rule `execute` follows for `Timer::sleep`, which
+    /// is constructed only on the branch that has a bound to measure. The
+    /// value handed back when there is no cache is never read by anything;
+    /// it is `UNIX_EPOCH` rather than a panic because the alternative is an
+    /// `Option` threaded through two signatures to say what the store's
+    /// absence already says.
+    #[cfg(feature = "cache")]
+    fn cache_now(&self) -> std::time::SystemTime {
+        if self.inner.cache.is_some() {
+            std::time::SystemTime::now()
+        } else {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    /// The twin without the feature — see `attach_cookies`'.
+    #[cfg(not(feature = "cache"))]
+    fn cache_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+    }
+
+    /// Asks the cache about this hop, before anything is sent.
+    ///
+    /// `Break` means the cache answered it and the transport is not
+    /// called; `Continue` carries whether the hop that is about to go out
+    /// is a revalidation.
+    ///
+    /// Three decisions live in these few lines.
+    ///
+    /// **A caller's own conditional wins, for the whole operation**, and
+    /// the precedent is `attach_cookies`' treatment of a caller-set
+    /// `Cookie` and `decompress::negotiate`'s of a caller-set
+    /// `Accept-Encoding`. Note the scope: `caller_owns_the_conditionals`
+    /// is decided once, from the original request, so a cross-origin
+    /// redirect does not hand the cache the wheel halfway through.
+    /// `http-ng-cache` refuses such a request on its own account too — the
+    /// two checks are the same rule stated where each layer can act on it,
+    /// and the one here is what stops the *conditions this client adds*
+    /// from being mistaken for the caller's on the next hop.
+    ///
+    /// **Removed before they are set.** A hop whose plan asks for no
+    /// condition must carry none, and the previous hop's — cloned in by
+    /// `next_hop` — is what would otherwise remain, naming a different
+    /// resource's validator. Exactly the `Cookie` header's rule, and for
+    /// exactly the same reason.
+    ///
+    /// **`SystemTime::now()`, read here.** Why the client's [`Timer`]
+    /// cannot supply it is on [`ClientBuilder::cache`].
+    #[cfg(feature = "cache")]
+    fn cache_before(
+        &self,
+        hp: &mut HopParts,
+        caller_owns_the_conditionals: bool,
+    ) -> std::ops::ControlFlow<http::Response<Cached<T::Body>>, Plan> {
+        use std::ops::ControlFlow::{Break, Continue};
+        let Some(cache) = self.inner.cache.as_ref() else {
+            return Continue(Plan::default());
+        };
+        if caller_owns_the_conditionals {
+            return Continue(Plan::default());
+        }
+        hp.headers.remove(http::header::IF_NONE_MATCH);
+        hp.headers.remove(http::header::IF_MODIFIED_SINCE);
+
+        let now = std::time::SystemTime::now();
+        match crate::cached::lock(cache).lookup(&hp.method, &hp.uri, &hp.headers, now) {
+            http_ng_cache::Lookup::Miss => Continue(Plan::default()),
+            http_ng_cache::Lookup::Hit(stored) => Break(crate::cached::serve(stored)),
+            http_ng_cache::Lookup::Unsatisfiable => Break(crate::cached::only_if_cached_miss()),
+            http_ng_cache::Lookup::Revalidate {
+                key,
+                stale,
+                conditions,
+            } => {
+                for (name, value) in conditions {
+                    hp.headers.insert(name, value);
+                }
+                Continue(Plan(Some(Box::new(crate::cached::Revalidating {
+                    key,
+                    stale,
+                }))))
+            }
+        }
+    }
+
+    /// The twin without the feature. A method rather than a `#[cfg]`
+    /// around the call site in `run`, for the reason `attach_cookies`'
+    /// twin exists: the call site says what happens and when, and burying
+    /// it in a conditional would put the per-hop reasoning behind a feature
+    /// flag too.
+    #[cfg(not(feature = "cache"))]
+    fn cache_before(
+        &self,
+        _: &mut HopParts,
+        _: bool,
+    ) -> std::ops::ControlFlow<http::Response<Cached<T::Body>>, Plan> {
+        std::ops::ControlFlow::Continue(Plan)
+    }
+
+    /// What the cache makes of the answer: a `304` served from the store,
+    /// an invalidation, or a body worth recording.
+    ///
+    /// **A `304` is only ever swallowed when this client asked the
+    /// question.** `plan` carries the stale entry, and it is `None` for
+    /// every hop the cache did not condition — including one whose
+    /// conditional the caller wrote — so a `304` arriving there reaches
+    /// the caller as the response it is. That is the same distinction
+    /// `cache_before` makes one method up, on the other side of the wire.
+    ///
+    /// **The transport's body is dropped on that path, and that is not a
+    /// leak.** A `304` carries no body by definition (RFC 9110 §15.4.5),
+    /// so what is dropped is an empty one; dropping it also stops the
+    /// exchange under `Transport::execute`'s contract, which is right —
+    /// there is nothing left to read.
+    ///
+    /// **Invalidation runs for every hop, not only for cacheable ones.**
+    /// RFC 9111 §4.4 is about what an unsafe method did to the resource,
+    /// which has nothing to do with whether its own response can be
+    /// stored; a `POST` returning `201` stores nothing and must still
+    /// evict the `GET`.
+    #[cfg(feature = "cache")]
+    fn cache_after(
+        &self,
+        hp: &HopParts,
+        plan: Plan,
+        resp: http::Response<T::Body>,
+        requested_at: std::time::SystemTime,
+    ) -> http::Response<Cached<T::Body>> {
+        let Some(cache) = self.inner.cache.as_ref() else {
+            return resp.map(Cached::live);
+        };
+        let received_at = std::time::SystemTime::now();
+        let (parts, body) = resp.into_parts();
+
+        if let Some(r) = plan.0 {
+            if parts.status == http::StatusCode::NOT_MODIFIED {
+                let served = crate::cached::lock(cache).revalidated(
+                    &r.key,
+                    r.stale,
+                    &parts,
+                    requested_at,
+                    received_at,
+                );
+                return crate::cached::serve(served);
+            }
+            // Not a `304`, so the entry we conditioned on is no longer the
+            // origin's answer — see `HttpCache::superseded` for why it is
+            // removed here rather than left for the storing path below to
+            // replace.
+            crate::cached::lock(cache).superseded(&r.key, &r.stale);
+        }
+
+        let mut guard = crate::cached::lock(cache);
+        guard.invalidated_by(&hp.method, &hp.uri, parts.status);
+        let storing = guard.storing(
+            &hp.method,
+            &hp.uri,
+            &hp.headers,
+            &parts,
+            requested_at,
+            received_at,
+        );
+        drop(guard);
+
+        let body = match storing {
+            Ok(s) => Cached::recording(
+                body,
+                crate::cached::Recorder::new(std::sync::Arc::clone(cache), s),
+            ),
+            // The reason is typed and is dropped here, exactly as a
+            // `Set-Cookie` refusal is: one uncacheable response must not
+            // fail an exchange. `http_ng_cache::NotStored` is what a caller
+            // driving the cache themselves would read.
+            Err(_) => Cached::live(body),
+        };
+        http::Response::from_parts(parts, body)
+    }
+
+    /// The twin without the feature — see `cache_before`'.
+    #[cfg(not(feature = "cache"))]
+    fn cache_after(
+        &self,
+        _: &HopParts,
+        _: Plan,
+        resp: http::Response<T::Body>,
+        _: std::time::SystemTime,
+    ) -> http::Response<Cached<T::Body>> {
+        resp.map(Cached::live)
+    }
 }
 
 /// The body a `425 Too Early` replay is sent with, or `None` when this

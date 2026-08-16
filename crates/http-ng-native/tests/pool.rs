@@ -360,7 +360,18 @@ async fn checkout_walks_past_a_dead_connection_to_a_live_one() {
 
     // Two connections, both parked, both having served one request. The
     // delay is what keeps them concurrent, so neither can serve both.
-    let (a, b) = tokio::join!(get_ok(&client, addr), get_ok(&client, addr));
+    // **Boxed, and this is the only place in the suite that needs it.**
+    // `join!` holds both futures by value in one frame, so this test
+    // carries two whole `Client::execute` futures at once — which made it
+    // the first thing to abort when the `cache` feature grew that future,
+    // three crates away and with `SIGABRT` rather than a failed assertion.
+    // The size is now stated where it belongs, in `http-ng`'s
+    // `tests/future_size.rs`; boxing here means a future that grows fails
+    // *that* named bound instead of this test's stack.
+    let (a, b) = tokio::join!(
+        Box::pin(get_ok(&client, addr)),
+        Box::pin(get_ok(&client, addr))
+    );
     let _ = (a, b);
     assert_eq!(accepted.load(Ordering::SeqCst), 2, "two, not one");
 

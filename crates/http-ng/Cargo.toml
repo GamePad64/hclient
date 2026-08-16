@@ -94,6 +94,33 @@ brotli = ["dep:brotli-decompressor"]
 #
 # CI's `test` job runs `--all-features`, so this path stays under test.
 cookies = ["dep:http-ng-cookie"]
+# An RFC 9111 response cache owned by the `Client` —
+# `ClientBuilder::cache`, and the `http_ng::cache` re-export that names its
+# types. OFF by default, the same call as `cookies` above and made on the
+# same two measurements rather than by analogy.
+#
+# The graph cost: `cargo tree -p http-ng -e normal --no-default-features` is
+# **17 crates, and 18 with this feature** — `http-ng-cache` and nothing
+# else, because `bytes`, `http` and `thiserror` are already there. That is
+# one crate fewer than `cookies` costs, and it is the smaller half of the
+# argument.
+#
+# The larger half is what the feature turns on rather than what it links.
+# A cache is memory a client fills without being asked: an in-memory store
+# of up to 512 responses of up to a megabyte each, held for as long as the
+# `Client` lives. On `wasm32-unknown-unknown` paying that is certainly
+# wrong twice over — the browser keeps its own cache, `Capabilities::
+# owns_cache` says so, and `check_cache_supported` refuses a client-side
+# cache against `http-ng-fetch` at `build()`. A build that needs caching
+# says so.
+#
+# One switch, not one per RFC section: unlike `gzip`/`brotli`, whose
+# weights differ by an order of magnitude and which a caller genuinely
+# picks between, freshness without validation or validation without `Vary`
+# are not caches anyone wants — they are one RFC and one crate.
+#
+# CI's `test` job runs `--all-features`, so this path stays under test.
+cache = ["dep:http-ng-cache"]
 
 [dependencies]
 bytes         = { workspace = true }
@@ -106,6 +133,10 @@ http-ng-core  = { workspace = true }
 # transport, which is what lets the same jar behave identically behind
 # every backend instead of once per backend.
 http-ng-cookie = { workspace = true, optional = true }
+# The `cache` feature above. A leaf on `bytes`, `http` and `thiserror`
+# alone — the same shape as the jar, and for the same reason: a cache that
+# knew what a transport was could not behave identically behind all four.
+http-ng-cache = { workspace = true, optional = true }
 http-ng-mock  = { workspace = true, optional = true }
 # No default features (that is set in `[workspace.dependencies]`): the
 # `idn` feature above is what turns IDN back on, and it is in this crate's

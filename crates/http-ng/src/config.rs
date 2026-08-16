@@ -76,6 +76,21 @@ pub struct Config {
     /// Without the feature nothing can set this, so it is `false` and
     /// `check_cookies_supported` is inert.
     pub cookies: bool,
+    /// The caller asked this client to keep a response cache of its own.
+    ///
+    /// A `bool` here and the cache itself in `Client`'s `Inner`, for the
+    /// reason spelled out on `cookies` one field up and for one more: the
+    /// cache is shared not only by every clone of the client but by every
+    /// *response body* it has handed out, since a recording body holds the
+    /// same `Arc` and commits into it when it ends.
+    ///
+    /// Set only by [`crate::ClientBuilder::cache`], which exists only
+    /// under the `cache` feature, and **not `#[cfg]`-ed with it** — the
+    /// same argument the field above carries: `check_supported`
+    /// destructures `Config` with no `..` remainder precisely so a new
+    /// field cannot be forgotten, and a field that appears and disappears
+    /// takes that check into half the builds with it.
+    pub cache: bool,
 }
 
 /// The base URL is unfit to resolve this request against.
@@ -238,6 +253,11 @@ pub(crate) fn effective_redirect(
 /// "earns its refusal here the way `RedirectSupport::Internal` earned its
 /// variant — the setting, the variant and the `check_supported` arm arrive
 /// together". This is that arm; see `check_cookies_supported`.
+///
+/// `cache` arrived third and by the same route, with one difference worth
+/// noticing: `owns_cache` did not need a variant or a field added for it —
+/// it had been sitting in `Capabilities` since v0.1, set by one backend and
+/// read by nothing. See `check_cache_supported`.
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
@@ -254,10 +274,61 @@ pub fn check_supported(
         // runtime check, so there is nothing for `build()` to refuse.
         total: _,
         cookies,
+        cache,
     } = cfg;
     check_timeouts_supported(timeouts, caps, backend)?;
     check_redirect_supported(redirect, caps, backend)?;
-    check_cookies_supported(*cookies, caps, backend)
+    check_cookies_supported(*cookies, caps, backend)?;
+    check_cache_supported(*cache, caps, backend)
+}
+
+/// A response cache of the client's own, against a transport that already
+/// keeps one, is an error — not a setting that quietly does the work
+/// twice.
+///
+/// **The counterpart `owns_cache` never had.** The field has been set to
+/// `true` by exactly one backend since v0.1 and read by nobody, which is
+/// honest — there was no client-side cache for it to refuse — and is the
+/// state `check_cookies_supported` was in before `ClientBuilder::
+/// cookie_jar` existed. This is the arm that ends it.
+///
+/// **`http-ng-fetch` is the case this exists for, and what "twice" costs
+/// there is not symmetrical with the jar's.** The browser has its own HTTP
+/// cache and applies it inside `fetch()`, so a second cache in front of it
+/// would hold entries the browser has already evicted, would answer from
+/// them without the browser ever being asked, and — because `Cache-Control`
+/// on a *request* is one of the fields a `fetch`-shaped transport cannot
+/// reliably put on the wire — could not even be told to revalidate the way
+/// the RFC provides for. Two caches disagreeing about one resource is
+/// worse than either alone, and the client's is the one with less
+/// information.
+///
+/// **Only the cache-owning direction is rejected**, exactly as for the
+/// jar. A backend reporting `Capabilities::none()` says "keeps no cache",
+/// which is the truth for a transport that has never thought about
+/// caching, and is precisely where the client's own belongs.
+///
+/// **The gate is `owns_cache` and nothing else** — not
+/// `response_decompression == Internal`, and not
+/// `forbidden_request_headers` containing `Cache-Control`, even though
+/// `http-ng-fetch` happens to be the backend for all three. They are
+/// different claims that coincide there by accident, the trap
+/// `decompress::negotiate` spells out for `Accept-Encoding` and
+/// `check_cookies_supported` repeats for `Cookie`. A transport that
+/// decoded bodies internally while keeping no cache must still be
+/// cacheable in front of.
+pub(crate) fn check_cache_supported(
+    cache: bool,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    if cache && caps.owns_cache {
+        return Err(UnsupportedCapability {
+            what: "cache",
+            backend,
+        });
+    }
+    Ok(())
 }
 
 /// A cookie jar of the client's own, against a transport that already
