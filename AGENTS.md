@@ -1172,6 +1172,48 @@ first run of them scored every one as survived and was wrong, which is why
 `docs/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### `1xx` responses, and the third time hyper's `Send` shaped this crate
+
+`Native::watching_1xx()`, and `Event::Informational` on the hooks seam —
+because `Transport::execute` resolves exactly once and a `1xx` is not that
+once. It carries `id`, `status` and `headers` and **no `version`**: the
+connection's protocol was already reported by the `Connected` or `Reused`
+that opened the exchange, and a third place to be wrong about one fact is
+a third place to be wrong.
+
+**The two protocols reach the same capability by routes that share
+nothing.** HTTP/2 is `ResponseFuture::poll_informational`, a poll on the
+same future that awaits the response, needing no bound at all. HTTP/1 is
+`hyper::ext::on_informational`, whose callback must be
+`Send + Sync + 'static` and is stored as `Arc<dyn .. + Send + Sync>` —
+**the third time hyper's auto-trait requirements have shaped this
+crate**, after the sealed `Http2ClientConnExec` that ruled out
+`hyper/http2` in v0.2 and the `Rewind<Box<dyn Io + Send>>` inside
+`hyper::upgrade::Upgraded` that ruled it out for the WebSocket work. Here
+it collides with a property this workspace documents as supported: a hook
+may hold an `Rc`.
+
+What is different this time is that a pattern for absorbing it already
+exists. The bound sits on the opt-in constructor and the field is a `fn`
+pointer, which is `multiplexed()`'s shape exactly, so **no signature a
+single-threaded hook meets gains a bound** and an `Rc`-holding hook gets
+`E0277` on the line where it asked. One switch turns both protocols on,
+because the capability reports the **floor** — a `true` that held on h2
+alone would be a claim an HTTP/1 connection could not keep.
+
+Three defects came out of the writing rather than the design, and the
+middle one is the sharpest: **`Native::hooks` dropped the installer
+pointer but carried the capability**, so `.watching_1xx().hooks(h)`
+reported nothing while claiming `informational_1xx == true` — a
+capability lying, which is worse than the silent downgrade it accompanies
+because a caller can act on a capability. The h2 poll was also written
+above the connection drive, asking for interim heads before the frames
+carrying them had been read, under a comment arguing for the wrong
+ordering; and the **shared** h2 path was wired and unreached, its
+mutation surviving the whole suite until a fixture reached it.
+`docs/informational-1xx.md`, including what is still unmeasured —
+`Informational::id` is populated and never asserted.
+
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
 `Native::proxy(Proxy::new(protocol, host, port))`, behind `http-ng-native`'s
