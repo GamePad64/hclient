@@ -1223,6 +1223,24 @@ in the key for the moment a pool is shared between transports. That
 unreachability is this work's mutation **control**, and it survives as the
 comment predicts.
 
+**`Proxy::bypass([..])` is the half of `NO_PROXY` that is not policy**, and
+the split is the point: *reading the environment* is policy — which
+variables, whose matching dialect, whether a library may read the
+environment at all — and belongs to whoever builds the transport, where a
+list the caller wrote down is not policy at all. The rules are small
+because `NO_PROXY` has no specification and every implementation disagrees
+about the corners: exact host at any port, `.example.com` for a domain and
+everything under it, `host:port` for one port, and an address literal —
+a v6 one taking RFC 3986 brackets to carry a port. No CIDR, no wildcard,
+and a pattern in no accepted shape matches **nothing** rather than
+approximately something. **Nothing is bypassed by default, loopback
+included**: excluding it would change what goes on the wire for a caller
+who asked to proxy everything, which is what `TcpOpts`' every-field-off
+default exists to avoid. The list is asked in two places — `connect`, so a
+bypassed origin takes the ordinary path *in full*, and `Native::via`, so
+its request is written origin-form rather than reaching an origin server
+that never agreed to act as a proxy.
+
 The feature has **no `dep:` entries**: neither protocol needs a third-party
 crate, base64 included, so it buys code size back for a constrained target
 and costs nobody a dependency — the WebSocket framing's argument has no
