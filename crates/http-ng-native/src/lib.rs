@@ -105,12 +105,14 @@ type Watch1xx<H> = fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId);
 /// hyper stores it in an `Arc<dyn .. + Send + Sync>` that outlives this
 /// call. `H: Clone` is already what `Native` asks of a hook everywhere
 /// else — `self.hooks.clone()` is on the request path today.
-fn install_1xx<H: Hooks + Clone + Send + Sync + 'static>(
-    // send-bound-exception: amendment-C2
-    hooks: &H,
-    req: &mut http::Request<body::OutgoingBody>,
-    id: ConnectionId,
-) {
+fn install_1xx<H>(hooks: &H, req: &mut http::Request<body::OutgoingBody>, id: ConnectionId)
+where
+    // The marker sits on the `where` line rather than in the angle
+    // brackets because `cargo fmt` splits a long signature and carries a
+    // trailing comment off the line the bound is on — which silently
+    // unmarked this once already, and the invariant caught it.
+    H: Hooks + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C2
+{
     let hooks = hooks.clone();
     hyper::ext::on_informational(req, move |resp| {
         hooks.on(Event::Informational(
