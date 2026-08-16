@@ -1172,6 +1172,64 @@ first run of them scored every one as survived and was wrong, which is why
 `docs/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### Proxies: an HTTP one and SOCKS5, behind one seam
+
+`Native::proxy(Proxy::new(protocol, host, port))`, behind `http-ng-native`'s
+`proxy` feature, off by default. It changes `P` the way `.hooks(..)` changes
+`H`. Two protocols ship and they **share no bytes** — one is HTTP, one is
+RFC 1928 — which is what makes the seam evidence rather than a claim, the
+same standard `Transport` and `WebSocketConnect` were held to.
+
+**It is not a decorator over `TcpConnect`, and the reason is that seam's
+signature.** `connect` takes a `SocketAddr` and nothing else, so a wrapper
+could never hand the proxy the origin's *name*: the client would resolve it
+locally and leak exactly the DNS a proxy user is often there to hide, and
+`http://` could never take absolute-form, which is decided where the request
+head is written. SOCKS5's `ATYP=0x03 DOMAINNAME` is what proves the leak is
+a property of that seam rather than of proxying. So a proxy **replaces** the
+resolve → Happy-Eyeballs → connect block: the resolver is not consulted for
+the origin, HTTPS/SVCB discovery does not run, and Happy Eyeballs races the
+*proxy's* addresses instead.
+
+**Not `Box<dyn ProxyProtocol>` either**, and this crate's own history is the
+argument: erasing the protocol erases the IO with it, and a boxed IO needs a
+`Send` — the objection that disqualified `hyper::upgrade::Upgraded` for the
+WebSocket work and `hyper/http2` before it. Hence a type parameter,
+defaulted to `NoProxy`, which is an **empty enum**, so a transport nobody
+configured holds an `Option` that cannot be `Some` rather than a stub that
+exists to be absent.
+
+**The `CONNECT` tunnel turned out to be the WebSocket upgrade seam with a
+different accepted status**, and that was read in hyper 1.11 rather than
+hoped: its h1 client sets `wants_upgrade` for `Method::CONNECT`
+(`role.rs:240`) and skips the body for `CONNECT` + `is_success` (`:518`),
+so `into_parts` yields the tunnel and the bytes read past it exactly as it
+does for a `101`. `upgrade::exchange` takes the status test as a parameter,
+so there is one copy of those forty delicate lines instead of two. The
+request line needed nothing from hyper at all — it writes `http::Uri`'s
+`Display` verbatim, so authority-form and absolute-form are both a matter
+of handing it the right `Uri`.
+
+Three things worth knowing before touching it. **A `407` refusing a tunnel
+is `ErrorKind::Connect`, never a response** — it is the proxy's answer to
+us, not the origin's to the caller — while a `407` answering an
+absolute-form request *is* a response, from a server acting as origin for
+it; both are pinned. **A non-empty `read_buf` after a tunnel is a refusal
+rather than a rewind**, because nothing the origin might say can have
+arrived before we wrote to it. And **the proxy in `PoolKey` is unreachable
+today**, for the reason `docs/v02-acceptance.md` already gives about the
+TLS identity in the same key — a constant within any one pool — and it is
+in the key for the moment a pool is shared between transports. That
+unreachability is this work's mutation **control**, and it survives as the
+comment predicts.
+
+The feature has **no `dep:` entries**: neither protocol needs a third-party
+crate, base64 included, so it buys code size back for a constrained target
+and costs nobody a dependency — the WebSocket framing's argument has no
+subject here. The seam itself is unconditional, because a third protocol
+should not have to switch on a feature named after the two that ship.
+`docs/proxy-design.md`.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
