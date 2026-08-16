@@ -1172,6 +1172,59 @@ first run of them scored every one as survived and was wrong, which is why
 `docs/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
+### A response cache landed, and it is the counterpart `owns_cache` never had
+
+`http-ng-cache` — RFC 9111 freshness, validation, `Vary` and the
+directives on both sides — **sans-io and clockless**, exactly as
+`http-ng-cookie` is, and a leaf: `bytes`, `http`, `thiserror`, and not
+`http-ng-core`. `ClientBuilder::cache(HttpCache::new())` switches it on
+behind `http-ng`'s `cache` feature, off by default. `Client` supplies the
+`now` as `SystemTime::now()` for the reason the jar does — `Date`,
+`Expires` and `Age` are calendar values and `Timer::Instant` is a
+stopwatch with no epoch.
+
+**It is a private cache**, a user agent's rather than a shared one, and
+three rules turn on that: `private` is stored, `s-maxage` is not read at
+all, and a response to an authenticated request is stored with the
+credential in its `Selector` rather than refused — a narrowing of §3.5
+that a private cache needs and the RFC does not require.
+
+**`Capabilities::owns_cache` finally has a reader.** It had been a `bool`
+set by one backend — `http-ng-fetch`, because the browser caches inside
+`fetch()` — and branched on nowhere, which is the shape `proxy` and
+`client_certs` were found in this same week. A client-side cache against
+a transport reporting `true` is now an `UnsupportedCapability` at
+`build()`, the arm that field's own doc comment had promised since v0.1.
+
+Four things worth knowing before touching it. `Lookup` has **four**
+answers, because *send it*, *send it with these fields added* and *do not
+send it at all* are three instructions and an `Option` carries two. **A
+validator alone is enough to store on**, and the absence of heuristic
+freshness is load-bearing rather than a gap. **A `304` does not relabel
+the stored bytes** — `Content-Encoding` is excluded from the update set,
+which `http-ng`'s decompressor makes concrete. And `stale-while-
+revalidate` is deliberately absent: it needs somewhere to run the
+revalidation after the response has been handed over, and this client
+does not spawn on a caller's behalf — the same sentence the h3 body pump
+and the WebSocket keep-alive are written under.
+
+**The wiring's own defect was found by a stack overflow three crates
+away.** With the feature on, `http-ng-native`'s
+`checkout_walks_past_a_dead_connection_to_a_live_one` aborted with
+`SIGABRT` — a test that configures no cache at all. Measured: the
+`execute` future is 4,232 bytes without the feature and 4,344 with it,
+and that test needs between 1 and 2 MiB of stack without and between 2
+and 2.5 MiB with, against a 2 MiB default. It is the only place in the
+suite holding **two** whole client futures in one frame, through
+`tokio::join!`, so it noticed first — and it noticed by aborting rather
+than by failing anything. The two futures are boxed there now, and the
+bound is stated where a reader will find it: `tests/future_size.rs`
+asserts the future stays under 8 KiB, a ceiling with room rather than
+today's number, because a test pinned to the current value gets relaxed
+without thought. `cached::Cached::recorder` was already boxed for the
+same reason with its own measurement recorded; this is that finding one
+level up.
+
 ### `1xx` responses, and the third time hyper's `Send` shaped this crate
 
 `Native::watching_1xx()`, and `Event::Informational` on the hooks seam —
