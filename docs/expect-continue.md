@@ -85,3 +85,38 @@ the same argument `Timeouts` is built on and the reason this is not a new
   that receives a final status before sending the body to stop sending
   it. hyper owns the body and will keep pulling; making it stop needs a
   seam that does not exist.
+
+## 7. What building it found
+
+- **The wrapper was the defect.** The bound was first a combinator *around*
+  the exchange, and it held that whole future by value inside `execute`'s.
+  `http-ng-native`'s hook suite — **56 tests** — aborted with `SIGABRT` on
+  a stack overflow. It is folded into `within_first_byte` now: one race,
+  two sleeps, no extra nesting. The cache work met the same edge one crate
+  over in the same week, which is why `http-ng/tests/future_size.rs`
+  exists — and why that guard did not catch this one: it measures
+  `Client<MockTransport>`, and this grew `Native`'s own future.
+- **The fixture answered whether or not the body arrived**, so a client
+  that withheld it **for ever** passed every test. The mutation that stops
+  the `100` from opening the gate survived until the server was made to
+  wait for the payload. The `Seen` struct now carries both halves — was it
+  early, and did it come at all — and the second is the one that was
+  missing.
+- **Two mutations were applied to unreachable code and reported as
+  survivors.** `install_1xx` is only used where `watching_1xx` was called,
+  and the `Some(first_byte)` branch only where a bound was set; the tests
+  reach neither. Re-run against the sites they exercise, both kill. A
+  survivor is a claim about the tests **or** about where the mutation
+  landed, and only reading the second tells you which.
+
+### Mutations
+
+Anchor 273 (`http-ng-native --all-features`), `--no-fail-fast`.
+
+| # | mutation | verdict | killed |
+|---|---|---|---|
+| M1 | the body is not withheld | killed | 2 |
+| M2 | `install_gate_only` ignores the `100` | killed | 1 |
+| M3 | `continue_gate` does not check the header | killed | 1 |
+| M4 | the bound never opens the gate | killed | 1 |
+| M5 | **control** — the withhold and the callback install swap places, with no `await` between them | **survived, as intended** | 0 |

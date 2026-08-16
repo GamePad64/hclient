@@ -202,6 +202,53 @@ pub struct OutgoingBody {
     /// survives a `Failed::NotSent` and may be tried again on a
     /// connection that negotiated the other protocol.
     declared_trailers: Option<HashSet<HeaderName>>,
+    /// Set when this request carried `Expect: 100-continue` **and** the
+    /// transport was configured to honour it — see
+    /// [`Native::expect_continue`](crate::Native::expect_continue).
+    ///
+    /// **A flag and a waker, and deliberately no future.** A deadline
+    /// here would have to be a concrete `Pin<Box<Tm::Sleep>>`, which gives
+    /// this type a parameter that a dozen signatures would have to carry,
+    /// or a `Box<dyn Future>`, which drops auto traits — amendment C1, the
+    /// reason `hyper::upgrade::Upgraded` is unusable here. So the clock
+    /// stays in `Native::execute`, which has one already, and this body
+    /// knows only whether it may speak yet.
+    gate: Option<std::sync::Arc<ContinueGate>>,
+}
+
+/// Whether a request body withheld for `Expect: 100-continue` may go.
+///
+/// Opened by whichever comes first: the `100` arriving, through the same
+/// `hyper::ext::on_informational` callback `Native::watching_1xx` uses, or
+/// the bound expiring in `Native::execute`. RFC 9110 §10.1.1 makes the
+/// second outcome *send it anyway* rather than an error, which is why the
+/// gate has one open state and not two.
+#[derive(Debug, Default)]
+pub struct ContinueGate {
+    open: std::sync::atomic::AtomicBool,
+    waker: std::sync::Mutex<Option<std::task::Waker>>,
+}
+
+impl ContinueGate {
+    pub(crate) fn open(&self) {
+        self.open.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(w) = self.waker.lock().expect("continue gate poisoned").take() {
+            w.wake();
+        }
+    }
+
+    /// `true` when the body may proceed. Registers `cx` otherwise, so the
+    /// body is polled again when whichever side opens it does.
+    fn poll_open(&self, cx: &Context<'_>) -> bool {
+        if self.open.load(std::sync::atomic::Ordering::Acquire) {
+            return true;
+        }
+        *self.waker.lock().expect("continue gate poisoned") = Some(cx.waker().clone());
+        // Re-checked after registering, because the opener may have run
+        // between the load and the lock — the ordinary lost-wakeup race,
+        // and the reason this is not `if !open { register; return false }`.
+        self.open.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 /// The request body carried trailer field(s) the request never declared,
@@ -288,7 +335,13 @@ impl OutgoingBody {
         Self {
             inner: Inner::from_request_body(body),
             declared_trailers: None,
+            gate: None,
         }
+    }
+
+    /// Withhold every frame until `gate` opens.
+    pub(crate) fn withhold_until(&mut self, gate: std::sync::Arc<ContinueGate>) {
+        self.gate = Some(gate);
     }
 
     /// Arm the HTTP/1 trailer guard with the names the request declared
@@ -348,6 +401,11 @@ impl Body for OutgoingBody {
         // (`Inner::Streaming` is already `Box<dyn .. + Unpin>`), so the
         // projection is a plain `get_mut`, no `pin_project` needed.
         let this = self.get_mut();
+        // Before anything is read from the caller's body, so a producer
+        // that costs something to pull is not pulled at all while we wait.
+        if this.gate.as_ref().is_some_and(|g| !g.poll_open(cx)) {
+            return Poll::Pending;
+        }
         let polled = match &mut this.inner {
             Inner::Buffered(opt) => Poll::Ready(opt.take().map(|b| Ok(Frame::data(b)))),
             Inner::Streaming(s) => Pin::new(&mut **s).poll_frame(cx),

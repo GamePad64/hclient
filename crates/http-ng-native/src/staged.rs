@@ -376,9 +376,21 @@ where
         let (parts, body) = req.into_parts();
         let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body));
         let via = self.via(&uri);
-        let attempt = established::exchange(est, req, checkin, &uri, hooks, via, self.watch_1xx);
+        let gate = self.continue_gate(&req);
+        let attempt = established::exchange(
+            est,
+            req,
+            checkin,
+            &uri,
+            hooks,
+            established::Dispatch {
+                via,
+                watch_1xx: self.watch_1xx,
+                gate: gate.clone(),
+            },
+        );
         let resp = self
-            .within_first_byte(first_byte, attempt)
+            .within_first_byte_gated(first_byte, gate, attempt)
             .await
             .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, &uri, began);

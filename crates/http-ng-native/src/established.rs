@@ -244,8 +244,7 @@ pub(crate) async fn exchange<I, H>(
     checkin: Option<CheckIn<I>>,
     canonical: &http::Uri,
     hooks: H,
-    via: crate::proxy::Via<'_>,
-    watch_1xx: Option<crate::Watch1xx<H>>,
+    how: Dispatch<'_, H>,
 ) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
@@ -254,13 +253,28 @@ where
     let id = est.id();
     match est {
         Established::H1(e) => {
+            let Dispatch {
+                via,
+                watch_1xx,
+                gate,
+            } = how;
             let rewritten = Rewritten::for_http1(&mut req, via);
             // After the rewrite and before hyper: the callback rides in
             // the request's extensions, which `for_http1` carries across
             // untouched, and `id` is this connection's — so a caller with
             // several in flight can tell the `103`s apart.
-            if let Some(install) = watch_1xx {
-                install(&hooks, &mut req, id);
+            // The body is withheld first and the callback installed
+            // second, so there is no window in which a `100` could arrive
+            // to a gate the body is not yet holding.
+            if let Some(g) = &gate {
+                req.body_mut().withhold_until(std::sync::Arc::clone(g));
+            }
+            match (watch_1xx, gate) {
+                (Some(install), g) => install(&hooks, &mut req, id, g),
+                // No hook to report to, so no bound to satisfy — see
+                // `crate::install_gate_only`.
+                (None, Some(g)) => crate::install_gate_only(&mut req, g),
+                (None, None) => {}
             }
             match crate::h1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
@@ -286,7 +300,7 @@ where
                     headers,
                 }));
             };
-            let on_1xx = watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            let on_1xx = how.watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
             crate::http2::exchange(*e, req, checkin, on_1xx)
                 .await
                 .map(|r| {
@@ -315,7 +329,7 @@ where
                     headers,
                 }));
             };
-            let on_1xx = watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            let on_1xx = how.watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
             crate::http2::exchange_shared(s, req, on_1xx)
                 .await
                 .map(|r| {
@@ -325,6 +339,23 @@ where
                 })
         }
     }
+}
+
+/// How one request goes out: the three answers that are decided by the
+/// transport rather than by the request.
+///
+/// A struct rather than three more parameters, and the threshold is
+/// clippy's rather than taste — but the grouping is real: `via` decides
+/// the request line, `watch_1xx` and `gate` are the two readers of the
+/// **one** `hyper::ext::on_informational` callback a request may carry.
+#[derive(Clone)]
+pub(crate) struct Dispatch<'a, H> {
+    pub(crate) via: crate::proxy::Via<'a>,
+    pub(crate) watch_1xx: Option<crate::Watch1xx<H>>,
+    /// An owned handle rather than a borrow: the same gate is held by the
+    /// race in `Native::within_first_byte_gated`, and one of the two would
+    /// otherwise have to outlive the other for no reason.
+    pub(crate) gate: Option<std::sync::Arc<crate::body::ContinueGate>>,
 }
 
 /// What [`Rewritten::for_http1`] changed about a request, and how to

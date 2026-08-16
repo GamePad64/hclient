@@ -96,7 +96,30 @@ type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H>);
 
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
-type Watch1xx<H> = fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId);
+type Watch1xx<H> = fn(
+    &H,
+    &mut http::Request<body::OutgoingBody>,
+    ConnectionId,
+    Option<std::sync::Arc<body::ContinueGate>>,
+);
+
+/// The same callback with nothing to report to.
+///
+/// Separate from [`install_1xx`] rather than a branch inside it because
+/// the two differ in their **bounds**: reporting to a hook needs
+/// `H: Send + Sync + 'static`, and opening a gate needs nothing of `H` at
+/// all. Folding them together would make `Native::expect_continue` demand
+/// a bound it has no use for.
+fn install_gate_only(
+    req: &mut http::Request<body::OutgoingBody>,
+    gate: std::sync::Arc<body::ContinueGate>,
+) {
+    hyper::ext::on_informational(req, move |resp| {
+        if resp.status() == http::StatusCode::CONTINUE {
+            gate.open();
+        }
+    });
+}
 
 /// The body of [`Native::watching_1xx`]'s pointer, monomorphised where the
 /// `Send + Sync + 'static` is known and called where it is not.
@@ -105,8 +128,12 @@ type Watch1xx<H> = fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId);
 /// hyper stores it in an `Arc<dyn .. + Send + Sync>` that outlives this
 /// call. `H: Clone` is already what `Native` asks of a hook everywhere
 /// else — `self.hooks.clone()` is on the request path today.
-fn install_1xx<H>(hooks: &H, req: &mut http::Request<body::OutgoingBody>, id: ConnectionId)
-where
+fn install_1xx<H>(
+    hooks: &H,
+    req: &mut http::Request<body::OutgoingBody>,
+    id: ConnectionId,
+    gate: Option<std::sync::Arc<body::ContinueGate>>,
+) where
     // The marker sits on the `where` line rather than in the angle
     // brackets because `cargo fmt` splits a long signature and carries a
     // trailing comment off the line the bound is on — which silently
@@ -115,6 +142,13 @@ where
 {
     let hooks = hooks.clone();
     hyper::ext::on_informational(req, move |resp| {
+        // **One closure, two readers**, because `on_informational` stores
+        // ONE callback in the request's extensions and a second call
+        // replaces the first. The gate and the hook cannot each install
+        // their own.
+        if let (http::StatusCode::CONTINUE, Some(g)) = (resp.status(), &gate) {
+            g.open();
+        }
         hooks.on(Event::Informational(
             http_ng_core::unversioned::Informational {
                 id,
@@ -243,6 +277,10 @@ where
     /// meets gains a bound, and a build that never calls that constructor
     /// is unchanged.
     watch_1xx: Option<Watch1xx<H>>,
+    /// How long a request carrying `Expect: 100-continue` withholds its
+    /// body — see [`Native::expect_continue`]. `None` sends it at once,
+    /// which is what every build did before this existed and is legal.
+    expect_continue: Option<Duration>,
     /// How the origin is reached, when it is not reached directly.
     ///
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
@@ -559,6 +597,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         };
         Self {
             watch_1xx: None,
+            expect_continue: None,
             // `P` is `NoProxy` here, an empty enum, so this is the only
             // value this field can hold on a transport built by `new` —
             // `.proxy(..)` is what changes the type.
@@ -707,6 +746,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // Carried: the installer's type names `H`, which this method
             // does not change.
             watch_1xx: self.watch_1xx,
+            expect_continue: self.expect_continue,
             proxy: Some(proxy),
             rt: self.rt,
             tls: self.tls,
@@ -755,6 +795,41 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// `.hooks(..)` must come **before** this, for the reason it must come
     /// before [`Native::multiplexed`]: the pointer's type names `H`. The
     /// other order compiles and watches nothing.
+    /// Withhold a request body carrying `Expect: 100-continue` until the
+    /// server answers `100`, or until `after` has passed.
+    ///
+    /// # What it buys, and why it is not the default
+    ///
+    /// A body that will be rejected costs the same to upload as one that
+    /// will be accepted, and the two things that reject one before reading
+    /// it are a proxy answering `407` and an origin answering `401` or
+    /// `413`. This asks first.
+    ///
+    /// **A default that waited would be a default that hangs.** A server
+    /// that ignores `Expect` — legal for HTTP/1.0, and true of some
+    /// proxies — sends no `100`, so every such upload would be held for
+    /// the whole of `after` on a request nobody asked to change. Without
+    /// this call the header goes out and the body follows immediately,
+    /// which is what this crate has always done and is what RFC 9110
+    /// §10.1.1 permits: a client must only not wait *indefinitely*.
+    ///
+    /// # Why not a `Timeouts` field
+    ///
+    /// `Timeouts::first_byte` bounds a wait that ends in **failure**;
+    /// this bounds one that ends in **proceeding anyway**. Same clock,
+    /// opposite outcome, so folding them would make one of the two
+    /// silently wrong.
+    ///
+    /// # HTTP/1 only
+    ///
+    /// The gate is a request body hyper pulls; on HTTP/2 the body is a
+    /// `SendStream` this crate drives itself and there is nothing to
+    /// withhold in the same sense. `docs/expect-continue.md` §6.
+    pub fn expect_continue(mut self, after: Duration) -> Self {
+        self.expect_continue = Some(after);
+        self
+    }
+
     pub fn watching_1xx(mut self) -> Self
     where
         H: Hooks + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C2
@@ -781,6 +856,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // nothing; the compiler does not catch it and this comment
             // must not say it does.
             watch_1xx: None,
+            expect_continue: self.expect_continue,
             // Carried, unlike the two above: the proxy is named by
             // neither `H` nor the driver.
             proxy: self.proxy,
@@ -1374,21 +1450,56 @@ where
     /// Expiry drops the exchange future, which drops the connection, which
     /// closes the socket — `Capabilities::cancel_on_drop` is `Supported`
     /// on this transport and this is one of the places that relies on it.
-    async fn within_first_byte<F, V>(
+    /// The exchange under `Timeouts::first_byte`, with the
+    /// `Expect: 100-continue` bound folded in.
+    ///
+    /// **Folded rather than wrapped, and that is not tidiness.** A second
+    /// combinator around this one held the whole exchange future by value
+    /// inside `execute`'s, and `http-ng-native`'s hook suite — 56 tests —
+    /// aborted with `SIGABRT` on a stack overflow. Written that way once,
+    /// measured, and replaced by this: one race, two sleeps, no extra
+    /// nesting. The cache work found the same edge one crate over, which
+    /// is why `http-ng/tests/future_size.rs` exists.
+    async fn within_first_byte_gated<F, V>(
         &self,
         d: Option<Duration>,
+        gate: Option<std::sync::Arc<body::ContinueGate>>,
         fut: F,
     ) -> Result<V, established::Failed>
     where
         F: Future<Output = Result<V, established::Failed>>,
     {
+        let gate = gate.zip(self.expect_continue);
+        // No `first_byte` bound, so the only clock here is the gate's —
+        // and where there is neither, this is `fut.await` and nothing
+        // else, which is what every request that asked for nothing gets.
         let Some(d) = d else {
-            return fut.await;
+            let Some((gate, after)) = gate else {
+                return fut.await;
+            };
+            let mut fut = std::pin::pin!(fut);
+            let mut wait = std::pin::pin!(self.rt.sleep(after));
+            let mut opened = false;
+            return std::future::poll_fn(|cx| {
+                if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+                    return Poll::Ready(r);
+                }
+                if !opened && wait.as_mut().poll(cx).is_ready() {
+                    opened = true;
+                    gate.open();
+                }
+                Poll::Pending
+            })
+            .await;
         };
         let mut fut = std::pin::pin!(fut);
         // Built only on this branch: `Tokio::sleep` panics outside a
         // runtime, and a request that asked for nothing must not need one.
         let mut sleep_fut = std::pin::pin!(self.rt.sleep(d));
+        let mut gate_wait = gate
+            .as_ref()
+            .map(|(_, after)| Box::pin(self.rt.sleep(*after)));
+        let mut gate_opened = false;
         std::future::poll_fn(|cx| {
             // The exchange first, so a head that arrived in the same wake
             // as the deadline expiring is a response rather than a
@@ -1396,6 +1507,16 @@ where
             // below and `http_ng::within`.
             if let Poll::Ready(r) = fut.as_mut().poll(cx) {
                 return Poll::Ready(r);
+            }
+            // The gate's bound is a *release*, never a failure, so it is
+            // checked before the one that ends the request and does not
+            // return: RFC 9110 §10.1.1 makes an unanswered `Expect` mean
+            // "send it anyway".
+            if let (false, Some((gate, _)), Some(w)) = (gate_opened, &gate, gate_wait.as_mut())
+                && w.as_mut().poll(cx).is_ready()
+            {
+                gate_opened = true;
+                gate.open();
             }
             if sleep_fut.as_mut().poll(cx).is_ready() {
                 return Poll::Ready(Err(established::Failed::Sent(Error::new(
@@ -1615,6 +1736,31 @@ where
             }
             _ => crate::proxy::Via::Direct,
         }
+    }
+}
+
+impl<R, T, D, H, P> Native<R, T, D, H, P>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+{
+    /// A gate for this request, or `None` if it is not one that waits.
+    ///
+    /// **Both conditions**: the caller asked, by sending the header, and
+    /// the transport was configured to honour it. Either alone leaves the
+    /// body ungated — a header with no configuration is today's behaviour,
+    /// and a configuration with no header has nothing to wait for.
+    fn continue_gate(
+        &self,
+        req: &http::Request<body::OutgoingBody>,
+    ) -> Option<std::sync::Arc<body::ContinueGate>> {
+        self.expect_continue?;
+        let asked = req
+            .headers()
+            .get_all(http::header::EXPECT)
+            .iter()
+            .any(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+        asked.then(|| std::sync::Arc::new(body::ContinueGate::default()))
     }
 }
 
@@ -2028,16 +2174,23 @@ where
             #[cfg(feature = "http2")]
             drop(connect_guard.take());
             let via = self.via(&uri);
+            let gate = self.continue_gate(&req);
             let attempt = established::exchange(
                 est,
                 req,
                 checkin,
                 &uri,
                 self.hooks.clone(),
-                via,
-                self.watch_1xx,
+                established::Dispatch {
+                    via,
+                    watch_1xx: self.watch_1xx,
+                    gate: gate.clone(),
+                },
             );
-            match self.within_first_byte(timeouts.first_byte, attempt).await {
+            match self
+                .within_first_byte_gated(timeouts.first_byte, gate, attempt)
+                .await
+            {
                 Ok(resp) => {
                     self.report_head(&resp, id, &uri, began);
                     return Ok(self.bound_body(resp, timeouts.between_bytes));
@@ -2208,17 +2361,21 @@ where
         #[cfg(feature = "http2")]
         drop(connect_guard.take());
         let via = self.via(&uri);
+        let gate = self.continue_gate(&req);
         let attempt = established::exchange(
             est,
             req,
             checkin,
             &uri,
             self.hooks.clone(),
-            via,
-            self.watch_1xx,
+            established::Dispatch {
+                via,
+                watch_1xx: self.watch_1xx,
+                gate: gate.clone(),
+            },
         );
         let resp = self
-            .within_first_byte(timeouts.first_byte, attempt)
+            .within_first_byte_gated(timeouts.first_byte, gate, attempt)
             .await
             .map_err(established::Failed::into_error)?;
         self.report_head(&resp, id, &uri, began);
