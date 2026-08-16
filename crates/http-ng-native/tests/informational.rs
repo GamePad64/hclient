@@ -30,15 +30,16 @@ impl Hooks for Recorder {
     fn on(&self, event: Event<'_>) {
         let line = match event {
             Event::Informational(e) => format!(
-                "1xx {} link={}",
+                "1xx {} id={} link={}",
                 e.status.as_u16(),
+                e.id.get(),
                 e.headers
                     .get("link")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("<none>")
             ),
             Event::Head(e) => format!("head {}", e.status.as_u16()),
-            Event::Connected(_) => "connected".into(),
+            Event::Connected(e) => format!("connected id={}", e.id.get()),
             Event::Reused(_) => "reused".into(),
             Event::Closed(_) => "closed".into(),
         };
@@ -112,7 +113,27 @@ async fn a_103_reaches_the_hook_with_its_headers_and_before_the_head() {
         .position(|l| l.starts_with("head"))
         .unwrap_or_else(|| panic!("no head event: {seen:?}"));
     assert!(hint < head, "the hint must precede the head: {seen:?}");
-    assert_eq!(seen[hint], "1xx 103 link=</s.css>; rel=preload");
+    assert!(
+        seen[hint].ends_with("link=</s.css>; rel=preload"),
+        "the headers travel with it: {:?}",
+        seen[hint]
+    );
+
+    // **The id names the connection this arrived on**, which is what makes
+    // the event usable to a caller holding several exchanges at once — and
+    // was populated and unasserted until this line. `ConnectionId` is
+    // monotonic and never `UNWATCHED` here, so equality with the
+    // `Connected` that opened this exchange is the whole claim.
+    let connected = seen
+        .iter()
+        .find(|l| l.starts_with("connected id="))
+        .expect("a connection was opened")
+        .trim_start_matches("connected ")
+        .to_owned();
+    assert!(
+        seen[hint].contains(&connected),
+        "the 1xx must name the connection it came in on: {seen:?}"
+    );
 }
 
 /// **The control, and the capability agrees with it.** The same server and
@@ -176,7 +197,8 @@ async fn a_100_continue_is_reported_and_the_200_still_arrives() {
     assert_eq!(resp.status(), 200);
     let seen = rec.seen();
     assert!(
-        seen.iter().any(|l| l == "1xx 100 link=<none>"),
+        seen.iter()
+            .any(|l| l.starts_with("1xx 100 ") && l.ends_with("link=<none>")),
         "the 100 must be reported, with no Link of its own: {seen:?}"
     );
 }
