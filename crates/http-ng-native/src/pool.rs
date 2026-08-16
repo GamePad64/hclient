@@ -407,15 +407,38 @@ pub(crate) struct PoolKey {
     /// key rather than two.
     port: u16,
     protocol: Protocol,
+    /// Which proxy this connection goes through, `"host:port"`, or `None`
+    /// for a direct one.
+    ///
+    /// A **parameter** of [`PoolKey::new`] rather than something a builder
+    /// method adds, so that a new call site cannot forget it.
+    ///
+    /// **Unreachable today, and kept for exactly the reason `security` is**
+    /// — which `docs/v02-acceptance.md` already states about that field: a
+    /// proxy is configured on the transport and each transport owns its
+    /// own pool, so this is a constant within any one pool, as the TLS
+    /// identity is. It must be in the key *before* a pool is shared
+    /// between transports, because that is the moment its absence stops
+    /// being a redundancy and becomes a security defect — a tunnel handed
+    /// to a request routed through a different proxy. No test can reach
+    /// it, and saying so is better than a test that pretends to.
+    proxy: Option<Box<str>>,
 }
 
 impl PoolKey {
-    pub(crate) fn new(security: Security, host: &str, port: u16, protocol: Protocol) -> Self {
+    pub(crate) fn new(
+        security: Security,
+        host: &str,
+        port: u16,
+        protocol: Protocol,
+        proxy: Option<&str>,
+    ) -> Self {
         Self {
             security,
             host: host.to_ascii_lowercase().into_boxed_str(),
             port,
             protocol,
+            proxy: proxy.map(|p| p.to_ascii_lowercase().into_boxed_str()),
         }
     }
 }
@@ -1051,7 +1074,7 @@ mod tests {
     use super::*;
 
     fn key(host: &str) -> PoolKey {
-        PoolKey::new(Security::Plaintext, host, 80, Protocol::Http11)
+        PoolKey::new(Security::Plaintext, host, 80, Protocol::Http11, None)
     }
 
     #[test]
@@ -1059,8 +1082,8 @@ mod tests {
         assert_eq!(key("Example.COM"), key("example.com"));
         assert_ne!(key("example.com"), key("example.org"));
         assert_ne!(
-            PoolKey::new(Security::Plaintext, "h", 80, Protocol::Http11),
-            PoolKey::new(Security::Plaintext, "h", 8080, Protocol::Http11),
+            PoolKey::new(Security::Plaintext, "h", 80, Protocol::Http11, None),
+            PoolKey::new(Security::Plaintext, "h", 8080, Protocol::Http11, None),
         );
     }
 
@@ -1075,7 +1098,7 @@ mod tests {
     #[cfg(feature = "http2")]
     #[test]
     fn the_protocol_separates_keys() {
-        let of = |p| PoolKey::new(Security::Plaintext, "h", 80, p);
+        let of = |p| PoolKey::new(Security::Plaintext, "h", 80, p, None);
         assert_ne!(of(Protocol::Http11), of(Protocol::H2));
         assert_eq!(of(Protocol::H2), of(Protocol::H2));
     }
@@ -1088,18 +1111,18 @@ mod tests {
         let a = TlsConfigId::new_unique();
         let b = TlsConfigId::new_unique();
         assert_ne!(
-            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11),
-            PoolKey::new(Security::Tls(b), "h", 443, Protocol::Http11),
+            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11, None),
+            PoolKey::new(Security::Tls(b), "h", 443, Protocol::Http11, None),
         );
         assert_eq!(
-            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11),
-            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11),
+            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11, None),
+            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11, None),
         );
         // And plaintext is not "https with some identity" — the two can
         // never collide, whatever the identity.
         assert_ne!(
-            PoolKey::new(Security::Plaintext, "h", 443, Protocol::Http11),
-            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11),
+            PoolKey::new(Security::Plaintext, "h", 443, Protocol::Http11, None),
+            PoolKey::new(Security::Tls(a), "h", 443, Protocol::Http11, None),
         );
     }
 

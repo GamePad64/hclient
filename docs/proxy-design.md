@@ -140,3 +140,67 @@ not have to live here.
   rules, whether a library may read the environment at all) and is
   separable from being able to proxy at all.
 - **`CONNECT-UDP` / MASQUE for `http-ng-h3`.** §1's last row.
+
+## 8. What building it found, which the design above did not predict
+
+- **The `CONNECT` tunnel is the WebSocket upgrade seam with a different
+  accepted status**, and that was read rather than hoped: hyper 1.11's own
+  h1 client sets `wants_upgrade` for `Method::CONNECT` (`role.rs:240`) and
+  skips the body for `CONNECT` + `is_success` (`:518`, `:528`), so
+  `poll_without_shutdown` + `into_parts` yields the tunnel and the bytes
+  read past it exactly as it does for a `101`. `upgrade::exchange` now
+  takes the accepted-status test as a parameter and has **one** copy of
+  the forty delicate lines instead of two.
+- **The request line needed nothing from hyper.** It writes `http::Uri`'s
+  `Display` verbatim (`role.rs:1212`), so authority-form for `CONNECT` and
+  absolute-form for `http://` are both just a matter of handing it the
+  right `Uri` — which is what `http-ng-native` already does for
+  origin-form.
+- **`NoProxy` is an empty enum**, so a transport nobody configured a proxy
+  on holds an `Option` that cannot be `Some` — by construction rather than
+  by discipline. A unit struct with `unreachable!()` bodies would be a
+  value existing only to be absent.
+- **The proxy in `PoolKey` is unreachable today**, and that is stated
+  rather than tested. A proxy is configured on the transport and each
+  transport owns its own pool, so it is a constant within any one pool —
+  precisely what `docs/v02-acceptance.md` already says about the TLS
+  identity in the same key, and it is in the key for the same reason: the
+  moment a pool is shared between transports, its absence stops being a
+  redundancy and becomes a tunnel handed to a request routed elsewhere.
+  The mutation that changes its shape is this work's **control**, and it
+  survives as predicted.
+- **A non-empty `read_buf` after a tunnel is a refusal, not a rewind.**
+  Nothing the origin might say can have arrived — the client has not
+  written to it — so those bytes are the proxy's, and carrying them on
+  would feed them to the TLS handshake, or to hyper, as if the origin had
+  sent them.
+- **One fixture bug that looked exactly like a client bug.** The scripted
+  socket handed its reply back on the first poll, so hyper saw a response
+  with no request in flight and failed the exchange with
+  `hyper::Error(Canceled, UnexpectedMessage)`. A socket is silent until it
+  has been written to, and the fixture is now.
+
+### Mutations
+
+Anchor **189** (`http-ng-native`, `--features proxy`), `--no-fail-fast`.
+
+| # | mutation | verdict | killed |
+|---|---|---|---|
+| M1 | `HttpConnect::approach` always answers `Tunnel` | killed | 3 |
+| M2 | SOCKS5 sends `ATYP=0x01` where the name should go | killed | 1 |
+| M3 | `Capabilities::proxy` is left at `false` | killed | 1 |
+| M4 | `Proxy-Authorization` is dropped from an absolute-form request | killed | 1 |
+| M5 | **control** — the pool key's proxy component changes shape | **survived, as predicted** | 0 |
+
+M5 is a control by argument rather than by luck: the paragraph above says
+no observer exists, and the mutation is how that claim is checked instead
+of asserted.
+
+### Not covered
+
+**`CONNECT` is exercised by unit test only.** `HttpConnect` tunnels for
+`https://` alone, so an end-to-end run would need a TLS origin behind the
+proxy to prove what `connect_asks_for_the_authority_and_a_200_hands_the_
+socket_back` already proves about the bytes. What is *not* proven either
+way is the TLS handshake riding a tunnel — the origin's SNI over a
+proxy's socket — and that is the first thing a second pass should add.

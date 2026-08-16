@@ -905,10 +905,109 @@ where
 /// figure is a share of a total: see
 /// [`ConnectTiming`](http_ng_core::unversioned::ConnectTiming), which
 /// says so where a caller reads it.
-pub(crate) async fn connect<R, D, L, H>(
+/// Everything a proxy changes, in one place.
+///
+/// The origin's **name** goes to the proxy and its addresses are never
+/// looked up here — an HTTP proxy resolves it from the `CONNECT` target, a
+/// SOCKS5 one from `ATYP=0x03 DOMAINNAME`. Happy Eyeballs still runs, over
+/// the proxy's own addresses, so a dual-stack proxy is reached the same
+/// way a dual-stack origin is.
+///
+/// Discovery does not run at all: an HTTPS record's address hints name an
+/// address nobody will dial, and its port would move the connection
+/// somewhere the proxy was not asked about. `Prefetched` is not a
+/// parameter here for that reason — there is nothing for it to be.
+async fn through_proxy<R, L, P, H>(
+    rt: &R,
+    dns: &(impl Resolve + ?Sized),
+    tls: &L,
+    proxy: &crate::proxy::Proxy<P>,
+    host: &str,
+    use_tls: bool,
+    port: u16,
+    opts: &TcpOpts,
+    alpn: &[&[u8]],
+    began: Option<R::Instant>,
+) -> Result<
+    (
+        Conn<R::Stream, L::Stream<R::Stream>>,
+        Option<TlsInfo>,
+        Option<Box<Attempted>>,
+    ),
+    Error,
+>
+where
+    R: TcpConnect + Timer,
+    L: TlsConnect,
+    P: crate::proxy::ProxyProtocol,
+    R::Stream: 'static,
+    H: Hooks,
+{
+    let mut v6 = Answers::new(dns.lookup_ipv6(proxy.host()));
+    let mut v4 = Answers::new(dns.lookup_ipv4(proxy.host()));
+    let sched = build_scheduler(HeConfig::default())?;
+    let (tcp, mut attempted) = drive::<_, _, _, H>(
+        rt,
+        sched,
+        v6.replay(),
+        v4.replay(),
+        proxy.port(),
+        opts,
+        began,
+    )
+    .await?;
+
+    let tcp = match proxy.protocol().approach(use_tls) {
+        // Nothing to negotiate: an HTTP proxy serving `http://` is an
+        // origin server for this request, and what changes is the request
+        // line, one layer up.
+        crate::proxy::Approach::Absolute => tcp,
+        crate::proxy::Approach::Tunnel => {
+            let (stream, read_buf) = proxy.protocol().tunnel(tcp, host, port).await?;
+            // **It must be empty, and this is a check rather than a
+            // rewind.** We have not written a byte to the origin, so
+            // nothing it might answer can have arrived; anything past the
+            // end of the tunnel handshake was invented by the proxy. A
+            // `Rewind`-shaped wrapper would carry those bytes into the TLS
+            // handshake or into hyper as if the origin had sent them,
+            // which is the quieter of the two failures and the worse one.
+            if !read_buf.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Connect,
+                    crate::proxy::ProxySpokeFirst(read_buf.len()),
+                ));
+            }
+            stream
+        }
+    };
+
+    if !use_tls {
+        return Ok((Conn::Plain(tcp), None, attempted));
+    }
+
+    // The **origin's** name, never the proxy's: the tunnel is transport,
+    // and a certificate is checked against who the caller asked for.
+    let req = TlsRequest {
+        server_name: http_ng_core::bare_host(host),
+        alpn,
+        // No record was consulted, so there is nothing to apply — see this
+        // function's doc comment.
+        ech: None,
+        early_data: None,
+    };
+    let handshake_began = mark::<H, R>(rt);
+    let (stream, info) = tls.connect(tcp, req).await?;
+    if let Some(a) = attempted.as_mut() {
+        a.tls = Some(since::<R>(rt, handshake_began));
+    }
+    Ok((Conn::Tls(stream), Some(info), attempted))
+}
+
+pub(crate) async fn connect<R, D, L, P, H>(
     rt: &R,
     dns: &D,
     tls: &L,
+    proxy: Option<&crate::proxy::Proxy<P>>,
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
@@ -927,12 +1026,25 @@ where
     R: TcpConnect + Timer,
     D: Resolve,
     L: TlsConnect,
+    P: crate::proxy::ProxyProtocol,
+    R::Stream: 'static,
     H: Hooks,
 {
     let began = mark::<H, R>(rt);
     let host = host(uri)?;
     let use_tls = wants_tls(uri)?;
     let port = port(uri, use_tls);
+
+    // Before the resolver and before discovery, because a proxy replaces
+    // both rather than layering over them. `prefetched` is not consulted
+    // and `discovery_cache` is not touched: whatever either says is about
+    // an origin this connection will not dial.
+    if let Some(proxy) = proxy {
+        return through_proxy::<R, L, P, H>(
+            rt, dns, tls, proxy, host, use_tls, port, opts, alpn, began,
+        )
+        .await;
+    }
 
     // Both families are started here, at the top, rather than inside
     // `attempt` where they used to live — that placement is the whole of
@@ -2101,10 +2213,11 @@ mod tests {
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let cache = NegativeCache::default();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2150,10 +2263,11 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2326,10 +2440,11 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2383,10 +2498,11 @@ mod tests {
         let rt = FakeRt::new([]);
         let uri: Uri = "https://example.invalid/".parse().unwrap();
 
-        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2513,17 +2629,19 @@ mod tests {
         let opts = TcpOpts::default();
 
         {
-            let mut fut = std::pin::pin!(super::connect::<_, _, _, NoHooks>(
-                &rt,
-                &dns,
-                &NoOpTls,
-                &uri,
-                &opts,
-                &[],
-                &cache,
-                Duration::ZERO,
-                Prefetched::NotConsulted,
-            ));
+            let mut fut =
+                std::pin::pin!(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+                    &rt,
+                    &dns,
+                    &NoOpTls,
+                    None,
+                    &uri,
+                    &opts,
+                    &[],
+                    &cache,
+                    Duration::ZERO,
+                    Prefetched::NotConsulted,
+                ));
             let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(
                 fut.as_mut().poll(&mut cx).is_pending(),
@@ -2611,18 +2729,20 @@ mod tests {
             .parse()
             .unwrap();
         let rt = FakeRt::new([(live.ip(), true)]);
-        let (conn, _info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
-            &rt,
-            &dns,
-            &NoOpTls,
-            &uri,
-            &TcpOpts::default(),
-            &[],
-            &NegativeCache::default(),
-            Duration::ZERO,
-            Prefetched::NotConsulted,
-        ))
-        .expect("the v4 address must win the race");
+        let (conn, _info, _facts) =
+            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+                &rt,
+                &dns,
+                &NoOpTls,
+                None,
+                &uri,
+                &TcpOpts::default(),
+                &[],
+                &NegativeCache::default(),
+                Duration::ZERO,
+                Prefetched::NotConsulted,
+            ))
+            .expect("the v4 address must win the race");
         assert!(matches!(conn, Conn::Plain(_)));
         // v6(2) never got its turn — the race stopped as soon as v4 won.
         assert_eq!(
@@ -2642,18 +2762,20 @@ mod tests {
         let uri: Uri = format!("http://example.invalid:{}/", addr.port())
             .parse()
             .unwrap();
-        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
-            &FakeRt::new([(addr.ip(), true)]),
-            &dns,
-            &NoOpTls,
-            &uri,
-            &TcpOpts::default(),
-            &[],
-            &NegativeCache::default(),
-            Duration::ZERO,
-            Prefetched::NotConsulted,
-        ))
-        .expect("connect");
+        let (conn, info, _facts) =
+            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+                &FakeRt::new([(addr.ip(), true)]),
+                &dns,
+                &NoOpTls,
+                None,
+                &uri,
+                &TcpOpts::default(),
+                &[],
+                &NegativeCache::default(),
+                Duration::ZERO,
+                Prefetched::NotConsulted,
+            ))
+            .expect("connect");
         assert!(matches!(conn, Conn::Plain(_)));
         assert!(info.is_none());
     }
@@ -2669,18 +2791,20 @@ mod tests {
             .parse()
             .unwrap();
         let alpn: [&[u8]; 1] = [b"h2"];
-        let (conn, info, _facts) = bounded_block_on(super::connect::<_, _, _, NoHooks>(
-            &FakeRt::new([(addr.ip(), true)]),
-            &dns,
-            &NoOpTls,
-            &uri,
-            &TcpOpts::default(),
-            &alpn,
-            &NegativeCache::default(),
-            Duration::ZERO,
-            Prefetched::NotConsulted,
-        ))
-        .expect("connect");
+        let (conn, info, _facts) =
+            bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
+                &FakeRt::new([(addr.ip(), true)]),
+                &dns,
+                &NoOpTls,
+                None,
+                &uri,
+                &TcpOpts::default(),
+                &alpn,
+                &NegativeCache::default(),
+                Duration::ZERO,
+                Prefetched::NotConsulted,
+            ))
+            .expect("connect");
         assert!(matches!(conn, Conn::Tls(_)));
         assert_eq!(info.unwrap().alpn.as_deref(), Some(b"h2".as_slice()));
     }
@@ -2692,10 +2816,11 @@ mod tests {
             v4: vec![],
         };
         let uri: Uri = "ftp://example.invalid/".parse().unwrap();
-        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2722,10 +2847,11 @@ mod tests {
         };
         let uri: Uri = "https://example.invalid/".parse().unwrap();
         let rt = FakeRt::new([]);
-        let _ = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let _ = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &rt,
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2746,10 +2872,11 @@ mod tests {
         };
         // An `http::Uri` with no authority at all (origin-form).
         let uri: Uri = "/just/a/path".parse().unwrap();
-        let err = bounded_block_on(super::connect::<_, _, _, NoHooks>(
+        let err = bounded_block_on(super::connect::<_, _, _, crate::proxy::NoProxy, NoHooks>(
             &FakeRt::new([]),
             &dns,
             &NoOpTls,
+            None,
             &uri,
             &TcpOpts::default(),
             &[],

@@ -240,6 +240,7 @@ pub(crate) async fn exchange<I, H>(
     checkin: Option<CheckIn<I>>,
     canonical: &http::Uri,
     hooks: H,
+    via: crate::proxy::Via<'_>,
 ) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
@@ -248,7 +249,7 @@ where
     let id = est.id();
     match est {
         Established::H1(e) => {
-            let rewritten = Rewritten::for_http1(&mut req);
+            let rewritten = Rewritten::for_http1(&mut req, via);
             match crate::h1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
                     inner: Inner::H1(b),
@@ -319,7 +320,7 @@ impl Rewritten {
     /// meaning its checks (`connect::host`, `connect::wants_tls`) passed,
     /// so `req.uri()` is guaranteed to carry a host and a supported
     /// (`http`/`https`) scheme; this function doesn't recheck them.
-    fn for_http1(req: &mut http::Request<OutgoingBody>) -> Self {
+    fn for_http1(req: &mut http::Request<OutgoingBody>, via: crate::proxy::Via<'_>) -> Self {
         let uri = req.uri().clone();
         let https = uri.scheme_str() == Some("https");
         let default_port = if https { 443 } else { 80 };
@@ -345,13 +346,28 @@ impl Rewritten {
                 host_inserted = true;
             }
         }
-        let pq = uri
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/")
-            .to_owned();
-        if let Ok(u) = pq.parse::<http::Uri>() {
-            *req.uri_mut() = u;
+        match via {
+            // Absolute-form: the URI is already what has to go on the
+            // wire, so the rewrite below is skipped entirely rather than
+            // done and undone. hyper writes `http::Uri`'s `Display` into
+            // the request line verbatim (`role.rs:1212`), so this is the
+            // whole of it.
+            crate::proxy::Via::AbsoluteForm(auth) => {
+                if let Some(auth) = auth {
+                    req.headers_mut()
+                        .insert(http::header::PROXY_AUTHORIZATION, auth.clone());
+                }
+            }
+            crate::proxy::Via::Direct => {
+                let pq = uri
+                    .path_and_query()
+                    .map(|p| p.as_str())
+                    .unwrap_or("/")
+                    .to_owned();
+                if let Ok(u) = pq.parse::<http::Uri>() {
+                    *req.uri_mut() = u;
+                }
+            }
         }
         // Read from the headers as they are about to go out, and in two
         // statements because the second borrows `req` mutably: the set

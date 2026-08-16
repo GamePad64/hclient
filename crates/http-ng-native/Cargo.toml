@@ -41,6 +41,10 @@ repository.workspace = true
 [features]
 default = []
 http2 = ["dep:h2", "dep:tokio"]
+# No `dep:` entries, and that is the point: both protocols behind this
+# flag are written here, so the feature buys code size back for a
+# constrained target and costs nobody a dependency. See `src/proxy.rs`.
+proxy = []
 
 [dependencies]
 bytes          = { workspace = true }

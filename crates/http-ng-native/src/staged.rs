@@ -297,7 +297,7 @@ where
 /// [`Prefetch`](crate::Prefetch)'s reason: an inherent method of the same
 /// name wins method resolution over a trait one, so a caller with the trait
 /// in scope would silently get the other function.
-impl<R, T, D, H> StagedConnect for Native<R, T, D, H>
+impl<R, T, D, H, P> StagedConnect for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -305,6 +305,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     type Staged = Staged<R, T, H>;
 
@@ -374,7 +375,8 @@ where
             .expect("a Staged is emptied only by this method, which consumes it");
         let (parts, body) = req.into_parts();
         let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body));
-        let attempt = established::exchange(est, req, checkin, &uri, hooks);
+        let via = self.via(&uri);
+        let attempt = established::exchange(est, req, checkin, &uri, hooks, via);
         let resp = self
             .within_first_byte(first_byte, attempt)
             .await
@@ -384,7 +386,7 @@ where
     }
 }
 
-impl<R, T, D, H> Native<R, T, D, H>
+impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -392,6 +394,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     /// The body of [`StagedConnect::connect`], written where the `Refused`
     /// packing is not, so that each failure arm is a pair rather than a
@@ -452,10 +455,11 @@ where
         } else {
             &[b"http/1.1"]
         };
-        let connect_fut = connect::connect::<R, D, T, H>(
+        let connect_fut = connect::connect::<R, D, T, P, H>(
             &self.rt,
             &self.dns,
             &self.tls,
+            self.proxy.as_ref(),
             &uri,
             &self.opts,
             alpn,

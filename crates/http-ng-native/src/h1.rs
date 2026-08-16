@@ -965,6 +965,7 @@ mod tests {
             "example.invalid",
             80,
             crate::pool::Protocol::Http11,
+            None,
         );
 
         let est = {
@@ -1050,6 +1051,7 @@ mod tests {
             "example.invalid",
             80,
             crate::pool::Protocol::Http11,
+            None,
         );
 
         let est = {

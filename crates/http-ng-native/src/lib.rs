@@ -47,6 +47,7 @@ mod h1;
 mod http2;
 mod idle;
 mod pool;
+pub mod proxy;
 mod staged;
 mod upgrade;
 
@@ -60,6 +61,9 @@ pub use http2::H2Driver;
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
+pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxySpokeFirst};
+#[cfg(feature = "proxy")]
+pub use proxy::{HttpConnect, Socks5};
 pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
 
@@ -184,11 +188,21 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// `H` is deliberately last, after the three seams: it is the only one of
 /// the four that is not a seam a backend author has to fill in.
 #[derive(Debug)]
-pub struct Native<R, T, D, H = NoHooks>
+pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
 {
+    /// How the origin is reached, when it is not reached directly.
+    ///
+    /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
+    /// **empty enum** — so a transport nobody configured a proxy on holds
+    /// an `Option` that cannot be `Some`, by construction rather than by
+    /// discipline, and the field costs it one word. `docs/proxy-design.md`
+    /// §2 has why this is a parameter rather than a `Box<dyn ..>`: erasing
+    /// the protocol erases the IO with it, and that needs a `Send` this
+    /// crate does not declare.
+    proxy: Option<crate::proxy::Proxy<P>>,
     rt: R,
     tls: T,
     dns: D,
@@ -494,6 +508,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             between_bytes: true,
         };
         Self {
+            // `P` is `NoProxy` here, an empty enum, so this is the only
+            // value this field can hold on a transport built by `new` —
+            // `.proxy(..)` is what changes the type.
+            proxy: None,
             epoch: rt.now(),
             rt,
             tls,
@@ -571,7 +589,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
 /// method that names a *particular* `H` ([`NoHooks`]), and putting it in
 /// this block would make `Native::<_, _, _, MyHook>::new` a thing a
 /// caller could write and get a hookless transport from.
-impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
+impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// Send this transport's events to `hooks` — see
     /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
     /// costs, and [`Event`] for the vocabulary.
@@ -600,8 +618,62 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H> Native<R, T, D, H> {
     /// [`Native::tcp_opts`] replacing the whole option set. Pinned by
     /// `tests/http2_multiplex.rs`'s pair of orders, so the rule is
     /// measured rather than only written here.
-    pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2> {
+    /// Reach every origin through `proxy` instead of directly.
+    ///
+    /// Changes `P`, the way [`Native::hooks`] changes `H`, because the
+    /// protocol is a type: see `proxy`'s module doc for why it is not a
+    /// `Box<dyn ..>`. There is no per-origin routing and no `NO_PROXY`
+    /// here — one proxy for everything this transport sends, which is
+    /// stated rather than implied because the absence is the surprising
+    /// half.
+    ///
+    /// What this changes beyond which socket is opened, each of which is
+    /// somewhere else in this crate agreeing:
+    ///
+    /// - **The resolver is not consulted for the origin.** The proxy
+    ///   resolves it — an HTTP proxy from the `CONNECT` target, SOCKS5
+    ///   from `ATYP=0x03 DOMAINNAME`. Happy Eyeballs still runs, over the
+    ///   *proxy's* addresses.
+    /// - **No HTTPS/SVCB discovery for the origin**, which answers
+    ///   [`Discovered::NotConsulted`](crate::Discovered): address hints
+    ///   for an address nobody will dial, and a record port we would not
+    ///   honour, are worse than no answer.
+    /// - **The pool key names the proxy**, so a tunnel is never reused
+    ///   through a different one.
+    /// - **A `407` is a connect error, never a response.** It is the
+    ///   proxy's answer to us, not the origin's to the caller.
+    pub fn proxy<P2>(self, proxy: crate::proxy::Proxy<P2>) -> Native<R, T, D, H, P2> {
+        let mut caps = self.caps;
+        // Read from the thing that knows, `client_certs`' lesson one field
+        // over: this transport applies a proxy configuration of its own,
+        // which is exactly what the field says. Mutated rather than
+        // written as a literal because `Capabilities` is
+        // `#[non_exhaustive]` — a field added later must arrive here as
+        // whatever it already was, not as a compile error somebody
+        // silences by copying its neighbour.
+        caps.proxy = true;
         Native {
+            proxy: Some(proxy),
+            rt: self.rt,
+            tls: self.tls,
+            dns: self.dns,
+            hooks: self.hooks,
+            opts: self.opts,
+            caps,
+            epoch: self.epoch,
+            pool: self.pool,
+            svcb_failures: self.svcb_failures,
+            #[cfg(feature = "http2")]
+            share_h2: self.share_h2,
+        }
+    }
+
+    pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2, P> {
+        Native {
+            // Carried, unlike the h2 spawner below: the driver's type
+            // names `H`, which is what this method changes, and the proxy
+            // is named by neither.
+            proxy: self.proxy,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -1050,7 +1122,7 @@ where
 /// `Transport` needs anyway (`'static` on the two stream types is what
 /// hyper's handshake requires), kept in a separate block so `new` and the
 /// builder methods above don't inherit them.
-impl<R, T, D, H> Native<R, T, D, H>
+impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -1063,6 +1135,7 @@ where
     // worth writing is `Unpin` already — `Rc`, `Arc`, an atomic, a
     // closure that captures them.
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     /// Everything about a pool key except the protocol — and, as a side
     /// effect the rest of `execute` relies on, the point at which an
@@ -1094,6 +1167,7 @@ where
             security,
             host: host.into(),
             port,
+            proxy: self.proxy.as_ref().map(|p| p.key().into_boxed_str()),
         })
     }
 
@@ -1406,17 +1480,47 @@ where
     }
 }
 
+impl<R, T, D, H, P> Native<R, T, D, H, P>
+where
+    R: TcpConnect + Timer,
+    T: TlsConnect,
+    P: crate::proxy::ProxyProtocol,
+{
+    /// How this request's head must be written, which a tunnel does not
+    /// change — see [`crate::proxy::Via`].
+    fn via(&self, uri: &http::Uri) -> crate::proxy::Via<'_> {
+        let use_tls = uri.scheme_str() == Some("https");
+        match &self.proxy {
+            Some(p) if p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute => {
+                crate::proxy::Via::AbsoluteForm(p.protocol().proxy_authorization())
+            }
+            _ => crate::proxy::Via::Direct,
+        }
+    }
+}
+
 /// A pool key with its protocol not yet decided — see
 /// [`Native::key_parts`].
 struct KeyParts {
     security: Security,
     host: Box<str>,
     port: u16,
+    /// Carried from the transport that built these parts, so that a
+    /// pooled tunnel is never handed to a request routed through a
+    /// different proxy. `None` on every direct transport, which is every
+    /// transport whose `P` is `NoProxy`.
+    proxy: Option<Box<str>>,
 }
 
 impl KeyParts {
     fn key(&self, protocol: Protocol) -> PoolKey {
-        PoolKey::new(self.security, &self.host, self.port, protocol)
+        PoolKey::new(
+            self.security,
+            &self.host,
+            self.port,
+            protocol,
+            self.proxy.as_deref(),
+        )
     }
 }
 
@@ -1641,13 +1745,14 @@ pub trait Prefetch: Transport {
 ///
 /// The bounds are the [`Transport`] impl's below, repeated because an
 /// inherent method cannot inherit them.
-impl<R, T, D, H> Native<R, T, D, H>
+impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     /// The whole of an exchange, from a request that may or may not have
     /// been prepared.
@@ -1803,7 +1908,8 @@ where
             // must not become a queue.
             #[cfg(feature = "http2")]
             drop(connect_guard.take());
-            let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
+            let via = self.via(&uri);
+            let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone(), via);
             match self.within_first_byte(timeouts.first_byte, attempt).await {
                 Ok(resp) => {
                     self.report_head(&resp, id, &uri, began);
@@ -1865,10 +1971,11 @@ where
         // negative cache's window and a connection's idle deadline are
         // measured from one epoch on one clock, and two reads a
         // microsecond apart would be two facts where there is one.
-        let connect_fut = connect::connect::<R, D, T, H>(
+        let connect_fut = connect::connect::<R, D, T, P, H>(
             &self.rt,
             &self.dns,
             &self.tls,
+            self.proxy.as_ref(),
             &uri,
             &self.opts,
             alpn,
@@ -1973,7 +2080,8 @@ where
         let est = self.share_if_multiplexing(est, &mut checkin, now, &parts_of_key);
         #[cfg(feature = "http2")]
         drop(connect_guard.take());
-        let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone());
+        let via = self.via(&uri);
+        let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone(), via);
         let resp = self
             .within_first_byte(timeouts.first_byte, attempt)
             .await
@@ -1991,7 +2099,7 @@ where
 /// shipped ones are ZSTs, `TokioHandle` is a handle, `Embassy` is two
 /// pointers and says in its own doc that `Native` wants to clone it), so
 /// this pins down a fact rather than adding a restriction.
-impl<R, T, D, H> Transport for Native<R, T, D, H>
+impl<R, T, D, H, P> Transport for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -2004,6 +2112,7 @@ where
     // this transport's. `H: Unpin` is argued where the sibling impl
     // above declares it.
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     /// The pooled body, with the `between_bytes` bound wrapped round it.
     ///
@@ -2051,7 +2160,7 @@ where
 /// with the trait in scope would silently get the other function and, with
 /// it, a concrete response body where the projection was wanted. Two
 /// spellings of one thing is how that mistake gets made.
-impl<R, T, D, H> Prefetch for Native<R, T, D, H>
+impl<R, T, D, H, P> Prefetch for Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
     R::Stream: 'static,
@@ -2059,6 +2168,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     async fn prepare(&self, req: http::Request<RequestBody>) -> Prepared {
         // The same reading of the same clock the negative cache's window
