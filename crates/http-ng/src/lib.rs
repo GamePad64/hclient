@@ -132,8 +132,8 @@ pub use http_ng_core::{
 // them here does not promise otherwise: the quarantine is a statement
 // about the trait, not about where its name is written.
 pub use http_ng_core::unversioned::{
-    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
-    Reused,
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, Informational,
+    NoHooks, Reused,
 };
 pub use http_ng_proto::backoff::Backoff;
 pub use http_ng_proto::redirect::RedirectPolicy;

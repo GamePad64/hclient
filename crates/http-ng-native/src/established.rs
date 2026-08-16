@@ -33,6 +33,10 @@ use bytes::Bytes;
 use http_body::{Body, Frame, SizeHint};
 use http_ng_core::Error;
 use http_ng_core::unversioned::{ConnectionId, Hooks};
+// Only the HTTP/2 arms build an `Informational` here; the HTTP/1 one hands
+// the job to hyper's own callback, installed in `crate::install_1xx`.
+#[cfg(feature = "http2")]
+use http_ng_core::unversioned::{Event, Informational};
 use hyper::rt::{Read, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -241,6 +245,7 @@ pub(crate) async fn exchange<I, H>(
     canonical: &http::Uri,
     hooks: H,
     via: crate::proxy::Via<'_>,
+    watch_1xx: Option<crate::Watch1xx<H>>,
 ) -> Result<http::Response<NativeBody<I, H>>, Failed>
 where
     I: Read + Write + Unpin + 'static,
@@ -250,6 +255,13 @@ where
     match est {
         Established::H1(e) => {
             let rewritten = Rewritten::for_http1(&mut req, via);
+            // After the rewrite and before hyper: the callback rides in
+            // the request's extensions, which `for_http1` carries across
+            // untouched, and `id` is this connection's — so a caller with
+            // several in flight can tell the `103`s apart.
+            if let Some(install) = watch_1xx {
+                install(&hooks, &mut req, id);
+            }
             match crate::h1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
                     inner: Inner::H1(b),
@@ -262,11 +274,27 @@ where
             }
         }
         #[cfg(feature = "http2")]
-        Established::H2(e) => crate::http2::exchange(*e, req, checkin).await.map(|r| {
-            r.map(|b| NativeBody {
-                inner: Inner::H2(Box::new(b)),
-            })
-        }),
+        Established::H2(e) => {
+            // Built here rather than passed down as `H`, so nothing below
+            // has to name the hook's type — see `http2::On1xx`. The
+            // closure borrows for exactly this call, which is why HTTP/2
+            // needs none of the `Send + Sync + 'static` HTTP/1 does.
+            let report = |status, headers: &http::HeaderMap| {
+                hooks.on(Event::Informational(Informational {
+                    id,
+                    status,
+                    headers,
+                }));
+            };
+            let on_1xx = watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            crate::http2::exchange(*e, req, checkin, on_1xx)
+                .await
+                .map(|r| {
+                    r.map(|b| NativeBody {
+                        inner: Inner::H2(Box::new(b)),
+                    })
+                })
+        }
         // The `checkin` is dropped here, unused, and that is the shape
         // rather than an oversight: a shared connection was never taken
         // out of the pool, so there is nothing to put back. It is still
@@ -274,11 +302,28 @@ where
         // variant it holds without a second `match` that would then have
         // to agree with this one. See `crate::http2::exchange_shared`.
         #[cfg(feature = "http2")]
-        Established::H2Shared(s) => crate::http2::exchange_shared(s, req).await.map(|r| {
-            r.map(|b| NativeBody {
-                inner: Inner::H2(Box::new(b)),
-            })
-        }),
+        Established::H2Shared(s) => {
+            // The same closure as the exclusive arm, and it must be here
+            // too: a `multiplexed()` transport that also asked to watch
+            // `1xx` would otherwise report none while its capability said
+            // it did — a capability lying, which is the defect class this
+            // workspace hunts.
+            let report = |status, headers: &http::HeaderMap| {
+                hooks.on(Event::Informational(Informational {
+                    id,
+                    status,
+                    headers,
+                }));
+            };
+            let on_1xx = watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            crate::http2::exchange_shared(s, req, on_1xx)
+                .await
+                .map(|r| {
+                    r.map(|b| NativeBody {
+                        inner: Inner::H2(Box::new(b)),
+                    })
+                })
+        }
     }
 }
 

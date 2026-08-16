@@ -352,10 +352,20 @@ fn strip_connection_headers(headers: &mut http::HeaderMap) {
 /// "the server closed this connection while it was idle". Past that point
 /// every failure is [`Failed::Sent`]: conservative in the right direction,
 /// since `Sent` is the verdict that suppresses a retry.
+/// What a `1xx` is reported through on this path.
+///
+/// A `&dyn Fn` rather than the hook itself, and that is the whole reason
+/// HTTP/2 costs no bound where HTTP/1 costs `Send + Sync + 'static`: the
+/// callback is called from inside the future that awaits the response, so
+/// it neither outlives this call nor crosses a thread, and nothing here
+/// has to name `H`.
+pub(crate) type On1xx<'a> = &'a dyn Fn(http::StatusCode, &http::HeaderMap);
+
 pub(crate) async fn exchange<I>(
     est: Established<I>,
     req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
+    on_1xx: Option<On1xx<'_>>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
     I: Read + Write + Unpin,
@@ -480,6 +490,21 @@ where
                     // reaches it *after* giving a response that did arrive
                     // before the connection ended the chance to be seen.
                     Poll::Pending => {}
+                }
+            }
+            // **After the connection, before the response**, and the
+            // order is the whole of it. `conn` is the only thing driving
+            // this connection's IO, so polling for interim heads ahead of
+            // it asks before the frames have been read — measured, not
+            // reasoned: written that way first, the `103` never arrived.
+            // And it must come before `resp_fut` resolves, because the
+            // loop returns on `Ready` and would never ask again — a `103`
+            // that shared a flight with the final head would be lost,
+            // which is the one thing it cannot survive, since it exists
+            // to be acted on *before* the response.
+            if let Some(report) = on_1xx {
+                while let Poll::Ready(Some(Ok(interim))) = resp_fut.poll_informational(cx) {
+                    report(interim.status(), interim.headers());
                 }
             }
             return match Pin::new(&mut resp_fut).poll(cx) {
@@ -1440,6 +1465,7 @@ pub(crate) async fn shared_is_reusable(shared: &mut Shared) -> bool {
 pub(crate) async fn exchange_shared<I>(
     shared: Shared,
     req: http::Request<OutgoingBody>,
+    on_1xx: Option<On1xx<'_>>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
     I: Read + Write + Unpin,
@@ -1498,6 +1524,14 @@ where
                 // The duplex line, unchanged: a write that cannot proceed
                 // must not stop the response from arriving.
                 Poll::Pending => {}
+            }
+        }
+        // Same rule as `exchange`, and the same reason: after whatever
+        // drives the IO — here the spawned driver, not this loop — and
+        // before `resp_fut` resolves, because this returns on `Ready`.
+        if let Some(report) = on_1xx {
+            while let Poll::Ready(Some(Ok(interim))) = resp_fut.poll_informational(cx) {
+                report(interim.status(), interim.headers());
             }
         }
         match Pin::new(&mut resp_fut).poll(cx) {

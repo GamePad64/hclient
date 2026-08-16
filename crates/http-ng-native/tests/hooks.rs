@@ -42,6 +42,15 @@ const BOUND: Duration = Duration::from_secs(30);
 /// borrowed pieces copied out because `Event<'_>` cannot outlive the call.
 #[derive(Debug, Clone, PartialEq)]
 enum Seen {
+    /// This suite's transports never opt in to `1xx` — `Native::watching_1xx`
+    /// is what turns it on — so this variant should stay unused here, and
+    /// it is recorded rather than `unreachable!`d so that a regression
+    /// shows up as an unexpected entry in an assertion rather than as a
+    /// panic inside a hook on the request path.
+    Informational {
+        id: u64,
+        status: u16,
+    },
     Connected {
         id: u64,
         uri: String,
@@ -141,6 +150,10 @@ impl Hooks for Recorder {
             "the hook was told to panic"
         );
         let seen = match event {
+            Event::Informational(e) => Seen::Informational {
+                id: e.id.get(),
+                status: e.status.as_u16(),
+            },
             Event::Connected(e) => Seen::Connected {
                 id: e.id.get(),
                 uri: e.uri.to_string(),

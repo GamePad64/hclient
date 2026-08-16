@@ -166,6 +166,40 @@ pub enum Event<'a> {
     Head(Head<'a>),
     /// A connection ended, and why.
     Closed(Closed<'a>),
+    /// A `1xx` arrived ahead of the response — `100 Continue`,
+    /// `103 Early Hints`, or anything else a server sends before the one
+    /// answer the caller is waiting for.
+    ///
+    /// An event rather than a response, because it is not one: a `1xx` is
+    /// not the end of the exchange and `Transport::execute` resolves
+    /// exactly once. A caller who wants `103`'s preload hints reads them
+    /// here, before the head that follows.
+    Informational(Informational<'a>),
+}
+
+/// A `1xx` that arrived before the response.
+///
+/// # Why there is no `version` here, when [`Head`] has one
+///
+/// A `1xx` travels on a connection, and the connection's protocol was
+/// already reported by the [`Connected`] or [`Reused`] that opened this
+/// exchange — both of which carry a plain `Version` rather than an
+/// `Option`, because only a transport that owns a connection emits either
+/// and owning one means having negotiated its protocol. Repeating it here
+/// would be a third place to be wrong about the same fact.
+///
+/// `Head::version` is an `Option` for the opposite reason: the two
+/// backends that own no connection emit `Head` and nothing else, so for
+/// them there is no `Connected` to have carried it. Neither of them can
+/// emit this event at all.
+#[derive(Debug)]
+pub struct Informational<'a> {
+    pub id: ConnectionId,
+    /// `1xx`. Which one is the whole of what distinguishes a `100` from a
+    /// `103`, so it is not narrowed to an enum: a status this crate has
+    /// never heard of is still a status the server sent.
+    pub status: http::StatusCode,
+    pub headers: &'a http::HeaderMap,
 }
 
 /// Which connection an event is about.

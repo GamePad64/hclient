@@ -94,6 +94,35 @@ use std::time::Duration;
 #[cfg(feature = "http2")]
 type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H>);
 
+/// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
+/// where it is not.
+type Watch1xx<H> = fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId);
+
+/// The body of [`Native::watching_1xx`]'s pointer, monomorphised where the
+/// `Send + Sync + 'static` is known and called where it is not.
+///
+/// The hook is **cloned into** the callback rather than borrowed, because
+/// hyper stores it in an `Arc<dyn .. + Send + Sync>` that outlives this
+/// call. `H: Clone` is already what `Native` asks of a hook everywhere
+/// else — `self.hooks.clone()` is on the request path today.
+fn install_1xx<H: Hooks + Clone + Send + Sync + 'static>(
+    // send-bound-exception: amendment-C2
+    hooks: &H,
+    req: &mut http::Request<body::OutgoingBody>,
+    id: ConnectionId,
+) {
+    let hooks = hooks.clone();
+    hyper::ext::on_informational(req, move |resp| {
+        hooks.on(Event::Informational(
+            http_ng_core::unversioned::Informational {
+                id,
+                status: resp.status(),
+                headers: resp.headers(),
+            },
+        ));
+    });
+}
+
 /// The IO a [`Native`] speaks HTTP/1 over: a plain socket from the runtime,
 /// or that same socket wrapped by the TLS backend.
 ///
@@ -193,6 +222,25 @@ where
     R: TcpConnect + Timer,
     T: TlsConnect,
 {
+    /// Installs hyper's `1xx` callback on an outgoing HTTP/1 request, or
+    /// `None` where nobody asked to watch them.
+    ///
+    /// A `fn` pointer for the reason `share_h2` is one, and against a
+    /// harder constraint. `hyper::ext::on_informational` demands
+    /// `F: Fn(..) + Send + Sync + 'static` and stores it as
+    /// `Arc<dyn .. + Send + Sync>` — **the third time hyper's `Send`
+    /// requirement has shaped this crate**, after the sealed
+    /// `Http2ClientConnExec` that ruled out `hyper/http2` in v0.2 and the
+    /// `Rewind<Box<dyn Io + Send>>` inside `hyper::upgrade::Upgraded` that
+    /// ruled it out for the WebSocket work. Here it collides with a
+    /// documented property: a hook may hold an `Rc`
+    /// (`http-ng-core/tests/shape.rs`, P13).
+    ///
+    /// So the bound lives on [`Native::watching_1xx`] and this field
+    /// demands nothing of `H` — no signature a hook with an `Rc` in it
+    /// meets gains a bound, and a build that never calls that constructor
+    /// is unchanged.
+    watch_1xx: Option<Watch1xx<H>>,
     /// How the origin is reached, when it is not reached directly.
     ///
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
@@ -508,6 +556,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             between_bytes: true,
         };
         Self {
+            watch_1xx: None,
             // `P` is `NoProxy` here, an empty enum, so this is the only
             // value this field can hold on a transport built by `new` —
             // `.proxy(..)` is what changes the type.
@@ -653,6 +702,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         // silences by copying its neighbour.
         caps.proxy = true;
         Native {
+            // Carried: the installer's type names `H`, which this method
+            // does not change.
+            watch_1xx: self.watch_1xx,
             proxy: Some(proxy),
             rt: self.rt,
             tls: self.tls,
@@ -668,18 +720,74 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         }
     }
 
+    /// Report `1xx` responses (`100 Continue`, `103 Early Hints`) to this
+    /// transport's hooks, and say so in
+    /// [`Capabilities::informational_1xx`].
+    ///
+    /// # Why this is an opt-in rather than always on
+    ///
+    /// Not cost: hyper's own callback fires only when a `1xx` arrives.
+    /// **The bound.** `hyper::ext::on_informational` takes
+    /// `F: Fn(..) + Send + Sync + 'static`, so a hook that reaches it must
+    /// be `Send + Sync + 'static` too — and this crate documents the
+    /// opposite as supported: a hook may hold an `Rc`
+    /// (`http-ng-core/tests/shape.rs`, P13), which is the whole reason the
+    /// seam declares no auto traits. Putting the bound here rather than on
+    /// `H` is [`Native::multiplexed`]'s shape: the field is a `fn`
+    /// pointer, so **no signature a single-threaded hook meets changes**,
+    /// and a runtime that never calls this constructor is untouched. A
+    /// hook holding an `Rc` gets `E0277` on the line where it asked.
+    ///
+    /// # What the two protocols cost, which is not the same thing
+    ///
+    /// HTTP/1 goes through hyper's callback, hence the bound. HTTP/2 needs
+    /// no bound at all — `h2::client::ResponseFuture::poll_informational`
+    /// is a poll, driven by the same future that awaits the response — and
+    /// it is switched on by the same call anyway. The capability reports
+    /// the **floor**, the rule v0.2 W3 set for `full_duplex`: one switch
+    /// for both, because a `true` that held on h2 alone would be a claim
+    /// an HTTP/1 connection could not keep.
+    ///
+    /// # Ordering
+    ///
+    /// `.hooks(..)` must come **before** this, for the reason it must come
+    /// before [`Native::multiplexed`]: the pointer's type names `H`. The
+    /// other order compiles and watches nothing.
+    pub fn watching_1xx(mut self) -> Self
+    where
+        H: Hooks + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C2
+    {
+        self.watch_1xx = Some(install_1xx::<H>);
+        self.caps.informational_1xx = true;
+        self
+    }
+
     pub fn hooks<H2>(self, hooks: H2) -> Native<R, T, D, H2, P> {
+        // The capability must go with the pointer. Dropping one and
+        // carrying the other left this transport saying it reports `1xx`
+        // while nothing did — a capability lying, which is worse than the
+        // silent downgrade it accompanies, because a caller can act on a
+        // capability. Found by the pair of orders in
+        // `tests/informational.rs`, not by reading.
+        let mut caps = self.caps;
+        caps.informational_1xx = false;
         Native {
-            // Carried, unlike the h2 spawner below: the driver's type
-            // names `H`, which is what this method changes, and the proxy
-            // is named by neither.
+            // Dropped for the same reason as `share_h2` below and by the
+            // same rule: the installer's type names `H`, and this method's
+            // whole purpose is to change it. `.hooks(..)` first, then
+            // `.watching_1xx()`. The other order compiles and watches
+            // nothing; the compiler does not catch it and this comment
+            // must not say it does.
+            watch_1xx: None,
+            // Carried, unlike the two above: the proxy is named by
+            // neither `H` nor the driver.
             proxy: self.proxy,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
             hooks,
             opts: self.opts,
-            caps: self.caps,
+            caps,
             epoch: self.epoch,
             pool: self.pool,
             svcb_failures: self.svcb_failures,
@@ -1918,7 +2026,15 @@ where
             #[cfg(feature = "http2")]
             drop(connect_guard.take());
             let via = self.via(&uri);
-            let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone(), via);
+            let attempt = established::exchange(
+                est,
+                req,
+                checkin,
+                &uri,
+                self.hooks.clone(),
+                via,
+                self.watch_1xx,
+            );
             match self.within_first_byte(timeouts.first_byte, attempt).await {
                 Ok(resp) => {
                     self.report_head(&resp, id, &uri, began);
@@ -2090,7 +2206,15 @@ where
         #[cfg(feature = "http2")]
         drop(connect_guard.take());
         let via = self.via(&uri);
-        let attempt = established::exchange(est, req, checkin, &uri, self.hooks.clone(), via);
+        let attempt = established::exchange(
+            est,
+            req,
+            checkin,
+            &uri,
+            self.hooks.clone(),
+            via,
+            self.watch_1xx,
+        );
         let resp = self
             .within_first_byte(timeouts.first_byte, attempt)
             .await

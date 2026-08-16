@@ -335,6 +335,7 @@ fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {
 fn a_hook_can_be_written_against_the_facade_alone() {
     #[derive(Default)]
     struct Counts {
+        informational: std::cell::Cell<usize>,
         connected: std::cell::Cell<usize>,
         reused: std::cell::Cell<usize>,
         head: std::cell::Cell<usize>,
@@ -345,6 +346,15 @@ fn a_hook_can_be_written_against_the_facade_alone() {
         fn on(&self, event: http_ng::Event<'_>) {
             let bump = |c: &std::cell::Cell<usize>| c.set(c.get() + 1);
             match event {
+                // Named through the facade like the rest: a caller writing
+                // a hook must not have to reach past `http-ng` for one
+                // event out of five.
+                http_ng::Event::Informational(e) => {
+                    let _: http_ng::ConnectionId = e.id;
+                    let _: http::StatusCode = e.status;
+                    let _: &http::HeaderMap = e.headers;
+                    bump(&self.informational);
+                }
                 http_ng::Event::Connected(e) => {
                     // Every field a caller would log, named through the
                     // facade: an id, an address, a version, four durations.

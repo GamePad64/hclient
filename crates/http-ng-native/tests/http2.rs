@@ -150,6 +150,19 @@ async fn serve(tcp: tokio::net::TcpStream, seen: Arc<Mutex<Vec<Seen>>>) -> Resul
             if path == "/slow" {
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
+            if path == "/hints" {
+                // **Two**, so the loop that drains them is load-bearing:
+                // with one, `while let` and `if let` behave identically
+                // and a client that reported only the first would pass.
+                let first = http::Response::builder().status(100).body(()).unwrap();
+                let _ = respond.send_informational(first);
+                let second = http::Response::builder()
+                    .status(103)
+                    .header("link", "</s.css>; rel=preload")
+                    .body(())
+                    .unwrap();
+                let _ = respond.send_informational(second);
+            }
             let response = http::Response::builder().status(200).body(()).unwrap();
             let Ok(mut send) = respond.send_response(response, false) else {
                 return;
@@ -758,5 +771,60 @@ async fn an_unmarked_request_still_offers_h2() {
         tls.offered()[0],
         vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         "an unmarked request must be offered h2 exactly as before"
+    );
+}
+
+// --- 1xx over HTTP/2 ----------------------------------------------------
+
+/// The h2 half of `Capabilities::informational_1xx`.
+///
+/// It matters that this exists at all: the capability reports the
+/// **floor**, so a `true` that held on HTTP/1 alone would be a claim an
+/// HTTP/2 connection could not keep. The two arrive by structurally
+/// different routes — hyper's `Send + Sync + 'static` callback on h1, a
+/// plain poll here — and only running both shows they agree.
+#[derive(Debug, Clone, Default)]
+struct Hints(std::sync::Arc<Mutex<Vec<String>>>);
+
+impl http_ng_core::unversioned::Hooks for Hints {
+    fn on(&self, event: http_ng_core::unversioned::Event<'_>) {
+        if let http_ng_core::unversioned::Event::Informational(e) = event {
+            self.0.lock().unwrap().push(format!(
+                "{} {}",
+                e.status.as_u16(),
+                e.headers
+                    .get("link")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("<none>")
+            ));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_103_over_http2_reaches_the_hook_too() {
+    let fx = spawn_h2_server();
+    let hints = Hints::default();
+    let client = Client::builder(
+        Native::new(Tokio, FakeTls::negotiating_h2(), SystemDns::new(Tokio))
+            .hooks(hints.clone())
+            .watching_1xx(),
+    )
+    .build()
+    .expect("build");
+
+    let url = format!("https://127.0.0.1:{}/hints", fx.addr.port());
+    let resp = tokio::time::timeout(Duration::from_secs(5), client.get(&url).send())
+        .await
+        .expect("must not hang")
+        .expect("the 200 is the response");
+    assert_eq!(resp.status(), 200, "a 1xx is not the response");
+    assert_eq!(resp.version(), http::Version::HTTP_2, "over h2");
+
+    let seen = hints.0.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        ["100 <none>", "103 </s.css>; rel=preload"],
+        "both interim heads, in order, each with its own headers"
     );
 }

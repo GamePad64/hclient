@@ -15,8 +15,8 @@ mod transport;
 mod websocket;
 
 pub use hooks::{
-    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, NoHooks,
-    Reused,
+    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, Informational,
+    NoHooks, Reused,
 };
 pub use timer::{Discard, Timer};
 pub use transport::Transport;

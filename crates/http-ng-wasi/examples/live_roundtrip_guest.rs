@@ -504,6 +504,15 @@ impl http_ng_core::unversioned::Hooks for Recorder {
             // a backend that started emitting one of them shows up in the
             // harness's output as the word it is, instead of as a count
             // that went up.
+            // `wasi:http@0.3.0` has no interim-response concept at all —
+            // `client` is one function returning one response — so this
+            // arm should never fire, and it prints rather than panicking
+            // for the reason the three below do: a backend that started
+            // emitting one shows up in the harness's output as the word
+            // it is, not as a process that died inside a hook.
+            Event::Informational(i) => {
+                format!("EVENT informational id={} status={}", i.id, i.status)
+            }
             Event::Connected(c) => format!("EVENT connected id={}", c.id),
             Event::Reused(r) => format!("EVENT reused id={}", r.id),
             Event::Closed(c) => format!("EVENT closed id={}", c.id),

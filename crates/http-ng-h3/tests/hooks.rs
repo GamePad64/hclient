@@ -55,6 +55,14 @@ use std::time::Duration;
 /// borrowed pieces copied out because `Event<'_>` cannot outlive the call.
 #[derive(Debug, Clone, PartialEq)]
 enum Seen {
+    /// Recorded rather than `unreachable!`d, because "this transport emits
+    /// no `1xx`" is a claim about `h3`'s client and not a law: if one ever
+    /// arrives, the assertions below fail with it in the list instead of
+    /// the process dying inside a hook on the request path.
+    Informational {
+        id: u64,
+        status: u16,
+    },
     Connected {
         id: u64,
         uri: String,
@@ -214,6 +222,10 @@ impl Hooks for Recorder {
             "the hook was told to panic"
         );
         let seen = match event {
+            Event::Informational(e) => Seen::Informational {
+                id: e.id.get(),
+                status: e.status.as_u16(),
+            },
             Event::Connected(e) => Seen::Connected {
                 id: e.id.get(),
                 uri: e.uri.to_string(),
@@ -629,6 +641,7 @@ async fn a_pooled_connection_that_died_while_idle_is_reported_stale() {
         .take()
         .iter()
         .map(|e| match e {
+            Seen::Informational { .. } => "informational",
             Seen::Connected { .. } => "connected",
             Seen::Reused { .. } => "reused",
             Seen::Head { .. } => "head",

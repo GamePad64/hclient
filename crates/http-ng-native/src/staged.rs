@@ -376,7 +376,7 @@ where
         let (parts, body) = req.into_parts();
         let req = http::Request::from_parts(parts, body::OutgoingBody::from_request_body(body));
         let via = self.via(&uri);
-        let attempt = established::exchange(est, req, checkin, &uri, hooks, via);
+        let attempt = established::exchange(est, req, checkin, &uri, hooks, via, self.watch_1xx);
         let resp = self
             .within_first_byte(first_byte, attempt)
             .await

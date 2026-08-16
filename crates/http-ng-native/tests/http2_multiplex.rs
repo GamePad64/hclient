@@ -230,6 +230,14 @@ async fn handle(
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
+    if path == "/hints" {
+        let interim = http::Response::builder()
+            .status(103)
+            .header("link", "</s.css>; rel=preload")
+            .body(())
+            .unwrap();
+        let _ = respond.send_informational(interim);
+    }
     let resp = http::Response::builder().status(200).body(()).unwrap();
     if let Ok(mut send) = respond.send_response(resp, false) {
         let _ = send.send_data(Bytes::from_static(b"ok"), true);
@@ -1250,5 +1258,59 @@ async fn a_demand_for_http2_is_served_by_the_shared_connection() {
         hook.lines(),
         vec!["connected", "reused:HTTP/2.0"],
         "and the reuse names the protocol the connection actually speaks"
+    );
+}
+
+/// **A `1xx` on a SHARED connection reaches the hook too.**
+///
+/// The third code path — `exchange_shared`, which `Native::multiplexed`
+/// turns on — and it was wired without a fixture reaching it: the
+/// mutation that removes its poll survived the whole suite until this
+/// test existed. A capability saying `informational_1xx` while a
+/// multiplexed transport reported none would be a capability lying, which
+/// is what `.watching_1xx()` promises not to be.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
+    #[derive(Debug, Clone, Default)]
+    struct Hints(std::sync::Arc<std::sync::Mutex<Vec<u16>>>);
+
+    impl http_ng_core::unversioned::Hooks for Hints {
+        fn on(&self, event: http_ng_core::unversioned::Event<'_>) {
+            if let http_ng_core::unversioned::Event::Informational(e) = event {
+                self.0.lock().unwrap().push(e.status.as_u16());
+            }
+        }
+    }
+
+    let server = spawn_server(None);
+    server.expect(2);
+    let hints = Hints::default();
+    // `.hooks(..)` first, then the two opt-ins — the order both of them
+    // require, and the reason is the same pointer-names-`H` rule.
+    let client = Client::builder(
+        Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
+            .hooks(hints.clone())
+            .watching_1xx()
+            .multiplexed(),
+    )
+    .build()
+    .expect("build");
+
+    let calls = (0..2).map(|_| call(&client, server.url("/hints")));
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("must not hang");
+    for r in results {
+        assert_eq!(r.expect("every call must succeed"), 200);
+    }
+    assert_eq!(
+        server.accepted(),
+        1,
+        "one connection, or this is not the shared path"
+    );
+    assert_eq!(
+        hints.0.lock().unwrap().clone(),
+        vec![103, 103],
+        "one interim head per request, on the connection they share"
     );
 }
