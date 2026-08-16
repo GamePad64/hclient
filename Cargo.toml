@@ -36,6 +36,12 @@ http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
 # cheaper one. A consumer who wants that build takes `http-ng-cookie`
 # directly.
 http-ng-cookie = { path = "crates/http-ng-cookie", version = "0.1.0" }
+# No features at all, default or otherwise: unlike the jar, whose default
+# is the public suffix list that makes `Domain=co.uk` a refusal, there is
+# nothing in this crate a build could sensibly do without. The store is a
+# seam rather than a feature (`CacheStore`), so "a smaller cache" is a
+# different `S`, not a thinner build.
+http-ng-cache = { path = "crates/http-ng-cache", version = "0.1.0" }
 # Default features left ON, for the same reason as `http-ng-cookie` and the
 # opposite of `http-ng-proto`: this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
