@@ -191,16 +191,44 @@ Anchor **189** (`http-ng-native`, `--features proxy`), `--no-fail-fast`.
 | M3 | `Capabilities::proxy` is left at `false` | killed | 1 |
 | M4 | `Proxy-Authorization` is dropped from an absolute-form request | killed | 1 |
 | M5 | **control** — the pool key's proxy component changes shape | **survived, as predicted** | 0 |
+| M6 | the tunnelled TLS handshake takes the **proxy's** name as its SNI | killed | 1 |
+| M7 | the `read_buf` guard after a tunnel is removed | killed | 1 |
 
 M5 is a control by argument rather than by luck: the paragraph above says
 no observer exists, and the mutation is how that claim is checked instead
 of asserted.
 
-### Not covered
+### The tunnel end to end, which closed this section's own gap
 
-**`CONNECT` is exercised by unit test only.** `HttpConnect` tunnels for
-`https://` alone, so an end-to-end run would need a TLS origin behind the
-proxy to prove what `connect_asks_for_the_authority_and_a_200_hands_the_
-socket_back` already proves about the bytes. What is *not* proven either
-way is the TLS handshake riding a tunnel — the origin's SNI over a
-proxy's socket — and that is the first thing a second pass should add.
+This section read *"what is not proven either way is the TLS handshake
+riding a tunnel — the origin's SNI over a proxy's socket — and that is
+the first thing a second pass should add."* It is added.
+
+`tls_rides_the_tunnel_and_the_origin_is_greeted_with_its_own_name` runs a
+real `tokio-rustls` origin behind a real tunnelling proxy and makes three
+claims in one exchange: the `CONNECT` names the **origin's** authority;
+the origin's certificate validates, so the stream is end to end rather
+than terminated at the proxy; and the SNI the origin was greeted with is
+`localhost` rather than `127.0.0.1`, which is the proxy's own host and
+exactly what a connector taking its name from the socket would have sent.
+The name is read off the accepted connection (`ServerConnection::
+server_name`) rather than inferred from the request succeeding — a
+handshake that failed for having no SNI at all and one that sent the
+wrong name are different defects.
+
+The resolver in that test is `IpLiteralOnly`, so `localhost` is a name
+this client **cannot** resolve: reaching the origin at all is the proof
+that the name was carried rather than looked up.
+
+`a_proxy_that_speaks_first_is_refused` is its sibling and inverts one
+thing — the fixture appends eight bytes after its `200`. The error names
+both the defect and the count, `ProxySpokeFirst(8)`, and the test reads
+the source type rather than the rendered message.
+
+### Still not covered
+
+- **A tunnelled `http://` origin over SOCKS5 with TLS** — SOCKS5 tunnels
+  either scheme, and only the plaintext half is exercised.
+- **A proxy that fails mid-tunnel**, as opposed to refusing up front.
+- **`NO_PROXY`, per-origin routing and PAC**, which §7 lists as
+  deliberately out of scope rather than missed.

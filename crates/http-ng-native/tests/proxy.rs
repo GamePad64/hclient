@@ -293,3 +293,207 @@ async fn a_407_answering_an_absolute_form_request_is_a_response() {
         .expect("a 407 here is a response, not an error");
     assert_eq!(status, 407);
 }
+
+// --- TLS over a tunnel --------------------------------------------------
+
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::sync::Arc;
+
+fn identity() -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        .expect("rcgen can always make a self-signed cert");
+    (
+        CertificateDer::from(cert.cert.der().to_vec()),
+        PrivateKeyDer::try_from(cert.signing_key.serialize_der()).expect("pkcs8 from rcgen"),
+    )
+}
+
+/// A TLS origin that reports **the server name it was greeted with**.
+///
+/// That is the whole assertion: over a tunnel the certificate is still the
+/// origin's, so a client that sent the proxy's name would fail the
+/// handshake — but it would also fail if it sent nothing, and the two are
+/// different defects. The name is read off the accepted connection rather
+/// than inferred from the request succeeding.
+fn tls_origin() -> (SocketAddr, CertificateDer<'static>, mpsc::Receiver<String>) {
+    let (cert_der, key_der) = identity();
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .expect("the cert and key were made together");
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async move {
+            listener.set_nonblocking(true).expect("nonblocking");
+            let listener = tokio::net::TcpListener::from_std(listener).expect("adopt");
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let sni = tls.get_ref().1.server_name().unwrap_or("<none>").to_owned();
+                    let _ = tx.send(sni);
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 1024];
+                    let _ = tls.read(&mut buf).await;
+                    let _ = tls.write_all(ok_response()).await;
+                    let _ = tls.flush().await;
+                });
+            }
+        });
+    });
+    (addr, cert_der, rx)
+}
+
+/// An HTTP proxy that tunnels: `200`, then bytes both ways, and it reports
+/// the authority it was asked for.
+fn tunnelling_proxy(origin: SocketAddr) -> (SocketAddr, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut client) = conn else { break };
+            let head = read_head(&mut client);
+            let target = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or_default()
+                .to_owned();
+            let _ = tx.send(target);
+            let Ok(mut upstream) = TcpStream::connect(origin) else {
+                continue;
+            };
+            if client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .is_err()
+            {
+                continue;
+            }
+            let (mut c2, mut u2) = (
+                client.try_clone().expect("clone"),
+                upstream.try_clone().expect("clone"),
+            );
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut c2, &mut u2);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut upstream, &mut client);
+            });
+        }
+    });
+    (addr, rx)
+}
+
+/// **The TLS handshake rides the tunnel and carries the ORIGIN's name.**
+///
+/// The gap `docs/proxy-design.md` §8 named as the first thing a second
+/// pass should add, and it is three claims in one run: the `CONNECT` names
+/// the origin's authority, the origin's certificate validates (so the
+/// stream really is end to end rather than terminated at the proxy), and
+/// the SNI the origin was greeted with is `localhost` — **not**
+/// `127.0.0.1`, which is the proxy's own host and the value a connector
+/// that took its name from the socket would have sent.
+///
+/// The resolver is `IpLiteralOnly`, so `localhost` is a name this client
+/// **cannot** resolve: reaching the origin at all proves the name was
+/// carried rather than looked up.
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_rides_the_tunnel_and_the_origin_is_greeted_with_its_own_name() {
+    let (origin, cert, sni) = tls_origin();
+    let (proxy, asked) = tunnelling_proxy(origin);
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("a DER certificate");
+    let tls = http_ng_tls_rustls::Rustls::from_config(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+
+    let client = Client::builder(Native::new(Tokio, tls, IpLiteralOnly).proxy(Proxy::new(
+        HttpConnect::new(),
+        "127.0.0.1",
+        proxy.port(),
+    )))
+    .build()
+    .expect("build");
+
+    let url = format!("https://localhost:{}/x", origin.port());
+    let status = tokio::time::timeout(BOUND, get(&client, &url))
+        .await
+        .expect("must not hang")
+        .expect("the tunnelled request must succeed");
+    assert_eq!(status, 200);
+
+    assert_eq!(
+        asked.recv_timeout(BOUND).expect("the proxy was asked"),
+        format!("localhost:{}", origin.port()),
+        "the CONNECT names the origin's authority, not the proxy's"
+    );
+    assert_eq!(
+        sni.recv_timeout(BOUND).expect("the origin was greeted"),
+        "localhost",
+        "the SNI is the origin's name; the proxy's host is 127.0.0.1"
+    );
+}
+
+/// **A proxy that speaks past its own handshake is refused, not rewound.**
+///
+/// Nothing the origin might say can have arrived — the client has not
+/// written to it — so those bytes are the proxy's. Carrying them on would
+/// feed them to the TLS handshake as if the origin had sent them, which is
+/// the quieter of the two failures and the worse one.
+///
+/// The control is the test above: the same fixture, differing only in the
+/// trailing bytes, completes a handshake.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proxy_that_speaks_first_is_refused() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let proxy = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            let _ = read_head(&mut s);
+            // The `200`, and then eight bytes nobody asked for.
+            let _ = s.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nSURPRISE");
+            let _ = s.flush();
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+
+    let client = Client::builder(
+        Native::new(Tokio, http_ng_tls::NoTls, IpLiteralOnly).proxy(Proxy::new(
+            HttpConnect::new(),
+            "127.0.0.1",
+            proxy.port(),
+        )),
+    )
+    .build()
+    .expect("build");
+
+    let err = tokio::time::timeout(BOUND, get(&client, "https://example.invalid/x"))
+        .await
+        .expect("must not hang")
+        .expect_err("the tunnel must be refused");
+    assert_eq!(*err.kind(), http_ng_core::ErrorKind::Connect);
+    // The source type, not the message: `ProxySpokeFirst(8)` names both
+    // the defect and how many bytes were invented, and a test reading the
+    // rendered string would pass for any wording.
+    let spoke = std::error::Error::source(&err)
+        .and_then(|s| s.downcast_ref::<http_ng_native::ProxySpokeFirst>())
+        .expect("the defect must be readable off the error");
+    assert_eq!(spoke.0, 8, "the eight bytes the fixture invented");
+}
