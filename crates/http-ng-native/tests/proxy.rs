@@ -647,3 +647,54 @@ async fn a_tunnel_that_dies_after_it_is_established_fails_rather_than_hangs() {
     // and says so.
     assert_eq!(*err.kind(), http_ng_core::ErrorKind::Tls, "{err:?}");
 }
+
+/// **A bypassed origin goes direct, and the same client still proxies
+/// everything else.** Both halves in one run, because a bypass list that
+/// matched everything would pass the first assertion on its own and a
+/// client that never bypassed would pass the second.
+///
+/// The direct half also checks the *shape* of the request, not only where
+/// it landed: a bypassed request written in absolute-form would reach an
+/// origin server that never agreed to act as a proxy, which is the
+/// quieter half of getting this wrong.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bypassed_origin_goes_direct_and_in_origin_form() {
+    let (proxy, proxied) = http_proxy("200");
+    let (origin, direct) = http_proxy("200");
+
+    let client = Client::builder(
+        Native::new(Tokio, http_ng_tls::NoTls, IpLiteralOnly)
+            .proxy(Proxy::new(HttpConnect::new(), "127.0.0.1", proxy.port()).bypass(["127.0.0.1"])),
+    )
+    .build()
+    .expect("build");
+
+    let url = format!("http://127.0.0.1:{}/direct", origin.port());
+    let status = tokio::time::timeout(BOUND, get(&client, &url))
+        .await
+        .expect("must not hang")
+        .expect("the bypassed origin answers");
+    assert_eq!(status, 200);
+    let head = direct
+        .recv_timeout(BOUND)
+        .expect("the bypassed origin was reached directly");
+    assert!(
+        head.starts_with("GET /direct HTTP/1.1\r\n"),
+        "origin-form, got: {:?}",
+        head.lines().next()
+    );
+
+    let status = tokio::time::timeout(BOUND, get(&client, "http://example.invalid/proxied"))
+        .await
+        .expect("must not hang")
+        .expect("the proxy answers");
+    assert_eq!(status, 200);
+    let head = proxied
+        .recv_timeout(BOUND)
+        .expect("everything else still goes through the proxy");
+    assert!(
+        head.starts_with("GET http://example.invalid/proxied HTTP/1.1\r\n"),
+        "absolute-form, got: {:?}",
+        head.lines().next()
+    );
+}

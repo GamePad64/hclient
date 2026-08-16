@@ -1039,7 +1039,11 @@ where
     // both rather than layering over them. `prefetched` is not consulted
     // and `discovery_cache` is not touched: whatever either says is about
     // an origin this connection will not dial.
-    if let Some(proxy) = proxy {
+    // `serves` is asked here rather than at `Native::proxy`, because a
+    // bypassed origin must take the ordinary path in full — its resolver,
+    // its discovery, its Happy Eyeballs — rather than a proxied path with
+    // the proxy removed.
+    if let Some(proxy) = proxy.filter(|p| p.serves(host, port)) {
         return through_proxy::<R, L, P, H>(
             rt, dns, tls, proxy, host, use_tls, port, opts, alpn, began,
         )

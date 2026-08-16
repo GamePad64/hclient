@@ -1490,8 +1490,17 @@ where
     /// change — see [`crate::proxy::Via`].
     fn via(&self, uri: &http::Uri) -> crate::proxy::Via<'_> {
         let use_tls = uri.scheme_str() == Some("https");
+        let port = uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 });
+        let host = uri.host().unwrap_or_default();
         match &self.proxy {
-            Some(p) if p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute => {
+            // The bypass list is asked here too, and it must be: a request
+            // that went direct because it was bypassed would otherwise
+            // still be written in absolute-form, to an origin that never
+            // agreed to be a proxy.
+            Some(p)
+                if p.serves(host, port)
+                    && p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute =>
+            {
                 crate::proxy::Via::AbsoluteForm(p.protocol().proxy_authorization())
             }
             _ => crate::proxy::Via::Direct,

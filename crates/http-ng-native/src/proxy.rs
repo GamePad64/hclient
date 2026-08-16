@@ -120,6 +120,7 @@ pub struct Proxy<P> {
     protocol: P,
     host: Box<str>,
     port: u16,
+    bypass: Vec<Box<str>>,
 }
 
 impl<P> Proxy<P> {
@@ -128,7 +129,56 @@ impl<P> Proxy<P> {
             protocol,
             host: host.into(),
             port,
+            bypass: Vec::new(),
         }
+    }
+
+    /// Origins this proxy does **not** serve, which go direct instead.
+    ///
+    /// # Why there is no default, and why nothing is read from the
+    /// environment
+    ///
+    /// Excluding loopback by default would be this crate deciding, on a
+    /// caller's behalf, that a request they asked to proxy should not be —
+    /// a default that changes what goes on the wire without being asked,
+    /// which is the shape `TcpOpts`' every-field-off default exists to
+    /// avoid. So `Native::proxy` proxies everything until told otherwise,
+    /// and a caller who also talks to `127.0.0.1` says so here.
+    ///
+    /// `HTTP_PROXY`/`NO_PROXY` are a different question and stay out:
+    /// *which* variables, whose matching dialect, and whether a library
+    /// may read the environment at all are policy, and policy belongs to
+    /// whoever builds the transport. **This** list is not policy — the
+    /// caller wrote it down.
+    ///
+    /// # The rules, which are small on purpose
+    ///
+    /// `NO_PROXY` has no specification and every implementation disagrees
+    /// about the corners. Rather than pick one dialect and be subtly
+    /// wrong, these are the forms this accepts, matched
+    /// case-insensitively against the request's host:
+    ///
+    /// - `example.com` — that host exactly, at any port.
+    /// - `.example.com` — that host **and** any subdomain of it.
+    /// - `example.com:8080` — that host at that port alone.
+    /// - `127.0.0.1`, `::1` — an address literal is just a host. A v6 one
+    ///   takes RFC 3986 brackets to carry a port: `[::1]:8080`.
+    ///
+    /// No CIDR and no wildcard. A pattern in no accepted shape matches
+    /// nothing rather than approximately something.
+    pub fn bypass<S: Into<Box<str>>>(mut self, patterns: impl IntoIterator<Item = S>) -> Self {
+        self.bypass.extend(
+            patterns
+                .into_iter()
+                .map(|p| p.into().to_ascii_lowercase().into_boxed_str()),
+        );
+        self
+    }
+
+    /// Whether this proxy is used for `host:port`.
+    pub(crate) fn serves(&self, host: &str, port: u16) -> bool {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        !self.bypass.iter().any(|p| matches_bypass(p, host, port))
     }
 
     pub fn protocol(&self) -> &P {
@@ -149,6 +199,58 @@ impl<P> Proxy<P> {
     /// `PoolKey`'s TLS-identity field is already kept for.
     pub(crate) fn key(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+}
+
+/// One pattern against one origin. Separate from [`Proxy::serves`] so the
+/// forms can be tested one at a time rather than through a list.
+fn matches_bypass(pattern: &str, host: &str, port: u16) -> bool {
+    let host = host.to_ascii_lowercase();
+    let (p_host, p_port) = split_pattern(pattern);
+    match p_port {
+        Some(want) => want == port && host_matches(p_host, &host),
+        None => host_matches(p_host, &host),
+    }
+}
+
+/// A pattern into its host and its optional port.
+///
+/// **An IPv6 literal is why this is not one `rsplit_once(':')`.** `::1`
+/// splits into `("::", "1")`, and `1` parses as a port — so a bare v6
+/// address would silently become "the host `::` at port 1", matching
+/// nothing a caller meant. RFC 3986 §3.2.2's brackets are the
+/// disambiguator and are required here for the same reason they are in an
+/// authority: `[::1]:8080` binds a port, `::1` does not.
+fn split_pattern(pattern: &str) -> (&str, Option<u16>) {
+    if let Some(rest) = pattern.strip_prefix('[') {
+        return match rest.split_once(']') {
+            Some((h, "")) => (h, None),
+            Some((h, tail)) => (h, tail.strip_prefix(':').and_then(|p| p.parse().ok())),
+            // An unclosed bracket is in no accepted shape, so it matches
+            // nothing rather than approximately something.
+            None => (pattern, None),
+        };
+    }
+    if pattern.matches(':').count() > 1 {
+        return (pattern, None);
+    }
+    match pattern.rsplit_once(':') {
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(port) => (h, Some(port)),
+            Err(_) => (pattern, None),
+        },
+        None => (pattern, None),
+    }
+}
+
+fn host_matches(pattern: &str, host: &str) -> bool {
+    match pattern.strip_prefix('.') {
+        // `.example.com` is the domain and everything under it. The
+        // leading dot is not part of the name, so `example.com` itself
+        // matches — which is what a reader expects and what most
+        // `NO_PROXY` implementations do.
+        Some(domain) => host == domain || host.ends_with(pattern),
+        None => host == pattern,
     }
 }
 
@@ -719,6 +821,54 @@ mod tests {
         let socks = Socks5::new();
         assert_eq!(socks.approach(true), Approach::Tunnel);
         assert_eq!(socks.approach(false), Approach::Tunnel);
+    }
+
+    /// The accepted forms match what they say and nothing beside it — a
+    /// bypass list that matched approximately would send a request direct
+    /// that the caller asked to be proxied.
+    #[test]
+    fn the_bypass_forms_match_what_they_say_and_nothing_beside_it() {
+        let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
+
+        // Exact host, at any port, case-insensitively.
+        assert!(!p("example.com").serves("example.com", 443));
+        assert!(!p("example.com").serves("EXAMPLE.COM", 8080));
+        assert!(p("example.com").serves("api.example.com", 443));
+        assert!(p("example.com").serves("notexample.com", 443));
+
+        // Domain and everything under it.
+        assert!(!p(".example.com").serves("example.com", 443));
+        assert!(!p(".example.com").serves("api.example.com", 443));
+        assert!(!p(".example.com").serves("a.b.example.com", 443));
+        assert!(p(".example.com").serves("notexample.com", 443));
+
+        // Host at one port alone.
+        assert!(!p("example.com:8080").serves("example.com", 8080));
+        assert!(p("example.com:8080").serves("example.com", 443));
+
+        // An address literal is just a host, and a v6 one arrives here
+        // wearing the brackets RFC 3986 gives the authority.
+        assert!(!p("127.0.0.1").serves("127.0.0.1", 80));
+        assert!(p("127.0.0.1").serves("127.0.0.2", 80));
+        assert!(!p("::1").serves("[::1]", 80));
+        assert!(!p("::1").serves("::1", 1), "`::1` binds no port");
+        assert!(!p("[::1]:8080").serves("[::1]", 8080));
+        assert!(p("[::1]:8080").serves("[::1]", 80));
+
+        // No CIDR, no wildcard: a pattern in no accepted shape matches
+        // nothing rather than approximately something.
+        assert!(p("10.0.0.0/8").serves("10.1.2.3", 80));
+        assert!(p("*.example.com").serves("api.example.com", 80));
+    }
+
+    /// Empty by default, which is the decision rather than an oversight:
+    /// excluding loopback for a caller who asked to proxy everything
+    /// would change what goes on the wire without being asked.
+    #[test]
+    fn nothing_is_bypassed_until_a_caller_says_so() {
+        let p = Proxy::new(Socks5::new(), "px", 1080);
+        assert!(p.serves("127.0.0.1", 80));
+        assert!(p.serves("localhost", 80));
     }
 
     /// Both length prefixes are one byte, so both limits are the RFC's

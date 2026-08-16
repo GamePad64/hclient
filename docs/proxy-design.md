@@ -247,7 +247,51 @@ handshake went into it.
 - **A proxy whose own upstream refuses**, as distinct from one that
   agrees and dies: the reply codes of RFC 1928 §6 are rendered but only
   `0x00` is exercised over a socket.
-- **`NO_PROXY`, per-origin routing and PAC**, which §7 lists as
-  deliberately out of scope rather than missed — but see the note there:
-  one proxy for everything a transport sends is the surprising half, and
-  it is the first thing a caller will ask for.
+- **PAC, and reading `HTTP_PROXY`/`NO_PROXY` from the environment**,
+  which §7 lists as deliberately out of scope — and see §9, which splits
+  that question in two.
+
+## 9. The bypass list, and the half of `NO_PROXY` that is not policy
+
+§7 put `NO_PROXY` out of scope in one line, and that line conflated two
+questions. **Reading the environment is policy** — which variables, whose
+matching dialect, whether a library may read the environment at all — and
+policy belongs to whoever builds the transport. **A list the caller wrote
+down is not policy at all**: they said what they wanted. Only the first is
+still out.
+
+`Proxy::bypass([..])`, and the rules are small on purpose, because
+`NO_PROXY` has no specification and every implementation disagrees about
+the corners. Four forms, matched case-insensitively: an exact host at any
+port; `.example.com` for a domain and everything under it; `host:port` for
+one port alone; and an address literal, which is just a host — a v6 one
+taking RFC 3986 brackets to carry a port. No CIDR, no wildcard. **A
+pattern in no accepted shape matches nothing rather than approximately
+something**, which is the direction that fails safe: an unmatched pattern
+proxies a request the caller wanted proxied anyway, where a loosely
+matched one sends direct a request they asked to be tunnelled.
+
+**Nothing is bypassed by default, loopback included**, and that is the
+decision. Excluding it would be this crate deciding on a caller's behalf
+that a request they asked to proxy should not be — a default that changes
+what goes on the wire without being asked, which is what `TcpOpts`'
+every-field-off default exists to avoid.
+
+**`serves` is asked in two places, and both are needed.** `connect` asks
+it so a bypassed origin takes the ordinary path *in full* — its resolver,
+its discovery, its Happy Eyeballs — rather than a proxied path with the
+proxy removed. `Native::via` asks it so the request is written in
+origin-form: a bypassed request in absolute-form would reach an origin
+server that never agreed to act as a proxy, which is the quieter half of
+getting this wrong and is the mutation M9 exists to catch.
+
+**One defect the tests found rather than the design.** `split_pattern`
+first used a single `rsplit_once(':')`, so `::1` became "the host `::` at
+port 1" — the comment above it claimed the right-hand split avoided
+exactly that, and it did not. Brackets are the disambiguator, required
+here for the same reason they are in an authority.
+
+| # | mutation | verdict | killed |
+|---|---|---|---|
+| M8 | `Proxy::serves` ignores the list | killed | 2 |
+| M9 | `Native::via` does not ask the list | killed | 1 — the *shape* assertion, the request having landed direct but written absolute-form |
