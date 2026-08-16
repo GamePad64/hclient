@@ -1,0 +1,30 @@
+[package]
+name = "http-ng-cache"
+version = "0.1.0"
+description = "A sans-io HTTP response cache for http-ng: RFC 9111 freshness, validation and Vary, with no clock and no I/O"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The stored body. Already in `http-ng`'s graph and in every transport's, so
+# a cache costs no crate for it; `Bytes::clone` is a refcount, which is what
+# makes handing a stored body to a caller cheap enough that the store can
+# hand out owned copies instead of lending them under a lock.
+bytes = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+assert_matches = { workspace = true }
+# The oracle for `date.rs`, dev-only and for the reason `http-ng-cookie`
+# keeps its own date oracles there: `HTTP-date` has three accepted forms,
+# and a hand-written parser that quietly accepted a fourth — or refused one
+# of the three — would be invisible in every test that only ever feeds it
+# `IMF-fixdate`. `tests/dates.rs` runs both over one corpus.
+httpdate = "1.0"
+
+[lints]
+workspace = true

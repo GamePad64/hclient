@@ -1195,6 +1195,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-ng-cache"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "http",
+ "httpdate",
+ "rstest",
+ "thiserror",
+]
+
+[[package]]
 name = "http-ng-cookie"
 version = "0.1.0"
 dependencies = [
