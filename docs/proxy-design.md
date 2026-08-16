@@ -244,9 +244,17 @@ handshake went into it.
 
 ### Still not covered
 
-- **A proxy whose own upstream refuses**, as distinct from one that
-  agrees and dies: the reply codes of RFC 1928 §6 are rendered but only
-  `0x00` is exercised over a socket.
+- ~~A proxy whose own upstream refuses~~ — **done**, and it took three
+  codes rather than one: `0x05` refused, `0x04` host unreachable, `0x02`
+  not allowed by ruleset, because a client reporting every refusal as the
+  same value would pass a single-row test. The mutation that pins one
+  `REP` kills exactly that test.
+
+  Its sibling is the distinction that mattered: **refusing the greeting is
+  not refusing the CONNECT.** RFC 1928 §3's `0xFF` never reaches the
+  request stage, so reporting it as a `REP` would name a byte the proxy
+  never sent — asserted in both directions, that the handshake error is
+  there and that a reply code is not.
 - **PAC, and reading `HTTP_PROXY`/`NO_PROXY` from the environment**,
   which §7 lists as deliberately out of scope — and see §9, which splits
   that question in two.

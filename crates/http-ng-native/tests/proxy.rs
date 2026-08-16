@@ -698,3 +698,118 @@ async fn a_bypassed_origin_goes_direct_and_in_origin_form() {
         head.lines().next()
     );
 }
+
+/// A SOCKS5 proxy that gets as far as `refuse_with` and stops there.
+///
+/// `None` means it refuses the *greeting* with RFC 1928 §3's `0xFF`;
+/// `Some(rep)` means it accepts the greeting and refuses the CONNECT with
+/// that `REP`. The two are different failures — one is "we will not talk
+/// to you", the other "we talked, and your origin is unreachable" — and
+/// the point of this fixture is that they arrive as different errors.
+fn socks5_refusing(refuse_with: Option<u8>) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            let mut hdr = [0u8; 2];
+            if s.read_exact(&mut hdr).is_err() {
+                continue;
+            }
+            let mut methods = vec![0u8; usize::from(hdr[1])];
+            let _ = s.read_exact(&mut methods);
+            let Some(rep) = refuse_with else {
+                let _ = s.write_all(&[0x05, 0xFF]);
+                let _ = s.flush();
+                continue;
+            };
+            let _ = s.write_all(&[0x05, 0x00]);
+            let mut req = [0u8; 4];
+            if s.read_exact(&mut req).is_err() {
+                continue;
+            }
+            let mut len = [0u8; 1];
+            let _ = s.read_exact(&mut len);
+            let mut host = vec![0u8; usize::from(len[0])];
+            let _ = s.read_exact(&mut host);
+            let mut port = [0u8; 2];
+            let _ = s.read_exact(&mut port);
+            let _ = s.write_all(&[0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            let _ = s.flush();
+        }
+    });
+    addr
+}
+
+/// The proxy protocol is part of the transport's type, which is the
+/// visible cost of `P` being a parameter rather than a `Box<dyn ..>` —
+/// and the reason it is one is in `proxy`'s module doc.
+fn socks5_client(
+    proxy: SocketAddr,
+) -> Client<
+    Native<Tokio, http_ng_tls::NoTls, IpLiteralOnly, http_ng_core::unversioned::NoHooks, Socks5>,
+> {
+    Client::builder(
+        Native::new(Tokio, http_ng_tls::NoTls, IpLiteralOnly).proxy(Proxy::new(
+            Socks5::new(),
+            "127.0.0.1",
+            proxy.port(),
+        )),
+    )
+    .build()
+    .expect("build")
+}
+
+/// **The proxy's own upstream failing is a connect error carrying the
+/// `REP` byte**, which is the last thing about SOCKS5 this suite reached
+/// only through `0x00`.
+///
+/// Three codes rather than one, because a client that reported every
+/// refusal as the same value would pass a single-row test: `0x05`
+/// connection refused, `0x04` host unreachable, `0x02` not allowed by
+/// ruleset.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socks5_upstream_failure_arrives_with_its_own_reply_code() {
+    for rep in [0x05u8, 0x04, 0x02] {
+        let client = socks5_client(socks5_refusing(Some(rep)));
+        let err = tokio::time::timeout(BOUND, get(&client, "http://example.invalid/x"))
+            .await
+            .expect("must not hang")
+            .expect_err("a refused CONNECT is not a response");
+        assert_eq!(*err.kind(), http_ng_core::ErrorKind::Connect);
+        let refused = std::error::Error::source(&err)
+            .and_then(|s| s.downcast_ref::<http_ng_native::Socks5Refused>())
+            .unwrap_or_else(|| panic!("REP={rep:#04x} must be readable off the error: {err:?}"));
+        assert_eq!(refused.rep, rep);
+    }
+}
+
+/// **Refusing the greeting is a different error from refusing the
+/// CONNECT**, and the pair is the assertion: `0xFF` never reaches the
+/// request stage at all, so reporting it as a `REP` would name a byte the
+/// proxy never sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code() {
+    let client = socks5_client(socks5_refusing(None));
+    let err = tokio::time::timeout(BOUND, get(&client, "http://example.invalid/x"))
+        .await
+        .expect("must not hang")
+        .expect_err("no acceptable methods is a refusal");
+    assert_eq!(*err.kind(), http_ng_core::ErrorKind::Connect);
+    let source = std::error::Error::source(&err).expect("a source");
+    assert!(
+        source
+            .downcast_ref::<http_ng_native::Socks5HandshakeError>()
+            .is_some_and(|e| matches!(
+                e,
+                http_ng_native::Socks5HandshakeError::NoAcceptableMethods
+            )),
+        "the handshake failed, not the CONNECT: {err:?}"
+    );
+    assert!(
+        source
+            .downcast_ref::<http_ng_native::Socks5Refused>()
+            .is_none(),
+        "and it must not be reported as a reply code the proxy never sent"
+    );
+}
