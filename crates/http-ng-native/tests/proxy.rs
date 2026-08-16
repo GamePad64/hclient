@@ -497,3 +497,153 @@ async fn a_proxy_that_speaks_first_is_refused() {
         .expect("the defect must be readable off the error");
     assert_eq!(spoke.0, 8, "the eight bytes the fixture invented");
 }
+
+/// A SOCKS5 proxy that really connects and really pipes, unlike
+/// [`socks5_proxy`], which answers HTTP itself. Needed for the TLS row:
+/// a handshake cannot be faked by a fixture that never dials.
+fn socks5_tunnel(origin: SocketAddr) -> (SocketAddr, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut client) = conn else { break };
+            let mut hdr = [0u8; 2];
+            if client.read_exact(&mut hdr).is_err() {
+                continue;
+            }
+            let mut methods = vec![0u8; usize::from(hdr[1])];
+            let _ = client.read_exact(&mut methods);
+            let _ = client.write_all(&[0x05, 0x00]);
+            let mut req = [0u8; 4];
+            if client.read_exact(&mut req).is_err() {
+                continue;
+            }
+            let mut len = [0u8; 1];
+            let _ = client.read_exact(&mut len);
+            let mut host = vec![0u8; usize::from(len[0])];
+            let _ = client.read_exact(&mut host);
+            let mut port = [0u8; 2];
+            let _ = client.read_exact(&mut port);
+            let _ = tx.send(format!(
+                "{}:{}",
+                String::from_utf8_lossy(&host),
+                u16::from_be_bytes(port)
+            ));
+            let Ok(mut upstream) = TcpStream::connect(origin) else {
+                continue;
+            };
+            let _ = client.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            let (mut c2, mut u2) = (
+                client.try_clone().expect("clone"),
+                upstream.try_clone().expect("clone"),
+            );
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut c2, &mut u2);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut upstream, &mut client);
+            });
+        }
+    });
+    (addr, rx)
+}
+
+/// **The same three claims as the `CONNECT` row, over a protocol that
+/// shares no bytes with it.** SOCKS5 tunnels either scheme, so this is the
+/// half the first pass left out — and it is the strongest evidence the
+/// seam is in the right place: the TLS handshake, the origin's
+/// certificate and the origin's SNI are the transport's business, and
+/// nothing about them changes with the protocol that carried the bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_rides_a_socks5_tunnel_with_the_origin_name_too() {
+    let (origin, cert, sni) = tls_origin();
+    let (proxy, asked) = socks5_tunnel(origin);
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("a DER certificate");
+    let tls = http_ng_tls_rustls::Rustls::from_config(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+
+    let client = Client::builder(Native::new(Tokio, tls, IpLiteralOnly).proxy(Proxy::new(
+        Socks5::new(),
+        "127.0.0.1",
+        proxy.port(),
+    )))
+    .build()
+    .expect("build");
+
+    let url = format!("https://localhost:{}/x", origin.port());
+    let status = tokio::time::timeout(BOUND, get(&client, &url))
+        .await
+        .expect("must not hang")
+        .expect("the tunnelled request must succeed");
+    assert_eq!(status, 200);
+    assert_eq!(
+        asked.recv_timeout(BOUND).expect("asked"),
+        format!("localhost:{}", origin.port())
+    );
+    assert_eq!(
+        sni.recv_timeout(BOUND).expect("greeted"),
+        "localhost",
+        "the SNI is the origin's name over SOCKS5 exactly as it is over CONNECT"
+    );
+}
+
+/// **A proxy that agrees and then vanishes is a failure with a name, not
+/// a hang.** The refusal cases above all decline up front; this one
+/// establishes the tunnel and drops it before the origin can answer,
+/// which is the shape a real proxy takes when its own upstream dies.
+///
+/// The TLS backend is the **real** one, with the origin's certificate
+/// trusted, and that is the whole point: with `NoTls` an `https://`
+/// request fails the same way whether the tunnel is alive or dead, so
+/// such a test would pass for a client that never noticed. The control is
+/// `tls_rides_the_tunnel_and_the_origin_is_greeted_with_its_own_name`,
+/// which differs in one thing — its proxy pipes instead of dropping — and
+/// succeeds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_that_dies_after_it_is_established_fails_rather_than_hangs() {
+    let (_origin, cert, _sni) = tls_origin();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let proxy = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            let _ = read_head(&mut s);
+            let _ = s.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+            let _ = s.flush();
+            // Established, and then gone: the client's ClientHello goes
+            // into a socket nobody will answer.
+            drop(s);
+        }
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert).expect("a DER certificate");
+    let tls = http_ng_tls_rustls::Rustls::from_config(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+
+    let client = Client::builder(Native::new(Tokio, tls, IpLiteralOnly).proxy(Proxy::new(
+        HttpConnect::new(),
+        "127.0.0.1",
+        proxy.port(),
+    )))
+    .build()
+    .expect("build");
+
+    let err = tokio::time::timeout(BOUND, get(&client, "https://localhost:1/x"))
+        .await
+        .expect("must not hang")
+        .expect_err("a dead tunnel cannot complete a handshake");
+    // The handshake is where it dies, because that is the first thing
+    // written into the tunnel. What is asserted is that it dies at all
+    // and says so.
+    assert_eq!(*err.kind(), http_ng_core::ErrorKind::Tls, "{err:?}");
+}

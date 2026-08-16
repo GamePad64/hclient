@@ -225,10 +225,29 @@ thing — the fixture appends eight bytes after its `200`. The error names
 both the defect and the count, `ProxySpokeFirst(8)`, and the test reads
 the source type rather than the rendered message.
 
+### The same three claims over SOCKS5, and a tunnel that dies
+
+`tls_rides_a_socks5_tunnel_with_the_origin_name_too` repeats the row
+above over a protocol that shares no bytes with `CONNECT`, and that is
+the strongest evidence the seam is where it belongs: the handshake, the
+certificate and the SNI are the transport's business, and none of them
+changes with whatever carried the bytes.
+
+`a_tunnel_that_dies_after_it_is_established_fails_rather_than_hangs` is
+the case every refusal above misses — the proxy *agrees*, then drops the
+socket, which is what a real one does when its own upstream dies. It uses
+the **real** TLS backend deliberately: with `NoTls` an `https://` request
+fails identically whether the tunnel is alive or dead, so that test would
+have passed for a client that never noticed. `ErrorKind::Tls` rather than
+`Connect` is itself the evidence the tunnel was established and the
+handshake went into it.
+
 ### Still not covered
 
-- **A tunnelled `http://` origin over SOCKS5 with TLS** — SOCKS5 tunnels
-  either scheme, and only the plaintext half is exercised.
-- **A proxy that fails mid-tunnel**, as opposed to refusing up front.
+- **A proxy whose own upstream refuses**, as distinct from one that
+  agrees and dies: the reply codes of RFC 1928 §6 are rendered but only
+  `0x00` is exercised over a socket.
 - **`NO_PROXY`, per-origin routing and PAC**, which §7 lists as
-  deliberately out of scope rather than missed.
+  deliberately out of scope rather than missed — but see the note there:
+  one proxy for everything a transport sends is the surprising half, and
+  it is the first thing a caller will ask for.
