@@ -20,6 +20,21 @@ pub struct Config {
     /// the other way with 10 MB; the difference is that this client's
     /// callers include one streaming an arbitrary body to disk.
     pub response_limit: Option<u64>,
+    /// Headers put on every request this client sends, including every
+    /// redirect hop, unless the caller set that header on the request
+    /// itself.
+    ///
+    /// **Empty by default, and no `User-Agent` is invented.** A default
+    /// this crate chose would be a string every deployment of it announced
+    /// to every server, changing what goes on the wire for a caller who
+    /// asked for nothing — the rule `TcpOpts`' every-field-off default
+    /// exists for. `reqwest` sends none either; `ureq` does.
+    ///
+    /// The caller's own header wins, for the reason `Host:` and
+    /// `Content-Type` already follow one and two layers down: a header
+    /// the caller wrote on the request is a decision about that request,
+    /// and a default is a decision about the client.
+    pub default_headers: http::HeaderMap,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -290,9 +305,16 @@ pub fn check_supported(
         // capability a backend could report about it, because there is
         // nothing a backend could do to honour or refuse it.
         response_limit: _,
+        // Checked, and it has to be: a backend that forbids a header owns
+        // it, and a default the transport would drop is a client-side
+        // setting silently ignored — the shape this whole function exists
+        // to refuse. `http-ng-fetch` forbids `User-Agent` among others,
+        // because the browser writes them.
+        default_headers,
         cookies,
         cache,
     } = cfg;
+    check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;
     check_redirect_supported(redirect, caps, backend)?;
     check_cookies_supported(*cookies, caps, backend)?;
@@ -532,6 +554,36 @@ pub(crate) fn check_timeouts_supported(
     for (requested, supported, what) in checks {
         if requested && !supported {
             return Err(UnsupportedCapability { what, backend });
+        }
+    }
+    Ok(())
+}
+
+/// A default header a backend forbids is an error at `build()`, never a
+/// header quietly dropped on the way out.
+///
+/// The asymmetry with `RequestBuilder::header` is deliberate and is about
+/// **when the caller finds out**: a per-request header is written next to
+/// the request that carries it, where a default is written once and
+/// applies to traffic the author may never look at again. A client whose
+/// `User-Agent` silently vanished on one backend would be a client whose
+/// author had no reason to look.
+fn check_default_headers_supported(
+    headers: &http::HeaderMap,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    // `what` names the setting rather than the header, which is the
+    // convention every other arm here follows — and the header is not
+    // `&'static str`, so carrying it would mean widening a core type for
+    // one call site. The caller wrote the map; the transport's own
+    // `forbidden_request_headers` is what says which of theirs it was.
+    for name in headers.keys() {
+        if caps.forbidden_request_headers.contains(name) {
+            return Err(UnsupportedCapability {
+                what: "default_headers",
+                backend,
+            });
         }
     }
     Ok(())

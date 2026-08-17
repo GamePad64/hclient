@@ -112,6 +112,44 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
         self.config.response_limit = Some(bytes);
         self
     }
+
+    /// `User-Agent` on every request this client sends.
+    ///
+    /// There is **no default** — see [`Config::default_headers`] for why
+    /// this crate does not invent one.
+    ///
+    /// A `HeaderValue` rather than a `&str`, which is [`Self::base_url`]'s
+    /// convention one setter up: the parse is the caller's, so this
+    /// builder needs no way to be half-configured and no error to latch
+    /// until `build()`. `HeaderValue::from_static("app/1.0")` is the
+    /// usual form and is checked at compile time.
+    pub fn user_agent(self, value: http::HeaderValue) -> Self {
+        self.default_header(http::header::USER_AGENT, value)
+    }
+
+    /// One header on every request this client sends, replacing any
+    /// previous default of the same name.
+    ///
+    /// Applied once per redirect hop, and never over a header the caller
+    /// set on the request itself. A header this client's transport
+    /// forbids is an `UnsupportedCapability` at `build()` rather than a
+    /// value quietly dropped — `http-ng-fetch` forbids several, including
+    /// `User-Agent`, because the browser writes them.
+    pub fn default_header(mut self, name: http::HeaderName, value: http::HeaderValue) -> Self {
+        self.config.default_headers.insert(name, value);
+        self
+    }
+
+    /// Every default header at once, replacing the set.
+    ///
+    /// Wholesale rather than field by field, the same shape
+    /// [`Self::timeouts`] and `Native::tcp_opts` take — and with the same
+    /// cost, which is that a caller who sets this after
+    /// [`Self::user_agent`] has replaced it.
+    pub fn default_headers(mut self, headers: http::HeaderMap) -> Self {
+        self.config.default_headers = headers;
+        self
+    }
     /// The base against which each request's URI is resolved.
     ///
     /// This library's answer to reqwest #988 and #213 (open since 2017 and
@@ -880,6 +918,23 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             // from this one (a header that stopped being right for the
             // path).
             self.attach_cookies(&mut hp, caller_owns_the_cookie_header);
+            // **Per hop, and the caller's own header wins.** Per hop
+            // because a redirect leads to a request this client is making
+            // too, and a `User-Agent` that vanished after the first hop
+            // would be a stranger thing than one that was never there.
+            // The caller's wins for the reason `Host:` and `Content-Type`
+            // already follow: a header written on the request is a
+            // decision about that request, and a default is a decision
+            // about the client.
+            //
+            // A default a backend forbids never reaches here — it is an
+            // `UnsupportedCapability` at `build()`, see
+            // `config::check_default_headers_supported`.
+            for (name, value) in &self.config().default_headers {
+                if !hp.headers.contains_key(name) {
+                    hp.headers.append(name.clone(), value.clone());
+                }
+            }
 
             // The replay snapshot is taken BEFORE sending: after that, the
             // body is already consumed. For `Streaming` this returns
