@@ -525,6 +525,58 @@ lint-idn:
     cargo clippy -p http-ng-idn --all-targets -- -D warnings
     cargo clippy -p http-ng-idn --all-targets --all-features -- -D warnings
 
+# the one mutation this project cannot kill on Linux, run where it can be
+#
+# `docs/v03-acceptance.md` recorded it as the single surviving mutation of
+# the UDP work and said what would settle it: "one run of that test on
+# `macos-latest` with the mutation applied". This is that run, on every
+# push rather than once.
+#
+# The mutant replaces `ecn: ecn_is_really_on(&io)` with `ecn: true`. On a
+# Linux kernel both answers are `true`, so the mutant is indistinguishable
+# from the truth and no test can see it. On macOS they come apart:
+# `quinn-udp`'s own unix backend carries "mac and ios do not support
+# IP_RECVTOS on dual-stack sockets", so the honest answer for a dual-stack
+# v6 socket is `false` and a hardcoded `true` is a claim the socket cannot
+# keep.
+#
+# **Every step fails closed**, because a mutation harness that silently
+# stops mutating reports "killed" for a test nobody changed — which is the
+# defect this project has already found twice, in `test-doc` and in
+# `test-no-default`.
+ecn-mutation-dies-on-macos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    f=crates/http-ng-rt-tokio/src/udp.rs
+    live='ecn: ecn_is_really_on(&io),'
+    test=ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too
+
+    # 1. The anchor must exist, or the source moved and this checks nothing.
+    if ! grep -qF "$live" "$f"; then
+      echo "::error::the ECN call site is not in $f any more — this check is checking nothing"
+      exit 1
+    fi
+    # 2. The test must pass unmutated, or its failure below proves nothing.
+    if ! cargo nextest run -p http-ng-rt-tokio --all-features -E "test($test)" --color never; then
+      echo "::error::$test fails without any mutation — nothing below is evidence"
+      exit 1
+    fi
+    # 3. Mutate, and verify the file actually changed.
+    cp "$f" "$f.orig"
+    trap 'mv -f "$f.orig" "$f"' EXIT
+    perl -0pi -e "s/\Qecn: ecn_is_really_on(&io),\E/ecn: true,/" "$f"
+    if cmp -s "$f" "$f.orig"; then
+      echo "::error::the mutation did not apply"
+      exit 1
+    fi
+    # 4. And now it must FAIL. A pass here means the test cannot see the
+    #    difference on this runner either, and the claim is still unchecked.
+    if cargo nextest run -p http-ng-rt-tokio --all-features -E "test($test)" --color never; then
+      echo "::error::the mutant SURVIVED on this runner — $test does not distinguish an asked kernel from an assumed one here"
+      exit 1
+    fi
+    echo "the ECN mutant is killed on this platform"
+
 # the doctests, which nextest cannot run
 test-doc:
     #!/usr/bin/env bash

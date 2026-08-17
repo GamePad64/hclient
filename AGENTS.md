@@ -125,6 +125,20 @@ nothing. `fuzz-smoke` shares the missing `-e` and is unaffected: every
 cargo group there is chained with `&&` inside a subshell ending
 `|| exit 1`.
 
+**One mutation is applied by CI itself, on the only platform that can
+kill it.** `docs/v03-acceptance.md` recorded the single survivor of the
+UDP work — a hardcoded `ecn: true` is indistinguishable from the truth on
+a Linux kernel, where both answers are `true` — and named what would
+settle it: one run on macOS, where `quinn-udp`'s own backend documents
+`IP_RECVTOS` as unavailable on dual-stack sockets, so the honest answer
+is `false`. `just ecn-mutation-dies-on-macos` is that run, on every push:
+it applies the mutation and requires the test to **fail**. Every step
+fails closed, because a mutation harness that quietly stops mutating
+reports a kill for a test nobody changed — the same defect this file
+records for `test-doc` and `test-no-default`. On Linux the recipe reports
+the mutant surviving and exits non-zero, which is what makes the macOS
+pass mean anything.
+
 Browser tests: those go through `wasm-pack test --headless
 --chrome|--firefox` regardless, see the `browser` job.
 

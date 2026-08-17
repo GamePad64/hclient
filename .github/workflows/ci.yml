@@ -40,6 +40,14 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: just macos-loopback
+      # The one mutation this project cannot kill on Linux — a hardcoded
+      # `ecn: true` is indistinguishable from the truth on that kernel.
+      # macOS is the platform where the two come apart, and the recipe
+      # fails closed if the mutation stops applying. See its comment.
+      - name: the ECN mutant dies where it can
+        if: runner.os == 'macOS'
+        shell: bash
+        run: just ecn-mutation-dies-on-macos
       # `http-ng-rt-embassy`'s live scenarios drive a real embassy-net stack
       # over a TAP device and are the only thing proving the W1 cancellation
       # contract holds there. Without the marker they SKIP — quietly, which
