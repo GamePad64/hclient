@@ -149,6 +149,13 @@ that: drop the connection, poll the request future once, take hyper's
 answer. Exactly one poll and it never suspends — the same shape and the
 same reason as `is_reusable` and the look at the top of `exchange`.
 
+It is an `async fn`, which in this workspace is a thing to measure rather
+than assume: `Native::execute`'s future is **15,480 bytes** with it and
+was 15,480 without, unchanged to the byte, against
+`tests/future_size.rs`'s 24 KiB ceiling. `claim_back` is only awaited on
+a branch that is already failing, and its own state is one `Pin<Box<_>>`
+and an `Error`.
+
 **The verdict stays hyper's.** `Failed`'s doc comment says the split is
 "not our judgement about what looks safe to resend"; that is unchanged.
 `claim_back` makes no judgement — it removes the one thing standing
