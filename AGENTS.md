@@ -321,11 +321,13 @@ For constrained targets that *do* have `std` — static musl binaries, small
 containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
 `crates/http-ng-native/examples/minimal.rs`.
 
-Microcontrollers are not reachable today, but the obstacles are
-dependencies rather than design. The `Transport` seam already spans a
-socket plus hyper, a delegated `wasi:http` exchange, and the browser's
-`fetch`; an `embedded-nal-async` backend would be a fourth point on that
-line, nearer to the native one than `fetch` is. Two things stand in the way:
+**Bare-metal microcontrollers are not reachable today, and that sentence
+used to be broader than the truth.** A device with `std` — an esp-idf
+target, say — already is: `http-ng-rt-embassy` implements `TcpConnect`
+over a real `embassy-net` stack, with live scenarios over a TAP device in
+CI, so `Native<Embassy, NoTls, IpLiteralOnly>` is the embedded transport
+and no separate backend is owed. What is still out is `no_std`, and the
+obstacle there is a dependency rather than a design:
 
 - **`http` 1.x, external.** The `compile_error!` above.
 - **`url`, ours — and now removed.** `http-ng-proto` used it at exactly one
@@ -1280,6 +1282,25 @@ ordering; and the **shared** h2 path was wired and unreached, its
 mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
+
+### Four crates this file did not name, and what each is for
+
+Recorded because `docs/competitive-gaps.md` found them missing from here
+while two of them are still listed in `docs/v01-acceptance.md` as
+deliberately not done — a list that was updated for its DoH half and not
+for these.
+
+- **`http-ng-mock`** — `MockTransport`, behind `http-ng`'s `test-util`
+  feature. It is how every capability refusal in this workspace is tested,
+  because "a jar against a jar-owning backend is refused at `build()`" is
+  a fact about a type that never sends anything.
+- **`http-ng-tower`** — the `tower::Service` adapter, so this client fits
+  a stack that already speaks that vocabulary.
+- **`http-ng-dns-hickory`** — the third `Resolve` backend, beside the
+  system resolver and DoH.
+- **`http-ng-rt-embassy`** — a `TcpConnect`/`Timer` runtime over
+  `embassy-net`, which is what makes the embedded target reachable at all;
+  see the `std` paragraph above.
 
 ### A fifth backend: Apple's `URLSession`, and the three things it refuses to take
 
