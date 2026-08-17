@@ -253,6 +253,12 @@ http-ng-fetch = { path = "../http-ng-fetch", version = "0.1.0", optional = true 
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# `BodyExt::collect`, for draining a `RequestBody` in `multipart.rs`'s unit
+# tests and in `tests/multipart.rs`. A dev-dependency only: the crate itself
+# polls `http_body::Body` by hand everywhere (`deadline.rs`, `decompress.rs`,
+# `multipart.rs`), which is what keeps the combinators out of a consumer's
+# graph.
+http-body-util   = { workspace = true }
 # The derive lives only here: the test behind the `json` feature needs
 # `#[derive(Deserialize)]`, the crate itself doesn't (`Collected::json`
 # takes an already-serializable T from the caller). dev-dependencies aren't
