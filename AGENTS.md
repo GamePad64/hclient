@@ -1427,6 +1427,85 @@ subject here. The seam itself is unconditional, because a third protocol
 should not have to switch on a feature named after the two that ship.
 `docs/proxy-design.md`.
 
+### The pooled-reuse race has three points, and the middle one was ours
+
+A server can close a pooled HTTP/1 connection between the client's last
+look and its write. Every HTTP/1 pool has this; `h1.rs` has called it
+"residual" since v0.2 W2 and `docs/nagle-and-nodelay.md` §6 names the two
+expensive fixes it would take. Reproducing it deterministically — which
+had never been done, because *"that instant cannot be hit from outside"* —
+showed the window has **three** points rather than two, and that the
+middle one was not a race with the network at all.
+
+`try_send_request` puts the request into hyper's queue **eagerly**, when
+the future is built. hyper's `poll_loop` then reads before it writes, and
+a graceful EOF on an idle connection sets `close_read`, which makes
+`can_write_head()` false — so the dispatcher **refuses to write**,
+finishes with `Ok`, and says nothing about the request, which is still
+sitting in its queue as a whole `http::Request`. This crate called that
+`Failed::Sent`, with a comment reading *"we no longer own the request, so
+there is nothing to hand back"*. The first half was true; the second was
+one `drop` away from being false. hyper's `Envelope::drop` answers the
+promise of every still-queued request **with the request attached**, and
+that receiver lives inside the `Connection` the function is holding.
+
+`h1::claim_back` drops the connection and asks once. **The verdict stays
+hyper's** — nothing here judges what looks safe to resend, which is the
+contract `Failed`'s doc states; what changed is that the question is now
+asked at a moment when hyper can answer it. The far point is unchanged:
+a request already taken apart and written out is `Failed::Sent`, the
+caller is told, and at-most-once is intact.
+
+**That is also why the attempt §6 records failed.** It polled the send
+future on the connection's error arm *without* dropping the dispatcher —
+asking a promise nothing would ever fulfil — and moved 9 failures in 20
+to 6, a number that could not carry a decision. The mechanism was one
+line away.
+
+Measured twice, deterministically, and the two forms share no code.
+Scripted in `h1.rs`, driven poll by poll with a noop waker: the EOF
+placed at each point gives `NotSent` / **`Sent`** / `Sent` before and
+`NotSent` / **`NotSent`** / `Sent` after. On a real socket through the
+whole transport, with `LateEof(Tokio, n)` hiding the peer's `FIN` from
+exactly `n` looks — eight sweeps of six arms each side, no disagreement
+within a column:
+
+| EOFs hidden | who finds the close | before | after |
+|---|---|---|---|
+| 0 | the pool's checkout poll | `200`, 2 accepts | `200`, 2 accepts |
+| 1 | `exchange`'s look, request still ours | `200`, 2 accepts | `200`, 2 accepts |
+| 2 | hyper's first read, request queued | **error, 1 accept** | **`200`, 2 accepts** |
+| 3+ | hyper's read after writing | error, 1 accept | error, 1 accept |
+
+**The two expensive fixes are still refused, and now for sharper reasons
+than cost.** Suspending before the request is handed over buys nothing
+certain — *a yield is not a fence*: it gives the reactor one more chance
+to have delivered the `FIN`, moving the window rather than closing it,
+and it costs a scheduler round trip on every pooled request plus the
+*"exactly one poll, and it never suspends"* contract written where that
+poll is. Replaying a request hyper will not hand back needs a notion of
+method safety this codebase deliberately does not have, the same one
+`docs/h3-research.md` §3.5 declines for 0-RTT; `RetryKind` answers only
+half of it, and the `425` precedent argues the other way, because there
+the **server** asked for the repeat.
+
+Two things worth knowing before touching it. The error a caller reads is
+the **connection's cause and not hyper's answer to our own drop** —
+`dispatch_gone` describes the drop — and that is not decoration:
+`Native::run` discards a `NotSent` error because it retries, but
+`Staged::exchange` carries no retry and surfaces it. That was a mutation
+that survived all 278 tests before it was an assertion. And the
+`LateEof → point` mapping is exact only while the server's close is
+**late**: with a prompt close the *first* exchange's own teardown read can
+meet the `FIN` and spend one of the hidden EOFs, shifting every row by
+one — seen once, in one arm of one sweep, and gone in the 48 since.
+
+`docs/pooled-reuse-race.md`, including the mutation table, its control
+(the connection's *error* arm, verified unreachable by replacing it with
+a `panic!` and running the suite), and the one gap it names:
+`CloseReason::Stale` from `exchange`'s own look has no test, because
+`Native::checkout`'s emitter satisfies the one that exists.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
@@ -1502,7 +1581,8 @@ client pooled a connection the peer had already closed and the next request
 raced the FIN — `http-ng-native`'s pooled-reuse window, recorded in `h1.rs`
 as residual and still there. Nagle's 41 ms had been padding the gap; with it
 gone the suite failed 7 runs in 12 under `-j16`. The fixture now announces
-its close, and the library's race is unchanged and still recorded.
+its close, and the library's race is one look narrower than it was — see
+the section above on the point in it that was ours.
 
 **Checked against gRPC as an external yardstick, and gRPC itself is out of
 scope.** The goal is a client powerful enough that someone else could build

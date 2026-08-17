@@ -302,6 +302,20 @@ assumed to have it, is a strict improvement in principle; it moved 9
 failures in 20 to 6 in 20, which at n = 20 is not a result, and it was
 reverted rather than shipped on a number that could not carry it.
 
+> **Since fixed, and this attempt is why it looked impossible.** It was
+> right to ask and wrong about *how*: a request still sitting in hyper's
+> dispatch queue has its promise resolved by `Envelope::drop` and by
+> nothing else, so polling the send future while the dispatcher is still
+> alive polls a promise nothing will ever fulfil. Dropping the connection
+> first is the whole of it. `h1::claim_back` does that, and the window
+> below turns out to have had **three** points rather than two — the
+> middle one being a request hyper had taken and refused to write, which
+> this crate reported as `Failed::Sent`. `docs/pooled-reuse-race.md` has
+> both deterministic reproductions, the before/after sweep on a real
+> socket, and why §6's two named fixes are still refused. The two
+> paragraphs below stand as written: they are about the third point,
+> which is unchanged.
+
 Why it could not have helped much is written down four hundred lines
 below it, on
 `a_connection_that_ends_with_the_request_queued_fails_instead_of_hanging`:
@@ -322,6 +336,15 @@ scheduler round trip on every pooled request. Or be able to replay a
 request hyper will not hand back — a design change, and `RetryKind` is the
 vocabulary it would have to use, with `Client`'s `425` replay as the
 precedent for what a second attempt costs and who is allowed to make it.
+
+> **Both are still refused, and `docs/pooled-reuse-race.md` §4 gives the
+> sharper reason for each.** The first because a yield is not a fence: it
+> moves the window rather than closing it, so it buys an unbounded
+> improvement in probability for a bounded cost on every pooled request.
+> The second because it needs a notion of method safety this codebase
+> deliberately does not have — the same one `docs/h3-research.md` §3.5
+> declines for 0-RTT — and `RetryKind` answers only half of the question.
+> What was built instead is neither of them and costs one `drop`.
 
 ## 7. What was not verified
 

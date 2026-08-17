@@ -95,12 +95,21 @@
 //!   `close_read` makes `can_write_head()` false, so the dispatcher never
 //!   picks it up, and the callback that would resolve it is inside the
 //!   very `Connection` value this function is still holding. Nothing would
-//!   ever wake that future. So `conn_done` with the request still pending
-//!   returns a typed error instead — see the `Poll::Pending if conn_done`
-//!   arm below, and this file's
-//!   `a_connection_that_ends_with_the_request_queued_fails_instead_of_hanging`,
-//!   which reproduces exactly this ordering, poll by poll, on a scripted
-//!   connection with no clock in it.
+//!   ever wake that future *while this function holds the connection*. So
+//!   `conn_done` with the request still pending ends the wait instead —
+//!   see the `Poll::Pending if conn_done` arm below, and this file's
+//!   `race_lost_after`, which reproduces this ordering poll by poll on a
+//!   scripted connection with no clock in it.
+//!
+//!   **The italics above are the whole of [`claim_back`].** "Nothing can
+//!   resolve it" was true of a function that keeps the `Connection`, and
+//!   false one line later: hyper's `Envelope::drop` answers the promise
+//!   of every request still in its queue, with the request itself
+//!   attached. So the request is one drop from being ours again, and this
+//!   file had been calling that state `Failed::Sent` — for a request not
+//!   one byte of which had reached the wire.
+//!   `docs/pooled-reuse-race.md` has both reproductions and the two
+//!   expensive fixes it makes unnecessary.
 //! - **Inside [`H1Body::poll_frame`]**, after headers have already
 //!   been handed to the caller: `Connection` behaves the same as before,
 //!   except its job now is to finish writing the remaining body bytes

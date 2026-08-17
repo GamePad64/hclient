@@ -111,6 +111,15 @@ chased this way each turned out to be a real defect, one of them an RFC
 Nagle's 41 ms had been padding the window — and the two fixes it would
 take are named where the race is.
 
+> **Narrowed since, and by neither of those two.** Reproduced
+> deterministically — scripted, and again from outside the client on a
+> real socket — the window has three points, and the middle one is a
+> request hyper took into its queue and *refused to write*. It comes back
+> for the price of a `drop`, so it is retried rather than surfaced;
+> `h1::claim_back`, `docs/pooled-reuse-race.md`. The far point is
+> unchanged and still reaches the caller, which is the at-most-once
+> decision and not a gap.
+
 **`StagedConnect::connect` uses a shared h2 connection when the pool has
 one and never makes one.** `http-ng-select` is unaffected, and that is
 checked rather than assumed: its TCP arm goes through

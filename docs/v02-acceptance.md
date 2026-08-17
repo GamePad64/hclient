@@ -349,6 +349,19 @@ someone to "fix" an item whose absence is the decision.
   Measured, not reasoned: a fixture whose server closes 150 ms after its
   last response fails the request with
   `Connect / hyper::Error(Io, ConnectionReset)`, five runs out of five.
+
+  **Since narrowed, and the bullet is kept because what it says is still
+  true of what remains.** The window turned out to have three points and
+  not two, and the middle one — hyper holding the request in its queue and
+  *refusing to write it*, because a closed read side makes
+  `can_write_head()` false — was being reported as `Failed::Sent` for a
+  request not one byte of which had reached the wire. `h1::claim_back`
+  drops the connection, which is what makes `Envelope::drop` hand the
+  request back, and asks hyper once. Reproduced deterministically twice —
+  scripted poll by poll in `h1.rs`, and from outside the client on a real
+  socket through `LateEof(Tokio, n)` — with the middle row going from an
+  error and one accept to `200` and two, and the third row unchanged in
+  both. `docs/pooled-reuse-race.md`.
 - ~~**`total` does not cut a body that goes completely silent after the
   head.**~~ **Done. It cuts it now**, and the row is in the claims table
   above. The bullet is kept rather than deleted because it was wrong twice
