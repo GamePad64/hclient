@@ -34,6 +34,7 @@ mod config;
 pub use http_ng_cookie as cookie;
 mod deadline;
 mod decompress;
+mod erased;
 mod limit;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.
 ///
@@ -54,6 +55,10 @@ pub use client::{Client, ClientBuilder};
 pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
 pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
 pub use decompress::{DecodeFailed, Decompressed};
+#[cfg(feature = "cookies")]
+pub use erased::AnyList;
+#[cfg(feature = "cache")]
+pub use erased::AnyStore;
 pub use limit::{Limited, ResponseTooLarge};
 
 /// The response body a [`Client`] hands back: the transport's own body,

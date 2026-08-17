@@ -28,7 +28,7 @@ pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
     /// bit that says one was asked for — see `Config::cookies` for why the
     /// two halves live apart.
     #[cfg(feature = "cookies")]
-    jar: Option<http_ng_cookie::CookieJar>,
+    jar: Option<http_ng_cookie::CookieJar<crate::AnyList>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -300,10 +300,20 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// transport is refused above, so the combination that would reach the
     /// panic is a browser build driving some transport other than the
     /// browser's own.
+    ///
+    /// **The list is the caller's**, and is erased on the way in — see
+    /// [`AnyList`](crate::AnyList) for why that rather than a type
+    /// parameter on `Client`, and for the one `Send` bound it costs.
+    /// `CookieJar::new()` is still the plain form; `CookieJar::
+    /// with_public_suffix_list(NoList)` is what drops the compiled-in
+    /// list's 77 KiB at run time.
     #[cfg(feature = "cookies")]
-    pub fn cookie_jar(mut self, jar: http_ng_cookie::CookieJar) -> Self {
+    pub fn cookie_jar<P>(mut self, jar: http_ng_cookie::CookieJar<P>) -> Self
+    where
+        P: http_ng_cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
+    {
         self.config.cookies = true;
-        self.jar = Some(jar);
+        self.jar = Some(jar.map_suffixes(crate::AnyList::new));
         self
     }
 
@@ -369,10 +379,20 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// - `Timeouts::connect`/`first_byte`/`between_bytes` bound nothing,
     ///   there being nothing to bound. `total` still covers the operation,
     ///   which now may consist of no I/O at all.
+    ///
+    /// **The store is the caller's**, and is erased on the way in — see
+    /// [`AnyStore`](crate::AnyStore). `HttpCache::new()` is still the plain
+    /// form; `HttpCache::with_store(..)` is how a disk-backed or shared
+    /// store gets here.
     #[cfg(feature = "cache")]
-    pub fn cache(mut self, cache: http_ng_cache::HttpCache) -> Self {
+    pub fn cache<S>(mut self, cache: http_ng_cache::HttpCache<S>) -> Self
+    where
+        S: http_ng_cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
+    {
         self.config.cache = true;
-        self.cache = Some(std::sync::Arc::new(std::sync::Mutex::new(cache)));
+        self.cache = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            cache.map_store(crate::AnyStore::new),
+        )));
         self
     }
 
@@ -460,7 +480,7 @@ struct Inner<T, Tm> {
     /// functions of the jar, the URI and a `now`, which is what the
     /// sans-io shape of `http-ng-cookie` buys here.
     #[cfg(feature = "cookies")]
-    cookies: Option<std::sync::Mutex<http_ng_cookie::CookieJar>>,
+    cookies: Option<std::sync::Mutex<http_ng_cookie::CookieJar<crate::AnyList>>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -591,7 +611,9 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// because an unrelated task panicked would be a worse answer than a
     /// slightly stale jar.
     #[cfg(feature = "cookies")]
-    pub fn cookies(&self) -> Option<std::sync::MutexGuard<'_, http_ng_cookie::CookieJar>> {
+    pub fn cookies(
+        &self,
+    ) -> Option<std::sync::MutexGuard<'_, http_ng_cookie::CookieJar<crate::AnyList>>> {
         Some(lock(self.inner.cookies.as_ref()?))
     }
 
@@ -617,7 +639,9 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// observe, and a client that stopped caching because an unrelated
     /// task panicked would be a worse answer than a slightly stale store.
     #[cfg(feature = "cache")]
-    pub fn cache(&self) -> Option<std::sync::MutexGuard<'_, http_ng_cache::HttpCache>> {
+    pub fn cache(
+        &self,
+    ) -> Option<std::sync::MutexGuard<'_, http_ng_cache::HttpCache<crate::AnyStore>>> {
         Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 

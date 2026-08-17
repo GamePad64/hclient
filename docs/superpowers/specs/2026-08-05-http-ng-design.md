@@ -2192,3 +2192,60 @@ where-clauses and type aliases in `crates/http-ng-h3/src/{lib,runtime}.rs`.
 It is cited nowhere else: a bound demanded by a *different* third-party
 trait would be a different amendment, because the argument is about which
 external contract is being satisfied and cannot be reused by gesture.
+
+### C11. `unsafe` at Apple's Objective-C boundary, in the files this amendment names
+
+C8's shape at a different foreign boundary: `http-ng-urlsession` puts
+Apple's `URLSession` behind `Transport`, and every call into it goes
+through `objc2`'s message send, which is `unsafe` by construction — the
+selector, the argument types and the ownership convention are checked by
+nothing the compiler can see. `unsafe` is the medium there rather than an
+optimisation, so a crate-wide `forbid` would mean no backend.
+
+The exemption follows the policy rather than relaxing it. The crate is in
+`scripts/unsafe-code-policy.sh`'s `EXEMPT` list, **every** `unsafe` line in
+it carries an `amendment-C11` marker, and the files are named in the same
+script — `crates/http-ng-urlsession/src/{delegate,session}.rs` and no
+others. `body.rs` has none at all, which is the check the naming exists to
+make possible: a file drifting into `unsafe` fails the script rather than
+passing unnoticed.
+
+objc2 0.6 needed far less than the design expected — 23 sites became 11 —
+because `define_class!` and the typed framework bindings absorb the message
+sends that would otherwise each be one.
+
+### C12. `http-ng` declares `Send` on two setters, to erase a store and a list
+
+The fourth class. Not erasure forced by a seam (C1/C2), not a capability
+trait of ours (C5), not a third-party contract (C10): a bound this crate
+chooses, on two opt-in calls, so that a caller's own cache store and public
+suffix list can reach `Client` without a type parameter.
+
+`http_ng_cache::HttpCache<S>` and `http_ng_cookie::CookieJar<P>` are both
+generic; `Client` accepted only their defaulted forms, so the seams were
+unreachable through the facade. Both routes to closing that were weighed:
+
+- **A type parameter on `Client`** puts `S` on the public `ClientBody`
+  alias, because a recording body holds a cache handle — so the *arity of
+  a public alias* would change with a feature, and Cargo unifies features.
+  Worse, a defaulted parameter needs a default type, and both crates are
+  **optional dependencies**: `Client<T, Tm, P = http_ng_cookie::
+  BuiltinList, ..>` names a type that does not exist without the feature,
+  so the declaration forks four ways.
+- **Erasure** (`AnyList`, `AnyStore` in `crates/http-ng/src/erased.rs`)
+  leaves every arity fixed and every method of `HttpCache` and `CookieJar`
+  reachable, at the cost of this bound.
+
+The bound states a property the concrete types already had. `Inner`'s doc
+has said since the jar landed that its `Mutex` is there because *"a
+`Client` is meant to cross a `tokio::spawn`"*, and `BuiltinList` and
+`MemoryStore` are both `Send`. Erasing without it would make every
+`Client` in a build with either feature compiled in `!Send` — configured
+or not — which is the feature-unification hazard the first bullet is
+about. `pluggable_stores.rs` asserts the negation.
+
+It is `Native::multiplexed()`'s shape: the bound sits on the opt-in call,
+no signature anyone else meets acquires one, and a caller handing in a
+`!Send` list gets `E0277` on the line where they asked. The marker is
+`send-bound-exception: amendment-C12`, and the sites are `erased.rs` and
+the two `where` clauses in `crates/http-ng/src/client.rs`.

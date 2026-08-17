@@ -289,6 +289,20 @@ impl<S: CacheStore> HttpCache<S> {
         }
     }
 
+    /// The same cache over a different store — the [`Limits`] carried
+    /// across, the entries going wherever `f` puts them.
+    ///
+    /// `HttpCache` is a policy and `S` is where the bytes live, so the two
+    /// should be separable after construction as well as at it. What asked
+    /// for it is `http-ng`, which holds one cache type for every caller and
+    /// so must erase `S` behind a value of its own.
+    pub fn map_store<R>(self, f: impl FnOnce(S) -> R) -> HttpCache<R> {
+        HttpCache {
+            store: f(self.store),
+            limits: self.limits,
+        }
+    }
+
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;

@@ -232,6 +232,28 @@ impl<P: PublicSuffixList> CookieJar<P> {
         }
     }
 
+    /// The same jar over a different public suffix list — every cookie,
+    /// both bounds and the sequence counter carried across.
+    ///
+    /// The list is a seam and the jar is storage, so the two should be
+    /// separable after construction as well as at it. What actually asked
+    /// for this is `http-ng`, which holds one jar type for every caller
+    /// and so must erase `P`; the operation is not specific to that —
+    /// swapping a stale compiled-in snapshot for a freshly fetched list
+    /// without losing the cookies is the same call.
+    ///
+    /// Rebuilding by iteration would not do: `next_seq` is what orders
+    /// cookies of equal path length in the `Cookie` header, and a jar
+    /// rebuilt from `iter` would restart it.
+    pub fn map_suffixes<Q>(self, f: impl FnOnce(P) -> Q) -> CookieJar<Q> {
+        CookieJar {
+            cookies: self.cookies,
+            limits: self.limits,
+            suffixes: f(self.suffixes),
+            next_seq: self.next_seq,
+        }
+    }
+
     /// Replace the bounds. Applied on the next [`store`](Self::store); it
     /// does not evict what is already held.
     #[must_use]

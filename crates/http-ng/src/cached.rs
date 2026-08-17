@@ -266,23 +266,23 @@ impl Recorder {
 /// `HttpCache` is a pure function of the store, the message and a `now`,
 /// which is what the sans-io shape of `http-ng-cache` buys here.
 ///
-/// **The store type is `MemoryStore` and not a parameter**, which is the
-/// one place `http_ng_cache::CacheStore` being a seam does not reach
-/// through this facade. `HttpCache<S>` would put `S` on this type, on
-/// `Client`, and — because a recording body holds one — on the public
-/// `ClientBody` alias, whose arity is not something a feature nobody in a
-/// graph asked for should change. The precedent is exact:
-/// `ClientBuilder::cookie_jar` takes `CookieJar<BuiltinList>` while
-/// `http-ng-cookie`'s list is equally a seam. A caller who wants their own
-/// store drives `http-ng-cache` themselves.
+/// **The store is a caller's choice and is not a type parameter**, which
+/// is [`crate::AnyStore`]'s whole subject: `HttpCache<S>` here would put
+/// `S` on this type, on `Client`, and — because a recording body holds one
+/// — on the public `ClientBody` alias, whose arity is not something a
+/// feature nobody in a graph asked for should change. Erasing at the store
+/// leaves every arity fixed and every method of `HttpCache` reachable. The
+/// cookie jar's list is the same shape one field up, for the same reason.
 #[cfg(feature = "cache")]
-pub(crate) type Cache = std::sync::Arc<std::sync::Mutex<http_ng_cache::HttpCache>>;
+pub(crate) type Cache = std::sync::Arc<std::sync::Mutex<http_ng_cache::HttpCache<crate::AnyStore>>>;
 
 /// Locks the cache, recovering from poisoning rather than propagating it —
 /// see [`crate::Client::cache`] for why a poisoned cache is still a usable
 /// one.
 #[cfg(feature = "cache")]
-pub(crate) fn lock(c: &Cache) -> std::sync::MutexGuard<'_, http_ng_cache::HttpCache> {
+pub(crate) fn lock(
+    c: &Cache,
+) -> std::sync::MutexGuard<'_, http_ng_cache::HttpCache<crate::AnyStore>> {
     c.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
