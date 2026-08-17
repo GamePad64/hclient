@@ -1281,6 +1281,34 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### WebTransport: many sessions on one connection, and a `GOAWAY` nobody can see
+
+The two items this crate had recorded as deliberately not done, taken up
+together — and they came out opposite ways.
+
+**More than one session per connection works, and the blocker recorded
+for it was not the true one.** `PoolKey` is `http-ng-h3`'s problem;
+`http-ng-webtransport` takes its `quinn::Connection` from outside, so
+what actually binds is the peer's `SETTINGS_WEBTRANSPORT_MAX_SESSIONS`.
+`Session::open_session` opens a sibling on the same connection, the limit
+is **read off the SETTINGS frame** rather than assumed, a slot returns
+when a session is dropped, and exceeding it is a typed `TooManySessions`.
+Siblings are independent: closing one leaves the other open, and a
+datagram addressed to one is handed to that one. The hard constraint is
+pinned rather than described — `a_second_h3_client_on_one_connection_is_a_connection_error`
+asserts the `H3_STREAM_CREATION_ERROR`, so an `h3` that stopped enforcing
+it fails a line.
+
+**`GOAWAY` is a measured impossibility**, which is a complete answer
+rather than a missing feature. `h3` 0.0.8 gives a client nothing it can
+observe: a session's view is unchanged across one, polling the driver
+resolves nothing, and — the sharpest of the four —
+**two `GOAWAY`s saying opposite things look identical**. So a session
+opened after one is refused *by the peer rather than by us*, which is
+what the tests assert. No state was invented for it: a variant exists
+only if a caller decision turns on it, and there is nothing here for one
+to turn on.
+
 ### `multipart/form-data`, and a replay contract read off the parts
 
 `RequestBuilder::multipart(Form::new().part(Part::bytes(..).file_name(..)))`.
