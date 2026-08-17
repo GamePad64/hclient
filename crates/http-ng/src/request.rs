@@ -120,7 +120,8 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
     ///
     /// ```no_run
     /// # use http_ng::multipart::{Form, Part};
-    /// # async fn f(c: &http_ng::Client<impl http_ng::Transport<Error = http_ng::Error>>)
+    /// # use http_ng_core::unversioned::Transport;
+    /// # async fn f(c: &http_ng::Client<impl Transport<Error = http_ng::Error>>)
     /// # -> Result<(), http_ng::Error> {
     /// c.post("https://example.com/upload")
     ///     .multipart(
