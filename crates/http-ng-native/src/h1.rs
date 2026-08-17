@@ -608,7 +608,12 @@ where
     let sent = {
         // Drive the connection and the request **together**, without spawn.
         let mut send = Box::pin(sender.try_send_request(req));
-        std::future::poll_fn(|cx| {
+        // `Ok(_)` — the exchange settled on its own terms, which is every
+        // outcome the request future itself can produce. `Err(e)` — the
+        // connection is over and the request never resolved, `e` being
+        // why; [`claim_back`] is what turns that into a [`Failed`], and
+        // the two arms that produce it are the only two ways to get there.
+        let settled = std::future::poll_fn(|cx| {
             if !conn_done {
                 // The connection's two ends are reported from here and
                 // from `H1Body::poll_frame`, and between them they are
@@ -631,39 +636,50 @@ where
                             id,
                             reason: CloseReason::Failed(&e),
                         }));
-                        return Poll::Ready(Err(Failed::Sent(e)));
+                        // Not a verdict, a cause. Whether this is `Sent`
+                        // or `NotSent` is hyper's to say and is asked in
+                        // [`claim_back`]; what travels out here is the
+                        // error a caller should see, because the one
+                        // hyper produces once its dispatcher is dropped
+                        // is `dispatch_gone`, which says nothing about
+                        // why the connection died.
+                        return Poll::Ready(Err(e));
                     }
                     Poll::Pending => {}
                 }
             }
             match send.as_mut().poll(cx) {
-                Poll::Ready(Ok(r)) => Poll::Ready(Ok(r)),
-                Poll::Ready(Err(mut e)) => Poll::Ready(Err(match e.take_message() {
+                Poll::Ready(Ok(r)) => Poll::Ready(Ok(Ok(r))),
+                Poll::Ready(Err(mut e)) => Poll::Ready(Ok(Err(match e.take_message() {
                     // hyper's own verdict, not ours — see `Failed`.
                     Some(request) => Failed::NotSent {
                         error: from_hyper_error(e.into_error(), ErrorKind::Connect),
                         request: Box::new(request),
                     },
                     None => Failed::Sent(from_hyper_error(e.into_error(), ErrorKind::Connect)),
-                })),
+                }))),
                 // The connection has finished and the request is still
                 // waiting on a channel nobody will read: hyper's dispatcher
                 // reached `Dispatched::Shutdown` with our request queued
                 // behind a read side it had already closed. Nothing can
-                // resolve this future any more — the callback that would is
-                // inside the dispatcher we are holding, and it only fires
-                // when that is dropped — so returning here is the
-                // alternative to hanging. `Sent`, not `NotSent`: we no
-                // longer own the request, so there is nothing to hand back,
-                // whatever we may believe about how far it got.
-                Poll::Pending if conn_done => Poll::Ready(Err(Failed::Sent(Error::new(
+                // resolve this future any more *while this function holds
+                // the connection* — the callback that would is inside it,
+                // and it only fires when that is dropped — so ending here
+                // is the alternative to hanging.
+                Poll::Pending if conn_done => Poll::Ready(Err(Error::new(
                     ErrorKind::Connect,
                     ConnectionEndedWithTheRequestQueued,
-                )))),
+                ))),
                 Poll::Pending => Poll::Pending,
             }
         })
-        .await
+        .await;
+        match settled {
+            Ok(settled) => settled,
+            // The connection outlived the request. It is one drop away
+            // from hyper being able to answer for it — see [`claim_back`].
+            Err(error) => return Err(claim_back(conn, send, error).await),
+        }
     };
     let resp = sent?;
 
@@ -709,6 +725,84 @@ where
             open: still_open,
         },
     ))
+}
+
+/// What [`exchange`]'s request future resolves to. Written down once
+/// because [`claim_back`] has to name it and `try_send_request` returns an
+/// `impl Future`.
+type Sent = Result<
+    http::Response<hyper::body::Incoming>,
+    hyper::client::conn::TrySendError<http::Request<OutgoingBody>>,
+>;
+
+/// Ask hyper for the request back, when the connection has ended and the
+/// request never resolved — and take its answer as the verdict.
+///
+/// # Why this exists at all, and why it is a *drop*
+///
+/// A pooled connection the peer closed while nobody was polling it is
+/// discovered in one of four places, and only the last two are this
+/// function's business. The pool's checkout poll ([`crate::pool`]) and
+/// [`exchange`]'s look before `try_send_request` both happen while the
+/// request is still **ours**, and both hand it straight back. Past them
+/// the request has gone into hyper's dispatch queue, and from there only
+/// hyper can say whether it reached the wire.
+///
+/// It says so in two ways, and this crate used to ask for only one of
+/// them. `TrySendError::message` is `Some` when the dispatcher had not
+/// yet dequeued the request — hyper's `Callback` resolves the promise
+/// with the request itself — and `None` once `poll_msg` has taken it
+/// apart into a head and a body, which is the moment past which no
+/// `http::Request` exists to hand back. The second way is a **drop**:
+/// hyper's `Envelope::drop` sends `TrySendError { message: Some(req) }`
+/// for every request still sitting in the queue when the receiver goes
+/// away, and the receiver is inside the `Connection` this function takes
+/// by value. So the request is one drop from being ours again, and
+/// nothing else can release it — which is why an earlier attempt at this
+/// (`docs/nagle-and-nodelay.md` §6) polled the send future *without*
+/// dropping the connection and could not move the number much: there was
+/// nothing to poll for.
+///
+/// **The verdict is still hyper's and not ours.** This function makes no
+/// judgement about what looks safe to resend; it drops the one thing that
+/// stands between hyper and answering, then asks once. `Failed`'s doc
+/// comment is the contract and it is unchanged.
+///
+/// `error` is the cause, and it is deliberately not hyper's post-drop
+/// error: dropping a dispatcher produces `dispatch_gone`, which describes
+/// the drop rather than the connection.
+///
+/// Exactly one poll, and it never suspends — the same shape and the same
+/// reason as [`is_reusable`] and the look at the top of [`exchange`].
+async fn claim_back<I, F>(
+    conn: http1::Connection<I, OutgoingBody>,
+    mut send: Pin<Box<F>>,
+    error: Error,
+) -> Failed
+where
+    I: Read + Write + Unpin,
+    F: Future<Output = Sent>,
+{
+    drop(conn);
+    match std::future::poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await {
+        Poll::Ready(Err(mut e)) => match e.take_message() {
+            Some(request) => Failed::NotSent {
+                error,
+                request: Box::new(request),
+            },
+            None => Failed::Sent(error),
+        },
+        // Two shapes with one answer. `Pending` means hyper answered
+        // nothing at all, which it can only do by holding neither the
+        // request nor its callback — so there is nothing to hand back and
+        // nothing said about how far it got. `Ready(Ok(_))` is a response
+        // that materialised in the instant between the last poll and the
+        // drop, which the ordering above makes unreachable: the request
+        // future is polled after the connection in the very poll that set
+        // `conn_done`, and nothing runs in between. Reporting the
+        // connection's own failure is the honest answer to both.
+        _ => Failed::Sent(error),
+    }
 }
 
 #[cfg(test)]
@@ -1014,32 +1108,33 @@ mod tests {
         );
     }
 
-    /// The residual race of connection reuse, and the one outcome it must
-    /// not have.
+    /// Runs the residual race of connection reuse at one chosen point,
+    /// and hands back the verdict.
+    ///
+    /// One exchange to make the connection *pooled* — which is the whole
+    /// premise, see below — then the server disappears, and `after` says
+    /// how many looks it hides from. Every look is a read of the same
+    /// socket, so the sequence is the one the crate really performs:
+    /// `0` is the non-suspending look [`exchange`] takes while the
+    /// request is still ours, `1` is hyper's first read with the request
+    /// queued, `2` is hyper's read after it has written the request out.
+    /// (`Native::checkout`'s poll is one earlier still and is not on this
+    /// path — `tests/pool.rs` covers it against a real socket.)
     ///
     /// **Why the connection has to have served a request first, rather than
     /// being a fresh one with EOF arranged.** hyper answers an EOF
     /// differently depending on its own keep-alive state:
     /// `should_error_on_eof` is `!state.is_idle()`, and a connection that
     /// has never been used is `KA::Busy`, so an EOF there is an *error* —
-    /// and an error is the one case hyper does hand the request back for
-    /// (`TrySendError::message`), which is retryable and is a different
-    /// test. Only a connection that completed an exchange is `KA::Idle`,
-    /// and only there does EOF mean "closing gracefully": `close_read`,
-    /// `can_write_head()` false, the queued request never picked up,
-    /// `Dispatched::Shutdown`, `Connection` completing with `Ok` — and the
-    /// request's callback stranded inside the very `Connection` this
-    /// function is still holding.
-    ///
-    /// Three outcomes are then possible: a response (there is none —
-    /// nothing was written), an error, or `Pending` for ever. Without the
-    /// `Poll::Pending if conn_done` arm it is the third, and a request that
-    /// never returns and never fails is worse than either of the others.
-    /// This test would not fail on that mutation, it would run out of
-    /// polls — which is why `poll_to_completion` has a ceiling instead of
-    /// waiting.
-    #[test]
-    fn a_connection_that_ends_with_the_request_queued_fails_instead_of_hanging() {
+    /// which hyper reports through `recv_msg(Err(..))`, a path that looks
+    /// in its own queue and hands the request back by itself. Only a
+    /// connection that completed an exchange is `KA::Idle`, and only there
+    /// does EOF mean "closing gracefully": `close_read`, `can_write_head()`
+    /// false, the queued request never picked up, `Dispatched::Shutdown`,
+    /// `Connection` completing with `Ok` — and nothing at all said about
+    /// the request. That is the state this helper reaches, and the one
+    /// [`claim_back`] exists for.
+    fn race_lost_after(after: usize) -> Failed {
         let io = ScriptIo::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         let script = io.clone();
 
@@ -1109,21 +1204,90 @@ mod tests {
             }
         };
 
-        // From here the server is gone. One `Pending` covers the look
-        // before the request is handed over; the poll after that is hyper's,
-        // with the request already queued.
-        script.end_after(1);
+        // From here the server is gone, and `after` decides who finds out.
+        script.end_after(after);
 
         let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
         let mut fut = std::pin::pin!(fut);
-        let err = match poll_to_completion(fut.as_mut()) {
-            Ok(_) => panic!("nothing was ever written, so there is no response to have"),
+        match poll_to_completion(fut.as_mut()) {
+            Ok(_) => panic!("the server is gone, so there is no response to have"),
             Err(e) => e,
-        };
+        }
+    }
+
+    /// The look [`exchange`] takes while the request is still ours: the
+    /// connection never leaves our hands, so nothing has to be asked of
+    /// anybody.
+    ///
+    /// It is the cheapest of the three points and the least interesting,
+    /// and it is here because the other two are only meaningful as the
+    /// far end of a sequence that starts with it.
+    #[test]
+    fn a_connection_found_dead_before_the_request_is_handed_over_is_retryable() {
+        let failed = race_lost_after(0);
         assert!(
-            matches!(err, Failed::Sent(_)),
-            "hyper has the request and will not hand it back, so this is not retryable"
+            matches!(failed, Failed::NotSent { .. }),
+            "the request was never given to hyper, so it is still the same request"
         );
-        assert_eq!(*err.into_error().kind(), ErrorKind::Connect);
+        assert_eq!(*failed.into_error().kind(), ErrorKind::Connect);
+    }
+
+    /// **The window this crate had been giving away.** hyper takes the
+    /// request, sees the graceful EOF before it writes anything, refuses
+    /// to write (`can_write_head()` is false once the read side is
+    /// closed) and finishes with `Ok` — leaving the request in its queue
+    /// and saying nothing about it. Not a byte reached the wire, so this
+    /// is exactly as retryable as the point above, and until
+    /// [`claim_back`] this crate reported it as `Failed::Sent` and the
+    /// caller got an error.
+    ///
+    /// Three outcomes are possible here and only one of them is right: a
+    /// response (there is none — nothing was written), an answer, or
+    /// `Pending` for ever. Without the `Poll::Pending if conn_done` arm it
+    /// is the third, and a request that never returns and never fails is
+    /// worse than either of the others. This test would not *fail* on that
+    /// mutation, it would run out of polls — which is why
+    /// `poll_to_completion` has a ceiling instead of waiting.
+    #[test]
+    fn a_connection_that_ends_with_the_request_still_queued_hands_it_back() {
+        let failed = race_lost_after(1);
+        let Failed::NotSent { error, request } = failed else {
+            panic!(
+                "hyper never dequeued this request, so it can and must be handed \
+                 back rather than reported as sent"
+            );
+        };
+        assert_eq!(*error.kind(), ErrorKind::Connect);
+        // The request that comes back is the one that went in — not a
+        // rebuilt one, and not one whose body has been polled. `Native`
+        // resends this object itself, so a `Host:` or a URI lost here
+        // would be lost on the retry.
+        assert_eq!(request.uri(), &http::Uri::from_static("/"));
+        assert_eq!(
+            request
+                .headers()
+                .get(http::header::HOST)
+                .map(|v| v.as_bytes()),
+            Some(&b"example.invalid"[..])
+        );
+    }
+
+    /// **The control, and the boundary of the widening above.** One look
+    /// later the request has been dequeued, taken apart into a head and a
+    /// body and written out; hyper no longer holds an `http::Request` and
+    /// its `Callback` answers `message: None`. [`claim_back`] asks the
+    /// same question here and gets the other answer, which is what makes
+    /// it hyper's verdict rather than ours.
+    ///
+    /// Without this test the widening would be indistinguishable from
+    /// "always retry", which is the at-most-once promise gone.
+    #[test]
+    fn a_connection_that_ends_after_the_request_went_out_is_not_handed_back() {
+        let failed = race_lost_after(2);
+        assert!(
+            matches!(failed, Failed::Sent(_)),
+            "the request is on the wire, so resending it would be a second request"
+        );
+        assert_eq!(*failed.into_error().kind(), ErrorKind::Connect);
     }
 }
