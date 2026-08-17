@@ -244,3 +244,49 @@ fn an_authorization_credential_is_not_printed_by_debug() {
         }
     });
 }
+
+/// **A JSON body reaches the wire with its header**, and the value that
+/// cannot be serialised is the builder's error rather than a surprise
+/// after a connection was opened.
+///
+/// The failing half uses a map with a non-string key, which is
+/// `serde_json`'s own documented refusal — the smallest value that cannot
+/// be JSON at all rather than a contrived one.
+#[cfg(feature = "json")]
+#[test]
+fn a_json_body_reaches_the_wire_and_an_unserialisable_value_never_does() {
+    let (addr, seen) = recording_server();
+    rt().block_on(async move {
+        let c = client();
+        let url = format!("http://127.0.0.1:{}/x", addr.port());
+        let _ = c
+            .post(&url)
+            .json(&serde_json::json!({"a": 1, "b": "two"}))
+            .send()
+            .await
+            .expect("send");
+
+        let bad: std::collections::BTreeMap<(i32, i32), i32> = [((1, 2), 3)].into_iter().collect();
+        let err = c
+            .post(&url)
+            .json(&bad)
+            .send()
+            .await
+            .expect_err("a map with a non-string key is not JSON");
+        assert_eq!(*err.kind(), http_ng_core::ErrorKind::Other, "{err:?}");
+    });
+    let log = seen.lock().expect("log").clone();
+    assert_eq!(log.len(), 1, "only the serialisable one was sent");
+    assert!(
+        log[0]
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "{}",
+        log[0]
+    );
+    assert!(
+        log[0].ends_with(r#"{"a":1,"b":"two"}"#),
+        "the body is the serialisation, byte for byte: {:?}",
+        log[0]
+    );
+}

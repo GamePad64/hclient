@@ -1293,6 +1293,14 @@ straight back, while `base64` is a crate for twenty lines. Encode only,
 both: nothing here decodes either, and a decoder is where the sharp edges
 live.
 
+**A JSON request body closes the asymmetry** the response side had left:
+`Collected::json` had existed since v0.1 and `RequestBuilder::json` had
+not, both behind the same feature and for the same reason — a caller who
+streams bytes should not link a serialiser, and on wasm that is download
+size. It serialises **in the builder**, so a value that cannot be
+serialised is the first build error rather than a failure discovered
+after a connection was opened.
+
 **A colon in a Basic username is refused rather than encoded.** RFC 7617
 §2 makes it the separator, so `("a:b", "")` and `("a", "b")` would
 produce identical bytes and one of the two callers would be silently

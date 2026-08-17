@@ -170,6 +170,37 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         self
     }
 
+    /// A JSON body, with the header.
+    ///
+    /// Behind the `json` feature, off by default, for the reason
+    /// [`crate::Collected::json`] is: a caller who streams bytes should
+    /// not link a serialiser, and on wasm that cost is paid in download
+    /// size.
+    ///
+    /// **Serialised here rather than at send time**, so a value that
+    /// cannot be serialised is the builder's first error — surfacing out
+    /// of `send()` like every other one — instead of a failure discovered
+    /// after a connection has been opened.
+    ///
+    /// Sets `Content-Type` only if the caller has not, the same rule
+    /// [`Self::form`] follows.
+    #[cfg(feature = "json")]
+    pub fn json<V: serde::Serialize + ?Sized>(mut self, value: &V) -> Self {
+        match serde_json::to_vec(value) {
+            Ok(bytes) => {
+                if !self.headers.contains_key(http::header::CONTENT_TYPE) {
+                    self.headers.insert(
+                        http::header::CONTENT_TYPE,
+                        http::HeaderValue::from_static("application/json"),
+                    );
+                }
+                self.body = RequestBody::Full(bytes::Bytes::from(bytes));
+            }
+            Err(e) => self.fail(e),
+        }
+        self
+    }
+
     /// `Authorization: Basic`, RFC 7617.
     ///
     /// The value is marked sensitive, so a `Debug` of the request does not
