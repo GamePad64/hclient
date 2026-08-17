@@ -70,12 +70,16 @@ takes it back out, arms the script, and runs a second exchange with a
 noop waker and a 64-poll ceiling. Nothing in it waits on the outside
 world.
 
-| `n` | who finds the close | before | after |
-|---|---|---|---|
-| 0 | `exchange`'s own look | `NotSent` — `ConnectionWentAwayBeforeTheRequest` | unchanged |
-| 1 | hyper's first read, request queued | **`Sent` — `ConnectionEndedWithTheRequestQueued`** | **`NotSent` — same cause** |
-| 2 | hyper's read after the write | `Sent` — `IncompleteMessage` | unchanged |
-| 3 | later still | `Sent` — `IncompleteMessage` | unchanged |
+`n` counts `Pending`s and therefore starts at §1's **look 1**: this
+helper hands the connection straight to `exchange`, so look 0 —
+`Native::checkout`'s — is not on the path at all.
+
+| `n` | §1's look | who finds the close | before | after |
+|---|---|---|---|---|
+| 0 | 1 | `exchange`'s own poll | `NotSent` — `ConnectionWentAwayBeforeTheRequest` | unchanged |
+| 1 | 2 | hyper's first read, request queued | **`Sent` — `ConnectionEndedWithTheRequestQueued`** | **`NotSent` — same cause** |
+| 2 | 3 | hyper's read after the write | `Sent` — `IncompleteMessage` | unchanged |
+| 3 | 3 | later still | `Sent` — `IncompleteMessage` | unchanged |
 
 **Why the connection has to have served a request first.**
 `should_error_on_eof` is `!state.is_idle()`, so an EOF on a *fresh*
@@ -260,9 +264,9 @@ most often below are `h1.rs`'s
 | M1 | `claim_back` reports `Sent` without asking hyper at all — the code as it stood | killed | both, at once |
 | M2 | `claim_back` asks, but keeps the connection alive — §3.1's attempt | killed | both, at once |
 | M3 | **CONTROL**: the connection's *error* arm answers `Sent` itself instead of routing through `claim_back` | **survived** | nothing — see below |
-| M4 | `claim_back` reports hyper's post-drop error instead of the connection's cause | **survived**, then killed | nothing at first; see below |
+| M4 | `claim_back` reports hyper's post-drop error instead of the connection's cause | **survived**, then killed | nothing at first; the scripted one after §5's assertion — see below |
 | M5 | delete the `Poll::Pending if conn_done` arm | killed | the scripted one on its 64-poll ceiling, the real-socket one by hanging into its 30 s bound |
-| M6 | delete `exchange`'s look before the request is handed over | killed | both, by shifting the sequence |
+| M6 | delete `exchange`'s look before the request is handed over | **survived on the event**, then killed | the two sequence rows from the start; `a_connection_found_dead_before_the_request_is_handed_over_is_retryable` once the recording hook below was added |
 | M7 | `claim_back` gets the request back and reports `Sent` anyway | killed | both, at once |
 
 **M4 was a gap, and closing it is the finding.** It survived all 278
@@ -274,41 +278,21 @@ clean row, because "survived, therefore a gap, therefore an assertion" is
 the sequence worth copying.
 
 **M6's kill was about the sequence rather than the outcome, and that
-exposed the one gap this run found besides M4.** With `exchange`'s look
-deleted, point 0 collapses into point 1 and both tests' `n` means
-something one step earlier — which is what fails them. What did *not*
-fail is the outcome at point 0: the request still comes back, now through
-`claim_back` rather than through the pre-poll. So the pre-poll is no
-longer load-bearing for the retry's **correctness**; it is load-bearing
-for one fewer poll and for the `CloseReason::Stale` a hook reads there —
-and that second half had no test anywhere, because `hooks.rs`'s stale
-test is satisfied by `Native::checkout`'s emitter, one look earlier.
+exposed the one gap this run found besides M4.** Deleting `exchange`'s
+poll removes §1's look 1, so every count lands one look later than the
+tests are calibrated for — which is what fails them. What did *not* fail
+is the **outcome** at the first point: the request still comes back,
+through `claim_back` instead of through the deleted poll. So that poll is
+no longer load-bearing for the retry's **correctness**; it is
+load-bearing for one fewer poll and for the `CloseReason::Stale` a hook
+reads there — and that second half had no test anywhere, because
+`hooks.rs`'s stale test is satisfied by `Native::checkout`'s emitter, one
+look earlier.
 
 `race_lost_after` now carries a recording hook, and the three points
-assert the reason as well as the verdict.
-
-### 5.2 What that recording found, and is not fixing
-
-The three points report `Stale`, `Ended`, `Ended` — **for one socket in
-one state.** Both names are literally true at point 1: the peer closed it
-after a response, *and* it was handed out already closed. Which one a
-caller is told is decided by which of two adjacent polls noticed.
-
-This work neither introduced that nor changes it. What it changes is the
-number of readers: `CloseReason::Stale`'s own doc calls it *"the event
-that explains the [`Connected`] following it"*, and after `claim_back`
-there is a `Connected` following point 1 as well — where before there was
-an error and no retry at all.
-
-It is pinned rather than corrected. Correcting it means deciding the
-reason from what the *request* did rather than from which poll noticed,
-which moves the emission below the request's own outcome and puts the
-one-`Closed`-per-socket rule behind three exits instead of one — where
-`h1.rs`'s module doc leans on there being exactly two ("`exchange` and
-`H1Body::poll_frame`… between them they are every place hyper's
-`Connection` future can complete"). That is a change to the hooks seam
-wanting its own measurement and its own mutations, not a by-product of a
-race fix.
+assert the reason as well as the verdict — so M6 is killed on the
+**event** by the first point's test as well as by the two whose count it
+shifts.
 
 ### 5.1 The control, and how it was verified
 
@@ -343,6 +327,30 @@ queued. Those arms stay because that reasoning is hyper's to change, and
 a `Failed::Sent` there is the fail-closed answer where an
 `unreachable!()` would be a panic in a client on a path no test can
 reach.
+
+### 5.2 What that recording found, and is not fixing
+
+The three scripted points report `Stale`, `Ended`, `Ended` — and the
+first two are **one socket in one state.** Both names are literally true
+at §1's look 2: the peer closed it after a response, *and* it was handed
+out already closed. Which one a caller is told is decided by which of two
+adjacent polls noticed, and the event carries no field for that.
+
+This work neither introduced the asymmetry nor changes it. What it
+changes is the number of readers: `CloseReason::Stale`'s own doc calls it
+*"the event that explains the [`Connected`] following it"*, and after
+`claim_back` there is a `Connected` following look 2 as well — where
+before there was an error and no retry at all.
+
+It is pinned rather than corrected. Correcting it means deciding the
+reason from what the *request* did rather than from which poll noticed,
+which moves the emission below the request's own outcome and puts the
+one-`Closed`-per-socket rule behind three exits instead of one — where
+`h1.rs`'s module doc leans on there being exactly two ("`exchange` and
+`H1Body::poll_frame`… between them they are every place hyper's
+`Connection` future can complete"). That is a change to the hooks seam
+wanting its own measurement and its own mutations, not a by-product of a
+race fix.
 
 ## 6. What is not closed, and what was not verified
 
@@ -384,4 +392,4 @@ reach.
   shape as the two `docs/v04-acceptance.md` §*flakes* already records.
   The select-race flake that document names was **not** seen in those 30
   runs.
-- **The `CloseReason` asymmetry at point 1**, §5.2. Pinned, not fixed.
+- **The `CloseReason` asymmetry at look 2**, §5.2. Pinned, not fixed.

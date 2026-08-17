@@ -1500,14 +1500,14 @@ that survived all 278 tests before it was an assertion. And the
 meet the `FIN` and spend one of the hidden EOFs, shifting every row by
 one — seen once, in one arm of one sweep, and gone in the 48 since.
 
-**The three points report `Stale`, `Ended`, `Ended` — for one socket in
-one state**, and that is now pinned rather than corrected. Both names are
-true at the middle point (the peer closed it after a response, *and* it
-was handed out already closed), and which one a caller is told is decided
-by which of two adjacent polls noticed. This work neither introduced it
+**The three points report `Stale`, `Ended`, `Ended` — and the first two
+are one socket in one state**, now pinned rather than corrected. Both
+names are true at the middle row above (the peer closed it after a
+response, *and* it was handed out already closed), and which one a caller
+is told is decided by which of two adjacent polls noticed. This work neither introduced it
 nor changes it; what it changes is that `Stale`'s own promise — *"the
 event that explains the `Connected` following it"* — now has a
-`Connected` following the middle point too. Deciding the reason from what
+`Connected` following the middle row too. Deciding the reason from what
 the request did would move the emission below the request's outcome and
 put the one-`Closed`-per-socket rule behind three exits where `h1.rs`
 leans on two, which is a hooks change wanting its own measurement.
