@@ -640,6 +640,54 @@ fn a_streaming_form_is_not_replayed_across_a_307() {
     );
 }
 
+/// **An empty part in a chunked request does not end the body early.**
+///
+/// The risk is specific to this framing: a zero-length chunk *is* the
+/// terminator in RFC 9112 §7.1, so an encoder that handed hyper an empty
+/// data frame would be one `debug_assert!` away from truncating the
+/// request at the empty part. The encoder skips empty pieces as *frames*
+/// while still writing their head and delimiter, and this is where that
+/// shows.
+///
+/// The empty part is in the middle rather than at the end, and the form is
+/// chunked, because both are what make the truncation reachable at all: a
+/// trailing empty part would lose nothing visible.
+#[test]
+fn an_empty_part_in_a_chunked_form_does_not_truncate_it() {
+    let (addr, seen) = serve(|_, _| OK.to_owned());
+    rt().block_on(async move {
+        let c = client();
+        c.post(&format!("http://127.0.0.1:{}/x", addr.port()))
+            .multipart(
+                Form::new()
+                    .part(Part::text("before", "1"))
+                    .part(Part::new("empty", RequestBody::Empty))
+                    // Unknown length, so the whole request is chunked.
+                    .part(Part::new("after", streaming(&[b"tail"], None))),
+            )
+            .send()
+            .await
+            .expect("send");
+    });
+    let s = seen.lock().expect("log")[0].clone();
+    assert_eq!(s.header("transfer-encoding").as_deref(), Some("chunked"));
+    let got = rt().block_on(parse(&s));
+    assert_eq!(
+        got.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+        vec![
+            Some("before".into()),
+            Some("empty".into()),
+            Some("after".into())
+        ],
+        "all three parts, in order: {got:?}"
+    );
+    assert_eq!(
+        got[1].body, b"",
+        "and the empty one is empty rather than absent"
+    );
+    assert_eq!(got[2].body, b"tail");
+}
+
 /// **Two requests never share a boundary**, read off the wire rather than
 /// off the type — the security argument in the module's documentation is
 /// about what goes out, so this is where it has to be checked.

@@ -827,6 +827,72 @@ mod tests {
         );
     }
 
+    /// **`%` is not escaped, so the escape is not reversible** — a name
+    /// that genuinely contains `%22` and one that contains `"` produce the
+    /// same bytes.
+    ///
+    /// Asserted as an equality rather than described, because it is the
+    /// documented wart and a reader meeting it needs to know it is
+    /// deliberate: escaping `%` as well would make the encoding
+    /// unambiguous and would put bytes on the wire that no browser sends
+    /// and no server has been written against. Written after the mutation
+    /// that adds `'%' => "%25"` survived every other test here — none of
+    /// them feeds a name containing a literal `%`.
+    #[test]
+    fn a_literal_percent_is_left_alone_and_the_escape_is_therefore_ambiguous() {
+        let one = drain(
+            Form::new()
+                .part(Part::text("a%22b", "v").file_name("100%.txt"))
+                .encode(&fixed())
+                .expect("encode"),
+        );
+        assert!(
+            String::from_utf8_lossy(&one).contains("name=\"a%22b\"; filename=\"100%.txt\""),
+            "{:?}",
+            String::from_utf8_lossy(&one)
+        );
+        let two = drain(
+            Form::new()
+                .part(Part::text("a\"b", "v").file_name("100%.txt"))
+                .encode(&fixed())
+                .expect("encode"),
+        );
+        assert_eq!(
+            one, two,
+            "the two names are indistinguishable on the wire — whatwg/html#7575"
+        );
+    }
+
+    /// **`size_hint` is what is LEFT, not what there was.** `http_body`'s
+    /// contract says so, and a consumer asking part-way through has every
+    /// right to; nothing in this workspace does, which is why the mutation
+    /// that stops the counter survived until this test was written.
+    #[test]
+    fn the_size_hint_counts_down_as_frames_leave() {
+        let body = Form::new()
+            .part(Part::text("a", "hello"))
+            .encode(&fixed())
+            .expect("encode");
+        let RequestBody::Rewindable(f) = &body else {
+            panic!("expected Rewindable");
+        };
+        let RequestBody::Streaming(mut s) = f() else {
+            panic!("expected Streaming");
+        };
+        let total = s.size_hint().exact().expect("an exact total");
+        let frame =
+            futures_executor::block_on(std::future::poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
+                .expect("a frame")
+                .expect("not an error");
+        let n = frame.into_data().expect("data").len() as u64;
+        assert!(n > 0 && n < total, "a partial frame: {n} of {total}");
+        assert_eq!(
+            s.size_hint().exact(),
+            Some(total - n),
+            "the hint must be the remainder, not the total"
+        );
+    }
+
     /// Any other C0 control, and DEL, is a refusal rather than a guess.
     #[test]
     fn other_control_bytes_are_refused_and_a_tab_is_not() {
@@ -933,6 +999,50 @@ mod tests {
             Bytes::from_static(
                 b"--XbXb\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\r\n--XbXb--\r\n"
             )
+        );
+    }
+
+    /// **An empty piece is skipped as a frame**, so an empty part costs a
+    /// head and a delimiter and no data frame at all.
+    ///
+    /// Counted here rather than only checked on the wire, and that is the
+    /// whole reason this test exists: hyper's h1 dispatcher discards empty
+    /// chunks itself (1.11, `proto/h1/dispatch.rs:405` and `:412`), so the
+    /// wire test above stays green with this skip removed — verified by
+    /// mutation. Borrowing the property from hyper would leave every other
+    /// consumer of this body — the h2 path, `http-ng-fetch`, anyone
+    /// counting frames rather than bytes — holding a frame nobody meant to
+    /// send, and would make a zero-length chunk one `is_end_stream` away
+    /// from being RFC 9112 §7.1's terminator.
+    #[test]
+    fn an_empty_piece_is_never_a_frame() {
+        let body = Form::new()
+            .part(Part::new("empty", RequestBody::Empty))
+            .part(Part::text("full", "x"))
+            .encode(&fixed())
+            .expect("encode");
+        let RequestBody::Rewindable(f) = &body else {
+            panic!("expected Rewindable");
+        };
+        let RequestBody::Streaming(mut s) = f() else {
+            panic!("expected Streaming");
+        };
+        let mut frames = Vec::new();
+        while let Some(r) =
+            futures_executor::block_on(std::future::poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
+        {
+            frames.push(r.expect("not an error").into_data().expect("data"));
+        }
+        assert!(
+            frames.iter().all(|f| !f.is_empty()),
+            "no zero-length frame: {frames:?}"
+        );
+        // The empty part is still a part: head, blank line, delimiter.
+        let joined: Vec<u8> = frames.concat();
+        assert!(
+            String::from_utf8_lossy(&joined).contains("name=\"empty\"\r\n\r\n\r\n--XbXb"),
+            "{:?}",
+            String::from_utf8_lossy(&joined)
         );
     }
 
