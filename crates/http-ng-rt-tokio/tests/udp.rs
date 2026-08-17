@@ -102,6 +102,27 @@ async fn the_socket_refuses_a_gso_batch_it_cannot_send() {
 /// plausible-looking value. The second half is the one that matters most —
 /// an invented `Ect0` would feed a congestion controller evidence of a mark
 /// that never happened.
+/// A socket bound to the wildcard reports the **unspecified** address as
+/// its local one, and a datagram addressed there is not portable.
+///
+/// Linux delivers it — `0.0.0.0` and `::` are read as "this host" — and
+/// **macOS does not**, where the send succeeds and nothing ever arrives.
+/// That is why `ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too`,
+/// which binds `[::]:0` and is the only test that can tell an asked
+/// kernel from an assumed one, hung for ever on the one platform it was
+/// written for: measured on macOS 27, where it printed the right answer
+/// (`ecn=false` for the dual-stack socket against `true` for a v4 one)
+/// and then never returned.
+fn loopback_of(addr: SocketAddr) -> SocketAddr {
+    if !addr.ip().is_unspecified() {
+        return addr;
+    }
+    match addr {
+        SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, addr.port())),
+        SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, addr.port())),
+    }
+}
+
 async fn ecn_claim_matches_reality(
     a: &http_ng_rt_tokio::TokioUdpSocket,
     b: &http_ng_rt_tokio::TokioUdpSocket,
@@ -109,7 +130,7 @@ async fn ecn_claim_matches_reality(
     send(
         a,
         &Datagrams {
-            destination: b.local_addr().unwrap(),
+            destination: loopback_of(b.local_addr().unwrap()),
             src_ip: None,
             ecn: Some(EcnCodepoint::Ect0),
             segment_size: None,
@@ -137,10 +158,24 @@ async fn ecn_claim_matches_reality(
             "this socket claims ECN, so the codepoint it received must be the one that was sent"
         );
     } else {
-        assert_eq!(
-            meta[0].ecn, None,
-            "a socket that does not claim ECN must report the absence, never a plausible value"
-        );
+        // **And `false` promises nothing**, which is the correction macOS
+        // forced. This branch used to assert `None` — that a socket not
+        // claiming ECN must never report a codepoint — and macOS 27 fails
+        // it: a dual-stack v6 socket there answers `ecn=false` and then
+        // delivers `Some(Ect0)` for genuinely v6 traffic.
+        //
+        // Both are true at once, because the report is a fact about the
+        // SOCKET and the truth is a fact about the PACKET.
+        // `ecn_is_really_on` reads `recv_tclass_v6` (which macOS grants)
+        // **and** `recv_tos_v4` on a dual-stack socket (which it does
+        // not), so it answers for the worse of the two families the socket
+        // can receive. For v6 traffic the better one is what happens.
+        //
+        // That is the floor rule this workspace applies everywhere else,
+        // one layer down: an under-claim costs an opportunity and an
+        // over-claim costs correctness. So only `true` is a promise, and
+        // the case that falsifies a wrongly-`true` claim is v4-mapped
+        // traffic — `a_dual_stack_socket_that_claims_ecn_reports_it_for_v4_mapped_traffic_too`.
     }
 }
 
@@ -179,6 +214,86 @@ async fn ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too() {
         bind().caps().ecn
     );
     ecn_claim_matches_reality(&a, &b).await;
+}
+
+/// **The case that can falsify a wrongly-`true` ECN claim**, and the one
+/// nobody had written.
+///
+/// The two tests above send v6 to a v6 socket, or v4 to a v4 one, and on
+/// every platform in this project's matrix the answer for those is the
+/// same as a hardcoded `true` — which is why the `ecn: true` mutation has
+/// survived since v0.3. **v4-mapped traffic to a dual-stack socket is
+/// where the families come apart**: `quinn-udp`'s own unix backend
+/// carries "mac and ios do not support IP_RECVTOS on dual-stack sockets",
+/// so there the codepoint cannot come back, and a socket claiming it can
+/// is making a claim the kernel will not keep.
+///
+/// Written as a **biconditional** rather than a platform check: whatever
+/// the socket claims, the traffic must agree with it. That keeps the test
+/// honest on a kernel nobody has tried, instead of encoding today's two.
+#[tokio::test]
+async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_claims_to() {
+    let Ok(b) = http_ng_rt_tokio::Tokio.bind(SocketAddr::from(([0u8; 16], 0))) else {
+        eprintln!("skipped: this host has no IPv6 loopback");
+        return;
+    };
+    let port = b.local_addr().expect("bound").port();
+    let a = bind();
+    send(
+        &a,
+        &Datagrams {
+            // v4 loopback, arriving on the dual-stack socket as
+            // v4-mapped. Addressed explicitly rather than through
+            // `b.local_addr()`, which is the unspecified address — see
+            // `loopback_of`.
+            destination: SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+            src_ip: None,
+            ecn: Some(EcnCodepoint::Ect0),
+            segment_size: None,
+            contents: b"mapped",
+        },
+    )
+    .await
+    .expect("a datagram to v4 loopback");
+
+    let mut buf = [0u8; 64];
+    let mut meta = [RecvMeta::default(); 1];
+    let n = std::future::poll_fn(|cx| {
+        let mut bufs = [IoSliceMut::new(&mut buf)];
+        b.poll_recv(cx, &mut bufs, &mut meta)
+    })
+    .await
+    .expect("the datagram arrives");
+    assert_eq!(n, 1);
+    assert_eq!(&buf[..meta[0].len], b"mapped");
+
+    println!(
+        "dual-stack socket claims ecn={}, v4-mapped datagram reported {:?}",
+        b.caps().ecn,
+        meta[0].ecn
+    );
+    // **One direction only, and macOS is why.** A biconditional was
+    // written here first and fails there: the socket claims `false` and
+    // the codepoint arrives anyway. Measured on macOS 27 — `only_v6()` is
+    // `false`, `IPV6_RECVTCLASS` sets and reads back `true`, and
+    // `IP_RECVTOS` fails with `EINVAL`, exactly as `quinn-udp` documents
+    // — and yet the kernel reports the codepoint for v4-mapped traffic,
+    // because `IPV6_RECVTCLASS` covers both families there.
+    //
+    // So `ecn_is_really_on` under-reports on macOS: it requires the v4
+    // option to be settable on a dual-stack socket, and macOS delivers
+    // without it. Under-claiming is the safe direction and the floor rule
+    // this workspace applies everywhere, so the behaviour is left alone
+    // and written down rather than changed on the strength of one
+    // kernel — but only `true` is a promise, and this asserts exactly
+    // that.
+    if b.caps().ecn {
+        assert_eq!(
+            meta[0].ecn,
+            Some(EcnCodepoint::Ect0),
+            "a socket claiming ECN must report the codepoint for v4-mapped traffic too"
+        );
+    }
 }
 
 #[tokio::test]

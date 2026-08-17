@@ -339,8 +339,45 @@ someone to "fix" an item whose absence is the decision.
   `ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too` binds a
   dual-stack v6 socket, which is precisely the case `quinn-udp` documents
   macOS and iOS as unable to set `IP_RECVTOS` on, so the mutant is killable
-  there. Not yet observed being killed; what would settle it is one run of
-  that test on `macos-latest` with the mutation applied.
+  there. **That was a guess about a platform nobody had run, and it is
+  wrong.** The test was run on macOS 27, and three things came out of it,
+  none of them the expected one.
+
+  First, the test **hung there** and always would have: it sent to
+  `b.local_addr()`, which for a wildcard-bound socket is the *unspecified*
+  address. Linux reads `::` as "this host" and delivers; macOS does not,
+  so the send succeeded and nothing ever arrived. The intended killer
+  could never have run on the one platform it was written for. Fixed —
+  `loopback_of` addresses loopback explicitly.
+
+  Second, the test's `else` branch was **too strong**. It asserted that a
+  socket not claiming ECN must never report a codepoint; on macOS the
+  dual-stack socket answers `ecn=false` and then delivers `Some(Ect0)`.
+  Both are true at once, because the report is a fact about the SOCKET and
+  the truth is a fact about the PACKET.
+
+  Third, and this is the part that settles the mutation: **the mutant is
+  not killable anywhere, and now that is measured rather than assumed.**
+  Probed directly on macOS 27, on a `[::]` socket: `only_v6()` is
+  `Ok(false)`, `IPV6_RECVTCLASS` sets and reads back `true`, and
+  `IP_RECVTOS` fails with `EINVAL` — exactly what `quinn-udp` documents.
+  And the kernel reports the codepoint for v4-mapped traffic regardless,
+  because `IPV6_RECVTCLASS` covers both families there. So a hardcoded
+  `ecn: true` is indistinguishable from the truth on macOS as well as on
+  Linux, and `a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_claims_to`
+  — added for this — passes with the mutation applied.
+
+  What the probe *did* find is that `ecn_is_really_on` **under-reports on
+  macOS**: it requires the v4 option to be settable on a dual-stack
+  socket, and macOS delivers without it. Under-claiming is the safe
+  direction and the floor rule this workspace applies everywhere, so the
+  behaviour is left alone and written down rather than changed on the
+  strength of one kernel — the cost is that a QUIC stack on macOS turns
+  ECN off for a dual-stack socket that supports it.
+
+  A CI job asserting the mutant dies on macOS was written and **withdrawn
+  before it landed anywhere**: it would have failed on every push, because
+  the mutant does not die there.
 
   **W1's second backend does not change this, as the design predicted, and
   the reason is worth restating**: two runtimes on one kernel is still one
