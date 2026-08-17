@@ -53,7 +53,7 @@
 ))]
 
 use http_ng::mock::{MockTransport, TestTimer};
-use http_ng::{Cached, Client, Deadline, Decompressed};
+use http_ng::{Cached, Client, Deadline, Decompressed, Limited};
 use std::time::Duration;
 
 /// The declaration the first half of this file exists for: a bare
@@ -97,15 +97,22 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
 
     let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
 
-    // The annotation is the assertion: `Decompressed` outside, `Deadline`
-    // in, `Cached` inside that, and `MockBody` — the transport's own —
-    // innermost. The cache being BELOW the decoder is what lets a stored
-    // response be decoded on the way out by the same call that decodes a
-    // fresh one; above it, an entry would be stored decoded while still
-    // labelled `Content-Encoding`, and `Vary: Accept-Encoding` would key
-    // every variant on a coding the stored bytes no longer carried.
-    let body: Decompressed<Deadline<Cached<http_ng::mock::MockBody>, TestTimer>> =
+    // The annotation is the assertion, and every layer's position is an
+    // argument made somewhere else: `Limited` outside everything, because
+    // it counts what the caller receives and a decompression bomb is
+    // small on the wire; `Decompressed` inside it; `Deadline` inside
+    // that, because a `total` bound must be polled once per COMPRESSED
+    // frame or well-compressing padding walks around it; `Cached` inside
+    // that again, so a stored response is decoded on the way out by the
+    // same call that decodes a fresh one — above the decoder, an entry
+    // would be stored decoded while still labelled `Content-Encoding`,
+    // and `Vary: Accept-Encoding` would key every variant on a coding the
+    // stored bytes no longer carried. `MockBody`, the transport's own, is
+    // innermost.
+    let limited: Limited<Decompressed<Deadline<Cached<http_ng::mock::MockBody>, TestTimer>>> =
         resp.into_parts().1;
+    let body: Decompressed<Deadline<Cached<http_ng::mock::MockBody>, TestTimer>> =
+        limited.into_inner();
     assert_eq!(
         body.coding(),
         None,

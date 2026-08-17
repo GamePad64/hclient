@@ -34,6 +34,7 @@ mod config;
 pub use http_ng_cookie as cookie;
 mod deadline;
 mod decompress;
+mod limit;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -53,6 +54,7 @@ pub use client::{Client, ClientBuilder};
 pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
 pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
 pub use decompress::{DecodeFailed, Decompressed};
+pub use limit::{Limited, ResponseTooLarge};
 
 /// The response body a [`Client`] hands back: the transport's own body,
 /// with this client's three wrappers around it **in the order the client
@@ -82,7 +84,7 @@ pub use decompress::{DecodeFailed, Decompressed};
 /// enum test per frame for that — and without the `cache` feature
 /// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
 /// exist, so the third wrapper costs nothing a build did not ask for.
-pub type ClientBody<B, Tm> = Decompressed<Deadline<Cached<B>, Tm>>;
+pub type ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>;
 // Task 17 fix round 1: this list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `http-ng-core` type
 // reachable from the signature, a field, or a variant of something already

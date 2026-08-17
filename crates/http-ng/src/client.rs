@@ -90,6 +90,28 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
         self.config.timeouts = t;
         self
     }
+
+    /// Stop a response body after `bytes`, with a typed
+    /// [`ResponseTooLarge`](crate::ResponseTooLarge).
+    ///
+    /// **It counts what the caller receives**, after any
+    /// `Content-Encoding` is reversed, which is the axis a decompression
+    /// bomb lives on — a limit applied to the wire would pass one by
+    /// definition. `crate::Limited`'s module doc has the full argument,
+    /// including the cost: a bound of N does not promise that fewer than
+    /// N bytes crossed the wire.
+    ///
+    /// **Unset by default**, deliberately. A default ceiling would fail a
+    /// caller's legitimate large download on a number this crate picked,
+    /// which is what `TcpOpts`' every-field-off default exists to avoid.
+    ///
+    /// Independent of every `Timeouts` field: `total` bounds the
+    /// operation's *time*, and a body dripping under the rate this bounds
+    /// is stopped by neither unless both are set.
+    pub fn response_limit(mut self, bytes: u64) -> Self {
+        self.config.response_limit = Some(bytes);
+        self
+    }
     /// The base against which each request's URI is resolved.
     ///
     /// This library's answer to reqwest #988 and #213 (open since 2017 and
@@ -695,9 +717,15 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         // same way, and for the same reason — `Transport::execute`'s
         // signature is untouched by any of it.
         let body = Deadline::new(body, self.inner.timer.clone(), started, total);
+        // **Outermost**, so it counts what the caller receives rather than
+        // what crossed the wire — see `limit.rs` for why that is the side
+        // the threat is on, and why `Deadline` sits the other way round.
         Ok(http::Response::from_parts(
             parts,
-            Decompressed::new(body, decoder),
+            crate::Limited::new(
+                Decompressed::new(body, decoder),
+                self.config().response_limit,
+            ),
         ))
     }
 

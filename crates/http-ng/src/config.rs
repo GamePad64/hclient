@@ -9,6 +9,17 @@ use http_ng_proto::redirect::RedirectPolicy;
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub timeouts: Timeouts,
+    /// A ceiling on the bytes a response body may yield, or `None` for
+    /// none — see [`crate::Limited`], which is where the *which bytes*
+    /// question is answered.
+    ///
+    /// `None` by default, and that is the decision rather than an
+    /// omission: a default ceiling would fail a caller's legitimate large
+    /// download on a number this crate picked, which is the shape
+    /// `TcpOpts`' every-field-off default exists to avoid. `ureq` chooses
+    /// the other way with 10 MB; the difference is that this client's
+    /// callers include one streaming an arbitrary body to disk.
+    pub response_limit: Option<u64>,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -273,6 +284,12 @@ pub fn check_supported(
         // instead — a clock — is guaranteed by the client's type, not by a
         // runtime check, so there is nothing for `build()` to refuse.
         total: _,
+        // Nor this one, and for a related reason: the ceiling is enforced
+        // by a body wrapper this client owns, `Limited`, which sits
+        // outside everything a transport hands back. There is no
+        // capability a backend could report about it, because there is
+        // nothing a backend could do to honour or refuse it.
+        response_limit: _,
         cookies,
         cache,
     } = cfg;
