@@ -88,12 +88,16 @@ own suites are clean run alone. Whether the rate moved with v0.4's added
 load or is noise is **not distinguishable at these sample sizes**, which
 is why this paragraph says so rather than picking a side.
 
-A further **200 full workspace runs on the merged tree produced exactly
-one failure**, the select one — so the rate here is nearer 1 in 200 than
-1 in 40. The asymmetry worth recording is the machine: the 3-in-39 runs
-were taken while other work was in flight and these were not, which fits
-"timing-sensitive race" and is the first thing to vary if anyone sets out
-to capture it.
+A further **600 full workspace runs on the merged tree produced exactly
+one failure**, the select one — so the rate here is nearer 1 in 600 than
+1 in 40.
+
+**And the load hypothesis is weaker than it looked.** The asymmetry first
+recorded here was the machine: the 3-in-39 runs were taken while other
+work was in flight and the first 200 were not. Four hundred of these were
+taken with **three agents building and testing concurrently**, which is
+that condition, and produced nothing. Whatever separates the two
+environments, it is not simply how busy the host is.
 
 **That one failure was not captured, and losing it was a method mistake
 rather than bad luck.** The run's output went through `tail -2` for the
