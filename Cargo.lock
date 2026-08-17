@@ -1640,6 +1640,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-ng",
  "http-ng-core",
  "objc2",
  "objc2-foundation",

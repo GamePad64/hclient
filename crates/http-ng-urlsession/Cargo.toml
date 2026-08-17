@@ -49,6 +49,10 @@ features = [
 [dev-dependencies]
 futures-executor = "0.3"
 http-body-util = { workspace = true }
+# For the `Client`-level test: this backend refuses the OS's cookies,
+# cache and redirects precisely so `http-ng`'s own are the ones in force,
+# and that claim is only testable through `Client`.
+http-ng = { workspace = true }
 
 # NOT `[lints] workspace = true`, for the reason `http-ng-fetch`'s manifest
 # gives at length: the workspace sets `unsafe_code = "forbid"`, and `forbid`

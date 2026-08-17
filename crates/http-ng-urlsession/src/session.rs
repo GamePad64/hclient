@@ -54,6 +54,13 @@ impl UrlSession {
         cfg.setURLCache(None);
         cfg.setHTTPShouldSetCookies(false);
         let queue = NSOperationQueue::new();
+        // **Serial**, which Apple requires of a delegate queue and a fresh
+        // `NSOperationQueue` is not: its default concurrency is
+        // system-chosen, and `URLSession` asks for one operation at a time
+        // so that a task's callbacks arrive in the order they happened.
+        // Out of order, a `didReceiveData:` could reach the queue before
+        // the `didReceiveResponse:` it follows.
+        queue.setMaxConcurrentOperationCount(1);
         // **No session-level delegate, and that was a bug before it was a
         // decision.** One delegate per session means one queue for every
         // task, so `execute` polled a `Shared` nothing ever pushed to and
@@ -176,9 +183,12 @@ impl UrlSession {
                 &NSString::from_str(name.as_str()),
             );
         }
-        if let RequestBody::Full(bytes) = req.body() {
-            let data = NSData::with_bytes(bytes);
-            request.setHTTPBody(Some(&data));
+        match resolve_body(req.body())? {
+            Some(bytes) => {
+                let data = NSData::with_bytes(&bytes);
+                request.setHTTPBody(Some(&data));
+            }
+            None => {}
         }
         let task = self.session.dataTaskWithRequest(&request);
         // The task-scoped delegate: `URLSessionTask.delegate` is a
@@ -188,5 +198,58 @@ impl UrlSession {
         task.setDelegate(Some(&Delegate::as_task_protocol(&delegate)));
         task.resume();
         Ok(Retained::into_super(task))
+    }
+}
+
+/// How deep a `Rewindable` factory may nest before this gives up.
+///
+/// `http-ng`'s multipart encoder uses the same bound for the same reason:
+/// a factory that hands back another `Rewindable` is legal and a chain of
+/// them is not something to follow for ever.
+const MAX_REWIND_DEPTH: u8 = 16;
+
+/// The bytes to put on the request, or `None` for no body at all.
+///
+/// **A body this backend cannot send is a typed error, never a silent
+/// drop.** `Client` does not gate on
+/// `Capabilities::streaming_request_body`, so a `Streaming` body reaching
+/// here would otherwise go out as a request with no body — the request
+/// would succeed, and the payload would simply be gone. That is the
+/// silent no-op this workspace refuses everywhere else: an unsupported
+/// setting is an error, not an omission.
+///
+/// A `Rewindable` is unwrapped rather than refused, because its factory
+/// usually hands back a `Full` and that is a body this backend can send —
+/// the same bounded loop `http-ng`'s multipart encoder uses, and for the
+/// same reason.
+fn resolve_body(body: &RequestBody) -> Result<Option<bytes::Bytes>, Error> {
+    let refuse = |what: &str| {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            UrlSessionError(format!(
+                "URLSession here sends a buffered body only, and this request carries {what}; \
+                 `Capabilities::streaming_request_body` is `false` and says so"
+            )),
+        ))
+    };
+    match body {
+        RequestBody::Empty => Ok(None),
+        RequestBody::Full(b) => Ok(Some(b.clone())),
+        RequestBody::Streaming(_) => refuse("a streaming one"),
+        RequestBody::Rewindable(_) => {
+            let mut current = body.rewind();
+            for _ in 0..MAX_REWIND_DEPTH {
+                match current {
+                    Some(RequestBody::Full(b)) => return Ok(Some(b)),
+                    Some(RequestBody::Empty) => return Ok(None),
+                    Some(RequestBody::Streaming(_)) => {
+                        return refuse("a rewindable one whose factory streams");
+                    }
+                    Some(r @ RequestBody::Rewindable(_)) => current = r.rewind(),
+                    None => return refuse("a rewindable one that would not rewind"),
+                }
+            }
+            refuse("a rewindable one nested past this crate's depth bound")
+        }
     }
 }
