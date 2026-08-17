@@ -45,6 +45,17 @@
 //! window the request is inside `try_send_request`, hyper reports
 //! `message: None` for it, and `Failed::Sent` is not retryable.
 //!
+//! **That last sentence was half right, and the half that was wrong has
+//! since been fixed.** hyper reports `message: None` once its dispatcher
+//! has *dequeued* the request; there is a point before that at which the
+//! request is in the queue, unwritten, and `Envelope::drop` will hand it
+//! back — so `h1::claim_back` drops the connection and asks. The window
+//! this file measures is therefore one look narrower than when this text
+//! was written. What it measures has not changed: the *rate*, which is a
+//! scheduler property, and which the two arms below still cannot tell
+//! apart. `docs/pooled-reuse-race.md` has the deterministic form, which
+//! is what a rate cannot give.
+//!
 //! ```text
 //! cargo nextest run -p http-ng-native --test stale_reuse --run-ignored all \
 //!     --no-capture -j1

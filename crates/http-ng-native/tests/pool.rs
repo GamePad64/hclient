@@ -571,18 +571,38 @@ async fn room_for_every_connection_means_the_second_round_opens_none() {
 // the server really did close it, and the client really does discover it
 // exactly where the race would have put it. Everything else in the test is
 // the same server counting the same connections.
+//
+// It is a **deterministic blindfold**, and what it stands in for is a
+// probabilistic one: `tests/stale_reuse.rs` records that this race needs
+// contention rather than speed, because a starved client is one whose
+// reactor has not yet delivered the peer's `FIN` when the crate takes its
+// one deliberately non-suspending look. Hiding the EOF from exactly `n`
+// looks is that, with the scheduler taken out.
 
-/// [`Tokio`], with sockets that hide their first `n` EOFs, one per poll.
+/// [`Tokio`], with sockets that hide their first `n` EOFs, one per read
+/// that would have reported one.
 ///
-/// `n` is where in the sequence the server's close becomes visible. `1`
-/// hides it from the checkout poll and reveals it to `h1::exchange`'s look
-/// before the request is handed over — the retryable window, and the one
-/// this file is about. The window *after* that (hyper already has the
-/// request) cannot be reached this way, because how many times hyper reads
-/// per `Connection` poll is its own business and not a count a test may
-/// pin; it is covered deterministically by `h1.rs`'s
-/// `a_connection_that_ends_with_the_request_queued_fails_instead_of_hanging`,
-/// where every poll is driven by hand.
+/// `n` is where in the sequence the server's close becomes visible, and
+/// the sequence is a fact about this crate for the first two steps and
+/// about hyper afterwards:
+///
+/// | `n` | who finds the close | outcome |
+/// |---|---|---|
+/// | 0 | the pool's checkout poll (`h1::is_reusable`) | walked past, fresh connection |
+/// | 1 | `h1::exchange`'s look before the request is handed over | `Failed::NotSent`, retried |
+/// | 2 | hyper's first read, with the request queued and unwritten | `h1::claim_back` gets it back, retried |
+/// | 3+ | hyper's read after it has written the request | `Failed::Sent`, the caller is told |
+///
+/// The three tests below are rows 1, 2 and 3; row 0 is
+/// [`a_connection_the_server_closed_while_idle_is_not_handed_out`], which
+/// needs no wrapper at all.
+///
+/// **The mapping is only exact while the server's close is late**, and
+/// that is why [`race_lost_after`] sets [`Behaviour::close_delay`]. With
+/// a prompt close the *first* exchange's own teardown read can meet the
+/// `FIN` and spend one of the `n`, which shifts every row by one — seen
+/// while writing this, as a single arm of one sweep answering out of
+/// turn, and gone in 48 arms since.
 #[derive(Clone, Debug)]
 struct LateEof(Tokio, u8);
 
@@ -672,23 +692,26 @@ impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
     }
 }
 
-/// The request that loses the race must still succeed, on a fresh
-/// connection, because the pool is what put it in that position.
+/// One run of the race, with the close made visible after exactly
+/// `hidden` looks — see [`LateEof`] for what each count means.
 ///
-/// Without the retry this is not a slow request or a degraded one — it is
-/// an error returned to a caller who did nothing wrong, on a client that
-/// would have worked before v0.2 W2. That is why the retry ships with the
-/// pool rather than after it.
-#[tokio::test]
-async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
+/// Returns what the caller got for the second request and how many
+/// connections the server accepted, which is the only claim any test in
+/// this file makes about reuse (see the module doc).
+///
+/// [`Behaviour::close_delay`] is what keeps the counting exact: the
+/// server must not close until the first exchange has finished with its
+/// socket, or that exchange's own teardown read spends one of the looks.
+async fn race_lost_after(hidden: u8) -> (Result<u16, String>, usize) {
     let closes = Arc::new(AtomicUsize::new(0));
     let (addr, accepted) = counting_server(Behaviour {
         responses_before_close: Some(1),
         closes: Some(Arc::clone(&closes)),
+        close_delay: Duration::from_millis(150),
         ..Behaviour::default()
     });
     let transport = Native::new(
-        LateEof(Tokio, 1),
+        LateEof(Tokio, hidden),
         Rustls::with_webpki_roots(),
         SystemDns::new(Tokio),
     );
@@ -702,29 +725,109 @@ async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
     assert_eq!(first.collect().await.unwrap().text().unwrap(), "ok");
 
     // The server has closed — waited for rather than assumed, because the
-    // whole fixture below is about *when* the `FIN` becomes visible, and
-    // a close that has not happened yet is not a late `FIN`, it is a live
+    // whole fixture is about *when* the `FIN` becomes visible, and a close
+    // that has not happened yet is not a late `FIN`, it is a live
     // connection. The same barrier as
     // `checkout_walks_past_a_dead_connection_to_a_live_one`.
     server_has_closed(&closes, 1).await;
-    // The `FIN` is in the kernel, and the socket will hide it for exactly
-    // one poll — which is the poll at checkout.
+    // The `FIN` is in the kernel; from here it is `LateEof` that decides
+    // who is allowed to see it.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let second = tokio::time::timeout(BOUND, client.get(&url).send())
         .await
         .expect("must not hang");
-    let second = second.expect(
-        "the request lost the race against the server's close and must have been \
-         retried on a fresh connection, not returned as an error",
-    );
-    assert_eq!(second.status(), 200);
-    assert_eq!(second.collect().await.unwrap().text().unwrap(), "ok");
+    let out = match second {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            assert_eq!(
+                resp.collect().await.unwrap().text().unwrap(),
+                "ok",
+                "a response that arrives must be the whole response"
+            );
+            Ok(status)
+        }
+        Err(e) => Err(format!("{e:?}")),
+    };
+    (out, accepted.load(Ordering::SeqCst))
+}
 
+/// The request that loses the race must still succeed, on a fresh
+/// connection, because the pool is what put it in that position.
+///
+/// Without the retry this is not a slow request or a degraded one — it is
+/// an error returned to a caller who did nothing wrong, on a client that
+/// would have worked before v0.2 W2. That is why the retry ships with the
+/// pool rather than after it.
+#[tokio::test]
+async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
+    let (out, accepted) = race_lost_after(1).await;
     assert_eq!(
-        accepted.load(Ordering::SeqCst),
-        2,
+        out,
+        Ok(200),
+        "the request lost the race against the server's close and must have been \
+         retried on a fresh connection, not returned as an error"
+    );
+    assert_eq!(
+        accepted, 2,
         "the retry must be on a second, fresh connection"
+    );
+}
+
+/// **One look further, and this is the window that used to be lost.**
+///
+/// Here the close is hidden from both of this crate's own looks and
+/// revealed to hyper's first read — which happens before hyper writes
+/// anything, because `dispatch.rs`'s `poll_loop` reads before it writes
+/// and a closed read side makes `can_write_head()` false. So the request
+/// is sitting in hyper's queue, unwritten, on a connection that has
+/// finished; hyper says nothing about it, and the crate used to report
+/// `Failed::Sent` and hand the caller an error.
+///
+/// It is the same request in the same position as the test above — not a
+/// byte of it on the wire — so the same answer is the only consistent
+/// one. `h1::claim_back` is what asks for it, and the two accepts below
+/// are the fresh connection it was retried on.
+#[tokio::test]
+async fn a_request_hyper_took_but_never_wrote_is_retried_too() {
+    let (out, accepted) = race_lost_after(2).await;
+    assert_eq!(
+        out,
+        Ok(200),
+        "hyper never dequeued this request, so dropping its dispatcher hands it \
+         back and the retry is the same request rather than a second one"
+    );
+    assert_eq!(
+        accepted, 2,
+        "the retry must be on a second, fresh connection"
+    );
+}
+
+/// **The control, and the boundary the widening must not cross.**
+///
+/// One look later again: hyper has taken the request apart and written it
+/// out, so there is no `http::Request` left to hand back and no way to
+/// know whether the server acted on the bytes. The caller gets the error,
+/// the server accepts nothing further, and that is at-most-once behaving
+/// as designed rather than a gap — see `pool.rs`'s module doc for why
+/// choosing selectively would need a notion of method safety this
+/// codebase does not have.
+///
+/// Without this test the widening above would be indistinguishable from
+/// "retry everything".
+#[tokio::test]
+async fn a_request_already_on_the_wire_is_not_retried() {
+    let (out, accepted) = race_lost_after(3).await;
+    let Err(e) = out else {
+        panic!("the request went out on a connection that then died: {out:?}")
+    };
+    assert!(
+        e.contains("Connect"),
+        "the failure is the connection's, and it must say so: {e}"
+    );
+    assert_eq!(
+        accepted, 1,
+        "no second connection: the request was not repeated"
     );
 }
 

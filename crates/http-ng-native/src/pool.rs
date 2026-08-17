@@ -112,10 +112,10 @@
 //!    has it too — so it is handled rather than prevented: see the retry in
 //!    `Native::execute`.
 //!
-//!    **How far the retry reaches, corrected.** This paragraph used to end
-//!    "which is the reason this pool does not make previously reliable
-//!    requests fail intermittently", and that is true of the window the
-//!    retry covers and false past it. The retry fires on
+//!    **How far the retry reaches, corrected twice.** This paragraph used
+//!    to end "which is the reason this pool does not make previously
+//!    reliable requests fail intermittently", and that is true of the
+//!    window the retry covers and false past it. The retry fires on
 //!    [`crate::established::Failed::NotSent`] — hyper handing the request
 //!    back because not a byte of it reached the wire. If the server's close
 //!    lands *after* the request goes out, its kernel answers `RST`, hyper
@@ -131,6 +131,22 @@
 //!    five runs out of five; `docs/v02-acceptance.md` has the whole
 //!    run-down, including why `tests/pool.rs` now waits for the server to
 //!    say it has closed instead of sleeping and hoping.
+//!
+//!    **The second correction moved the line, and it moved it in our
+//!    favour.** "Not a byte of it reached the wire" is the rule and it
+//!    still is; what was wrong was where this crate believed that stopped
+//!    being knowable. The window has **three** points, not two: our own
+//!    look, hyper's first read with the request still queued, and hyper's
+//!    read after it has written. At the middle one hyper refuses to write
+//!    at all — a closed read side makes `can_write_head()` false — and
+//!    leaves the request whole in its queue, from where `Envelope::drop`
+//!    hands it back the moment the connection is dropped.
+//!    [`crate::h1::claim_back`] asks for it, so that point is retried like
+//!    the first rather than reported like the third. The third is
+//!    unchanged, and the paragraph above is about it.
+//!    `docs/pooled-reuse-race.md` has both reproductions, the sweep from
+//!    outside the client, and why the two expensive fixes named in
+//!    `docs/nagle-and-nodelay.md` §6 are still refused.
 //!
 //! # What is in the key, and why each part is there
 //!
