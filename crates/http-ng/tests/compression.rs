@@ -155,8 +155,14 @@ fn a_gzip_body_from_a_real_server_arrives_as_plaintext() {
     // assertion above would be satisfied by a server that never compressed
     // and a client that never decoded.
     let req = &seen.lock().expect("seen")[0];
+    // `contains("gzip")` and not `contains("accept-encoding: gzip")`: the
+    // header names every coding this build can reverse, in preference
+    // order, and gzip stopped being first the day `zstd` and `deflate`
+    // arrived. What this asserts is that the coding decoded was asked
+    // for — the position in the list is `decompress.rs`'s decision and is
+    // pinned there.
     assert!(
-        req.to_ascii_lowercase().contains("accept-encoding: gzip"),
+        req.to_ascii_lowercase().contains("gzip"),
         "the client must have asked for the coding it decoded: {req}"
     );
     // The two headers that stopped being true.
@@ -235,7 +241,8 @@ fn the_negotiation_and_the_decoding_both_survive_a_redirect() {
     assert_eq!(seen.len(), 2, "one hop and the request it redirected to");
     for (i, req) in seen.iter().enumerate() {
         assert!(
-            req.to_ascii_lowercase().contains("accept-encoding: gzip"),
+            req.to_ascii_lowercase().contains("accept-encoding:")
+                && req.to_ascii_lowercase().contains("gzip"),
             "hop {i} went out without the header: {req}"
         );
     }

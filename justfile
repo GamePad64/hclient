@@ -861,9 +861,22 @@ graph-idn-backend:
 
 # every feature combination compiles (58 of them)
 features:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo hack --workspace \
         --exclude http-ng-idn --exclude http-ng-rt-embassy \
         --each-feature --no-dev-deps check
+    # And the POWERSET over the four response codings, which
+    # `--each-feature` does not reach: it builds each feature on its own,
+    # where `decompress.rs`'s `#[cfg]` shape is about the COMBINATIONS —
+    # the wildcard arm that catches "whichever codings this build has no
+    # decoder for" is `not(all(..))` of four, and the exhaustive arm is
+    # `not(any(..))` of four, so exactly one of the sixteen sets is the
+    # boundary for each. Two of sixteen were checked before this line, and
+    # `cargo hack --each-feature` would have gone on saying `ok`.
+    cargo hack -p http-ng --feature-powerset \
+        --include-features gzip,brotli,deflate,zstd \
+        --no-dev-deps check
 
 # every dependency-graph claim, together
 graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport graph-quinn-adapter-is-shared graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend

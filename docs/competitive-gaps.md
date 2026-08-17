@@ -221,13 +221,13 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | strip `Authorization` across origins | Y | Y | — | Y\* | (browser's) | ng also strips `AllowEarlyData` there |
 | cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
 | **public-suffix rules in the jar** | **Y** | **N** | **N** | Y\* | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it |
-| **a pluggable cookie store** | **N** | Y | — | Y\* | n/a | `reqwest…client.rs:1213` takes any `CookieStore`. Here `CookieJar<P>` *is* generic over its suffix list, and `ClientBuilder::cookie_jar` pins `P = BuiltinList` (`client.rs:244`) |
+| **a pluggable cookie store** | Y | Y | — | Y\* | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
 | RFC 9111 response cache | **Y** | N | N | N | (browser's) | `http-ng-cache`: freshness, validation, `Vary`, both sides' directives |
-| **a pluggable cache store** | **N** | n/a | n/a | n/a | n/a | `CacheStore` is a trait (`http-ng-cache/src/store.rs:257`) and `HttpCache<S = MemoryStore>` is generic — and `ClientBuilder::cache` takes `HttpCache` with the default parameter (`client.rs:313`), so a disk-backed store cannot reach `Client` |
+| **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
 | gzip | Y\* | Y\* | Y\* | Y | (browser's) | |
 | brotli | Y\* | Y\* | Y\* | Y | (browser's) | |
-| deflate | **N** | Y\* | N | Y | (browser's) | refused — see §4 |
-| zstd | **N** | Y\* | N | Y | (browser's) | refused — see §4 |
+| deflate | Y\* | Y\* | N | Y | (browser's) | **both wire formats under one token** — RFC 9110 §8.4.1.2's zlib and the raw stream its own Note records, chosen from the first two bytes rather than after a failure. No new crate: `flate2` was already here for `gzip` |
+| zstd | Y\* | Y\* | N | Y | (browser's) | `ruzstd`, a decoder-first pure-Rust crate. The window is capped at RFC 8878 §3.1.1.1.2's recommended 8 MB — `ruzstd`'s own default is 100 MB — and the frame's XXH64 content checksum is compared, which `ruzstd` reads and never checks |
 | request-body compression | **N** | N | N | Y | N | refused in the design spec §9 |
 | automatic retry | Y\* | N | Y\* | N | n/a | ng retries a `NotSent` pooled write and replays a `425` once; neither is a general retry policy |
 
@@ -538,7 +538,8 @@ this document could fail.
 
 | absence | the rule that refuses it | where |
 |---|---|---|
-| `deflate` and `zstd` decoding | a client must not advertise a coding it may guess wrong about; `zstd` is a third dependency for a coding no server sends unasked | `http-ng/src/decompress.rs:44` |
+| ~~`deflate` and `zstd` decoding~~ | **reversed, and the row is kept because the reversal is the interesting part.** The `deflate` rule — *a client must not advertise a coding it may guess wrong about* — assumed the guess had to be made after a failure, as curl's is; it is answered from the first two bytes, which is a rule with no window. The `zstd` rule was *a third dependency for a coding no server sends unasked*, and the answer is that both premises were checked rather than argued: `deflate` costs **no** crate at all, and `zstd` costs two | `http-ng/src/decompress.rs` |
+| `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `http-ng/src/decompress.rs` |
 | request-body compression | server support is inconsistent; a clean manual path instead | design spec §9 |
 | reading `HTTP_PROXY`/`NO_PROXY` from the environment | reading the environment is *policy* and belongs to whoever builds the transport; a list the caller wrote is not policy | AGENTS.md, proxy section |
 | a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound | `docs/proxy-design.md` §1 |

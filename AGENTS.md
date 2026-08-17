@@ -1283,6 +1283,75 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Two more codings, and both premises for refusing them were wrong
+
+`deflate` and `zstd`, behind features of their own, off by default like
+`gzip` and `brotli` beside them. `decompress.rs` had refused both in
+writing, and the reversal is worth more than the codings.
+
+**`deflate` was refused because "a client must not advertise a coding it
+may guess wrong about".** RFC 9110 §8.4.1.2 specifies zlib and its own
+Note records that a long tail of servers sends the raw RFC 1951 stream
+instead — so the token really is ambiguous. What was wrong is the
+assumption that the guess must be made *after* a failure, which is how
+curl does it: `lib/content_encoding.c` tries zlib, and on `Z_DATA_ERROR`
+calls `inflateReset2(z, -MAX_WBITS)` and replays the buffer — **but only
+while no output has been produced yet**, a rule with a window. The
+question is answered here **from the first two bytes, before any output
+exists**, and it is not probability: RFC 1950's `CM == 8` cannot open a
+conformant raw stream, because RFC 1951 §3.2.3 packs `BFINAL` into bit 0
+and `BTYPE` into bits 1-2, so a low nibble of 8 is a stored block with the
+padding bit §3.2.4 tells encoders to zero. The `% 31` check is a second,
+independent one. **It costs no crate at all** — `flate2` was already here
+for `gzip`, and RFC 9110's `deflate` is the same RFC 1951 stream under a
+different wrapper.
+
+**`zstd` was refused as "a third dependency for a coding no server sends
+unasked".** It is two crates, `ruzstd` + `twox-hash`, and it is a decoder
+-first pure-Rust crate for the reason `flate2`'s `rust_backend` is chosen
+over `zlib-ng`: this crate also builds for `wasm32-unknown-unknown` and
+`wasm32-wasip2`, where a C build script is not a dependency but a wall.
+
+Three things about zstd are ours rather than the library's. **The window
+is capped at 8 MB** — RFC 8878 §3.1.1.1.2's recommended interoperability
+ceiling and the number Chrome settled on, against `ruzstd`'s own 100 MB
+default — because a frame declares its own `Window_Size` and `Limited`
+structurally cannot reach it: `Limited` counts bytes *yielded* and a
+window is allocated before the first byte is yielded. **The frame's XXH64
+content checksum is compared**, which `ruzstd` does not do: it exposes
+`get_checksum_from_data()` and `get_calculated_checksum()` and compares
+them nowhere. And **concatenated frames are one body** (RFC 8878 §3.1),
+which neither `ruzstd` entry point crosses on its own.
+
+**The `flate2` writers could not be used, and a wire test is what found
+it.** `write::ZlibDecoder::try_finish` calls `zio::finish`, which runs the
+decompressor until it stops producing and returns `Ok(())` **without ever
+asking whether the stream ended** (flate2 1.1, `src/zio.rs:173`) — so a
+truncated body reached the caller as a complete, shorter document, the
+exact defect the trailer checks on the other three codings exist against.
+`flate2::Decompress` answers `Status::StreamEnd`, and `Decompress::new(
+zlib_header)` is the sniff's switch in one type instead of two.
+
+Two method notes, both this file's recurring lessons landing again.
+`tests/compression.rs` already warns that a truncation under
+`Content-Length` is reported by the *transport*, so the decoder's
+end-of-stream check is never reached — the first draft of the new tests
+was written that way and passed with `ErrorKind::Body` over a decoder that
+had no check at all. And the trailing-bytes refusal was written as a
+mutation **control** on the reasoning that no well-formed body has bytes
+after the stream; a *server* can send them, so it was reachable and
+untested — a gap rather than a control. It has a test, and the control is
+now the `Sniffing` arm `push` documents as unreachable, verified by
+replacing it with a `panic!` and running the suite.
+
+**One check that could not fail was fixed with them.** `just features`
+runs `cargo hack --each-feature`, which builds each feature *alone* — and
+`decompress.rs`'s `#[cfg]` shape is about the **combinations**: the
+wildcard arm catching "whichever codings this build has no decoder for" is
+`not(all(..))` of four and the exhaustive arm is `not(any(..))` of four,
+so exactly one of the sixteen sets is each one's boundary. The recipe now
+runs the powerset over the four as well, and fails closed on either half.
+
 ### Four crates this file did not name, and what each is for
 
 Recorded because `docs/competitive-gaps.md` found them missing from here

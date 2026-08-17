@@ -68,9 +68,40 @@ json = ["dep:serde", "dep:serde_json"]
 # read by both, so the two cannot drift apart into a client that asks for
 # bytes it cannot read.
 #
-# CI's `test` job runs `--all-features`, so both codings stay under test.
+# CI's `test` job runs `--all-features`, so all four codings stay under
+# test — and `--all-features` is now two of SIXTEEN combinations rather
+# than two of four, which is why `just features` (`cargo hack
+# --each-feature`) is no longer enough on its own for this corner: the
+# powerset over these four is checked with
+# `cargo hack -p http-ng --feature-powerset --include-features
+# gzip,brotli,deflate,zstd --no-dev-deps check`, and the `#[cfg]` shape in
+# `decompress.rs` is written so that it has to be.
 gzip = ["dep:flate2"]
 brotli = ["dep:brotli-decompressor"]
+# `deflate`, and it is the one coding here that costs NO new crate: RFC
+# 9110 §8.4.1.2 makes it zlib (RFC 1950) wrapping the same DEFLATE stream
+# (RFC 1951) gzip carries, so `flate2` — already pulled in by `gzip`
+# above — decodes it with a different type and no new dependency. It is a
+# separate feature all the same, because what a feature buys back here is
+# CODE rather than a crate, and because the two are not the same claim: a
+# build that asks for `deflate` is taking on that coding's wire ambiguity
+# (see `decompress.rs`'s module doc, "The `deflate` wrapper question"),
+# and one that asks for `gzip` is not.
+deflate = ["dep:flate2"]
+# `zstd`, through `ruzstd` — a DECODER-first crate the way
+# `brotli-decompressor` is, and pure Rust for the reason the `flate2` line
+# below gives for `rust_backend`: the `zstd` crate binds libzstd through
+# `zstd-sys`, which is C with a build script, in a crate that also builds
+# for `wasm32-unknown-unknown` and `wasm32-wasip2`.
+#
+# It is the heaviest of the four to switch on and the one most worth
+# leaving off: two crates (`ruzstd` + `twox-hash`, both MIT, both already
+# permitted by `deny.toml` without widening it) against `deflate`'s zero.
+# `twox-hash` arrives with `ruzstd`'s default `hash` feature and is what
+# checks a frame's XXH64 content checksum — kept ON deliberately, because
+# `ruzstd` READS that checksum and never compares it, so this crate does
+# (`ZstdStream::verify_checksum`).
+zstd = ["dep:ruzstd"]
 # A cookie jar owned by the `Client` — `ClientBuilder::cookie_jar`, and the
 # `http_ng::cookie` re-export that names its type. OFF by default, the same
 # call as `json`/`gzip`/`brotli` above and made on the same measurement
@@ -150,6 +181,13 @@ http-ng-proto = { workspace = true }
 # dependency).
 serde         = { version = "1", default-features = false, features = ["std"], optional = true }
 serde_json    = { version = "1", default-features = false, features = ["std"], optional = true }
+# The `gzip` AND `deflate` features — one crate, two codings, because RFC
+# 9110 §8.4.1.2's `deflate` is RFC 1951 inside an RFC 1950 wrapper and
+# `gzip` is the same RFC 1951 inside an RFC 1952 one. `flate2::write::`
+# has a push-shaped decoder for each (`GzDecoder`, `ZlibDecoder`,
+# `DeflateDecoder`), which is what lets `Decompressed::poll_frame` drive
+# all three a frame at a time.
+#
 # The `gzip` feature. Default features (`rust_backend` = `miniz_oxide`), NOT
 # `zlib`/`zlib-ng`: those are C, which would put a build script and a linked
 # native library into the graph of a crate that also builds for
@@ -168,6 +206,29 @@ flate2        = { version = "1.1", optional = true }
 # into an error rather than a short read. Licence `BSD-3-Clause OR MIT`, its
 # two `alloc-*-stdlib` dependencies `BSD-3-Clause` — again already allowed.
 brotli-decompressor = { version = "5.0", optional = true }
+# The `zstd` feature. `ruzstd`, not `zstd`: the latter is libzstd through
+# `zstd-sys`, which is C with a build script — the same objection the
+# `flate2` line above records against `zlib`/`zlib-ng`, and it bites
+# harder here because there is no pure-Rust fallback inside that crate to
+# fall back to.
+#
+# `default-features` are kept (`std` + `hash`) and both are load-bearing:
+# `std` is what makes `ruzstd::io::Read` `std::io::Read`, so the same
+# `write_all`/`Read` vocabulary the other two decoders use applies, and
+# `hash` is `twox-hash`, without which a frame's XXH64 content checksum
+# cannot be recomputed at all — see `ZstdStream::verify_checksum`, which
+# exists because `ruzstd` reads that checksum off the wire and never
+# compares it to anything.
+#
+# `ruzstd` also carries an ENCODER this crate never touches, unlike
+# `brotli-decompressor`, which was chosen over `brotli` precisely to avoid
+# one. There is no feature to remove it in 0.9 — checked, the crate's
+# whole feature list is `std`, `hash`, `dict_builder`, `fuzz_exports`,
+# `rustc-dep-of-std` — so the cost is dead code that LTO drops rather than
+# a choice this manifest can make. Licences, checked with `cargo deny
+# --all-features check` before committing: `MIT` (ruzstd, twox-hash),
+# already in `deny.toml`'s allow-list, nothing widened.
+ruzstd        = { version = "0.9", optional = true }
 # SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
 # isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely
@@ -314,6 +375,18 @@ tokio              = { version = "1", features = ["rt-multi-thread"] }
 # whose test file is cfg'd out.
 flate2             = { version = "1.1" }
 brotli             = { version = "8.0", default-features = false, features = ["std"] }
+# The zstd ENCODER for the same server, and it is an oracle rather than a
+# convenience — the role `multer` plays for `multipart.rs` and `url` for
+# `uri.rs` one crate over. This is `zstd` 0.13, i.e. **libzstd itself**
+# through `zstd-sys`, which is the reference implementation and shares not
+# one line with the `ruzstd` decoder in `[dependencies]` above: a decoder
+# checked only against its own encoder is green for any self-consistent
+# mistake about what zstd is. The C-and-a-build-script objection that
+# keeps this crate out of `[dependencies]` does not apply on this side of
+# the line — dev-dependencies are outside `-e normal`, no consumer links
+# them, `deny.toml`'s `exclude-dev` keeps them out of the shipped graph,
+# and this test file only ever builds for the host.
+zstd               = { version = "0.13", default-features = false }
 # `tests/multipart.rs`'s oracle, and it is an oracle rather than a
 # convenience: an encoder checked against its own idea of itself is green
 # for any self-consistent mistake, so the parts are read back by a parser

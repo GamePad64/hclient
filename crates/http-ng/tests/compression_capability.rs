@@ -92,14 +92,21 @@ fn the_baseline_transport_does_get_its_body_decoded() {
 
     let got = get(&c).expect("decodes");
     assert_eq!(got.text().unwrap(), PLAINTEXT);
-    assert_eq!(
-        c.transport().requests()[0]
-            .headers
-            .get(http::header::ACCEPT_ENCODING)
-            .map(|v| v.to_str().unwrap().to_owned())
-            .as_deref(),
-        Some("gzip, br"),
-        "a transport that does not decode must be asked for a coding"
+    // The property, not the literal. This file is gated on `gzip` alone,
+    // so the header's exact value depends on which of the four codings
+    // this build compiled in — `"gzip"`, `"br, gzip"`, `"zstd, br, gzip,
+    // deflate"` are all correct answers here. What is asserted is what
+    // this test is named after: the coding that was decoded was asked
+    // for. The full list and its order are `decompress.rs`'s decision and
+    // are pinned by its own tests, which can see `Decoders`.
+    let asked = c.transport().requests()[0]
+        .headers
+        .get(http::header::ACCEPT_ENCODING)
+        .map(|v| v.to_str().unwrap().to_owned())
+        .expect("a transport that does not decode must be asked for a coding");
+    assert!(
+        asked.split(", ").any(|t| t == "gzip"),
+        "the body decoded was gzip and the header must name it: {asked}"
     );
 }
 
@@ -235,7 +242,7 @@ fn an_unknown_coding_is_left_untouched_rather_than_half_handled() {
             .expect("supported");
     c.transport().push_response_bytes(
         http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "zstd")
+            .header(http::header::CONTENT_ENCODING, "compress")
             .header(http::header::CONTENT_LENGTH, "3")
             .body(vec![Bytes::from_static(b"abc")])
             .unwrap(),
@@ -243,7 +250,7 @@ fn an_unknown_coding_is_left_untouched_rather_than_half_handled() {
 
     let got = get(&c).expect("nothing to decode, nothing to fail");
     assert_eq!(got.bytes().as_ref(), b"abc");
-    assert_eq!(got.headers()[http::header::CONTENT_ENCODING], "zstd");
+    assert_eq!(got.headers()[http::header::CONTENT_ENCODING], "compress");
     assert_eq!(
         got.headers()[http::header::CONTENT_LENGTH],
         "3",

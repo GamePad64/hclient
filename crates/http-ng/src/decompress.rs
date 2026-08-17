@@ -38,15 +38,104 @@
 //! — the same way: the bound is on the bytes the server sent, which is the
 //! only quantity a client can hold a server to.
 //!
+//! # The `deflate` wrapper question, and why it is answered by looking
+//!
+//! RFC 9110 §8.4.1.2 is unambiguous about what the token means and
+//! equally unambiguous that the wire is not:
+//!
+//! > The "deflate" coding is a "zlib" data format [RFC1950] containing a
+//! > "deflate" compressed data stream [RFC1951] […]
+//! >
+//! > | *Note:* Some non-conformant implementations send the "deflate"
+//! > | compressed data without the zlib wrapper.
+//!
+//! So a client that advertises `deflate` is taking on a guess, and the
+//! only question is where the guess is made. **It is made once, from the
+//! first two bytes, before a single byte of output exists** —
+//! [`DeflateStream::looks_like_zlib`]. A caller gets the same thing for
+//! both encodings on the wire: the plaintext, `Content-Encoding` and
+//! `Content-Length` stripped, and [`Decompressed::coding`] reading
+//! `"deflate"` — which is what that accessor promises, the token *as it
+//! appeared on the wire*, and the wire does not distinguish them either.
+//! A stream that then fails to decode is [`DecodeFailed`] with
+//! `coding == "deflate"`, never a short body and never the encoded bytes
+//! handed on as if they were plain.
+//!
+//! The reason two bytes are enough is not probability, it is RFC 1951
+//! §3.2.3. zlib's first byte carries `CM` in its low nibble and `deflate`
+//! is `CM == 8`; a RAW stream's first byte carries `BFINAL` in bit 0 and
+//! `BTYPE` in bits 1-2, so a low nibble of `8` means `BFINAL = 0`,
+//! `BTYPE = 00` — a stored block — **with bit 3 set**, and §3.2.4 has a
+//! decoder skip the remaining bits of that byte, which every encoder
+//! therefore writes as zero. A conformant raw stream cannot present
+//! `CM == 8`. The `(CMF << 8 | FLG) % 31 == 0` check is a second,
+//! independent one.
+//!
+//! curl answers the same question the other way, and it is worth knowing
+//! which is stronger. `lib/content_encoding.c` always tries zlib and, on
+//! `Z_DATA_ERROR`, calls `inflateReset2(z, -MAX_WBITS)` and replays the
+//! buffer — but only while `zlib_init == ZLIB_INIT`, and the comment
+//! three lines below says why: *"If we are in a state that would wrongly
+//! allow restart in raw mode at the next call, assume output has already
+//! started."* A retry is available only before the first output byte, so
+//! it is a rule with a window; looking at the header is a rule without
+//! one, and it needs no replay buffer beyond those two bytes.
+//!
+//! # The `zstd` window, which is the one thing a server can make us
+//! allocate
+//!
+//! RFC 8878 §3.1.1.1.2: *"To properly decode compressed data, a decoder
+//! will need to allocate a buffer of at least Window_Size bytes"*, and
+//! `Window_Size` is declared in the frame header by whoever compressed
+//! it — up to 3.75 TB. The same section grants the defence and names the
+//! number to use:
+//!
+//! > In order to protect decoders from unreasonable memory requirements,
+//! > a decoder is allowed to reject a compressed frame that requests a
+//! > memory size beyond the decoder's authorized range.
+//! >
+//! > For improved interoperability, it's recommended for decoders to
+//! > support values of Window_Size up to 8 MB and for encoders not to
+//! > generate frames requiring a Window_Size larger than 8 MB.
+//!
+//! [`ZSTD_MAX_WINDOW`] is that 8 MB, and it is the same answer Chrome
+//! reached for `Content-Encoding: zstd` (`ZSTD_d_windowLogMax`, 8 MiB,
+//! with its own net error code for the frames it turns away). `ruzstd`
+//! defaults to **100 MB** — `DEFAULT_MAX_WINDOW_SIZE`, read rather than
+//! assumed — so this is a narrowing of somebody else's default and not a
+//! belt on a bare waist. The check is made in `ruzstd` *before* the
+//! allocation (`FrameDecoderState::new` calls `check_window_size` and
+//! only then `DecoderScratch::new(window_size)`), so a rejected frame
+//! costs nothing.
+//!
+//! **[`crate::Limited`] cannot stand in for this**, which is why the
+//! number is here at all: it counts bytes yielded to the caller, and a
+//! window is one allocation made before the first byte is yielded. Two
+//! further facts, both measured by reading `ruzstd` 0.9:
+//!
+//! - The window is not always reserved up front. `DecoderScratch::new`
+//!   builds an EMPTY ring buffer that grows with the data, so a first
+//!   frame declaring 8 MB and carrying ten bytes allocates ten bytes'
+//!   worth. `DecodeBuffer::reset` — the path a SECOND frame takes on the
+//!   same decoder — does `buffer.reserve(window_size)` eagerly. So the
+//!   up-front allocation exists and needs two frames to reach.
+//! - While a frame is unfinished the decoder must RETAIN `Window_Size`
+//!   decoded bytes to resolve back-references, so up to 8 MB of
+//!   plaintext can be held before any of it is handed over, whatever
+//!   [`crate::Limited`] was set to. That is the cost of the coding, not
+//!   of this wrapper.
+//!
 //! # What is NOT here
 //!
 //! - **Request-body compression.** Response only; out of scope for W5.
-//! - **`deflate` and `zstd`.** `deflate` is genuinely ambiguous on the
-//!   wire (RFC 9110 says zlib, a long tail of servers sends raw), and a
-//!   client that advertises a coding it may then guess wrong about is a
-//!   worse client than one that never asks. `zstd` is a third dependency
-//!   for a coding no server sends unasked. Neither is advertised, so
-//!   neither can arrive.
+//! - **`compress`/`x-compress`.** RFC 9110 §8.4.1.1's LZW coding. No
+//!   decoder, so it is never advertised and never matched.
+//! - **A `q`-value on `Accept-Encoding`.** The header is a plain list in
+//!   preference order (see [`Decoders::PREFERENCE`]); RFC 9110 §12.5.3
+//!   allows weights and nothing here needs one, because no answer in the
+//!   set is worse than no answer at all.
+//! - **Telling a caller which `deflate` arrived.** See above: the wire
+//!   does not distinguish them, so neither does the accessor.
 //! - **Tidying the headers of a transport that decoded for us.** Under
 //!   [`DecompressionSupport::Internal`] the response may still carry a
 //!   `Content-Encoding` and a `Content-Length` describing the wire rather
@@ -73,6 +162,8 @@ use std::task::{Context, Poll};
 pub(crate) enum Coding {
     Gzip,
     Brotli,
+    Deflate,
+    Zstd,
 }
 
 impl Coding {
@@ -81,6 +172,8 @@ impl Coding {
         match self {
             Coding::Gzip => "gzip",
             Coding::Brotli => "br",
+            Coding::Deflate => "deflate",
+            Coding::Zstd => "zstd",
         }
     }
 
@@ -104,11 +197,20 @@ impl Coding {
             Coding::Brotli => Some(Decoder::Brotli(Some(Box::new(
                 brotli_decompressor::writer::DecompressorWriter::new(Vec::new(), BROTLI_BUFFER),
             )))),
+            #[cfg(feature = "deflate")]
+            Coding::Deflate => Some(Decoder::Deflate(Box::new(DeflateStream::new()))),
+            #[cfg(feature = "zstd")]
+            Coding::Zstd => Some(Decoder::Zstd(Box::new(ZstdStream::new()))),
             // Whichever codings this build has no decoder for. Written as
             // a wildcard rather than named arms because which names are
             // left depends on the feature set, and `#[cfg]`-ing the arm
-            // list twice over would say the same thing less clearly.
-            #[cfg(not(all(feature = "gzip", feature = "brotli")))]
+            // list four times over would say the same thing less clearly.
+            #[cfg(not(all(
+                feature = "gzip",
+                feature = "brotli",
+                feature = "deflate",
+                feature = "zstd"
+            )))]
             _ => None,
         }
     }
@@ -131,30 +233,57 @@ impl Coding {
 pub(crate) struct Decoders {
     gzip: bool,
     brotli: bool,
+    deflate: bool,
+    zstd: bool,
 }
 
 impl Decoders {
+    /// Every coding this crate knows how to name, **in the order they go
+    /// into `Accept-Encoding`**, which is a decision rather than the order
+    /// they were written in.
+    ///
+    /// Best first, and `deflate` deliberately LAST. RFC 9110 §12.5.3 puts
+    /// no meaning on the order of an unweighted list, so nothing here is
+    /// entitled to a particular answer — but a server that walks the list
+    /// and takes the first token it supports is the common
+    /// implementation, and the one coding whose wire format this client
+    /// has to GUESS at (see the module doc) is the one to be offered
+    /// least often. Browsers send `gzip, deflate, br, zstd`, which is
+    /// chronological rather than preferential; correctness here does not
+    /// depend on either order, only exposure does.
+    ///
+    /// One array, three readers: [`Self::accept_encoding`] walks it,
+    /// [`Self::has`] and [`Coding::token`] are what it walks with, and
+    /// the tests iterate it so that adding a fifth coding without
+    /// teaching `coding()` to match it fails a line.
+    pub(crate) const PREFERENCE: [Coding; 4] =
+        [Coding::Zstd, Coding::Brotli, Coding::Gzip, Coding::Deflate];
+
     /// What this build can reverse, from the features that pulled the
     /// decoders in.
     pub(crate) const fn compiled_in() -> Self {
         Self {
             gzip: cfg!(feature = "gzip"),
             brotli: cfg!(feature = "brotli"),
+            deflate: cfg!(feature = "deflate"),
+            zstd: cfg!(feature = "zstd"),
         }
     }
 
     /// Nothing may be reversed — what the capability gate returns for a
-    /// transport that decodes for us, and what a build with neither
-    /// feature has anyway.
+    /// transport that decodes for us, and what a build with none of the
+    /// features has anyway.
     pub(crate) const fn none() -> Self {
         Self {
             gzip: false,
             brotli: false,
+            deflate: false,
+            zstd: false,
         }
     }
 
     pub(crate) const fn is_empty(self) -> bool {
-        !self.gzip && !self.brotli
+        !self.gzip && !self.brotli && !self.deflate && !self.zstd
     }
 
     /// The `Accept-Encoding` value to send, or `None` when there is
@@ -167,7 +296,7 @@ impl Decoders {
     /// their spelling.
     pub(crate) fn accept_encoding(self) -> Option<http::HeaderValue> {
         let mut value = String::new();
-        for coding in [Coding::Gzip, Coding::Brotli] {
+        for coding in Self::PREFERENCE {
             if self.has(coding) {
                 if !value.is_empty() {
                     value.push_str(", ");
@@ -195,12 +324,22 @@ impl Decoders {
     /// encoded" answers. Matching is ASCII-case-insensitive, as RFC 9110
     /// §8.4.1 requires; `x-gzip` is accepted as the deprecated alias for
     /// `gzip` that RFC 9110 §8.4.1.3 still names.
+    ///
+    /// There is deliberately **no `x-deflate`**: RFC 9110 names exactly
+    /// two `x-` aliases, §8.4.1.1's `x-compress` and §8.4.1.3's `x-gzip`,
+    /// and inventing a third would be this client deciding what a token
+    /// nobody specified means — on the one coding whose wire format it is
+    /// already having to guess at.
     pub(crate) fn coding(self, value: &http::HeaderValue) -> Option<Coding> {
         let token = value.to_str().ok()?.trim();
         let coding = if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
             Coding::Gzip
         } else if token.eq_ignore_ascii_case("br") {
             Coding::Brotli
+        } else if token.eq_ignore_ascii_case("deflate") {
+            Coding::Deflate
+        } else if token.eq_ignore_ascii_case("zstd") {
+            Coding::Zstd
         } else {
             return None;
         };
@@ -211,6 +350,8 @@ impl Decoders {
         match coding {
             Coding::Gzip => self.gzip,
             Coding::Brotli => self.brotli,
+            Coding::Deflate => self.deflate,
+            Coding::Zstd => self.zstd,
         }
     }
 }
@@ -328,6 +469,14 @@ pub(crate) enum Decoder {
     /// the enum.
     #[cfg(feature = "brotli")]
     Brotli(Option<Box<brotli_decompressor::writer::DecompressorWriter<Vec<u8>>>>),
+    /// Two `flate2` types behind one token, chosen from the first two
+    /// bytes — see the module doc and [`DeflateStream`].
+    #[cfg(feature = "deflate")]
+    Deflate(Box<DeflateStream>),
+    /// The one decoder here that is not push-shaped upstream, so this
+    /// crate owns the buffering — see [`ZstdStream`].
+    #[cfg(feature = "zstd")]
+    Zstd(Box<ZstdStream>),
 }
 
 /// Hand-written: `brotli_decompressor`'s writer has no `Debug`, and a
@@ -364,7 +513,16 @@ impl Decoder {
                 w.write_all(input)?;
                 Ok(take(w.get_mut()))
             }
-            #[cfg(not(any(feature = "gzip", feature = "brotli")))]
+            #[cfg(feature = "deflate")]
+            Decoder::Deflate(d) => d.push(input),
+            #[cfg(feature = "zstd")]
+            Decoder::Zstd(d) => d.push(input),
+            #[cfg(not(any(
+                feature = "gzip",
+                feature = "brotli",
+                feature = "deflate",
+                feature = "zstd"
+            )))]
             _ => {
                 let _ = input;
                 match *self {}
@@ -377,8 +535,13 @@ impl Decoder {
     ///
     /// This is where a TRUNCATED body becomes an error rather than a short
     /// read — gzip's trailing CRC and length, brotli's own end-of-stream
-    /// marker. A body cut off mid-transfer that was merely flushed would
+    /// marker, zlib's Adler-32, zstd's last-block flag and its optional
+    /// XXH64. A body cut off mid-transfer that was merely flushed would
     /// reach the caller as a complete, shorter document.
+    ///
+    /// Raw DEFLATE is the one coding here with no trailer of its own, and
+    /// it is not an exception: RFC 1951 §3.2.3's `BFINAL` bit is the end
+    /// marker, and `flate2` reports a stream that ended without one.
     fn finish(&mut self) -> Result<Bytes, std::io::Error> {
         match self {
             #[cfg(feature = "gzip")]
@@ -403,7 +566,16 @@ impl Decoder {
                     )),
                 }
             }
-            #[cfg(not(any(feature = "gzip", feature = "brotli")))]
+            #[cfg(feature = "deflate")]
+            Decoder::Deflate(d) => d.finish(),
+            #[cfg(feature = "zstd")]
+            Decoder::Zstd(d) => d.finish(),
+            #[cfg(not(any(
+                feature = "gzip",
+                feature = "brotli",
+                feature = "deflate",
+                feature = "zstd"
+            )))]
             _ => match *self {},
         }
     }
@@ -414,7 +586,19 @@ impl Decoder {
             Decoder::Gzip(_) => Coding::Gzip.token(),
             #[cfg(feature = "brotli")]
             Decoder::Brotli(_) => Coding::Brotli.token(),
-            #[cfg(not(any(feature = "gzip", feature = "brotli")))]
+            // `"deflate"` whichever wrapper the sniff chose: the token is
+            // what appeared on the wire, and the wire has exactly one
+            // spelling for both — see the module doc.
+            #[cfg(feature = "deflate")]
+            Decoder::Deflate(_) => Coding::Deflate.token(),
+            #[cfg(feature = "zstd")]
+            Decoder::Zstd(_) => Coding::Zstd.token(),
+            #[cfg(not(any(
+                feature = "gzip",
+                feature = "brotli",
+                feature = "deflate",
+                feature = "zstd"
+            )))]
             _ => match *self {},
         }
     }
@@ -427,10 +611,412 @@ fn brotli_after_end() -> std::io::Error {
 
 /// Takes the accumulated plaintext out of a decoder's output buffer,
 /// leaving it empty for the next frame.
-#[cfg(any(feature = "gzip", feature = "brotli"))]
+#[cfg(any(feature = "gzip", feature = "brotli", feature = "deflate"))]
 fn take(out: &mut Vec<u8>) -> Bytes {
     Bytes::from(std::mem::take(out))
 }
+
+/// The `deflate` coding, both of it.
+///
+/// RFC 9110 §8.4.1.2 says zlib and its own Note says a long tail of
+/// servers disagrees, so this picks between them from the first two bytes
+/// off the wire. The module doc has the argument for why two bytes are
+/// enough and why the decision is made here rather than after a failure,
+/// as curl's is.
+///
+/// **`flate2::Decompress` rather than the two `flate2::write` decoders**,
+/// and that is not a preference: `write::ZlibDecoder::try_finish` calls
+/// `zio::finish`, which runs the decompressor until it stops producing
+/// and then returns `Ok(())` **without ever asking whether the stream
+/// ended** — read in flate2 1.1's `src/zio.rs:173`. So a truncated body
+/// reached the caller as a complete, shorter document, which is the exact
+/// defect the trailer checks on the other three codings exist against. It
+/// was found by a wire test, one of the two the first draft of this file
+/// wrote in the shape `tests/compression.rs` warns against.
+/// `Decompress::decompress_vec` answers `Status::StreamEnd`, which is the
+/// question, and `Decompress::new(zlib_header)` is the same switch in one
+/// type instead of two.
+///
+/// The states are one-way: `Sniffing` -> `Running`, never back.
+#[cfg(feature = "deflate")]
+pub(crate) enum DeflateStream {
+    /// Fewer than two bytes have arrived, so the question cannot be
+    /// answered yet. The buffer holds at most one byte, which is why it
+    /// is not a bound anybody has to think about.
+    Sniffing(Vec<u8>),
+    Running {
+        dec: flate2::Decompress,
+        /// `StreamEnd` has been seen — RFC 1951 §3.2.3's `BFINAL` block
+        /// for the raw form, and that plus RFC 1950's Adler-32 for the
+        /// wrapped one. What [`Self::finish`] asks about.
+        done: bool,
+    },
+}
+
+/// How many decoded bytes are asked for per `decompress_vec` call. Not a
+/// bound on anything a caller sees — the loop runs until the decoder stops
+/// making progress — only how often it grows a `Vec`.
+#[cfg(feature = "deflate")]
+const DEFLATE_CHUNK: usize = 16 * 1024;
+
+#[cfg(feature = "deflate")]
+impl DeflateStream {
+    fn new() -> Self {
+        DeflateStream::Sniffing(Vec::new())
+    }
+
+    /// Does `head` open an RFC 1950 stream?
+    ///
+    /// Three conditions, and the first is the one that carries the
+    /// argument (module doc): `CM == 8` cannot be the first nibble of a
+    /// conformant raw stream, because RFC 1951 §3.2.3 packs `BFINAL` into
+    /// bit 0 and `BTYPE` into bits 1-2, so a low nibble of `8` is a
+    /// stored block with the padding bit §3.2.4 tells encoders to zero.
+    ///
+    /// `FDICT` is deliberately NOT tested. A zlib stream needing a preset
+    /// dictionary is still a zlib stream; classifying it as raw would
+    /// swap flate2's honest "a dictionary is required" for a confusing
+    /// failure inside the wrong decoder.
+    fn looks_like_zlib(head: [u8; 2]) -> bool {
+        let cmf = head[0];
+        // CM, the low nibble: 8 is "deflate", and RFC 1950 §2.2 defines
+        // no other value a client would meet.
+        let method = cmf & 0x0f == 8;
+        // CINFO, the high nibble: log2(window) - 8, and §2.2 forbids
+        // values above 7 outright.
+        let window = cmf >> 4 <= 7;
+        // FCHECK: the two header bytes, read big-endian, are a multiple
+        // of 31 by construction.
+        let check = u16::from_be_bytes(head).is_multiple_of(31);
+        method && window && check
+    }
+
+    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
+        // The bytes to feed: normally just `input`, but on the frame that
+        // completes the two-byte header it is that header plus whatever
+        // came with it, because nothing buffered has been fed yet.
+        let mut carried = None;
+        if let DeflateStream::Sniffing(buf) = self {
+            buf.extend_from_slice(input);
+            if buf.len() < 2 {
+                return Ok(Bytes::new());
+            }
+            let all = std::mem::take(buf);
+            *self = DeflateStream::Running {
+                dec: flate2::Decompress::new(Self::looks_like_zlib([all[0], all[1]])),
+                done: false,
+            };
+            carried = Some(all);
+        }
+        let bytes: &[u8] = carried.as_deref().unwrap_or(input);
+        let DeflateStream::Running { dec, done } = self else {
+            // Unreachable: the block above leaves `Sniffing` only by
+            // returning. An empty answer rather than a panic, for the
+            // reason `Coding::decoder`'s `Option` is an `Option`.
+            return Ok(Bytes::new());
+        };
+        if *done && !bytes.is_empty() {
+            // Mirrors brotli's arm one type over. Discarding them would be
+            // this crate deciding that bytes a server sent are not part of
+            // the document.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bytes arrived after the end of the `deflate` stream",
+            ));
+        }
+        Self::drive(dec, done, bytes, flate2::FlushDecompress::None)
+    }
+
+    /// Runs the decoder until it stops making progress, or until the
+    /// stream ends.
+    ///
+    /// The loop deliberately makes one **more** call than there is input
+    /// for, and that is the defect this shape was written to fix: zlib
+    /// reports `StreamEnd` from the call that reads RFC 1950's four-byte
+    /// Adler-32 trailer, and with a `consumed < bytes.len()` guard that
+    /// call never happens on the frame that carried it — so a complete
+    /// body finished with `done == false` and was reported as truncated.
+    /// With an empty input slice and no output, the next iteration makes
+    /// no progress and breaks, so the extra call costs one iteration and
+    /// cannot spin.
+    fn drive(
+        dec: &mut flate2::Decompress,
+        done: &mut bool,
+        bytes: &[u8],
+        flush: flate2::FlushDecompress,
+    ) -> Result<Bytes, std::io::Error> {
+        let mut out = Vec::new();
+        let mut consumed = 0usize;
+        while !*done {
+            out.reserve(DEFLATE_CHUNK);
+            let (before_in, before_out) = (dec.total_in(), dec.total_out());
+            let status = dec
+                .decompress_vec(&bytes[consumed..], &mut out, flush)
+                .map_err(std::io::Error::other)?;
+            consumed += (dec.total_in() - before_in) as usize;
+            if status == flate2::Status::StreamEnd {
+                *done = true;
+                break;
+            }
+            if dec.total_in() == before_in && dec.total_out() == before_out {
+                // Neither read nor wrote: the decoder wants bytes that
+                // have not arrived.
+                break;
+            }
+        }
+        if *done && consumed < bytes.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bytes arrived after the end of the `deflate` stream",
+            ));
+        }
+        Ok(Bytes::from(out))
+    }
+
+    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
+        match self {
+            // The whole body was one byte or none. The shortest possible
+            // raw stream is two bytes and the shortest zlib one is eight,
+            // so this is a truncation whatever the wrapper would have
+            // been — there is no guess to get wrong.
+            DeflateStream::Sniffing(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the `deflate` body ended before even a two-byte header arrived",
+            )),
+            DeflateStream::Running { dec, done } => {
+                // One last call, with nothing left to give it: the
+                // decoder may still be holding output, and `StreamEnd`
+                // may still be one call away — see `drive`.
+                let last = Self::drive(dec, done, &[], flate2::FlushDecompress::Finish)?;
+                if !*done {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "the `deflate` body ended in the middle of the compressed stream",
+                    ));
+                }
+                Ok(last)
+            }
+        }
+    }
+}
+
+/// The largest `Window_Size` a `zstd` frame may declare before this client
+/// refuses it — RFC 8878 §3.1.1.1.2's recommended interoperability floor,
+/// and the same number Chrome settled on for `Content-Encoding: zstd`.
+///
+/// It is the only bound that can be placed on this coding's memory, since
+/// the window is allocated before a byte is yielded and
+/// [`crate::Limited`] counts bytes yielded. See the module doc.
+#[cfg(feature = "zstd")]
+const ZSTD_MAX_WINDOW: u64 = 8 * 1024 * 1024;
+
+/// How many decoded bytes are taken out of the frame decoder per call.
+///
+/// Not a limit on anything a caller can see — [`ZstdStream::drive`] loops
+/// until the decoder stops producing — only how often it copies. Same
+/// role as [`BROTLI_BUFFER`], and heap-resident rather than a stack array
+/// because everything here is reached from a `poll_frame`, where this
+/// crate already has two future-size guards.
+#[cfg(feature = "zstd")]
+const ZSTD_CHUNK: usize = 16 * 1024;
+
+/// The `zstd` coding, and the buffering `ruzstd` does not do.
+///
+/// The other three decoders are push-shaped upstream: hand them bytes and
+/// they hand back whatever came out. `ruzstd` is pull-shaped — its
+/// `StreamingDecoder` reads from a source and its `FrameDecoder` wants a
+/// whole block at a time — so the mismatch is absorbed here, in the one
+/// place that knows a frame off the wire is not a frame of the coding.
+///
+/// `FrameDecoder::decode_from_to` is the seam used, and its contract is
+/// exactly what is needed: *"The source slice may contain only parts of a
+/// frame but must contain at least one full block to make progress […]
+/// if read == 0 then the source did not contain a full block"*. So
+/// [`Self::pending`] holds whatever has not been consumed and never
+/// exceeds one zstd block plus a header, because everything else is
+/// consumed on the spot.
+///
+/// **Frames are plural, and that is not a nicety.** RFC 8878 §3.1: *"the
+/// decompressed content of multiple concatenated frames is the
+/// concatenation of each frame's decompressed content"*, and neither
+/// `ruzstd` entry point streams across a frame boundary — `StreamingDecoder`
+/// stops at `is_finished()`, `decode_from_to` never re-initialises. So
+/// [`Self::start_frame`] does, and the alternative — stopping at the
+/// first frame's end — would hand a caller a body silently missing
+/// everything after it.
+#[cfg(feature = "zstd")]
+pub(crate) struct ZstdStream {
+    dec: ruzstd::decoding::FrameDecoder,
+    /// Compressed bytes that have arrived and are not yet consumed.
+    pending: Vec<u8>,
+    /// The decoded-byte scratch `decode_from_to` writes into.
+    out: Vec<u8>,
+}
+
+#[cfg(feature = "zstd")]
+impl ZstdStream {
+    fn new() -> Self {
+        let mut dec = ruzstd::decoding::FrameDecoder::new();
+        // The narrowing this crate makes over `ruzstd`'s own 100 MB
+        // `DEFAULT_MAX_WINDOW_SIZE`. `ruzstd` checks it before it
+        // allocates, so a refused frame costs nothing.
+        dec.set_max_window_size(ZSTD_MAX_WINDOW);
+        Self {
+            dec,
+            pending: Vec::new(),
+            out: vec![0; ZSTD_CHUNK],
+        }
+    }
+
+    fn push(&mut self, input: &[u8]) -> Result<Bytes, std::io::Error> {
+        self.pending.extend_from_slice(input);
+        self.drive(false)
+    }
+
+    fn finish(&mut self) -> Result<Bytes, std::io::Error> {
+        let out = self.drive(true)?;
+        // `drive` stops when it needs input it does not have. At the end
+        // of the body there is none coming, so anything left over — a
+        // half-written block, a frame whose last block never arrived, a
+        // missing four-byte checksum — is a truncation rather than a
+        // pause. Without this the bytes that DID arrive would decode
+        // perfectly well and reach the caller as a shorter document,
+        // which is the same defect gzip's trailer check exists against.
+        if !self.dec.is_finished() || !self.pending.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the zstd body ended in the middle of a frame",
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Decodes everything the bytes in hand allow.
+    ///
+    /// `eof` says whether more compressed bytes may still arrive, and it
+    /// is read in exactly one place: deciding whether too few bytes for a
+    /// frame header mean *wait* or *this frame is truncated*.
+    fn drive(&mut self, eof: bool) -> Result<Bytes, std::io::Error> {
+        let mut decoded = Vec::new();
+        loop {
+            // `is_finished()` is true both before the first frame and
+            // after each completed one, which is the same question here:
+            // is there a frame in progress to feed?
+            if self.dec.is_finished() {
+                // Everything the completed frame is still holding, before
+                // `start_frame` resets the buffer under it.
+                loop {
+                    let n = std::io::Read::read(&mut self.dec, &mut self.out)?;
+                    if n == 0 {
+                        break;
+                    }
+                    decoded.extend_from_slice(&self.out[..n]);
+                }
+                self.verify_checksum()?;
+                if !self.start_frame(eof)? {
+                    break;
+                }
+                continue;
+            }
+            let (read, written) = self
+                .dec
+                .decode_from_to(&self.pending, &mut self.out)
+                .map_err(std::io::Error::other)?;
+            decoded.extend_from_slice(&self.out[..written]);
+            self.pending.drain(..read);
+            if read == 0 && written == 0 {
+                // Neither consumed nor produced: the rest of a block has
+                // not arrived. `decode_from_to` says so in as many words.
+                break;
+            }
+        }
+        Ok(Bytes::from(decoded))
+    }
+
+    /// Starts the next frame, answering whether there was one to start.
+    ///
+    /// A skippable frame (RFC 8878 §3.1.2) is stepped over rather than
+    /// refused: it is user metadata a decoder is required to ignore, and
+    /// `ruzstd` reports it as an error from `init` because `init` has no
+    /// other channel.
+    fn start_frame(&mut self, eof: bool) -> Result<bool, std::io::Error> {
+        use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+        loop {
+            if self.pending.is_empty() {
+                return Ok(false);
+            }
+            // A zstd frame header is at most 18 bytes — magic 4, frame
+            // header descriptor 1, window descriptor 1, dictionary id 4,
+            // frame content size 8. Below that `init` cannot tell "not
+            // yet" from "malformed", and it reports both as the same
+            // error, so waiting is the only way to keep the two apart.
+            // Once the body has ended there is nothing to wait for and a
+            // short header IS malformed, which is what `eof` decides.
+            if !eof && self.pending.len() < ZSTD_MAX_FRAME_HEADER {
+                return Ok(false);
+            }
+            let mut src: &[u8] = &self.pending;
+            match self.dec.init(&mut src) {
+                Ok(()) => {
+                    let consumed = self.pending.len() - src.len();
+                    self.pending.drain(..consumed);
+                    return Ok(true);
+                }
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame {
+                    length,
+                    ..
+                })) => {
+                    let consumed = self.pending.len() - src.len();
+                    let skip = consumed.saturating_add(length as usize);
+                    if self.pending.len() < skip {
+                        if eof {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "the zstd body ended inside a skippable frame",
+                            ));
+                        }
+                        return Ok(false);
+                    }
+                    self.pending.drain(..skip);
+                }
+                Err(e) => return Err(std::io::Error::other(e)),
+            }
+        }
+    }
+
+    /// Compares the frame's XXH64 content checksum with the one computed
+    /// while decoding — **which `ruzstd` does not do**.
+    ///
+    /// Read rather than assumed: `FrameDecoder` exposes
+    /// `get_checksum_from_data()` and `get_calculated_checksum()` and
+    /// compares them nowhere, so a body corrupted in a way that leaves
+    /// the block structure intact decodes without complaint. The check is
+    /// optional in the format — `Content_Checksum_flag` — and both
+    /// accessors answer `None` when it was not sent, which is why this is
+    /// a comparison of two `Option`s and not an assertion that one
+    /// exists.
+    fn verify_checksum(&self) -> Result<(), std::io::Error> {
+        let (Some(want), Some(got)) = (
+            self.dec.get_checksum_from_data(),
+            self.dec.get_calculated_checksum(),
+        ) else {
+            return Ok(());
+        };
+        if want == got {
+            return Ok(());
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the zstd frame's content checksum does not match the decoded bytes",
+        ))
+    }
+}
+
+/// The largest a zstd frame header can be: magic number 4, frame header
+/// descriptor 1, window descriptor 1, dictionary id 4, frame content size
+/// 8 (RFC 8878 §3.1.1.1).
+#[cfg(feature = "zstd")]
+const ZSTD_MAX_FRAME_HEADER: usize = 18;
 
 /// The response body with its `Content-Encoding` reversed.
 ///
@@ -658,14 +1244,43 @@ mod tests {
         c
     }
 
-    const BOTH: Decoders = Decoders {
+    /// Every coding this crate knows, on. Named `ALL` rather than `BOTH`
+    /// since W5's two became four.
+    const ALL: Decoders = Decoders {
         gzip: true,
         brotli: true,
+        deflate: true,
+        zstd: true,
     };
 
+    /// One member of `Decoders` per bit of `mask`, in
+    /// [`Decoders::PREFERENCE`] order — so `subsets()` below enumerates
+    /// all sixteen without naming any of them, which is the point: a
+    /// fifth coding makes these tests cover thirty-two by arithmetic
+    /// rather than by somebody remembering to add eight literals.
+    fn from_mask(mask: u32) -> Decoders {
+        let mut d = Decoders::none();
+        for (i, coding) in Decoders::PREFERENCE.into_iter().enumerate() {
+            if mask & (1 << i) == 0 {
+                continue;
+            }
+            match coding {
+                Coding::Gzip => d.gzip = true,
+                Coding::Brotli => d.brotli = true,
+                Coding::Deflate => d.deflate = true,
+                Coding::Zstd => d.zstd = true,
+            }
+        }
+        d
+    }
+
+    fn subsets() -> impl Iterator<Item = Decoders> {
+        (0..(1u32 << Decoders::PREFERENCE.len())).map(from_mask)
+    }
+
     /// The one-fact property, checked in whichever build is running — and
-    /// this test compiles into all four feature combinations, so between
-    /// CI's `--all-features` run and `idn-feature-is-real`'s
+    /// this test compiles into all sixteen feature combinations, so
+    /// between CI's `--all-features` run and `idn-feature-is-real`'s
     /// `--no-default-features` one it is checked in more than the maximal
     /// build.
     ///
@@ -676,7 +1291,7 @@ mod tests {
     /// read — the request-side form of a capability that lies.
     #[test]
     fn every_advertised_coding_has_a_decoder_in_this_build() {
-        for coding in [Coding::Gzip, Coding::Brotli] {
+        for coding in Decoders::PREFERENCE {
             assert_eq!(
                 Decoders::compiled_in().has(coding),
                 coding.decoder().is_some(),
@@ -686,36 +1301,85 @@ mod tests {
         }
     }
 
+    /// `PREFERENCE` is the only list of codings in this module, and
+    /// everything else reads it. A coding left out of it would be
+    /// unreachable from `accept_encoding` while still matching in
+    /// `coding()` — a client that decodes something it never asked for,
+    /// which is the shape the caller-set-header rule exists against.
+    #[test]
+    fn the_preference_list_names_every_coding_exactly_once() {
+        let mut tokens: Vec<&str> = Decoders::PREFERENCE.iter().map(|c| c.token()).collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(
+            tokens.len(),
+            Decoders::PREFERENCE.len(),
+            "a duplicate would be advertised twice in one header"
+        );
+        for coding in Decoders::PREFERENCE {
+            let v = http::HeaderValue::from_static(match coding {
+                Coding::Gzip => "gzip",
+                Coding::Brotli => "br",
+                Coding::Deflate => "deflate",
+                Coding::Zstd => "zstd",
+            });
+            assert_eq!(
+                ALL.coding(&v),
+                Some(coding),
+                "`{}` is in the preference list and is not matched back",
+                coding.token()
+            );
+        }
+    }
+
     #[test]
     fn accept_encoding_names_exactly_what_can_be_decoded() {
         // The property, not the string: every token advertised must be one
-        // `coding` recognises, for each of the four possible builds. A
-        // literal `assert_eq!(.., "gzip, br")` would pass just as happily
-        // for a build with the brotli decoder switched off.
-        for d in [
-            BOTH,
-            Decoders {
-                gzip: true,
-                brotli: false,
-            },
-            Decoders {
-                gzip: false,
-                brotli: true,
-            },
-            Decoders::none(),
-        ] {
+        // `coding` recognises, for each of the sixteen possible builds. A
+        // literal `assert_eq!(.., "zstd, br, gzip, deflate")` would pass
+        // just as happily for a build with three of the decoders switched
+        // off.
+        let mut seen = 0;
+        for d in subsets() {
+            seen += 1;
             let Some(v) = d.accept_encoding() else {
                 assert!(d.is_empty(), "only an empty set may advertise nothing");
                 continue;
             };
+            let mut count = 0;
             for token in v.to_str().unwrap().split(',') {
+                count += 1;
                 let one = http::HeaderValue::from_str(token.trim()).unwrap();
                 assert!(
                     d.coding(&one).is_some(),
                     "advertised `{token}` that {d:?} cannot decode"
                 );
             }
+            // And the other direction, which the loop above cannot see: a
+            // set of three that advertised two would satisfy every
+            // assertion so far.
+            let want = Decoders::PREFERENCE.iter().filter(|c| d.has(**c)).count();
+            assert_eq!(
+                count, want,
+                "{d:?} advertised {count} of its {want} codings"
+            );
         }
+        assert_eq!(seen, 16, "the point of this test is that it is exhaustive");
+    }
+
+    /// `deflate` is offered last, and that is a decision (see
+    /// `Decoders::PREFERENCE`) rather than the order the fields happen to
+    /// be declared in: it is the one coding whose wire format this client
+    /// has to guess at, so a server picking the first token it knows
+    /// should reach for it only when it has nothing else.
+    #[test]
+    fn the_ambiguous_coding_is_offered_last() {
+        let v = ALL.accept_encoding().expect("something is compiled in");
+        assert_eq!(
+            v.to_str().unwrap(),
+            "zstd, br, gzip, deflate",
+            "the order is preference, best first and the guess last"
+        );
     }
 
     #[test]
@@ -723,6 +1387,8 @@ mod tests {
         let gzip_only = Decoders {
             gzip: true,
             brotli: false,
+            deflate: false,
+            zstd: false,
         };
         assert_eq!(
             gzip_only.coding(&http::HeaderValue::from_static("br")),
@@ -739,20 +1405,20 @@ mod tests {
     #[test]
     fn content_encoding_matching_is_case_insensitive_and_rejects_lists() {
         assert_eq!(
-            BOTH.coding(&http::HeaderValue::from_static("GZIP")),
+            ALL.coding(&http::HeaderValue::from_static("GZIP")),
             Some(Coding::Gzip)
         );
         assert_eq!(
-            BOTH.coding(&http::HeaderValue::from_static(" x-gzip ")),
+            ALL.coding(&http::HeaderValue::from_static(" x-gzip ")),
             Some(Coding::Gzip)
         );
         assert_eq!(
-            BOTH.coding(&http::HeaderValue::from_static("identity")),
+            ALL.coding(&http::HeaderValue::from_static("identity")),
             None
         );
-        assert_eq!(BOTH.coding(&http::HeaderValue::from_static("")), None);
+        assert_eq!(ALL.coding(&http::HeaderValue::from_static("")), None);
         assert_eq!(
-            BOTH.coding(&http::HeaderValue::from_static("gzip, br")),
+            ALL.coding(&http::HeaderValue::from_static("gzip, br")),
             None,
             "two codings applied in order: reversing one and calling the body \
              decoded would corrupt it"
@@ -762,7 +1428,7 @@ mod tests {
     #[test]
     fn an_internal_transport_gets_no_header_and_no_decoding() {
         let mut h = http::HeaderMap::new();
-        let d = negotiate(&mut h, &caps(DecompressionSupport::Internal), BOTH);
+        let d = negotiate(&mut h, &caps(DecompressionSupport::Internal), ALL);
         assert!(d.is_empty(), "decoding twice would corrupt every response");
         assert!(!h.contains_key(http::header::ACCEPT_ENCODING));
     }
@@ -774,13 +1440,13 @@ mod tests {
         let mut c = caps(DecompressionSupport::None);
         c.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
         let mut h = http::HeaderMap::new();
-        let d = negotiate(&mut h, &c, BOTH);
+        let d = negotiate(&mut h, &c, ALL);
         assert!(
             !h.contains_key(http::header::ACCEPT_ENCODING),
             "the transport forbids this header; we must not add it"
         );
         assert_eq!(
-            d, BOTH,
+            d, ALL,
             "a `Content-Encoding` the server applied unbidden is still ours to reverse"
         );
     }
@@ -792,7 +1458,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("zstd"),
         );
-        let d = negotiate(&mut h, &caps(DecompressionSupport::None), BOTH);
+        let d = negotiate(&mut h, &caps(DecompressionSupport::None), ALL);
         assert_eq!(
             h[http::header::ACCEPT_ENCODING],
             "zstd",
@@ -815,7 +1481,7 @@ mod tests {
             .unwrap()
             .into_parts()
             .0;
-        let got = decoder_for(&mut parts, BOTH);
+        let got = decoder_for(&mut parts, ALL);
         assert_eq!(got.is_some(), cfg!(feature = "gzip"));
         if got.is_some() {
             assert!(!parts.headers.contains_key(http::header::CONTENT_ENCODING));
@@ -828,17 +1494,23 @@ mod tests {
         }
     }
 
+    /// The example used to be `zstd`, and the day this crate grew a zstd
+    /// decoder the test failed — which is the right failure and worth a
+    /// line, because the assertion is *a coding we cannot reverse is left
+    /// alone* and `zstd` had stopped being one. `compress` is RFC 9110
+    /// §8.4.1.1's LZW, named in the module doc as a coding with no decoder
+    /// here, so the test will fail again on the day that stops being true.
     #[test]
     fn a_body_we_do_not_decode_keeps_its_headers() {
         let mut parts = http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "zstd")
+            .header(http::header::CONTENT_ENCODING, "compress")
             .header(http::header::CONTENT_LENGTH, "42")
             .body(())
             .unwrap()
             .into_parts()
             .0;
-        assert!(decoder_for(&mut parts, BOTH).is_none());
-        assert_eq!(parts.headers[http::header::CONTENT_ENCODING], "zstd");
+        assert!(decoder_for(&mut parts, ALL).is_none());
+        assert_eq!(parts.headers[http::header::CONTENT_ENCODING], "compress");
         assert_eq!(
             parts.headers[http::header::CONTENT_LENGTH],
             "42",

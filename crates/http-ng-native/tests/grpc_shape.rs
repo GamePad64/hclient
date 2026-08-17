@@ -1490,9 +1490,18 @@ async fn the_clients_own_stages_leave_a_grpc_exchange_alone() {
     match s.header("accept-encoding") {
         None => {}
         Some(v) => {
+            // `http_ng`'s `Decoders::PREFERENCE`, which is not visible
+            // from here — this crate depends on `http-ng` only as a dev-
+            // dependency and the type is `pub(crate)` anyway. What the
+            // list is doing is asserting that the header names codings
+            // and nothing else; that each named one has a decoder in this
+            // build is `decompress.rs`'s own test, where `Decoders` is in
+            // scope. It was `gzip || br` until `deflate` and `zstd`
+            // landed, and this run is what caught it.
+            const KNOWN: [&str; 4] = ["zstd", "br", "gzip", "deflate"];
             for coding in v.split(',').map(str::trim) {
                 assert!(
-                    coding == "gzip" || coding == "br",
+                    KNOWN.contains(&coding),
                     "the client must never advertise a coding it cannot \
                      reverse; saw {coding:?} in {v:?}"
                 );
