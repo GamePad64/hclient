@@ -121,7 +121,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | `multipart/form-data` | Y | Y | Y | Y | Y | see §2.2 for the streaming difference |
 | Basic auth | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
 | Bearer auth | Y | Y | Y | Y | Y | |
-| Digest / NTLM / Negotiate | **N** | N | N | Y | N | libcurl only — see §3 G7 |
+| Digest / NTLM / Negotiate | **N** | N | N | **Y** | N | the `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`). See §3 G12 |
 | client-wide default headers | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/client.rs:1166`; ng has no `ClientBuilder` header setter at all |
 | a `User-Agent` at all | **N** | Y | Y | Y | (browser's) | `ureq-3.4.0/src/config.rs:546`; **ng sends none** |
 | base URL / relative URLs | Y | **N** | N | N | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
@@ -155,7 +155,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | h2 multiplexing on by default | N | Y | — | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
 | h2 tuning (window, frame size, keepalive PING, prior knowledge) | **N** | Y | N | Y | N | eight setters, `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
 | HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build |
-| WebSocket | Y | **N** | N | — | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/` |
+| WebSocket | Y | **N** | N | **N** | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust |
 | WebTransport | **Y** | N | N | N | N | `http-ng-webtransport`: sessions, bidi streams, datagrams, close capsules |
 | Server-Sent Events | **Y** | **N** | N | N | Y | zero matches for `eventsource`/`text/event-stream` in `reqwest-0.13.4/src/`; ng has a decoder *and* reconnection with `Last-Event-ID` |
 | `1xx` / `103 Early Hints` observable | **Y** | N | — | — | N | `Native::watching_1xx()` + `Event::Informational` |
@@ -172,7 +172,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | local source address | Y | Y | — | Y | N | `TcpOpts::local_address` |
 | **bind to an interface** (`SO_BINDTODEVICE`) | **N** | Y | — | Y | N | `reqwest…client.rs:1745`; grepped this tree for `SO_BINDTODEVICE`/`bind_device` — zero hits |
 | TCP keepalive | Y\* | Y | — | Y | N | ng has `TcpOpts::keepalive` (one duration); rq has interval, retries and `TCP_USER_TIMEOUT` besides |
-| Unix domain socket transport | **N** | N | — | Y | N | libcurl's `CURLOPT_UNIX_SOCKET_PATH` |
+| Unix domain socket transport | **N** | N | — | **Y** | N | `Easy2::unix_socket` / `unix_socket_path` over `CURLOPT_UNIX_SOCKET_PATH` (`curl-0.4.50/src/easy/handler.rs:782, :802`) |
 | static host→address override (`--resolve`) | seam | Y | — | Y | N | rq: `resolve`/`resolve_to_addrs`; here it is a `Resolve` impl, which is more work and more general |
 | pluggable resolver | seam | Y | — | Y | N | rq: `dns_resolver`; ng: the `Resolve` trait, with three shipped backends |
 | Happy Eyeballs (RFC 8305) | Y | Y | — | Y | (browser's) | |
@@ -496,11 +496,21 @@ backends, which is what `TimeoutSupport` is for. *Forbidden?* No.
 
 ### G12. Digest, NTLM and Negotiate authentication
 
-Nobody in pure Rust has these; libcurl does. A caller who needs to talk to a
-corporate intranet reaches for `curl` and finds nothing else. This is
-recorded as a gap rather than ranked higher because the population that
-needs it is narrow and it is a whole-ecosystem absence rather than this
-project's.
+Nobody in pure Rust has these; libcurl does, and the `curl` crate binds all
+five flags (`src/easy/handler.rs:3733-3790`). A caller who needs to talk to
+a corporate intranet reaches for `curl` and finds nothing else — `xh`, built
+on reqwest, wrote its own digest implementation rather than go without.
+
+This is recorded as a gap rather than ranked higher because the population
+that needs it is narrow and it is a whole-ecosystem absence rather than this
+project's. It is also the one row where **this workspace is unusually well
+placed to close it**: digest is a challenge/response loop over a `401`, and
+`Client::run` already owns exactly that shape for `425 Too Early` — a
+status-code branch that resends inside the same `total` budget, gated on
+`RequestBody::retry_kind()`. Nothing about it needs a dependency, a spawn or
+a `Send` bound. NTLM and Negotiate are a different matter: both need
+platform GSSAPI/SSPI, which is `http-ng-tls-native-tls`'s kind of argument
+one seam over and probably its own crate.
 
 ### G13. There is no way to name "any http-ng client"
 
@@ -819,11 +829,15 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
 
 ## 7. What this did not check
 
-- **`isahc`, `curl` and `attohttpc` are surveyed less thoroughly than
-  reqwest, ureq, gloo-net and hyper-util.** Their columns in §2 carry `—`
-  where nothing was read, and the libcurl rows lean on libcurl's documented
-  option set rather than on a line-by-line audit of what the `curl` crate
-  binds. Treat the `cu` column as indicative.
+- **`isahc` and `attohttpc` are surveyed much less thoroughly than reqwest,
+  ureq, gloo-net and hyper-util.** Their cells in §2 carry `—` where nothing
+  was read. The `curl` crate was checked directly on the five rows that
+  carry an argument — auth schemes, WebSocket, Unix sockets, HTTP/3 version
+  selection — and the rest of the `cu` column rests on libcurl's documented
+  option set rather than on a line-by-line audit of the binding. The
+  WebSocket row is a warning about doing that: libcurl 8.21 has the API and
+  the Rust binding does not expose it, so "libcurl can" and "a Rust caller
+  can" came apart on the first row where anyone looked.
 - **isahc's maintenance state was not established.** It is the client whose
   answer would most change the shape of §2, since a dead comparator should
   be dropped the way `surf` was, and nothing here checked.
