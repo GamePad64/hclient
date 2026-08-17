@@ -1258,6 +1258,20 @@ mod tests {
             );
         };
         assert_eq!(*error.kind(), ErrorKind::Connect);
+        // **The error is the connection's cause and not hyper's answer to
+        // our own drop**, and that is not decoration. `Native::run`
+        // discards a `NotSent` error because it retries, but
+        // `Staged::exchange` deliberately does not retry and surfaces it
+        // through `Failed::into_error` — so a caller of the staged connect
+        // whose pooled connection lost this race reads this string. Hyper's
+        // is `canceled: connection closed`, which describes the drop
+        // [`claim_back`] performed rather than why the connection died.
+        assert!(
+            std::error::Error::source(&error)
+                .is_some_and(|s| s.is::<ConnectionEndedWithTheRequestQueued>()),
+            "the cause a caller reads must be the connection's, not hyper's \
+             answer to our dropping its dispatcher: {error:?}"
+        );
         // The request that comes back is the one that went in — not a
         // rebuilt one, and not one whose body has been polled. `Native`
         // resends this object itself, so a `Host:` or a URI lost here
