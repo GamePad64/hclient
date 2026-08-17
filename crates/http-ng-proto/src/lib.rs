@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backoff;
+pub mod encode;
 pub mod happy_eyeballs;
 pub mod redirect;
 pub mod sse;

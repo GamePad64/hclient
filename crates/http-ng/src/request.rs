@@ -105,6 +105,120 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         self
     }
 
+    /// Append `application/x-www-form-urlencoded` pairs to the URI's query.
+    ///
+    /// **Appended, not replaced**, and each call appends again — so a
+    /// query already in the URL survives, and two calls are one query. A
+    /// setter that replaced would silently drop what a caller put in their
+    /// own URL string, which is the failure that cannot be seen from the
+    /// call site.
+    ///
+    /// The encoding is the WHATWG serialiser (`http_ng_proto::encode`),
+    /// which is **not** RFC 3986 percent-encoding: a space is `+`, and
+    /// only `*-._` survive as punctuation. That is the set a form parser
+    /// on the other end will undo.
+    pub fn query<K: AsRef<str>, V: AsRef<str>>(
+        mut self,
+        pairs: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        let added = http_ng_proto::encode::form_urlencoded(pairs);
+        if added.is_empty() {
+            return self;
+        }
+        let Ok(uri) = &self.uri else { return self };
+        let mut parts = uri.clone().into_parts();
+        let path = parts
+            .path_and_query
+            .as_ref()
+            .map_or("/", |p| p.path())
+            .to_owned();
+        let existing = parts.path_and_query.as_ref().and_then(|p| p.query());
+        let joined = match existing {
+            Some(q) if !q.is_empty() => format!("{path}?{q}&{added}"),
+            _ => format!("{path}?{added}"),
+        };
+        match joined.parse::<http::uri::PathAndQuery>() {
+            Ok(pq) => {
+                parts.path_and_query = Some(pq);
+                match http::Uri::from_parts(parts) {
+                    Ok(u) => self.uri = Ok(u),
+                    Err(e) => self.fail(e),
+                }
+            }
+            Err(e) => self.fail(e),
+        }
+        self
+    }
+
+    /// An `application/x-www-form-urlencoded` body, with the header.
+    ///
+    /// Sets `Content-Type` only if the caller has not — the same rule
+    /// `Host:` follows one layer down, and for the same reason: a caller
+    /// who set it meant it.
+    pub fn form<K: AsRef<str>, V: AsRef<str>>(
+        mut self,
+        pairs: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        let encoded = http_ng_proto::encode::form_urlencoded(pairs);
+        if !self.headers.contains_key(http::header::CONTENT_TYPE) {
+            self.headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+            );
+        }
+        self.body = RequestBody::Full(bytes::Bytes::from(encoded));
+        self
+    }
+
+    /// `Authorization: Basic`, RFC 7617.
+    ///
+    /// The value is marked sensitive, so a `Debug` of the request does not
+    /// print the password — the same thing `http-ng-native`'s proxy
+    /// credential does, and the reason both go through one encoder in
+    /// `http-ng-proto`.
+    ///
+    /// A username containing `:` is refused rather than encoded: RFC 7617
+    /// §2 makes the colon the separator, so `a:b` and `a` with password
+    /// `b` would produce identical bytes and one of the two callers would
+    /// be silently wrong.
+    pub fn basic_auth(mut self, user: &str, password: &str) -> Self {
+        if user.contains(':') {
+            self.fail(ColonInUsername);
+            return self;
+        }
+        let raw = http_ng_proto::encode::base64(format!("{user}:{password}").as_bytes());
+        self.authorization(&format!("Basic {raw}"))
+    }
+
+    /// `Authorization: Bearer`, RFC 6750 §2.1.
+    pub fn bearer_auth(self, token: &str) -> Self {
+        self.authorization(&format!("Bearer {token}"))
+    }
+
+    fn authorization(mut self, value: &str) -> Self {
+        match http::HeaderValue::from_str(value) {
+            Ok(mut v) => {
+                v.set_sensitive(true);
+                self.headers.insert(http::header::AUTHORIZATION, v);
+            }
+            Err(e) => self.fail(e),
+        }
+        self
+    }
+
+    /// Record a build error, first one wins — see [`Self::header`].
+    fn fail(
+        &mut self,
+        // `Error::new`'s own bound, and it is this crate's for the same
+        // reason: the source is stored behind `dyn Error`, which drops
+        // auto traits.
+        e: impl std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    ) {
+        if self.error.is_none() {
+            self.error = Some(Error::new(ErrorKind::Other, e));
+        }
+    }
+
     /// Timeouts for this request only. Stored in `Extensions`, where the
     /// transport reads them from; unset fields fall back to the client's
     /// configuration — the merge is done by `Client::execute` via
@@ -194,3 +308,10 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         Ok(Response::new(resp, uri))
     }
 }
+
+/// RFC 7617 §2 makes `:` the separator between a username and a password,
+/// so a username containing one is not representable — and encoding it
+/// anyway would make `("a:b", "")` and `("a", "b")` the same bytes.
+#[derive(Debug, thiserror::Error)]
+#[error("a Basic-auth username may not contain a colon")]
+pub struct ColonInUsername;

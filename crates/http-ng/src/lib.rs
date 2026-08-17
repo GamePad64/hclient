@@ -171,7 +171,7 @@ pub use http_ng_proto::redirect::RedirectPolicy;
 // tell "the URL you gave me is wrong" apart from every other `Other`.
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use http_ng_proto::uri::UriError;
-pub use request::RequestBuilder;
+pub use request::{ColonInUsername, RequestBuilder};
 pub use response::{Collected, Response};
 pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 

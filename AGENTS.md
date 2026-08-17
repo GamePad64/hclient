@@ -1267,6 +1267,40 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Request ergonomics: query, forms and auth, with no dependency added
+
+`RequestBuilder::{query, form, basic_auth, bearer_auth}`. Small, and the
+interesting part is what they are built on rather than what they do.
+
+**`query` appends and never replaces**, and each call appends again — a
+query already in the caller's own URL survives. A replacing setter fails
+invisibly from the call site: the `?tenant=acme` the caller wrote is
+simply gone.
+
+**The encoding is the WHATWG serialiser, not RFC 3986 percent-encoding**,
+and the two are not interchangeable. A space is `+` and only `*-._`
+survive as punctuation; `uri.rs`'s `percent_encode_into` is the other set
+and a query built with it reaches a form parser as different data — a `+`
+sent as itself reads back as a space. Both are now written down beside
+each other, in `http-ng-proto`'s `encode` module.
+
+**That module is where `base64` moved to**, and it is one function each:
+`http-ng-native`'s proxy had written its own for
+`Proxy-Authorization: Basic`, and `Authorization: Basic` is the same
+encoding for the same reason. Neither pulls a crate — `url` was removed
+from this graph at real cost, and its `form_urlencoded` would bring it
+straight back, while `base64` is a crate for twenty lines. Encode only,
+both: nothing here decodes either, and a decoder is where the sharp edges
+live.
+
+**A colon in a Basic username is refused rather than encoded.** RFC 7617
+§2 makes it the separator, so `("a:b", "")` and `("a", "b")` would
+produce identical bytes and one of the two callers would be silently
+wrong. Both credentials are marked sensitive, which is asserted — the
+mutation that removes the marking survived every wire-level test, because
+a `Debug` is the only place it shows, and an observable property with no
+observer is a gap rather than a control.
+
 ### `Expect: 100-continue`, and a ceiling that was measured rather than rounded
 
 `Native::expect_continue(after)`. A body carrying the header waits for the

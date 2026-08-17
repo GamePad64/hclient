@@ -356,7 +356,7 @@ impl HttpConnect {
     /// connect — and so that a value which cannot be a header is refused
     /// here rather than at the first request.
     pub fn basic_auth(mut self, user: &str, password: &str) -> Result<Self, Error> {
-        let raw = base64(format!("{user}:{password}").as_bytes());
+        let raw = http_ng_proto::encode::base64(format!("{user}:{password}").as_bytes());
         let mut v = http::HeaderValue::from_str(&format!("Basic {raw}"))
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         v.set_sensitive(true);
@@ -633,36 +633,6 @@ fn conn(e: io::Error) -> Error {
     Error::new(ErrorKind::Connect, e)
 }
 
-/// RFC 4648 §4, encode only.
-///
-/// Written here rather than taken from a crate, and the reason is the
-/// module doc's own claim: neither protocol needs a third-party
-/// dependency, so one arriving for a single header value would make that
-/// sentence false. Twenty lines against a crate is the same trade
-/// `http-ng-webtransport` made for its close capsule.
-fn base64(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for i in 0..4 {
-            // `chunk.len() + 1` output characters carry data; the rest is
-            // padding, which is `=` rather than the alphabet's `A`.
-            if i <= chunk.len() {
-                out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,24 +746,6 @@ mod tests {
                 .is_some_and(|r| r.0 == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED),
             "the status must be readable off the error: {err:?}"
         );
-    }
-
-    /// RFC 4648 §10's own vectors, plus the `Aladdin` line from RFC 7617
-    /// §2 — the one this function actually exists to produce.
-    #[test]
-    fn base64_matches_the_rfc_vectors() {
-        for (input, want) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-            ("Aladdin:open sesame", "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
-        ] {
-            assert_eq!(base64(input.as_bytes()), want, "input {input:?}");
-        }
     }
 
     /// The header is built once, at configuration time, and marked
