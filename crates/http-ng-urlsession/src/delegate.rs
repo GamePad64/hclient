@@ -212,9 +212,12 @@ impl Delegate {
         // unsafe-code-exception: amendment-C11
     }
 
-    pub(crate) fn as_protocol(
+    /// As the **task** delegate, which is the one that matters here:
+    /// each task carries its own so that its callbacks reach its own
+    /// `Shared`. The session-level slot is `None` — see `session.rs`.
+    pub(crate) fn as_task_protocol(
         this: &Retained<Self>,
-    ) -> Retained<ProtocolObject<dyn NSURLSessionDelegate>> {
+    ) -> Retained<ProtocolObject<dyn NSURLSessionTaskDelegate>> {
         ProtocolObject::from_retained(this.clone())
     }
 }

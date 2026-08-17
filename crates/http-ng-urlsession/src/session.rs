@@ -54,20 +54,16 @@ impl UrlSession {
         cfg.setURLCache(None);
         cfg.setHTTPShouldSetCookies(false);
         let queue = NSOperationQueue::new();
-        let shared = Arc::new(Shared::default());
-        // The delegate handed to `sessionWithConfiguration:` is retained
-        // for the session's lifetime and is per-task in everything it
-        // does, so one session with one delegate serves every request —
-        // the ivars it carries are only the queue, and each task gets its
-        // own through the task-scoped delegate below.
-        let delegate = Delegate::new(Arc::clone(&shared));
+        // **No session-level delegate, and that was a bug before it was a
+        // decision.** One delegate per session means one queue for every
+        // task, so `execute` polled a `Shared` nothing ever pushed to and
+        // every request hung — found by running on macOS, where the
+        // Linux-side `cargo check` had been clean. Each task gets its own
+        // delegate below, which is what makes one `Shared` per exchange
+        // possible at all.
         let session = unsafe {
             // unsafe-code-exception: amendment-C11
-            NSURLSession::sessionWithConfiguration_delegate_delegateQueue(
-                &cfg,
-                Some(&Delegate::as_protocol(&delegate)),
-                Some(&queue),
-            )
+            NSURLSession::sessionWithConfiguration_delegate_delegateQueue(&cfg, None, Some(&queue))
         };
         Self {
             session,
@@ -162,7 +158,7 @@ impl UrlSession {
     fn start(
         &self,
         req: &http::Request<RequestBody>,
-        _shared: Arc<Shared>,
+        shared: Arc<Shared>,
     ) -> Result<Retained<NSURLSessionTask>, Error> {
         let url = NSString::from_str(&req.uri().to_string());
         let Some(url) = NSURL::URLWithString(&url) else {
@@ -185,6 +181,11 @@ impl UrlSession {
             request.setHTTPBody(Some(&data));
         }
         let task = self.session.dataTaskWithRequest(&request);
+        // The task-scoped delegate: `URLSessionTask.delegate` is a
+        // **strong** reference, unusually for Cocoa, so the task keeps it
+        // alive and this crate does not have to.
+        let delegate = Delegate::new(shared);
+        task.setDelegate(Some(&Delegate::as_task_protocol(&delegate)));
         task.resume();
         Ok(Retained::into_super(task))
     }
