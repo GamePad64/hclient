@@ -1281,6 +1281,47 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### A fifth backend: Apple's `URLSession`, and the three things it refuses to take
+
+`http-ng-urlsession` puts `URLSession` behind `Transport` — the fourth
+**ambient** backend, owning no connection of its own, after `http-ng-wasi`
+and `http-ng-fetch`. It exists for the list a userspace stack cannot reach
+on an Apple platform: enterprise roots pushed by MDM, per-app VPN, the
+system proxy and its PAC, background transfer. That is a fact about the
+device rather than a preference, which is `http-ng-tls-native-tls`'s
+argument one seam over.
+
+**What it refuses to take from the OS is the decision worth knowing.**
+`URLSession` will keep cookies, a response cache and a redirect policy for
+you, and this turns all three off. None of them is in the list above; all
+three are portable behaviour this workspace already implements once; and
+leaving them on would make this the second backend reporting
+`owns_cookie_jar` and `owns_cache`, so a caller porting from
+`http-ng-native` would lose two features by changing one line.
+
+**Redirects are the sharpest, and this backend is stronger than the
+browser one.** `URLSession` lets a delegate refuse a redirect and a
+browser does not — so this reports `RedirectSupport::Transparent` where
+`http-ng-fetch` must report `Internal`, and `Client`'s hop limit and its
+`Authorization` stripping across origins work here and cannot there.
+Measured rather than read off Apple's documentation: a server that would
+have answered a second request receives exactly one.
+
+**Amendment C11 is a new kind of unsafe exemption.** The three before it
+each cover a site with its own argument; this crate is an FFI boundary
+where `unsafe` is the medium. It follows the policy rather than relaxing
+it — a marker on every site, files listed by name — and objc2 0.6 needed
+far less than expected: 23 sites became 11, and the body module has none.
+
+**And the reason the Mac mattered.** `cargo check --target
+aarch64-apple-darwin` is clean on a Linux host — which is worth knowing,
+because it means the shape can be kept honest without Apple hardware — and
+every network test hung on a real machine. One delegate per session was
+one queue for every task, so `execute` polled a channel nothing would push
+to; the signature said so, taking a `_shared` it ignored. A type-check
+cannot see an argument that is merely unused. Each task carries its own
+delegate now, and the four live tests are green on macOS 27.
+
 ### WebTransport: many sessions on one connection, and a `GOAWAY` nobody can see
 
 The two items this crate had recorded as deliberately not done, taken up
