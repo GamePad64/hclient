@@ -1286,8 +1286,20 @@ mutation surviving the whole suite until a fixture reached it.
 `http-ng-urlsession` puts `URLSession` behind `Transport` — the fourth
 **ambient** backend, owning no connection of its own, after `http-ng-wasi`
 and `http-ng-fetch`. It exists for the list a userspace stack cannot reach
-on an Apple platform: enterprise roots pushed by MDM, per-app VPN, the
-system proxy and its PAC, background transfer. That is a fact about the
+on an Apple platform: per-app VPN, the system proxy and its PAC, and
+background transfer.
+
+**That list said "enterprise roots pushed by MDM" first, and that was
+wrong.** `rustls-platform-verifier` 0.7.0 — which `DefaultTransport`
+already uses — reaches them: its Apple path builds the evaluation with
+`SecTrust::create_with_certificates` and *deliberately avoids* narrowing
+the anchors, calling `set_trust_anchor_certificates_only(false)` after any
+extra roots precisely so the system's own are kept
+(`src/verification/apple.rs:130-179`, read). So MDM roots were never a
+reason to reach for this backend, and the sentence stood for about an
+hour before `docs/competitive-gaps.md` caught it. The other three items
+stand, and so does the redirect argument below, which is the stronger one
+anyway. That is a fact about the
 device rather than a preference, which is `http-ng-tls-native-tls`'s
 argument one seam over.
 

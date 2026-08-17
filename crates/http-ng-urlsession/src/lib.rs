@@ -2,11 +2,19 @@
 //!
 //! The fourth ambient backend — after `http-ng-wasi` and `http-ng-fetch`,
 //! it owns no connection of its own — and the reason it exists is the list
-//! of things a userspace stack cannot reach on an Apple platform:
-//! enterprise roots pushed by MDM, per-app VPN, the system proxy and its
-//! PAC file, and background transfer. Every one of those is a fact about
-//! the device rather than a preference, which is the same argument
-//! `http-ng-tls-native-tls` is built on one seam over.
+//! of things a userspace stack cannot reach on an Apple platform: per-app
+//! VPN, the system proxy and its PAC file, and background transfer. Every
+//! one of those is a fact about the device rather than a preference,
+//! which is the same argument `http-ng-tls-native-tls` is built on one
+//! seam over.
+//!
+//! **Enterprise roots pushed by MDM were on that list and should not have
+//! been.** `rustls-platform-verifier` 0.7.0 already reaches them — its
+//! Apple path builds the trust evaluation with
+//! `SecTrust::create_with_certificates` and then, for any extra roots,
+//! calls `set_trust_anchor_certificates_only(false)` specifically so the
+//! system's own anchors survive. Read rather than assumed, and it is the
+//! verifier `http-ng`'s own `DefaultTransport` already uses.
 //!
 //! # What it deliberately does NOT take from the OS
 //!
