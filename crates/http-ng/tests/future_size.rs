@@ -21,10 +21,16 @@ use http_ng::Client;
 use http_ng::mock::MockTransport;
 
 /// Measured 4,232 bytes without the `cache` feature and 4,344 with it, on
-/// x86-64 Linux, debug. The ceiling is 8 KiB: roughly double, which leaves
-/// room for an ordinary field without leaving room for a wrapper that
-/// should have been boxed.
-const CEILING: usize = 8 * 1024;
+/// x86-64 Linux, debug.
+///
+/// **The ceiling is 6 KiB, and 8 KiB was wrong.** It was chosen as
+/// "roughly double" before anyone measured what a wrapper actually costs;
+/// `http-ng-native`'s twin of this test then measured it — one extra
+/// `async fn` layer around an exchange grew that future by **1.81×** — so
+/// a ceiling at 2× is a guard that cannot fire for the defect it names.
+/// 6 KiB is 1.38× today's, which is room for an ordinary field and none
+/// for a layer.
+const CEILING: usize = 6 * 1024;
 
 #[test]
 fn the_execute_future_stays_under_its_ceiling() {

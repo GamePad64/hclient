@@ -1267,6 +1267,48 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### `Expect: 100-continue`, and a ceiling that was measured rather than rounded
+
+`Native::expect_continue(after)`. A body carrying the header waits for the
+`100` or for `after`, whichever is first — RFC 9110 §10.1.1 makes the
+second outcome *send it anyway* rather than an error, so the gate has one
+open state and not two. **Both halves are required**: the caller asks by
+sending the header, the transport agrees by being configured, and either
+alone leaves the body ungated.
+
+hyper's client does **not** do this — `Expect` appears in hyper 1.11 on
+the server side only — and two things read from its source are what made
+it implementable. `dispatch.rs`'s `poll_loop` calls `poll_read` *before*
+`poll_write` every turn, so a body answering `Pending` does not stop the
+response from being read; and the `100` arrives through the same
+`hyper::ext::on_informational` the `1xx` work already installs. **That
+slot holds one closure**, so the gate and the hook cannot each have their
+own: which one is installed depends on whether a hook is watching,
+because reporting needs `H: Send + Sync + 'static` and opening a gate
+needs nothing of `H`.
+
+**The timer could not live in the body**, and that decided the shape: a
+concrete `Pin<Box<Tm::Sleep>>` would give `OutgoingBody` a type parameter
+a dozen signatures must carry, and a `Box<dyn Future>` drops auto traits
+(amendment C1). The body holds a flag and a waker; the clock stays in
+`Native`, folded into the `first_byte` race rather than wrapped around it
+— written as a wrapper first, and 56 tests in this crate's hook suite
+aborted with `SIGABRT` on a stack overflow.
+
+**A default that waited would be a default that hangs**, since a server
+ignoring `Expect` sends no `100`. And it is not a `Timeouts` field:
+`first_byte` bounds a wait ending in **failure** where this bounds one
+ending in **proceeding** — same clock, opposite outcome.
+
+That overflow produced the more general lesson. There are now two future
+-size guards, `http-ng/tests/future_size.rs` and `http-ng-native`'s, and
+**neither ceiling is a round number**: `Client::execute`'s future is
+4,344 bytes and `Native::execute`'s is 15,480, but the figure that sets
+both is what one extra `async fn` layer costs — measured at **1.81×**, so
+a ceiling at 2× would be a guard that cannot fire for the defect it
+names. They are 6 KiB and 24 KiB, and both are checked in the failing
+direction by reintroducing the layer. `docs/expect-continue.md` §7.
+
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
 `Native::proxy(Proxy::new(protocol, host, port))`, behind `http-ng-native`'s
