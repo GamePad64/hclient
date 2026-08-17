@@ -8,10 +8,15 @@
 //! # async fn example(
 //! #     conn: quinn::Connection,
 //! #     uri: http::Uri,
+//! #     second: http::Uri,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
 //! let session = http_ng_webtransport::Session::connect(conn, &uri).await?;
 //! let (mut send, mut _recv) = session.open_bi().await?;
 //! send.write_all(b"ping").await?;
+//! // A second session on the same connection, within the peer's
+//! // `SETTINGS_WT_MAX_SESSIONS`.
+//! let beside = session.open_session(&second).await?;
+//! # let _ = beside;
 //! # Ok(())
 //! # }
 //! ```
@@ -70,9 +75,13 @@
 //! The h3 *control* stream is polled exactly once, inside
 //! [`Session::connect`], to receive the peer's SETTINGS — which the draft
 //! makes a precondition of sending the CONNECT at all — and never again.
-//! What that costs is named rather than discovered: a `GOAWAY` arriving
-//! later is not observed. It arrives on the control stream, which is the
-//! driver's, and the driver is held rather than polled.
+//! What that costs is named rather than discovered, and now measured: a
+//! `GOAWAY` arriving later is not observed. It arrives on the control
+//! stream, which is the driver's, and the driver is held rather than
+//! polled. `tests/goaway.rs` is four assertions about why leaving it that
+//! way is a choice rather than an oversight, and one about what the choice
+//! costs — a round trip and a typed `H3_REQUEST_REJECTED`, because the peer
+//! enforces the rule this client cannot see.
 //!
 //! The **CONNECT** stream is a different stream and is now read:
 //! [`Session::closed`] is the caller's own future over it, spawning
@@ -97,6 +106,24 @@
 //! together, because **`h3` 0.0.8 has no capsule code at all** and neither
 //! does `h3-datagram` 0.0.2 or the crate named `h3-webtransport` 0.1.2.
 //! See `close_capsule`.
+//!
+//! # More than one session on one connection
+//!
+//! [`Session::open_session`] opens another, bounded by the peer's
+//! `SETTINGS_WT_MAX_SESSIONS`. Two things about it are worth knowing before
+//! reading it, and both were recorded here as blockers and turned out
+//! otherwise.
+//!
+//! **The limit is readable**, where `docs/v04-w2-webtransport.md` §3(c) said
+//! it was not: not from `h3::config::Settings`, which has no getter for it,
+//! but from the SETTINGS **frame** [`Session::connect`] already awaits and
+//! used to discard. See [`PeerSettings`].
+//!
+//! **A second h3 client is not the way**, and that part was right — it is a
+//! *connection* error, `H3_STREAM_CREATION_ERROR`, which takes the first
+//! session with it, and `tests/sessions.rs` executes the prediction. So
+//! [`Shared`] holds one h3 client and every session clones its
+//! `SendRequest`.
 //!
 //! # Datagrams
 //!
@@ -141,11 +168,13 @@
 use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;
 use h3::connection::ConnectionInner;
-use h3::proto::frame::Frame;
+use h3::proto::frame::{Frame, SettingId};
 use http_ng_core::{Error, ErrorKind};
+use std::collections::HashMap;
 use std::future::poll_fn;
-use std::sync::Mutex;
-use std::task::{Context, Poll};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 /// The identifier of a WebTransport session.
 ///
@@ -374,6 +403,32 @@ impl BadCloseCapsule {
     pub const MAX_REASON: usize = 1024;
 }
 
+/// The peer's `SETTINGS_WT_MAX_SESSIONS` has no room for another session.
+///
+/// Raised by [`Session::open_session`] **before** the CONNECT goes out, for
+/// the reason [`BadCloseCapsule::ReasonTooLong`] is raised before the
+/// capsule does: draft-ietf-webtrans-http3 §3.1 makes exceeding the limit
+/// the peer's business to punish, and a peer that punishes it does so at
+/// the *connection* level, taking every session on it down.
+///
+/// # Both numbers, because they are two different mistakes
+///
+/// `limit: 0` is a peer that announced WebTransport and offered no
+/// sessions — `h3`'s own server builder produces exactly that unless
+/// `max_webtransport_sessions` is called — and no `open_session` on it will
+/// ever succeed. `limit: 1` with `open: 1` is the ordinary case and the one
+/// the draft calls out by name: *"clients MUST NOT attempt to establish
+/// more than one simultaneous WebTransport session"*. Dropping a session
+/// gives its slot back, so the second is a wait and the first is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the peer allows {limit} simultaneous WebTransport session(s) and {open} are open")]
+pub struct TooManySessions {
+    /// The peer's `SETTINGS_WT_MAX_SESSIONS`.
+    pub limit: u64,
+    /// How many [`Session`] handles were alive on this connection.
+    pub open: u64,
+}
+
 /// [`Session::close`] was called on a session that has already sent its
 /// capsule.
 ///
@@ -410,6 +465,11 @@ pub struct AlreadyClosed;
 /// The second is the one worth knowing about: the driver is held to keep a
 /// stream open, not to be polled. See the crate doc.
 ///
+/// Both live in [`Shared`] rather than here, because they belong to the
+/// **connection** and not to any one session — which is what
+/// [`open_session`](Self::open_session) needed and what this crate spent
+/// its whole first version without.
+///
 /// # Why the two halves are behind mutexes
 ///
 /// Every other method here takes `&self` — `open_bi`, `send_datagram`,
@@ -427,16 +487,11 @@ pub struct AlreadyClosed;
 /// and then awaits, which is also what makes a second `close` an
 /// [`AlreadyClosed`] rather than a deadlock.
 pub struct Session {
-    /// The raw QUIC connection. WebTransport streams are QUIC streams with
-    /// a header, opened beside h3's rather than through it — which is why
-    /// this is here and `h3` is not asked to open them.
-    conn: quinn::Connection,
+    /// Everything this session shares with its siblings on the same QUIC
+    /// connection — including, until v0.4, the two anchors that used to
+    /// live here by value.
+    shared: Arc<Shared>,
     id: SessionId,
-    /// What the peer's SETTINGS said about `SETTINGS_H3_DATAGRAM`, read
-    /// once at establishment because that is when the frame arrives and
-    /// SETTINGS cannot be changed afterwards. It is not a third flag on
-    /// the gate — see [`Session::max_datagram_size`].
-    peer_datagrams: bool,
     /// The CONNECT stream's send half, `None` once [`Session::close`] has
     /// taken it. Dropping it is what FINs the stream, so it is taken by
     /// value rather than borrowed.
@@ -444,9 +499,60 @@ pub struct Session {
     /// The CONNECT stream's receive half, plus the bytes read past the end
     /// of the last capsule and the answer once it is known.
     connect_recv: Mutex<CloseWatch>,
-    // The two anchors. Named with a leading underscore because they are
-    // never read: their whole job is to not be dropped. See the type doc.
-    _send: h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+}
+
+/// One QUIC connection's HTTP/3 client, and everything its sessions share.
+///
+/// # Why this is a separate allocation rather than fields on `Session`
+///
+/// Until v0.4 it *was* fields on `Session`, and the consequence was
+/// recorded as this crate's last open item: *"here a `Session` owns the h3
+/// client, so there is one."* A second [`Session::connect`] on the same
+/// `quinn::Connection` builds a **second** h3 client, whose control stream
+/// the peer already has one of — RFC 9114 §6.2.1 — and which, measured
+/// against `h3`'s own server, does not error at all: it **hangs**, because
+/// a connection has exactly one server control stream and the first client
+/// took it, so the peer's SETTINGS never arrive at the second.
+/// `tests/sessions.rs` pins that.
+///
+/// Sharing it is what makes [`Session::open_session`] possible, and the
+/// three things below are shared because they are facts about the
+/// connection rather than about any one session.
+struct Shared {
+    /// The raw QUIC connection. WebTransport streams are QUIC streams with
+    /// a header, opened beside h3's rather than through it — which is why
+    /// this is here and `h3` is not asked to open them.
+    conn: quinn::Connection,
+    /// What the peer's SETTINGS said about `SETTINGS_H3_DATAGRAM`, read
+    /// once at establishment because that is when the frame arrives and
+    /// SETTINGS cannot be changed afterwards. It is not a third flag on
+    /// the gate — see [`Session::max_datagram_size`].
+    peer_datagrams: bool,
+    /// The peer's `SETTINGS_WT_MAX_SESSIONS`, and the only reader of it is
+    /// [`Session::open_session`]. See [`PeerSettings`] for where it comes
+    /// from, which is not where this crate's documentation used to say it
+    /// could not be got from.
+    max_sessions: u64,
+    /// How many [`Session`] handles are alive on this connection.
+    /// Incremented on establishment and decremented in `Drop`, which is
+    /// what makes the draft's word *simultaneous* mean something.
+    open: AtomicU64,
+    /// Datagrams one session read off the connection that belong to
+    /// another. See [`Shared::hand_over`].
+    parked: Mutex<HashMap<u64, Parked>>,
+    /// The h3 client. Held so that `h3`'s sender count never reaches zero
+    /// — it marks the connection closed with `H3_NO_ERROR` when the last
+    /// `SendRequest` drops — and **cloned** for every CONNECT, which is
+    /// what `SendRequest: Clone` is for.
+    send: h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+    /// The h3 connection driver. Held and never polled: it owns the
+    /// *control* stream, and a control stream that ends is
+    /// `H3_CLOSED_CRITICAL_STREAM` — a connection error, not a stream one.
+    ///
+    /// Never polled is the load-bearing half, and it is what makes a
+    /// `GOAWAY` invisible here. `docs/v04-goaway-and-sessions.md` §2 has
+    /// the four measurements behind leaving it that way, and
+    /// `tests/goaway.rs` asserts them.
     _driver: h3::client::Connection<h3_quinn::Connection, Bytes>,
 }
 
@@ -465,8 +571,29 @@ impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
             .field("id", &self.id)
-            .field("remote", &self.conn.remote_address())
+            .field("remote", &self.shared.conn.remote_address())
             .finish_non_exhaustive()
+    }
+}
+
+/// A session's handle is what the draft's word *simultaneous* counts, so
+/// the count is kept here rather than inferred from the CONNECT stream.
+///
+/// Deliberately not the same event as the session *ending*: a session that
+/// has been [`close`](Session::close)d, or whose peer closed it, is over on
+/// the wire but its handle is still the caller's, and a slot that came back
+/// while the caller could still call [`Session::closed`] on it would be a
+/// count of something nobody named. Dropping the handle is the moment the
+/// caller has finished with the session, which is exactly the moment a slot
+/// is free.
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.shared.open.fetch_sub(1, Ordering::Relaxed);
+        self.shared
+            .parked
+            .lock()
+            .expect("no panic can be held while this lock is taken")
+            .remove(&self.quarter_stream_id());
     }
 }
 
@@ -495,18 +622,11 @@ impl Session {
     /// on any of this puts one around the future, which is the same answer
     /// `Timeouts` gives one layer up.
     pub async fn connect(conn: quinn::Connection, uri: &http::Uri) -> Result<Self, Error> {
-        if uri.scheme_str() != Some("https") {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                NotHttps {
-                    scheme: uri.scheme_str().unwrap_or("(no scheme)").to_string(),
-                },
-            ));
-        }
+        check_https(uri)?;
         // No authority check follows, and that is a fact about `http::Uri`
         // rather than an omission — see [`NotHttps`].
 
-        let (mut driver, mut send) = h3::client::builder()
+        let (mut driver, send) = h3::client::builder()
             .enable_extended_connect(true)
             // The client's half of RFC 9297 §2.1: an endpoint may not
             // *receive* HTTP Datagrams it never said it understood, so this
@@ -522,55 +642,84 @@ impl Session {
             .await
             .map_err(connect_error)?;
 
-        let peer_datagrams = settings_announce_webtransport(&mut driver.inner, &send).await?;
+        let peer = settings_announce_webtransport(&mut driver.inner, &send).await?;
 
-        // `Protocol` in the request's extensions is the whole of the
-        // extended-CONNECT mechanism from this side: `h3`'s
-        // `Pseudo::request` reads `ext.get::<Protocol>()` **only when the
-        // method is CONNECT**, so the method and the extension are one
-        // fact expressed twice and neither is decoration.
-        let req = http::Request::builder()
-            .method(http::Method::CONNECT)
-            .uri(uri.clone())
-            .extension(h3::ext::Protocol::WEB_TRANSPORT)
-            .body(())
-            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
-
-        let mut stream = send.send_request(req).await.map_err(stream_error)?;
-        // Deliberately no `finish()`: the CONNECT stream stays open for
-        // the life of the session, and finishing it is how the draft says
-        // "the session is over".
-        let resp = stream.recv_response().await.map_err(stream_error)?;
-        if !resp.status().is_success() {
-            return Err(Error::new(
-                ErrorKind::Connect,
-                SessionRefused {
-                    status: resp.status(),
-                },
-            ));
-        }
-
-        // The full stream ID, not `StreamId::index()`. draft §4.2 says the
-        // Session ID *is* the Stream ID of the CONNECT stream, and the two
-        // differ by two bits of type: `h3`'s own `From<StreamId> for
-        // SessionId` uses `index()`, which is a fact about that crate's
-        // server side rather than one this client can copy.
-        let id = SessionId(stream.id().into_inner());
-        // RFC 9000 §2.1: the two halves of a bidirectional stream are
-        // independent, and `h3` hands them over as such. The session needs
-        // them apart rather than together, because closing and being closed
-        // are two things that happen at times nobody coordinates.
-        let (writer, reader) = stream.split();
-
-        Ok(Self {
+        let shared = Arc::new(Shared {
             conn,
-            id,
-            peer_datagrams,
-            connect_send: Mutex::new(Some(writer)),
-            connect_recv: Mutex::new(CloseWatch::new(reader)),
-            _send: send,
+            peer_datagrams: peer.datagrams,
+            max_sessions: peer.max_sessions,
+            open: AtomicU64::new(0),
+            parked: Mutex::new(HashMap::new()),
+            send,
             _driver: driver,
-        })
+        });
+        // Claimed rather than reserved: the first session is not checked
+        // against the peer's limit, for the reason
+        // [`open_session`](Self::open_session) gives.
+        establish(shared.claim(), uri).await
+    }
+
+    /// Open a **second** WebTransport session on the same QUIC connection.
+    ///
+    /// This is one extended CONNECT more, on the h3 client the first
+    /// session already built — not a second h3 client, which is the thing
+    /// that does not work (see [`Shared`]). The new session is a peer of
+    /// this one in every way: it has its own CONNECT stream, its own ID,
+    /// its own [`closed`](Self::closed), and its own datagrams. Dropping
+    /// either leaves the other running; the connection outlives both, and
+    /// the last one dropped takes the h3 client with it.
+    ///
+    /// # The limit is the peer's, and reading it is the whole finding
+    ///
+    /// draft-ietf-webtrans-http3 §3.1 bounds the number of simultaneous
+    /// sessions by the peer's `SETTINGS_WT_MAX_SESSIONS`, whose default is
+    /// **0** — *"the endpoint is not willing to receive any WebTransport
+    /// sessions"* — and whose value of `1` the draft makes an explicit
+    /// *"clients MUST NOT attempt to establish more than one simultaneous
+    /// WebTransport session"*. So this method is only correct if that
+    /// number can be read, and this crate's own documentation used to say
+    /// it could not: `h3::config::Settings` has getters for three flags
+    /// and none for this one.
+    ///
+    /// That was true of `h3::config::Settings` and false of `h3`. The
+    /// number arrives in the SETTINGS **frame** that
+    /// [`connect`](Self::connect) already awaits and used to discard with a
+    /// `_`, and `h3::proto::frame::Settings::get` is public under the same
+    /// feature this crate already takes. See [`PeerSettings`].
+    ///
+    /// # What it does not bound
+    ///
+    /// The **first** session is not checked against this number, and that
+    /// is deliberate rather than an oversight. The gate on establishment is
+    /// [`NotSupportedByPeer`]'s two flags, for the reason written there;
+    /// adding a third condition would refuse every peer that announces
+    /// WebTransport and leaves the limit at zero, which is exactly what
+    /// `h3`'s own **server** builder produces unless
+    /// `max_webtransport_sessions` is called — a peer whose two settings
+    /// disagree, and one that works. The same argument
+    /// `SETTINGS_H3_DATAGRAM` is kept off the gate by.
+    ///
+    /// So the number governs how many *more*, which is the only question a
+    /// caller of this method is asking.
+    ///
+    /// # Errors
+    ///
+    /// [`TooManySessions`] when the peer's limit is already spent, before
+    /// anything is sent — the same shape as
+    /// [`BadCloseCapsule::ReasonTooLong`] on [`close`](Self::close), and
+    /// for the same reason: a peer that enforces the limit answers a
+    /// session over it with a *connection* error.
+    ///
+    /// Otherwise whatever [`connect`](Self::connect) would answer for the
+    /// same URI, minus the two it cannot reach: the peer's SETTINGS have
+    /// already arrived and already passed, so [`NotSupportedByPeer`] is
+    /// behind us.
+    pub async fn open_session(&self, uri: &http::Uri) -> Result<Self, Error> {
+        check_https(uri)?;
+        // The slot is taken **before** the CONNECT goes out, and given
+        // back by the guard's `Drop` if it never arrives — so two callers
+        // racing this method cannot both find the last slot free.
+        establish(self.shared.reserve()?, uri).await
     }
 
     /// The session's ID — the CONNECT stream's QUIC stream ID.
@@ -590,6 +739,7 @@ impl Session {
     /// application bytes where a header belongs.
     pub async fn open_bi(&self) -> Result<(quinn::SendStream, quinn::RecvStream), Error> {
         let (mut send, recv) = self
+            .shared
             .conn
             .open_bi()
             .await
@@ -769,10 +919,11 @@ impl Session {
     /// always sets, so a session whose `max_datagram_size` is `None` can
     /// still have datagrams arrive on it.
     pub fn max_datagram_size(&self) -> Option<usize> {
-        if !self.peer_datagrams {
+        if !self.shared.peer_datagrams {
             return None;
         }
-        self.conn
+        self.shared
+            .conn
             .max_datagram_size()?
             .checked_sub(varint_len(self.quarter_stream_id()))
     }
@@ -815,7 +966,7 @@ impl Session {
     /// peer's SETTINGS are checked on this line, and the connection's own
     /// answer arrives from quinn.
     pub fn send_datagram(&self, payload: Bytes) -> Result<(), Error> {
-        if !self.peer_datagrams {
+        if !self.shared.peer_datagrams {
             return Err(Error::new(
                 ErrorKind::Unsupported,
                 DatagramsUnavailable::NotAnnouncedByPeer,
@@ -844,7 +995,8 @@ impl Session {
         let mut frame = Vec::with_capacity(varint_len(quarter) + payload.len());
         put_varint(&mut frame, quarter);
         frame.extend_from_slice(&payload);
-        self.conn
+        self.shared
+            .conn
             .send_datagram(Bytes::from(frame))
             .map_err(send_datagram_error)
     }
@@ -857,38 +1009,68 @@ impl Session {
     /// this stops receiving, and quinn's own receive buffer drops the
     /// oldest when it fills.
     ///
+    /// # A sibling's datagram is handed over, not dropped
+    ///
+    /// There is one datagram queue per QUIC connection and it is quinn's,
+    /// so whichever session is being polled reads *everything* — including
+    /// what belongs to a session opened by
+    /// [`open_session`](Self::open_session). Until v0.4 this method
+    /// discarded anything that was not its own, which was exactly right
+    /// while a connection could hold only one session and is silent data
+    /// loss now. So a foreign datagram is parked for its owner and its
+    /// owner is woken; see [`Shared::hand_over`] for what happens when the
+    /// owner is not listening, which is still the discard, and still
+    /// RFC 9297 §2.1's *"SHALL either drop that datagram silently or
+    /// buffer it temporarily"*.
+    ///
     /// # What it silently drops, and why silence is right
     ///
-    /// A datagram whose Quarter Stream ID is not this session's, and one
-    /// too short to carry a Quarter Stream ID at all, are discarded and
-    /// the wait continues. RFC 9297 §2.1 says a receiver "SHALL either
-    /// drop that datagram silently or buffer it temporarily" when the ID
-    /// names a stream it does not know, so an error here would be
-    /// inventing a failure the RFC forbids — and this crate holds one
-    /// session per connection, so *not this session* is the only
-    /// unknown-stream case that exists.
+    /// A datagram whose Quarter Stream ID names **no** session on this
+    /// connection, and one too short to carry a Quarter Stream ID at all,
+    /// are discarded and the wait continues — the RFC's sentence above,
+    /// and an error here would be inventing a failure it forbids.
     ///
     /// The one thing it does not do is the RFC's other arm: an ID above
     /// `2^60 - 1` is illegal and "MUST be treated as an HTTP/3 connection
-    /// error of type H3_DATAGRAM_ERROR". Such an ID cannot equal this
+    /// error of type H3_DATAGRAM_ERROR". Such an ID cannot equal any
     /// session's, so it is dropped rather than escalated; closing the
     /// connection from here is recorded as not done in
     /// `docs/v04-w2-datagrams.md` rather than half-done.
     pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
         let quarter = self.quarter_stream_id();
         loop {
-            let frame = self
-                .conn
-                .read_datagram()
-                .await
-                .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+            // A sibling may have read one for us while we were away.
+            if let Some(payload) = self.shared.collect(quarter) {
+                return Ok(payload);
+            }
+            // `read_datagram` is held across polls rather than rebuilt on
+            // each one, and that is load-bearing: quinn's future registers
+            // on a `Notify` when it is polled and **deregisters when it is
+            // dropped**, so a version that made a fresh one per poll would
+            // return `Pending` with nothing left to wake it.
+            let mut read = std::pin::pin!(self.shared.conn.read_datagram());
+            let frame = poll_fn(|cx| {
+                // Registered before the read is polled, so a sibling that
+                // hands one over between the two has somewhere to wake.
+                if self.shared.wait_for_a_handover(quarter, cx) {
+                    return Poll::Ready(None);
+                }
+                read.as_mut().poll(cx).map(Some)
+            })
+            .await;
+            let Some(frame) = frame else {
+                // A sibling parked one for us. Round again to collect it,
+                // rather than reaching into the map twice in one pass.
+                continue;
+            };
+            let frame = frame.map_err(|e| Error::new(ErrorKind::Connect, e))?;
             let Some((id, header)) = get_varint(&frame) else {
                 continue;
             };
-            if id != quarter {
-                continue;
+            if id == quarter {
+                return Ok(frame.slice(header..));
             }
-            return Ok(frame.slice(header..));
+            self.shared.hand_over(id, frame.slice(header..));
         }
     }
 
@@ -903,6 +1085,247 @@ impl Session {
     fn quarter_stream_id(&self) -> u64 {
         self.id.0 >> 2
     }
+}
+
+/// WebTransport runs over HTTP/3, which is always TLS.
+///
+/// Asked before anything is built or sent, by both entry points, because
+/// the answer does not depend on a connection — see [`NotHttps`].
+fn check_https(uri: &http::Uri) -> Result<(), Error> {
+    if uri.scheme_str() == Some("https") {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorKind::Unsupported,
+        NotHttps {
+            scheme: uri.scheme_str().unwrap_or("(no scheme)").to_string(),
+        },
+    ))
+}
+
+/// Send the extended CONNECT and make a [`Session`] out of what comes back.
+///
+/// The half of [`Session::connect`] that [`Session::open_session`] repeats
+/// verbatim: everything above it — the h3 client, the SETTINGS wait, the
+/// gate — is per **connection** and happens once.
+async fn establish(slot: Slot, uri: &http::Uri) -> Result<Session, Error> {
+    // Cloned rather than borrowed: `send_request` takes `&mut self`, and
+    // `SendRequest` is `Clone` exactly so that more than one request can be
+    // in flight on one connection. `h3` counts the clones and closes the
+    // connection when the last drops, which is why [`Shared`] keeps one
+    // that is never used to send.
+    let mut send = slot.shared().send.clone();
+
+    // `Protocol` in the request's extensions is the whole of the
+    // extended-CONNECT mechanism from this side: `h3`'s
+    // `Pseudo::request` reads `ext.get::<Protocol>()` **only when the
+    // method is CONNECT**, so the method and the extension are one
+    // fact expressed twice and neither is decoration.
+    let req = http::Request::builder()
+        .method(http::Method::CONNECT)
+        .uri(uri.clone())
+        .extension(h3::ext::Protocol::WEB_TRANSPORT)
+        .body(())
+        .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+
+    let mut stream = send.send_request(req).await.map_err(stream_error)?;
+    // Deliberately no `finish()`: the CONNECT stream stays open for
+    // the life of the session, and finishing it is how the draft says
+    // "the session is over".
+    let resp = stream.recv_response().await.map_err(stream_error)?;
+    if !resp.status().is_success() {
+        return Err(Error::new(
+            ErrorKind::Connect,
+            SessionRefused {
+                status: resp.status(),
+            },
+        ));
+    }
+
+    // The full stream ID, not `StreamId::index()`. draft §4.2 says the
+    // Session ID *is* the Stream ID of the CONNECT stream, and the two
+    // differ by two bits of type: `h3`'s own `From<StreamId> for
+    // SessionId` uses `index()`, which is a fact about that crate's
+    // server side rather than one this client can copy.
+    let id = SessionId(stream.id().into_inner());
+    // RFC 9000 §2.1: the two halves of a bidirectional stream are
+    // independent, and `h3` hands them over as such. The session needs
+    // them apart rather than together, because closing and being closed
+    // are two things that happen at times nobody coordinates.
+    let (writer, reader) = stream.split();
+
+    // Before the handle exists, so that a sibling already inside
+    // `recv_datagram` can hand this session a datagram from the first one
+    // that arrives rather than from the first one after it asks.
+    slot.shared().register(id.0 >> 2);
+
+    Ok(Session {
+        shared: slot.keep(),
+        id,
+        connect_send: Mutex::new(Some(writer)),
+        connect_recv: Mutex::new(CloseWatch::new(reader)),
+    })
+}
+
+/// One session's place in the peer's `SETTINGS_WT_MAX_SESSIONS` budget,
+/// taken before the CONNECT goes out.
+///
+/// It exists so that the count is decided in **one** place under a
+/// compare-and-exchange rather than in a check followed later by an
+/// increment: two callers racing [`Session::open_session`] on the last free
+/// slot would otherwise both see it free. Dropping it without
+/// [`keep`](Self::keep) gives the slot back, which is what happens when the
+/// CONNECT it was taken for never arrives.
+struct Slot(Option<Arc<Shared>>);
+
+impl Slot {
+    fn shared(&self) -> &Arc<Shared> {
+        self.0
+            .as_ref()
+            .expect("a slot holds its connection until kept")
+    }
+
+    /// Turn the reservation into a real session's share of the connection.
+    /// The count is not decremented here; [`Session`]'s `Drop` does that.
+    fn keep(mut self) -> Arc<Shared> {
+        self.0.take().expect("a slot is kept at most once")
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.0 {
+            shared.open.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Shared {
+    /// Take a slot without asking the peer's limit — the first session's
+    /// path. See [`Session::open_session`] for why the first is exempt.
+    fn claim(self: &Arc<Self>) -> Slot {
+        self.open.fetch_add(1, Ordering::Relaxed);
+        Slot(Some(self.clone()))
+    }
+
+    /// Take a slot if the peer's limit has one left.
+    fn reserve(self: &Arc<Self>) -> Result<Slot, Error> {
+        let mut open = self.open.load(Ordering::Relaxed);
+        loop {
+            if open >= self.max_sessions {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    TooManySessions {
+                        limit: self.max_sessions,
+                        open,
+                    },
+                ));
+            }
+            match self.open.compare_exchange_weak(
+                open,
+                open + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(Slot(Some(self.clone()))),
+                Err(actual) => open = actual,
+            }
+        }
+    }
+
+    /// Take the datagram a sibling read on this session's behalf, if there
+    /// is one, and forget the waker with it — the caller is awake.
+    fn collect(&self, quarter: u64) -> Option<Bytes> {
+        let mut parked = self
+            .parked
+            .lock()
+            .expect("no panic can be held while this lock is taken");
+        let waiting = parked.get_mut(&quarter)?;
+        waiting.waker = None;
+        waiting.held.take()
+    }
+
+    /// Register `cx` as the thing to wake when a sibling reads a datagram
+    /// for `quarter`, and say whether one is already there.
+    ///
+    /// Registering is what makes a session *listening*, and
+    /// [`hand_over`](Self::hand_over) drops a datagram for a session that
+    /// is not — which is RFC 9297 §2.1's own answer for an ID naming a
+    /// stream the receiver does not know, applied to one it knows and
+    /// nobody is reading.
+    fn wait_for_a_handover(&self, quarter: u64, cx: &Context<'_>) -> bool {
+        let mut parked = self
+            .parked
+            .lock()
+            .expect("no panic can be held while this lock is taken");
+        // `entry`, because a session registered at establishment and
+        // removed at `Drop` is always here — this is a `get_mut` that
+        // cannot be `None` rather than a second registration point.
+        let waiting = parked.entry(quarter).or_default();
+        if waiting.held.is_some() {
+            return true;
+        }
+        match &waiting.waker {
+            Some(known) if known.will_wake(cx.waker()) => {}
+            _ => waiting.waker = Some(cx.waker().clone()),
+        }
+        false
+    }
+
+    /// Give a datagram to the session it is addressed to, and drop it if no
+    /// session on this connection has that ID.
+    ///
+    /// `get_mut`, not `entry`, and that is the whole of RFC 9297 §2.1's
+    /// *"a Quarter Stream ID naming a stream the receiver does not know"*:
+    /// the map's keys **are** this connection's live sessions, put there by
+    /// `establish` and taken out by [`Session`]'s `Drop`, so an ID that is
+    /// not one of them is dropped rather than stored — which also means a
+    /// peer cannot grow this map by inventing IDs.
+    ///
+    /// **At most one datagram is held per session**, and the rest of a
+    /// burst is dropped. That is the right shape for a transport whose
+    /// whole promise is that a datagram may be lost: a queue here would be
+    /// a reliability this layer does not have and cannot honestly offer,
+    /// and an unbounded one would let a session that stopped reading
+    /// consume memory a peer chooses the size of.
+    fn hand_over(&self, quarter: u64, payload: Bytes) {
+        let mut parked = self
+            .parked
+            .lock()
+            .expect("no panic can be held while this lock is taken");
+        let Some(waiting) = parked.get_mut(&quarter) else {
+            return;
+        };
+        if waiting.held.is_none() {
+            waiting.held = Some(payload);
+        }
+        // Woken if anyone is inside `recv_datagram`; collected on the next
+        // call if not. The two are the same code path — see `collect`.
+        if let Some(waker) = waiting.waker.take() {
+            waker.wake();
+        }
+    }
+
+    /// Record that a session with this Quarter Stream ID exists on this
+    /// connection, which is what makes [`hand_over`](Self::hand_over) able
+    /// to tell *not this session* from *no session at all*.
+    fn register(&self, quarter: u64) {
+        self.parked
+            .lock()
+            .expect("no panic can be held while this lock is taken")
+            .entry(quarter)
+            .or_default();
+    }
+}
+
+/// One session's side of the hand-off in [`Shared::hand_over`].
+#[derive(Default)]
+struct Parked {
+    /// A datagram a sibling read for this session and has not collected.
+    held: Option<Bytes>,
+    /// The waker of whoever is inside [`Session::recv_datagram`], or
+    /// `None` when nobody is.
+    waker: Option<Waker>,
 }
 
 /// The signal value that begins a client-initiated bidirectional
@@ -1116,20 +1539,17 @@ impl CloseWatch {
 /// first frame on the control stream (RFC 9114 §6.2.1) and has already
 /// stored it, so the read below is of the peer's real answer.
 ///
-/// Returns what the same frame said about `SETTINGS_H3_DATAGRAM`, which is
-/// read here because this is the only moment it is readable and because
-/// the answer is fixed for the connection's life. It is deliberately
-/// **not** a third condition on the gate: a server may honestly announce
-/// WebTransport and not datagrams, `h3`'s own server builder can be
-/// configured into exactly that state, and a caller that only ever opens
-/// streams would be refused a session that works. What it does instead is
-/// decide [`Session::max_datagram_size`].
+/// Returns [`PeerSettings`]: the two things this crate reads off that frame
+/// and keeps for the connection's life, neither of which is a condition on
+/// the gate.
 async fn settings_announce_webtransport(
     inner: &mut ConnectionInner<h3_quinn::Connection, Bytes>,
     send: &h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-) -> Result<bool, Error> {
-    match poll_fn(|cx| inner.poll_control(cx)).await {
-        Ok(Frame::Settings(_)) => {}
+) -> Result<PeerSettings, Error> {
+    // The frame is **kept**, where until v0.4 it was matched with a `_`.
+    // See [`PeerSettings::max_sessions`].
+    let frame = match poll_fn(|cx| inner.poll_control(cx)).await {
+        Ok(Frame::Settings(frame)) => frame,
         // Unreachable rather than impossible, and typed rather than
         // `unwrap`ed: `h3` turns any other first frame into
         // `H3_MISSING_SETTINGS` on the line above, so this arm exists for
@@ -1141,18 +1561,56 @@ async fn settings_announce_webtransport(
             ));
         }
         Err(e) => return Err(connect_error(e)),
-    }
+    };
 
     let settings = send.settings();
     let announced = NotSupportedByPeer {
         webtransport: settings.enable_webtransport(),
         extended_connect: settings.enable_extended_connect(),
     };
-    if announced.webtransport && announced.extended_connect {
-        Ok(settings.enable_datagram())
-    } else {
-        Err(Error::new(ErrorKind::Unsupported, announced))
+    if !announced.webtransport || !announced.extended_connect {
+        return Err(Error::new(ErrorKind::Unsupported, announced));
     }
+    Ok(PeerSettings {
+        datagrams: settings.enable_datagram(),
+        max_sessions: frame.get(SettingId::WEBTRANSPORT_MAX_SESSIONS).unwrap_or(0),
+    })
+}
+
+/// What this crate keeps out of the peer's SETTINGS frame, and where each
+/// half comes from.
+///
+/// # Two sources for two values, and the second is the finding
+///
+/// `datagrams` is read through `h3::config::Settings`, which has a getter
+/// for it. `max_sessions` is read off the **frame**, because that struct
+/// has no getter for `max_webtransport_sessions` — its field is
+/// `pub(crate)` — and `docs/v04-w2-webtransport.md` §3(c) recorded that as
+/// *"the peer's `max_webtransport_sessions` cannot be read"*.
+///
+/// **That was true of `h3::config::Settings` and false of `h3`.** The
+/// SETTINGS frame this function already awaits *is*
+/// `h3::proto::frame::Settings`, whose `get` is `pub` and whose
+/// `SettingId::WEBTRANSPORT_MAX_SESSIONS` is a `pub const`, all under the
+/// `i-implement-a-third-party-backend` feature this crate already takes for
+/// the two facts one paragraph up. The value was arriving, being parsed and
+/// being thrown away by the `_` in this function's own match.
+///
+/// The default when the setting is absent is `0`, which is the draft's own
+/// default and means *no sessions* — see [`TooManySessions`].
+///
+/// Neither value is a condition on the establishment gate. A server may
+/// honestly announce WebTransport and not datagrams, `h3`'s own server
+/// builder can be configured into exactly that state, and a caller that
+/// only ever opens streams would be refused a session that works; the same
+/// argument, one setting over, is why a limit of zero does not refuse the
+/// first session. What they decide instead is
+/// [`Session::max_datagram_size`] and [`Session::open_session`].
+struct PeerSettings {
+    /// `SETTINGS_H3_DATAGRAM`.
+    datagrams: bool,
+    /// `SETTINGS_WT_MAX_SESSIONS`.
+    max_sessions: u64,
 }
 
 /// QUIC's variable-length integer encoding, RFC 9000 §16.

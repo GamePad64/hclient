@@ -50,10 +50,70 @@ pub struct Options {
     /// too short to carry a Quarter Stream ID, and one carrying a Quarter
     /// Stream ID that is not the session's.
     pub noise_before_echo: bool,
+    /// How many extended CONNECTs this server answers.
+    ///
+    /// One is the shape every test before v0.4 needed, because a
+    /// connection could hold one session. A fixture that accepted a second
+    /// would have made `Session::open_session` look like it worked while
+    /// the second CONNECT was never answered at all — which is exactly what
+    /// the first attempt at it measured.
+    ///
+    /// **It is exactly this many, and they come first.** The fixture stops
+    /// polling its `h3::server::Connection` once it has them, which is what
+    /// leaves `quic.accept_bi()` as the only reader of incoming bidirectional
+    /// streams (see [`serve`]) — so a test that sets this higher than the
+    /// number of CONNECTs it sends gets no WebTransport streams read at all.
+    /// While it is still waiting, the h3 connection *is* being polled, which
+    /// is the difference `a_second_h3_client_on_one_connection_is_a_connection_error`
+    /// turns on.
+    pub sessions: usize,
+    /// What the server announces as `SETTINGS_WT_MAX_SESSIONS`.
+    ///
+    /// `h3`'s server builder sends this whatever it is set to, and its
+    /// default is **0** — a peer announcing WebTransport and offering no
+    /// sessions. The client reads it off the SETTINGS frame, so this is the
+    /// number `Session::open_session` is bounded by.
+    pub max_sessions: u64,
+    /// Write an HTTP/3 `GOAWAY` on the control stream, once this many
+    /// sessions have been answered.
+    pub goaway: Option<GoAway>,
     /// The status the extended CONNECT is answered with.
     pub answer: http::StatusCode,
     /// What the server does with the CONNECT stream once it has answered.
     pub after_response: AfterResponse,
+}
+
+/// When the fixture writes its `GOAWAY`, and what it says.
+///
+/// # The ordering is the server's, deliberately
+///
+/// It is written **after** the `after`-th session's response and before the
+/// next `accept`, from inside the accept loop, so `h3`'s server has set its
+/// `sent_closing` before any later CONNECT can be resolved — which makes a
+/// later CONNECT's rejection deterministic *at the server* however the two
+/// streams' bytes happen to interleave on the wire.
+///
+/// The first attempt at this was a gate the test opened, like
+/// [`Server::abandon_the_session`], and it **flaked three runs in six**:
+/// a `GOAWAY` travels on the control stream and a CONNECT on a request
+/// stream, QUIC orders bytes within a stream and not across two, and there
+/// is no client-side event that means *the GOAWAY has landed* — which is
+/// the same fact `tests/goaway.rs` gives as the reason this crate does not
+/// try to observe one.
+#[derive(Debug, Clone, Copy)]
+pub struct GoAway {
+    /// How many sessions are answered before it is written. `1` puts it
+    /// after the first session's response.
+    pub after: usize,
+    /// `h3::server::Connection::shutdown`'s `max_requests`, which names the
+    /// frame's identifier relative to the last stream accepted.
+    ///
+    /// `0` names **that** session's own CONNECT stream, which RFC 9114
+    /// §5.2 makes rejected; `1` names the next request stream after it,
+    /// which leaves that session standing. Two different instructions, and
+    /// `two_goaways_that_say_opposite_things_look_identical` is that a
+    /// client cannot tell them apart.
+    pub max_requests: usize,
 }
 
 /// What the fixture does with the CONNECT stream after the response.
@@ -113,6 +173,9 @@ impl Default for Options {
             announce_datagram: true,
             quic_datagrams: true,
             noise_before_echo: false,
+            sessions: 1,
+            max_sessions: 1,
+            goaway: None,
             answer: http::StatusCode::OK,
             after_response: AfterResponse::ReadCapsules,
         }
@@ -381,7 +444,7 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
         .enable_webtransport(opts.announce_webtransport)
         .enable_extended_connect(opts.announce_extended_connect)
         .enable_datagram(opts.announce_datagram)
-        .max_webtransport_sessions(1)
+        .max_webtransport_sessions(opts.max_sessions)
         .build::<h3_quinn::Connection, Bytes>(h3_quinn::Connection::new(conn))
         .await
     else {
@@ -401,62 +464,90 @@ async fn serve(conn: quinn::Connection, opts: Options, state: Arc<State>) {
     // first — QUIC opens the lower-numbered streams implicitly — and
     // resolves to an error, which is a *stream* error and not a connection
     // one.
-    let (req, mut stream) = loop {
-        let Ok(Some(resolver)) = h3.accept().await else {
+    for answered in 0..opts.sessions {
+        // `GOAWAY` is written from inside this loop rather than from a task
+        // of its own, because `h3::server::Connection::shutdown` needs the
+        // connection by `&mut` and the loop is holding it — and because
+        // writing it *here*, between one response and the next `accept`, is
+        // what makes it ordered with respect to the requests. See
+        // [`GoAway`].
+        if let Some(goaway) = opts.goaway
+            && goaway.after == answered
+            && h3.shutdown(goaway.max_requests).await.is_err()
+        {
             return;
-        };
-        match resolver.resolve_request().await {
-            Ok(pair) => break pair,
-            Err(_) => continue,
         }
-    };
-    // Read at the moment the request resolved, which is after the client's
-    // control stream has been read — the same `h3` shared state the client
-    // half of this exchange reads the *server's* settings from.
-    *state.client_settings.lock().unwrap() = Some(SeenClientSettings {
-        extended_connect: h3.settings().enable_extended_connect(),
-        webtransport: h3.settings().enable_webtransport(),
-        datagram: h3.settings().enable_datagram(),
-    });
-    state.requests.lock().unwrap().push(SeenRequest {
-        method: req.method().clone(),
-        uri: req.uri().clone(),
-        protocol: req
-            .extensions()
-            .get::<h3::ext::Protocol>()
-            .map(|p| p.as_str().to_string()),
-        stream_id: stream.id().into_inner(),
-    });
 
-    let resp = http::Response::builder()
-        .status(opts.answer)
-        .body(())
-        .expect("a status and no body always builds");
-    if stream.send_response(resp).await.is_err() {
-        return;
+        let (req, mut stream) = loop {
+            let Ok(Some(resolver)) = h3.accept().await else {
+                return;
+            };
+            match resolver.resolve_request().await {
+                Ok(pair) => break pair,
+                Err(_) => continue,
+            }
+        };
+        // Read at the moment the request resolved, which is after the client's
+        // control stream has been read — the same `h3` shared state the client
+        // half of this exchange reads the *server's* settings from.
+        *state.client_settings.lock().unwrap() = Some(SeenClientSettings {
+            extended_connect: h3.settings().enable_extended_connect(),
+            webtransport: h3.settings().enable_webtransport(),
+            datagram: h3.settings().enable_datagram(),
+        });
+        state.requests.lock().unwrap().push(SeenRequest {
+            method: req.method().clone(),
+            uri: req.uri().clone(),
+            protocol: req
+                .extensions()
+                .get::<h3::ext::Protocol>()
+                .map(|p| p.as_str().to_string()),
+            stream_id: stream.id().into_inner(),
+        });
+
+        let resp = http::Response::builder()
+            .status(opts.answer)
+            .body(())
+            .expect("a status and no body always builds");
+        if stream.send_response(resp).await.is_err() {
+            return;
+        }
+
+        // The CONNECT stream is *moved* into its own task rather than held and
+        // ignored. That task is what keeps the session alive — it owns the
+        // stream, and `quinn::SendStream::drop` finishes it — and it is also
+        // the whole of the capsule protocol on this side.
+        tokio::spawn(connect_stream(
+            stream,
+            quic.clone(),
+            opts.clone(),
+            state.clone(),
+        ));
     }
 
-    // The session ID, which is what every WebTransport stream and every
-    // WebTransport datagram on this connection must name.
-    let session_id = stream.id().into_inner();
+    let opts_for_goaway = opts.clone();
 
-    // The CONNECT stream is *moved* into its own task rather than held and
-    // ignored. That task is what keeps the session alive — it owns the
-    // stream, and `quinn::SendStream::drop` finishes it — and it is also
-    // the whole of the capsule protocol on this side.
-    tokio::spawn(connect_stream(
-        stream,
-        quic.clone(),
-        opts.clone(),
-        state.clone(),
-    ));
+    // One datagram reader per connection, not per session: there is one
+    // QUIC datagram queue and the echo goes back to whichever Quarter
+    // Stream ID it arrived on, which is what makes the fixture answer two
+    // sessions without knowing either of them.
+    tokio::spawn(echo_datagrams(quic.clone(), opts.clone(), state.clone()));
 
-    tokio::spawn(echo_datagrams(
-        quic.clone(),
-        session_id,
-        opts.clone(),
-        state.clone(),
-    ));
+    // The h3 connection is moved into a task of its own rather than held
+    // here, and the task never returns: dropping an
+    // `h3::server::Connection` drops the control stream with it, which
+    // RFC 9114 §6.2.1 makes a connection error, and that is a different
+    // fact from the one every test using this fixture is about. It still
+    // owes a `GOAWAY` if [`GoAway::after`] is the session count itself.
+    tokio::spawn(async move {
+        let mut h3 = h3;
+        if let Some(goaway) = opts_for_goaway.goaway
+            && goaway.after >= opts_for_goaway.sessions
+        {
+            let _ = h3.shutdown(goaway.max_requests).await;
+        }
+        std::future::pending::<()>().await
+    });
 
     while let Ok((send, recv)) = quic.accept_bi().await {
         let state = state.clone();
@@ -609,13 +700,7 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<SeenCapsule> {
 /// HTTP/3 layer gates it, which is precisely why the client's own
 /// announcement has to be asserted from [`SeenClientSettings`] instead of
 /// being inferred from a datagram arriving.
-async fn echo_datagrams(
-    conn: quinn::Connection,
-    session_id: u64,
-    opts: Options,
-    state: Arc<State>,
-) {
-    let quarter = session_id >> 2;
+async fn echo_datagrams(conn: quinn::Connection, opts: Options, state: Arc<State>) {
     while let Ok(frame) = conn.read_datagram().await {
         let mut reader = VarintReader {
             buf: frame.to_vec(),
@@ -636,9 +721,12 @@ async fn echo_datagrams(
             // one. `+ 1` rather than an arbitrary number so that the
             // header is the same length as the real one and the two
             // differ in value alone.
-            let _ = conn.send_datagram(datagram(quarter + 1, b"stray"));
+            let _ = conn.send_datagram(datagram(quarter_stream_id + 1, b"stray"));
         }
-        let _ = conn.send_datagram(datagram(quarter, &payload));
+        // Back to the ID it came from rather than to a remembered one: a
+        // connection may carry more than one session, and this side has no
+        // business deciding which of them a datagram belongs to.
+        let _ = conn.send_datagram(datagram(quarter_stream_id, &payload));
     }
 }
 
