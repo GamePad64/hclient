@@ -1281,6 +1281,53 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### `multipart/form-data`, and a replay contract read off the parts
+
+`RequestBuilder::multipart(Form::new().part(Part::bytes(..).file_name(..)))`.
+Its shape is decided by one requirement: **a multipart body must be able
+to stream.** Concatenating every part into one `Bytes` is four lines and
+is wrong for the case multipart exists for — a file large enough that a
+second copy of it is the thing that fails.
+
+**The replay contract is not a setting; it is read off the parts**, and
+it is knowable before sending, which is `RetryKind`'s whole promise.
+Every part resolved to bytes → a `Rewindable` body, `ViaFactory`,
+`Content-Length`. Any part a stream → `Streaming`, `Impossible`, and
+`Content-Length` only where every stream's own `size_hint` is exact. The
+way to opt into retries is to give the parts bytes; there is no flag,
+because a flag would be a promise this module could not keep for a stream
+it has already handed to a transport. "Resolved to bytes" is not "written
+as bytes": a `Rewindable` part whose factory hands back a `Full` counts,
+one whose factory hands back a `Streaming` does not.
+
+**The boundary is 128 bits from the OS, and there is no collision check.**
+Not omitted for cost: it cannot be made whole, because a streaming part's
+content is unreadable before it is sent, so a scan could only cover the
+buffered parts — a guarantee for some inputs, which reads as a guarantee
+for all of them and is worse than an honest probability. The probability
+is the argument, and it rests on drawing **after** the caller supplied the
+content, once per form: an adversary choosing a file cannot choose it to
+contain a value that does not exist yet. `getrandom` was already in this
+crate's graph for SSE jitter, so nothing is added.
+
+**An entropy failure is an error and never a fixed fallback** — the
+opposite resolution from `sse.rs`'s `jitter()` three files over, where a
+failed draw becomes `0.0`. The two are consistent: jitter's degenerate
+value is un-jittered backoff, slower and safe, where a fixed boundary is
+the single string most likely to appear in someone's content and the one
+an attacker could plant. **A degraded value is only acceptable when the
+degradation has a direction.**
+
+Field and file names go out as UTF-8 with three bytes escaped — LF, CR
+and `"` — which is the WHATWG rule all three browser engines moved to,
+and every other C0 control is **rejected**. That is a framing property
+before an interoperability one: a raw CR LF in caller data would end the
+header field and let the rest be read as further part headers. There is
+no `filename*`, because RFC 7578 §4.2 forbids it in as many words. The
+wart is stated where a caller meets it: `%` is not escaped, so a name
+containing the literal text `%22` is indistinguishable from one
+containing `"`.
+
 ### Request ergonomics: query, forms and auth, with no dependency added
 
 `RequestBuilder::{query, form, basic_auth, bearer_auth}`. Small, and the
