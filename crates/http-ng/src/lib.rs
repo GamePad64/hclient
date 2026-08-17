@@ -42,6 +42,7 @@ mod decompress;
 /// exists so that callers who already had the facade see no change.
 #[cfg(feature = "test-util")]
 pub use http_ng_mock as mock;
+pub mod multipart;
 mod request;
 mod response;
 mod sse;
@@ -171,7 +172,7 @@ pub use http_ng_proto::redirect::RedirectPolicy;
 // tell "the URL you gave me is wrong" apart from every other `Other`.
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use http_ng_proto::uri::UriError;
-pub use request::{ColonInUsername, RequestBuilder};
+pub use request::{ColonInUsername, ContentTypeIsNotOursToKeep, RequestBuilder};
 pub use response::{Collected, Response};
 pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 

@@ -22,6 +22,15 @@ pub struct RequestBuilder<'a, T, Tm = crate::DefaultClock> {
     headers: http::HeaderMap,
     body: RequestBody,
     extensions: http::Extensions,
+    /// The boundary of the multipart body currently set, if that is what
+    /// the body is.
+    ///
+    /// **The `Content-Type` is written at `send()` rather than here**,
+    /// which is the one place this builder defers a header it knows, and
+    /// the reason is in [`Self::multipart`]. Keeping the boundary means
+    /// the invariant is "this is `Some` exactly while the body is the
+    /// multipart one" — so every method that replaces the body clears it.
+    multipart: Option<crate::multipart::Boundary>,
     /// The first build error. Surfaces in `send()`: a silently swallowed
     /// invalid header is exactly the silent no-op `ClientBuilder::build` was
     /// built against (see `check_supported` in config.rs). The brief's
@@ -40,6 +49,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
             headers: http::HeaderMap::new(),
             body: RequestBody::Empty,
             extensions: http::Extensions::new(),
+            multipart: None,
             error: None,
         }
     }
@@ -102,6 +112,71 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
 
     pub fn body(mut self, body: RequestBody) -> Self {
         self.body = body;
+        self.multipart = None;
+        self
+    }
+
+    /// A `multipart/form-data` body — RFC 7578.
+    ///
+    /// ```no_run
+    /// # use http_ng::multipart::{Form, Part};
+    /// # use http_ng_core::unversioned::Transport;
+    /// # async fn f(c: &http_ng::Client<impl Transport<Error = http_ng::Error>>)
+    /// # -> Result<(), http_ng::Error> {
+    /// c.post("https://example.com/upload")
+    ///     .multipart(
+    ///         Form::new()
+    ///             .part(Part::text("title", "a holiday photo"))
+    ///             .part(Part::bytes("file", &b"\x89PNG\r\n"[..])
+    ///                 .file_name("beach.png")
+    ///                 .mime("image/png")),
+    ///     )
+    ///     .send()
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// **Whether this body can be retried is decided by the parts**, not
+    /// by an argument: a form whose parts are all bytes comes out
+    /// [`RetryKind::ViaFactory`] and carries a `Content-Length`, and one
+    /// with a stream in it comes out [`RetryKind::Impossible`]. The
+    /// module documentation has the table and the reason there is no
+    /// flag.
+    ///
+    /// **`Content-Type` is not set here, and that is the one place this
+    /// builder does not follow [`Self::form`]'s rule.** For `form` and
+    /// `json` the header is a *label* — the body is the same bytes
+    /// whatever it says — so a caller who set one meant it and it is left
+    /// alone. Multipart's header is not a label: it carries the boundary,
+    /// which is part of the encoding and did not exist when the caller
+    /// wrote their header. Deferring to a caller-set value would put a
+    /// `Content-Type` on the wire that cannot describe the body, and the
+    /// server would see one unparseable part.
+    ///
+    /// So the header is written at [`Self::send`], from the boundary, and
+    /// a `Content-Type` set by the caller — before this call or after it,
+    /// through [`Self::header`] or [`Self::headers`] — is a typed build
+    /// error rather than a silent override in either direction. A caller
+    /// who really wants a different multipart subtype has
+    /// [`crate::multipart::Form::encode`] and [`Self::body`].
+    ///
+    /// [`RetryKind::ViaFactory`]: http_ng_core::RetryKind::ViaFactory
+    /// [`RetryKind::Impossible`]: http_ng_core::RetryKind::Impossible
+    pub fn multipart(mut self, form: crate::multipart::Form) -> Self {
+        let boundary = match crate::multipart::Boundary::random() {
+            Ok(b) => b,
+            Err(e) => {
+                self.fail(e);
+                return self;
+            }
+        };
+        match form.encode(&boundary) {
+            Ok(body) => {
+                self.body = body;
+                self.multipart = Some(boundary);
+            }
+            Err(e) => self.fail(e),
+        }
         self
     }
 
@@ -167,6 +242,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
             );
         }
         self.body = RequestBody::Full(bytes::Bytes::from(encoded));
+        self.multipart = None;
         self
     }
 
@@ -195,6 +271,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
                     );
                 }
                 self.body = RequestBody::Full(bytes::Bytes::from(bytes));
+                self.multipart = None;
             }
             Err(e) => self.fail(e),
         }
@@ -330,15 +407,40 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
             return Err(e);
         }
         let uri = self.uri?;
+        let mut headers = self.headers;
+        // The one header this builder writes last rather than at the call
+        // that asked for it — see `multipart`'s doc comment. Asked here
+        // rather than there so the answer does not depend on the order
+        // the caller wrote the two calls in: a `Content-Type` set after
+        // `multipart(..)` is the same refusal as one set before it.
+        if let Some(b) = self.multipart {
+            if headers.contains_key(http::header::CONTENT_TYPE) {
+                return Err(Error::new(ErrorKind::Other, ContentTypeIsNotOursToKeep));
+            }
+            headers.insert(http::header::CONTENT_TYPE, b.content_type());
+        }
         let mut req = http::Request::new(self.body);
         *req.method_mut() = self.method;
         *req.uri_mut() = uri.clone();
-        *req.headers_mut() = self.headers;
+        *req.headers_mut() = headers;
         *req.extensions_mut() = self.extensions;
         let resp = self.client.execute(req).await?;
         Ok(Response::new(resp, uri))
     }
 }
+
+/// A `multipart/form-data` body was set and so was a `Content-Type`.
+///
+/// The two cannot both stand: the header carries the boundary, so the
+/// caller's value would describe a body that is not there. Refusing names
+/// both, where overriding would lose the caller's header silently and
+/// deferring would send bytes no receiver can parse.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a multipart body sets its own Content-Type, because the header carries the boundary — \
+     remove the Content-Type, or build the body with multipart::Form::encode and set both"
+)]
+pub struct ContentTypeIsNotOursToKeep;
 
 /// RFC 7617 §2 makes `:` the separator between a username and a password,
 /// so a username containing one is not representable — and encoding it

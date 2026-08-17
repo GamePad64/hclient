@@ -253,6 +253,12 @@ http-ng-fetch = { path = "../http-ng-fetch", version = "0.1.0", optional = true 
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+# `BodyExt::collect`, for draining a `RequestBody` in `multipart.rs`'s unit
+# tests and in `tests/multipart.rs`. A dev-dependency only: the crate itself
+# polls `http_body::Body` by hand everywhere (`deadline.rs`, `decompress.rs`,
+# `multipart.rs`), which is what keeps the combinators out of a consumer's
+# graph.
+http-body-util   = { workspace = true }
 # The derive lives only here: the test behind the `json` feature needs
 # `#[derive(Deserialize)]`, the crate itself doesn't (`Collected::json`
 # takes an already-serializable T from the caller). dev-dependencies aren't
@@ -308,6 +314,21 @@ tokio              = { version = "1", features = ["rt-multi-thread"] }
 # whose test file is cfg'd out.
 flate2             = { version = "1.1" }
 brotli             = { version = "8.0", default-features = false, features = ["std"] }
+# `tests/multipart.rs`'s oracle, and it is an oracle rather than a
+# convenience: an encoder checked against its own idea of itself is green
+# for any self-consistent mistake, so the parts are read back by a parser
+# that shares no code with `src/multipart.rs` — the same role `url` plays
+# for `uri.rs` one crate over. `default-features = false` on purpose: the
+# default set pulls `tokio` with `io-util` plus `tokio-util` for the
+# `AsyncRead` constructor, and this test feeds it a `Stream` instead.
+#
+# Executed rather than read. `multer` does NOT percent-decode the `name`
+# and `filename` parameters — checked by running it, after this workspace
+# spent a day on an upstream encoder whose documentation and behaviour
+# disagreed (`h3-datagram`'s discarded stream id) — so the assertions below
+# are about the escaped forms that go on the wire, which is also what a
+# browser sends.
+multer             = { version = "3.1", default-features = false }
 
 # `tests/wasm_default.rs` — the first browser tests in this crate (Task 8 of
 # vertical 3). `wasm-bindgen-test` is the harness `wasm-pack test` drives;
