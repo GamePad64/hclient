@@ -311,7 +311,11 @@ implies hyper holds neither, which cannot be true while our request is
 unresolved.
 
 *Executed, because reading is not the standard here.* The arm replaced by
-`panic!`, whole suite: **278 pass**. It is never reached.
+`panic!`: **278 pass** in this crate, and **1615 pass across the whole
+workspace** — which is the run that matters, because `http-ng-select`'s
+Alt-Svc failures in `docs/nagle-and-nodelay.md` §6 were a
+`hyper::Error(Shutdown, ..)` over TLS and this is the arm they would have
+to arrive on. It is never reached.
 
 The arm is kept rather than deleted, and routed through `claim_back`
 rather than answering for itself, because the argument above is about
@@ -319,9 +323,10 @@ hyper's internals: one rule beats two, and the version with two would be
 the one that goes stale.
 
 **The same probe on `claim_back`'s own `Sent` arms**: `panic!` in place
-of both, whole suite, **278 pass**. When `claim_back` is reached at all,
-hyper hands the request back — because a callback hyper still holds is
-always answered inside the very poll that ends the connection, so the
+of both, **278 pass** here and **1615 across the workspace**. When
+`claim_back` is reached at all, hyper hands the request back — because a
+callback hyper still holds is always answered inside the very poll that
+ends the connection, so the
 `Pending`-with-`conn_done` state is only reachable with the request still
 queued. Those arms stay because that reasoning is hyper's to change, and
 a `Failed::Sent` there is the fail-closed answer where an
@@ -367,10 +372,10 @@ race fix.
   never how often a point is reached.
 - **This is not shown to be the cause of any flake on record.** The
   `alt_svc` failures in `nagle-and-nodelay.md` §6 were
-  `hyper::Error(Shutdown, BrokenPipe)` — a connection *error*, which
-  §5.1's probe says never reaches the arm this work touches in this
-  crate's suite — and that fixture has since been fixed to announce its
-  close. Claiming the fix for those failures would be reasoning where
+  `hyper::Error(Shutdown, BrokenPipe)` — a connection *error*, and §5.1's
+  probe says that arm is never reached anywhere in the workspace's 1615
+  tests as they stand — and that fixture has since been fixed to announce
+  its close. Claiming the fix for those failures would be reasoning where
   this project asks for capturing.
 - **Linux, loopback, one machine.** Both reproductions are deterministic
   and neither depends on a clock, so what generalises is the table rather
