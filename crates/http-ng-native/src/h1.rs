@@ -1117,6 +1117,28 @@ mod tests {
         );
     }
 
+    /// Every `Closed` reason one exchange reported, in order.
+    ///
+    /// A hook rather than an assertion inside the crate, because the
+    /// question here is what a *caller* is told: `CloseReason::Stale`'s own
+    /// doc says it is "the event that explains the `Connected` following
+    /// it", and after [`claim_back`] there is a `Connected` following it at
+    /// two of the three points rather than one.
+    #[derive(Clone, Default)]
+    struct Closes(std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>);
+
+    impl Hooks for Closes {
+        fn on(&self, event: Event<'_>) {
+            if let Event::Closed(c) = event {
+                self.0.borrow_mut().push(match c.reason {
+                    CloseReason::Ended => "Ended",
+                    CloseReason::Stale => "Stale",
+                    CloseReason::Failed(_) => "Failed",
+                });
+            }
+        }
+    }
+
     /// Runs the residual race of connection reuse at one chosen point,
     /// and hands back the verdict.
     ///
@@ -1143,7 +1165,7 @@ mod tests {
     /// `Connection` completing with `Ok` — and nothing at all said about
     /// the request. That is the state this helper reaches, and the one
     /// [`claim_back`] exists for.
-    fn race_lost_after(after: usize) -> Failed {
+    fn race_lost_after(after: usize) -> (Failed, Vec<&'static str>) {
         let io = ScriptIo::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         let script = io.clone();
 
@@ -1216,12 +1238,21 @@ mod tests {
         // From here the server is gone, and `after` decides who finds out.
         script.end_after(after);
 
-        let fut = exchange(est, get_request(), None, NoHooks, ConnectionId::UNWATCHED);
+        let closes = Closes::default();
+        let fut = exchange(
+            est,
+            get_request(),
+            None,
+            closes.clone(),
+            ConnectionId::UNWATCHED,
+        );
         let mut fut = std::pin::pin!(fut);
-        match poll_to_completion(fut.as_mut()) {
+        let failed = match poll_to_completion(fut.as_mut()) {
             Ok(_) => panic!("the server is gone, so there is no response to have"),
             Err(e) => e,
-        }
+        };
+        let seen = closes.0.borrow().clone();
+        (failed, seen)
     }
 
     /// The look [`exchange`] takes while the request is still ours: the
@@ -1233,12 +1264,18 @@ mod tests {
     /// far end of a sequence that starts with it.
     #[test]
     fn a_connection_found_dead_before_the_request_is_handed_over_is_retryable() {
-        let failed = race_lost_after(0);
+        let (failed, closes) = race_lost_after(0);
         assert!(
             matches!(failed, Failed::NotSent { .. }),
             "the request was never given to hyper, so it is still the same request"
         );
         assert_eq!(*failed.into_error().kind(), ErrorKind::Connect);
+        // The reason this look exists to report, and the only place in
+        // this function that can: `Native::checkout`'s poll is one
+        // earlier and has its own emitter, so nothing outside this file
+        // covers this one — which is why deleting the look fails the two
+        // tests below on their *sequence* and nothing at all on the event.
+        assert_eq!(closes, ["Stale"]);
     }
 
     /// **The window this crate had been giving away.** hyper takes the
@@ -1259,7 +1296,20 @@ mod tests {
     /// `poll_to_completion` has a ceiling instead of waiting.
     #[test]
     fn a_connection_that_ends_with_the_request_still_queued_hands_it_back() {
-        let failed = race_lost_after(1);
+        let (failed, closes) = race_lost_after(1);
+        // **The reason is `Ended` and the point above is `Stale`, for one
+        // socket in one state.** Both are literally true — the peer closed
+        // it after a response, and it was handed out already closed — and
+        // which one a caller is told is decided by which of two adjacent
+        // polls noticed. This work did not introduce that and does not
+        // change it; what it changes is that a `Connected` now follows
+        // here too, so the asymmetry has one more reader than it had.
+        // Pinned rather than corrected, because moving the emission below
+        // the request's own outcome would put the one-`Closed`-per-socket
+        // rule behind three exits instead of one, and that is a change to
+        // the hooks seam wanting its own measurement rather than a
+        // by-product of this one. `docs/pooled-reuse-race.md` §6.
+        assert_eq!(closes, ["Ended"]);
         let Failed::NotSent { error, request } = failed else {
             panic!(
                 "hyper never dequeued this request, so it can and must be handed \
@@ -1306,11 +1356,12 @@ mod tests {
     /// "always retry", which is the at-most-once promise gone.
     #[test]
     fn a_connection_that_ends_after_the_request_went_out_is_not_handed_back() {
-        let failed = race_lost_after(2);
+        let (failed, closes) = race_lost_after(2);
         assert!(
             matches!(failed, Failed::Sent(_)),
             "the request is on the wire, so resending it would be a second request"
         );
         assert_eq!(*failed.into_error().kind(), ErrorKind::Connect);
+        assert_eq!(closes, ["Ended"]);
     }
 }

@@ -273,17 +273,42 @@ by the scripted test alone. Recorded as it happened rather than as a
 clean row, because "survived, therefore a gap, therefore an assertion" is
 the sequence worth copying.
 
-**M6's kill is about the sequence, not about the outcome.** With
-`exchange`'s look deleted, point 1 collapses into point 2 and both tests'
-`n` means something one step earlier — which is what fails them. What
-does *not* fail is the third test in the scripted family: at `n = 0` the
-request still comes back, now through `claim_back` rather than through
-the pre-poll. So the pre-poll is no longer load-bearing for the retry's
-**correctness**; it is load-bearing for one fewer poll and for the
-`CloseReason::Stale` a hook reads there. That second half is **not
-covered by any test** — `hooks.rs`'s stale test is satisfied by
-`Native::checkout`'s emitter, one look earlier — and it is named here
-rather than closed.
+**M6's kill was about the sequence rather than the outcome, and that
+exposed the one gap this run found besides M4.** With `exchange`'s look
+deleted, point 0 collapses into point 1 and both tests' `n` means
+something one step earlier — which is what fails them. What did *not*
+fail is the outcome at point 0: the request still comes back, now through
+`claim_back` rather than through the pre-poll. So the pre-poll is no
+longer load-bearing for the retry's **correctness**; it is load-bearing
+for one fewer poll and for the `CloseReason::Stale` a hook reads there —
+and that second half had no test anywhere, because `hooks.rs`'s stale
+test is satisfied by `Native::checkout`'s emitter, one look earlier.
+
+`race_lost_after` now carries a recording hook, and the three points
+assert the reason as well as the verdict.
+
+### 5.2 What that recording found, and is not fixing
+
+The three points report `Stale`, `Ended`, `Ended` — **for one socket in
+one state.** Both names are literally true at point 1: the peer closed it
+after a response, *and* it was handed out already closed. Which one a
+caller is told is decided by which of two adjacent polls noticed.
+
+This work neither introduced that nor changes it. What it changes is the
+number of readers: `CloseReason::Stale`'s own doc calls it *"the event
+that explains the [`Connected`] following it"*, and after `claim_back`
+there is a `Connected` following point 1 as well — where before there was
+an error and no retry at all.
+
+It is pinned rather than corrected. Correcting it means deciding the
+reason from what the *request* did rather than from which poll noticed,
+which moves the emission below the request's own outcome and puts the
+one-`Closed`-per-socket rule behind three exits instead of one — where
+`h1.rs`'s module doc leans on there being exactly two ("`exchange` and
+`H1Body::poll_frame`… between them they are every place hyper's
+`Connection` future can complete"). That is a change to the hooks seam
+wanting its own measurement and its own mutations, not a by-product of a
+race fix.
 
 ### 5.1 The control, and how it was verified
 
@@ -347,3 +372,16 @@ reach.
   `docs/v02-acceptance.md` already records that no test in this
   repository walks a dead *pooled* h2 connection past to a fresh one, and
   that is still true.
+- **One workspace flake was captured while hunting for another, and it is
+  not this one.** 30 full workspace runs at `-j8` produced one failure:
+  `http2_multiplex::beyond_the_peers_stream_limit_requests_queue_on_one_connection`,
+  `Connect / Reset(StreamId(5), REFUSED_STREAM, Remote)`. It is on the h2
+  path, which this work does not touch, and the A/B says so rather than
+  the reading: the same test file looped 40 times at `-j16` fails **2 of
+  40** with this change and **4 of 40** with `h1.rs` reverted to the
+  commit before it. Two against four at n = 40 is not a result either
+  way, which is the point — it is pre-existing and unattributed, the same
+  shape as the two `docs/v04-acceptance.md` §*flakes* already records.
+  The select-race flake that document names was **not** seen in those 30
+  runs.
+- **The `CloseReason` asymmetry at point 1**, §5.2. Pinned, not fixed.
