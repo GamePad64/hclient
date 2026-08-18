@@ -292,24 +292,26 @@ the trigger is the owner's. It is listed first anyway because a competitive
 gap analysis that ranked `deflate` above "cannot be depended on" would be
 measuring the wrong thing.
 
-### G2. No `User-Agent`, and no client-wide default headers
+### G2. No `User-Agent`, and no client-wide default headers — **closed**
 
-`ClientBuilder` has `redirect`, `timeouts`, `base_url`, `total_timeout`,
-`cookie_jar`, `cache` and nothing else (`client.rs:78-313`). There is no
-header setter at any level but `RequestBuilder::header`, and **no default
-`User-Agent` is sent at all**. reqwest has both
-(`client.rs:1128`, `:1166`); ureq has `Config::user_agent`
-(`config.rs:546`).
+`ClientBuilder::{user_agent, default_header, default_headers}`. Three
+decisions came out of building it, and the analysis above had predicted
+the third.
 
-*What it takes*: two fields on `Config`, applied in `Client::execute` before
-the redirect loop, so that they survive to every hop the way
-`Accept-Encoding` already does. *Rules it must respect*: `forbidden_request_headers`
-— `http-ng-fetch` forbids several headers the browser owns, and a default
-header set that ignored that list would be a client-side setting silently
-dropped, which is the shape `check_supported` exists to refuse. `User-Agent`
-is on that list for `fetch`, so the honest arrangement is a default the
-transport's capability can veto at `build()`, not one applied blindly.
-*Forbidden by a rule?* No.
+**A header the caller wrote on the request wins**, because a default is a
+fallback and not an override. **Applied per hop**, inside `Client::run`'s
+redirect loop, so a `User-Agent` survives a redirect — a chain whose second
+request looks like a different client's is stranger than one that never
+sets the header. And **a default a backend forbids is refused at
+`build()`**, naming the setting, which is what
+`forbidden_request_headers` was for: the asymmetry with
+`RequestBuilder::header` is about when the caller finds out, since a
+per-request header sits beside the request that carries it while a default
+applies to traffic its author may never look at again.
+
+**There is still no `User-Agent` by default**, and that is deliberate
+rather than unfinished: a library that names itself on every request makes
+a decision for its embedder, and the embedder is who has an opinion.
 
 ### G3. No blocking API, and this is a refusal that has aged
 
@@ -387,24 +389,30 @@ A byte order mark overrides the declared label — the Encoding Standard's
 rule, inherited from `encoding_rs::Encoding::decode` and pinned by a test
 rather than assumed.
 
-### G6. No pluggable cookie or cache store, though both crates are already generic
+### G6. No pluggable cookie or cache store, though both crates are already generic — **closed**
 
-`CookieJar<P = BuiltinList>` (`http-ng-cookie/src/jar.rs:202`) and
-`HttpCache<S = MemoryStore>` (`http-ng-cache/src/policy.rs:265`) are both
-generic. `ClientBuilder::cookie_jar` and `ClientBuilder::cache` both take
-the **defaulted** form (`client.rs:244`, `:313`), so the generality stops at
-the facade. A caller who wants a disk-backed cache, a shared cache between
-processes, or a jar with `NoList` (which is what saves the measured 77 KiB)
-cannot get there through `Client`.
+`ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and
+`ClientBuilder::cache` takes `HttpCache<S>` for any store, erasing each
+into `AnyList`/`AnyStore` on the way in. So a disk-backed cache, a store
+shared between processes, and a jar over `NoList` all reach `Client`.
 
-This is the most clearly *unintended* gap in the document: the seam exists
-one crate down and is unreachable one crate up. *What it takes*: either a
-type parameter on `Client` (heavy — `Client<T, Tm>` becoming
-`Client<T, Tm, S, P>`) or `Box<dyn CacheStore>`, which is object-safe as
-written. *Rules*: no `Send` bound may be added to reach it, which is what
-rules out the obvious `Arc<dyn CacheStore + Send + Sync>`; the existing
-`Arc<Mutex<..>>` already imposes `Send` in practice, so this needs looking
-at rather than assuming. *Forbidden?* No.
+**Erased rather than parameterised**, and the second of the two reasons is
+the one this analysis had not seen. `cached.rs` had already written down
+the first: a recording body holds a cache handle, so `S` on the cache is
+`S` on the public `ClientBody` alias, and the arity of a public alias must
+not change with a feature Cargo may unify on. The second is that a
+defaulted parameter needs a default **type**, and both crates are optional
+dependencies — `Client<T, Tm, P = http_ng_cookie::BuiltinList, ..>` names
+a type that does not exist without the feature, so the declaration would
+fork four ways over a `Client` that is already forked once.
+
+Both wrappers implement the seam they erase, so the jar and the cache keep
+their whole API and `Client::cookies`/`Client::cache` still hand back a
+guard onto the real thing. The `Send` bound this document anticipated is
+real and is spec amendment C12: it sits on the two opt-in setters and
+nowhere else, and it states a property `BuiltinList` and `MemoryStore`
+already had — erasing without it would make every `Client` in a build with
+either feature compiled in `!Send`, configured or not.
 
 ### G7. Proxy configuration from the environment, and a per-URL proxy rule
 
@@ -462,20 +470,19 @@ which is the interesting constraint: a closure there is fine, but it must
 stay clockless and io-free, which a redirect predicate naturally is.
 *Forbidden?* No.
 
-### G10. No response body size limit
+### G10. No response body size limit — **closed**
 
-Nothing in `http-ng` or `http-ng-core` bounds a response body. `Deadline`
-bounds *time* and does so against the compressed stream deliberately, which
-answers the decompression-bomb question for the time axis and not for the
-byte axis. A `Content-Length: 900000000000` with a slow enough drip passes
-every bound this client has.
+`ClientBuilder::response_limit(u64)`, and the axis is the whole decision:
+`Limited` is the **outermost** body wrapper, so it counts the bytes the
+caller receives, after any `Content-Encoding` has been reversed. A limit
+counting wire bytes would let a decompression bomb through by definition —
+small on the wire is what makes it a bomb — and the test that separates a
+real bound from a plausible one is a 60-byte gzip stream expanding to a
+megabyte against a 4 KiB limit.
 
-*What it takes*: a body wrapper, the `IdleTimeout`/`Deadline` shape exactly,
-and one field. *Rules*: it must wrap **outside** the decompressor if it is
-counting decompressed bytes and **inside** if it is counting wire bytes, and
-the `Decompressed<Deadline<B, Tm>>` ordering argument says which is which —
-so this is a decision, not a wrapper. *Forbidden?* No, and it is the
-cheapest real security improvement in this list.
+`Deadline` sits the other way round for the mirror-image reason, and both
+are now written next to each other: one counts what arrives, the other
+times what is sent, and each is on the side its own threat is on.
 
 ### G11. Interface binding, TCP keepalive detail, Unix sockets
 
@@ -815,16 +822,29 @@ for 1.0* (design spec §10) list four:
 Two further planned crates named in the version plan are absent:
 `http-ng-espidf` and `http-ng-nyquest` (both v0.4).
 
-So the honest answer to "is it full-featured yet" is: the *hard* half is
-done and the *ordinary* half is not. Every protocol capability a demanding
-consumer would ask for exists — h2, h3, WebSocket, WebTransport, SSE,
-trailers, duplex, 0-RTT, `1xx`, `Expect`, caching, cookies, proxies. What
-is missing is the second verification loop that would find the ordinary
-things: a `User-Agent`, a default header set, a size limit, a charset, a
-pluggable store. **G2, G5, G6 and G10 are exactly the class of defect a
-second real consumer finds and a test suite does not**, which is an
-argument for `http-ng-rmcp` before an argument for any individual row in
-§3.
+So the honest answer to "is it full-featured yet" is: the *hard* half was
+done and the *ordinary* half was not. Every protocol capability a
+demanding consumer would ask for exists — h2, h3, WebSocket,
+WebTransport, SSE, trailers, duplex, 0-RTT, `1xx`, `Expect`, caching,
+cookies, proxies — and what was missing was the ordinary furniture: a
+`User-Agent`, a default header set, a size limit, a charset, a pluggable
+store.
+
+**G2, G5, G6 and G10 are closed** (and `deflate`/`zstd` with them), which
+does not retire the argument this paragraph was making — it sharpens it.
+Every one of the five was found by *writing this document*, not by the
+test suite, which was green throughout and is green now; and each took
+under a day once named. That is the signature of the class: cheap to fix,
+invisible from inside, and found only by someone trying to use the thing.
+A second real consumer — `http-ng-rmcp` — is still the argument, because
+the next five are equally invisible from here and this document cannot be
+written twice by the same reader.
+
+Two of the five also changed a rule rather than adding a feature, which is
+the return a fresh reader buys that a test suite cannot: G5 established
+that a feature must never change what an existing method **means**, and
+the `deflate`/`zstd` work reversed two refusals whose premises turned out
+to be wrong when checked instead of argued.
 
 **Two real consumers say the same thing about reqwest, and they say it in
 opposite directions.** `xh` — the curl-replacement CLI built on reqwest —
