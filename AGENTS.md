@@ -628,10 +628,11 @@ would go out in early data against the very server that refused to risk it
 — is paid, in `Client::run`'s `425` branch.
 
 **Response decompression landed in v0.2 (W5), inside `Client` and behind
-the `gzip` and `brotli` features** (off by default, `json`'s precedent: a
-browser build would be linking decoders that cannot run there). With either
-on, a client asks for the codings it can actually reverse and reverses
-whatever the server chose — unless the transport says it did that already.
+one feature per coding** — `gzip` and `brotli` then, `deflate` and `zstd`
+since (see the section on those two below), all off by default on `json`'s
+precedent: a browser build would be linking decoders that cannot run
+there. With any of them on, a client asks for the codings it can actually
+reverse and reverses whatever the server chose — unless the transport says it did that already.
 That is a capability of its own, `Capabilities::response_decompression`,
 and deliberately NOT read off `forbidden_request_headers`: `http-ng-fetch`
 both forbids `Accept-Encoding` and decompresses internally, so the two
