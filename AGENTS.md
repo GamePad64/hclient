@@ -1283,6 +1283,42 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### `text()` learned a charset — as a second method, not a smarter first one
+
+`Collected::text_with_charset`, behind the `charset` feature, off by
+default: `encoding_rs` is over a megabyte of conversion tables and a
+build that only ever meets UTF-8 has no use for them. The name is the one
+reqwest and ureq both independently chose.
+
+**What decides the shape is that `text()` must not change meaning with a
+feature.** Cargo unifies features across a graph, so a charset-aware
+`text()` would answer differently depending on what an unrelated crate
+switched on — and the difference is silent: `windows-1251` bytes come
+back as plausible mojibake rather than as the error they are today. Same
+hazard as the `Capabilities` floor rule, one layer up. So it is a
+separate method and the caller says so at the call site.
+
+Four answers and each is a decision. **No `charset` parameter is UTF-8** —
+RFC 7231 removed RFC 2616's ISO-8859-1 default, and content sniffing is a
+browser's job done against a security model this type does not have. **An
+unknown label is a typed error naming it**, never a quiet fall back to
+UTF-8, which would turn *the server said something we did not understand*
+into mojibake with nothing to show for it. **Malformed bytes are an error
+and not U+FFFD**, because `text()` refuses invalid UTF-8 rather than
+patching it, and two policies under one name is worse than either; a
+caller who wants the lossy answer has `bytes()`. And **a byte order mark
+overrides the declared label** — the Encoding Standard's rule, inherited
+from `encoding_rs::Encoding::decode` and pinned rather than assumed.
+
+The `charset` parameter is read here rather than by a `mime` crate, for
+the reason `url` was removed and base64 is twenty lines in
+`http-ng-proto`. It splits on `;` **outside quotes**, with backslash
+escapes honoured, because `boundary="a;charset=utf-8;b"` is a header a
+server can send and a naive `split(';')` reads a parameter out of it. An
+escaped quote is reachable from a server too, so it is a test rather than
+a mutation control — the rule this file recorded one section up, applied
+before it had to be.
+
 ### Two more codings, and both premises for refusing them were wrong
 
 `deflate` and `zstd`, behind features of their own, off by default like

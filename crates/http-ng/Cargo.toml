@@ -52,6 +52,20 @@ default-transport = [
 # stays under test, just not in the default build. Same trick reqwest uses,
 # for the same reason.
 json = ["dep:serde", "dep:serde_json"]
+# `Collected::text_with_charset`, and NOT a change to `Collected::text`.
+# Off by default on the `json` precedent above, and the weight is the
+# argument: `encoding_rs` is a megabyte and more of conversion tables for
+# every legacy encoding the WHATWG Encoding Standard names, which a build
+# that only ever meets UTF-8 — the overwhelming majority — has no use for.
+#
+# **What this feature must never do is change what `text()` means.** Cargo
+# unifies features across a graph, so a library calling `text()` would get
+# a different answer depending on what some unrelated crate switched on,
+# and the difference is silent: `windows-1251` bytes come back as text
+# instead of as an error. That is the same hazard `Capabilities`' floor
+# rule exists for. So the charset-aware path is a SEPARATE METHOD, and a
+# caller who wants it says so at the call site rather than in a manifest.
+charset = ["dep:encoding_rs"]
 # Response decompression, per coding — v0.2 W5. OFF by default, on the
 # `json` precedent above and for the same kind of reason: the browser
 # transport decodes for us already (`Capabilities::response_decompression`
@@ -229,6 +243,15 @@ brotli-decompressor = { version = "5.0", optional = true }
 # --all-features check` before committing: `MIT` (ruzstd, twox-hash),
 # already in `deny.toml`'s allow-list, nothing widened.
 ruzstd        = { version = "0.9", optional = true }
+# The `charset` feature. `encoding_rs` is the WHATWG Encoding Standard as
+# Firefox implements it, and there is no lighter honest option: the tables
+# ARE the feature, and a hand-written subset would be this crate deciding
+# which of the world's encodings are worth supporting. Nothing here
+# encodes — `Encoding::decode` only — but the crate has no feature to drop
+# the encoder side, so the cost is dead code LTO removes rather than a
+# choice this manifest can make. `encoding_rs` is what reqwest and ureq
+# both reach for, under a feature both independently named `charset`.
+encoding_rs   = { version = "0.8", optional = true }
 # SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
 # isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely

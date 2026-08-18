@@ -180,6 +180,8 @@ pub use http_ng_proto::redirect::RedirectPolicy;
 pub use http_ng_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 pub use http_ng_proto::uri::UriError;
 pub use request::{ColonInUsername, ContentTypeIsNotOursToKeep, RequestBuilder};
+#[cfg(feature = "charset")]
+pub use response::CharsetError;
 pub use response::{Collected, Response};
 pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 

@@ -129,7 +129,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | per-request redirect override | Y | N | — | — | N | `RequestBuilder::redirect` (`request.rs:387`) |
 | set an `http::Extensions` value from the builder | **N** | — | — | — | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
 | `error_for_status` | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/response.rs:378` |
-| response text with charset from `Content-Type` | **N** | Y | Y | — | — | `Collected::text` is `String::from_utf8` (`response.rs:174`); rq/uq both ship an `encoding_rs`-backed path behind a `charset` feature |
+| response text with charset from `Content-Type` | Y\* | Y | Y | — | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error |
 
 ### 2.2 Bodies and streaming
 
@@ -357,22 +357,35 @@ HTTPS record from a caller: an extension is a channel any code that can
 build a request can write to. *Forbidden by a rule?* No — the rule tells you
 where to put it.
 
-### G5. `text()` is UTF-8 or an error, with no charset from `Content-Type`
+### G5. `text()` is UTF-8 or an error, with no charset from `Content-Type` — **closed**
 
-`Collected::text()` is `String::from_utf8` (`response.rs:174`). A response
-labelled `Content-Type: text/html; charset=windows-1251` comes back as a
-`Decode` error rather than as text. reqwest and ureq both ship an
-`encoding_rs`-backed path behind a feature named `charset` — the same name,
-independently, in both feature tables.
+`Collected::text_with_charset`, behind a `charset` feature, off by
+default. The dependency question was real and is answered by what the
+method costs rather than by what it is worth: `encoding_rs` is over a
+megabyte of tables, and a build that only ever meets UTF-8 pays nothing
+because the feature is off.
 
-*What it takes*: `encoding_rs`, which is a real dependency of real size, in
-a workspace that removed `url` at the cost of writing RFC 3986 §5.2 by hand
-and hand-wrote base64 rather than take a crate for twenty lines. *Rules*:
-the `gzip`/`brotli`/`json` precedent — one feature, off by default, because
-the browser build should not link a charset table it cannot use.
-*Forbidden?* No, but the dependency-resistance rule sets a high bar and
-`encoding_rs` is 1–2 MB of tables. The honest answer may be to keep
-`text()` as it is and document it, which is what it does not do today.
+**The shape is the interesting part, and it is the one this document
+predicted.** `text()` is unchanged, and must be: Cargo unifies features
+across a graph, so a `charset` feature that made `text()` charset-aware
+would give a library a different answer depending on what some unrelated
+crate in the graph enabled — and the difference is not an error, it is
+plausible-looking mojibake. That is the same hazard the `Capabilities`
+floor rule exists for, one layer up.
+
+Four answers, each a decision rather than a default: no `charset`
+parameter is UTF-8 (RFC 7231 removed RFC 2616's ISO-8859-1 default, and
+sniffing is a browser's job); a label the WHATWG Encoding Standard names
+is decoded with it; a label it does not name is a typed error **naming the
+label**, because falling back to UTF-8 turns "the server said something we
+did not understand" into mojibake with nothing to show for it; and
+malformed bytes are an error rather than U+FFFD, because `text()` refuses
+invalid UTF-8 rather than patching it and two policies under one name is
+worse than either.
+
+A byte order mark overrides the declared label — the Encoding Standard's
+rule, inherited from `encoding_rs::Encoding::decode` and pinned by a test
+rather than assumed.
 
 ### G6. No pluggable cookie or cache store, though both crates are already generic
 
