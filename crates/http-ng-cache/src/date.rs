@@ -12,14 +12,20 @@
 //! this one would read `Expires=Thu, 01-Jan-1970 00:00:01 GMT` — the most
 //! common deletion on the web — as no date at all.
 //!
-//! `httpdate` would do this correctly and is a leaf crate. It is a
-//! dev-dependency instead, exactly as it is in `http-ng-cookie`: this crate
-//! also has to parse in the **lenient** direction the RFC requires of
-//! recipients (RFC 850 and asctime, which senders must not produce and
-//! recipients must accept), and it has to answer `None` for an unparsable
-//! `Expires` in a way §5.3 turns into *already stale* rather than into
-//! *ignore the header*. Owning the parser is what lets that distinction be
-//! made here rather than inferred from an `Err` somebody else chose.
+//! `httpdate` is a leaf crate that reads all three forms correctly, and it
+//! **is** used here — as the oracle in `tests/dates.rs`, exactly as `url`
+//! is the oracle for `uri.rs` and as it is in `http-ng-cookie`. Two reasons
+//! keep it out of the implementation, and neither is leniency: it parses
+//! RFC 850 and asctime just as this does, which the differential corpus
+//! proves by agreeing on them.
+//!
+//! The first is what a refusal has to *mean*. §5.3 turns an unparsable
+//! `Expires` into *already stale*, which is the opposite of ignoring the
+//! header, and that distinction is made at the call site from a `None` this
+//! module owns rather than inferred from an `Err` somebody else chose. The
+//! second is the return type, below. This parser also deliberately accepts
+//! **more** than `httpdate` does — the weekday is not checked against the
+//! date — for a reason recorded beside the test that pins it.
 //!
 //! # What this returns, and why it is not a `SystemTime`
 //!

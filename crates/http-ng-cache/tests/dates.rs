@@ -145,20 +145,6 @@ fn the_two_parsers_agree_on_which_strings_are_dates_at_all() {
     }
 }
 
-/// **A deliberate disagreement, with its reason.**
-///
-/// `httpdate` implements RFC 9110 §5.6.7's moving 50-year window for the
-/// two-digit RFC 850 year — "more than 50 years in the future" is read as
-/// the past — which needs a clock. This crate is clockless by
-/// construction, so it uses RFC 6265 §5.1.1's fixed split instead: `70`
-/// and above is the 1900s, below is the 2000s.
-///
-/// The gap is only reachable for a response claiming an `Expires` between
-/// 50 and 100 years out, and the direction is the safe one: this crate
-/// reads `Nov-70` as 1970 — already stale — where a moving window would
-/// read it as 2070 and serve the entry for the next 45 years. The test
-/// exists so the difference is a decision on record rather than a bug
-/// waiting to be reported.
 /// **The one deliberate disagreement, measured rather than guessed.**
 ///
 /// `httpdate` validates the day name against the date and refuses a
