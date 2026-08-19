@@ -107,7 +107,10 @@ place. The fifth quotes `embassy-net`'s own `Drop for TcpSocket` as
 evidence and is ```text, because someone else's code cited in an
 argument was never our example. The recipe now fails closed on both
 shapes — no `test result:` line at all, and any `ignored` count — so
-13 doctests are checked where 9 were.
+13 doctests were checked where 9 had been — and **20 today**, which is
+the number's real job: it grows with the crate, so what it pins is the
+recipe's honesty rather than a figure. `just test-doc` prints it, and the
+gate is the fail-closed pair rather than any value.
 
 And `test-no-default` **ran, printed `error:`, and exited zero**, for as
 long as it had existed. Its four trailing `cargo clippy` lines are
