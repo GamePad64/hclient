@@ -503,13 +503,75 @@ where
     }
 }
 
+/// What this client will accept from a server on an HTTP/1 connection,
+/// where it does not want hyper's default.
+///
+/// Both fields bound a **response head**, which is the one part of a
+/// response a client must buffer whole before it can act on any of it —
+/// so it is the one part a hostile server can make expensive without ever
+/// sending a body. `H2Opts::max_header_list_size` is the same guard one
+/// protocol over, which is why neither is complete without the other: a
+/// transport that negotiates ALPN speaks whichever the server picked.
+///
+/// `None` means hyper's default, on [`crate::H2Opts`]' rule and
+/// `TcpOpts`': a value set here changes what this client accepts, so a
+/// default of ours would change behaviour for a caller who asked for
+/// nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct H1Opts {
+    /// How many header fields a response may carry. hyper's default is
+    /// **100**, and it is not a soft one — a response with more is an
+    /// error, not a truncation.
+    ///
+    /// Raising it costs allocation rather than only memory: hyper's own
+    /// note is that a value here moves header storage to the heap and
+    /// costs about 5%, because the default is a stack array.
+    pub max_headers: Option<usize>,
+    /// The largest read buffer, and therefore the largest response head:
+    /// hyper reads until the head is complete and fails with *message
+    /// head is too large* when it will not fit. Default ~400 KB.
+    ///
+    /// **Below 8192 hyper panics**, which is why
+    /// [`Native::h1_opts`](crate::Native::h1_opts) returns a `Result`
+    /// where `h2_opts` does not — see that method.
+    pub max_buf_size: Option<usize>,
+}
+
+/// hyper's `MINIMUM_MAX_BUFFER_SIZE`, read from its source rather than
+/// guessed, and the reason [`Native::h1_opts`](crate::Native::h1_opts) can
+/// fail.
+pub(crate) const MINIMUM_MAX_BUF_SIZE: usize = 8192;
+
+/// A [`H1Opts`] value hyper would refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("max_buf_size is {asked}, below hyper's minimum of {MINIMUM_MAX_BUF_SIZE}")]
+pub struct MaxBufSizeTooSmall {
+    pub asked: usize,
+}
+
 /// The HTTP/1 handshake, split out from [`exchange`] because a pooled
 /// connection has already had one and a fresh one has not.
-pub(crate) async fn handshake<I>(io: I, id: ConnectionId) -> Result<Established<I>, Error>
+pub(crate) async fn handshake<I>(
+    io: I,
+    id: ConnectionId,
+    opts: H1Opts,
+) -> Result<Established<I>, Error>
 where
     I: Read + Write + Unpin + 'static,
 {
-    let (sender, conn) = http1::handshake::<I, OutgoingBody>(io)
+    let mut builder = http1::Builder::new();
+    if let Some(n) = opts.max_headers {
+        builder.max_headers(n);
+    }
+    if let Some(n) = opts.max_buf_size {
+        // Checked at the setter, not here: this is the one place hyper
+        // would panic on a caller's number, and a panic inside a connect
+        // is not a refusal a caller can act on.
+        debug_assert!(n >= MINIMUM_MAX_BUF_SIZE);
+        builder.max_buf_size(n);
+    }
+    let (sender, conn) = builder
+        .handshake::<I, OutgoingBody>(io)
         .await
         .map_err(|e| from_hyper_error(e, ErrorKind::Connect))?;
     Ok(Established { sender, conn, id })
@@ -917,7 +979,7 @@ mod tests {
             .unwrap();
 
         let est = {
-            let fut = handshake(SinkIo, ConnectionId::UNWATCHED);
+            let fut = handshake(SinkIo, ConnectionId::UNWATCHED, H1Opts::default());
             let mut fut = std::pin::pin!(fut);
             poll_once(fut.as_mut()).expect("handshake over SinkIo must succeed")
         };
@@ -1072,7 +1134,7 @@ mod tests {
         );
 
         let est = {
-            let fut = handshake(io, ConnectionId::UNWATCHED);
+            let fut = handshake(io, ConnectionId::UNWATCHED, H1Opts::default());
             let mut fut = std::pin::pin!(fut);
             poll_to_completion(fut.as_mut()).expect("handshake must succeed")
         };
@@ -1181,7 +1243,7 @@ mod tests {
         );
 
         let est = {
-            let fut = handshake(io, ConnectionId::UNWATCHED);
+            let fut = handshake(io, ConnectionId::UNWATCHED, H1Opts::default());
             let mut fut = std::pin::pin!(fut);
             poll_to_completion(fut.as_mut()).expect("handshake must succeed")
         };

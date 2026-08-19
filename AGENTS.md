@@ -1284,6 +1284,32 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### The response head is bounded on both protocols, and one setter can refuse
+
+`Native::h1_opts(H1Opts { max_headers, max_buf_size })`, beside
+`H2Opts::max_header_list_size`. **A response head is the one part of a
+response a client must buffer whole before it can act on any of it**, so it
+is the one part a hostile server can make expensive without ever sending a
+body — and neither half is complete without the other, because a transport
+that negotiates ALPN speaks whichever protocol the server picked.
+
+Two bounds and not one: a count alone does not bound the bytes, since a
+server can send one field with a megabyte of value and stay under any
+count.
+
+**`h1_opts` is fallible where `h2_opts` is not, and the difference is who
+would refuse the value.** A `SETTINGS` frame is written by this crate and
+there is nobody to say no; `max_buf_size` is handed to hyper, which
+`assert!`s below 8192. A caller's number reaching a `panic!` inside a
+connect is not a refusal they can act on, so it is checked at the setter
+and named — and the boundary itself is accepted, which a check written
+`<=` would not do.
+
+The failures come back as `ErrorKind::Connect` rather than `Body`, and
+that is hyper's classification rather than a judgement made here: a head
+that cannot be parsed means nothing usable came off the connection, so
+there is no response for a body error to attach to.
+
 ### More than one proxy, chosen by scheme, first match wins
 
 `Native::and_proxy` appends to a list and `Proxy::only_for(ProxyScheme)`

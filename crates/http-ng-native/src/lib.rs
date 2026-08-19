@@ -59,6 +59,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 #[cfg(feature = "http2")]
 pub use http2::{H2Driver, H2Opts};
 // `Prefetch` is declared in this file, beside the exchange it refines.
+pub use h1::{H1Opts, MaxBufSizeTooSmall};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxyScheme, ProxySpokeFirst};
@@ -310,6 +311,10 @@ where
     /// not want `h2`'s default. Constant within a `Native` and therefore
     /// within its pool, which is why it is not in `PoolKey` — the
     /// argument the TLS identity and the proxy already carry there.
+    /// What this client accepts in an HTTP/1 response head — see
+    /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
+    /// the HTTP/1 path is the one every build has.
+    h1_opts: crate::h1::H1Opts,
     #[cfg(feature = "http2")]
     h2_opts: crate::http2::H2Opts,
     caps: Capabilities,
@@ -620,6 +625,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         Self {
             watch_1xx: None,
             expect_continue: None,
+            h1_opts: crate::h1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
             // `P` is `NoProxy` here, an empty enum, so this is the only
@@ -771,6 +777,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // does not change.
             watch_1xx: self.watch_1xx,
             expect_continue: self.expect_continue,
+            h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
             proxies: vec![proxy],
@@ -919,6 +926,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // must not say it does.
             watch_1xx: None,
             expect_continue: self.expect_continue,
+            h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
             // Carried, unlike the two above: the proxy is named by
@@ -1395,6 +1403,37 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     pub fn h2_opts(mut self, opts: H2Opts) -> Self {
         self.h2_opts = opts;
         self
+    }
+
+    /// What this client accepts in an HTTP/1 **response head** — the
+    /// header count and the largest head it will buffer. See
+    /// [`H1Opts`](crate::H1Opts).
+    ///
+    /// The head is the one part of a response a client must hold whole
+    /// before it can act on any of it, so it is the one part a hostile
+    /// server can make expensive without sending a body.
+    /// [`h2_opts`](Self::h2_opts)' `max_header_list_size` is the same
+    /// guard one protocol over, and neither is complete without the other:
+    /// a transport that negotiates ALPN speaks whichever the server
+    /// picked.
+    ///
+    /// **Fallible, unlike [`h2_opts`](Self::h2_opts)**, and the difference
+    /// is who would refuse the value. A `SETTINGS` frame is written by
+    /// this crate and there is nobody to say no; `max_buf_size` is handed
+    /// to hyper, which **panics** below 8192. A caller's number reaching a
+    /// `panic!` inside a connect is not a refusal they can act on, so it
+    /// is checked here and named.
+    pub fn h1_opts(mut self, opts: crate::h1::H1Opts) -> Result<Self, Error> {
+        if let Some(asked) = opts.max_buf_size
+            && asked < crate::h1::MINIMUM_MAX_BUF_SIZE
+        {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                crate::h1::MaxBufSizeTooSmall { asked },
+            ));
+        }
+        self.h1_opts = opts;
+        Ok(self)
     }
 }
 
@@ -1965,6 +2004,7 @@ async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
     id: ConnectionId,
+    h1_opts: crate::h1::H1Opts,
     h2_opts: crate::http2::H2Opts,
 ) -> Result<established::Established<I>, Error>
 where
@@ -1975,7 +2015,9 @@ where
             http2::handshake(conn, id, h2_opts).await?,
         )))
     } else {
-        Ok(established::Established::H1(h1::handshake(conn, id).await?))
+        Ok(established::Established::H1(
+            h1::handshake(conn, id, h1_opts).await?,
+        ))
     }
 }
 
@@ -1989,12 +2031,15 @@ async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
     id: ConnectionId,
+    h1_opts: crate::h1::H1Opts,
 ) -> Result<established::Established<I>, Error>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     debug_assert!(!is_h2(protocol));
-    Ok(established::Established::H1(h1::handshake(conn, id).await?))
+    Ok(established::Established::H1(
+        h1::handshake(conn, id, h1_opts).await?,
+    ))
 }
 
 /// The HTTP version this transport will actually speak on a connection
@@ -2488,6 +2533,7 @@ where
             conn,
             protocol,
             id,
+            self.h1_opts,
             #[cfg(feature = "http2")]
             self.h2_opts,
         )
@@ -2905,7 +2951,8 @@ pub mod testing {
         I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
         use http_ng_core::unversioned::{ConnectionId, NoHooks};
-        let est = crate::h1::handshake(io, ConnectionId::UNWATCHED).await?;
+        let est =
+            crate::h1::handshake(io, ConnectionId::UNWATCHED, crate::h1::H1Opts::default()).await?;
         crate::h1::exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED)
             .await
             .map(|r| r.map(crate::established::NativeBody::h1))

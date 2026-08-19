@@ -519,6 +519,7 @@ where
             conn,
             protocol,
             id,
+            self.h1_opts,
             #[cfg(feature = "http2")]
             self.h2_opts,
         )

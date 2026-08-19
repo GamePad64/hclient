@@ -1275,6 +1275,7 @@ mod tests {
         let mut h = Box::pin(crate::h1::handshake(
             NeverIo,
             http_ng_core::unversioned::ConnectionId::UNWATCHED,
+            crate::h1::H1Opts::default(),
         ));
         match poll_once(&mut h) {
             Poll::Ready(Ok(est)) => Established::H1(est),
