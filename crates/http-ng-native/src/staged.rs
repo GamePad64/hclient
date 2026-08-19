@@ -277,7 +277,7 @@ where
     ///
     /// **A shared connection is dropped rather than checked in**, and the
     /// two are opposites here rather than variations: a
-    /// [`crate::established::Established::H2Shared`] was *borrowed* from
+    /// `crate::established::Established::H2Shared` was *borrowed* from
     /// the pool and never left it, so putting it back would leave two
     /// entries naming one connection — and the pool would then be holding
     /// a connection open one entry longer than the origin's traffic

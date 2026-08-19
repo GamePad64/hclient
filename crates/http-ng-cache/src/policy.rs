@@ -334,7 +334,7 @@ impl<S: CacheStore> HttpCache<S> {
     ///   standing aside is the honest version of not implementing it. The
     ///   same request is not stored either, for the mirror reason: what
     ///   comes back may be a `304` whose body is not the resource.
-    /// - **One carrying `Range`.** See [`CACHEABLE_STATUSES`] for why
+    /// - **One carrying `Range`.** See `CACHEABLE_STATUSES` for why
     ///   `206` is not stored; serving a range out of a complete stored
     ///   entry is the other half of the same missing machinery.
     /// - **One whose method is not `GET`.** The method is in the key
@@ -541,7 +541,7 @@ impl<S: CacheStore> HttpCache<S> {
     /// hand back what to serve.
     ///
     /// RFC 9111 §4.3.4 by way of §3.2 — every field in the `304` replaces
-    /// the stored one, except those in [`NOT_UPDATED_BY_304`] and any the
+    /// the stored one, except those in `NOT_UPDATED_BY_304` and any the
     /// `304`'s own `Connection` header nominates.
     pub fn revalidated(
         &mut self,

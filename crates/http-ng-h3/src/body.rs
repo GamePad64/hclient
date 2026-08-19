@@ -21,7 +21,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 ///
 /// `full_duplex` is `true` on this transport, which means the head can be
 /// delivered while the request body is still going out. The unfinished
-/// write is a future ([`crate::pump`]) and it comes here, because this is
+/// write is a future (`crate::pump`) and it comes here, because this is
 /// the object the caller still holds: `poll_frame` polls it first, so the
 /// upload advances every time the download is read.
 ///
@@ -56,7 +56,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 ///
 /// A body outlives `Transport::execute`, so if the connection underneath
 /// it dies while it is being read there is nothing else left to say so.
-/// [`crate::hooks::Watch`] is what it says it with, and the discrimination
+/// `crate::hooks::Watch` is what it says it with, and the discrimination
 /// is `quinn::Connection::close_reason()`: a stream that failed on a
 /// connection that is still alive — a `RESET_STREAM`, a server that
 /// stopped reading — is one request's failure and **not** a close, which

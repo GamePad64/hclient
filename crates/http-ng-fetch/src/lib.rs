@@ -95,7 +95,7 @@ use wasm_bindgen::JsCast;
 /// `Box<dyn Hooks>`, which is the whole of the zero-cost claim.
 ///
 /// **This backend emits exactly one of the four events**, and which one is
-/// the finding rather than an omission: see [`crate::hooks`]'s module doc
+/// the finding rather than an omission: see `crate::hooks`'s module doc
 /// for why a transport that owns no connection has nothing to put in
 /// `Connected`, `Reused` or `Closed`, and which two fields of `Head`
 /// itself it cannot fill either.
@@ -124,7 +124,7 @@ impl Fetch {
 impl<H> Fetch<H> {
     /// Send this transport's events to `hooks` — see
     /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
-    /// costs, and [`crate::hooks`] for the three quarters of the
+    /// costs, and `crate::hooks` for the three quarters of the
     /// vocabulary a browser cannot speak.
     ///
     /// **It returns a different type**, and that is the zero-cost
@@ -478,9 +478,10 @@ pub mod testing {
             .map(|c| (c.request, c.abort))
     }
 
-    /// The conversion with caller-chosen [`FetchOpts`](crate::opts::
-    /// FetchOpts), so `tests/opts.rs` can read the four members back off a
-    /// `web_sys::Request` without sending anything.
+    /// The conversion with caller-chosen
+    /// [`FetchOpts`](crate::opts::FetchOpts), so `tests/opts.rs` can read
+    /// the four members back off a `web_sys::Request` without sending
+    /// anything.
     ///
     /// A seam rather than a live request, for the reason the whole file
     /// gives: what is claimed is that a value the caller set reaches the
@@ -567,7 +568,7 @@ pub mod testing {
         Ok(buf.freeze())
     }
 
-    /// Exercises [`crate::AbortOnDrop`] directly and deterministically — no
+    /// Exercises `crate::AbortOnDrop` directly and deterministically — no
     /// network involved, `AbortController`/`AbortSignal` are plain,
     /// synchronous browser objects, unlike a real `fetch()`'s timing (which
     /// this test environment has no way to bound or control on demand; see

@@ -46,11 +46,11 @@ pub struct TcpOpts {
     /// `TCP_KEEPIDLE` — how long a connection may be idle before the
     /// first probe.
     ///
-    /// **One setting in three parts, with [`keepalive_interval`](Self::
-    /// keepalive_interval) and [`keepalive_retries`](Self::
-    /// keepalive_retries).** Setting *any* of the three turns
-    /// `SO_KEEPALIVE` on; each part left `None` keeps the operating
-    /// system's value for it. That is `socket2::TcpKeepalive`'s own shape
+    /// **One setting in three parts, with
+    /// [`keepalive_interval`](Self::keepalive_interval) and
+    /// [`keepalive_retries`](Self::keepalive_retries).** Setting *any* of
+    /// the three turns `SO_KEEPALIVE` on; each part left `None` keeps the
+    /// operating system's value for it. That is `socket2::TcpKeepalive`'s own shape
     /// and it is stated here because the field names do not say it: a
     /// caller who sets only the interval has switched keepalive on, with
     /// the OS's idle time.
@@ -334,8 +334,9 @@ pub trait TcpConnect {
     ///
     /// The default is a refusal rather than a panic, and the error carries
     /// [`std::io::ErrorKind::Unsupported`] so a caller who reached it
-    /// through some path that skipped [`SUPPORTS_UNIX`](Self::
-    /// SUPPORTS_UNIX) still gets an answer rather than an abort.
+    /// through some path that skipped
+    /// [`SUPPORTS_UNIX`](Self::SUPPORTS_UNIX) still gets an answer rather
+    /// than an abort.
     fn connect_unix(
         &self,
         path: &std::path::Path,

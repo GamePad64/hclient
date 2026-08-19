@@ -117,12 +117,12 @@
 //! **The limit is readable**, where `docs/v04-w2-webtransport.md` §3(c) said
 //! it was not: not from `h3::config::Settings`, which has no getter for it,
 //! but from the SETTINGS **frame** [`Session::connect`] already awaits and
-//! used to discard. See [`PeerSettings`].
+//! used to discard. See `PeerSettings`.
 //!
 //! **A second h3 client is not the way**, and that part was right — it is a
 //! *connection* error, `H3_STREAM_CREATION_ERROR`, which takes the first
 //! session with it, and `tests/sessions.rs` executes the prediction. So
-//! [`Shared`] holds one h3 client and every session clones its
+//! `Shared` holds one h3 client and every session clones its
 //! `SendRequest`.
 //!
 //! # Datagrams
@@ -389,7 +389,7 @@ pub enum BadCloseCapsule {
     /// then stopped, so what it meant to say is unknown — which is a
     /// different fact from a stream that ends at a capsule boundary, and
     /// the whole reason this is an error rather than
-    /// [`SessionClose::ENDED_WITHOUT_A_CAPSULE`].
+    /// `SessionClose::ENDED_WITHOUT_A_CAPSULE`.
     #[error("the CONNECT stream ended with {have} bytes of an unfinished capsule")]
     Truncated {
         /// How many bytes of the unfinished capsule had arrived.
@@ -465,7 +465,7 @@ pub struct AlreadyClosed;
 /// The second is the one worth knowing about: the driver is held to keep a
 /// stream open, not to be polled. See the crate doc.
 ///
-/// Both live in [`Shared`] rather than here, because they belong to the
+/// Both live in `Shared` rather than here, because they belong to the
 /// **connection** and not to any one session — which is what
 /// [`open_session`](Self::open_session) needed and what this crate spent
 /// its whole first version without.
@@ -529,7 +529,7 @@ struct Shared {
     /// the gate — see [`Session::max_datagram_size`].
     peer_datagrams: bool,
     /// The peer's `SETTINGS_WT_MAX_SESSIONS`, and the only reader of it is
-    /// [`Session::open_session`]. See [`PeerSettings`] for where it comes
+    /// [`Session::open_session`]. See `PeerSettings` for where it comes
     /// from, which is not where this crate's documentation used to say it
     /// could not be got from.
     max_sessions: u64,
@@ -538,7 +538,7 @@ struct Shared {
     /// what makes the draft's word *simultaneous* mean something.
     open: AtomicU64,
     /// Datagrams one session read off the connection that belong to
-    /// another. See [`Shared::hand_over`].
+    /// another. See `Shared::hand_over`.
     parked: Mutex<HashMap<u64, Parked>>,
     /// The h3 client. Held so that `h3`'s sender count never reaches zero
     /// — it marks the connection closed with `H3_NO_ERROR` when the last
@@ -663,7 +663,7 @@ impl Session {
     ///
     /// This is one extended CONNECT more, on the h3 client the first
     /// session already built — not a second h3 client, which is the thing
-    /// that does not work (see [`Shared`]). The new session is a peer of
+    /// that does not work (see `Shared`). The new session is a peer of
     /// this one in every way: it has its own CONNECT stream, its own ID,
     /// its own [`closed`](Self::closed), and its own datagrams. Dropping
     /// either leaves the other running; the connection outlives both, and
@@ -685,7 +685,7 @@ impl Session {
     /// number arrives in the SETTINGS **frame** that
     /// [`connect`](Self::connect) already awaits and used to discard with a
     /// `_`, and `h3::proto::frame::Settings::get` is public under the same
-    /// feature this crate already takes. See [`PeerSettings`].
+    /// feature this crate already takes. See `PeerSettings`.
     ///
     /// # What it does not bound
     ///
@@ -1018,7 +1018,7 @@ impl Session {
     /// discarded anything that was not its own, which was exactly right
     /// while a connection could hold only one session and is silent data
     /// loss now. So a foreign datagram is parked for its owner and its
-    /// owner is woken; see [`Shared::hand_over`] for what happens when the
+    /// owner is woken; see `Shared::hand_over` for what happens when the
     /// owner is not listening, which is still the discard, and still
     /// RFC 9297 §2.1's *"SHALL either drop that datagram silently or
     /// buffer it temporarily"*.
@@ -1112,7 +1112,7 @@ async fn establish(slot: Slot, uri: &http::Uri) -> Result<Session, Error> {
     // Cloned rather than borrowed: `send_request` takes `&mut self`, and
     // `SendRequest` is `Clone` exactly so that more than one request can be
     // in flight on one connection. `h3` counts the clones and closes the
-    // connection when the last drops, which is why [`Shared`] keeps one
+    // connection when the last drops, which is why `Shared` keeps one
     // that is never used to send.
     let mut send = slot.shared().send.clone();
 
@@ -1318,7 +1318,7 @@ impl Shared {
     }
 }
 
-/// One session's side of the hand-off in [`Shared::hand_over`].
+/// One session's side of the hand-off in `Shared::hand_over`.
 #[derive(Default)]
 struct Parked {
     /// A datagram a sibling read for this session and has not collected.
@@ -1539,7 +1539,7 @@ impl CloseWatch {
 /// first frame on the control stream (RFC 9114 §6.2.1) and has already
 /// stored it, so the read below is of the peer's real answer.
 ///
-/// Returns [`PeerSettings`]: the two things this crate reads off that frame
+/// Returns `PeerSettings`: the two things this crate reads off that frame
 /// and keeps for the connection's life, neither of which is a condition on
 /// the gate.
 async fn settings_announce_webtransport(

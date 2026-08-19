@@ -153,7 +153,7 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for TokioHandle {
 
 impl Blocking for TokioHandle {
     /// `Handle::spawn_blocking` is total in the same way `Handle::spawn`
-    /// is, so this needs no guard either — only the same [`classify`],
+    /// is, so this needs no guard either — only the same `classify`,
     /// which is shared with [`Tokio`] rather than repeated, so the
     /// panic-vs-`Cancelled` distinction cannot drift between the two.
     async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(

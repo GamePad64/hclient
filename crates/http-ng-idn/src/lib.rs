@@ -718,7 +718,7 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 /// `aarch64-apple-darwin`, and never two. Making `idna` available beside a
 /// platform backend would buy the comparison back at the price of the ICU
 /// tables on Windows and macOS, which is the saving this crate exists for.
-/// [`policy_over`] is the differential seam that does work, and
+/// [`testing::policy_over`] is the differential seam that does work, and
 /// `fuzz/fuzz_targets/idn_policy_vs_idna.rs` is what uses it.
 ///
 /// Not a public API: no stability promise, and nothing in the client calls

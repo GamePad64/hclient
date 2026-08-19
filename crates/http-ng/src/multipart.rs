@@ -77,7 +77,7 @@
 //! moved to it from backslash-escaping.
 //!
 //! There is no `filename*`. RFC 7578 §4.2 is unusually blunt about it —
-//! *"The encoding method described in [RFC5987], which would add a
+//! *"The encoding method described in \[RFC5987\], which would add a
 //! `filename*` parameter to the Content-Disposition header field, MUST
 //! NOT be used"* — so the RFC 6266 / RFC 5987 tangle has one answer here
 //! and it is written into the code rather than chosen per call.

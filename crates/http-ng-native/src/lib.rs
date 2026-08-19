@@ -3,14 +3,14 @@
 //!
 //! This crate wires together the runtime ([`http_ng_rt`]), DNS ([`http_ng_dns`])
 //! and TLS ([`http_ng_tls`]) on top of `hyper`. Task 10 laid down the request
-//! body adapter ([`body`], `pub(crate)`); Task 11 added the connector
-//! ([`connect`], also `pub(crate)`); Task 12 added the HTTP/1 driver
-//! ([`h1`], `pub(crate)`); Task 13 assembles all of this into [`Native`] —
+//! body adapter (`body`, `pub(crate)`); Task 11 added the connector
+//! (`connect`, also `pub(crate)`); Task 12 added the HTTP/1 driver
+//! (`h1`, `pub(crate)`); Task 13 assembles all of this into [`Native`] —
 //! the crate's only public type, which implements `http_ng_core::
 //! unversioned::Transport`. v0.2 W2 added the connection pool
-//! ([`pool`]); v0.2 W3 added the HTTP/2 driver ([`http2`], behind the
+//! (`pool`); v0.2 W3 added the HTTP/2 driver (`http2`, behind the
 //! `http2` feature and **not** on hyper — see its module doc) and
-//! [`established`], the one place that knows there is more than one
+//! `established`, the one place that knows there is more than one
 //! protocol.
 //!
 //! # `Native::execute` does not resolve DNS itself
@@ -231,13 +231,13 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// ([`http_ng_tls::TlsConnect`]) and resolver `D` ([`http_ng_dns::Resolve`]).
 ///
 /// Connections are reused (v0.2 W2): see [`PoolConfig`], [`Native::pool`]
-/// and [`Native::without_pool`], and read [`crate::pool`]'s module doc for
+/// and [`Native::without_pool`], and read `crate::pool`'s module doc for
 /// what "reused" costs when there is no `Spawn` to drive an idle
 /// connection.
 ///
 /// HTTP/1.1 always; **HTTP/2 with the `http2` feature**, on `https://`
 /// origins whose TLS backend both negotiated `h2` and can say so — see
-/// `TlsConnect::reports_alpn` and [`crate::http2`]'s module doc. There is
+/// `TlsConnect::reports_alpn` and `crate::http2`'s module doc. There is
 /// no h2c: cleartext stays HTTP/1.1. What was negotiated is readable after
 /// the fact from `Response::version()`; it is deliberately not readable
 /// from [`Capabilities`], which report the floor (see [`Native::new`]).
@@ -845,7 +845,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// ProxyProtocol>`.
     ///
     /// Uncallable before `proxy` for free rather than by a check: without
-    /// it `P` is [`NoProxy`](crate::NoProxy), an empty enum, so there is
+    /// it `P` is [`NoProxy`], an empty enum, so there is
     /// no `Proxy<NoProxy>` to pass.
     #[must_use]
     pub fn and_proxy(mut self, proxy: crate::proxy::Proxy<P>) -> Self {
@@ -979,7 +979,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     }
 
     /// How this transport reuses connections — see [`PoolConfig`], and
-    /// [`crate::pool`]'s module doc for what reuse can and cannot promise
+    /// `crate::pool`'s module doc for what reuse can and cannot promise
     /// without a `Spawn` to drive an idle connection.
     ///
     /// Reuse is **on by default**, with [`PoolConfig::default`]; this
@@ -1008,7 +1008,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// to hand them out.
     ///
     /// Sets the pool exactly as [`Native::pool`] does and additionally
-    /// spawns a [`Reaper`] on `R`. Read [`crate::pool`]'s module doc first:
+    /// spawns a [`Reaper`] on `R`. Read `crate::pool`'s module doc first:
     /// without one, [`PoolConfig::idle_timeout`] is a filter applied at
     /// checkout, so a client that goes quiet holds its sockets until its
     /// next request or until `Drop`. Measured with the server watching its
@@ -1183,9 +1183,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// a typo, so the pairing below is the discipline: each refusal sits
     /// next to a version of itself that differs in one thing and compiles.
     /// The messages were also read once, by building the same two calls as
-    /// an ordinary test — `the trait bound `NoSpawn: Spawn<H2Driver<Conn<
-    /// TokioIo, NoStream>, NoHooks>>` is not satisfied` and
-    /// ``Rc<Cell<usize>>` cannot be sent between threads safely`, both
+    /// an ordinary test — `` `the trait bound `NoSpawn:
+    /// Spawn<H2Driver<Conn<TokioIo, NoStream>, NoHooks>>` is not
+    /// satisfied` `` and `` `Rc<Cell<usize>>` cannot be sent between
+    /// threads safely `` — both
     /// pointing at the `multiplexed()` call and at this method's bound.
     /// (`compile_fail,E0277` would say so in the fence, but rustdoc's
     /// error-code annotation is unstable and is **not** enforced on
@@ -1430,7 +1431,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
 
     /// What this client accepts in an HTTP/1 **response head** — the
     /// header count and the largest head it will buffer. See
-    /// [`H1Opts`](crate::H1Opts).
+    /// [`H1Opts`].
     ///
     /// The head is the one part of a response a client must hold whole
     /// before it can act on any of it, so it is the one part a hostile
@@ -1469,7 +1470,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// # What it replaces
     ///
     /// The whole resolve → HTTPS-record discovery → Happy Eyeballs →
-    /// `connect` block, which is [`Proxy`](crate::Proxy)'s slot exactly:
+    /// `connect` block, which is [`Proxy`]'s slot exactly:
     /// there is no name to resolve, no address family to race and no port.
     /// It is **not** a proxy — nothing is tunnelled and the request head is
     /// written origin-form — which is why it is a setting rather than a
@@ -1489,8 +1490,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// # It is refused where the runtime says it cannot
     ///
-    /// [`TcpConnect::SUPPORTS_UNIX`](http_ng_rt::TcpConnect::
-    /// SUPPORTS_UNIX), which both shipped runtimes compute with `cfg!(unix)`
+    /// [`http_ng_rt::TcpConnect::SUPPORTS_UNIX`],
+    /// which both shipped runtimes compute with `cfg!(unix)`
     /// — so this fails at the call that configures it rather than on the
     /// first request, which is `tcp_opts`' rule one method over.
     pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
@@ -2708,7 +2709,7 @@ where
     type Body = NativeBody<R, T, H>;
     type Error = Error;
 
-    /// [`Native::run`] with nothing looked up — which is what every
+    /// `Native::run` with nothing looked up — which is what every
     /// request through this seam is, because the seam has no way to carry
     /// an answer and [deliberately does not gain one](Prefetch::prepare).
     /// The record is fetched inside, when and if a connection is opened.
@@ -2797,11 +2798,11 @@ where
     }
 }
 
-/// The failure [`Native::within_first_byte`] ends in when the timer wins
+/// The failure `Native`'s `first_byte` gate ends in when the timer wins
 /// the race against the exchange.
 ///
 /// A named type rather than a string, for the same reason
-/// [`ConnectTimedOut`] is one: a caller must be able to tell the phases
+/// `ConnectTimedOut` is one: a caller must be able to tell the phases
 /// apart with `Error::source().downcast_ref()`, and to read the bound
 /// that was actually in force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

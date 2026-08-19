@@ -66,7 +66,7 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
 /// **This backend emits exactly one of the four events**, and which one is
 /// the finding rather than an omission: `wasi:http@0.3.0` has no
 /// connection resource anywhere in it, so `Connected`, `Reused` and
-/// `Closed` have nothing to be about. See [`crate::hooks`].
+/// `Closed` have nothing to be about. See `crate::hooks`.
 #[derive(Debug)]
 pub struct WasiHttp<H = NoHooks> {
     caps: Capabilities,
@@ -78,7 +78,7 @@ pub struct WasiHttp<H = NoHooks> {
 impl<H> WasiHttp<H> {
     /// Send this transport's events to `hooks` — see
     /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
-    /// costs, and [`crate::hooks`] for the three quarters of the
+    /// costs, and `crate::hooks` for the three quarters of the
     /// vocabulary `wasi:http` cannot speak.
     ///
     /// **It returns a different type**, and that is the zero-cost

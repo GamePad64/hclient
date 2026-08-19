@@ -83,7 +83,7 @@
 //! two consequences above are exactly what it costs:
 //!
 //! 1. Dropping an exchange no longer closes the connection — the driver
-//!    owns it — so [`Pump`]'s `Drop` becomes the thing the peer sees. Its
+//!    owns it — so `Pump`'s `Drop` becomes the thing the peer sees. Its
 //!    own doc comment said the `RST_STREAM(CANCEL)` it queues was
 //!    unobservable and was kept for this day; it is observed now, in
 //!    `tests/grpc_shape.rs`'s
@@ -101,7 +101,7 @@
 //!
 //! [`exchange`] used to write the whole request body before it waited for
 //! the response, and that arrangement is what `full_duplex: false` used to
-//! describe. It no longer is. The body is written by a [`Pump`] polled
+//! describe. It no longer is. The body is written by a `Pump` polled
 //! *beside* the response future, and a pump still running when the head
 //! arrives **moves into [`H2Body`]**, which drives it from `poll_frame`.
 //! v0.3 did the same thing for HTTP/3 (`http_ng_h3::pump` is the
@@ -305,8 +305,9 @@ where
 ///   has no such thing, so it would be ours to write, and a wrong
 ///   estimator is worse than an honest constant.
 /// - **Keepalive pings.** Sending one needs somebody polling an idle
-///   connection, which here means [`Native::multiplexed`](crate::Native::
-///   multiplexed) and the `Spawn` bound that comes with it. It is a
+///   connection, which here means
+///   [`Native::multiplexed`](crate::Native::multiplexed) and the `Spawn`
+///   bound that comes with it. It is a
 ///   feature of the driver rather than of the settings frame, and it
 ///   belongs on that constructor if it arrives.
 /// - **`max_concurrent_streams`.** A client's own limit governs streams
@@ -590,7 +591,7 @@ where
                         // Dropped here rather than at the end of the
                         // function, and it is the drop that resets the
                         // stream: a request whose write failed is not a
-                        // request that ended. See [`Pump`]'s `Drop`.
+                        // request that ended. See `Pump`'s `Drop`.
                         pump = None;
                         return Poll::Ready(Err(Failed::Sent(e)));
                     }
@@ -1194,7 +1195,7 @@ where
     ///
     /// **An upload still in flight has nowhere left to go.** Nothing polls
     /// a body that has answered `None`, so the pump would never be driven
-    /// to its end; dropping it resets the stream (see [`Pump`]'s `Drop`),
+    /// to its end; dropping it resets the stream (see `Pump`'s `Drop`),
     /// which is what tells the server that what it has is not the whole
     /// request. The alternative — holding the response open until the
     /// upload finishes — hangs against exactly the server that produces
@@ -1450,7 +1451,7 @@ where
 /// feature is named after:
 ///
 /// 1. Several requests can be in flight on it at once.
-/// 2. The `RST_STREAM(CANCEL)` [`Pump`]'s `Drop` queues **reaches the
+/// 2. The `RST_STREAM(CANCEL)` `Pump`'s `Drop` queues **reaches the
 ///    wire**: the connection outlives the stream, so there is still
 ///    something to write it. Its own doc comment records that it was
 ///    unobservable until this existed.

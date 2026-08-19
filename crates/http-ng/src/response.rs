@@ -70,8 +70,8 @@ impl<B> Response<B> {
     ///
     /// A `3xx` is `Ok`, because reaching one means the redirect policy
     /// already decided to hand it back — see
-    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::
-    /// None), where a `3xx` is stated to be the caller's answer rather than
+    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::None),
+    /// where a `3xx` is stated to be the caller's answer rather than
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
     ///
@@ -250,8 +250,8 @@ impl Collected {
     ///
     /// A `3xx` is `Ok`, because reaching one means the redirect policy
     /// already decided to hand it back — see
-    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::
-    /// None), where a `3xx` is stated to be the caller's answer rather than
+    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::None),
+    /// where a `3xx` is stated to be the caller's answer rather than
     /// a failure to reach one. Treating it as an error here would overrule
     /// that from two layers up.
     ///

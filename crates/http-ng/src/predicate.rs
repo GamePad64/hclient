@@ -62,8 +62,9 @@ pub enum RedirectVerdict {
     /// what [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::None)
     /// does for a whole client.
     Stop,
-    /// Do not, and fail: [`ErrorKind::Redirect`](http_ng_core::ErrorKind::
-    /// Redirect) with a [`RedirectRefused`] source naming the hop.
+    /// Do not, and fail:
+    /// [`ErrorKind::Redirect`](http_ng_core::ErrorKind::Redirect) with a
+    /// [`RedirectRefused`] source naming the hop.
     Refuse,
 }
 

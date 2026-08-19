@@ -45,7 +45,7 @@ use web_sys::{ReferrerPolicy, RequestCache, RequestCredentials, RequestMode};
 /// something other than the browser's default.
 ///
 /// Every field is `None` by default — *leave it to `fetch`* — which is
-/// `TcpOpts`' and [`H2Opts`](http_ng_native::H2Opts)' rule one crate over:
+/// `TcpOpts`' and `H2Opts`' rule one crate over:
 /// a value set here changes what the browser does, so a default of ours
 /// would change behaviour for a caller who asked for nothing. That matters
 /// more here than anywhere else in this workspace, because these members
@@ -72,7 +72,7 @@ pub struct FetchOpts {
     ///
     /// Note which cache this is. `Capabilities::owns_cache` is `true` for
     /// this backend precisely because the browser caches inside `fetch()`,
-    /// and a client-side [`HttpCache`](http_ng_cache::HttpCache) is
+    /// and a client-side `HttpCache` is
     /// refused at `build()` for that reason. This field is how a caller
     /// reaches the cache that *is* in force.
     pub cache: Option<RequestCache>,

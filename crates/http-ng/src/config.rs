@@ -39,7 +39,7 @@ pub struct Config {
     ///
     /// Consulted **after** `redirect::decide` and only about a hop it
     /// already approved, which is why it is here and not a variant of
-    /// [`RedirectPolicy`] — see [`crate::predicate`] for that argument and
+    /// [`RedirectPolicy`] — see `crate::predicate` for that argument and
     /// for the `Send + Sync` bound it costs.
     pub redirect_predicate: Option<crate::RedirectPredicate>,
     /// `Option::None` here is "the caller never asked for a redirect

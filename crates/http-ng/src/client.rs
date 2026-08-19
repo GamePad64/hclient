@@ -376,8 +376,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// `.cache(HttpCache::new())` is the "just turn it on" form. The
     /// argument is there because a cache is worth configuring — a body
     /// bound ([`Limits`](http_ng_cache::Limits)), a store size
-    /// ([`MemoryStore::with_capacity`](http_ng_cache::MemoryStore::
-    /// with_capacity)), or a store of the caller's own
+    /// ([`MemoryStore::with_capacity`](http_ng_cache::MemoryStore::with_capacity)),
+    /// or a store of the caller's own
     /// ([`CacheStore`](http_ng_cache::CacheStore)) — and a `bool` could
     /// express none of it. The cache is shared by every clone of the built
     /// client, and by every response body it hands out, because a body

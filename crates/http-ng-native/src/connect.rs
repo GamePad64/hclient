@@ -1343,7 +1343,7 @@ where
     .await
 }
 
-/// The failure [`first_address_within`] ends in.
+/// The failure `first_address_within` ends in.
 ///
 /// A named type rather than a string, for the reason
 /// [`crate::FirstByteTimedOut`] is one: a caller tells the phases apart

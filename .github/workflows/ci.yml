@@ -73,6 +73,12 @@ jobs:
           bins: just
       - run: just fmt-check
       - run: just lint
+      # The rendered docs are this project's product and nothing checked
+      # them: 96 rustdoc warnings across 17 crates, including two unclosed
+      # HTML tags that delete text from the page. Here rather than in the
+      # matrix job because rustdoc's answer does not vary by platform.
+      - name: the rendered documentation has no warnings
+        run: just docs
 
   sse-complexity-guard:
     runs-on: ubuntu-latest

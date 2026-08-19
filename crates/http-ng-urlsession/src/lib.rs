@@ -34,7 +34,7 @@
 //!   one line.
 //! - Redirects are the sharpest of the three, because `URLSession` lets a
 //!   delegate refuse them and the browser does not. So this backend
-//!   reports [`RedirectSupport::Transparent`] where `http-ng-fetch`
+//!   reports [`RedirectSupport::Transparent`](http_ng_core::RedirectSupport::Transparent) where `http-ng-fetch`
 //!   reports `Internal`, and `Client`'s redirect policy — its hop limit,
 //!   its `Authorization` stripping across origins — works here and cannot
 //!   there.

@@ -52,7 +52,7 @@
 //! `std::io` removes an `unsafe`. `tungstenite::protocol::WebSocketContext`
 //! takes the stream as a *parameter* rather than owning it, so the
 //! persistent protocol state and the transient IO are separate values and
-//! the [`Shim`] handed to each call borrows the poll `Context` for exactly
+//! the `Shim` handed to each call borrows the poll `Context` for exactly
 //! that call. `tokio-tungstenite`'s `AllowStd` owns the stream across
 //! calls and therefore has to smuggle a `*mut Context` in; this crate
 //! forbids `unsafe` and does not have to.
@@ -82,7 +82,7 @@
 //! `out_buffer.drain(0..len)` for each partial write *before* the `?` on
 //! the next one propagates — so what was written is dropped from the
 //! buffer, what was not stays in it, and the next flush continues where
-//! the last one stopped. That property is the whole reason [`Shim`]'s
+//! the last one stopped. That property is the whole reason `Shim`'s
 //! `write` must return the real `n` rather than `buf.len()`;
 //! `a_message_larger_than_the_socket_buffer_arrives_whole` is the test,
 //! and the mutation it catches.
@@ -573,7 +573,7 @@ impl WebSocketKeepAlive {
 /// inventing a second vocabulary.
 ///
 /// It is deliberately **not** an `ErrorKind::Timeout`: no field of
-/// [`Timeouts`] is in force here, and `Phase::BetweenBytes` in particular
+/// [`http_ng_core::Timeouts`] is in force here, and `Phase::BetweenBytes` in particular
 /// would name a bound `docs/w4-upgrade-seam.md` §7 explicitly refused to
 /// give this seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -650,7 +650,7 @@ impl<Tm: Timer> Liveness<Tm> {
 /// An open WebSocket on a native socket.
 ///
 /// The IO and the protocol state are separate fields on purpose: that is
-/// what lets [`Shim`] borrow the poll `Context` for one call, and it is
+/// what lets `Shim` borrow the poll `Context` for one call, and it is
 /// the whole of §6's argument for driving `tungstenite` rather than
 /// wrapping it.
 pub struct TungsteniteWebSocket<I, Tm: Timer> {

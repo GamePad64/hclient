@@ -553,6 +553,36 @@ test-doc:
       exit 1
     fi
 
+# rustdoc warnings, which nothing checked until publishing made them visible
+docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # This project's actual product is its prose, and it had no check at
+    # all: 96 warnings had accumulated across 17 crates. Four kinds, in
+    # rising order of harm — a `redundant explicit link target`; a link
+    # from public prose to a private item, which docs.rs renders as
+    # literal `[`brackets`]`; an unresolved link; and two unclosed HTML
+    # tags, which silently *delete* the rest of the sentence from the
+    # page. The dominant cause was one shape: a link target wrapped
+    # across two `///` lines. rustdoc does not rejoin the path, so twelve
+    # targets were `crate::` followed by a newline.
+    #
+    # `--no-deps` because a dependency's warnings are not ours to fix, and
+    # `--all-features` because a feature-gated item's docs are the half of
+    # this crate a reader most needs — every backend, coding and knob.
+    rc=0
+    out="$(RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features \
+             --no-deps --color never 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || { echo "::error::rustdoc reported warnings"; exit "$rc"; }
+    # Fails closed on the run not happening, the way `test-doc` does:
+    # rustdoc printing nothing is indistinguishable from rustdoc finding
+    # nothing, and reporting `ok` over a build that never ran is this
+    # recipe's whole failure mode.
+    if ! printf '%s\n' "$out" | grep -qE 'Generated .*index\.html|Finished'; then
+      echo "::error::no sign rustdoc ran at all — the check did not happen"
+      exit 1
+    fi
 # nightly is not optional here (sanitizer flags), and `RUSTUP_TOOLCHAIN` is
 # how it survives rust-toolchain.toml. The explicit `--target` is not
 # cosmetic either: cargo-fuzz defaults to the triple it was itself built for,

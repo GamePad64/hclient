@@ -53,8 +53,9 @@
 
 /// A [`PublicSuffixList`](http_ng_cookie::PublicSuffixList) of any type.
 ///
-/// Built by [`ClientBuilder::cookie_jar`](crate::ClientBuilder::
-/// cookie_jar) from whatever list the caller's jar was carrying; a caller
+/// Built by
+/// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar) from
+/// whatever list the caller's jar was carrying; a caller
 /// never needs to name it to configure one, only to name the jar's type
 /// when reading it back.
 #[cfg(feature = "cookies")]

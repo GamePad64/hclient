@@ -365,11 +365,11 @@ pub trait TlsIdentity {
 /// this vertical wants a bare handshake without a wrapped stream, or the
 /// reverse.
 pub trait TlsConnect: TlsIdentity {
-    /// The wrapped stream after the handshake. `S: hyper::rt::Read + Write
-    /// + Unpin` appears in both places (on the type itself and in its
-    /// where clause) — an implementation can't promise a wrapper for only
-    /// some possible `S`; every `S` capable of `connect` must get back a
-    /// working `Stream<S>` too.
+    /// The wrapped stream after the handshake.
+    /// `S: hyper::rt::Read + Write + Unpin` appears in both places (on the
+    /// type itself and in its where clause) — an implementation can't
+    /// promise a wrapper for only some possible `S`; every `S` capable of
+    /// `connect` must get back a working `Stream<S>` too.
     type Stream<S>: hyper::rt::Read + hyper::rt::Write + Unpin
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
@@ -388,7 +388,7 @@ pub trait TlsConnect: TlsIdentity {
         S: hyper::rt::Read + hyper::rt::Write + Unpin;
 
     /// What a transport built on this implementation should advertise in
-    /// [`Capabilities::tls_config`].
+    /// [`Capabilities::tls_config`](http_ng_core::Capabilities::tls_config).
     ///
     /// Defaulted to `Full` so that adding this method broke no existing
     /// implementation — every one of them does perform TLS. It exists for
@@ -396,7 +396,7 @@ pub trait TlsConnect: TlsIdentity {
     /// that asks instead of assuming cannot end up advertising TLS it will
     /// refuse to perform.
     ///
-    /// The same shape as [`http_ng_dns::Resolve::supports_svcb`], and for
+    /// The same shape as `http_ng_dns::Resolve::supports_svcb`, and for
     /// the same reason: a capability has to come from the component that
     /// knows, not from whoever assembles it.
     fn tls_support(&self) -> TlsSupport {
@@ -427,7 +427,7 @@ pub trait TlsConnect: TlsIdentity {
     /// `false` default describes, and it does not override this method.
     ///
     /// The same shape as [`tls_support`](Self::tls_support) and
-    /// [`http_ng_dns::Resolve::supports_svcb`], for the same reason: a
+    /// `http_ng_dns::Resolve::supports_svcb`, for the same reason: a
     /// capability has to come from the component that knows, not from
     /// whoever assembles it.
     fn reports_alpn(&self) -> bool {

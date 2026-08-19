@@ -150,7 +150,7 @@
 //!
 //! # What is in the key, and why each part is there
 //!
-//! [`PoolKey`] is the v0.2 design document's `(scheme, host, port,
+//! `PoolKey` is the v0.2 design document's `(scheme, host, port,
 //! negotiated ALPN, TLS configuration identity)`, with scheme and TLS
 //! identity folded into one field because they are not independent:
 //!
@@ -342,7 +342,7 @@ pub struct PoolConfig {
     /// direction: the deadline is never later than the true idle deadline,
     /// only earlier, and by exactly the time the exchange took.
     pub idle_timeout: Duration,
-    /// How many idle connections to keep per [`PoolKey`].
+    /// How many idle connections to keep per `PoolKey`.
     ///
     /// Bounded rather than unbounded: without a reaper (see the module
     /// doc), an unbounded pool that a burst of concurrent requests filled
@@ -948,7 +948,7 @@ where
 /// with nobody, which is today's behaviour with a spawned task added.
 ///
 /// So one request connects and the others wait for it. What they wait on
-/// is this: a mark under the origin's [`PoolKey`], taken before the
+/// is this: a mark under the origin's `PoolKey`, taken before the
 /// connect and released by [`Connecting`]'s `Drop` — so a connect that
 /// fails, or a request whose future is dropped mid-connect, releases the
 /// herd rather than stranding it.

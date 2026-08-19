@@ -184,7 +184,7 @@ where
 }
 
 /// A [`tower_service::Service`] wearing the seam's clothes — the return
-/// journey, so a tower stack can sit *underneath* [`http_ng::Client`]
+/// journey, so a tower stack can sit *underneath* `http_ng::Client`
 /// rather than replacing it.
 ///
 /// Without this, a `tower-http` layer could only be applied on top of the

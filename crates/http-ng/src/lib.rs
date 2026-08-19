@@ -319,7 +319,7 @@ pub type DefaultTransport = http_ng_fetch::Fetch;
 ///   `sleep` panics outside a tokio runtime, the same condition
 ///   [`Client::new`] already documents.
 /// - `wasm32-unknown-unknown`, with `default-transport`:
-///   [`http_ng_fetch::BrowserClock`], a `setTimeout` clock. `Fetch` has no
+///   `http_ng_fetch::BrowserClock`, a `setTimeout` clock. `Fetch` has no
 ///   clock inside it, so unlike the native branch this one is a genuinely
 ///   separate choice — the browser's transport and the browser's clock are
 ///   two independent facts.

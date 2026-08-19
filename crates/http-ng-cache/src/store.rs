@@ -310,7 +310,7 @@ impl MemoryStore {
     ///
     /// A number rather than "unbounded": a cache with no bound is a
     /// memory-exhaustion bug with a server on the other end of it, which
-    /// is the same sentence `http-ng-cookie`'s [`Limits`] carries and the
+    /// is the same sentence `http-ng-cookie`'s `Limits` carries and the
     /// same reason. 512 is not derived from anything — no RFC states a
     /// minimum for a cache the way RFC 6265 §6.1 does for a jar — so it is
     /// named as arbitrary here rather than dressed up, and

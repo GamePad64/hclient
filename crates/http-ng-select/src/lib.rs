@@ -951,7 +951,7 @@ where
     }
 }
 
-/// The two member bodies, named once each so that [`Selecting::over_quic`]
+/// The two member bodies, named once each so that `Selecting::over_quic`
 /// and the [`Transport`] impl cannot spell them differently.
 pub(crate) type NativeBodyOf<R, T, D> = <Native<R, T, D> as Transport>::Body;
 pub(crate) type QuicBodyOf<R, T, D> = <H3<R, T, D> as Transport>::Body;
@@ -1011,7 +1011,7 @@ where
     Native<R, T, D>: Prefetch + Transport<Error = Error> + TcpStagedConnect<Error = Error>,
     // `StagedConnect` rather than `Transport` alone — it is a supertrait of
     // it, so this is the same bound plus the staged pair the QUIC arm goes
-    // through. See [`Selecting::over_quic`].
+    // through. See `Selecting::over_quic`.
     H3<R, T, D>: StagedConnect<Error = Error>,
     <Native<R, T, D> as Transport>::Body:
         http_body::Body<Data = bytes::Bytes, Error = Error> + Unpin,
@@ -1043,11 +1043,11 @@ where
     /// caller inspecting its own response is entitled to see what the
     /// origin sent. That read is the whole of the slow tier's cost on a
     /// response that carries no such field: one `HeaderMap` lookup, no
-    /// clock and no lock (see [`Selecting::note_alt_svc`]).
+    /// clock and no lock (see `Selecting::note_alt_svc`).
     ///
     /// The QUIC arm is **staged** — `connect`, then `exchange` — and is
     /// the one place in this crate where the request is not simply handed
-    /// over. See [`Selecting::over_quic`] for the two things that buys and
+    /// over. See `Selecting::over_quic` for the two things that buys and
     /// the one thing it costs.
     ///
     /// **And where [`Selecting::hedging`] was called, it is raced**: a TCP

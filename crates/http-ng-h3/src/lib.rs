@@ -49,7 +49,7 @@
 //! shared connection but the in-flight request futures — so a caller that
 //! stopped polling one request would stall its neighbours. The argument is
 //! correct and it has no subject here: the driver has moved into
-//! [`Spawn`](http_ng_rt::Spawn), because it had to for the connection to
+//! [`Spawn`], because it had to for the connection to
 //! survive at all, and a driver that is nobody's request future cannot be
 //! stalled by any request's polling behaviour.
 //!
@@ -248,7 +248,7 @@ pub const DEFAULT_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_se
 /// caller asks; what comes back is a *different type*, which is the whole
 /// of the zero-cost claim rather than an inconvenience.
 ///
-/// What this transport can and cannot say is in [`crate::hooks`]: `tcp`
+/// What this transport can and cannot say is in `crate::hooks`: `tcp`
 /// holds the QUIC attempt and `tls` is always `None`, because QUIC's
 /// handshake is TLS and `into_0rtt` hands back a usable connection before
 /// it finishes; `CloseReason::Ended` has no emitter, because nothing in
@@ -286,7 +286,7 @@ where
     /// - `streaming_request_body: true` and `full_duplex: true`. HTTP/3
     ///   supports both — the request and response halves of a stream are
     ///   independent — and as of this change **so does this
-    ///   implementation**: [`one_attempt`](H3::one_attempt) splits the
+    ///   implementation**: `one_attempt` splits the
     ///   stream, writes the body from a future polled beside
     ///   `recv_response`, and hands the unfinished write to [`H3Body`].
     ///   Neither field is set from what the protocol can do; both were
@@ -319,7 +319,7 @@ where
     ///   bounds resolution, the QUIC handshake and h3's settings exchange
     ///   together, the same scope `http-ng-native` gives the same setting.
     ///   `first_byte` and `between_bytes` stay `false`, and the comment on
-    ///   [`capabilities`] says what each of them would cost.
+    ///   `capabilities` says what each of them would cost.
     pub fn new(rt: R, tls: T, dns: D) -> Result<Self, Error> {
         let early_data = if tls.offers_early_data() {
             EarlyDataSupport::Supported
@@ -354,7 +354,7 @@ where
 {
     /// Send this transport's events to `hooks` — see
     /// [`http_ng_core::unversioned::Hooks`] for what it hears and what it
-    /// costs, [`Event`] for the vocabulary, and [`crate::hooks`] for the
+    /// costs, [`Event`] for the vocabulary, and `crate::hooks` for the
     /// two things QUIC cannot say in it.
     ///
     /// **It returns a different type**, and that is the zero-cost
@@ -366,7 +366,7 @@ where
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
     /// working (P13; `crates/http-ng-core/tests/shape.rs`). What that
-    /// costs here is written down in [`crate::hooks`] — the spawned
+    /// costs here is written down in `crate::hooks` — the spawned
     /// connection driver is `Send` because quinn says so, so a hook cannot
     /// be called from it, and a close is discovered rather than observed.
     ///
@@ -1108,7 +1108,7 @@ where
     type Body = H3Body<H>;
     type Error = Error;
 
-    /// [`H3::stage`] then [`H3::finish`] — the same two halves
+    /// `H3::stage` then `H3::finish` — the same two halves
     /// [`crate::StagedConnect`] hands a caller separately, in one call.
     ///
     /// One sequencing with two entry points, for `Native::run`'s reason:
@@ -1162,7 +1162,7 @@ impl From<Error> for DialFailed {
     }
 }
 
-/// The failure [`within_connect`] ends in when the timer wins.
+/// The failure `within_connect` ends in when the timer wins.
 ///
 /// A named type rather than a string, for the reason
 /// `http_ng_native::FirstByteTimedOut` gives: a caller must be able to tell
