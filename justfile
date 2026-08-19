@@ -553,6 +553,38 @@ test-doc:
       exit 1
     fi
 
+# every publishable crate ships its licence texts and a README
+packaging:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `license = "MIT OR Apache-2.0"` is a claim; the texts are what make it
+    # a grant, and this workspace declared the one without carrying the
+    # other for its whole life. The detail that decides where they live is
+    # that **a file at the repository root never reaches the tarball** —
+    # `cargo package` takes only what is inside the crate's own directory —
+    # so each crate carries its own copy, and nothing but packaging one
+    # would have shown that. A README is the same shape one step down: with
+    # none, a crates.io page is a single line of `description`.
+    #
+    # Asserted against the packaged file list rather than against the
+    # working tree, because the tree can hold a file the tarball drops.
+    n=0
+    for d in crates/*/; do
+      grep -q '^publish = false' "$d/Cargo.toml" && continue
+      c="$(basename "$d")"
+      list="$(cargo package -p "$c" --no-verify --allow-dirty --list 2>/dev/null)"
+      for f in LICENSE-APACHE LICENSE-MIT README.md; do
+        printf '%s\n' "$list" | grep -qx "$f" || {
+          echo "::error::$c would publish without $f"; exit 1; }
+      done
+      n=$((n+1))
+    done
+    # Fail closed on the loop never running: an empty `crates/*/` glob, or a
+    # `publish = false` added everywhere, would otherwise report success
+    # over nothing checked at all.
+    [ "$n" -ge 25 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
+    echo "$n publishable crates carry both licence texts and a README"
+
 # rustdoc warnings, which nothing checked until publishing made them visible
 docs:
     #!/usr/bin/env bash

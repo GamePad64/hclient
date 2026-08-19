@@ -79,6 +79,11 @@ jobs:
       # matrix job because rustdoc's answer does not vary by platform.
       - name: the rendered documentation has no warnings
         run: just docs
+      # `license = "MIT OR Apache-2.0"` was declared for this workspace's
+      # whole life with no licence text anywhere in it, and a root file
+      # never reaches the tarball. Checked against the packaged file list.
+      - name: every publishable crate ships its licences and a README
+        run: just packaging
 
   sse-complexity-guard:
     runs-on: ubuntu-latest

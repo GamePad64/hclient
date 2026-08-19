@@ -2486,6 +2486,38 @@ leans on two, which is a hooks change wanting its own measurement.
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
 
+### The licence was a claim with no text behind it, and the root is the wrong place for one
+
+Every crate here has declared `license = "MIT OR Apache-2.0"` since the
+workspace existed, and **there was not one licence text in the
+repository** — no `LICENSE-MIT`, no `LICENSE-APACHE`, at the root or
+anywhere else. An SPDX expression is a claim; the text is what makes it a
+grant. `cargo package` does not check this, `cargo publish --dry-run` does
+not check this, and the crate would have gone out with the claim standing
+alone.
+
+**The detail that decides where the files live is that a file at the
+repository root never reaches the tarball.** `cargo package` takes only
+what is inside the crate's own directory, so one pair at the root would
+have looked right in every git view and shipped nothing. Each of the 29
+publishable crates carries its own copy, as a symlink — cargo follows one
+and packs the content, verified by extracting the `.crate` rather than by
+reading the file list: 18 files where there were 16, and the first line of
+`LICENSE-MIT` inside the tarball is the copyright.
+
+A README is the same shape one step down, and it was the same absence: no
+crate had one, `readme` was set nowhere, so 29 crates.io pages would have
+carried a single line of `description`. Each crate has one now, and each
+says the thing this workspace's own arguments turn on — **why it is its own
+crate** — because that is the question a reader landing on
+`http-ng-tls-quic` actually has.
+
+`just packaging` is the check, in the `lint` job, and it asserts against
+the **packaged file list** rather than the working tree, because the tree
+can hold a file the tarball drops — which is the whole defect. It fails
+closed on the loop not running, and it was checked in the failing direction
+by removing one README and watching it name the crate.
+
 ### `#[non_exhaustive]` has three answers, and only one of them is "yes"
 
 Publishing turns every public type into a promise, so the attribute was
