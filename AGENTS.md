@@ -2498,7 +2498,16 @@ likeliest suspect passes it most sharply — `http-ng-tls-quic` is **153
 lines**, the smallest here, and it carries `quinn-proto`, which is exactly
 the dependency the argument is about. `http-ng-quinn` has one in-tree
 consumer and an external reason (41 crates against `http-ng-h3`'s 56 for a
-caller who wants bare QUIC), enforced by a `just` recipe. Eleven crates have
+caller who wants bare QUIC), enforced by a `just` recipe — **and it was
+misnamed, which this pass checked it for redundancy and missed.** It was
+`http-ng-rt-quinn`, and the arrow points the other way from the rest of
+that family: `http-ng-rt-tokio` and its siblings implement *our* seam using
+someone else's runtime, where this implements *quinn's* — `quinn::Runtime`,
+`AsyncTimer`, `AsyncUdpSocket`, `UdpPoller` — using ours. Its own first line
+had always said so. It is not a fourth runtime; it is what lets quinn run on
+whichever runtime the caller already chose, and the family name made the
+wrong reading the default. `http-ng-tower`'s bare-foreign-name shape is the
+one it takes now, and `docs/quinn-adapter-extraction.md` went with it. Eleven crates have
 no in-workspace consumer at all and are terminal by design: a user picks the
 backend.
 
