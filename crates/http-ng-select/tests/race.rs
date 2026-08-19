@@ -170,14 +170,25 @@ async fn hop(t: &Selector, pair: &Pair, req: http::Request<RequestBody>) -> Hop 
     }
 }
 
-/// Wait up to a second for a server thread to have caught up with a socket
-/// the kernel already handed it.
+/// Wait for a server thread to have caught up with a socket the kernel
+/// already handed it.
 ///
 /// Only ever used for assertions of the *at least* kind: a counter that has
 /// not moved yet is a scheduling fact, where a counter that must **not**
 /// move is read immediately and needs no waiting.
+///
+/// **A guard rather than a claim**, and ten seconds rather than one — but
+/// not for the reason that was first written here. The bound was widened
+/// on the theory that an oversubscribed run (`-j96` on 28 cores) had
+/// starved the TCP fixture's thread; **it was measured and the theory was
+/// wrong**, the same three-in-forty failure rate before and after. What
+/// the widening did establish is that the connection never existed rather
+/// than arriving late, which is what sent the search to the caller and
+/// found a timing claim there. The generous bound is kept anyway: a guard
+/// costs a passing run nothing, since the loop exits on the first poll
+/// that sees the counter.
 async fn eventually(mut ready: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
+    for _ in 0..2_000 {
         if ready() {
             return true;
         }
@@ -186,16 +197,42 @@ async fn eventually(mut ready: impl FnMut() -> bool) -> bool {
     ready()
 }
 
+/// Waits until the black hole's datagram counter has stopped moving.
+///
+/// **Between two hops, and it is a fixture problem rather than a client
+/// one.** `hop` measures a delta across `execute`, and the end of that
+/// future is not the end of the abandoned QUIC arm's UDP: measured, a hop
+/// whose hedge wins puts **two** datagrams into the hole, and under an
+/// oversubscribed run the second of them arrives after `execute` has
+/// already returned — landing in the *next* hop's delta and reading as a
+/// QUIC attempt the memory failed to stop.
+///
+/// Captured six times in forty full-workspace runs at `-j96` before this
+/// existed, always the same shape: hop 1 with one datagram instead of its
+/// usual two, hop 2 with the missing one.
+///
+/// A guard, not an assertion: it exits on the first pair of equal reads,
+/// so a run where nothing is late pays two polls.
+async fn settled(pair: &Pair) {
+    let mut last = pair.quic_datagrams();
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let now = pair.quic_datagrams();
+        if now == last {
+            return;
+        }
+        last = now;
+    }
+}
+
 // --- the premise ---------------------------------------------------------
 
 /// **The claim the staged connect made true and this file exists for.**
 ///
-/// No head start at all, and two working servers: both stacks connect —
-/// the QUIC endpoint counted an attempt and the TCP listener counted an
-/// accept — and **exactly one request reaches the origin**. The measurement
-/// this replaces (`docs/v04-w1-acceptance.md` §7.3, M3) had a complete
-/// request delivered by the *losing* arm in five of six arms at this
-/// setting.
+/// No head start at all, and two working servers: **exactly one request
+/// reaches the origin**. The measurement this replaces
+/// (`docs/v04-w1-acceptance.md` §7.3, M3) had a complete request delivered
+/// by the *losing* arm in five of six arms at this setting.
 ///
 /// It does not assert which arm wins, and must not: on loopback there is no
 /// round trip, so the two stacks are being compared on CPU alone and TCP is
@@ -203,8 +240,27 @@ async fn eventually(mut ready: impl FnMut() -> bool) -> bool {
 /// work: TCP by name 1.4–2.6 ms against QUIC's 2.5–7.8 ms). What is
 /// asserted is the thing that holds whichever wins, because neither
 /// `connect` writes a request byte.
+///
+/// # It used to assert that both stacks connect, and that was a clock
+///
+/// The name said *both stacks connect*, and the body asserted
+/// `tcp_accepted >= 1`. That is a timing claim wearing a counter's
+/// clothes: at a head start of zero the hedge is only *started*, and a
+/// QUIC arm that finishes first cancels it — possibly before its `SYN`
+/// leaves. Captured twice under an oversubscribed run, with the counters
+/// in the failure: `body="h3" quic_answered=1 tcp_accepted=0
+/// elapsed=3.0ms`. Widening the wait to ten seconds changed nothing,
+/// which is what says the connection never existed rather than arriving
+/// late.
+///
+/// Nothing is lost by dropping it. That the hedge runs and answers when
+/// QUIC cannot is asserted **causally** by
+/// [`a_blocked_origin_is_answered_without_waiting_for_quinn_to_give_up`],
+/// and that its connection is the one used by
+/// [`the_connection_the_hedge_made_is_the_one_the_request_is_sent_on`] —
+/// neither of which depends on who is faster.
 #[tokio::test(flavor = "multi_thread")]
-async fn with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent() {
+async fn with_no_head_start_exactly_one_request_reaches_the_origin() {
     let pair = servers::start();
     let t = hedged(&pair, offers_h3(), Duration::ZERO);
 
@@ -220,13 +276,11 @@ async fn with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent(
         matches!(one.body(), "h1" | "h3"),
         "and the caller got a real answer from whichever server won"
     );
+    // The QUIC arm is safe to assert on where the hedge is not: `select`
+    // polls it first and nothing cancels it before it has begun.
     assert!(
         eventually(|| pair.quic_attempted() >= 1).await,
         "with no head start the QUIC arm certainly ran"
-    );
-    assert!(
-        eventually(|| pair.tcp_accepted() >= 1).await,
-        "and so did the hedge — this is what a head start of zero means"
     );
 }
 
@@ -522,6 +576,7 @@ async fn a_quic_arm_that_lost_the_race_teaches_the_memory() {
         "this hop must actually have tried QUIC, or hop 2 proves nothing"
     );
 
+    settled(&pair).await;
     let two = hop(&t, &pair, request(&pair, None)).await;
     assert_eq!(
         (two.body(), two.quic_datagrams),

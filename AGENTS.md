@@ -1284,6 +1284,40 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Two more flakes in the same hunt, and neither was the client
+
+The `-j96` hunt that found the h2 defect below turned up two more, and both
+were the **test** measuring something the client does not promise. Worth
+recording because the difference is only visible after capturing the
+failure, and both first theories were wrong.
+
+**`with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
+asserted a clock wearing a counter's clothes.** Its `tcp_accepted >= 1`
+says *the hedge ran*, and at a head start of zero the hedge is only
+**started** — a QUIC arm that finishes first cancels it, possibly before
+its `SYN` leaves. The captured failure carries the numbers: `body="h3"
+quic_answered=1 tcp_accepted=0 elapsed=3.0ms`. The first fix was to widen
+the wait from one second to ten on the theory that the fixture's thread was
+starved; **measured, the rate was unchanged** — which is what proved the
+connection never existed rather than arriving late. The assertion is gone
+and the test is renamed for what it does claim; nothing is lost, because
+the hedge running is asserted *causally* two tests down, against a QUIC
+origin that cannot answer.
+
+**`a_quic_arm_that_lost_the_race_teaches_the_memory` measured across a
+boundary the client does not own.** `hop` takes a delta of the black hole's
+datagram counter across `execute`, and the end of that future is not the
+end of the abandoned QUIC arm's UDP. Measured: a hop whose hedge wins puts
+**two** datagrams into the hole, and every captured failure showed hop 1
+with one and hop 2 with the other. A `settled` guard between the hops fixes
+it — 6 failures in 40 before, 0 in 40 after.
+
+The second one also cost a wrong "decisive" reading first: the diagnostic
+printed `two.quic_tried == 0` and that looked conclusive until the fixture
+was read, where `quic_attempted` turns out never to move for a black hole.
+**A counter that cannot move is not evidence**, and checking which counters
+the fixture actually feeds is part of reading a capture.
+
 ### A stream opened on a guess, found by hunting a flake
 
 `h2`'s `initial_max_send_streams` defaults to `usize::MAX`: until the
