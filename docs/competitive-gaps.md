@@ -883,21 +883,47 @@ cookies, proxies — and what was missing was the ordinary furniture: a
 `User-Agent`, a default header set, a size limit, a charset, a pluggable
 store.
 
-**G2, G5, G6 and G10 are closed** (and `deflate`/`zstd` with them), which
-does not retire the argument this paragraph was making — it sharpens it.
-Every one of the five was found by *writing this document*, not by the
-test suite, which was green throughout and is green now; and each took
-under a day once named. That is the signature of the class: cheap to fix,
-invisible from inside, and found only by someone trying to use the thing.
-A second real consumer — `http-ng-rmcp` — is still the argument, because
-the next five are equally invisible from here and this document cannot be
-written twice by the same reader.
+**Seven are closed** — G2, G5, G6, G8, G9, G10 and G12's digest half, plus
+`deflate`/`zstd` from §4 — which does not retire the argument this
+paragraph was making. It sharpens it. Every one was found by *writing this
+document*, not by the test suite, which was green throughout and is green
+now; each took under a day once named. That is the signature of the class:
+cheap to fix, invisible from inside, and found only by someone trying to
+use the thing. A second real consumer — `http-ng-rmcp` — is still the
+argument, because whatever is next is equally invisible from here and this
+document cannot be written twice by the same reader.
 
-Two of the five also changed a rule rather than adding a feature, which is
-the return a fresh reader buys that a test suite cannot: G5 established
-that a feature must never change what an existing method **means**, and
-the `deflate`/`zstd` work reversed two refusals whose premises turned out
-to be wrong when checked instead of argued.
+**What is left is a different shape, which is itself a finding.** G1 is
+the owner's call, G3 is refused by the problem statement, and G13's cause
+is identified upstream (rust-lang/rust#109417). Of the rest, G4 needs
+browser judgement about the browser's own model, G7 and G11 are more
+fields on seams that already exist, and G11a is the one that needs care —
+Happy Eyeballs interleaves resolution with connecting on purpose, so
+*"resolve took N ms"* is not a phase this connector has, and the honest
+bound is time-to-first-address rather than a phase boundary. The furniture
+is on; what remains is either somebody else's decision or a design
+question.
+
+**Four of the seven changed a rule rather than adding a feature**, which
+is the return a fresh reader buys that a test suite cannot. G5 established
+that a feature must never change what an existing method *means*. The
+`deflate`/`zstd` work reversed two refusals whose premises turned out to
+be wrong when checked instead of argued. G6 found that a defaulted type
+parameter needs a default *type*, which an optional dependency does not
+supply — an argument nobody had made. And G12 drew the line this project
+had never had to draw about dependencies: hand-write what fails loudly,
+take what fails silently.
+
+**Two predictions in this document were wrong, and both in the same
+direction — too optimistic about `Send`.** G9 said a redirect predicate
+needed no bound since nothing is spawned around the decision; true of the
+*call*, but the closure is stored in a `Client` meant to cross a
+`tokio::spawn`, so an unbounded one would make every client `!Send`. G6
+said the existing `Arc<Mutex<..>>` "already imposes `Send` in practice, so
+this needs looking at rather than assuming" — the looking found the same
+answer. Both landed on amendment C12, which is now the shape for *a value
+the caller owns, reaching `Client` by erasure rather than by a type
+parameter*.
 
 **Two real consumers say the same thing about reqwest, and they say it in
 opposite directions.** `xh` — the curl-replacement CLI built on reqwest —
