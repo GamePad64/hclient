@@ -471,7 +471,7 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
-            self.proxy.as_ref(),
+            &self.proxies,
             &uri,
             &self.opts,
             alpn,

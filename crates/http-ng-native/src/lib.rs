@@ -61,7 +61,7 @@ pub use http2::{H2Driver, H2Opts};
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
-pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxySpokeFirst};
+pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxyScheme, ProxySpokeFirst};
 #[cfg(feature = "proxy")]
 pub use proxy::{HttpConnect, ProxyRefused, Socks5, Socks5HandshakeError, Socks5Refused};
 pub use staged::{Refused, Staged, StagedConnect};
@@ -290,7 +290,12 @@ where
     /// §2 has why this is a parameter rather than a `Box<dyn ..>`: erasing
     /// the protocol erases the IO with it, and that needs a `Send` this
     /// crate does not declare.
-    proxy: Option<crate::proxy::Proxy<P>>,
+    /// The proxies this transport may use, in the order the caller wrote
+    /// them; the first that serves a request wins, and an empty list is
+    /// direct. A `Vec` rather than an `Option` since v0.4: a caller with
+    /// separate `http` and `https` proxies is the ordinary corporate
+    /// setup, and one `Option` cannot hold two.
+    proxies: Vec<crate::proxy::Proxy<P>>,
     rt: R,
     tls: T,
     dns: D,
@@ -617,7 +622,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // `P` is `NoProxy` here, an empty enum, so this is the only
             // value this field can hold on a transport built by `new` —
             // `.proxy(..)` is what changes the type.
-            proxy: None,
+            proxies: Vec::new(),
             epoch: rt.now(),
             rt,
             tls,
@@ -765,7 +770,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             expect_continue: self.expect_continue,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
-            proxy: Some(proxy),
+            proxies: vec![proxy],
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -778,6 +783,42 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             #[cfg(feature = "http2")]
             share_h2: self.share_h2,
         }
+    }
+
+    /// A second proxy, and a third — **the first that serves a request
+    /// wins**.
+    ///
+    /// The case this exists for is the ordinary corporate one, an
+    /// `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts:
+    ///
+    /// ```no_run
+    /// # use http_ng_native::{Native, Proxy, ProxyScheme, HttpConnect};
+    /// # use http_ng_rt::{TcpConnect, Timer};
+    /// # use http_ng_tls::TlsConnect;
+    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
+    /// # -> Native<R, T, D, http_ng_core::unversioned::NoHooks, HttpConnect> {
+    /// t.proxy(Proxy::new(HttpConnect::new(), "secure-proxy.corp", 8443)
+    ///         .only_for(ProxyScheme::Https))
+    ///  .and_proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080))
+    /// # }
+    /// ```
+    ///
+    /// **It does not change `P`**, unlike [`proxy`](Self::proxy), and that
+    /// is the limit rather than an oversight: `Native` has one proxy
+    /// protocol, so every proxy on one transport speaks the same one. A
+    /// caller wanting SOCKS5 for `https` and an HTTP proxy for `http`
+    /// cannot say so here — lifting that would mean erasing `P`, and
+    /// erasing `P` erases the IO with it, which is the objection
+    /// `crate::proxy`'s module doc records against `Box<dyn
+    /// ProxyProtocol>`.
+    ///
+    /// Uncallable before `proxy` for free rather than by a check: without
+    /// it `P` is [`NoProxy`](crate::NoProxy), an empty enum, so there is
+    /// no `Proxy<NoProxy>` to pass.
+    #[must_use]
+    pub fn and_proxy(mut self, proxy: crate::proxy::Proxy<P>) -> Self {
+        self.proxies.push(proxy);
+        self
     }
 
     /// Report `1xx` responses (`100 Continue`, `103 Early Hints`) to this
@@ -879,7 +920,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             h2_opts: self.h2_opts,
             // Carried, unlike the two above: the proxy is named by
             // neither `H` nor the driver.
-            proxy: self.proxy,
+            proxies: self.proxies,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -1422,7 +1463,28 @@ where
             security,
             host: host.into(),
             port,
-            proxy: self.proxy.as_ref().map(|p| p.key().into_boxed_str()),
+            // **The proxy that will actually serve this request**, not
+            // "the proxy": with a list, two schemes can route to two
+            // different proxies, and a key naming the wrong one would let
+            // a tunnel through proxy A be reused for a request routed to
+            // proxy B — the security defect `Proxy::key`'s own doc names.
+            //
+            // **Unreachable today, and structurally so**, which is this
+            // change's mutation control: replacing this with
+            // `self.proxies.first()` passes the whole suite. `choose` is a
+            // pure function of `(use_tls, host, port)` and the key already
+            // carries all three — `security` encodes the first — so two
+            // requests that agree on the key cannot disagree on the proxy.
+            // It is written correctly anyway for the reason the `proxy`
+            // field is in `PoolKey` at all: the moment a pool is shared
+            // between transports, the two stop being the same question.
+            proxy: crate::proxy::Proxy::choose(
+                &self.proxies,
+                matches!(security, Security::Tls(_)),
+                host,
+                port,
+            )
+            .map(|p| p.key().into_boxed_str()),
         })
     }
 
@@ -1792,15 +1854,13 @@ where
         let use_tls = uri.scheme_str() == Some("https");
         let port = uri.port_u16().unwrap_or(if use_tls { 443 } else { 80 });
         let host = uri.host().unwrap_or_default();
-        match &self.proxy {
-            // The bypass list is asked here too, and it must be: a request
-            // that went direct because it was bypassed would otherwise
-            // still be written in absolute-form, to an origin that never
-            // agreed to be a proxy.
-            Some(p)
-                if p.serves(host, port)
-                    && p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute =>
-            {
+        // The list and its bypasses are asked here too, and they must be:
+        // a request that went direct — because it was bypassed, or because
+        // no proxy in the list serves its scheme — would otherwise still
+        // be written in absolute-form, to an origin that never agreed to
+        // be a proxy.
+        match crate::proxy::Proxy::choose(&self.proxies, use_tls, host, port) {
+            Some(p) if p.protocol().approach(use_tls) == crate::proxy::Approach::Absolute => {
                 crate::proxy::Via::AbsoluteForm(p.protocol().proxy_authorization())
             }
             _ => crate::proxy::Via::Direct,
@@ -2325,7 +2385,7 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
-            self.proxy.as_ref(),
+            &self.proxies,
             &uri,
             &self.opts,
             alpn,

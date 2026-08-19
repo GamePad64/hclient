@@ -241,7 +241,7 @@ where
             &self.rt,
             &self.dns,
             &self.tls,
-            self.proxy.as_ref(),
+            &self.proxies,
             &uri,
             &self.opts,
             &[b"http/1.1"],

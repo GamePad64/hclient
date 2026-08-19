@@ -1284,6 +1284,45 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### More than one proxy, chosen by scheme, first match wins
+
+`Native::and_proxy` appends to a list and `Proxy::only_for(ProxyScheme)`
+restricts an entry to `http://` or `https://`. The case is the ordinary
+corporate one — an `HTTP_PROXY` and an `HTTPS_PROXY` at different hosts —
+which one `Option` could not hold.
+
+**First-match-wins, not most-specific-wins.** A precedence rule has to be
+learned; an ordered list is read off the builder chain that wrote it. So
+an unrestricted proxy placed first shadows a narrower one after it, and
+that is asserted rather than warned about — the same reason `bypass`
+refuses to invent the precedence that every `NO_PROXY` implementation
+disagrees about.
+
+**One `P` per transport, stated rather than worked around.** A caller
+wanting SOCKS5 for `https` and an HTTP proxy for `http` cannot say so;
+lifting it means erasing `P`, and erasing `P` erases the IO with it, which
+is the objection that disqualified `Box<dyn ProxyProtocol>` in the first
+place. `and_proxy` therefore does not change `P`, unlike `proxy` — and it
+is uncallable before `proxy` for free rather than by a check, since
+`NoProxy` is an empty enum and there is no `Proxy<NoProxy>` to pass.
+
+**A bypass belongs to the proxy that carries it**, so a bypassed host
+falls through to the next proxy and goes direct only when the list runs
+out. The global `NO_PROXY` reading is worse *because* the list exists: a
+host bypassed on an `https`-only proxy would take an `http://` request
+direct, past an `http` proxy that was never in the running and never
+mentioned it. With one proxy the two rules coincide exactly, which is why
+this was invisible until there could be two. The first test written for it
+asserted the global rule and failed — correctly.
+
+**The pool key asks the list rather than taking the first entry, and that
+correctness is unobservable** — this change's mutation control. `choose`
+is a pure function of `(use_tls, host, port)` and `PoolKey` already
+carries all three, so two requests that agree on the key cannot disagree
+on the proxy. It is written correctly anyway for the reason the `proxy`
+field is in `PoolKey` at all: a pool shared between transports ends the
+coincidence.
+
 ### Four more socket options, and `APPLIES` stopped being a constant
 
 `TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`

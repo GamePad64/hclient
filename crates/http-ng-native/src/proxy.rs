@@ -114,6 +114,22 @@ impl ProxyProtocol for NoProxy {
     }
 }
 
+/// Which request scheme a proxy serves, for a caller who has more than
+/// one.
+///
+/// The distinction that motivates it is the ordinary corporate one — an
+/// `HTTP_PROXY` and an `HTTPS_PROXY` pointing at different hosts — not two
+/// different proxy *protocols*: `Native` has one `P`, so every proxy on
+/// one transport speaks the same one. That is a real limit and it is
+/// stated rather than worked around, because erasing `P` to lift it would
+/// erase the IO with it, which is the objection `proxy`'s own module doc
+/// records against `Box<dyn ProxyProtocol>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyScheme {
+    Http,
+    Https,
+}
+
 /// Where a proxy lives, and which protocol it speaks.
 #[derive(Debug, Clone)]
 pub struct Proxy<P> {
@@ -121,6 +137,9 @@ pub struct Proxy<P> {
     host: Box<str>,
     port: u16,
     bypass: Vec<Box<str>>,
+    /// `None` — the default — means both schemes, which is what a caller
+    /// with one proxy wants and what `Proxy::new` gives them.
+    only: Option<ProxyScheme>,
 }
 
 impl<P> Proxy<P> {
@@ -130,6 +149,7 @@ impl<P> Proxy<P> {
             host: host.into(),
             port,
             bypass: Vec::new(),
+            only: None,
         }
     }
 
@@ -166,6 +186,20 @@ impl<P> Proxy<P> {
     ///
     /// No CIDR and no wildcard. A pattern in no accepted shape matches
     /// nothing rather than approximately something.
+    ///
+    /// # A bypass belongs to the proxy that carries it
+    ///
+    /// With one proxy — the overwhelming majority — a bypassed host goes
+    /// direct, and that is `NO_PROXY`'s meaning. With several
+    /// ([`Native::and_proxy`](crate::Native::and_proxy)) a bypassed host
+    /// **falls through to the next proxy**, and only goes direct when the
+    /// list runs out.
+    ///
+    /// The global reading is the worse one *because* the list exists: a
+    /// host bypassed on an `https`-only proxy would take an `http://`
+    /// request direct, past an `http` proxy that was never in the running
+    /// and never mentioned it. A caller who wants the global rule writes
+    /// the list on each proxy, which is honest because they wrote it.
     pub fn bypass<S: Into<Box<str>>>(mut self, patterns: impl IntoIterator<Item = S>) -> Self {
         self.bypass.extend(
             patterns
@@ -175,10 +209,65 @@ impl<P> Proxy<P> {
         self
     }
 
-    /// Whether this proxy is used for `host:port`.
-    pub(crate) fn serves(&self, host: &str, port: u16) -> bool {
+    /// Use this proxy for one scheme only.
+    ///
+    /// The default is both, and stays the honest default: a caller who
+    /// names one proxy means it for everything, and narrowing it silently
+    /// would send half their traffic direct.
+    ///
+    /// Ordering is the caller's, not a precedence rule of ours:
+    /// [`Native::proxy`](crate::Native::proxy) and
+    /// [`and_proxy`](crate::Native::and_proxy) build a list and **the
+    /// first entry that serves a request wins**. So an unrestricted proxy
+    /// placed first shadows everything after it, which is visible at the
+    /// call site rather than hidden in a rule.
+    #[must_use]
+    pub fn only_for(mut self, scheme: ProxyScheme) -> Self {
+        self.only = Some(scheme);
+        self
+    }
+
+    /// Whether this proxy is used for a request to `host:port` under
+    /// `use_tls`.
+    ///
+    /// Two questions in one, and they are asked in this order because they
+    /// fail differently: a scheme this proxy does not serve means *try the
+    /// next proxy*, where a bypassed host means *go direct* — and the
+    /// caller of this function collapses them only because a list that
+    /// runs out is itself "go direct".
+    pub(crate) fn serves(&self, use_tls: bool, host: &str, port: u16) -> bool {
+        let wanted = if use_tls {
+            ProxyScheme::Https
+        } else {
+            ProxyScheme::Http
+        };
+        if self.only.is_some_and(|only| only != wanted) {
+            return false;
+        }
         let host = host.trim_start_matches('[').trim_end_matches(']');
         !self.bypass.iter().any(|p| matches_bypass(p, host, port))
+    }
+
+    /// The scheme this proxy is restricted to, if any — read by
+    /// `Native`'s own tests and by nothing on the request path.
+    pub fn scheme(&self) -> Option<ProxyScheme> {
+        self.only
+    }
+
+    /// The first proxy in `list` that serves this request, or `None` for
+    /// direct.
+    ///
+    /// First-match-wins rather than most-specific-wins: a precedence rule
+    /// would have to be learned, where an ordered list is read off the
+    /// builder chain that wrote it. `NO_PROXY` implementations that invent
+    /// a precedence are exactly what `bypass`'s doc refuses to imitate.
+    pub(crate) fn choose<'a>(
+        list: &'a [Proxy<P>],
+        use_tls: bool,
+        host: &str,
+        port: u16,
+    ) -> Option<&'a Proxy<P>> {
+        list.iter().find(|p| p.serves(use_tls, host, port))
     }
 
     pub fn protocol(&self) -> &P {
@@ -783,34 +872,34 @@ mod tests {
         let p = |pat: &str| Proxy::new(Socks5::new(), "px", 1080).bypass([pat]);
 
         // Exact host, at any port, case-insensitively.
-        assert!(!p("example.com").serves("example.com", 443));
-        assert!(!p("example.com").serves("EXAMPLE.COM", 8080));
-        assert!(p("example.com").serves("api.example.com", 443));
-        assert!(p("example.com").serves("notexample.com", 443));
+        assert!(!p("example.com").serves(true, "example.com", 443));
+        assert!(!p("example.com").serves(true, "EXAMPLE.COM", 8080));
+        assert!(p("example.com").serves(true, "api.example.com", 443));
+        assert!(p("example.com").serves(true, "notexample.com", 443));
 
         // Domain and everything under it.
-        assert!(!p(".example.com").serves("example.com", 443));
-        assert!(!p(".example.com").serves("api.example.com", 443));
-        assert!(!p(".example.com").serves("a.b.example.com", 443));
-        assert!(p(".example.com").serves("notexample.com", 443));
+        assert!(!p(".example.com").serves(true, "example.com", 443));
+        assert!(!p(".example.com").serves(true, "api.example.com", 443));
+        assert!(!p(".example.com").serves(true, "a.b.example.com", 443));
+        assert!(p(".example.com").serves(true, "notexample.com", 443));
 
         // Host at one port alone.
-        assert!(!p("example.com:8080").serves("example.com", 8080));
-        assert!(p("example.com:8080").serves("example.com", 443));
+        assert!(!p("example.com:8080").serves(true, "example.com", 8080));
+        assert!(p("example.com:8080").serves(true, "example.com", 443));
 
         // An address literal is just a host, and a v6 one arrives here
         // wearing the brackets RFC 3986 gives the authority.
-        assert!(!p("127.0.0.1").serves("127.0.0.1", 80));
-        assert!(p("127.0.0.1").serves("127.0.0.2", 80));
-        assert!(!p("::1").serves("[::1]", 80));
-        assert!(!p("::1").serves("::1", 1), "`::1` binds no port");
-        assert!(!p("[::1]:8080").serves("[::1]", 8080));
-        assert!(p("[::1]:8080").serves("[::1]", 80));
+        assert!(!p("127.0.0.1").serves(true, "127.0.0.1", 80));
+        assert!(p("127.0.0.1").serves(true, "127.0.0.2", 80));
+        assert!(!p("::1").serves(true, "[::1]", 80));
+        assert!(!p("::1").serves(true, "::1", 1), "`::1` binds no port");
+        assert!(!p("[::1]:8080").serves(true, "[::1]", 8080));
+        assert!(p("[::1]:8080").serves(true, "[::1]", 80));
 
         // No CIDR, no wildcard: a pattern in no accepted shape matches
         // nothing rather than approximately something.
-        assert!(p("10.0.0.0/8").serves("10.1.2.3", 80));
-        assert!(p("*.example.com").serves("api.example.com", 80));
+        assert!(p("10.0.0.0/8").serves(true, "10.1.2.3", 80));
+        assert!(p("*.example.com").serves(true, "api.example.com", 80));
     }
 
     /// Empty by default, which is the decision rather than an oversight:
@@ -819,8 +908,8 @@ mod tests {
     #[test]
     fn nothing_is_bypassed_until_a_caller_says_so() {
         let p = Proxy::new(Socks5::new(), "px", 1080);
-        assert!(p.serves("127.0.0.1", 80));
-        assert!(p.serves("localhost", 80));
+        assert!(p.serves(true, "127.0.0.1", 80));
+        assert!(p.serves(true, "localhost", 80));
     }
 
     /// Both length prefixes are one byte, so both limits are the RFC's

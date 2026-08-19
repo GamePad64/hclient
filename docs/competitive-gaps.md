@@ -207,7 +207,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`http-ng-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
 | read the proxy from the environment | **N** | Y | Y\* | Y | n/a | **refused as policy** — see §4 |
 | `NO_PROXY` matching | Y\* | Y | — | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
-| a per-request/per-URL proxy rule | **N** | Y | — | Y | n/a | rq: `Proxy::custom(closure)`; ng has one proxy per transport |
+| a per-request/per-URL proxy rule | Y\* | Y | — | Y | n/a | closed for the per-scheme rule — an ordered list, `Proxy::only_for` and first-match-wins. No closure, and one proxy *protocol* per transport: erasing `P` would erase the IO with it. See G7 |
 | PAC | **N** | N | N | N | (browser's) | nobody in Rust has this |
 | system proxy (Windows registry, macOS SCF) | **N** | Y\* | Y\* | Y | (browser's) | rq behind `system-proxy`; uq behind `win-system-proxy` (Windows only) |
 | proxy for QUIC (MASQUE / `CONNECT-UDP`) | N | N | N | — | n/a | refused: a different protocol against a different server |
@@ -427,25 +427,38 @@ nowhere else, and it states a property `BuiltinList` and `MemoryStore`
 already had — erasing without it would make every `Client` in a build with
 either feature compiled in `!Send`, configured or not.
 
-### G7. Proxy configuration from the environment, and a per-URL proxy rule
+### G7. Proxy configuration from the environment, and a per-URL proxy rule — **the per-scheme half is closed**
 
-`Proxy::bypass([..])` takes a list the caller wrote down, and reading
-`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` is **refused as policy** — AGENTS.md
-says which half is policy and why. That refusal is well-argued and it is
-the right one for a library.
+`Native::and_proxy` builds a list, `Proxy::only_for(ProxyScheme)`
+restricts an entry to one scheme, and **the first entry that serves a
+request wins**. So the ordinary corporate setup — an `HTTP_PROXY` and an
+`HTTPS_PROXY` at different hosts — is expressible, which one `Option`
+could not hold.
 
-The gap that is *not* refused is next to it: there is one proxy per
-transport (`Native::proxy` replaces `P`), so a caller cannot route
-`http://` and `https://` through different proxies, which
-`Proxy::http`/`Proxy::https` do in reqwest, nor supply a closure
-(`Proxy::custom`). And SOCKS4/4a is absent where reqwest accepts both
-schemes (`proxy.rs:130`).
+**First-match-wins rather than most-specific-wins**, because a precedence
+rule has to be learned where an ordered list is read off the builder chain
+that wrote it. An unrestricted proxy placed first therefore shadows a
+narrower one after it, which is visible at the call site and is asserted.
 
-*What it takes*: for the per-scheme rule, a second `Option<Proxy<P>>` and a
-choice at `via`/`connect` — genuinely small. For a closure, a `Send`-free
-`Fn(&Uri) -> Option<&Proxy<P>>`, which the type-parameter-not-`Box<dyn>`
-rule already anticipates. *Forbidden?* Environment reading is. The rest is
-not.
+**One `P` per transport, and that is the limit rather than an oversight.**
+A caller wanting SOCKS5 for `https` and an HTTP proxy for `http` cannot
+say so: lifting it means erasing `P`, and erasing `P` erases the IO with
+it — the objection `docs/proxy-design.md` already records against
+`Box<dyn ProxyProtocol>`. Which makes the closure form this section
+suggested a bigger change than it looks: `Fn(&Uri) -> Option<&Proxy<P>>`
+would still be one `P`, so it buys arbitrary *routing* and not arbitrary
+*protocols* — an ordered list already buys the routing that a caller can
+name.
+
+**A bypass belongs to the proxy that carries it**, so a bypassed host
+falls through to the next proxy and only goes direct when the list runs
+out. The global `NO_PROXY` reading is the worse one *because* the list
+exists: a host bypassed on an `https`-only proxy would take an `http://`
+request direct, past an `http` proxy that was never in the running. With
+one proxy — the overwhelming majority — the two rules coincide exactly.
+
+Still absent: **SOCKS4/4a**, and **reading the environment**, which stays
+refused as policy.
 
 ### G8. HTTP/2 has no tuning surface — **closed for the settings frame**
 

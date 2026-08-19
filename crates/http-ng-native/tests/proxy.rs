@@ -813,3 +813,206 @@ async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code()
         "and it must not be reported as a reply code the proxy never sent"
     );
 }
+
+// ── the per-scheme rule ─────────────────────────────────────────────────
+
+/// **Two proxies, one transport, and the scheme decides which sees the
+/// request.** The ordinary corporate setup — an `HTTP_PROXY` and an
+/// `HTTPS_PROXY` at different hosts — which one `Option` could not hold.
+///
+/// Asserted from **both proxies' side of the wire**, and both halves are
+/// needed: a transport that always used the first would pass the `http`
+/// half alone, and one that always used the last would pass the `https`
+/// half alone.
+///
+/// The `https` arm is expected to fail, and that is not a weakness: the
+/// fixture answers `CONNECT` with `200` and then speaks no TLS, so the
+/// handshake fails **after** the tunnel. What is being asserted is which
+/// proxy received the `CONNECT`, which is the routing question.
+#[tokio::test]
+async fn two_proxies_route_by_scheme_and_each_one_sees_only_its_own() {
+    use http_ng_native::ProxyScheme;
+
+    let (secure, secure_seen) = http_proxy("200");
+    let (plain, plain_seen) = http_proxy("200");
+
+    let transport = Native::new(Tokio, NoTls, IpLiteralOnly)
+        .proxy(
+            Proxy::new(HttpConnect::new(), secure.ip().to_string(), secure.port())
+                .only_for(ProxyScheme::Https),
+        )
+        .and_proxy(Proxy::new(
+            HttpConnect::new(),
+            plain.ip().to_string(),
+            plain.port(),
+        ));
+    let client = Client::builder(transport).build().expect("build");
+
+    // `http://` — absolute-form to the second proxy, which answers it.
+    let text = tokio::time::timeout(BOUND, async {
+        client
+            .get("http://198.51.100.7/one")
+            .send()
+            .await?
+            .collect()
+            .await
+    })
+    .await
+    .expect("must not hang")
+    .expect("the plain proxy answers")
+    .text()
+    .expect("utf-8");
+    assert_eq!(text, "hi");
+
+    let head = plain_seen
+        .recv_timeout(BOUND)
+        .expect("the plain proxy saw it");
+    assert!(
+        head.starts_with("GET http://198.51.100.7/one HTTP/1.1\r\n"),
+        "absolute-form to the proxy that serves http: {head}"
+    );
+    assert!(
+        secure_seen
+            .recv_timeout(Duration::from_millis(300))
+            .is_err(),
+        "and the https-only proxy saw nothing at all"
+    );
+
+    // `https://` — a CONNECT to the first proxy. `NoTls` refuses the
+    // scheme before any of this, so the transport is rebuilt with a real
+    // one for this half.
+    // Any real TLS backend: the handshake is expected to fail, since the
+    // fixture answers `CONNECT` and then speaks HTTP. What matters is that
+    // the `CONNECT` went to the right proxy, which happens first.
+    let transport = Native::new(
+        Tokio,
+        http_ng_tls_rustls::Rustls::with_webpki_roots(),
+        IpLiteralOnly,
+    )
+    .proxy(
+        Proxy::new(HttpConnect::new(), secure.ip().to_string(), secure.port())
+            .only_for(ProxyScheme::Https),
+    )
+    .and_proxy(Proxy::new(
+        HttpConnect::new(),
+        plain.ip().to_string(),
+        plain.port(),
+    ));
+    let client = Client::builder(transport).build().expect("build");
+    let _ = tokio::time::timeout(BOUND, client.get("https://198.51.100.7/two").send())
+        .await
+        .expect("must not hang");
+
+    let head = secure_seen
+        .recv_timeout(BOUND)
+        .expect("the https-only proxy saw it");
+    assert!(
+        head.starts_with("CONNECT 198.51.100.7:443 HTTP/1.1\r\n"),
+        "a tunnel through the proxy that serves https: {head}"
+    );
+    assert!(
+        plain_seen.recv_timeout(Duration::from_millis(300)).is_err(),
+        "and the plain proxy saw nothing this time"
+    );
+}
+
+/// **The first entry that serves a request wins**, which is a rule about
+/// order rather than about specificity — so an unrestricted proxy placed
+/// first shadows a narrower one after it, and the shadowing is visible at
+/// the call site.
+#[tokio::test]
+async fn an_unrestricted_proxy_placed_first_shadows_the_one_after_it() {
+    use http_ng_native::ProxyScheme;
+
+    let (first, first_seen) = http_proxy("200");
+    let (second, second_seen) = http_proxy("200");
+
+    let transport = Native::new(Tokio, NoTls, IpLiteralOnly)
+        .proxy(Proxy::new(
+            HttpConnect::new(),
+            first.ip().to_string(),
+            first.port(),
+        ))
+        .and_proxy(
+            Proxy::new(HttpConnect::new(), second.ip().to_string(), second.port())
+                .only_for(ProxyScheme::Http),
+        );
+    let client = Client::builder(transport).build().expect("build");
+    let _ = tokio::time::timeout(BOUND, client.get("http://198.51.100.7/x").send())
+        .await
+        .expect("must not hang");
+
+    assert!(first_seen.recv_timeout(BOUND).is_ok());
+    assert!(
+        second_seen
+            .recv_timeout(Duration::from_millis(300))
+            .is_err(),
+        "the narrower proxy is after the broad one and never gets a turn"
+    );
+}
+
+/// **A bypass is a property of the proxy that carries it**, so a
+/// bypassed host falls through to the next proxy in the list and only
+/// goes direct when the list runs out.
+///
+/// That is a decision, and the alternative — a bypass anywhere meaning
+/// direct everywhere, which is `NO_PROXY`'s semantics — is worse *because*
+/// the list exists: a host bypassed on an `https`-only proxy would take an
+/// `http://` request direct, past an `http` proxy that was never in the
+/// running and never mentioned it. With one proxy, which is the
+/// overwhelming majority, the two rules coincide exactly. A caller who
+/// wants the global rule writes the list on each proxy, which is honest
+/// because they wrote it.
+///
+/// Both halves, because either alone is satisfied by the wrong rule: with
+/// a second proxy the request reaches it, and with only the bypassing
+/// proxy it reaches nobody.
+#[tokio::test]
+async fn a_bypass_belongs_to_its_own_proxy_and_falls_through_to_the_next() {
+    let (first, first_seen) = http_proxy("200");
+    let (second, second_seen) = http_proxy("200");
+
+    let bypassing = |addr: SocketAddr| {
+        Proxy::new(HttpConnect::new(), addr.ip().to_string(), addr.port()).bypass(["198.51.100.7"])
+    };
+
+    let client = Client::builder(
+        Native::new(Tokio, NoTls, IpLiteralOnly)
+            .proxy(bypassing(first))
+            .and_proxy(Proxy::new(
+                HttpConnect::new(),
+                second.ip().to_string(),
+                second.port(),
+            )),
+    )
+    .build()
+    .expect("build");
+    let _ = tokio::time::timeout(BOUND, client.get("http://198.51.100.7/x").send()).await;
+
+    assert!(
+        first_seen.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the host is on this proxy's bypass list"
+    );
+    assert!(
+        second_seen.recv_timeout(BOUND).is_ok(),
+        "and the next proxy, which does not bypass it, serves it"
+    );
+
+    // The other half: with nothing after it, the same bypass is direct.
+    // 198.51.100.7 is TEST-NET-2 and answers nothing, so the attempt
+    // fails — which is the assertion, since a proxied attempt would have
+    // reached the fixture instead.
+    let (only, only_seen) = http_proxy("200");
+    let client = Client::builder(Native::new(Tokio, NoTls, IpLiteralOnly).proxy(bypassing(only)))
+        .build()
+        .expect("build");
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.get("http://198.51.100.7/x").send(),
+    )
+    .await;
+    assert!(
+        only_seen.recv_timeout(Duration::from_millis(300)).is_err(),
+        "a list that runs out is direct"
+    );
+}
