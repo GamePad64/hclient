@@ -39,11 +39,11 @@ Versions read, all from `~/.cargo/registry/src/index.crates.io-*/`:
 | `reqwest` | **0.13.4** | already vendored; 0.12.28 also present and not used |
 | `ureq` | **3.4.0** | fetched for this document |
 | `ureq-proto` | 0.6.1 | ureq's sans-io half |
-| `isahc` | 1.8.3 | fetched |
+| `isahc` | **2.0.1** | re-fetched 2026-08-19; was 1.8.3 |
 | `curl` | 0.4.50 | fetched |
 | `curl-sys` | 0.4.90+curl-8.21.0 | fetched |
-| `attohttpc` | 0.29.2 | fetched |
-| `gloo-net` | 0.6.0 | fetched |
+| `attohttpc` | **0.31.0** | re-fetched 2026-08-19; was 0.29.2 |
+| `gloo-net` | **0.7.0** | re-fetched 2026-08-19; was 0.6.0 |
 | `hyper-util` | 0.1.20 | already vendored |
 | `cookie_store` | 0.22.1 | fetched, to settle one row in §2.7 |
 | `publicsuffix` | 2.3.0 | same |
@@ -56,7 +56,32 @@ client that has not shipped in four years is not a comparator; it is
 history. `attohttpc` 0.29.2 was fetched and is only lightly surveyed, for
 the same reason in weaker form.
 
-`http-ng` is this tree at `96e8b28`.
+**Re-surveyed on 2026-08-19, and three of the eight comparators had
+moved.** `reqwest` 0.13.4, `ureq` 3.4.0, `curl` 0.4.50 and `cookie_store`
+0.22.1 are still the latest published, so every row citing them stands as
+written and was not re-read. What changed:
+
+- **`isahc` 1.8.3 → 2.0.1**, which answers §7's open question about its
+  maintenance state in the strongest available way: a major release, on
+  edition 2024 with `rust-version = "1.85"`, and TLS turned into a choice
+  (`rustls-tls`, `native-tls`, `trust-webpki-roots`, `tls-insecure` —
+  none of which 1.8.3 had). It is not `surf`. Its column was mostly `—`
+  and is now read; six rows below change because of it, and one of them
+  is the sharpest row in the document.
+- **`attohttpc` 0.29.2 → 0.31.0** and **`gloo-net` 0.6.0 → 0.7.0**, and
+  neither moved a row: `gloo-net`'s `http::{Request, Response}` surfaces
+  are identical between the two (diffed, `pub fn` for `pub fn`), and
+  `attohttpc`'s feature table gains only rustls plumbing
+  (`__rustls-ring`) over the same set of capabilities.
+
+**A version bump is not evidence of change and an unchanged version is not
+evidence of staleness** — both had to be checked, and the cheap half is
+diffing the public surface rather than reading the changelog.
+
+`http-ng` was this tree at `96e8b28` when the document was written, and
+the `ng` column has been kept current since — ten of the thirteen ranked
+gaps closed between then and `5dc452d`, each row updated with the change
+that closed it.
 
 ---
 
@@ -108,8 +133,8 @@ restriction, named in the notes; **seam** = not a call, but reachable by
 implementing a public trait; **N** = absent; **—** = not checked.
 
 Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
-**uq** = ureq 3.4.0, **cu** = the `curl` 0.4.50 binding / `isahc` 1.8.3,
-**br** = the browser story (reqwest's wasm build, `gloo-net` 0.6.0).
+**uq** = ureq 3.4.0, **cu** = the `curl` 0.4.50 binding / `isahc` 2.0.1,
+**br** = the browser story (reqwest's wasm build, `gloo-net` 0.7.0).
 
 ### 2.1 Request shaping
 
@@ -121,7 +146,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | `multipart/form-data` | Y | Y | Y | Y | Y | see §2.2 for the streaming difference |
 | Basic auth | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
 | Bearer auth | Y | Y | Y | Y | Y | |
-| Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`). See §3 G12 |
+| Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`), and **`isahc` 2.0.1 surfaces two of them in Rust** — `Authentication::digest()` and `::negotiate()` (`src/auth.rs:100, :120`), the second behind its `spnego` feature. So the `cu` column is not only the raw binding here. See §3 G12 |
 | client-wide default headers | Y | Y | Y | — | Y | closed — `ClientBuilder::{default_header, default_headers}`, applied per redirect hop, the caller's own header winning, and refused at `build()` where a backend forbids the name. See G2 |
 | a `User-Agent` at all | Y\* | Y | Y | Y | (browser's) | `ClientBuilder::user_agent` exists; **ng still sends none by default**, deliberately — a library that names itself on every request decides for its embedder, and the embedder is who has an opinion. `ureq-3.4.0/src/config.rs:546` |
 | base URL / relative URLs | Y | **N** | N | N | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
@@ -130,7 +155,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | per-request redirect override | Y | N | — | — | N | `RequestBuilder::redirect` (`request.rs:387`) |
 | set an `http::Extensions` value from the builder | **N** | — | — | — | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
 | `error_for_status` | Y | Y | Y | — | Y | on both `Response` and `Collected` — the second for a caller who wants the server's error text before deciding. A `3xx` is `Ok`, because reaching one means the redirect policy already handed it back. Writing it found that `Response::url()` reported the *requested* URL rather than the answering one, undocumented and untested; it is the last hop now |
-| response text with charset from `Content-Type` | Y\* | Y | Y | — | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error |
+| response text with charset from `Content-Type` | Y\* | Y | Y | Y | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error. **`isahc` 2.0.1 is the live counter-example to the other half of the decision**: its `text-decoding` is *in `default`*, and an unknown label falls back to UTF-8 with a `tracing::warn!` (`src/text.rs:64-70`) — where ng makes it a typed error naming the label, because a warning nobody reads and mojibake handed back are the same outcome for the caller |
 
 ### 2.2 Bodies and streaming
 
@@ -141,7 +166,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | **full duplex** | Y\* | — | N | — | Y\* | ng: `true` on `http-ng-h3` and on h2, and the capability still reports the HTTP/1.1 **floor** — see §5 |
 | replay contract knowable before sending | **Y** | N | N | N | N | `RetryKind::{Free, ViaFactory, Impossible}`, and multipart derives it from its parts |
 | streaming multipart | Y | Y | — | Y | — | ng: any streaming part makes the whole form `Streaming`/`Impossible` |
-| response trailers reach the caller | Y | N | N | — | N | ng on h2 and h3; read via `into_parts()`, not `collect()` |
+| response trailers reach the caller | Y | N | N | **Y** | N | ng on h2 and h3; read via `into_parts()`, not `collect()`. `isahc` 2.0.1 has a `Trailer` handle with `try_get`, `wait` and `wait_timeout` (`src/trailer.rs:26-107`) — a *blocking* read, which is the shape a curl-backed client can offer and an async one cannot |
 | request trailers | Y\* | N | N | — | N | sent on h1 and h2, and `Capabilities::request_trailers` understates the h2 path — a known mismatch, `v03-acceptance.md:3132` |
 | a response body size limit | Y | N | **Y** | Y | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `http-ng`/`http-ng-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
 | header size / count limits | Y | — | Y | Y | n/a | closed on both protocols — `Native::h1_opts` (`max_headers`, `max_buf_size`) and `H2Opts::max_header_list_size`. Neither is complete without the other: a transport that negotiates ALPN speaks whichever the server picked. `h1_opts` is **fallible** where `h2_opts` is not, because hyper panics below 8192 and a caller's number must not reach a `panic!` inside a connect. `ureq…/src/config.rs:586` |
@@ -155,12 +180,12 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | HTTP/2 | Y\* | Y | N | Y | — | ng behind `http-ng-native/http2`, off by default |
 | h2 multiplexing on by default | N | Y | — | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
 | h2 tuning (window, frame size, keepalive PING, prior knowledge) | Y\* | Y | N | Y | N | closed for the settings frame — `Native::h2_opts`: both windows, `max_frame_size`, `max_header_list_size`. Keepalive, an adaptive window and prior knowledge are still absent, each for its own reason rather than as a batch. See G8; reqwest's eight are `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
-| HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build |
+| HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build — and `isahc` 2.0.1 makes that dependence readable rather than a build-time surprise: `VersionNegotiation::http3()` exists and `info.rs:47` asks `curl_info().feature_http3()` at run time, so a caller can find out whether the linked libcurl has it |
 | WebSocket | Y | **N** | N | **N** | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust |
 | WebTransport | **Y** | N | N | N | N | `http-ng-webtransport`: sessions, bidi streams, datagrams, close capsules |
 | Server-Sent Events | **Y** | **N** | N | N | Y | zero matches for `eventsource`/`text/event-stream` in `reqwest-0.13.4/src/`; ng has a decoder *and* reconnection with `Last-Event-ID` |
 | `1xx` / `103 Early Hints` observable | **Y** | N | — | — | N | `Native::watching_1xx()` + `Event::Informational` |
-| `Expect: 100-continue` | **Y** | N | **Y** | Y | N | `Native::expect_continue(after)`; **hyper's client does not do this**, so reqwest cannot. uq has it *and* a dedicated `timeout_await_100` (`src/config.rs:721`), which is the same "a wait ending in *proceeding*, not in failure" distinction this workspace argues for keeping out of `Timeouts` |
+| `Expect: 100-continue` | **Y** | N | **Y** | Y | N | `Native::expect_continue(after)`; **hyper's client does not do this**, so reqwest cannot. uq has it *and* a dedicated `timeout_await_100` (`src/config.rs:721`), which is the same "a wait ending in *proceeding*, not in failure" distinction this workspace argues for keeping out of `Timeouts`. **`isahc` 2.0.1 does it by default** and lets a caller turn it off (`ExpectContinue`, `src/config/mod.rs:209`) — the opposite default from ng's, where a default that waited would be a default that hangs against a server ignoring `Expect` |
 | demand a specific version and fail otherwise | **Y** | N\* | N | Y\* | N | `RequireVersion` is enforced before the head; rq's `http1_only`/`http2_prior_knowledge` are client-wide settings, not per-request demands |
 
 ### 2.4 Connections, sockets, resolution
@@ -168,17 +193,18 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | capability | ng | rq | uq | cu | br | note |
 |---|---|---|---|---|---|---|
 | connection pool | Y | Y | Y | Y | (browser's) | ng: `PoolConfig { idle_timeout, max_idle_per_key }` |
+| per-request timing a caller can read | Y\* | N | N | **Y** | N | **A row this document did not have, and `isahc` 2.0.1 is why it should.** Its `Metrics` gives `name_lookup_time`, `connect_time`, `secure_connect_time`, `transfer_start_time`, `transfer_time`, `total_time` and upload/download progress and speed (`src/metrics.rs:58-142`), behind one `metrics(true)` switch. ng has `ConnectTiming` on the `Connected` hook event with `dns`/`tcp`/`tls`/`total` and `Head::elapsed` — the same four phases, but through a `Hooks` impl rather than off the response, which is `Y*` rather than `Y`: a caller who wants one request's numbers must write a hook and correlate by `ConnectionId`. Neither reqwest nor ureq has either |
 | a reaper that closes idle sockets | Y\* | Y | — | Y | — | ng: `Native::with_reaper`, opt-in, bounded on `R: Spawn` |
 | `TCP_NODELAY` | Y | Y | — | Y | N | |
 | local source address | Y | Y | — | Y | N | `TcpOpts::local_address` |
-| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | N | closed — `TcpOpts::bind_device`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
+| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | N | closed — `TcpOpts::bind_device`. `isahc` 2.0.1 has `interface(..)` taking a name, an address or `Any` (`src/config/mod.rs:393`, `src/net/interface.rs`), which is libcurl's `CURLOPT_INTERFACE` and covers both what ng splits into `bind_device` and `local_address`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
 | TCP keepalive | Y\* | Y | — | Y | N | ng has `TcpOpts::keepalive` (one duration); rq has interval, retries and `TCP_USER_TIMEOUT` besides |
-| Unix domain socket transport | Y | N | — | **Y** | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
+| Unix domain socket transport | Y | N | N | **Y** | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. `isahc` 2.0.1 has it too and spells it as a *dialer*: `Dialer::unix_socket("/var/run/docker.sock")`, or the URI form `"unix:/path/to/my.sock".parse::<Dialer>()` (`src/net/dial.rs:41, :95`) — which is a nicer shape than a transport-wide setting for a caller who wants one request over a socket. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
 | static host→address override (`--resolve`) | seam | Y | — | Y | N | rq: `resolve`/`resolve_to_addrs`; here it is a `Resolve` impl, which is more work and more general |
 | pluggable resolver | seam | Y | — | Y | N | rq: `dns_resolver`; ng: the `Resolve` trait, with three shipped backends |
 | Happy Eyeballs (RFC 8305) | Y | Y | — | Y | (browser's) | |
 | HTTPS/SVCB records consulted | **Y** | N | N | Y\* | (browser's) | asked in the same round as A/AAAA — measured, 404.6 ms → 0.8 ms |
-| Alt-Svc | **Y** | **N** | N | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/` |
+| Alt-Svc | **Y** | **N** | N | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/`, and `isahc` 2.0.1 says so about itself — its version-negotiation doc reads *"In the future, headers such as `Alt-Svc` will be used"* (`src/config/mod.rs:788`), which is a comparator naming its own absence |
 | DNS-over-HTTPS | Y | N | N | Y | N | `http-ng-dns-doh`, 22 crates, no tokio/hyper/h2 |
 | choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `http-ng-select`, from the HTTPS record, with a negative cache |
 | race the two stacks | **Y** | N | N | Y\* | (browser's) | off by default; `curl` has `--http3-only`/Happy-Eyeballs-for-h3 at the libcurl level |
@@ -203,7 +229,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | HTTP `CONNECT` tunnel | Y | Y | Y | Y | (browser's) | |
 | absolute-form for `http://` | Y | Y | — | Y | — | |
 | SOCKS5 | Y | Y\* | Y\* | Y | — | rq behind `socks`; uq behind `socks-proxy` |
-| SOCKS4/4a | Y | Y | — | Y | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. See G7 |
+| SOCKS4/4a | Y | Y | — | Y | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. `isahc` 2.0.1 takes all four as proxy URI schemes — `socks4`, `socks4a`, `socks5`, `socks5h` (`src/config/mod.rs:471-474`) — which is libcurl's spelling and makes the remote-DNS choice a scheme rather than a decision. See G7 |
 | SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`http-ng-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
 | read the proxy from the environment | **N** | Y | Y\* | Y | n/a | **refused as policy** — see §4 |
 | `NO_PROXY` matching | Y\* | Y | — | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
@@ -221,7 +247,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | **custom redirect predicate** | Y | Y | — | N | N | closed — `ClientBuilder::redirect_predicate`, asked **after** the policy about a hop it already approved, so it is handed the resolved target and the origin answer that drives credential stripping. Three verdicts where `reqwest-0.13.4/src/redirect.rs:102` also has three. See G9 |
 | strip `Authorization` across origins | Y | Y | — | Y\* | (browser's) | ng also strips `AllowEarlyData` there |
 | cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
-| **public-suffix rules in the jar** | **Y** | **N** | **N** | Y\* | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it |
+| **public-suffix rules in the jar** | **Y** | **N** | **N** | **Y\*, and a third answer** | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it. **`isahc` 2.0.1 does exactly that, and it is the third answer to this question rather than a fourth vote for one of the two above.** Behind its `psl` feature (not in `default`) it carries *both* a compiled-in list, through the `psl` crate, *and* a copy downloaded from `publicsuffix::LIST_URL` on a 24-hour TTL, refreshed on a background thread and falling back to the compiled-in one when the network fails (`src/cookies/psl.rs:33-137`). Its module doc gives the argument against this workspace's choice in as many words: *"HTTP clients tend to be used in a much different way and are often embedded into long-lived software without frequent (or any) updates, [so] it is better for us to download a fresh copy from the Internet every once in a while"* — and then answers itself, *"a stale list is better than no list at all"*. ng reaches the same end differently: the list is a seam (`CookieJar<P>`), and since G6 a caller can hand a fresher one through `Client`, so what isahc does by default is here a decision the caller makes and pays for |
 | **a pluggable cookie store** | Y | Y | — | Y\* | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
 | RFC 9111 response cache | **Y** | N | N | N | (browser's) | `http-ng-cache`: freshness, validation, `Vary`, both sides' directives |
 | **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
@@ -1042,18 +1068,28 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
 
 ## 7. What this did not check
 
-- **`isahc` and `attohttpc` are surveyed much less thoroughly than reqwest,
-  ureq, gloo-net and hyper-util.** Their cells in §2 carry `—` where nothing
-  was read. The `curl` crate was checked directly on the five rows that
+- ~~**`isahc` and `attohttpc` are surveyed much less thoroughly than
+  reqwest, ureq, gloo-net and hyper-util.**~~ **Half answered.** `isahc`
+  2.0.1 was read on 2026-08-19 and seven rows changed because of it —
+  digest and Negotiate, Unix sockets, response trailers, `Expect:
+  100-continue`, SOCKS4/4a, HTTP/3 detection, interface binding — plus one
+  row this document did not have (per-request timing) and a **third
+  answer** on the public-suffix row. `attohttpc` 0.31.0 is still only
+  lightly surveyed, and now deliberately: its feature table is unchanged
+  in every capability this document compares. The `curl` crate was checked directly on the five rows that
   carry an argument — auth schemes, WebSocket, Unix sockets, HTTP/3 version
   selection — and the rest of the `cu` column rests on libcurl's documented
   option set rather than on a line-by-line audit of the binding. The
   WebSocket row is a warning about doing that: libcurl 8.21 has the API and
   the Rust binding does not expose it, so "libcurl can" and "a Rust caller
   can" came apart on the first row where anyone looked.
-- **isahc's maintenance state was not established.** It is the client whose
-  answer would most change the shape of §2, since a dead comparator should
-  be dropped the way `surf` was, and nothing here checked.
+- ~~**isahc's maintenance state was not established.**~~ **Answered: it is
+  alive.** `isahc` 2.0.1 is a major release on edition 2024 with
+  `rust-version = "1.85"`, and it turned TLS into a choice — `rustls-tls`,
+  `native-tls`, `trust-webpki-roots`, `tls-insecure`, none of which 1.8.3
+  had. The prediction that its answer "would most change the shape of §2"
+  was right: it moved more rows than any other single re-read in this
+  document's history.
 - **No comparator was benchmarked.** Every performance number in this
   document is one this repository already measured about itself.
 - **reqwest's full-duplex behaviour was not established.** The `full_duplex`
