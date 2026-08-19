@@ -358,7 +358,7 @@ fetch-must-fail-under-atomics:
 
 # ── the external oracle ─────────────────────────────────────────────────
 
-# Every fixture in `crates/http-ng-ws-tungstenite/tests/websocket.rs` was
+# Every fixture in `crates/http-ng-tungstenite/tests/websocket.rs` was
 # written beside the implementation it observes, which is the arrangement
 # in which a fixture agrees with a bug. The Autobahn TestSuite is the
 # answer to that: 517 client cases nobody here wrote, served by `wstest
@@ -385,7 +385,7 @@ autobahn-parser-selftest:
 test-autobahn: autobahn-parser-selftest
     #!/usr/bin/env bash
     set -euo pipefail
-    agent=http-ng-ws-tungstenite
+    agent=http-ng-tungstenite
     reports="$PWD/target/autobahn"
     container=http-ng-autobahn
     if ! docker info >/dev/null 2>&1; then
@@ -398,7 +398,7 @@ test-autobahn: autobahn-parser-selftest
     fi
     # The driver is built before the container starts, so a compile error
     # is a compile error rather than a connection timeout.
-    cargo build -p http-ng-ws-tungstenite --example autobahn || exit $?
+    cargo build -p http-ng-tungstenite --example autobahn || exit $?
     rm -rf "$reports" && mkdir -p "$reports" || exit $?
     docker rm -f "$container" >/dev/null 2>&1
     trap 'docker rm -f "$container" >/dev/null 2>&1' EXIT
@@ -772,11 +772,11 @@ graph-no-framing-in-the-transport:
     #!/usr/bin/env bash
     set -euo pipefail
     ./scripts/tree-guard.sh absent '^(tungstenite|sha1|data-encoding) ' \
-        "http-ng-native has the WebSocket framing in its graph again. It lives in http-ng-ws-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
+        "http-ng-native has the WebSocket framing in its graph again. It lives in http-ng-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
         -- -p http-ng-native --all-features
     ./scripts/tree-guard.sh present '^tungstenite ' \
-        "http-ng-ws-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
-        -- -p http-ng-ws-tungstenite
+        "http-ng-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
+        -- -p http-ng-tungstenite
 
 # The same argument one seam down, and in the direction that catches a
 # COPY rather than a feature. `SeamRuntime` was `mod runtime` inside

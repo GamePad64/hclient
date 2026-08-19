@@ -980,7 +980,7 @@ where
 /// #       T: http_ng_tls::TlsConnect, T::Stream<R::Stream>: 'static,
 /// #       D: http_ng_dns::Resolve {
 /// use http_ng_core::unversioned::WebSocketConnect;
-/// use http_ng_ws_tungstenite::Tungstenite;
+/// use http_ng_tungstenite::Tungstenite;
 ///
 /// let req = http::Request::builder().uri("wss://example.com/chat").body(())?;
 /// let ws = Tungstenite::new(client.transport()).websocket(req).await?;

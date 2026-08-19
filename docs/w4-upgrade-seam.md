@@ -270,9 +270,9 @@ it rather than invent a second vocabulary.
 **~~What this section does not decide~~ — both decided, in the writing.**
 This paragraph left two questions to whoever implemented it, with tests.
 Both are answered, the reasoning is next to the code
-(`crates/http-ng-ws-tungstenite/src/lib.rs`'s module doc — it was
+(`crates/http-ng-tungstenite/src/lib.rs`'s module doc — it was
 `http-ng-native`'s until §8 below was built) and the answers are pinned by
-`crates/http-ng-ws-tungstenite/tests/websocket.rs`.
+`crates/http-ng-tungstenite/tests/websocket.rs`.
 
 **No, an unanswered ping is not surfaced before its deadline.** The
 `Stream` can yield two things and neither can carry it. `Message` has no
@@ -362,7 +362,7 @@ frames; it was never `Native`'s business, and the fact that its knob was
 spelled `Native::websocket_keep_alive` was a symptom of the same
 misplacement. It is `Tungstenite::keep_alive` now.
 
-## 8.1 Built: `http-ng-ws-tungstenite`, and the connector borrows
+## 8.1 Built: `http-ng-tungstenite`, and the connector borrows
 
 ~~Open, for whoever builds it: who implements `WebSocketConnect`
 afterwards.~~ **Decided, on the measurement §8 asked for.** The two shapes
@@ -388,7 +388,7 @@ WebSocket from one transport:
 ```toml
 # before                              # after
 http-ng-native = { version = "0.1",   http-ng-native = "0.1"
-  features = ["websocket"] }          http-ng-ws-tungstenite = "0.1"
+  features = ["websocket"] }          http-ng-tungstenite = "0.1"
 ```
 
 ```rust
@@ -423,7 +423,7 @@ here — which is what makes it a control rather than a gap.
 
 What each side owns, finally:
 
-| | `http-ng-native` | `http-ng-ws-tungstenite` |
+| | `http-ng-native` | `http-ng-tungstenite` |
 |---|---|---|
 | connection | its connector, its TLS, `http/1.1` alone on ALPN, never the pool | — |
 | h1 upgrade | `poll_without_shutdown` + `into_parts`, `101` **by status** | — |

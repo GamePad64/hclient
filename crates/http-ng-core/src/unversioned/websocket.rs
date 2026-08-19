@@ -34,8 +34,8 @@
 //!
 //! - **`Ping` and `Pong` are not [`Message`] variants.** RFC 6455 §5.5.2
 //!   makes answering a ping the *endpoint's* duty, not the caller's, and
-//!   `http-ng-ws-tungstenite` discharges it without telling anybody
-//!   (`crates/http-ng-ws-tungstenite/tests/websocket.rs` watches the pong
+//!   `http-ng-tungstenite` discharges it without telling anybody
+//!   (`crates/http-ng-tungstenite/tests/websocket.rs` watches the pong
 //!   leave from the server's side of the wire). A caller-visible `Ping`
 //!   would be
 //!   a variant the browser can neither send nor ever receive, which is the
@@ -119,7 +119,7 @@ pub trait WebSocket: Stream<Item = Result<Message, Error>> + Sink<Message, Error
 ///
 /// Implemented either by a transport itself (`http_ng_fetch::Fetch`, where
 /// the platform hands back messages) or by a connector over one
-/// (`http_ng_ws_tungstenite::Tungstenite`, where it hands back bytes and
+/// (`http_ng_tungstenite::Tungstenite`, where it hands back bytes and
 /// the framing is a crate of its own — `docs/w4-upgrade-seam.md` §8).
 /// Either way a WebSocket opened this way inherits everything the
 /// transport already knows: its runtime, its TLS configuration, its

@@ -93,7 +93,7 @@ of the CONNECT stream must still exist, and something must poll it.
 The first is (a). The second is the caller: `Session::closed()` is the
 caller's own future, and nothing is spawned — the same trade
 `Session::recv_datagram` makes and the same one
-`http-ng-ws-tungstenite`'s keep-alive makes. **A caller that never awaits
+`http-ng-tungstenite`'s keep-alive makes. **A caller that never awaits
 it never learns the session ended.** That is stated where the method is,
 because it is the cost of the shape rather than a defect in it: a session
 is the caller's object, and the QUIC connection is driven by the endpoint
@@ -266,7 +266,7 @@ pub struct AlreadyClosed;
 **`Ok` against `Err` is the distinction, and it is not a new vocabulary.**
 An unclean end is `ErrorKind::Body`, deliberately agreeing with
 `http-ng-fetch`'s treatment of a `wasClean == false` WebSocket close and
-with `http-ng-ws-tungstenite`'s `PongNotReceived`, and deliberately not
+with `http-ng-tungstenite`'s `PongNotReceived`, and deliberately not
 `ErrorKind::Timeout`, since no `Timeouts` field is in force on an open
 session.
 

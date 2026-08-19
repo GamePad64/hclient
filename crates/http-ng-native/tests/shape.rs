@@ -64,7 +64,7 @@ fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
 /// `NativeBody` above.
 ///
 /// The framing half of the same claim is
-/// `http-ng-ws-tungstenite/tests/shape.rs`, which asserts it of the value
+/// `http-ng-tungstenite/tests/shape.rs`, which asserts it of the value
 /// this one turns into.
 ///
 /// `Sync` is deliberately not asserted: an upgrade in flight is used

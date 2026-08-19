@@ -2,7 +2,7 @@
 //! watched from the other side of a real socket.
 //!
 //! The framing that used to sit on top of this lives in
-//! `http-ng-ws-tungstenite` now, and its tests moved with it. What is left
+//! `http-ng-tungstenite` now, and its tests moved with it. What is left
 //! here is what stayed here: the request this transport puts on the wire,
 //! the `101` recognised by **status**, and the bytes a server sent in the
 //! same flight as it.

@@ -168,7 +168,7 @@ jobs:
           HTTP_NG_REQUIRE_BROWSERS: "1"
         run: just test-browser ${{ matrix.browser }}
 
-  # Every fixture in `crates/http-ng-ws-tungstenite/tests/websocket.rs` was
+  # Every fixture in `crates/http-ng-tungstenite/tests/websocket.rs` was
   # written beside the implementation it observes, which is the arrangement
   # in which a fixture agrees with a bug. This job is the external oracle:
   # `crossbario/autobahn-testsuite` in `fuzzingserver` mode, 517 client

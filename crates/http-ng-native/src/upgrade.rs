@@ -3,7 +3,7 @@
 //! This module is what is left in this crate of v0.3 W4's WebSocket
 //! support after `docs/w4-upgrade-seam.md` §8 split it: **the connection
 //! and the upgrade, without a word about frames.** The framing lives in
-//! `http-ng-ws-tungstenite`, which depends on this crate and not the other
+//! `http-ng-tungstenite`, which depends on this crate and not the other
 //! way round, so `tungstenite` cannot be switched on in this one by a
 //! neighbour in the graph — which a `websocket` feature here could not
 //! prevent, Cargo's features being additive.
@@ -44,7 +44,7 @@
 //!    else, and it is the *only* check here: what makes a `101` a
 //!    **WebSocket** `101` — `Upgrade:`, `Connection:` and
 //!    `Sec-WebSocket-Accept` — belongs to whoever knows what WebSocket is,
-//!    and is `http_ng_ws_tungstenite::Handshake::accept`'s.
+//!    and is `http_ng_tungstenite::Handshake::accept`'s.
 //!
 //!    Those three still run **before** the connection is taken apart, and
 //!    that ordering is now structural rather than remembered: what
@@ -90,7 +90,7 @@
 //!    first frames in the same flight as the `101`, and hyper will have
 //!    read them already. Dropping that buffer works in every test where
 //!    the server pauses first, which is what makes it worth a test where
-//!    it does not (`http-ng-ws-tungstenite`'s
+//!    it does not (`http-ng-tungstenite`'s
 //!    `the_first_frame_may_arrive_in_the_same_flight_as_the_101`, and
 //!    `the_bytes_that_arrived_with_the_101_are_handed_on` here).
 //!

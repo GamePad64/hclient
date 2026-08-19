@@ -1430,11 +1430,11 @@ overtaken** — steps 3 and 4 are the section below, and there is no
 
 **A third thing this section describes has moved, and every path it names
 below with it.** `docs/w4-upgrade-seam.md` §8 split the framing out of
-`http-ng-native` into `http-ng-ws-tungstenite`, so
+`http-ng-native` into `http-ng-tungstenite`, so
 `crates/http-ng-native/src/websocket.rs` is
-`crates/http-ng-ws-tungstenite/src/lib.rs`, its tests are that crate's
+`crates/http-ng-tungstenite/src/lib.rs`, its tests are that crate's
 `tests/websocket.rs` (run with `cargo nextest run -p
-http-ng-ws-tungstenite`, there being no feature to name any more),
+http-ng-tungstenite`, there being no feature to name any more),
 `NativeWebSocket` is `TungsteniteWebSocket`, and
 `Native::websocket_keep_alive` is `Tungstenite::keep_alive`. What stayed
 in `http-ng-native` is the connection and the h1 upgrade, in

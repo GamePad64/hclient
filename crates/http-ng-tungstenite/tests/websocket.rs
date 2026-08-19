@@ -58,7 +58,7 @@ use http_ng_dns::IpLiteralOnly;
 use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
-use http_ng_ws_tungstenite::{PongNotReceived, Tungstenite, WebSocketKeepAlive};
+use http_ng_tungstenite::{PongNotReceived, Tungstenite, WebSocketKeepAlive};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -29,7 +29,7 @@ repository.workspace = true
 #
 # **There is no `websocket` feature, and that is a decision rather than an
 # omission.** WebSocket over this transport is
-# `http-ng-ws-tungstenite`, a crate that depends on this one; what stays
+# `http-ng-tungstenite`, a crate that depends on this one; what stays
 # here is the h1 upgrade (`src/upgrade.rs`), which is hyper and nothing
 # else. It was a feature here until `docs/w4-upgrade-seam.md` §8, and the
 # reason it stopped being one is the reason `http-ng-h3` is not a feature

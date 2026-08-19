@@ -20,7 +20,7 @@ the per-topic documents, because each of those knows only its own half.
 | Hooks on all four backends, and `Head::version` becoming an `Option` | `v04-w2-hooks-ambient.md` |
 | `http-ng-webtransport` — sessions, streams, datagrams, close capsules | `v04-w2-webtransport.md`, `-datagrams.md`, `-capsules.md` |
 | `http-ng-rt-quinn` — `SeamRuntime` extracted, 42 crates against h3's 58 | `rt-quinn-extraction.md` |
-| `http-ng-ws-tungstenite` — the WebSocket framing as its own crate | `w4-upgrade-seam.md` §8 |
+| `http-ng-tungstenite` — the WebSocket framing as its own crate | `w4-upgrade-seam.md` §8 |
 | h2 multiplexing, opt-in behind `Native::multiplexed()` | `h2-multiplexing.md` |
 | `TCP_NODELAY` asked for where the runtime says it applies | AGENTS.md, and the 41 ms it saves |
 | The gRPC yardstick — 21 requirements, 15 tests, **no library code changed** | `grpc-yardstick.md` |

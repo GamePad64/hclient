@@ -1,5 +1,5 @@
 [package]
-name = "http-ng-ws-tungstenite"
+name = "http-ng-tungstenite"
 version.workspace = true
 description = "WebSocket framing for http-ng: RFC 6455 over an upgraded byte stream, on tungstenite"
 edition.workspace = true

@@ -483,7 +483,7 @@ Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
 in v0.3**, in its own crate `http-ng-h3`, over QUIC. **WebSocket landed in
 v0.3 (W4)**, and in v0.4 became a crate of its own,
-`http-ng-ws-tungstenite` — and not as a method on `Transport`: it is its
+`http-ng-tungstenite` — and not as a method on `Transport`: it is its
 own trait pair,
 `WebSocketConnect` (what a backend implements — a backend is not a
 connection) and `WebSocket` (the message channel), so a transport that
@@ -510,7 +510,7 @@ call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
 calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
 measurements and the decisions.
 
-**It is `http-ng-ws-tungstenite`, its own crate, and until v0.4 it was a
+**It is `http-ng-tungstenite`, its own crate, and until v0.4 it was a
 `websocket` feature of `http-ng-native` — the one pluggable thing here
 that was not its own crate** (`docs/w4-upgrade-seam.md` §8). Features are
 additive, so that feature put `tungstenite` into every build in any graph
@@ -2485,6 +2485,64 @@ leans on two, which is a hooks change wanting its own measurement.
 `docs/pooled-reuse-race.md`, including the mutation table and its
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
+
+### One crate was named after a family the dependency rule forbids
+
+Asked before publishing whether any crate is redundant or misnamed, both
+questions were measured rather than eyeballed, and they came out
+differently.
+
+**Nothing is redundant.** The test is this workspace's own: a crate exists
+to hold a dependency a feature would otherwise spread to every graph. The
+likeliest suspect passes it most sharply — `http-ng-tls-quic` is **153
+lines**, the smallest here, and it carries `quinn-proto`, which is exactly
+the dependency the argument is about. `http-ng-rt-quinn` has one in-tree
+consumer and an external reason (41 crates against `http-ng-h3`'s 56 for a
+caller who wants bare QUIC), enforced by a `just` recipe. Eleven crates have
+no in-workspace consumer at all and are terminal by design: a user picks the
+backend.
+
+**`http-ng-rt-pair-check` is the one that looks superfluous and is not.** A
+5-line lib whose own doc says *deliberately empty*, 500 lines of tests, an
+empty `[dependencies]`, `publish = false` — and it must depend on
+`http-ng-rt-tokio` **and** `http-ng-rt-smol` at once, with `udp` on both,
+which no shipped crate may do. Its name sits in the runtime-implementation
+namespace while being a test harness, and it is left alone deliberately: the
+name never reaches crates.io, and it is cited as evidence in seventeen doc
+comments across the workspace, so it has become a landmark whose renaming
+costs prose and buys nothing outside the repository.
+
+**One name was wrong, and the interesting part is that the missing crate it
+implied should not exist.** Three families follow `http-ng-<seam>-<impl>`
+and each has a seam crate: `http-ng-rt` (which carries **hyper**),
+`http-ng-tls` (**hyper** again) and `http-ng-dns` (`dns-message-parser`
+behind `codec`). Each head exists to hold something `http-ng-core` must
+not. `http-ng-ws-tungstenite` was the fourth `-<impl>` name and had no head
+— and it should not have one: the `WebSocketConnect`/`WebSocket` pair is
+**161 lines over `futures_core` and `futures_sink`**, nothing `http-ng-core`
+does not already have, so an `http-ng-ws` would be a crate with nothing to
+carry. The name promised a crate the dependency rule forbids.
+
+It is **`http-ng-tungstenite`** now, which keeps the framing library in the
+name — that choice is argued in `docs/w4-upgrade-seam.md`, `tungstenite`
+over `tokio-tungstenite` because `WebSocketContext` takes the stream as a
+parameter and needs no `*mut Context` — and promises no family. Renaming
+before the first publish is free and after it is not, which is why the
+question was worth asking at this exact moment. The reason lives in the
+crate's own README, where a reader looking for `http-ng-ws` will be.
+
+Two softer observations, recorded and not acted on. `http-ng-select` agrees
+with its `Selecting` type but does not say what it selects between.
+`http-ng-idn` is not about HTTP at all — it is a UTS 46 crate that picks its
+implementation by target, worth more to the ecosystem than the prefix lets
+anyone find. Both are the owner's call and neither is wrong.
+
+All 29 names were checked against crates.io and all are free. **The first
+run of that check answered `403` for every name including its control**,
+`reqwest` — crates.io refusing a request with no `User-Agent` — which is
+this file's rule about a check whose answers cannot differ, met one more
+time. With a `User-Agent` the controls separate: `reqwest` 200, a nonsense
+name 404.
 
 ### The licence was a claim with no text behind it, and the root is the wrong place for one
 

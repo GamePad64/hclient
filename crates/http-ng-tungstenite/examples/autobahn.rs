@@ -35,8 +35,8 @@
 //! or, against a `fuzzingserver` already listening:
 //!
 //! ```text
-//! cargo run -p http-ng-ws-tungstenite --example autobahn \
-//!     -- ws://127.0.0.1:9001 http-ng-ws-tungstenite
+//! cargo run -p http-ng-tungstenite --example autobahn \
+//!     -- ws://127.0.0.1:9001 http-ng-tungstenite
 //! ```
 
 use futures_util::{SinkExt, StreamExt};
@@ -45,7 +45,7 @@ use http_ng_dns_system::SystemDns;
 use http_ng_native::Native;
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls_rustls::Rustls;
-use http_ng_ws_tungstenite::Tungstenite;
+use http_ng_tungstenite::Tungstenite;
 
 type Client<'a> = Tungstenite<'a, Tokio, Rustls, SystemDns<Tokio>>;
 
@@ -129,9 +129,7 @@ impl AsyncEcho for First {
 async fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1);
     let base = args.next().unwrap_or_else(|| "ws://127.0.0.1:9001".into());
-    let agent = args
-        .next()
-        .unwrap_or_else(|| "http-ng-ws-tungstenite".into());
+    let agent = args.next().unwrap_or_else(|| "http-ng-tungstenite".into());
     let base = base.trim_end_matches('/').to_owned();
 
     let transport = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));

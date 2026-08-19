@@ -29,7 +29,6 @@ fn auto_traits_reach_the_websocket() {
     type Rt = http_ng_rt_tokio::Tokio;
     type Tls = http_ng_tls_rustls::Rustls;
 
-    assert_send::<
-        http_ng_ws_tungstenite::TungsteniteWebSocket<http_ng_native::NativeIo<Rt, Tls>, Rt>,
-    >();
+    assert_send::<http_ng_tungstenite::TungsteniteWebSocket<http_ng_native::NativeIo<Rt, Tls>, Rt>>(
+    );
 }

@@ -140,7 +140,7 @@ the reason `Reaper` is: `Spawn<F>` makes the future a parameter of the
 constructor and a call site inside an impl block with no `Spawn` bound were
 added to `crates/http-ng-native/src/lib.rs` and `src/http2.rs`,
 `cargo build -p http-ng-native --all-features --tests` was green, so were
-`http-ng-select` and `http-ng-ws-tungstenite`, and the change was reverted.
+`http-ng-select` and `http-ng-tungstenite`, and the change was reverted.
 The only diagnostic was a `Debug` warning on the new struct.
 
 ### 2.3 What the negative side costs, and where the refusal lands

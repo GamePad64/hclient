@@ -868,7 +868,7 @@ impl Session {
     /// The returned future is the only thing reading the CONNECT stream. A
     /// caller that never awaits it never learns the session ended — the
     /// same trade as [`recv_datagram`](Self::recv_datagram) and as
-    /// `http-ng-ws-tungstenite`'s keep-alive, and for the same reason: the
+    /// `http-ng-tungstenite`'s keep-alive, and for the same reason: the
     /// session is the caller's object, and the QUIC connection is driven by
     /// the endpoint driver `quinn` already runs.
     ///
