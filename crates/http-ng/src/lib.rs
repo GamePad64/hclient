@@ -186,7 +186,7 @@ pub use http_ng_proto::uri::UriError;
 pub use request::{ColonInUsername, ContentTypeIsNotOursToKeep, RequestBuilder};
 #[cfg(feature = "charset")]
 pub use response::CharsetError;
-pub use response::{Collected, Response};
+pub use response::{Collected, Response, UnexpectedStatus};
 pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
 
 /// The default transport, chosen by **the target, not the user**.

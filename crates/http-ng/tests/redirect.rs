@@ -605,3 +605,42 @@ fn query_reaches_the_transport_and_survives_a_redirect_with_its_body() {
         );
     }
 }
+
+/// **`Response::url()` is the last hop, not the first.** Pinned here as
+/// well as in `error_for_status.rs`, because this is the file about
+/// redirects and the property is a redirect property: it was the requested
+/// URL, undocumented and untested, until an error that carries it made the
+/// difference visible.
+#[test]
+fn the_response_url_is_the_hop_that_answered() {
+    let t = MockTransport::new();
+    t.push_response(
+        http::Response::builder()
+            .status(302)
+            .header("location", "https://a.test/second")
+            .body("")
+            .unwrap(),
+    );
+    t.push_response(http::Response::builder().status(200).body("here").unwrap());
+    let c = Client::builder(t).build().expect("build");
+
+    let resp = futures_executor::block_on(c.get("https://a.test/first").send()).expect("chain");
+    assert_eq!(resp.url(), "https://a.test/second");
+    let body = futures_executor::block_on(resp.collect()).expect("body");
+    assert_eq!(
+        body.url(),
+        "https://a.test/second",
+        "and `Collected` carries the same one through"
+    );
+}
+
+/// The control, and it is what says the value is not simply *the second
+/// request*: with no redirect, the URL is the one that was asked for.
+#[test]
+fn without_a_redirect_the_url_is_the_one_that_was_asked_for() {
+    let t = MockTransport::new();
+    t.push_response(http::Response::builder().status(200).body("here").unwrap());
+    let c = Client::builder(t).build().expect("build");
+    let resp = futures_executor::block_on(c.get("https://a.test/only").send()).expect("one hop");
+    assert_eq!(resp.url(), "https://a.test/only");
+}

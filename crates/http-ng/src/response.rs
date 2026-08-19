@@ -23,6 +23,18 @@ pub struct Response<B> {
     sealed: bool,
 }
 
+/// A `4xx` or `5xx` the caller asked to be told about.
+///
+/// Carries the URL as well as the status, because by the time a caller is
+/// looking at one they have usually stopped holding the response — and a
+/// chain of redirects means the URL that failed is not the one they typed.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("the server answered {status} for {url}")]
+pub struct UnexpectedStatus {
+    pub status: http::StatusCode,
+    pub url: http::Uri,
+}
+
 impl<B> Response<B> {
     pub(crate) fn new(resp: http::Response<B>, url: http::Uri) -> Self {
         let (parts, body) = resp.into_parts();
@@ -33,6 +45,50 @@ impl<B> Response<B> {
             sealed: false,
         }
     }
+    /// `Ok(self)` for a `1xx`/`2xx`/`3xx`, and an
+    /// [`ErrorKind::Status`] error for a `4xx` or `5xx`.
+    ///
+    /// # Why it takes `self` where nothing else here does
+    ///
+    /// The rest of this type is built around *not* consuming the response:
+    /// `Collected` keeps the status, the headers and the URL after the
+    /// body has been read, which is reqwest issue #1542 answered. This one
+    /// consumes, and that is not an inconsistency — the whole point is
+    /// that a caller who writes `?` after it is choosing to stop having a
+    /// response. A `&self` form would leave the failed response in hand,
+    /// which is what the caller just said they did not want.
+    ///
+    /// # What it is not
+    ///
+    /// Not a client setting, and deliberately so. reqwest, ureq and curl
+    /// all put this at the call site rather than in a builder, and the
+    /// reason is that `404` is a normal answer for about half the requests
+    /// ever made — a client-wide *treat every 4xx as an error* would turn
+    /// a HEAD probe or a conditional GET into a failure. The caller knows
+    /// which of their requests has a status they can act on; a builder
+    /// does not.
+    ///
+    /// A `3xx` is `Ok`, because reaching one means the redirect policy
+    /// already decided to hand it back — see
+    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::
+    /// None), where a `3xx` is stated to be the caller's answer rather than
+    /// a failure to reach one. Treating it as an error here would overrule
+    /// that from two layers up.
+    ///
+    /// [`ErrorKind::Status`]: http_ng_core::ErrorKind::Status
+    pub fn error_for_status(self) -> Result<Self, Error> {
+        if self.status().is_client_error() || self.status().is_server_error() {
+            return Err(Error::new(
+                ErrorKind::Status,
+                UnexpectedStatus {
+                    status: self.status(),
+                    url: self.url().clone(),
+                },
+            ));
+        }
+        Ok(self)
+    }
+
     pub fn status(&self) -> http::StatusCode {
         self.parts.status
     }
@@ -42,6 +98,16 @@ impl<B> Response<B> {
     pub fn version(&self) -> http::Version {
         self.parts.version
     }
+    /// **The URL this answer came from**, which is the last hop of a
+    /// redirect chain rather than the one the caller asked for. The two
+    /// differ exactly when a redirect was followed, and then the caller
+    /// already has the first — they typed it.
+    ///
+    /// It used to be the requested URL, undocumented and untested, which
+    /// meant `Response::url()` and `Collected::url()` answered *"where did
+    /// you send this"* under a name that reads *"where did this come
+    /// from"*. Found by writing [`Self::error_for_status`], whose error
+    /// carries this value and is useless carrying the wrong one.
     pub fn url(&self) -> &http::Uri {
         &self.url
     }
@@ -159,6 +225,50 @@ pub struct Collected {
 }
 
 impl Collected {
+    /// `Ok(self)` for a `1xx`/`2xx`/`3xx`, and an
+    /// [`ErrorKind::Status`] error for a `4xx` or `5xx`.
+    ///
+    /// # Why it takes `self` where nothing else here does
+    ///
+    /// The rest of this type is built around *not* consuming the response:
+    /// `Collected` keeps the status, the headers and the URL after the
+    /// body has been read, which is reqwest issue #1542 answered. This one
+    /// consumes, and that is not an inconsistency — the whole point is
+    /// that a caller who writes `?` after it is choosing to stop having a
+    /// response. A `&self` form would leave the failed response in hand,
+    /// which is what the caller just said they did not want.
+    ///
+    /// # What it is not
+    ///
+    /// Not a client setting, and deliberately so. reqwest, ureq and curl
+    /// all put this at the call site rather than in a builder, and the
+    /// reason is that `404` is a normal answer for about half the requests
+    /// ever made — a client-wide *treat every 4xx as an error* would turn
+    /// a HEAD probe or a conditional GET into a failure. The caller knows
+    /// which of their requests has a status they can act on; a builder
+    /// does not.
+    ///
+    /// A `3xx` is `Ok`, because reaching one means the redirect policy
+    /// already decided to hand it back — see
+    /// [`RedirectPolicy::None`](http_ng_proto::redirect::RedirectPolicy::
+    /// None), where a `3xx` is stated to be the caller's answer rather than
+    /// a failure to reach one. Treating it as an error here would overrule
+    /// that from two layers up.
+    ///
+    /// [`ErrorKind::Status`]: http_ng_core::ErrorKind::Status
+    pub fn error_for_status(self) -> Result<Self, Error> {
+        if self.status().is_client_error() || self.status().is_server_error() {
+            return Err(Error::new(
+                ErrorKind::Status,
+                UnexpectedStatus {
+                    status: self.status(),
+                    url: self.url().clone(),
+                },
+            ));
+        }
+        Ok(self)
+    }
+
     pub fn status(&self) -> http::StatusCode {
         self.parts.status
     }

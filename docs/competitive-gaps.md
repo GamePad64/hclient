@@ -129,7 +129,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | a separate bound on name resolution | Y\* | N | Y | Y | n/a | closed — `Timeouts::resolve`. What it bounds is the wait for the **first address**, not a phase: Happy Eyeballs interleaves resolving with connecting, so there is no instant at which resolution finished. `false` on both ambient backends, honestly. See G11a; `ureq-3.4.0/src/config.rs:692` |
 | per-request redirect override | Y | N | — | — | N | `RequestBuilder::redirect` (`request.rs:387`) |
 | set an `http::Extensions` value from the builder | **N** | — | — | — | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
-| `error_for_status` | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/response.rs:378` |
+| `error_for_status` | Y | Y | Y | — | Y | on both `Response` and `Collected` — the second for a caller who wants the server's error text before deciding. A `3xx` is `Ok`, because reaching one means the redirect policy already handed it back. Writing it found that `Response::url()` reported the *requested* URL rather than the answering one, undocumented and untested; it is the last hop now |
 | response text with charset from `Content-Type` | Y\* | Y | Y | — | — | closed: `Collected::text_with_charset` behind a `charset` feature — the name rq and uq both independently chose. **A separate method, not a smarter `text()`**: Cargo unifies features, so a feature that changed what `text()` means would make a library's behaviour depend on what an unrelated crate switched on, and the difference is silent mojibake rather than an error |
 
 ### 2.2 Bodies and streaming
@@ -143,7 +143,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | streaming multipart | Y | Y | — | Y | — | ng: any streaming part makes the whole form `Streaming`/`Impossible` |
 | response trailers reach the caller | Y | N | N | — | N | ng on h2 and h3; read via `into_parts()`, not `collect()` |
 | request trailers | Y\* | N | N | — | N | sent on h1 and h2, and `Capabilities::request_trailers` understates the h2 path — a known mismatch, `v03-acceptance.md:3132` |
-| a response body size limit | **N** | N | **Y** | Y | N | **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `http-ng`/`http-ng-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
+| a response body size limit | Y | N | **Y** | Y | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `http-ng`/`http-ng-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
 | header size / count limits | **N** | — | Y | Y | n/a | `Config::max_response_header_size` (`ureq…/src/config.rs:586`) |
 | non-destructive body read | Y | N | — | — | — | `Collected` keeps status/headers/url after `.text()` — reqwest #1542 |
 

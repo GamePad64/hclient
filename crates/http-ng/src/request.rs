@@ -462,7 +462,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         *req.uri_mut() = uri.clone();
         *req.headers_mut() = headers;
         *req.extensions_mut() = self.extensions;
-        let resp = self
+        let (resp, final_uri) = self
             .client
             .execute_with(
                 req,
@@ -470,7 +470,13 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
                 self.digest,
             )
             .await?;
-        Ok(Response::new(resp, uri))
+        // **The URL the answer came from, not the one that was asked
+        // for.** They differ exactly when a redirect was followed, and
+        // then it is the last hop that is worth reporting — the caller
+        // already has the first, having typed it. `uri` is still what the
+        // builder resolved against `base_url`, so a chain that never
+        // redirected reports the same value it always did.
+        Ok(Response::new(resp, final_uri))
     }
 }
 

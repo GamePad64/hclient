@@ -784,6 +784,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             None,
         )
         .await
+        .map(|(resp, _final_uri)| resp)
     }
 
     /// [`Self::execute`] with the one thing that cannot travel in the
@@ -797,7 +798,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         mut req: http::Request<RequestBody>,
         #[cfg(feature = "digest-auth")] digest: Option<(String, String)>,
-    ) -> Result<http::Response<crate::ClientBody<T::Body, Tm>>, Error>
+    ) -> Result<(http::Response<crate::ClientBody<T::Body, Tm>>, http::Uri), Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -855,6 +856,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                 .await?
             }
         };
+        let (resp, final_uri) = resp;
         let (mut parts, body) = resp.into_parts();
         // Also strips `Content-Encoding` and `Content-Length` when it
         // returns a decoder — both describe the wire, and neither is true
@@ -879,12 +881,15 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         // **Outermost**, so it counts what the caller receives rather than
         // what crossed the wire — see `limit.rs` for why that is the side
         // the threat is on, and why `Deadline` sits the other way round.
-        Ok(http::Response::from_parts(
-            parts,
-            crate::Limited::new(
-                Decompressed::new(body, decoder),
-                self.config().response_limit,
+        Ok((
+            http::Response::from_parts(
+                parts,
+                crate::Limited::new(
+                    Decompressed::new(body, decoder),
+                    self.config().response_limit,
+                ),
             ),
+            final_uri,
         ))
     }
 
@@ -900,7 +905,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         req: http::Request<RequestBody>,
         #[cfg(feature = "digest-auth")] mut digest: Option<(String, String)>,
-    ) -> Result<http::Response<Cached<T::Body>>, Error>
+    ) -> Result<(http::Response<Cached<T::Body>>, http::Uri), Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -1262,7 +1267,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             );
 
             match action {
-                RedirectAction::Stop => return Ok(resp),
+                RedirectAction::Stop => return Ok((resp, hp.uri)),
                 RedirectAction::TooManyRedirects => {
                     // Only `Limited` can reach here: `decide` turns `None`
                     // into `Stop` before any counting, because "do not
@@ -1306,7 +1311,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                         );
                         match pred.ask(&hop) {
                             crate::RedirectVerdict::Follow => {}
-                            crate::RedirectVerdict::Stop => return Ok(resp),
+                            crate::RedirectVerdict::Stop => return Ok((resp, hp.uri)),
                             crate::RedirectVerdict::Refuse => {
                                 return Err(Error::new(
                                     ErrorKind::Redirect,
@@ -1320,7 +1325,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                     }
                     hops += 1;
                     let Some((next_hp, next_body)) = next_hop(&hp, replay, &f) else {
-                        return Ok(resp);
+                        return Ok((resp, hp.uri));
                     };
                     hp = next_hp;
                     body = next_body;

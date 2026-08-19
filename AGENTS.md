@@ -1284,6 +1284,39 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### `error_for_status`, and the defect it found one line away
+
+`Response::error_for_status()` and `Collected::error_for_status()` —
+`Ok(self)` below `400`, an `ErrorKind::Status` error at or above it,
+carrying an `UnexpectedStatus` with the status and the URL.
+
+Three decisions. **On both types**, because they are used at different
+moments: before the body for a caller who will not read it, after for one
+who wants the server's error text and only then decides. **It takes
+`self`** where nothing else on these types does — the whole point is that a
+caller writing `?` is choosing to stop having a response, and a `&self`
+form would leave the failed one in hand. And **`3xx` is `Ok`**, because
+reaching one means the redirect policy already decided to hand it back;
+`RedirectPolicy::None`'s own doc says a `3xx` is the caller's answer rather
+than a failure to reach one, and erroring here would overrule that from two
+layers up.
+
+**Not a client setting**, which reqwest, ureq and curl all agree on: `404`
+is a normal answer for about half the requests ever made, and a
+client-wide *treat every 4xx as an error* would turn a HEAD probe or a
+conditional GET into a failure. The caller knows which of their requests
+has a status they can act on.
+
+**And it found that `Response::url()` was answering the wrong question.**
+It reported the URL the caller *asked for*, not the one that answered —
+undocumented, untested, and different exactly when a redirect was
+followed. The name reads *where did this come from*; the value said *where
+did you send this*, which the caller already knows, having typed it. It is
+the last hop now, pinned in `tests/redirect.rs` as well as beside the
+error, with the no-redirect control that says the value is not simply *the
+second request*. The defect was invisible until an error carried the value
+somewhere a caller would read it.
+
 ### A separate bound on resolution, and it bounds something that is not a phase
 
 `Timeouts::resolve`, `TimeoutSupport::resolve` and `Phase::Resolve`, in one
