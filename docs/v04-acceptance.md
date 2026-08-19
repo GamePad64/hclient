@@ -101,6 +101,32 @@ than in thirty manifests. `AGENTS.md` carries what that costs, measured:
 six public types took a semver-breaking change in the 31 commits before
 the trigger, and none of them is `#[non_exhaustive]`.
 
+~~**A third flake, found while verifying the second one's fix and
+deliberately not fixed here.**~~ — **fixed, and the fix is the assertion
+rather than a window.** The captured error is a lawful answer: on the wire
+a WebTransport data stream is an ordinary client-initiated bidirectional
+stream, and `h3` 0.0.8 gives a peer nothing to tell one from a request, so
+a server already inside `shutdown` may answer it with
+`STOP_SENDING(H3_REQUEST_REJECTED)`. The test now asserts what is true of
+**both** answers — a refusal here is a *stream* error and the connection
+survives, which is the claim it is named for — and the bytes-arrive half
+is asserted where it is determined, in `sessions.rs` against a server that
+was never shut down.
+
+**Two things about the verification are worth more than the fix.** A 200 ms
+pause before `open_bi` was tried on the theory that the rejection was
+systematic and produced **0 failures in 5**, which is what disproved it —
+the rejection is not deterministic in either direction. And the rate could
+**not** be shown to move: 60 workspace runs at `-j96` after the change were
+clean with the new arm never taken, but a **control** run of the original
+`expect`, same host and same hour, was also 0 in 30. The conditions that
+gave 3 in 40 that morning were gone, so neither number is evidence. The fix
+rests on the capture and on the shape of the change, not on a rate — and
+the `Stopped` arm is **unexercised in this environment**, which is the one
+thing about it still worth watching.
+
+The original entry follows.
+
 **A third flake, found while verifying the second one's fix and
 deliberately not fixed here.**
 `http-ng-webtransport::goaway::a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us`

@@ -269,8 +269,61 @@ async fn a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us() {
         .open_bi()
         .await
         .expect("and the session still opens streams");
-    send.write_all(b"a lives").await.expect("loopback");
-    send.finish().expect("a freshly written stream finishes");
+
+    // **The write has two lawful answers and the invariant is the same in
+    // both**, which is why this is a `match` rather than an `expect`.
+    //
+    // On the wire a WebTransport data stream is an ordinary client-initiated
+    // bidirectional stream, and `h3` 0.0.8 gives a peer nothing to tell one
+    // from a request — so a server already inside `shutdown` may answer it
+    // with `STOP_SENDING(H3_REQUEST_REJECTED)`, and this fixture's does,
+    // sometimes. It was an `expect`, and it failed 3 runs in 40 under
+    // `-j96` across the workspace. Captured rather than reasoned about:
+    // `stream=StreamId(8) err=Stopped(267) requests=1 close_reason=None` —
+    // the session's own CONNECT is stream 0, the refused sibling is 4, and
+    // this stream is 8.
+    //
+    // Widening a window would not have fixed it and the guess that it might
+    // was measured and dropped: a 200 ms pause before `open_bi` produced 0
+    // failures in 5, so the rejection is not deterministic in *either*
+    // direction. Whether the server's accept loop is still running when
+    // stream 8 arrives is the fixture's own race, and nothing this client
+    // does can settle it.
+    //
+    // **What could not be shown is that this change lowers a rate**, and
+    // saying so is the point. After it, 60 workspace runs at `-j96` were
+    // clean and the `Stopped` arm was never taken — but a **control** run
+    // of the original `expect`, on the same host in the same hour, was
+    // also 0 in 30. The conditions that produced 3 in 40 that morning were
+    // gone, so neither number is evidence about the fix. What the fix
+    // rests on is the capture above and the shape of the change: the
+    // rejection is a lawful answer and the test now asserts what is true
+    // of both answers, which cannot fail for the reason that was caught.
+    //
+    // The arm is therefore **unexercised in this environment**, and that
+    // is recorded in `docs/v04-acceptance.md` rather than left to be
+    // rediscovered.
+    //
+    // What does not vary is the claim this test is named for, and it is
+    // asserted on both paths: a rejection here is a **stream** error and
+    // the connection is still up. The bytes-arrive half is asserted where
+    // it is determined — `sessions.rs`'s
+    // `closing_one_session_leaves_the_other_open` writes the same payload
+    // on a surviving session against a server that was never shut down.
+    match send.write_all(b"a lives").await {
+        Ok(()) => send.finish().expect("a freshly written stream finishes"),
+        Err(quinn::WriteError::Stopped(code)) => assert_eq!(
+            code.into_inner(),
+            0x10b,
+            "the only refusal in play here is H3_REQUEST_REJECTED"
+        ),
+        Err(other) => panic!("a stream error was expected, not {other:?}"),
+    }
+    assert!(
+        conn.close_reason().is_none(),
+        "and either way the connection survives it: {:?}",
+        conn.close_reason()
+    );
 }
 
 /// **(2)** `poll_close` absorbs a `GOAWAY`: it processes the frame and goes
