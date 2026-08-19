@@ -623,6 +623,22 @@ async fn a_pooled_connection_the_server_closed_while_idle_is_reported_stale() {
     // second request wins the race as often as not and the test asserts
     // on whichever side of it the machine happened to be.
     server_has_closed(&closed, 1).await;
+    // **And a turn for this client's reactor**, which is a different fact
+    // from the one above and the one the premise actually needs.
+    // `server_has_closed` says the peer dropped its socket; whether tokio
+    // has processed the `FIN`'s readiness by the time `is_reusable` takes
+    // its single non-suspending look is a scheduling question, and under
+    // an oversubscribed run the answer was no — six captures in sixty at
+    // `-j96`, every one of them `IncompleteMessage` with `accepted=1` and
+    // the connection's `Closed(Ended)` arriving from inside the second
+    // exchange instead of from the checkout.
+    //
+    // That is the far point of the pooled-reuse window
+    // (`docs/pooled-reuse-race.md`), which this workspace documents as
+    // residual and deliberately unfixed — so what the test was catching
+    // was a race it exists to sit on one side of, not a defect. A sleep
+    // here is a guard on the premise, not an assertion.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     get_ok(&client, addr).await;
 
     assert_eq!(

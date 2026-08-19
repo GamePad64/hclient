@@ -1284,6 +1284,34 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### The pooled-reuse race has a third test sitting on it, and it was the premise
+
+`a_pooled_connection_the_server_closed_while_idle_is_reported_stale` waits
+for the *server* to have dropped its socket and then expects the second
+request to find the connection dead at checkout. Under an oversubscribed
+run it failed six times in sixty with `IncompleteMessage`, and the capture
+says which point of the window it reached: `accepted=1`,
+`closes_seen=[(1, Ended)]`, `connects=1` — no fresh connection, and the
+connection's end reported from **inside the second exchange** rather than
+from the checkout.
+
+That is the far point of `docs/pooled-reuse-race.md`'s three, the one this
+workspace documents as residual and deliberately unfixed — hyper wrote the
+request and then read `EOF`, which is `Failed::Sent` and no retry. **The
+client did exactly what is written down.**
+
+What was wrong is the premise. `server_has_closed` establishes that the
+peer dropped its socket; what the test needs is that *this client's
+reactor* has processed the `FIN`'s readiness before `is_reusable` takes its
+single non-suspending look, and those are different facts. Under load tokio
+had not had its turn. A sleep after the wait is a guard on the premise, not
+an assertion — and it is the same lever `Behaviour::close_delay` already
+is, one field over.
+
+Three flakes, three test-level causes, and one real defect (the h2 stream
+limit below) — which is the ratio worth remembering before assuming a flake
+is noise.
+
 ### Two more flakes in the same hunt, and neither was the client
 
 The `-j96` hunt that found the h2 defect below turned up two more, and both
