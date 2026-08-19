@@ -2486,6 +2486,69 @@ leans on two, which is a hooks change wanting its own measurement.
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
 
+### `#[non_exhaustive]` has three answers, and only one of them is "yes"
+
+Publishing turns every public type into a promise, so the attribute was
+decided type by type rather than swept on: **21 added**, bringing the
+workspace to 35 sites. What the sweep produced is a rule, and the rule is
+worth more than the list.
+
+**It is a no-op wherever a struct has a private field**, which is most of
+them — such a struct already cannot be built with a literal from outside.
+So of 236 public types the question is even *live* for about 40.
+
+**Answer 1: the caller builds it, so no.** `TcpOpts`, `Timeouts`,
+`H1Opts`, `H2Opts` and `FetchOpts` exist to be written
+`Struct { one: Some(n), ..Default::default() }`, and the attribute forbids
+exactly that expression from outside the defining crate — functional
+update included. `TcpOptsSupport` and `TimeoutSupport` are the same answer
+with a different caller: a **runtime or transport implementor** writes
+those, and an implementor outside this workspace is the whole point of the
+seam. `WebSocketKeepAlive` looked like this group and is **not** in it,
+which is what identifies the real discriminator: `::new(every, within)` is
+its only construction path, so the attribute costs nobody anything. The
+shape of the type is not the test; how it is built is.
+
+**Answer 2: exhaustiveness is the mechanism, so no.** `Event` already
+carried this in writing — a new variant must be a compile error for every
+backend, and *the design worked and the running of it did not* is a
+sentence this file records about that exact property. The capability enums
+join it, because `Client::build()` refuses a setting a transport cannot
+honour, and a `_` arm there is the **silently ignored setting** defect
+this project has closed four times. So do `RetryKind`, `RedirectPolicy`
+and `Discovered`, each of which encodes a distinction something branches
+on.
+
+**The sharpest case in this group was found by the compiler rather than by
+reading, and it splits a class this workspace had treated as uniform.**
+Fourteen error enums were already `#[non_exhaustive]`, so `SvcbRecordError`
+looked like the fifteenth — and `http-ng-dns-system` and `http-ng-dns-doh`
+both refused to compile, because both **translate** it variant by variant
+into their own error types. **An error's answer depends on who stands on
+the other side.** One that reaches an end caller can afford the attribute:
+the caller's `_` arm says *something else went wrong*, which is true. One
+that crosses a seam into a translator cannot: there the `_` arm is a
+*mapping*, and a new variant would quietly acquire the wrong one.
+`RawParam` is the same file's other half, and its `Other(u16)` is why — an
+unknown SvcParamKey never adds a variant, so a new variant means *this
+crate now parses that parameter* and every converter owes it a decision.
+
+**Answer 3: the library hands it back and the caller only reads it —
+yes**, and that is the 21. Errors with public fields (`UnexpectedStatus`,
+`ResponseTooLarge`, `RedirectRefused`, `InvalidBaseUrl`, the four SOCKS and
+WebTransport ones), parsed values that will grow with their RFCs
+(`SetCookie`, `RequestDirectives`, `ResponseDirectives`), and reports
+(`Config`, `Follow`, `Disagreement`, `RecordedRequest`).
+
+**What the attribute does not buy is worth stating, because it is what
+prompted the exercise.** Of the six types that took a semver-breaking
+change in the 31 commits before the trigger, `#[non_exhaustive]` would
+have saved **two** — `Phase`'s new variant, and nothing else that is now
+marked. `TcpOpts`, `TcpOptsSupport`, `Timeouts` and `TimeoutSupport` are
+all answer 1, and `Connected::remote` changed a field's *type*, which no
+attribute has ever protected. The freedom this workspace has been spending
+was never mostly about additions.
+
 ### The rendered docs had no check, and the prose is the product
 
 `just docs` — `RUSTDOCFLAGS="-D warnings" cargo doc --workspace

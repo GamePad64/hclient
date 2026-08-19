@@ -531,6 +531,7 @@ fn ws_error(e: tungstenite::Error) -> Error {
 /// The two fields reset on different events, deliberately — the module
 /// doc is where the reasoning for both is written down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WebSocketKeepAlive {
     /// How long the socket may be **silent** before a `Ping` goes out.
     ///

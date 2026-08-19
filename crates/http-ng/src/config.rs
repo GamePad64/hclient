@@ -7,6 +7,7 @@ use http_ng_core::{
 use http_ng_proto::redirect::RedirectPolicy;
 
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Config {
     pub timeouts: Timeouts,
     /// A ceiling on the bytes a response body may yield, or `None` for
@@ -139,6 +140,7 @@ pub struct Config {
 /// the base exists for aren't expressible as `http::Uri` at all.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("cannot resolve `{requested}` against base URL `{base}` (a base URL must be absolute)")]
+#[non_exhaustive]
 pub struct InvalidBaseUrl {
     pub base: http::Uri,
     pub requested: String,

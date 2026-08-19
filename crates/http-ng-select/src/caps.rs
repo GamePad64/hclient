@@ -60,6 +60,7 @@ use http_ng_core::Capabilities;
 #[error(
     "the two stacks disagree on `{field}`, and neither value is true of the pair: the TCP stack says `{tcp}`, the QUIC stack says `{quic}`"
 )]
+#[non_exhaustive]
 pub struct Disagreement {
     /// The `Capabilities` field, by its own name.
     pub field: &'static str,

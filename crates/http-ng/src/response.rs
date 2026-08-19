@@ -30,6 +30,7 @@ pub struct Response<B> {
 /// chain of redirects means the URL that failed is not the one they typed.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("the server answered {status} for {url}")]
+#[non_exhaustive]
 pub struct UnexpectedStatus {
     pub status: http::StatusCode,
     pub url: http::Uri,

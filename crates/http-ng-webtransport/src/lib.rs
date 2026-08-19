@@ -210,6 +210,7 @@ impl std::fmt::Display for SessionId {
 /// fact from `404`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the peer refused the WebTransport session with {status}")]
+#[non_exhaustive]
 pub struct SessionRefused {
     /// The status the peer answered the extended CONNECT with.
     pub status: http::StatusCode,
@@ -227,6 +228,7 @@ pub struct SessionRefused {
 #[error(
     "the peer does not support WebTransport (SETTINGS_ENABLE_WEBTRANSPORT={webtransport}, SETTINGS_ENABLE_CONNECT_PROTOCOL={extended_connect})"
 )]
+#[non_exhaustive]
 pub struct NotSupportedByPeer {
     /// Whether the peer sent `SETTINGS_ENABLE_WEBTRANSPORT` with a
     /// non-zero value.
@@ -255,6 +257,7 @@ pub struct NotSupportedByPeer {
 /// the variant was deleted.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("WebTransport runs over HTTP/3, which is always TLS; `{scheme}` has no plaintext form")]
+#[non_exhaustive]
 pub struct NotHttps {
     /// The scheme the session URI carried, or `(no scheme)`.
     pub scheme: String,
@@ -272,6 +275,7 @@ pub struct NotHttps {
 /// tests, which is the standard the WebTransport work set for a variant
 /// existing at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DatagramsUnavailable {
     /// The peer's SETTINGS carried no `SETTINGS_H3_DATAGRAM`, so
     /// RFC 9297 §2.1 forbids sending it HTTP Datagrams.
@@ -363,6 +367,7 @@ impl SessionClose {
 /// crate's tests, which is the standard `DatagramsUnavailable` set for a
 /// variant existing at all.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum BadCloseCapsule {
     /// The capsule's payload was shorter than the four bytes of the
     /// application error code (draft §5's `Application Error Code (32)`),

@@ -49,6 +49,7 @@ use std::time::Duration;
 /// — "any staleness at all" — and `Some(Some(d))` is a bound. A `bool`
 /// plus a `Duration` would have collapsed the first two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RequestDirectives {
     /// §5.2.1.5. Nothing about this request or its response may be stored.
     pub no_store: bool,
@@ -69,6 +70,7 @@ pub struct RequestDirectives {
 
 /// The `Cache-Control` directives a **response** carries, RFC 9111 §5.2.2.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResponseDirectives {
     /// §5.2.2.5. This response may not be stored at all.
     pub no_store: bool,

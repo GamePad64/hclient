@@ -51,6 +51,7 @@ impl Default for RedirectPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Follow {
     /// Where to go. May carry userinfo sent by the server
     /// (`https://user:pass@host/`) — it's not part of the origin per RFC

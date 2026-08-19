@@ -44,6 +44,7 @@ use std::task::{Context, Poll};
 /// the general case), so `RecordedRequest` can't be compared as a whole —
 /// only field by field.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RecordedRequest {
     pub method: http::Method,
     pub uri: http::Uri,

@@ -45,6 +45,7 @@ use http_ng_core::{Error, ErrorKind};
 /// close the truth was to it.
 #[derive(Debug, thiserror::Error)]
 #[error("the response body exceeded the {limit}-byte limit (stopped at {seen})")]
+#[non_exhaustive]
 pub struct ResponseTooLarge {
     pub limit: u64,
     pub seen: u64,

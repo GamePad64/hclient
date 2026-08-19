@@ -147,6 +147,7 @@ impl<'a> ProposedRedirect<'a> {
 /// The predicate refused a hop.
 #[derive(Debug, thiserror::Error)]
 #[error("the redirect policy refused a {status} to {to}")]
+#[non_exhaustive]
 pub struct RedirectRefused {
     pub to: http::Uri,
     pub status: http::StatusCode,

@@ -383,6 +383,7 @@ pub struct ProxyRefused(pub http::StatusCode);
 /// RFC 1928 §6's `REP`, which is one byte and has no HTTP meaning at all.
 #[derive(Debug, thiserror::Error)]
 #[error("the SOCKS5 proxy refused with REP={rep:#04x} ({})", socks5_reply(*rep))]
+#[non_exhaustive]
 pub struct Socks5Refused {
     pub rep: u8,
 }
@@ -404,6 +405,7 @@ fn socks5_reply(rep: u8) -> &'static str {
 /// The proxy would not agree to any method we offered, or refused the
 /// credentials. `0xFF` is RFC 1928 §3's "no acceptable methods".
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Socks5HandshakeError {
     #[error("the SOCKS5 proxy accepted none of the authentication methods offered")]
     NoAcceptableMethods,
@@ -746,6 +748,7 @@ pub enum Socks4HandshakeError {
 /// SOCKS4's `CD`, which is one byte and has no HTTP meaning at all.
 #[derive(Debug, thiserror::Error)]
 #[error("the SOCKS4 proxy refused with CD={cd} ({})", socks4_reply(*cd))]
+#[non_exhaustive]
 pub struct Socks4Refused {
     pub cd: u8,
 }

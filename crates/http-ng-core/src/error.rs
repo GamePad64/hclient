@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Phase {
     /// Name resolution alone, which is a phase a caller can distinguish
     /// and a connector mostly cannot — see

@@ -17,6 +17,7 @@ use crate::date::parse_cookie_date;
 /// A `Set-Cookie` header as parsed, before any of it has been checked
 /// against a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SetCookie {
     /// The cookie name, already trimmed of surrounding whitespace.
     pub name: String,

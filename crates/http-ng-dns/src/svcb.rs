@@ -75,6 +75,26 @@ pub struct RawBinding {
 /// One SvcParam, reduced to what `SvcbEndpoint` can hold plus the key
 /// number of everything it cannot.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// **Both public enums in this module are deliberately exhaustive**, which
+// is the opposite of the rule the fourteen error types elsewhere in this
+// workspace follow, and the difference is who stands on the other side.
+//
+// `Other(u16)` already carries every key this crate does not model, so a
+// new variant here never means "IANA registered something" — it means
+// *this crate now parses that parameter*, and a `_` arm would silently
+// drop one we had gone to the trouble of reading.
+//
+// `SvcbRecordError` below is the sharper case, and the compiler found it
+// where a reading had not: `http-ng-dns-system` and `http-ng-dns-doh` both
+// **translate** it, variant by variant, into their own error types. An
+// error that reaches an end caller can afford `#[non_exhaustive]`, because
+// there the caller's `_` arm says *something else went wrong*, which is
+// true. An error that crosses a seam into a translator cannot: there the
+// `_` arm is a mapping, and a new variant would quietly acquire the wrong
+// one.
+//
+// So this is `Event`'s rule, twice over: exhaustiveness is the mechanism,
+// and the compile error is the feature.
 pub enum RawParam {
     Mandatory(Vec<u16>),
     Alpn(Vec<Vec<u8>>),
