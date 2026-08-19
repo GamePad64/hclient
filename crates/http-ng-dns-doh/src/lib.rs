@@ -190,6 +190,12 @@ const DNS_MESSAGE: &str = "application/dns-message";
 /// not silently become the slowest thing in a connection attempt. Override
 /// with [`Doh::timeouts`].
 const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
+    // `None`, and it would be a category error to set it: this is the
+    // resolver's own client, so a `resolve` bound here would be a bound on
+    // resolving the name of the thing that resolves names. `Doh::pinned`
+    // takes an IP literal and `Doh::bootstrapped` a name whose lookup is
+    // the fallback resolver's, bounded by whatever that one carries.
+    resolve: None,
     connect: Some(Duration::from_secs(2)),
     first_byte: Some(Duration::from_secs(5)),
     between_bytes: Some(Duration::from_secs(5)),

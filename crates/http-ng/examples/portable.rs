@@ -282,6 +282,7 @@ where
     if let Some(ms) = args.timeout_ms {
         let d = Duration::from_millis(ms);
         builder = builder.timeouts(Timeouts {
+            resolve: None,
             connect: Some(d),
             first_byte: Some(d),
             ..Default::default()

@@ -461,6 +461,7 @@ async fn connect_timeout(stack: Stack<'static>) {
     let rt = Embassy::new(stack, pool);
     let client = Client::builder(Native::new(rt, NoTls, IpLiteralOnly))
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(DEADLINE),
             ..Default::default()
         })
@@ -509,6 +510,7 @@ async fn connect_timeout(stack: Stack<'static>) {
     // measuring the neighbour cache, not the pool.
     let client = Client::builder(Native::new(rt, NoTls, IpLiteralOnly))
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(Duration::from_secs(10)),
             ..Default::default()
         })

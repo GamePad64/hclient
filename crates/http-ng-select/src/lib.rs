@@ -991,6 +991,7 @@ fn spend_connect_budget(req: &mut http::Request<RequestBody>, spent: Duration) -
     // member will answer with its own `Timeout(Connect)` one instant
     // before it would have anyway.
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         connect: Some(left),
         ..timeouts
     });

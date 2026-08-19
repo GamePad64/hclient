@@ -398,6 +398,7 @@ pub(crate) fn probe() -> Capabilities {
     // expressed through it individually. Declaring any of the three would
     // be a capability that lies.
     c.timeouts = TimeoutSupport {
+        resolve: false,
         connect: false,
         first_byte: false,
         between_bytes: false,

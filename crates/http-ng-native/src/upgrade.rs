@@ -252,6 +252,11 @@ where
             // handshake is not one. The connector does its own discovery
             // here, exactly as it did before that type existed.
             crate::discovery::Prefetched::NotConsulted,
+            // No `Timeouts` here, and none to read: an upgrade
+            // handshake is not an `http::Request<RequestBody>`, so
+            // there is no extension bag carrying one — the same fact
+            // that makes `Prepared` unreachable two lines up.
+            None,
         );
         let (conn, _tls_info, _facts) =
             crate::with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;

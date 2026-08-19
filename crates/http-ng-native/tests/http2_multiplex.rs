@@ -481,6 +481,7 @@ async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         first_byte: Some(Duration::from_millis(200)),
         ..Timeouts::default()
     });
@@ -971,6 +972,7 @@ fn bounded(url: &str, connect: Duration) -> http::Request<RequestBody> {
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         connect: Some(connect),
         ..Timeouts::default()
     });

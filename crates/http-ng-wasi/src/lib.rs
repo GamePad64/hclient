@@ -185,6 +185,13 @@ impl WasiHttp {
         caps.request_trailers = true;
         caps.response_trailers = true;
         caps.timeouts = TimeoutSupport {
+            // **`false`, and honestly so.** `wasi:http` 0.3's
+            // `request-options` has connect-timeout, first-byte-timeout
+            // and between-bytes-timeout and nothing for resolution: the
+            // host resolves, and there is no moment in this guest at which
+            // a bound could be applied or a failure attributed. Declaring
+            // it would be the shape `Capabilities` exists to refuse.
+            resolve: false,
             connect: true,
             first_byte: true,
             between_bytes: true,

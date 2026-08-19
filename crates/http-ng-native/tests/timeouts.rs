@@ -203,6 +203,7 @@ async fn a_server_that_never_answers_hits_the_first_byte_bound() {
     let addr = server(Behaviour::AnswersNever);
     let err = get_all(
         Timeouts {
+            resolve: None,
             first_byte: Some(BOUND),
             ..Default::default()
         },
@@ -242,6 +243,7 @@ async fn a_server_that_answers_inside_the_first_byte_bound_is_not_cut() {
     let addr = server(Behaviour::Dribbles(Duration::from_millis(10)));
     let body = get_all(
         Timeouts {
+            resolve: None,
             first_byte: Some(BOUND),
             ..Default::default()
         },
@@ -263,6 +265,7 @@ async fn a_body_that_goes_silent_after_the_head_hits_the_between_bytes_bound() {
     let addr = server(Behaviour::HeadThenSilence);
     let err = get_all(
         Timeouts {
+            resolve: None,
             between_bytes: Some(BOUND),
             ..Default::default()
         },
@@ -290,6 +293,7 @@ async fn a_body_that_stalls_half_way_hits_the_between_bytes_bound() {
     let addr = server(Behaviour::StallsMidBody);
     let err = get_all(
         Timeouts {
+            resolve: None,
             between_bytes: Some(BOUND),
             ..Default::default()
         },
@@ -325,6 +329,7 @@ async fn a_slow_but_never_silent_body_is_not_cut_by_between_bytes() {
     let addr = server(Behaviour::Dribbles(BOUND / 5));
     let body = get_all(
         Timeouts {
+            resolve: None,
             between_bytes: Some(BOUND),
             ..Default::default()
         },
@@ -344,6 +349,7 @@ async fn a_silent_body_is_between_bytes_even_with_a_tighter_first_byte_bound_set
     let addr = server(Behaviour::HeadThenSilence);
     let err = get_all(
         Timeouts {
+            resolve: None,
             first_byte: Some(BOUND / 2),
             between_bytes: Some(BOUND),
             ..Default::default()
@@ -378,6 +384,7 @@ async fn a_silent_body_is_between_bytes_even_with_a_tighter_first_byte_bound_set
 async fn a_between_bytes_timeout_closes_the_connection_the_server_sees() {
     let (addr, closed) = server_watching(Behaviour::HeadThenSilence);
     let c = client(Timeouts {
+        resolve: None,
         between_bytes: Some(BOUND),
         ..Default::default()
     });

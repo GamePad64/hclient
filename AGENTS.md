@@ -1284,6 +1284,57 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### A separate bound on resolution, and it bounds something that is not a phase
+
+`Timeouts::resolve`, `TimeoutSupport::resolve` and `Phase::Resolve`, in one
+change — the rule that kept `connect` off `http-ng-h3` until v0.4 W1 and
+`first_byte`/`between_bytes` off native until v0.2 W4.
+
+**What it bounds took working out.** Happy Eyeballs interleaves resolution
+with connecting on purpose: the resolver is a `Stream`, and `connect`
+starts both families at the top precisely so `attempt` can dial the first
+address while the rest are still arriving. So there is no instant at which
+*resolution finished*, and a bound on one would have nothing to attach to.
+What is bounded is the wait for the **first address from either family** —
+which is the failure a caller cannot otherwise diagnose, since a resolver
+that hangs and an origin that will not answer are the same
+`Timeout(Connect)` today.
+
+**Nothing is serialised by it.** `attempt` cannot connect before an address
+exists, so the gate waits for what the next line would wait for anyway;
+what changes is the error, not the schedule.
+
+Three decisions came out of the shape:
+
+- **It does not apply where the connection does not need the resolver.** An
+  HTTPS record with address hints gives the connector somewhere to go with
+  no answer at all, so waiting for one would bound a query whose result is
+  off the path — the same reasoning that keeps discovery from running for
+  an IP literal. That skip was first written as a mutation **control** and
+  is a **test**: RFC 9460 §7.3 hints are ordinary, so it was reachable and
+  untested, which this file's own rule calls a gap. It is asserted
+  causally, on the fixture seeing a connection at all, because after a
+  hinted attempt fails the connector legitimately falls back to the
+  resolver and the exchange's *ending* is not the subject.
+- **It stops waiting when both families are done**, so a name that does not
+  exist stays `ErrorKind::Resolve` rather than becoming a timeout —
+  `drive`'s `ResolveErrors` has per-family causes this gate does not, and
+  replacing a precise diagnosis with a vague one is what the feature exists
+  to undo.
+- **`false` on both ambient backends, and it is the first field whose
+  `TimeoutSupport` bool was ever honestly `false` on arrival.**
+  `wasi:http` 0.3's `request-options` carries three timeouts and nothing
+  for resolution — the host resolves — and `fetch` collapses everything
+  into one `AbortController`. `http-ng-dns-doh` sets `None` for a third
+  reason: it is the resolver's own client, so a `resolve` bound there would
+  bound resolving the name of the thing that resolves names.
+
+**Overlapping budgets are the caller's to reconcile.** Nothing subtracts
+`resolve` from `connect`: a resolver that answered in 10 ms has not spent
+any of the connect budget in any sense a connector can see, and inventing
+an arithmetic between them would make one field's meaning depend on the
+other's.
+
 ### Digest authentication, and it is the `425` branch with a computed header
 
 `RequestBuilder::digest_auth(user, password)` — RFC 7616, behind the

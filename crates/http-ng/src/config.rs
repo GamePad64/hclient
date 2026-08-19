@@ -210,6 +210,7 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
     match req.get::<Timeouts>() {
         None => *client,
         Some(o) => Timeouts {
+            resolve: o.resolve.or(client.resolve),
             connect: o.connect.or(client.connect),
             first_byte: o.first_byte.or(client.first_byte),
             between_bytes: o.between_bytes.or(client.between_bytes),
@@ -549,11 +550,13 @@ pub(crate) fn check_timeouts_supported(
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {
     let Timeouts {
+        resolve,
         connect,
         first_byte,
         between_bytes,
     } = t;
     let checks = [
+        (resolve.is_some(), caps.timeouts.resolve, "resolve_timeout"),
         (connect.is_some(), caps.timeouts.connect, "connect_timeout"),
         (
             first_byte.is_some(),
@@ -648,12 +651,14 @@ mod tests {
     #[test]
     fn request_overrides_client_field_by_field() {
         let client = Timeouts {
+            resolve: None,
             connect: secs(1),
             first_byte: secs(2),
             between_bytes: secs(3),
         };
         let mut ext = http::Extensions::new();
         ext.insert(Timeouts {
+            resolve: None,
             connect: secs(9),
             ..Default::default()
         });
@@ -666,6 +671,7 @@ mod tests {
     #[test]
     fn client_config_used_when_request_says_nothing() {
         let client = Timeouts {
+            resolve: None,
             connect: secs(1),
             ..Default::default()
         };
@@ -677,6 +683,7 @@ mod tests {
     fn unsupported_timeout_is_an_error_not_a_silent_noop() {
         let cfg = Config {
             timeouts: Timeouts {
+                resolve: None,
                 between_bytes: secs(5),
                 ..Default::default()
             },
@@ -684,6 +691,7 @@ mod tests {
         };
         let mut caps = Capabilities::none();
         caps.timeouts = TimeoutSupport {
+            resolve: true,
             connect: true,
             first_byte: true,
             between_bytes: false,
@@ -697,6 +705,7 @@ mod tests {
     fn supported_config_passes() {
         let cfg = Config {
             timeouts: Timeouts {
+                resolve: None,
                 connect: secs(1),
                 ..Default::default()
             },
@@ -704,6 +713,7 @@ mod tests {
         };
         let mut caps = Capabilities::none();
         caps.timeouts = TimeoutSupport {
+            resolve: true,
             connect: true,
             first_byte: false,
             between_bytes: false,
@@ -723,12 +733,14 @@ mod tests {
     #[test]
     fn request_overrides_first_byte_only_leaves_others_from_client() {
         let client = Timeouts {
+            resolve: None,
             connect: secs(1),
             first_byte: secs(2),
             between_bytes: secs(3),
         };
         let mut ext = http::Extensions::new();
         ext.insert(Timeouts {
+            resolve: None,
             first_byte: secs(9),
             ..Default::default()
         });
@@ -760,6 +772,7 @@ mod tests {
     fn unsupported_connect_is_named_connect_not_another_phase() {
         let cfg = Config {
             timeouts: Timeouts {
+                resolve: None,
                 connect: secs(1),
                 ..Default::default()
             },
@@ -767,6 +780,7 @@ mod tests {
         };
         let mut caps = Capabilities::none();
         caps.timeouts = TimeoutSupport {
+            resolve: false,
             connect: false,
             first_byte: true,
             between_bytes: true,
@@ -780,6 +794,7 @@ mod tests {
     fn unsupported_first_byte_is_named_first_byte_not_another_phase() {
         let cfg = Config {
             timeouts: Timeouts {
+                resolve: None,
                 first_byte: secs(1),
                 ..Default::default()
             },
@@ -787,6 +802,7 @@ mod tests {
         };
         let mut caps = Capabilities::none();
         caps.timeouts = TimeoutSupport {
+            resolve: true,
             connect: true,
             first_byte: false,
             between_bytes: true,
@@ -800,6 +816,7 @@ mod tests {
     fn unsupported_between_bytes_is_named_between_bytes_not_another_phase() {
         let cfg = Config {
             timeouts: Timeouts {
+                resolve: None,
                 between_bytes: secs(1),
                 ..Default::default()
             },
@@ -807,6 +824,7 @@ mod tests {
         };
         let mut caps = Capabilities::none();
         caps.timeouts = TimeoutSupport {
+            resolve: false,
             connect: true,
             first_byte: true,
             between_bytes: false,

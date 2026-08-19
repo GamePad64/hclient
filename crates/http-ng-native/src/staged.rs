@@ -478,6 +478,7 @@ where
             &self.svcb_failures,
             now,
             discovery::Prefetched::NotConsulted,
+            timeouts.resolve,
         );
         let (conn, tls_info, attempted) =
             match with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await {

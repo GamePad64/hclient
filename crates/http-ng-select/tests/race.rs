@@ -87,6 +87,7 @@ fn request(pair: &Pair, timeouts: Option<Timeouts>) -> http::Request<RequestBody
 
 fn bound(connect: Duration) -> Timeouts {
     Timeouts {
+        resolve: None,
         connect: Some(connect),
         ..Default::default()
     }

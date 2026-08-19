@@ -72,6 +72,7 @@ async fn end_to_end_through_the_client() {
 async fn build_rejects_timeouts_fetch_cannot_express() {
     let err = Client::builder(Fetch::new())
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(std::time::Duration::from_secs(1)),
             ..Default::default()
         })

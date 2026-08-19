@@ -176,6 +176,7 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
 
     let mut caps = http_ng::Capabilities::none();
     caps.timeouts = http_ng::TimeoutSupport {
+        resolve: false,
         connect: true,
         first_byte: true,
         between_bytes: true,
@@ -187,6 +188,7 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     let _ = futures_executor::block_on(
         c.get("https://a/x")
             .timeouts(Timeouts {
+                resolve: None,
                 connect: Some(Duration::from_secs(3)),
                 ..Default::default()
             })

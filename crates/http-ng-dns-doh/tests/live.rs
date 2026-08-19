@@ -132,6 +132,7 @@ const BACKOFF: Duration = Duration::from_millis(250);
 /// Set through the public `Doh::timeouts`, which is the knob a deployment on
 /// a bad link would reach for too.
 const LIVE_TIMEOUTS: http_ng_core::Timeouts = http_ng_core::Timeouts {
+    resolve: None,
     connect: Some(Duration::from_secs(5)),
     first_byte: Some(Duration::from_secs(5)),
     between_bytes: Some(Duration::from_secs(5)),

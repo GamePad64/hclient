@@ -160,6 +160,7 @@ fn capability_support_types_are_reachable_from_the_facade() {
     caps.tls_config = http_ng::TlsSupport::Full;
     caps.early_data = http_ng::EarlyDataSupport::Supported;
     caps.timeouts = http_ng::TimeoutSupport {
+        resolve: false,
         connect: true,
         first_byte: true,
         between_bytes: false,

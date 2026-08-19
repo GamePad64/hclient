@@ -126,6 +126,7 @@ async fn an_ip_literal_asks_for_no_https_record_either() {
 async fn a_first_byte_bound_ends_a_lookup_a_silent_server_would_not() {
     let server = Server::spawn(|_| Reply::Silence);
     let doh = doh(&server).timeouts(Timeouts {
+        resolve: None,
         connect: Some(BOUND),
         first_byte: Some(BOUND),
         between_bytes: Some(BOUND),
@@ -148,6 +149,7 @@ async fn a_first_byte_bound_ends_a_lookup_a_silent_server_would_not() {
 async fn the_same_silent_server_hangs_with_every_bound_unset() {
     let server = Server::spawn(|_| Reply::Silence);
     let doh = doh(&server).timeouts(Timeouts {
+        resolve: None,
         connect: None,
         first_byte: None,
         between_bytes: None,

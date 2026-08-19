@@ -578,6 +578,7 @@ mod tests {
 
         let mut req = http::Request::new(RequestBody::Empty);
         req.extensions_mut().insert(Timeouts {
+            resolve: None,
             connect: Some(Duration::from_secs(3)),
             ..Default::default()
         });

@@ -2,6 +2,11 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
+    /// Name resolution alone, which is a phase a caller can distinguish
+    /// and a connector mostly cannot — see [`Timeouts::resolve`](crate::
+    /// Timeouts::resolve) for what it bounds and why it is not
+    /// [`Connect`](Self::Connect) minus the rest.
+    Resolve,
     Connect,
     FirstByte,
     BetweenBytes,

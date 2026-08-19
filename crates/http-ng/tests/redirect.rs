@@ -180,6 +180,7 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
     let m = MockTransport::new(); // Capabilities::none() — timeouts unsupported
     let err = Client::builder(m)
         .timeouts(Timeouts {
+            resolve: None,
             connect: Some(std::time::Duration::from_secs(1)),
             ..Default::default()
         })
@@ -241,6 +242,7 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     // not about the gate.
     let mut caps = http_ng::Capabilities::none();
     caps.timeouts = http_ng::TimeoutSupport {
+        resolve: false,
         connect: true,
         first_byte: true,
         between_bytes: true,
@@ -255,6 +257,7 @@ fn per_request_extensions_survive_a_hop_unchanged() {
         .body(RequestBody::Empty)
         .unwrap();
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         connect: Some(Duration::from_secs(3)),
         ..Default::default()
     });

@@ -484,6 +484,7 @@ fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilitie
     // Declaring either without that is the silent no-op this field exists
     // to make impossible.
     c.timeouts = TimeoutSupport {
+        resolve: true,
         connect: true,
         first_byte: false,
         between_bytes: false,

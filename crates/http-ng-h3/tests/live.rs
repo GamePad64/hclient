@@ -575,6 +575,7 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
 
     let mut req = get(addr, "/x");
     req.extensions_mut().insert(http_ng_core::Timeouts {
+        resolve: None,
         connect: Some(CONNECT_BOUND),
         ..Default::default()
     });
@@ -638,6 +639,7 @@ async fn a_client_may_now_set_a_connect_timeout_over_h3() {
     let id = server::identity();
     let client = http_ng::Client::builder(h3(&id.cert_der))
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(CONNECT_BOUND),
             ..Default::default()
         })

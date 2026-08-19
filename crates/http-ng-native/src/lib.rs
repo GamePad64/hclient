@@ -52,7 +52,7 @@ mod staged;
 mod upgrade;
 
 pub use body::UndeclaredRequestTrailers;
-pub use connect::Conn;
+pub use connect::{Conn, ResolveTimedOut};
 pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 /// The future [`Native::multiplexed`] spawns — public because that
 /// constructor's `Spawn` bound has to name it, and for no other reason.
@@ -557,6 +557,14 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // line of it.
         caps.version_select = true;
         caps.timeouts = TimeoutSupport {
+            // Enforced by `connect::first_address_within`, and its scope is
+            // narrower than the field name suggests on purpose: it bounds
+            // the wait for the **first address from either family**, not a
+            // phase, because Happy Eyeballs has no instant at which
+            // resolution finished. `Timeouts::resolve`'s own doc has the
+            // argument; `tests/timeouts.rs` has the server that never
+            // answers a query.
+            resolve: true,
             // Actually enforced — see `execute`'s race between
             // `connect::connect` and `rt.sleep(d)`, below, and
             // `tests/transport.rs`'s
@@ -2329,6 +2337,7 @@ where
             // function, and it was fetched for this request's own
             // authority — see `Prepared`.
             prefetched,
+            timeouts.resolve,
         );
         // `budget` rather than `timeouts.connect`: on the shared path it
         // is what a wait for somebody else's connect left, and on every

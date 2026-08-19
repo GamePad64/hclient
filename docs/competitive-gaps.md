@@ -122,10 +122,11 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | Basic auth | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
 | Bearer auth | Y | Y | Y | Y | Y | |
 | Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`). See §3 G12 |
-| client-wide default headers | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/client.rs:1166`; ng has no `ClientBuilder` header setter at all |
-| a `User-Agent` at all | **N** | Y | Y | Y | (browser's) | `ureq-3.4.0/src/config.rs:546`; **ng sends none** |
+| client-wide default headers | Y | Y | Y | — | Y | closed — `ClientBuilder::{default_header, default_headers}`, applied per redirect hop, the caller's own header winning, and refused at `build()` where a backend forbids the name. See G2 |
+| a `User-Agent` at all | Y\* | Y | Y | Y | (browser's) | `ClientBuilder::user_agent` exists; **ng still sends none by default**, deliberately — a library that names itself on every request decides for its embedder, and the embedder is who has an opinion. `ureq-3.4.0/src/config.rs:546` |
 | base URL / relative URLs | Y | **N** | N | N | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
 | per-request timeout override | Y | Y | Y\* | Y | Y | `RequestBuilder::timeouts` (`request.rs:341`) |
+| a separate bound on name resolution | Y\* | N | Y | Y | n/a | closed — `Timeouts::resolve`. What it bounds is the wait for the **first address**, not a phase: Happy Eyeballs interleaves resolving with connecting, so there is no instant at which resolution finished. `false` on both ambient backends, honestly. See G11a; `ureq-3.4.0/src/config.rs:692` |
 | per-request redirect override | Y | N | — | — | N | `RequestBuilder::redirect` (`request.rs:387`) |
 | set an `http::Extensions` value from the builder | **N** | — | — | — | — | recorded as deliberate, `v03-acceptance.md:3394` — see §4 |
 | `error_for_status` | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/response.rs:378` |
@@ -530,20 +531,41 @@ error has to name the option, so growing it is the designed-for change. A
 Unix socket is a different `TcpConnect`, or rather a sibling trait, and is
 the larger of the two. *Forbidden?* No.
 
-### G11a. No separate bound on name resolution
+### G11a. No separate bound on name resolution — **closed**
 
-`Timeouts::connect` covers resolve → Happy Eyeballs → TCP → TLS as one
-budget. ureq separates `timeout_resolve` from `timeout_connect`
-(`src/config.rs:692, :702`). A caller behind a resolver that hangs cannot
-distinguish "DNS is broken" from "the origin is unreachable", and cannot
-give the two different budgets.
+`Timeouts::resolve`, `TimeoutSupport::resolve` and `Phase::Resolve`, all in
+one change — the rule this field had to land under, and the one that kept
+`connect` off `http-ng-h3` until W1.
 
-*What it takes*: a fourth `Timeouts` field, a fourth `TimeoutSupport` bool,
-and a race around the resolver call. *Rules*: the declaration and the
-enforcement must land in one change — the rule that kept `connect` off
-`http-ng-h3` until W1 and `first_byte`/`between_bytes` off native until v0.2
-W4. It is also the field most likely to be honestly `false` on the ambient
-backends, which is what `TimeoutSupport` is for. *Forbidden?* No.
+**What it bounds is not a phase, and finding that out was the work.**
+Happy Eyeballs interleaves resolution with connecting on purpose — the
+resolver is a `Stream` and `http-ng-native` starts dialling the first
+address while the rest are still arriving — so there is no instant at which
+*resolution finished* for a bound to attach to. What is bounded is the wait
+for the **first address from either family**, which is exactly the failure
+the gap named: a resolver that hangs is indistinguishable from an origin
+that will not answer, and only the first is worth a different retry.
+
+Nothing is serialised by it. `attempt` cannot connect before an address
+exists, so the gate waits for what the next line would wait for anyway;
+what changes is the error, not the schedule.
+
+Three things the shape decided:
+
+- **It does not apply where the connection does not need the resolver** —
+  an HTTPS record carrying address hints gives the connector somewhere to
+  go with no answer at all. That skip was first written as a mutation
+  *control* and is a **test**: RFC 9460 §7.3 address hints are ordinary, so
+  the behaviour was reachable and untested, which is a gap.
+- **It stops waiting when both families are done**, so a name that does not
+  exist stays `ErrorKind::Resolve` rather than becoming a timeout. Turning
+  a precise diagnosis into a vague one is the thing this feature exists to
+  undo.
+- **`TimeoutSupport::resolve` is honestly `false` on both ambient
+  backends.** `wasi:http` 0.3's `request-options` has three timeouts and
+  nothing for resolution — the host resolves — and `fetch` collapses
+  everything into one `AbortController`. The field's own reason for
+  existing, met on the first try.
 
 ### G12. Digest, NTLM and Negotiate authentication — **Digest closed**
 

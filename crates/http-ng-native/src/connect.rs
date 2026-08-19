@@ -1014,6 +1014,7 @@ pub(crate) async fn connect<R, D, L, P, H>(
     discovery_cache: &NegativeCache,
     now: Duration,
     prefetched: Prefetched,
+    resolve: Option<Duration>,
 ) -> Result<
     (
         Conn<R::Stream, L::Stream<R::Stream>>,
@@ -1075,6 +1076,22 @@ where
         already => already,
     };
     let endpoint = found.actionable();
+
+    // **`Timeouts::resolve`, and it is applied here rather than around
+    // anything.** Happy Eyeballs interleaves resolution with connecting on
+    // purpose — the streams above are consumed lazily by `attempt` — so
+    // there is no instant at which resolution finished for a bound to
+    // attach to. What is bounded is the wait for the first address from
+    // either family, which is the failure a caller cannot otherwise
+    // diagnose: a resolver that hangs is indistinguishable from an origin
+    // that will not answer, and only the first is worth a different retry.
+    //
+    // Nothing is serialised by it. `attempt` cannot connect before an
+    // address exists, so this waits for what the next line would wait for
+    // anyway; what changes is the error, not the schedule.
+    if let Some(bound) = resolve {
+        first_address_within::<R>(rt, bound, &mut v6, &mut v4, endpoint.as_ref()).await?;
+    }
 
     let first = attempt::<R, L, H>(
         rt,
@@ -1178,6 +1195,73 @@ where
 /// port at which the HTTPS record fetched for a bare origin name applies
 /// (RFC 9460 §9.5, see [`crate::discovery`]).
 const HTTPS_DEFAULT_PORT: u16 = 443;
+
+/// Waits for the first address either family produces, or fails naming
+/// the resolver.
+///
+/// # What it does not wait for
+///
+/// **Nothing, where the connection does not need it.** An HTTPS record
+/// carrying address hints gives `attempt` somewhere to go with no resolver
+/// answer at all, so waiting for one would bound a query whose result is
+/// not on the path — the same reasoning that keeps discovery from running
+/// for an IP literal one layer up.
+///
+/// # When it stops waiting without an address
+///
+/// When **both** families are done. A resolver that failed, and one that
+/// honestly found nothing, are told apart by `drive`'s `ResolveErrors`,
+/// which has the per-family causes this function does not; producing a
+/// timeout here for a resolver that already answered *no* would replace a
+/// precise diagnosis with a vague one.
+async fn first_address_within<R>(
+    rt: &R,
+    bound: Duration,
+    v6: &mut Answers<'_>,
+    v4: &mut Answers<'_>,
+    endpoint: Option<&Endpoint>,
+) -> Result<(), Error>
+where
+    R: Timer,
+{
+    // Hints are addresses. `is_inert` has already dropped a record that
+    // contributes nothing, so a `Some` here with hints really is somewhere
+    // to go.
+    if endpoint.is_some_and(|e| !e.ipv6hint.is_empty() || !e.ipv4hint.is_empty()) {
+        return Ok(());
+    }
+    let mut sleep = core::pin::pin!(rt.sleep(bound));
+    core::future::poll_fn(|cx| {
+        v6.pump(cx);
+        v4.pump(cx);
+        // An `Ok` from either family is an address to try. An `Err` is
+        // not: a family that failed leaves the other one still worth
+        // waiting for, and if both fail `done` below ends the wait.
+        let any = |a: &Answers<'_>| a.seen.iter().any(Result::is_ok);
+        if any(v6) || any(v4) || (v6.done && v4.done) {
+            return Poll::Ready(Ok(()));
+        }
+        match sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(Error::new(
+                ErrorKind::Timeout(http_ng_core::Phase::Resolve),
+                ResolveTimedOut(bound),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
+}
+
+/// The failure [`first_address_within`] ends in.
+///
+/// A named type rather than a string, for the reason
+/// [`crate::FirstByteTimedOut`] is one: a caller tells the phases apart
+/// with `Error::source().downcast_ref()`, and the point of this bound is
+/// that *"DNS is broken"* and *"the origin is unreachable"* stop looking
+/// alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no address from the resolver within the resolve timeout of {0:?}")]
+pub struct ResolveTimedOut(pub Duration);
 
 /// One connection attempt: Happy Eyeballs over `endpoint`'s hints followed
 /// by the origin's own addresses, then TLS if the scheme asks for it.
@@ -2228,6 +2312,7 @@ mod tests {
             &cache,
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("nothing answers");
 
@@ -2278,6 +2363,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("nothing answers");
 
@@ -2455,6 +2541,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("nothing answers");
 
@@ -2513,6 +2600,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("nothing answers");
 
@@ -2645,6 +2733,7 @@ mod tests {
                     &cache,
                     Duration::ZERO,
                     Prefetched::NotConsulted,
+                    None,
                 ));
             let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(
@@ -2745,6 +2834,7 @@ mod tests {
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
+                None,
             ))
             .expect("the v4 address must win the race");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -2778,6 +2868,7 @@ mod tests {
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
+                None,
             ))
             .expect("connect");
         assert!(matches!(conn, Conn::Plain(_)));
@@ -2807,6 +2898,7 @@ mod tests {
                 &NegativeCache::default(),
                 Duration::ZERO,
                 Prefetched::NotConsulted,
+                None,
             ))
             .expect("connect");
         assert!(matches!(conn, Conn::Tls(_)));
@@ -2831,6 +2923,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("ftp isn't supported");
         assert_eq!(err.kind(), &ErrorKind::Unsupported);
@@ -2862,6 +2955,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ));
         let log = rt.log.borrow();
         assert_eq!(log.len(), 1);
@@ -2887,6 +2981,7 @@ mod tests {
             &NegativeCache::default(),
             Duration::ZERO,
             Prefetched::NotConsulted,
+            None,
         ))
         .expect_err("no host — nowhere to connect to");
         assert_eq!(err.kind(), &ErrorKind::Connect);

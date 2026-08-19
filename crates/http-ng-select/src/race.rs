@@ -290,6 +290,7 @@ fn set_connect(req: &mut http::Request<RequestBody>, connect: Duration) {
         .copied()
         .unwrap_or_default();
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         connect: Some(connect),
         ..timeouts
     });
@@ -551,6 +552,7 @@ mod tests {
         req.extensions_mut()
             .insert(http_ng_core::RequireVersion(http::Version::HTTP_3));
         req.extensions_mut().insert(Timeouts {
+            resolve: None,
             connect: Some(Duration::from_millis(300)),
             ..Default::default()
         });

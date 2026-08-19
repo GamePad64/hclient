@@ -365,6 +365,10 @@ pub enum TlsSupport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeoutSupport {
+    /// Whether [`Timeouts::resolve`] is enforced. Honestly `false` on
+    /// every ambient backend: `wasi:http` and `fetch` do the resolving
+    /// inside the host, so there is no moment for a client to bound.
+    pub resolve: bool,
     pub connect: bool,
     pub first_byte: bool,
     pub between_bytes: bool,
@@ -381,6 +385,36 @@ pub struct TimeoutSupport {
 /// `http::Extensions`, and they don't depend on `http-ng`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
+    /// A bound on **getting an address to try**, separate from the connect
+    /// budget that follows it.
+    ///
+    /// # What it bounds, which is not a phase boundary
+    ///
+    /// Happy Eyeballs interleaves resolution with connecting on purpose —
+    /// the resolver is a `Stream` and `http-ng-native` starts connecting to
+    /// the first address while the rest are still arriving — so there is no
+    /// instant at which *resolution finished*, and a bound on one would
+    /// have nothing to attach to. What this bounds is the wait for the
+    /// **first** address from either family, which is exactly the failure a
+    /// caller cannot otherwise diagnose: a resolver that hangs looks like
+    /// an origin that is unreachable, and only the first is worth a
+    /// different retry.
+    ///
+    /// It therefore does **not** apply where the connection does not depend
+    /// on the resolver — an IP literal, and an HTTPS record carrying
+    /// address hints, both of which give a connector somewhere to go
+    /// without an answer.
+    ///
+    /// # Why not simply a smaller `connect`
+    ///
+    /// Because the two answer different questions and a caller who cares
+    /// wants both: `resolve` says *how long may I wait to learn where to
+    /// go*, `connect` says *and how long may going there take*. Folding
+    /// them loses which one failed, which is the whole gap. Overlapping
+    /// budgets are the caller's to reconcile; nothing here subtracts one
+    /// from the other, because a resolver that answered in 10 ms has not
+    /// spent any of the connect budget in any sense a connector can see.
+    pub resolve: Option<core::time::Duration>,
     pub connect: Option<core::time::Duration>,
     pub first_byte: Option<core::time::Duration>,
     pub between_bytes: Option<core::time::Duration>,
@@ -824,6 +858,7 @@ impl Capabilities {
             version_select: false,
             version_reported: false,
             timeouts: TimeoutSupport {
+                resolve: false,
                 connect: false,
                 first_byte: false,
                 between_bytes: false,
@@ -919,6 +954,7 @@ mod tests {
         assert_eq!(
             timeouts,
             TimeoutSupport {
+                resolve: false,
                 connect: false,
                 first_byte: false,
                 between_bytes: false,
@@ -942,6 +978,7 @@ mod tests {
     #[test]
     fn timeout_support_is_per_phase_not_a_single_flag() {
         let t = TimeoutSupport {
+            resolve: true,
             connect: true,
             first_byte: true,
             between_bytes: false,

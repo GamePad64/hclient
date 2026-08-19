@@ -141,6 +141,7 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // enforced by both. Declaring a bound that one stack silently ignores
     // is the exact no-op v0.2 W4 made this field exist to prevent.
     c.timeouts = http_ng_core::TimeoutSupport {
+        resolve: tcp.timeouts.connect && quic.timeouts.connect,
         connect: tcp.timeouts.connect && quic.timeouts.connect,
         first_byte: tcp.timeouts.first_byte && quic.timeouts.first_byte,
         between_bytes: tcp.timeouts.between_bytes && quic.timeouts.between_bytes,

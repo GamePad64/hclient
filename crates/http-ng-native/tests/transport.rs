@@ -394,6 +394,7 @@ async fn every_timeout_phase_is_accepted_at_build_time_now_that_each_is_enforced
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
     Client::builder(t)
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(Duration::from_secs(1)),
             first_byte: Some(Duration::from_secs(1)),
             between_bytes: Some(Duration::from_secs(1)),
@@ -777,6 +778,7 @@ fn declared_connect_timeout_is_actually_applied() {
     let t = Native::new(NeverConnects, NoOpTls, OneUnroutableAddr);
     let c = Client::builder(t)
         .timeouts(http_ng::Timeouts {
+            resolve: None,
             connect: Some(Duration::from_millis(50)),
             ..Default::default()
         })
@@ -908,6 +910,7 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
         let t = Native::new(rt.clone(), NoOpTls, FiveUnroutableAddrs);
         let c = Client::builder(t)
             .timeouts(http_ng::Timeouts {
+                resolve: None,
                 connect: Some(d),
                 ..Default::default()
             })

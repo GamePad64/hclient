@@ -28,6 +28,7 @@ fn secs(n: u64) -> Option<Duration> {
 fn all_timeouts_supported() -> Capabilities {
     let mut caps = Capabilities::none();
     caps.timeouts = TimeoutSupport {
+        resolve: false,
         connect: true,
         first_byte: true,
         between_bytes: true,
@@ -47,6 +48,7 @@ fn client_level_timeouts_reach_the_transport() {
 
     let c = Client::builder(m)
         .timeouts(Timeouts {
+            resolve: None,
             connect: secs(7),
             ..Default::default()
         })
@@ -74,6 +76,7 @@ fn request_timeouts_override_the_client_field_by_field() {
 
     let c = Client::builder(m)
         .timeouts(Timeouts {
+            resolve: None,
             connect: secs(1),
             first_byte: secs(2),
             between_bytes: secs(3),
@@ -83,6 +86,7 @@ fn request_timeouts_override_the_client_field_by_field() {
     futures_executor::block_on(
         c.get("https://a/x")
             .timeouts(Timeouts {
+                resolve: None,
                 first_byte: secs(9),
                 ..Default::default()
             })
@@ -123,6 +127,7 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
     let err = futures_executor::block_on(
         c.get("https://a/x")
             .timeouts(Timeouts {
+                resolve: None,
                 connect: secs(3),
                 ..Default::default()
             })
@@ -178,5 +183,46 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
         *t,
         Timeouts::default(),
         "and it's empty: the extension's presence doesn't mean timeouts were requested"
+    );
+}
+
+/// **`resolve_timeout` is refused by name**, which is the rule the field
+/// landed under: the declaration and the enforcement in one change, and a
+/// capability saying `false` meaning it.
+///
+/// It is checked separately from `connect_timeout` above rather than by
+/// widening that test, because what is being asserted is that the refusal
+/// names *this* setting — a caller who wrote `resolve` must not be told
+/// `connect` was the problem.
+#[test]
+fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
+    let mut caps = http_ng::Capabilities::none();
+    caps.timeouts = http_ng::TimeoutSupport {
+        resolve: false,
+        // The three a backend may well support while resolution is the
+        // host's — which is `http-ng-wasi`'s exact answer.
+        connect: true,
+        first_byte: true,
+        between_bytes: true,
+    };
+    let err = Client::builder(MockTransport::new().with_capabilities(caps.clone()))
+        .timeouts(Timeouts {
+            resolve: secs(1),
+            ..Default::default()
+        })
+        .build()
+        .expect_err("the backend says it cannot bound resolution");
+    assert_eq!(err.what, "resolve_timeout", "{err}");
+
+    // The control: the same setting against a backend that can.
+    caps.timeouts.resolve = true;
+    assert!(
+        Client::builder(MockTransport::new().with_capabilities(caps))
+            .timeouts(Timeouts {
+                resolve: secs(1),
+                ..Default::default()
+            })
+            .build()
+            .is_ok()
     );
 }

@@ -67,6 +67,7 @@ fn get(uri: String) -> http::Request<RequestBody> {
         .body(RequestBody::Empty)
         .expect("a well-formed request");
     req.extensions_mut().insert(Timeouts {
+        resolve: None,
         connect: Some(CONNECT),
         ..Timeouts::default()
     });

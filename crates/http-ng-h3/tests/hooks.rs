@@ -1112,6 +1112,7 @@ async fn a_connect_that_never_completes_reports_nothing() {
 
     let mut req = get(addr, "/nowhere");
     req.extensions_mut().insert(http_ng_core::Timeouts {
+        resolve: None,
         connect: Some(Duration::from_millis(300)),
         ..Default::default()
     });
