@@ -721,11 +721,82 @@ parameter to its own callers.
 
 `http-ng-tower::TransportService` is the erasure route — it boxes the future
 — and its own module doc records that the box is `!Send` and cannot be fixed
-here until return type notation stabilises (rust-lang/rust#109417). So this
-is a **gap with the cause identified upstream**, which is the most useful
-kind. *Forbidden?* The `Box<dyn>`-erases-auto-traits rule (amendment C1) is
-what makes the `Send` version impossible today; the `!Send` version already
+here until return type notation stabilises (rust-lang/rust#109417).
+**Re-checked on 2026-08-19 against rustc 1.97.1: still `E0658`, "return
+type notation is experimental".** So the upstream half of the cause has not
+moved.
+
+*Forbidden?* The `Box<dyn>`-erases-auto-traits rule (amendment C1) is what
+makes the `Send` version impossible today; the `!Send` version already
 exists.
+
+#### The half that is not upstream, and will still be there when RTN lands
+
+The paragraph above is about `Transport`, and `Client<T, Tm>` has **two**
+parameters. Erasing it means erasing both, and the second is the harder
+one — which nothing here had written down.
+
+`Transport` needs three things erased and only one of them is a wall:
+`type Body: http_body::Body<Data = Bytes>` boxes; `type Error` is already
+normalised, since `Client::execute` bounds it `Send + Sync + 'static`
+under amendment C1 and every backend here produces `http_ng_core::Error`
+anyway; and `execute`'s RPITIT future is the RTN wall.
+
+**`Timer` needs `type Instant: Copy + PartialOrd` erased, and `Copy` on a
+trait object is not a thing.** That is not an upstream blocker and no
+stabilisation removes it. The only way out is to fix `Instant` to a
+concrete type — and there is none to fix it to. The three clocks that ship
+here disagree:
+
+| clock | `type Instant` |
+|---|---|
+| `http_ng_rt_tokio::Tokio` | `tokio::time::Instant` |
+| `http_ng_rt_smol::Smol` | `std::time::Instant` |
+| `http_ng::NoClock` | `()` |
+
+A `NoClock` whose instant is `()` is not an accident to be tidied away, and
+its own doc says why in one line: *"`Copy + PartialOrd`, which is all
+`Timer` asks of an instant, and it cannot be mistaken for a real one."*
+That is the whole point of it — so fixing `Instant` to a concrete type
+would either throw `NoClock` out of the seam or hand it an instant that
+*can* be mistaken for a real one. Its `elapsed_since` is `Duration::ZERO`
+for ever, which is the property `ClientBuilder::cookie_jar`'s doc leans on
+when it explains why the jar's `now` is `SystemTime::now()` and not the
+client's `Timer`.
+
+And the difference between the other two is **load-bearing on purpose**.
+`crates/http-ng/tests/two_runtimes.rs`'s module doc records it as the
+mutation that proves the runtime seam is real rather than decorative:
+adding `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s bounds
+breaks instantiation on `Tokio` (a wrapper type) and does not break it on
+`Smol` (`std::time::Instant` directly). Fixing the instant to satisfy a
+trait object would delete the property that test exists to demonstrate.
+
+#### What is buildable today, and it is two different things
+
+- **A `!Send` erasure, now.** A `BoxTransport` whose `execute` returns
+  `Pin<Box<dyn Future + '_>>` satisfies `Transport::execute`, which returns
+  `impl Future` and is happy with any concrete future type — the same trick
+  `http-ng-tower` already plays one seam over. It gives one concrete client
+  type at `TransportService`'s recorded price: no `tokio::spawn`, no
+  `axum`. Natural for a browser build, and it takes the main use away from
+  a native one.
+- **A `Send` erasure, also now, and without RTN.** The compiler cannot
+  prove *generically* that `T::execute`'s future is `Send`; it can prove it
+  wherever the concrete type is known. So a second trait with **no default
+  body** — each backend that can, boxes its own future and says so — gives
+  `Send` erasure on stable. That is `TcpConnect::connect_unix`'s shape
+  minus the default: `http-ng-native` could implement it, `http-ng-fetch`
+  structurally cannot, and its inability would be a compile error rather
+  than a runtime surprise. It buys nothing for `Tm`, which is the paragraph
+  above.
+
+Whatever is built must keep the machinery out of the core, which is
+decision D6: *"all the machinery was a consequence of type erasure in
+middleware; remove the erasure from the built-in stages and the machinery
+disappears entirely"*. `dynosaur`, `trait_variant` and a `BoxFuture` alias
+are refused by name. The shape above obeys it — an additional trait beside
+the seam, hand-written per backend, no proc macro and no `cfg` alias.
 
 ---
 
