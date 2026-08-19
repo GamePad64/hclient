@@ -31,6 +31,16 @@ pub struct RequestBuilder<'a, T, Tm = crate::DefaultClock> {
     /// the invariant is "this is `Some` exactly while the body is the
     /// multipart one" — so every method that replaces the body clears it.
     multipart: Option<crate::multipart::Boundary>,
+    /// The credentials to answer a `401 Digest` with, if the caller gave
+    /// any — see [`Self::digest_auth`].
+    ///
+    /// **Not in `extensions`, and that is the decision**: extensions reach
+    /// `Transport::execute`, so a password there would be readable by any
+    /// transport, including one this workspace did not write. It travels
+    /// as an argument to `Client::execute` instead, which is also what
+    /// keeps the cross-origin rule below in one place.
+    #[cfg(feature = "digest-auth")]
+    digest: Option<(String, String)>,
     /// The first build error. Surfaces in `send()`: a silently swallowed
     /// invalid header is exactly the silent no-op `ClientBuilder::build` was
     /// built against (see `check_supported` in config.rs). The brief's
@@ -50,6 +60,8 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
             body: RequestBody::Empty,
             extensions: http::Extensions::new(),
             multipart: None,
+            #[cfg(feature = "digest-auth")]
+            digest: None,
             error: None,
         }
     }
@@ -298,6 +310,32 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         self.authorization(&format!("Basic {raw}"))
     }
 
+    /// Answer a `401` digest challenge on this request — RFC 7616.
+    ///
+    /// Unlike [`basic_auth`](Self::basic_auth) beside it, **nothing is
+    /// sent until the server asks**: a digest response is computed from a
+    /// nonce the server chooses, so the first request goes out
+    /// unauthenticated and the client answers the challenge that comes
+    /// back. That costs one round trip per request and is written down as
+    /// a deliberate absence in [`crate::digest`], with what removing it
+    /// would need.
+    ///
+    /// **The credentials do not cross an origin.** A redirect that changes
+    /// host, scheme or port drops them, by the same rule and in the same
+    /// place that already strips `Authorization` — so a `401` from the
+    /// second origin is the caller's answer rather than an invitation to
+    /// send a password somewhere they never named.
+    ///
+    /// Behind the `digest-auth` feature, off by default: the hashes cost
+    /// nine crates, measured, which a caller who never meets a digest
+    /// challenge should not link.
+    #[cfg(feature = "digest-auth")]
+    #[must_use]
+    pub fn digest_auth(mut self, user: &str, password: &str) -> Self {
+        self.digest = Some((user.to_owned(), password.to_owned()));
+        self
+    }
+
     /// `Authorization: Bearer`, RFC 6750 §2.1.
     pub fn bearer_auth(self, token: &str) -> Self {
         self.authorization(&format!("Bearer {token}"))
@@ -424,7 +462,14 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
         *req.uri_mut() = uri.clone();
         *req.headers_mut() = headers;
         *req.extensions_mut() = self.extensions;
-        let resp = self.client.execute(req).await?;
+        let resp = self
+            .client
+            .execute_with(
+                req,
+                #[cfg(feature = "digest-auth")]
+                self.digest,
+            )
+            .await?;
         Ok(Response::new(resp, uri))
     }
 }

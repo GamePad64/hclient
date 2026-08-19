@@ -66,6 +66,21 @@ json = ["dep:serde", "dep:serde_json"]
 # rule exists for. So the charset-aware path is a SEPARATE METHOD, and a
 # caller who wants it says so at the call site rather than in a manifest.
 charset = ["dep:encoding_rs"]
+# `RequestBuilder::digest_auth` — RFC 7616 Digest Access Authentication.
+# OFF by default, on the same measurement as `zstd` above and for a bigger
+# number: MD5 and SHA-2 cost **nine** crates (`md-5`, `sha2`, `digest`,
+# `block-buffer`, `crypto-common`, `hybrid-array`, `typenum`, `cfg-if`,
+# `cpufeatures` — measured, not estimated), which a caller who never meets
+# a `401 Digest` should not link.
+#
+# Taken rather than hand-written, which is a departure from the rule that
+# removed `url` and hand-wrote base64 — and the line between them is
+# whether a wrong answer is *visible*. Base64 is twenty lines and a wrong
+# one fails immediately and everywhere. A hash is two hundred lines whose
+# defects are silent and whose test vectors nobody re-derives; RustCrypto's
+# are audited, `no_std`, build-script-free and build for both wasm targets,
+# which is the same shortlist `ruzstd` was chosen from.
+digest-auth = ["dep:md-5", "dep:sha2"]
 # Response decompression, per coding — v0.2 W5. OFF by default, on the
 # `json` precedent above and for the same kind of reason: the browser
 # transport decodes for us already (`Capabilities::response_decompression`
@@ -252,6 +267,12 @@ ruzstd        = { version = "0.9", optional = true }
 # choice this manifest can make. `encoding_rs` is what reqwest and ureq
 # both reach for, under a feature both independently named `charset`.
 encoding_rs   = { version = "0.8", optional = true }
+# The `digest-auth` feature. `default-features = false` on both: the
+# `std` feature buys `std::io::Write` impls this crate never uses, and
+# dropping it keeps the pair `no_std` — which is not idle, since
+# `http-ng-proto` is one `http` release away from being buildable there.
+md-5          = { version = "0.11", optional = true, default-features = false }
+sha2          = { version = "0.11", optional = true, default-features = false }
 # SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
 # isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely

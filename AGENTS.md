@@ -1284,6 +1284,74 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Digest authentication, and it is the `425` branch with a computed header
+
+`RequestBuilder::digest_auth(user, password)` — RFC 7616, behind the
+`digest-auth` feature, off by default. No pure-Rust client ships it;
+`xh`, built on reqwest, wrote its own rather than go without, which is the
+evidence the absence is felt rather than theoretical.
+
+**The shape was already here.** Digest is a challenge/response over a
+`401`, and `Client::run` owns exactly that for `425 Too Early`: a
+status-code test, one resend, inside the same `total` budget, gated on
+`RequestBody::retry_kind()`. The branch sits beside it and differs by one
+thing — the resend carries a header computed from what came back. Nothing
+spawns, no clock, no `Send` bound.
+
+**The arithmetic is checked against RFC 7616 §3.9's own printed answers**,
+copied out of the document, which is why `digest::answer` takes `cnonce`
+as a parameter rather than drawing it: a hash function checked against its
+own output is green for any self-consistent mistake about what digest is.
+Both of the RFC's examples are there, SHA-256 and MD5 over identical
+inputs — the pair is what says the algorithm is *used* rather than echoed
+in the header — plus RFC 2617's, for the `qop`-less form §3.4.1 keeps.
+
+**Three decisions the building made that the plan had not asked.**
+The credentials **do not cross an origin**, by the rule already stripping
+`Authorization`: a password-derived secret must not reach a server the
+caller never named, which is a stronger case than the one `AllowEarlyData`
+was taken off a hop for. They are **not in `http::Extensions`**, because
+extensions reach `Transport::execute` and a password there would be
+readable by any transport, including one this workspace did not write — so
+they travel as an argument to `execute_with` instead. And what goes in
+`uri=` is the **request-target**, not the URL: §3.4.2 hashes what goes on
+the request line, and a full URL would give the server a different `A2`
+and a second `401` nobody could explain.
+
+**Nine crates, measured, which is why they are taken rather than written.**
+`md-5` + `sha2` pull `digest`, `block-buffer`, `crypto-common`,
+`hybrid-array`, `typenum`, `cfg-if`, `cpufeatures` — eight net in this
+graph. That is a departure from the rule that removed `url` and hand-wrote
+base64, and the line between them is whether a wrong answer is *visible*:
+base64 is twenty lines and fails loudly everywhere, where a hash is two
+hundred whose defects are silent and whose vectors nobody re-derives.
+RustCrypto's are audited, `no_std`, build-script-free and build for both
+wasm targets — the same shortlist `ruzstd` was chosen from.
+
+**MD5 is here and RFC 7616 §5.2 deprecates it**, which is not an
+oversight: a client supporting only SHA-256 would fail against most servers
+that speak digest at all. What this does instead is **prefer** the
+strongest algorithm offered — across header lines, since a server sending
+SHA-256 and MD5 as two `WWW-Authenticate` values is ordinary and a client
+taking the first would answer MD5 to a server that offered better. The
+client never chooses the algorithm; the server does.
+
+Two absences with their reasons. **`auth-int`** hashes the request body
+into `A2`, which cannot be done for a `Streaming` body without buffering
+it — so a server offering it *alone* gets a named refusal rather than an
+`auth` response it will reject with a `401` nobody can diagnose. And
+**there is no nonce cache**, so every request pays one `401` round trip;
+removing that needs per-origin state with a lifetime nobody states, which
+is the question that made a cache dishonest for SVCB records and honest for
+`Alt-Svc`.
+
+**`cnonce` is 128 bits from the OS and its failure path is the opposite of
+`sse.rs`'s.** A failed draw there degrades to un-jittered backoff, slower
+and safe; here a fixed cnonce is the one value an attacker would choose, so
+a failed draw falls back to a heap address — worse entropy, still not a
+constant. The rule this file already records: *a degraded value is only
+acceptable when the degradation has a direction.*
+
 ### HTTP/2's settings frame is tunable, and three of reqwest's eight knobs still are not
 
 `Native::h2_opts(H2Opts { .. })` — the stream window, the connection

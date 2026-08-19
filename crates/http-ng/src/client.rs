@@ -773,7 +773,30 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// used with `Client`.
     pub async fn execute(
         &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<crate::ClientBody<T::Body, Tm>>, Error>
+    where
+        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
+    {
+        self.execute_with(
+            req,
+            #[cfg(feature = "digest-auth")]
+            None,
+        )
+        .await
+    }
+
+    /// [`Self::execute`] with the one thing that cannot travel in the
+    /// request: digest credentials.
+    ///
+    /// Separate rather than a parameter on the public method, because a
+    /// caller who has credentials wrote them on a
+    /// [`RequestBuilder`](crate::RequestBuilder) and a caller who does not
+    /// should not be made to pass `None`.
+    pub(crate) async fn execute_with(
+        &self,
         mut req: http::Request<RequestBody>,
+        #[cfg(feature = "digest-auth")] digest: Option<(String, String)>,
     ) -> Result<http::Response<crate::ClientBody<T::Body, Tm>>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -807,8 +830,30 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
             // sleep constructed at all. `Tokio::sleep` panics outside a
             // runtime, and a client that never asked for a timeout must
             // not start requiring one.
-            None => self.run(req).await?,
-            Some(t) => within(self.run(req), &self.inner.timer, t).await?,
+            // The digest replay lives INSIDE this future, like the `425`
+            // one, so it spends what is left of `total` rather than a
+            // fresh copy of it — a bound a server can double by answering
+            // `401` is not a bound.
+            None => {
+                self.run(
+                    req,
+                    #[cfg(feature = "digest-auth")]
+                    digest,
+                )
+                .await?
+            }
+            Some(t) => {
+                within(
+                    self.run(
+                        req,
+                        #[cfg(feature = "digest-auth")]
+                        digest,
+                    ),
+                    &self.inner.timer,
+                    t,
+                )
+                .await?
+            }
         };
         let (mut parts, body) = resp.into_parts();
         // Also strips `Content-Encoding` and `Content-Length` when it
@@ -854,6 +899,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     async fn run(
         &self,
         req: http::Request<RequestBody>,
+        #[cfg(feature = "digest-auth")] mut digest: Option<(String, String)>,
     ) -> Result<http::Response<Cached<T::Body>>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -1153,6 +1199,51 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                         resp = self.send_hop(&retry, again).await?;
                     }
 
+                    // **The `401` answer, and it is the `425` branch's shape**: a
+                    // status-code test, one resend, inside the same `total` budget,
+                    // gated on `RequestBody::retry_kind()`. What differs is that
+                    // the resend carries a header computed from what came back.
+                    //
+                    // Once per hop, deliberately. A second `401` after an answer
+                    // means the credentials are wrong — or, with `stale=true`, that
+                    // the nonce expired between the challenge and the answer, which
+                    // a second round would only race again. Either way the `401` is
+                    // the server's answer and it goes to the caller.
+                    #[cfg(feature = "digest-auth")]
+                    if resp.status() == http::StatusCode::UNAUTHORIZED
+                        && let Some((user, password)) = &digest
+                        && let Some(again) = replay_for_too_early(replay.as_ref())
+                        && let Ok(challenge) = crate::digest::best_challenge(
+                            resp.headers().get_all("www-authenticate").iter(),
+                        )
+                    {
+                        // The request-target, not the URL: §3.4.2 hashes what goes
+                        // on the request line, and a server recomputing from a full
+                        // URL would get a different `A2` and answer `401` again.
+                        let target = hp
+                            .uri
+                            .path_and_query()
+                            .map_or_else(|| hp.uri.path().to_owned(), |pq| pq.to_string());
+                        let value = crate::digest::answer(
+                            &challenge,
+                            user,
+                            password,
+                            &hp.method,
+                            &target,
+                            &crate::digest::cnonce(),
+                        );
+                        if let Ok(mut v) = http::HeaderValue::from_str(&value) {
+                            // Marked for the reason `basic_auth`'s is: the value
+                            // is derived from a password, and a `Debug` of the
+                            // request is the only place it would show.
+                            v.set_sensitive(true);
+                            let mut retry = hp.clone();
+                            retry.headers.insert(http::header::AUTHORIZATION, v);
+                            requested_at = self.cache_now();
+                            resp = self.send_hop(&retry, again).await?;
+                        }
+                    }
+
                     self.cache_after(&hp, plan, resp, requested_at)
                 }
             };
@@ -1186,6 +1277,17 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                     return Err(Error::new(ErrorKind::Redirect, BadLocation));
                 }
                 RedirectAction::Follow(f) => {
+                    // **Credentials do not cross an origin**, by the rule
+                    // that is already stripping `Authorization` three lines
+                    // down in `next_hop`. Answering a `401` from a host the
+                    // caller never named would send a password derived
+                    // secret to a server they never vouched for — the
+                    // judgement `AllowEarlyData` had to be taken off for,
+                    // and a stronger case, since this one is the password.
+                    #[cfg(feature = "digest-auth")]
+                    if f.strip_sensitive {
+                        digest = None;
+                    }
                     // Asked here rather than inside `decide`, and only
                     // about a hop `decide` approved — see
                     // `crate::predicate`. `strip_sensitive` is handed over

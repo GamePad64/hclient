@@ -34,6 +34,8 @@ mod config;
 pub use http_ng_cookie as cookie;
 mod deadline;
 mod decompress;
+#[cfg(feature = "digest-auth")]
+pub mod digest;
 mod erased;
 mod limit;
 mod predicate;

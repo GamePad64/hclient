@@ -121,7 +121,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | `multipart/form-data` | Y | Y | Y | Y | Y | see §2.2 for the streaming difference |
 | Basic auth | Y | Y | Y | Y | Y | ng **refuses a colon in the username** (RFC 7617 §2) where the others encode it |
 | Bearer auth | Y | Y | Y | Y | Y | |
-| Digest / NTLM / Negotiate | **N** | N | N | **Y** | N | the `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`). See §3 G12 |
+| Digest / NTLM / Negotiate | **Digest: Y\*** | N | N | **Y** | N | **Digest closed** — RFC 7616, `RequestBuilder::digest_auth`, MD5 / SHA-256 / SHA-512-256 and their `-sess` variants, checked against the RFC's own §3.9 vectors. The only pure-Rust client with it. NTLM and Negotiate still refused: both need the platform's GSSAPI or SSPI. The `curl` crate binds all of them: `Auth` + `Easy::http_auth` over `CURLAUTH_DIGEST`, `_DIGEST_IE`, `_GSSNEGOTIATE`, `_NTLM`, `_NTLM_WB` (`curl-0.4.50/src/easy/handler.rs:565, :1340, :3733-3790`). See §3 G12 |
 | client-wide default headers | **N** | Y | Y | — | Y | `reqwest-0.13.4/src/async_impl/client.rs:1166`; ng has no `ClientBuilder` header setter at all |
 | a `User-Agent` at all | **N** | Y | Y | Y | (browser's) | `ureq-3.4.0/src/config.rs:546`; **ng sends none** |
 | base URL / relative URLs | Y | **N** | N | N | N | `ClientBuilder::base_url` — reqwest #988/#213 open since 2017 |
@@ -545,23 +545,45 @@ enforcement must land in one change — the rule that kept `connect` off
 W4. It is also the field most likely to be honestly `false` on the ambient
 backends, which is what `TimeoutSupport` is for. *Forbidden?* No.
 
-### G12. Digest, NTLM and Negotiate authentication
+### G12. Digest, NTLM and Negotiate authentication — **Digest closed**
 
-Nobody in pure Rust has these; libcurl does, and the `curl` crate binds all
-five flags (`src/easy/handler.rs:3733-3790`). A caller who needs to talk to
-a corporate intranet reaches for `curl` and finds nothing else — `xh`, built
-on reqwest, wrote its own digest implementation rather than go without.
+`RequestBuilder::digest_auth(user, password)` behind a `digest-auth`
+feature, off by default. This document's own prediction was right in full:
+`Client::run` already owned the shape, and the branch is the `425` one with
+a computed header — a status-code test, one resend, inside the same `total`
+budget, gated on `RequestBody::retry_kind()`. No spawn, no `Send` bound.
 
-This is recorded as a gap rather than ranked higher because the population
-that needs it is narrow and it is a whole-ecosystem absence rather than this
-project's. It is also the one row where **this workspace is unusually well
-placed to close it**: digest is a challenge/response loop over a `401`, and
-`Client::run` already owns exactly that shape for `425 Too Early` — a
-status-code branch that resends inside the same `total` budget, gated on
-`RequestBody::retry_kind()`. Nothing about it needs a dependency, a spawn or
-a `Send` bound. NTLM and Negotiate are a different matter: both need
-platform GSSAPI/SSPI, which is `http-ng-tls-native-tls`'s kind of argument
-one seam over and probably its own crate.
+**MD5 and SHA-2 cost nine crates, measured**, which is why the feature is
+off by default and why they are taken rather than hand-written — a
+departure from the rule that removed `url` and hand-wrote base64, and the
+line between them is whether a wrong answer is *visible*. Base64 is twenty
+lines and fails loudly; a hash is two hundred whose defects are silent.
+
+Three things the building decided that the analysis had not asked:
+
+- **The arithmetic is checked against RFC 7616 §3.9's own printed
+  answers**, copied from the document, which is why `digest::answer` takes
+  `cnonce` as a parameter instead of drawing it. A hash checked against its
+  own output is green for any self-consistent mistake about what digest is.
+- **The credentials do not cross an origin**, by the rule that already
+  strips `Authorization` — a password-derived secret must not reach a
+  server the caller never named. That is a stronger case than the one
+  `AllowEarlyData` was taken off the hop for.
+- **They are not in `http::Extensions`.** Extensions reach
+  `Transport::execute`, so a password there would be readable by any
+  transport, including one this workspace did not write.
+
+Two deliberate absences with their reasons: `auth-int`, which hashes the
+request body into `A2` and so cannot be computed for a `Streaming` one — a
+server offering it *alone* gets a named refusal rather than a wrong answer
+— and a nonce cache, so **every request pays one `401` round trip**.
+Removing that needs per-origin state with a lifetime nobody states, the
+question that made a cache dishonest for SVCB and honest for `Alt-Svc`.
+
+**NTLM and Negotiate are unchanged and still refused**: both need the
+platform's GSSAPI or SSPI, which is `http-ng-tls-native-tls`'s argument one
+seam over and its own crate. Neither is a challenge/response this code
+could grow into.
 
 ### G13. There is no way to name "any http-ng client"
 
