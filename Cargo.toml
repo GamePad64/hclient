@@ -2,7 +2,18 @@
 resolver = "3"
 members = ["crates/*"]
 
+# Every publishable crate carries `[package.metadata.docs.rs] all-features =
+# true`, and the reason is stated here rather than 29 times. docs.rs builds
+# `default` features only; in this workspace `default` is empty or
+# near-empty by design, because every backend, coding, proxy and knob is a
+# feature — a build should carry nothing it did not ask for. Without the
+# setting, the published page for a crate whose whole story is its features
+# would show almost none of it. Verified buildable rather than assumed:
+# `cargo doc --workspace --all-features --no-deps` is green on x86-64 Linux,
+# the target docs.rs uses, and `just docs` keeps it that way on every push.
+
 [workspace.package]
+version      = "0.1.0"
 edition      = "2024"
 rust-version = "1.97"
 license      = "MIT OR Apache-2.0"

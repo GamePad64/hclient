@@ -1,11 +1,15 @@
 [package]
 name = "http-ng-tls"
-version = "0.1.0"
+version.workspace = true
 description = "Pluggable TLS trait for http-ng"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 http-ng-core = { workspace = true }

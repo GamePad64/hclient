@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-select"
-version = "0.1.0"
+version.workspace = true
 description = "One http-ng transport over both protocol stacks, choosing HTTP/3 where an origin's HTTPS record offers it"
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,10 @@ repository.workspace = true
 # and the `UdpBind + Spawn` bounds it needs from the runtime — into every
 # build in any graph that switched it on, including the ones that will only
 # ever speak HTTP/1.1. A crate is opt-in by being named.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 bytes          = { workspace = true }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }

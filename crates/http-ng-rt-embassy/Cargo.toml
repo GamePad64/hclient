@@ -1,11 +1,15 @@
 [package]
 name = "http-ng-rt-embassy"
-version = "0.1.0"
+version.workspace = true
 description = "http-ng runtime capabilities implemented on top of embassy — embassy-time for the clock, embassy-net (smoltcp) for the sockets"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # Which address families this build can reach. They forward straight to

@@ -1,11 +1,15 @@
 [package]
 name = "http-ng"
-version = "0.1.0"
+version.workspace = true
 description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["idn"]

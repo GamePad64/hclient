@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-rt-tokio"
-version = "0.1.0"
+version.workspace = true
 description = "http-ng runtime capabilities implemented on top of tokio"
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,10 @@ repository.workspace = true
 # UDP stack in a crate whose job is to adapt a runtime. So the feature
 # pulls `quinn-udp` — and a build that only ever speaks HTTP/1 or HTTP/2
 # does not pay for it.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 udp = ["dep:quinn-udp"]

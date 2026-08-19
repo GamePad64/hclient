@@ -1,11 +1,15 @@
 [package]
 name = "http-ng-rt"
-version = "0.1.0"
+version.workspace = true
 description = "Runtime capabilities needed by http-ng's native transport"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }

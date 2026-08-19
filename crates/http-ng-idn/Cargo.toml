@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-idn"
-version = "0.1.0"
+version.workspace = true
 description = "IDN (UTS 46) domain-to-ASCII for http-ng, through the platform's own ICU where there is one"
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,10 @@ build = "build.rs"
 # from this workspace. The whole point is that a build may take this crate
 # INSTEAD of the Unicode tables, and a crate that dragged the rest of the
 # client in with it could not be used that way.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 thiserror = { workspace = true }
 

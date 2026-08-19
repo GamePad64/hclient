@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-tls-quic"
-version = "0.1.0"
+version.workspace = true
 description = "The TLS seam for QUIC: key schedules rather than a wrapped byte stream"
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,10 @@ repository.workspace = true
 # `crypto::ClientConfig` trait object and nothing else, and in particular
 # picks no crypto provider — that is the implementing backend's decision,
 # and `http-ng-tls-rustls` makes it behind its own `quic` feature.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 http-ng-core = { workspace = true }
 http-ng-tls  = { path = "../http-ng-tls", version = "0.1.0" }

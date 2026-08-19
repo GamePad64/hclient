@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-native"
-version = "0.1.0"
+version.workspace = true
 description = "Native transport for http-ng: TCP + TLS + HTTP/1.1 on hyper"
 edition.workspace = true
 rust-version.workspace = true
@@ -38,6 +38,10 @@ repository.workspace = true
 # crates for this crate alone, +14 for a full client build — into every
 # other crate's build of this transport. A dependency in the other
 # direction cannot be turned on from outside.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 http2 = ["dep:h2", "dep:tokio"]

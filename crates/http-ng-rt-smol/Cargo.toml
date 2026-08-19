@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-rt-smol"
-version = "0.1.0"
+version.workspace = true
 description = "http-ng runtime capabilities implemented on top of smol"
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,10 @@ repository.workspace = true
 #
 # It costs **no other new dependency**: `async-io` is already a direct
 # dependency below, and it is the only thing this backend needs from smol.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 udp = ["dep:quinn-udp"]

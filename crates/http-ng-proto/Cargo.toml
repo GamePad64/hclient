@@ -1,11 +1,15 @@
 [package]
 name = "http-ng-proto"
-version = "0.1.0"
+version.workspace = true
 description = "Pure state machines for http-ng's protocol layers: no I/O, no async, no runtime"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["idn"]

@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-fetch"
-version = "0.1.0"
+version.workspace = true
 description = "http-ng transport over the browser fetch API"
 edition.workspace = true
 rust-version.workspace = true
@@ -51,6 +51,10 @@ repository.workspace = true
 # told the crate is constrained by something this branch removed — the same
 # defect this repository keeps finding, a declaration and the code written
 # at different times. What it was protecting no longer needs protecting.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 http          = { workspace = true }
 http-ng-core  = { workspace = true }

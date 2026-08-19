@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-ws-tungstenite"
-version = "0.1.0"
+version.workspace = true
 description = "WebSocket framing for http-ng: RFC 6455 over an upgraded byte stream, on tungstenite"
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,10 @@ repository.workspace = true
 # `http-ng-tls-quic` out of `http-ng-tls` — `docs/w4-upgrade-seam.md` §8.
 # A build that wants WebSocket names this crate; one that does not cannot
 # be given it by a neighbour.
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 bytes        = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-h3"
-version = "0.1.0"
+version.workspace = true
 description = "HTTP/3 transport for http-ng: QUIC over the runtime seam's UDP capability"
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,10 @@ repository.workspace = true
 # `http-ng-native/http3` feature would have to make them unconditional for
 # every build in the graph. The 55-crate stack behind it is the second
 # reason, not the first.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 bytes          = { workspace = true }
 h3             = "0.0.8"

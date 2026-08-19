@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-rt-quinn"
-version = "0.1.0"
+version.workspace = true
 description = "quinn on http-ng's runtime seam: a quinn::Runtime over UdpBind, Spawn and Timer"
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,10 @@ repository.workspace = true
 # and it is the only place either has to know about the other.
 # `docs/w4-upgrade-seam.md` §8 makes the same argument for the WebSocket
 # framing; `docs/v04-w2-webtransport.md` §4 recorded this one as owed.
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 http-ng-rt       = { path = "../http-ng-rt", version = "0.1.0" }

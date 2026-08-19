@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-webtransport"
-version = "0.1.0"
+version.workspace = true
 description = "WebTransport sessions over an HTTP/3 QUIC connection, for http-ng"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,10 @@ repository.workspace = true
 # feature on `http-ng-h3` would put the extended-CONNECT SETTINGS — a
 # *wire* change, announced on every connection that build makes — into
 # every graph that switched it on.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 bytes        = { workspace = true }
 http         = { workspace = true }

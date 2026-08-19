@@ -1,6 +1,6 @@
 [package]
 name = "http-ng-mock"
-version = "0.1.0"
+version.workspace = true
 description = "Mock transport and controllable timer for testing http-ng transports and clients"
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,10 @@ repository.workspace = true
 # Keep it that way. A dependency on `http-ng` here would re-create exactly
 # the coupling this split removed, and would do it silently, since the
 # facade already dev-depends on nothing that would flag the cycle.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 bytes         = { workspace = true }
 http          = { workspace = true }

@@ -1,11 +1,15 @@
 [package]
 name = "http-ng-cache"
-version = "0.1.0"
+version.workspace = true
 description = "A sans-io HTTP response cache for http-ng: RFC 9111 freshness, validation and Vary, with no clock and no I/O"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 # The stored body. Already in `http-ng`'s graph and in every transport's, so
