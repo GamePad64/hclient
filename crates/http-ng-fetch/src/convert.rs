@@ -464,6 +464,7 @@ fn checked_url(uri: &http::Uri) -> Result<String, Error> {
 pub(crate) fn to_web_request(
     req: http::Request<RequestBody>,
     caps: &Capabilities,
+    opts: &crate::opts::FetchOpts,
 ) -> Result<Converted, Error> {
     let (parts, body) = req.into_parts();
     check_headers(&parts.headers, caps)?;
@@ -499,6 +500,11 @@ pub(crate) fn to_web_request(
 
     let init = web_sys::RequestInit::new();
     init.set_method(parts.method.as_str());
+    // Before the body and the signal, and it does not matter that it is:
+    // `RequestInit` is a dictionary, so these are independent writes.
+    // First because it reads as what the caller configured, ahead of what
+    // this request happens to carry.
+    crate::opts::apply(&init, opts);
 
     let headers = build_headers(&parts.headers)?;
     init.set_headers(&headers);

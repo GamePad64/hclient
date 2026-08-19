@@ -14,6 +14,7 @@ mod body;
 mod caps;
 mod convert;
 mod hooks;
+pub mod opts;
 mod promise;
 mod timer;
 mod websocket;
@@ -101,6 +102,10 @@ use wasm_bindgen::JsCast;
 #[derive(Debug)]
 pub struct Fetch<H = NoHooks> {
     caps: Capabilities,
+    /// The `RequestInit` members this transport sets beyond the five
+    /// `to_web_request` always writes — see [`crate::opts`], including why
+    /// `redirect` is not among them.
+    opts: opts::FetchOpts,
     /// Where the events go. `NoHooks` is a ZST, so this field costs a
     /// build that wants nothing exactly nothing.
     hooks: H,
@@ -110,6 +115,7 @@ impl Fetch {
     pub fn new() -> Self {
         Self {
             caps: caps::probe(),
+            opts: opts::FetchOpts::default(),
             hooks: NoHooks,
         }
     }
@@ -138,8 +144,41 @@ impl<H> Fetch<H> {
     pub fn hooks<H2>(self, hooks: H2) -> Fetch<H2> {
         Fetch {
             caps: self.caps,
+            // Carried: this method changes `H` and nothing else, unlike
+            // `http-ng-native`'s `hooks`, which has an installer whose
+            // type names `H` and must drop it.
+            opts: self.opts,
             hooks,
         }
+    }
+
+    /// The `RequestInit` members this transport sets beyond method,
+    /// headers, body, signal and `duplex` — `mode`, `credentials`, `cache`
+    /// and `referrerPolicy`.
+    ///
+    /// See [`crate::opts`] for what each buys, why they are here rather
+    /// than on `Transport` or in a request extension, and why `redirect`
+    /// is deliberately not among them.
+    ///
+    /// ```no_run
+    /// # use http_ng_fetch::{Fetch, opts::FetchOpts};
+    /// # use web_sys::RequestCredentials;
+    /// let t = Fetch::new().opts(FetchOpts {
+    ///     // What a cross-origin authenticated request needs; the
+    ///     // browser's default is `same-origin`.
+    ///     credentials: Some(RequestCredentials::Include),
+    ///     ..FetchOpts::default()
+    /// });
+    /// # let _ = t;
+    /// ```
+    ///
+    /// **Nothing in [`Capabilities`] moves**, which is worth stating
+    /// because one of these looks as though it should: `redirect` would
+    /// have, which is exactly why it is absent — see the module doc.
+    #[must_use]
+    pub fn opts(mut self, opts: opts::FetchOpts) -> Self {
+        self.opts = opts;
+        self
     }
 
     /// Test-only accessor for the probed `Capabilities`. `#[doc(hidden)]`:
@@ -234,7 +273,7 @@ impl<H: Hooks> Transport for Fetch<H> {
             request,
             abort,
             streamed,
-        } = convert::to_web_request(req, &self.caps)?;
+        } = convert::to_web_request(req, &self.caps, &self.opts)?;
         let guard = AbortOnDrop(abort);
 
         // `fetch` lives in both `Window` and `WorkerGlobalScope` — go
@@ -416,7 +455,7 @@ pub mod testing {
         f: &crate::Fetch,
         req: http::Request<http_ng_core::RequestBody>,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), http_ng_core::Error> {
-        crate::convert::to_web_request(req, &f.caps).map(|c| (c.request, c.abort))
+        crate::convert::to_web_request(req, &f.caps, &f.opts).map(|c| (c.request, c.abort))
     }
 
     /// Same conversion, against a caller-supplied `Capabilities` rather than
@@ -435,7 +474,25 @@ pub mod testing {
         req: http::Request<http_ng_core::RequestBody>,
         caps: &http_ng_core::Capabilities,
     ) -> Result<(web_sys::Request, Option<web_sys::AbortController>), http_ng_core::Error> {
-        crate::convert::to_web_request(req, caps).map(|c| (c.request, c.abort))
+        crate::convert::to_web_request(req, caps, &crate::opts::FetchOpts::default())
+            .map(|c| (c.request, c.abort))
+    }
+
+    /// The conversion with caller-chosen [`FetchOpts`](crate::opts::
+    /// FetchOpts), so `tests/opts.rs` can read the four members back off a
+    /// `web_sys::Request` without sending anything.
+    ///
+    /// A seam rather than a live request, for the reason the whole file
+    /// gives: what is claimed is that a value the caller set reaches the
+    /// `Request`, and a browser is not needed to see that — while
+    /// `credentials: "include"` against a real cross-origin server is not
+    /// something a headless test can arrange honestly.
+    pub fn to_web_request_with_opts(
+        req: http::Request<http_ng_core::RequestBody>,
+        caps: &http_ng_core::Capabilities,
+        opts: &crate::opts::FetchOpts,
+    ) -> Result<web_sys::Request, http_ng_core::Error> {
+        crate::convert::to_web_request(req, caps, opts).map(|c| c.request)
     }
 
     pub fn check_headers(

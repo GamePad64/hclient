@@ -1284,6 +1284,58 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### The browser's own `fetch` members, and the one that is refused
+
+`Fetch::opts(FetchOpts { .. })` — `mode`, `credentials`, `cache` and
+`referrerPolicy`, four `Option`s applied to `RequestInit`, `None` meaning
+*leave it to the browser*. Until this, `to_web_request` set method,
+headers, body, signal and `duplex` and nothing else, so a browser caller
+could not send `credentials: "include"` — what a cross-origin
+authenticated request needs. Two independent browser clients expose all of
+it (reqwest's wasm build and `gloo-net`), which is what makes it an absence
+rather than a knob nobody wants.
+
+**On `Fetch`, not on `Transport`**, because three of five backends have no
+such concept — the rule that put `WebSocketConnect` in its own trait. And
+**not a request extension**, for the reason `Prefetch::prepare` refuses to
+take an HTTPS record from a caller: an extension is a channel any code able
+to build a request can write to, and `credentials: "include"` is a decision
+about which origins receive the user's cookies. Four `web-sys` feature
+names and no crate — the graph is 32 either way, measured.
+
+**`redirect` is refused, and it is the interesting one, because it is a
+capability that would lie.** `fetch`'s `redirect: "manual"` does not hand
+back a `3xx` a caller can act on: a cross-origin response comes back
+*opaque-redirect* — status `0`, empty header list, null body, no readable
+`Location`. So `Capabilities::redirects` could not honestly move from
+`Internal` to `Transparent`, and claiming otherwise would promise `Client`
+a policy it could act on for exactly the case where redirects matter.
+`http-ng-urlsession` is the backend that genuinely reports `Transparent` —
+its delegate can refuse a hop — and the asymmetry is why both are worth
+having. `redirect: "error"` is a third thing, *fail rather than follow*,
+which is `RedirectPolicy::None` with the answer thrown away.
+
+**Asserted without a network, deliberately.** `web_sys::Request` has a
+getter for each of the four, so the browser answers whether the member
+arrived. What a headless run cannot honestly arrange is what the members
+are *for* — `include` against a cross-origin server that sets a cookie,
+`no-cors` producing an opaque response — both needing a second origin.
+What this crate is responsible for is that the member reaches the request.
+The control is the default arm: without it, a test setting `Include` and
+reading `Include` back would pass for a transport that hard-coded it.
+
+**And the browser suite had not compiled since 2026-08-16.**
+`Event::Informational` landed with the `1xx` work and `http-ng-fetch`'s
+`tests/hooks.rs` never gained an arm, so every browser binary in that
+crate failed to build through six merges that were each green on
+`cargo nextest run --workspace --all-features` — which does not build for
+`wasm32-unknown-unknown`, where `just test-browsers` is its own CI job.
+`Event` not being `#[non_exhaustive]` is what turned a new variant into a
+compile error rather than silence: **the design worked and the running of
+it did not.** The cheap check that would have caught it needs no browser at
+all — `cargo test -p http-ng-fetch --target wasm32-unknown-unknown
+--no-run`.
+
 ### `error_for_status`, and the defect it found one line away
 
 `Response::error_for_status()` and `Collected::error_for_status()` —

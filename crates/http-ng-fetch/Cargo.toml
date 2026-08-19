@@ -92,6 +92,14 @@ web-sys       = { version = "0.3.103", features = [
     # No new crate: `web-sys` is already here, this is one more feature
     # name on it.
     "Performance",
+    # v0.4 (`src/opts.rs`): the four `RequestInit` members a browser
+    # caller could not reach. Each is an enum web-sys already binds, so
+    # this is four feature names and no crate — measured, the graph is
+    # unchanged.
+    "RequestMode",
+    "RequestCredentials",
+    "RequestCache",
+    "ReferrerPolicy",
 ] }
 # Task 4 (`src/body.rs`) is the first file in this crate to actually
 # implement `http_body::Body`, so `bytes`/`http-body`/`futures-core` move

@@ -329,36 +329,48 @@ exists to avoid. A caller can already write
 `two_runtimes.rs` proves that path works with no reactor — so what is
 missing is a facade, not a capability.
 
-### G4. Browser callers cannot reach `mode`, `credentials`, `cache` or `redirect`
+### G4. Browser callers cannot reach `mode`, `credentials`, `cache` or `redirect` — **closed for three of the four, and the fourth is refused**
 
-`http-ng-fetch`'s `RequestInit` is built with method, headers, body, signal
-and (through an unchecked ref) `duplex` — and nothing else
-(`crates/http-ng-fetch/src/convert.rs:500-537`). So from a browser this
-client cannot send `credentials: "include"`, which is what a cross-origin
-authenticated request needs; cannot select `no-cors`; and cannot set the
-cache mode or the referrer policy.
+`Fetch::opts(FetchOpts { .. })` — `mode`, `credentials`, `cache` and
+`referrerPolicy`, four `Option`s applied to `RequestInit`, `None` meaning
+*leave it to the browser*. Setters on `Fetch` and not on `Transport`,
+exactly as this section predicted, and not a request extension for the
+reason it gave: an extension is a channel any code that can build a
+request may write to, and `credentials: "include"` decides which origins
+receive the user's cookies.
 
-reqwest's browser build has all of them, as `fetch_mode_no_cors`,
-`fetch_credentials_{same_origin,include,omit}` and `fetch_cache_*` on its
-wasm `RequestBuilder` — methods that **do not exist in its native build**
-(`reqwest-0.13.4/src/wasm/request.rs:342-438`). So does `gloo-net` 0.6.0,
-more completely and with typed `web-sys` enums passed straight through:
-`mode` (`src/http/request.rs:147`), `credentials` (`:66`), `cache` (`:59`),
-`referrer_policy` (`:181`), `referrer` (`:173`), `integrity` (`:123`),
-`redirect` (`:165`), `abort_signal` (`:187`). It also exposes
-`Response::type_()`, `redirected()` and the post-redirect `url()`
-(`src/http/response.rs:36, :48, :43`). This is therefore a real absence
-rather than a knob nobody bothers with: **two independent browser clients
-expose all of it and this one exposes none of it.**
+Four `web-sys` feature names and **no crate**: the graph is 32 either way,
+measured.
 
-*What it takes*: setters on `Fetch`, not on `Transport` — the shape
-`Native::multiplexed()` and `Native::expect_continue()` already have, and
-the one the workspace's own rule demands, since three of five backends have
-no such concept. A request extension would be the tempting alternative and
-is the wrong one for the same reason `Prefetch::prepare` refuses to take an
-HTTPS record from a caller: an extension is a channel any code that can
-build a request can write to. *Forbidden by a rule?* No — the rule tells you
-where to put it.
+**`redirect` is refused, and the reason is a capability that would lie.**
+`fetch`'s `redirect: "manual"` does not hand back a `3xx` a caller can act
+on — for a cross-origin response it yields an *opaque-redirect* filtered
+response, status `0`, empty header list, null body, no readable
+`Location`. So `Capabilities::redirects` could not honestly move from
+`Internal` to `Transparent`; it would claim a policy `Client` could act on
+for exactly the case where redirects matter and the browser gives nothing.
+`http-ng-urlsession` is the backend that genuinely reports `Transparent`,
+which is what makes the two comparable at all. `redirect: "error"` is a
+third thing — fail rather than follow — and it is `RedirectPolicy::None`
+with the answer thrown away.
+
+**Asserted without a network**, and that is the honest shape here rather
+than a shortcut: `web_sys::Request` has a getter for each of the four, so
+the browser itself answers whether the member arrived. What a headless run
+could *not* honestly arrange is what these members are for —
+`credentials: "include"` against a cross-origin server that sets a cookie,
+`no-cors` producing an opaque response — both of which need a second
+origin. What this crate is responsible for is that the member reaches the
+request; what the browser does with it afterwards is the browser's.
+
+**Finding this also found that the browser suite had not compiled since
+2026-08-16.** `Event::Informational` landed with the `1xx` work and
+`http-ng-fetch`'s `tests/hooks.rs` never gained an arm, so every browser
+binary in that crate failed to build through six green merges —
+`cargo nextest run --workspace --all-features` does not build for
+`wasm32-unknown-unknown`, and `just test-browsers` is its own CI job.
+`Event` not being `#[non_exhaustive]` is what made it a compile error
+rather than silence: the design worked and the running of it did not.
 
 ### G5. `text()` is UTF-8 or an error, with no charset from `Content-Type` — **closed**
 

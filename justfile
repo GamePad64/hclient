@@ -307,7 +307,7 @@ test-browser BROWSER="chrome":
       fi
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
-    run_browser_suite crates/http-ng-fetch 119
+    run_browser_suite crates/http-ng-fetch 123
     run_browser_suite crates/http-ng 6 --features default-transport,test-util
 
 # both browser suites, on both engines — CI runs one engine per matrix leg
