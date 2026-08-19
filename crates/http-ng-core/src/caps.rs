@@ -690,13 +690,61 @@ pub fn check_version(
 ///
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
 /// (streaming request body available since 131) and Safari (not available).
+///
+/// # Two kinds of field, and the difference was never written down
+///
+/// Every field here is one of two things, and reading them as one kind is
+/// how `docs/competitive-gaps.md` §7 came to ask whether
+/// [`proxy`](Self::proxy) "should have a reader at all".
+///
+/// - **A gate.** The field guards a setting a caller made on the
+///   *`Client`*, and `ClientBuilder::build` refuses when the transport
+///   cannot honour it — the model this whole type exists for, taken from
+///   `wasi:http`'s own setters returning
+///   `result<_, request-options-error::not-supported>`. A gate with no
+///   branch is the *silently ignored setting* defect, and this project has
+///   closed four of them: `redirects`, `owns_cookie_jar`, `owns_cache` and
+///   the `timeouts` triple each earned a branch the day the setting
+///   arrived.
+/// - **A report.** The field states a fact about the transport, and
+///   nothing at the client level could refuse it, because the setting it
+///   describes is configured *on the transport*. `proxy`, `client_certs`,
+///   `tls_config`, `early_data`, `connection_reuse`, `cancel_on_drop`,
+///   `full_duplex`, `streaming_request_body`, the two trailer flags and
+///   `version_reported` are all this kind. Its reader is the caller.
+///
+/// **A report is not a dead field.** `upgrade` was deleted for having no
+/// reader, and the difference is that its four variants encoded a
+/// distinction with one reachable side — where a report has both values
+/// reachable and answers a question only it can answer.
+///
+/// The classification is enforced rather than described:
+/// `every_capability_is_a_gate_or_a_report` in this module destructures
+/// the struct with no `..`, so a field added later is a compile error
+/// until somebody decides which kind it is.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Capabilities {
+    /// Whether a request body may be written as it is produced.
+    ///
+    /// Reported. `Client` does not gate on it — see this type's doc for
+    /// why some fields do and some do not — which is why
+    /// `http-ng-urlsession` refuses a `Streaming` body with a typed error
+    /// of its own rather than relying on a check that does not happen.
     pub streaming_request_body: bool,
+    /// Whether the response may begin arriving before the request body has
+    /// finished. Reported.
     pub full_duplex: bool,
+    /// Reported.
     pub request_trailers: bool,
+    /// Reported.
     pub response_trailers: bool,
+    /// Who follows a redirect — see [`RedirectSupport`].
+    ///
+    /// **A gate**: `RedirectPolicy` and a redirect predicate are `Client`
+    /// settings, and [`RedirectSupport::Internal`] means the transport has
+    /// already followed the chain by the time anything is handed back, so
+    /// either setting would silently not apply.
     pub redirects: RedirectSupport,
     /// What dropping an in-flight `execute` future does — see
     /// [`CancelSupport`] and the contract on
@@ -712,8 +760,36 @@ pub struct Capabilities {
     /// data — see [`EarlyDataSupport`], which says less than its name
     /// suggests and says so at length.
     pub early_data: EarlyDataSupport,
+    /// What TLS configuration this transport accepts — see [`TlsSupport`].
+    ///
+    /// **Reported, not a gate.** A `Client` has no TLS setting to refuse:
+    /// the trust store, the client certificate and the ALPN list are all
+    /// configured on the `TlsConnect` a transport was built with. See this
+    /// type's own doc for the two kinds of field.
     pub tls_config: TlsSupport,
+    /// Whether the TLS configuration this transport holds presents a
+    /// client certificate.
+    ///
+    /// Reported, for [`tls_config`](Self::tls_config)'s reason. Read off
+    /// `TlsIdentity::presents_client_certs` by the backends rather than
+    /// from a constant, which is what stopped one connector giving two
+    /// answers depending on which stack held it.
     pub client_certs: bool,
+    /// Whether this transport sends through a proxy.
+    ///
+    /// **Reported, and it will never be a gate** — which is the answer to
+    /// a question `docs/competitive-gaps.md` §7 raised and left open. The
+    /// setting it would guard is `Native::proxy`, which is on the
+    /// transport that would answer the question, so there is nothing at
+    /// the client level to refuse. That makes it unlike
+    /// [`owns_cookie_jar`](Self::owns_cookie_jar), where the client owns
+    /// the setting and the transport owns the conflict.
+    ///
+    /// It is not [`upgrade`](https://docs.rs/http-ng-core)'s case either,
+    /// the four-variant enum deleted for having no reader: both values
+    /// here are reachable, and the reader is the caller — *will my
+    /// requests go through a proxy* is a question a diagnostic asks and
+    /// only this field answers.
     pub proxy: bool,
     /// Whether the transport keeps its own cookie jar: attaching `Cookie`
     /// to outgoing requests and processing `Set-Cookie` on incoming ones,
@@ -883,6 +959,82 @@ pub struct UnsupportedCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Every field is a gate or a report, and adding one without saying
+    /// which is a compile error.**
+    ///
+    /// The distinction is [`Capabilities`]' own doc; this is what keeps it
+    /// from going stale. Destructured with no `..` rest pattern —
+    /// `#[non_exhaustive]` blocks that only from outside the crate, which
+    /// is why the classification has to live here rather than in
+    /// `http-ng`, where the branches themselves are.
+    ///
+    /// The lists are asserted against each other rather than merely
+    /// written: a field named in both, or in neither, fails a line.
+    #[test]
+    fn every_capability_is_a_gate_or_a_report() {
+        let c = Capabilities::none();
+        let Capabilities {
+            // ── gates: a `Client` setting the transport can refuse ──
+            //
+            // Each of these has a branch in `http_ng::check_supported` and
+            // a test naming the setting it refuses.
+            redirects,
+            response_decompression,
+            owns_cookie_jar,
+            owns_cache,
+            version_select,
+            timeouts,
+            forbidden_request_headers,
+            // `informational_1xx` is a gate in the other direction: no
+            // `Client` setting turns it on, and what it guards is a
+            // *claim* — `Native::hooks` clears it, because a transport
+            // reporting `true` while reporting nothing is a capability
+            // that lies.
+            informational_1xx,
+
+            // ── reports: a fact whose setting lives on the transport ──
+            streaming_request_body,
+            full_duplex,
+            request_trailers,
+            response_trailers,
+            cancel_on_drop,
+            connection_reuse,
+            early_data,
+            tls_config,
+            client_certs,
+            proxy,
+            version_reported,
+        } = &c;
+
+        // The gates, at their conservative base: each is the value that
+        // refuses a caller's setting rather than silently dropping it.
+        assert_eq!(*redirects, RedirectSupport::None);
+        assert_eq!(*response_decompression, DecompressionSupport::None);
+        assert!(!owns_cookie_jar);
+        assert!(!owns_cache);
+        assert!(!version_select);
+        assert!(!timeouts.resolve && !timeouts.connect);
+        assert!(!timeouts.first_byte && !timeouts.between_bytes);
+        assert!(forbidden_request_headers.is_empty());
+        assert!(!informational_1xx);
+
+        // The reports, likewise understated: a report that over-claims
+        // costs a caller correctness, one that under-claims costs an
+        // opportunity — the floor rule, which is why `none()` is the base
+        // every transport starts from.
+        assert!(!streaming_request_body);
+        assert!(!full_duplex);
+        assert!(!request_trailers);
+        assert!(!response_trailers);
+        assert_eq!(*cancel_on_drop, CancelSupport::None);
+        assert_eq!(*connection_reuse, ReuseSupport::None);
+        assert_eq!(*early_data, EarlyDataSupport::None);
+        assert_eq!(*tls_config, TlsSupport::None);
+        assert!(!client_certs);
+        assert!(!proxy);
+        assert!(!version_reported);
+    }
 
     #[test]
     fn none_is_the_conservative_base() {

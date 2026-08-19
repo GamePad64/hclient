@@ -1284,6 +1284,45 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### `Capabilities` has two kinds of field, and one of them is not a gate
+
+`docs/competitive-gaps.md` §7 asked whether `Capabilities::proxy` "should
+have a reader at all" — a producer, no reader, and the `upgrade` deletion
+sitting there as a precedent. The answer is that the question was the wrong
+one: `proxy` is one of **eleven** fields nothing branches on, and six of
+them (`proxy`, `client_certs`, `tls_config`, `early_data`,
+`connection_reuse`, `cancel_on_drop`) had no doc comment either.
+
+**A gate** guards a setting a caller made on the `Client`, and `build()`
+refuses when the transport cannot honour it — `redirects`,
+`response_decompression`, `owns_cookie_jar`, `owns_cache`,
+`version_select`, `timeouts`, `forbidden_request_headers`. A gate with no
+branch is the *silently ignored setting* defect, and this project has
+closed four of them.
+
+**A report** states a fact about the transport, and nothing at the client
+level could refuse it, because the setting it describes is configured *on
+the transport*. `proxy` is a report: what it would guard is
+`Native::proxy`, which is on the object that answers the question. So it
+will never be a gate, and that is structural rather than an omission.
+
+**A report is not a dead field**, which is where `upgrade` differs: those
+four variants encoded a distinction with one reachable side, where a report
+has both values reachable and answers a question only it can answer — *will
+my requests go through a proxy* is a diagnostic's question.
+
+`informational_1xx` is the one gate in the other direction: no `Client`
+setting turns it on, and what it guards is a **claim** — `Native::hooks`
+clears it, because a transport reporting `true` while reporting nothing is
+a capability that lies.
+
+The classification is enforced rather than described.
+`every_capability_is_a_gate_or_a_report` lives in `http-ng-core`, because
+`#[non_exhaustive]` allows an exhaustive destructure only inside the
+defining crate (amendment C6) — so a field added later is a compile error
+in **two** places until somebody decides which kind it is. Checked by
+adding one and watching both fail.
+
 ### The response head is bounded on both protocols, and one setter can refuse
 
 `Native::h1_opts(H1Opts { max_headers, max_buf_size })`, beside

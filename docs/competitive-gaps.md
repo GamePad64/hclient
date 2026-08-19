@@ -1041,13 +1041,30 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
 - **Nothing here was checked on Windows or macOS.** The Apple `URLSession`
   rows rest on `http-ng-urlsession`'s own record, which states its four live
   tests are green on macOS 27.
-- **`Capabilities::proxy` has a producer and still no reader.**
-  `Native::proxy` sets it (`http-ng-native/src/lib.rs:744`), and grepping
-  `crates/http-ng/src/` for a read of it returns nothing. So the field is no
-  longer inert in the sense `docs/v04-acceptance.md` recorded — it can be
-  `true` — but the second half of that entry's demand, *"make the field mean
-  something"*, is unmet. Whether it should have a reader at all is a
-  question this document raises and does not answer.
+- ~~**`Capabilities::proxy` has a producer and still no reader.**~~
+  **Answered, and the answer is bigger than the field.** `proxy` is not one
+  field without a reader — it is one of *eleven*, and the six this entry
+  could have named (`proxy`, `client_certs`, `tls_config`, `early_data`,
+  `connection_reuse`, `cancel_on_drop`) are in exactly the same state.
+  Which means the question was the wrong one: `Capabilities` has **two
+  kinds of field**, and the difference had never been written down.
+
+  A **gate** guards a setting a caller made on the `Client`, and
+  `build()` refuses when the transport cannot honour it — a gate with no
+  branch is the *silently ignored setting* defect. A **report** states a
+  fact about the transport, and nothing at the client level could refuse
+  it, because the setting it describes is configured *on the transport*.
+  `proxy` is a report: what it would guard is `Native::proxy`, on the
+  object that would answer the question.
+
+  It is not `upgrade`'s case either — that enum was deleted for having
+  four variants encoding a distinction with one reachable side, where a
+  report has both values reachable and answers a question only it can
+  answer. The classification is now on the type, and enforced:
+  `every_capability_is_a_gate_or_a_report` destructures the struct with no
+  `..`, so a field added later is a compile error until somebody decides
+  which kind it is. Verified by adding one and watching both destructures
+  fail.
 - **No security review was attempted.** G10 is named as a gap, not as a
   finding.
 
