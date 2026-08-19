@@ -2486,6 +2486,55 @@ leans on two, which is a hooks change wanting its own measurement.
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
 
+### The rendered docs had no check, and the prose is the product
+
+`just docs` — `RUSTDOCFLAGS="-D warnings" cargo doc --workspace
+--all-features --no-deps`, in the `lint` job. It was run for the first
+time when publishing made the output visible, and it reported **96
+warnings across 17 crates**. Four kinds, in rising order of harm, and the
+order is the point: the cheapest is cosmetic and the dearest is
+invisible.
+
+**Two unclosed HTML tags, which silently delete the rest of the sentence
+from the page.** `<S>` and `<usize>` escaped their code spans, and one of
+them for a reason no reader would find by looking: a doc line beginning
+`+ Unpin` starts a **markdown list**, which closes the code span opened
+on the line above, so every backtick after it pairs one off and
+`Stream<S>` lands outside any span. Counting the backticks says the line
+is balanced. It is the parser that disagrees.
+
+**Twelve unresolved links from a single shape** — a link target wrapped
+across two `///` lines. rustdoc does not rejoin the path, so the target
+is `crate::` followed by a newline. Searching for the *shape* rather than
+working the warning list found a thirteenth the warnings had classified
+differently, which is the argument for fixing a class rather than a list.
+
+**Forty-eight links from public prose to private items**, which docs.rs
+renders as literal `[`brackets`]`. These are the maintainer's cross
+references — `crate::pool`, `crate::hooks`, `Native::run` — and a reader
+of the published page meets them as punctuation.
+
+The remaining fourteen were answered one at a time rather than silenced:
+six named a crate that is genuinely not a dependency (one of them a
+*dev*-dependency, which resolves in a test and not in a doc build), three
+only needed a path, one named a private helper under a name it does not
+have, and one — `[RFC5987]` — is a verbatim quotation from RFC 7578 and
+is escaped so it stays the quote it is.
+
+**This is the third shape of the rule this file keeps recording.**
+`test-doc` was a recipe nothing called; `test-no-default` was a recipe
+that printed `error:` and exited zero; this was **no check at all**, for
+the artifact this project's whole method rests on. The recipe fails
+closed twice — on rustdoc's warnings, and on there being no sign rustdoc
+ran, because printing nothing and finding nothing are indistinguishable —
+and it was checked in the failing direction rather than assumed: a
+deliberate `[`ThisDoesNotExist`]` takes it to exit 101.
+
+`--all-features` is not thoroughness, it is the same fact as the docs.rs
+metadata beside it: `default` is empty or near-empty in every crate here
+by design, so a doc build without it checks the smallest part of the
+surface and publishes the same.
+
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code

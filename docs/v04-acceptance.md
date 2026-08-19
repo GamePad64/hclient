@@ -34,13 +34,26 @@ found by capturing a failure rather than by reasoning about one.
 
 ## Deliberately not done
 
-**The `urlsession` backend.** Deferred by the owner mid-version, not
-blocked. Nothing in this tree depends on it.
+~~**The `urlsession` backend.** Deferred by the owner mid-version, not
+blocked. Nothing in this tree depends on it.~~ — **built.**
+`http-ng-urlsession` is the fifth backend and the fourth *ambient* one,
+and it reports `RedirectSupport::Transparent`, which `http-ng-fetch`
+cannot. See `AGENTS.md`. The entry that motivated it was also found
+wrong on its way in: MDM roots were listed first and
+`rustls-platform-verifier` already reaches them.
 
 **WebTransport, four things**, each with what it needs rather than a
-shrug: `GOAWAY`; more than one session per connection (`PoolKey` has no
-field to tell two apart); the capsule protocol beyond
-`CLOSE_WEBTRANSPORT_SESSION`; and server-initiated unidirectional
+shrug: ~~`GOAWAY`~~ — **answered, and the answer is that it is
+unobservable**: `h3` 0.0.8 gives a client nothing to see, and two
+`GOAWAY`s saying opposite things are indistinguishable, so no state was
+invented for it and a post-`GOAWAY` session is refused by the *peer*;
+~~more than one session per connection (`PoolKey` has no field to tell
+two apart)~~ — **built, and the blocker recorded here was the wrong
+one**: `PoolKey` is `http-ng-h3`'s, where this crate takes its
+`quinn::Connection` from outside, so what binds is the peer's
+`SETTINGS_WEBTRANSPORT_MAX_SESSIONS`, read off the frame; the capsule
+protocol beyond `CLOSE_WEBTRANSPORT_SESSION`; and server-initiated
+unidirectional
 streams, which are **unreachable rather than unimplemented** — the arm
 that would keep them is guarded by a SETTINGS flag `h3` 0.0.8's *client*
 cannot set, and that impossibility is asserted by a test rather than
@@ -53,8 +66,22 @@ connection. The threshold that would decide otherwise needs the peer's
 limit — `h2` will not report it — and a handshake cost that is a network
 property, so a loopback number would be a number about this machine.
 
-**`Capabilities::proxy` is inert, and this is a decision waiting rather
-than a finding acted on.** Measured: the field is set in exactly one
+~~**`Capabilities::proxy` is inert, and this is a decision waiting rather
+than a finding acted on.**~~ — **both halves done, and the question
+turned out to be the wrong one.** Proxies are built (an HTTP one and
+SOCKS5 behind one seam, plus SOCKS4/4a, a bypass list and more than one
+proxy chosen by scheme), so the field means something; and the field is
+one of **eleven** nothing branches on, which is why the answer is a
+classification rather than a deletion. `Capabilities` has two kinds of
+field — a **gate**, which guards a `Client` setting and makes `build()`
+refuse, and a **report**, which states a transport fact nothing at the
+client level could refuse. `proxy` is a report, so it will never have a
+branch, and that is structural rather than an omission; six fields
+including this one gained the doc comment they lacked. The rule is
+enforced by an exhaustive destructure in `http-ng-core` rather than
+described. Original text follows.
+
+ Measured: the field is set in exactly one
 place — `Capabilities::none()`'s `false` — no backend sets it, nothing
 in `http-ng` branches on it, and there is no proxy setting on `Client`,
 no seam on `Transport` and no implementation anywhere, so a caller
@@ -67,8 +94,12 @@ have, so the two ways out are opposite: delete the field, or build
 proxy support and make the field mean something. Both are the owner's
 call; recorded here rather than taken.
 
-**Publishing.** Unchanged and not a v0.4 question: every crate still says
-`0.1.0`, and the trigger is the owner's.
+~~**Publishing.** Unchanged and not a v0.4 question: every crate still says
+`0.1.0`, and the trigger is the owner's.~~ — **the owner pulled it.**
+`0.1.0` is the first published version, and it is stated once now rather
+than in thirty manifests. `AGENTS.md` carries what that costs, measured:
+six public types took a semver-breaking change in the 31 commits before
+the trigger, and none of them is `#[non_exhaustive]`.
 
 ## What v0.4 has not checked
 
@@ -78,8 +109,19 @@ and it reproduces on `main` independently of any branch, so it is the
 environment rather than the code. Firefox passes, and the `browser` CI
 job runs both.
 
-**Two workspace-level flakes, seen on this tree and on the tree before
-it, and deliberately not attributed.**
+~~**Two workspace-level flakes, seen on this tree and on the tree before
+it, and deliberately not attributed.**~~ — **both captured, and neither
+was noise.** The h3 one was a **real defect**: `h3` opens its control
+stream in early data, so a server refusing it reset the stream and
+`connect` surfaced `H3_CLOSED_CRITICAL_STREAM` as `ErrorKind::Connect`;
+`connect` now dials at most twice. The select one was the **test**
+measuring something the client does not promise — at a head start of
+zero the hedge is only *started*, so `tcp_accepted >= 1` was a clock
+wearing a counter's clothes; the assertion is gone and the test renamed.
+The paragraph's refusal to attribute them was right, and the way out was
+capturing rather than sampling harder. Original text follows.
+
+
 `http-ng-select::race::with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
 and `http-ng-h3::zero_rtt::early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake`
 each fail at a rate near 1 in 40 full
