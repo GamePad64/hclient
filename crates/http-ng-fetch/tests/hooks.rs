@@ -30,6 +30,20 @@ enum Seen {
     Connected,
     Reused,
     Closed,
+    /// **Never emitted by this backend**, and here so that the `match`
+    /// below stays exhaustive rather than gaining a `_` arm.
+    ///
+    /// `Event` is deliberately not `#[non_exhaustive]`, which is what made
+    /// a new variant a compile error here instead of a silently unhandled
+    /// case — and this file is the evidence that the design works and the
+    /// running of it did not: the variant landed on 2026-08-16 and this
+    /// suite did not build again until it was noticed, because
+    /// `just test-browsers` is its own CI job and nothing local runs it.
+    ///
+    /// A `_` arm would have absorbed the next variant too. Every test here
+    /// asserts an exact event sequence, so one of these appearing fails a
+    /// line rather than being counted.
+    Informational,
     Head {
         id: u64,
         uri: String,
@@ -79,6 +93,7 @@ impl Hooks for Recorder {
             Event::Connected(_) => Seen::Connected,
             Event::Reused(_) => Seen::Reused,
             Event::Closed(_) => Seen::Closed,
+            Event::Informational(_) => Seen::Informational,
             Event::Head(h) => {
                 self.elapsed.borrow_mut().push(h.elapsed);
                 Seen::Head {
