@@ -153,7 +153,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | HTTP/1.1 | Y | Y | Y | Y | (browser's) | |
 | HTTP/2 | Y\* | Y | N | Y | — | ng behind `http-ng-native/http2`, off by default |
 | h2 multiplexing on by default | N | Y | — | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
-| h2 tuning (window, frame size, keepalive PING, prior knowledge) | **N** | Y | N | Y | N | eight setters, `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
+| h2 tuning (window, frame size, keepalive PING, prior knowledge) | Y\* | Y | N | Y | N | closed for the settings frame — `Native::h2_opts`: both windows, `max_frame_size`, `max_header_list_size`. Keepalive, an adaptive window and prior knowledge are still absent, each for its own reason rather than as a batch. See G8; reqwest's eight are `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
 | HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build |
 | WebSocket | Y | **N** | N | **N** | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust |
 | WebTransport | **Y** | N | N | N | N | `http-ng-webtransport`: sessions, bidi streams, datagrams, close capsules |
@@ -434,24 +434,40 @@ choice at `via`/`connect` — genuinely small. For a closure, a `Send`-free
 rule already anticipates. *Forbidden?* Environment reading is. The rest is
 not.
 
-### G8. HTTP/2 has no tuning surface
+### G8. HTTP/2 has no tuning surface — **closed for the settings frame**
 
-reqwest exposes eight h2 knobs — initial stream and connection window,
-adaptive window, max frame size, max header list size, keepalive interval,
-keepalive timeout, keepalive-while-idle, prior knowledge
-(`reqwest…client.rs:1563-1674`). `Native` exposes none: `multiplexed()`
-turns the driver on and that is the whole surface.
+`Native::h2_opts(H2Opts { .. })`, four `Option` fields forwarded to
+`h2::client::Builder`: the stream window, the connection window,
+`max_frame_size` and `max_header_list_size`. Every field `None` by
+default, meaning *whatever h2 chooses*, on `TcpOpts`' rule — a value set
+here goes on the wire, so a default of ours would change what a caller who
+asked for nothing announces to every server.
 
-This bites a caller carrying a large response over a long fat pipe, where
-the default 64 KiB window is the throughput ceiling. `tests/grpc_shape.rs`
-row 11 already carries 524 328 bytes through that window, so the path is
-exercised — it just cannot be widened.
+The one that motivates the rest is the window, and the arithmetic is worth
+stating because it is not this client's: a peer may have at most a window
+in flight, so the best achievable rate is `window / RTT` — 65 535 bytes
+over a 100 ms round trip is about 5 Mbit/s whatever the link can do.
 
-*What it takes*: fields on `Native` forwarded to `h2::client::Builder`;
-mechanically small. *Rules*: the capability floor — none of these change a
-`Capabilities` value, so nothing is at risk there; and no `Spawn` bound may
-leak, which keepalive does not need since the ping is answered by whoever is
-polling. *Forbidden?* No. It is a plain absence.
+**Three of reqwest's eight are deliberately still absent**, each for its
+own reason rather than as a batch. An *adaptive window* is hyper's, computed
+from measured RTT; `h2` has none, so it would be ours to write, and a wrong
+estimator is worse than an honest constant. *Keepalive pings* need somebody
+polling an idle connection, which here means `multiplexed()` and its
+`Spawn` bound — a property of the driver rather than of the settings frame,
+and it belongs on that constructor if it arrives. And
+*`max_concurrent_streams`* governs streams the **server** opens, i.e.
+server push, which `h2` does not enable and RFC 9113 §8.4 deprecates: a
+knob with no subject. *Prior knowledge* is a separate axis — speaking h2
+without ALPN — and is not tuning.
+
+**Nothing is timed.** A throughput measurement on loopback would say
+almost nothing, since the window bounds bytes *in flight* and a round trip
+near zero refills it as fast as it drains — which is precisely why the
+default only bites on a long fat pipe. What is observable without a
+network is the setting itself, at the peer that has to obey it: an
+`h2::server` reserving capacity is told by its own flow control how much
+the client said it would accept, and it frames a large body at the
+client's `max_frame_size`.
 
 ### G9. No custom redirect predicate — **closed**
 

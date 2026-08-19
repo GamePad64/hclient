@@ -514,7 +514,15 @@ where
             Some(p) => self.checkin_for(&parts_of_key.key(p), now),
             None => None,
         };
-        let est = match handshake_for(conn, protocol, id).await {
+        let est = match handshake_for(
+            conn,
+            protocol,
+            id,
+            #[cfg(feature = "http2")]
+            self.h2_opts,
+        )
+        .await
+        {
             Ok(e) => e,
             Err(e) => return Err((e, req)),
         };

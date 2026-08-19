@@ -1284,6 +1284,63 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### HTTP/2's settings frame is tunable, and three of reqwest's eight knobs still are not
+
+`Native::h2_opts(H2Opts { .. })` — the stream window, the connection
+window, `max_frame_size` and `max_header_list_size`, four `Option`s
+forwarded to `h2::client::Builder`. `None` means *whatever `h2` chooses*,
+which is `TcpOpts`' rule: a value set here goes on the wire, so a default
+of ours would change what a caller who asked for nothing announces to
+every server.
+
+**The window is the one that motivates the rest, and the arithmetic is not
+ours.** RFC 9113 §6.9.2 fixes the default at 65 535 bytes and a peer may
+have at most a window in flight, so the ceiling is `window / RTT` however
+much bandwidth there is — about 5 Mbit/s over a 100 ms round trip. Raising
+the stream window alone changes nothing where streams share a connection,
+because the connection window is still 65 535; that is a test rather than a
+sentence, since a caller reading only the field name would set one and
+measure nothing.
+
+**Infallible, unlike `tcp_opts` beside it**, and the difference is who
+applies the value: a socket option is applied by a runtime that may not
+have it, so `TcpOpts` needs a refusal and a per-field support mirror, where
+a `SETTINGS` frame is written by this crate and there is nobody to say no.
+Nothing in `Capabilities` moves either — a window size is not a capability.
+
+**Nothing is timed, deliberately.** A throughput measurement on loopback
+would say almost nothing: the window bounds bytes *in flight*, and with a
+round trip near zero a sender refills it as fast as it drains — which is
+exactly why the default only bites on a long fat pipe. What is observable
+without a network is the setting at the peer that must obey it, so an
+`h2::server` reports what capacity its `SendStream` was granted, and the
+frame size is read as *behaviour* — one 512 KiB write cut into DATA frames
+at the client's limit — because `h2::server::Connection` exposes no
+accessor for it.
+
+Two numbers had to be read rather than guessed. `SendStream::capacity` is
+bounded by the sender's own buffer as well as by the peer's window, and
+h2's `DEFAULT_MAX_SEND_BUFFER_SIZE` is 400 KiB — a first draft asked for a
+megabyte and was told 409 600, which discriminates but does not measure. So
+the test asks for 256 KiB, under that buffer, where the window is the only
+thing binding. And `max_header_list_size` is enforced by `h2` on **receive**
+as well as advertised (`codec/framed_read.rs`), which is what gives the
+fourth field a local observable instead of a forwarding line nobody checks.
+
+**Three of reqwest's eight are still absent, each for its own reason.** An
+adaptive window is hyper's, computed from measured RTT; `h2` has none, so
+it would be ours to write and a wrong estimator is worse than an honest
+constant. Keepalive pings need somebody polling an idle connection, which
+here means `multiplexed()` and its `Spawn` bound — a property of the driver
+rather than of the settings frame. And `max_concurrent_streams` governs
+streams the *server* opens, i.e. server push, which `h2` does not enable
+and RFC 9113 §8.4 deprecates: a knob with no subject.
+
+`H2Opts` is deliberately **not** `#[non_exhaustive]`, copying `TcpOpts`:
+its whole use is `H2Opts { one: Some(n), ..Default::default() }`, which the
+attribute forbids from outside the crate, leaving per-field setters that
+exist only to work around it.
+
 ### A caller gets a say over each redirect hop, after the policy rather than inside it
 
 `ClientBuilder::redirect_predicate(|hop| ..)` -> `RedirectVerdict::{Follow,

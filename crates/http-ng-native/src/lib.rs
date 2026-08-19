@@ -57,7 +57,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 /// The future [`Native::multiplexed`] spawns — public because that
 /// constructor's `Spawn` bound has to name it, and for no other reason.
 #[cfg(feature = "http2")]
-pub use http2::H2Driver;
+pub use http2::{H2Driver, H2Opts};
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
@@ -298,6 +298,12 @@ where
     /// build that wants nothing exactly nothing.
     hooks: H,
     opts: TcpOpts,
+    /// What goes in this client's HTTP/2 `SETTINGS` frame where it does
+    /// not want `h2`'s default. Constant within a `Native` and therefore
+    /// within its pool, which is why it is not in `PoolKey` — the
+    /// argument the TLS identity and the proxy already carry there.
+    #[cfg(feature = "http2")]
+    h2_opts: crate::http2::H2Opts,
     caps: Capabilities,
     /// The instant this transport was built, and the origin every pool
     /// deadline is measured from.
@@ -598,6 +604,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         Self {
             watch_1xx: None,
             expect_continue: None,
+            #[cfg(feature = "http2")]
+            h2_opts: crate::http2::H2Opts::default(),
             // `P` is `NoProxy` here, an empty enum, so this is the only
             // value this field can hold on a transport built by `new` —
             // `.proxy(..)` is what changes the type.
@@ -747,6 +755,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // does not change.
             watch_1xx: self.watch_1xx,
             expect_continue: self.expect_continue,
+            #[cfg(feature = "http2")]
+            h2_opts: self.h2_opts,
             proxy: Some(proxy),
             rt: self.rt,
             tls: self.tls,
@@ -857,6 +867,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // must not say it does.
             watch_1xx: None,
             expect_continue: self.expect_continue,
+            #[cfg(feature = "http2")]
+            h2_opts: self.h2_opts,
             // Carried, unlike the two above: the proxy is named by
             // neither `H` nor the driver.
             proxy: self.proxy,
@@ -1282,6 +1294,55 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         self.opts = opts;
         Ok(self)
+    }
+
+    /// What this client announces in its HTTP/2 `SETTINGS` frame, where it
+    /// does not want `h2`'s default — see [`H2Opts`], which is where the
+    /// argument for each field is and where the three deliberate absences
+    /// are named.
+    ///
+    /// The one that motivates the rest is the receive window: RFC 9113
+    /// §6.9.2 fixes it at 65 535 bytes, and on a long fat pipe a peer can
+    /// have at most a window in flight, so the ceiling is `window / RTT`
+    /// however much bandwidth there is.
+    ///
+    /// ```no_run
+    /// # use http_ng_native::{H2Opts, Native};
+    /// # use http_ng_rt::{TcpConnect, Timer};
+    /// # use http_ng_tls::TlsConnect;
+    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>) -> Native<R, T, D> {
+    /// t.h2_opts(H2Opts {
+    ///     initial_window_size: Some(4 << 20),
+    ///     // Raised together: the connection window is the ceiling for
+    ///     // everything sharing the connection, so lifting only the
+    ///     // stream one leaves 65 535 in force where streams are shared.
+    ///     initial_connection_window_size: Some(8 << 20),
+    ///     ..H2Opts::default()
+    /// })
+    /// # }
+    /// ```
+    ///
+    /// **Infallible, unlike [`tcp_opts`](Self::tcp_opts) beside it**, and
+    /// the difference is who applies the value: a socket option is applied
+    /// by a runtime that may not have it, so `TcpOpts` needs a refusal and
+    /// a per-field support mirror, where a `SETTINGS` frame is written by
+    /// this crate and there is nobody to say no. A value out of the RFC's
+    /// range is `h2`'s to reject at the handshake, not this method's to
+    /// second-guess.
+    ///
+    /// **It replaces the whole set**, as `tcp_opts` does, and the wart is
+    /// smaller here for the same reason the constructor differs: every
+    /// field is an `Option` whose `None` means *h2's default*, so a caller
+    /// who sets one field and drops another gets the default rather than
+    /// an option silently switched off.
+    ///
+    /// Nothing in [`Capabilities`] changes — a window size is not a
+    /// capability, and no caller can ask whether one was raised.
+    #[cfg(feature = "http2")]
+    #[must_use]
+    pub fn h2_opts(mut self, opts: H2Opts) -> Self {
+        self.h2_opts = opts;
+        self
     }
 }
 
@@ -1833,13 +1894,14 @@ async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
     id: ConnectionId,
+    h2_opts: crate::http2::H2Opts,
 ) -> Result<established::Established<I>, Error>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     if is_h2(protocol) {
         Ok(established::Established::H2(Box::new(
-            http2::handshake(conn, id).await?,
+            http2::handshake(conn, id, h2_opts).await?,
         )))
     } else {
         Ok(established::Established::H1(h1::handshake(conn, id).await?))
@@ -2350,7 +2412,14 @@ where
             None => None,
         };
 
-        let est = handshake_for(conn, protocol, id).await?;
+        let est = handshake_for(
+            conn,
+            protocol,
+            id,
+            #[cfg(feature = "http2")]
+            self.h2_opts,
+        )
+        .await?;
         // The one place a connection becomes a *shared* one. It happens
         // before the exchange, so what this request holds is a clone like
         // any other and the pool's copy owns the connection from the first

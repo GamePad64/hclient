@@ -275,15 +275,106 @@ where
     }
 }
 
+/// What this client puts in its `SETTINGS` frame, where it does not want
+/// h2's default.
+///
+/// Every field is `None` by default, meaning *whatever `h2` chooses*, and
+/// that is deliberate in the direction [`TcpOpts`](http_ng_rt::TcpOpts)
+/// already establishes: a value set here goes on the wire, so a default of
+/// ours would change what a caller who asked for nothing announces to
+/// every server. The difference from `TcpOpts` is that these cannot be
+/// refused — a `SETTINGS` frame is written by this crate, not by a runtime
+/// that may or may not support the option, so there is no `…Support`
+/// mirror and nothing to error at connect.
+///
+/// # What they are for, and the one that motivates the rest
+///
+/// [`initial_window_size`](Self::initial_window_size) is the flow-control
+/// window the **server** may fill on one stream before waiting for a
+/// `WINDOW_UPDATE`, and RFC 9113 §6.9.2 fixes its default at 65 535
+/// bytes. On a long fat pipe that number is the throughput ceiling
+/// outright: a peer can have at most a window in flight, so the best
+/// achievable rate is `window / RTT` however much bandwidth there is —
+/// 65 535 bytes over a 100 ms round trip is about 5 Mbit/s, whatever the
+/// link can do. Nothing about this is specific to this client, and the
+/// only fix is a bigger number.
+///
+/// # What is deliberately not here
+///
+/// - **An adaptive window.** hyper computes one from measured RTT; `h2`
+///   has no such thing, so it would be ours to write, and a wrong
+///   estimator is worse than an honest constant.
+/// - **Keepalive pings.** Sending one needs somebody polling an idle
+///   connection, which here means [`Native::multiplexed`](crate::Native::
+///   multiplexed) and the `Spawn` bound that comes with it. It is a
+///   feature of the driver rather than of the settings frame, and it
+///   belongs on that constructor if it arrives.
+/// - **`max_concurrent_streams`.** A client's own limit governs streams
+///   the *server* opens, i.e. server push, which `h2` does not enable and
+///   RFC 9113 §8.4 deprecates. Announcing a number for something that
+///   cannot happen is a knob with no subject.
+///
+/// # Not `#[non_exhaustive]`, and that is deliberate
+///
+/// Not `#[non_exhaustive]`, unlike most public structs added here late —
+/// deliberately, and [`TcpOpts`](http_ng_rt::TcpOpts) is the precedent it
+/// is copied from. The whole use of this type is
+/// `H2Opts { one_field: Some(n), ..Default::default() }`, which
+/// `#[non_exhaustive]` forbids from outside the crate; a caller would be
+/// left with per-field setters that exist only to work around the
+/// attribute. What the attribute buys — a new field not breaking a literal
+/// nobody should have written — is bought instead by every field being an
+/// `Option` and by nothing here being published yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct H2Opts {
+    /// `SETTINGS_INITIAL_WINDOW_SIZE`, RFC 9113 §6.5.2 — per stream.
+    /// Default 65 535; see the type's doc for why that is a ceiling.
+    pub initial_window_size: Option<u32>,
+    /// The whole connection's receive window, which is not a `SETTINGS`
+    /// parameter at all: RFC 9113 §6.9.2 says the connection window can
+    /// only be changed with `WINDOW_UPDATE`, so `h2` sends one straight
+    /// after the preface. Worth setting with the one above rather than
+    /// instead of it — raising only the stream window leaves the
+    /// connection's 65 535 as the ceiling for everything sharing it.
+    pub initial_connection_window_size: Option<u32>,
+    /// `SETTINGS_MAX_FRAME_SIZE`, RFC 9113 §6.5.2: the largest frame this
+    /// client will accept, between 16 384 and 16 777 215.
+    pub max_frame_size: Option<u32>,
+    /// `SETTINGS_MAX_HEADER_LIST_SIZE`, RFC 9113 §6.5.2: an advisory
+    /// ceiling on a response head's uncompressed size.
+    pub max_header_list_size: Option<u32>,
+}
+
 /// The HTTP/2 connection preface and the first `SETTINGS` exchange.
 ///
 /// Split out from [`exchange`] for the same reason the HTTP/1 handshake
 /// is: a pooled connection has already had one.
-pub(crate) async fn handshake<I>(io: I, id: ConnectionId) -> Result<Established<I>, Error>
+pub(crate) async fn handshake<I>(
+    io: I,
+    id: ConnectionId,
+    opts: H2Opts,
+) -> Result<Established<I>, Error>
 where
     I: Read + Write + Unpin,
 {
-    let (sender, conn) = h2::client::handshake(TokioIo::new(io))
+    let mut builder = h2::client::Builder::new();
+    // Field by field rather than through a helper, because each `Some`
+    // has to reach a differently named method and there is nothing to
+    // share between them but the shape.
+    if let Some(n) = opts.initial_window_size {
+        builder.initial_window_size(n);
+    }
+    if let Some(n) = opts.initial_connection_window_size {
+        builder.initial_connection_window_size(n);
+    }
+    if let Some(n) = opts.max_frame_size {
+        builder.max_frame_size(n);
+    }
+    if let Some(n) = opts.max_header_list_size {
+        builder.max_header_list_size(n);
+    }
+    let (sender, conn) = builder
+        .handshake(TokioIo::new(io))
         .await
         .map_err(|e| from_h2_error(e, ErrorKind::Connect))?;
     Ok(Established { sender, conn, id })
