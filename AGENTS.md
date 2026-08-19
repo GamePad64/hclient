@@ -2585,6 +2585,33 @@ can hold a file the tarball drops — which is the whole defect. It fails
 closed on the loop not running, and it was checked in the failing direction
 by removing one README and watching it name the crate.
 
+**`just package-build` is the other half, and it is the one that builds.**
+`cargo package --workspace` does what a publish does and stops before the
+upload: each `.crate` is built from the files that would ship, and then
+**verified** by compiling it out of that tarball. That is the only check
+here that builds a crate the way a reader would get it rather than the way
+this workspace sits on disk — the same distinction the doctest job exists
+for, where two examples compiled only because another member turned a
+feature on.
+
+**It failed on its first run, and the cause would have blocked the entire
+publication.** `http-ng-fetch` and `http-ng-native` each dev-depend on
+`http-ng`, which depends on both — `DefaultTransport` is `Fetch` on wasm and
+`Native` elsewhere. Cargo allows that cycle inside a workspace and refuses
+it at package time, because a dev-dependency carrying a version has to
+resolve from the registry and `http-ng` cannot be there until those two
+are. Nothing else could see it: not `cargo check`, not `cargo nextest`, and
+not `just packaging`, which packages with `--no-verify`. Both are path-only
+now, so cargo strips them from the published manifest, and the reason is
+written at both sites — every other workspace dependency in those files is
+`{ workspace = true }`, so the odd one out invites a tidy-up that would put
+the defect straight back.
+
+It is deliberately **not** `cargo publish --dry-run`: that also asks the
+registry about ownership and version collisions, which is a different
+question and one CI has no credentials for. Nothing in the workflow
+publishes and there is no registry token in it.
+
 ### `#[non_exhaustive]` has three answers, and only one of them is "yes"
 
 Publishing turns every public type into a promise, so the attribute was
