@@ -144,8 +144,12 @@ zstd = ["dep:ruzstd"]
 #
 # The graph cost, measured here rather than inherited from that crate's
 # own report: `cargo tree -p http-ng -e normal --no-default-features` is
-# **17 crates, and 19 with this feature** — `http-ng-cookie` and
-# `public-suffix`, and nothing else, because both are leaves.
+# **Two crates** — `http-ng-cookie` and `public-suffix`, and nothing
+# else, because both are leaves. Stated as a delta rather than as a pair
+# of totals: a total is a fact about a resolution and drifts under
+# `cargo update` (AGENTS.md's dependency table records six such drifts),
+# where the delta is what this feature actually costs and is the
+# argument.
 #
 # One switch, not one per piece: unlike `gzip`/`brotli`, whose weights
 # differ by an order of magnitude and which a caller genuinely picks
@@ -160,10 +164,10 @@ cookies = ["dep:http-ng-cookie"]
 # same two measurements rather than by analogy.
 #
 # The graph cost: `cargo tree -p http-ng -e normal --no-default-features` is
-# **17 crates, and 18 with this feature** — `http-ng-cache` and nothing
-# else, because `bytes`, `http` and `thiserror` are already there. That is
-# one crate fewer than `cookies` costs, and it is the smaller half of the
-# argument.
+# **One crate** — `http-ng-cache` and nothing else, because `bytes`,
+# `http` and `thiserror` are already there. That is one fewer than
+# `cookies` costs, and it is the smaller half of the argument. A delta
+# rather than a total, for the reason the `cookies` line above gives.
 #
 # The larger half is what the feature turns on rather than what it links.
 # A cache is memory a client fills without being asked: an in-memory store
