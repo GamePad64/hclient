@@ -398,8 +398,23 @@ someone to "fix" an item whose absence is the decision.
   now reachable on `http-ng-native`, and neither replaces the other: a
   caller that sets only one of them has bounded only one of those two
   shapes.
-- **A `Client` cannot be given a jar over a caller-supplied public suffix
-  list.** `CookieJar<P>` is generic over the list — that is the seam
+- ~~**A `Client` cannot be given a jar over a caller-supplied public suffix
+  list.**~~ **Closed**, by the second of the two routes below and not the
+  first. `ClientBuilder::cookie_jar` is `cookie_jar<P>` now, and what it
+  stores is `jar.map_suffixes(AnyList::new)` — `AnyList` being a
+  `Box<dyn PublicSuffixList + Send>` that *implements the trait it erases*,
+  so `CookieJar<AnyList>` keeps the jar's whole API rather than a subset.
+  The conversion is written in `http-ng` rather than in `http-ng-cookie`,
+  which the paragraph below expected to be impossible: `map_suffixes` is a
+  public method on the jar, so the private field is never touched. The
+  `Send` bound sits on this one opt-in call and nowhere else — amendment
+  C12, the same shape `redirect_predicate` takes — so no signature a
+  single-threaded caller meets gains a bound. `crates/http-ng/src/erased.rs`,
+  and `AnyStore` beside it does the same for the response cache. The
+  original text follows, because the route it rejected is still the right
+  one to reject.
+
+  `CookieJar<P>` is generic over the list — that is the seam
   `http-ng-cookie` built so a caller can supply a fresher snapshot than
   the compiled-in one — and `ClientBuilder::cookie_jar` takes
   `CookieJar<BuiltinList>` only.
@@ -435,9 +450,14 @@ someone to "fix" an item whose absence is the decision.
   runtime flag existing only to be refused, or negative reasoning coherence
   does not offer. A per-handle bound costs one `Arc` bump and covers most of
   the same ground.
-- **`MockTransport` still reports `Capabilities::none()`**, so
-  `cancel_on_drop: None`. That is honest rather than lazy: its `execute`
-  completes synchronously and there is nothing to cancel.
+- **`MockTransport` reports `Capabilities::none()` *by default*** — since
+  narrowed, and the default is still the honest one rather than a lazy one:
+  its `execute` completes synchronously, so `cancel_on_drop: None` is what
+  is true of it. What the bullet said and no longer does is that this is all
+  it can report. `MockTransport::with_capabilities(caps)` overrides it,
+  which is what lets the mock stand in for a backend whose *capability* is
+  the thing under test — every `build()` refusal in this workspace is tested
+  that way.
 - **A `tower::buffer::Buffer` in the stack breaks the cancellation
   contract**, because it spawns a worker and the request outlives the
   dropped future. Such a stack must declare `None` even when the transport

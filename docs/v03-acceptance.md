@@ -220,11 +220,17 @@ someone to "fix" an item whose absence is the decision.
   that this layer passes a `425` through untouched, which stays true however
   `Client` evolves.
 
-  The second half is a live obligation rather than a note for later, and it
-  is aimed at whoever writes that retry (v0.3's `425` work, in flight
-  separately): **the replayed request must have `AllowEarlyData` removed
-  from its extensions.** The mark is the only thing that can put a request
-  into early data, so removing it is necessary and sufficient.
+  ~~The second half is a live obligation rather than a note for later~~ —
+  **discharged.** `retry.extensions.remove::<http_ng_core::AllowEarlyData>()`
+  is in `Client::run`'s `425` branch, and the argument below is quoted in
+  the comment beside it. Two things the writing added that this paragraph
+  did not ask for: the strip is on a **clone** of the hop, so the mark
+  survives to the *next* hop — a redirect after a `425` is a different
+  request and the caller marked it too — and `next_hop` takes it off across
+  an **origin**, because "replaying this is safe" is a claim about what a
+  request does at a particular server. Four tests read the mark at the
+  transport boundary; the fourth exists because a mutant stripping on every
+  response rather than on a `425` passed the other three.
 
   It is tempting to think the duty is vacuous — by the time a `425` comes
   back the handshake completed long ago, and streams opened after that are
@@ -1673,9 +1679,17 @@ write-blind shim in `poll_next`) is killed at the top of the table.
   list. A subprotocol *can* be asked for, because the request carries
   headers; nothing checks what came back, and `tungstenite`'s own
   `verify_response` rules for it are deliberately not reimplemented here.
-- **No `Ping`/`Pong` a caller can send.** A keep-alive ping is a real
-  need and this seam cannot express one; the answer is a variant, and a
-  variant needs a caller decision that turns on it (see above).
+- **No `Ping`/`Pong` a caller can send**, and that is still true of the
+  seam — but **the need it names was answered elsewhere**, in the same
+  version: `Tungstenite::keep_alive(WebSocketKeepAlive::new(every, within))`
+  writes RFC 6455 ping/pong liveness, off by default because a default that
+  pings sends traffic nobody asked for. It sits on the **connector** rather
+  than on the seam precisely because a browser has neither `send(ping)` nor
+  `onping` — the same fact that keeps the variants out of `Message` — so
+  asking `http-ng-fetch` for it does not compile. The frames it writes are
+  deliberately never visible on the `Stream`, which is why this is not a way
+  in for a caller who wants to send one. See the keep-alive section's own
+  not-done list below.
 - **`WebSocketConfig` is `tungstenite`'s default** — 128 KiB read and
   write buffers, 64 MiB maximum message, 16 MiB maximum frame — and
   nothing exposes it. A caller who needs a different message ceiling
@@ -3135,8 +3149,16 @@ direction and the one the floor rule intends.
   `response_trailers`, not `version_select`. The floor is right for a
   static answer and the honest per-request answer is a design decision
   rather than a mechanical one.
-- **`request_trailers` is still `false` and still not enforced on this
-  path.** `http-ng-h3` refuses a trailers frame by name
+- ~~**`request_trailers` is still `false` and still not enforced on this
+  path.**~~ **Decided, and the decision is that the two crates differ
+  honestly.** `http-ng-native` declares `true` now, which is what its
+  `send_trailers` call always did; `http-ng-h3` keeps `false`, which is what
+  its `RequestTrailersNotSent` refusal always did. What the bullet asked for
+  — *one decision covering both* — turned out to be the wrong shape: the
+  asymmetry is a real difference between two transports rather than a drift
+  between two declarations, and a single value would have made one of them
+  lie. The original text follows. `http-ng-h3` refuses a trailers frame by
+  name
   (`RequestTrailersNotSent`) because it declares `false` and a streaming
   body can now produce one. `http2.rs` *sends* them —
   `Pump::poll`'s trailers arm calls `send_trailers` — while
@@ -3393,8 +3415,11 @@ test, and M3b now dies twice.
 
 ## Deliberately not done
 
-- **`request_trailers` is unchanged, in both crates**, and section B is
-  why: the premise Appendix B's fix rested on is false, so the decision
+- ~~**`request_trailers` is unchanged, in both crates**~~ — **changed
+  since, and in one crate only**: `http-ng-native` declares `true`,
+  `http-ng-h3` keeps `false`, and the asymmetry is the answer rather than a
+  drift. Section B's argument, below, is why it could not be settled *here*.
+  Section B is why: the premise Appendix B's fix rested on is false, so the decision
   goes back rather than forward. Nothing about the declaration, the h3
   enforcement or the h2 `send_trailers` moved.
 - **The silent drop of undeclared h1 trailers is left standing**, pinned
@@ -3728,9 +3753,29 @@ consumer can write a hook with it.
 - **`Transport`'s shape is untouched.** The brief made this a stopping
   condition; it was not reached. The hook is a type parameter of
   `Native`, not a method on the seam.
-- **`http-ng-h3`, `http-ng-fetch` and `http-ng-wasi` are untouched**, by
-  the brief's boundary. What each would need is below.
-- **No `Closed` from the h2 body.** `Connected`, `Reused` and `Head` are
+- ~~**`http-ng-h3`, `http-ng-fetch` and `http-ng-wasi` are untouched**, by
+  the brief's boundary.~~ **All three have hooks now** — h3 first, then the
+  two that own no connections at all. The ambient pair emit exactly **one**
+  of the four events, `Head`, and reached that answer without sharing any
+  reasoning: `wasi:http@0.3.0` has no connection resource anywhere in the
+  WIT, and the browser's `Performance` entry does not exist when `execute`
+  returns the head and names no request when it does — measured, 0 entries
+  then 1. Building it settled two debts differently: `Head::id` was not one
+  (a hook can only meet `ConnectionId::UNWATCHED` in the ambient sense
+  *this event names no connection*), while `Head::version` was, and is
+  `Option<http::Version>` now — a hook counting protocol mix reported a
+  browser's h2 and h3 traffic as HTTP/1.1, a *wrong* answer rather than a
+  missing one. `http-ng-urlsession` arrived later and has none.
+- **No `Closed` from the h2 body** — still true of the *exclusive* path,
+  and **no longer true of the shared one**. `Native::multiplexed()` spawns
+  the h2 connection's driver, and a driver that owns the connection is
+  exactly the single place its end is known: `H2Driver::poll` emits
+  `CloseReason::Ended` where the connection future resolves `Ok` — which h2
+  does for a clean close *and* for a `GOAWAY` carrying no error, matching
+  the seam's own wording — and `Failed` where it resolves `Err`. The three
+  ambiguous sites this bullet worried about are what the exclusive path
+  still has, and it still emits nothing. Original text follows. `Connected`,
+  `Reused` and `Head` are
   emitted by `Native::execute` and are protocol-agnostic, so the h2 path
   gets all three for free; the *end* of a connection is known inside the
   body, and h2's has three places it can arrive (the connection future,
@@ -3743,9 +3788,18 @@ consumer can write a hook with it.
   the handshake consumes, and ends when the caller's `Stream` ends —
   which the caller sees directly. A `Connected` alone would put an id in
   a log that no later event ever mentions again.
-- **No `Capabilities` field.** Nothing about a hook is a promise a caller
-  can act on before making a request, and the seam expresses itself by
-  being *called* — the same argument the WebSocket seam rests on.
+- ~~**No `Capabilities` field.**~~ **Two now, and both arrived for reasons
+  this bullet's argument does not cover.** `version_reported` is a
+  *report*, and it exists because `Head::version` had to become an
+  `Option`: the rule is a **biconditional** — `Some` exactly when
+  `version_reported` — checked on both ambient backends by tests that read
+  the event and the capability in one place. `informational_1xx` is a
+  *gate*, and the one pointing the other way: no `Client` setting turns it
+  on, and what it guards is a **claim**, so `Native::hooks` clears it —
+  a transport reporting `true` while reporting nothing is a capability that
+  lies, which is exactly the defect it was found in. The bullet's argument
+  stands for the thing it was about: there is still no field saying *this
+  backend has hooks*, because the seam expresses itself by being called.
 
 ## What this leaves unverified
 
@@ -4301,7 +4355,12 @@ and exactly why a regression would leave it standing.
   cannot poison the pool —
   `a_panicking_hook_leaves_the_transport_usable` panics at the emission
   nearest the pool and then requires the next request to succeed.
-- **No `Ended`.** Argued above.
+- ~~**No `Ended`.**~~ **It exists**, and the first emitter was not this
+  crate's pool but h2's connection driver, where `Ok` from the connection
+  future means a clean close or a `GOAWAY` with no error — *"nothing went
+  wrong, there is simply no second request to be had on it"*, which is the
+  variant's own wording. The argument above was about what `checkout` could
+  honestly say, and it is still right about that.
 - **No event for the 0-RTT replay.** Argued above.
 - **`http-ng-select` gets no hook of its own.** It owns a `Native` and an
   `H3` and would have to decide whether a hook set on the pair reaches
