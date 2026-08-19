@@ -1346,7 +1346,8 @@ recording because the difference is only visible after capturing the
 failure, and both first theories were wrong.
 
 **`with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
-asserted a clock wearing a counter's clothes.** Its `tcp_accepted >= 1`
+— now `with_no_head_start_exactly_one_request_reaches_the_origin` — asserted
+a clock wearing a counter's clothes.** Its `tcp_accepted >= 1`
 says *the hedge ran*, and at a head start of zero the hedge is only
 **started** — a QUIC arm that finishes first cancels it, possibly before
 its `SYN` leaves. The captured failure carries the numbers: `body="h3"
