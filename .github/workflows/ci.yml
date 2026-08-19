@@ -84,6 +84,11 @@ jobs:
       # never reaches the tarball. Checked against the packaged file list.
       - name: every publishable crate ships its licences and a README
         run: just packaging
+      # The only check that builds a crate the way a reader would get it —
+      # out of its own `.crate` tarball — rather than the way the workspace
+      # sits on disk. It stops before the upload; nothing here publishes.
+      - name: every crate builds from its own published tarball
+        run: just package-build
 
   sse-complexity-guard:
     runs-on: ubuntu-latest

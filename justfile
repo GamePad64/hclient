@@ -553,6 +553,44 @@ test-doc:
       exit 1
     fi
 
+# every crate builds from its own published tarball, without publishing
+package-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `cargo package --workspace` does the two things a publish would do and
+    # stops before the upload: it builds each `.crate` from the files that
+    # would actually be shipped, and then **verifies** each one by compiling
+    # it out of that tarball. That second half is the point — it is the only
+    # check here that builds a crate the way a reader would get it rather
+    # than the way this workspace sits on disk, which is the defect
+    # `test-doc` was written for one level up.
+    #
+    # It found a real one on its first run: `http-ng-fetch` and
+    # `http-ng-native` each dev-depend on `http-ng`, which depends on them —
+    # a cycle cargo allows inside a workspace and refuses at package time,
+    # because a dev-dependency carrying a version has to resolve from the
+    # registry and `http-ng` cannot be there until they are. Both are path-
+    # only now, so cargo strips them from the published manifest.
+    #
+    # Deliberately not `cargo publish --dry-run`: that does this and also
+    # talks to the registry about ownership and version collisions, which is
+    # a different question and one CI has no credentials to ask.
+    rc=0
+    out="$(cargo package --workspace --allow-dirty --color never 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || { echo "::error::a crate does not build the way it would be published"; exit "$rc"; }
+    # Fail closed on a run that packaged little or nothing: a `cargo package`
+    # that quietly did five crates would otherwise report success for
+    # twenty-five nobody built. Verified, not merely packaged — the two
+    # counts must both be there and must agree.
+    pkg="$(printf '%s\n' "$out" | grep -c 'Packaged' || true)"
+    ver="$(printf '%s\n' "$out" | grep -c 'Verifying' || true)"
+    if [ "$pkg" -lt 29 ] || [ "$ver" -ne "$pkg" ]; then
+      echo "::error::packaged $pkg and verified $ver — expected at least 29 of each, and equal"
+      exit 1
+    fi
+    echo "$ver crates build from their own published tarball"
+
 # every publishable crate ships its licence texts and a README
 packaging:
     #!/usr/bin/env bash

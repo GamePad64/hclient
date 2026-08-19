@@ -155,7 +155,16 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # crate needs `Client`/`Timeouts`/`RequestBody` only, and gets exactly that
 # with a plain workspace inheritance, the same form `http-ng-native`'s
 # Cargo.toml already uses.
-http-ng = { workspace = true }
+# Path only, deliberately, where every other workspace dependency here is
+# `{ workspace = true }`. This one is a **cycle**: `http-ng` depends on this
+# crate, and this crate's tests depend on `http-ng`. Cargo allows that inside
+# a workspace and refuses it at `cargo package`, because a dev-dependency
+# carrying a version requirement has to be resolvable from the registry —
+# and `http-ng` cannot be there until this crate is. Dropping the version
+# makes cargo strip the dev-dependency from the published manifest, which is
+# the documented way through and changes nothing about how the tests build
+# here. Caught by `just package-build` rather than by reading.
+http-ng = { path = "../http-ng" }
 # `tests/convert.rs` needed to construct a `RequestBody::Streaming` (to prove
 # it's rejected as a typed error, never silently emptied — see
 # `resolve_body`'s doc comment) and a `RequestBody::Full` (to check the
