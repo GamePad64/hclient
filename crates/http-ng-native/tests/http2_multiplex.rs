@@ -41,6 +41,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 /// Ceiling for anything that must not hang. Every failure mode in this
@@ -156,11 +157,20 @@ async fn serve(
     shared: Arc<Shared>,
     limit: Option<u32>,
 ) -> Result<(), h2::Error> {
+    serve_io(tcp, shared, limit).await
+}
+
+/// The same, over any IO — so a test can put a wrapper between the socket
+/// and `h2` without a second copy of the server.
+async fn serve_io<I>(io: I, shared: Arc<Shared>, limit: Option<u32>) -> Result<(), h2::Error>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let mut builder = h2::server::Builder::new();
     if let Some(n) = limit {
         builder.max_concurrent_streams(n);
     }
-    let mut conn = builder.handshake(tcp).await?;
+    let mut conn = builder.handshake(io).await?;
     while let Some(accepted) = conn.accept().await {
         let (req, respond) = accepted?;
         let goaway = req.uri().path() == "/goaway";
@@ -1314,5 +1324,140 @@ async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
         hints.0.lock().unwrap().clone(),
         vec![103, 103],
         "one interim head per request, on the connection they share"
+    );
+}
+
+// ── the stream limit before the peer has stated one ─────────────────────
+
+/// Holds the first write for `delay`, so a server's `SETTINGS` frame
+/// arrives after the client has had to decide how many streams to open.
+///
+/// The first write and no other: what is being delayed is the frame that
+/// carries `MAX_CONCURRENT_STREAMS`, and `h2::server::handshake` writes it
+/// before anything else. Delaying every write would also delay the
+/// `RST_STREAM`s this test is about seeing or not seeing.
+struct DelayFirstWrite<S> {
+    inner: S,
+    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> DelayFirstWrite<S> {
+    fn new(inner: S, delay: Duration) -> Self {
+        Self {
+            inner,
+            sleep: Some(Box::pin(tokio::time::sleep(delay))),
+        }
+    }
+
+    /// `Pending` until the delay has elapsed, then never again.
+    fn gate(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        let Some(sleep) = self.sleep.as_mut() else {
+            return Poll::Ready(());
+        };
+        std::task::ready!(sleep.as_mut().poll(cx));
+        self.sleep = None;
+        Poll::Ready(())
+    }
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for DelayFirstWrite<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for DelayFirstWrite<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        std::task::ready!(self.gate(cx));
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        std::task::ready!(self.gate(cx));
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// **A burst against a connection whose peer has not stated a limit opens
+/// one stream, not six.**
+///
+/// This is the deterministic form of a flake: under load, four full-suite
+/// runs in forty had
+/// `beyond_the_peers_stream_limit_requests_queue_on_one_connection` fail
+/// with `RST_STREAM(REFUSED_STREAM)` on stream 5 — the client had opened
+/// six streams against a server allowing two, because `h2`'s
+/// `initial_max_send_streams` is `usize::MAX` and the burst beat the
+/// `SETTINGS` frame. `send_request` consumes the head, so that failure
+/// cannot be retried by this client even though RFC 9113 §8.7 says the
+/// request was never processed.
+///
+/// Here the frame is held back on purpose, so the client's decision is
+/// forced rather than raced: the assertion is the server's own high-water
+/// mark, which is `2` — the limit it advertised — and never `6`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_before_the_peers_settings_does_not_open_streams_on_a_guess() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::new(Shared::default());
+    let shared_t = Arc::clone(&shared);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            while let Ok((tcp, _)) = listener.accept().await {
+                shared_t.accepted.fetch_add(1, Ordering::SeqCst);
+                let shared = Arc::clone(&shared_t);
+                tokio::spawn(async move {
+                    // 300 ms is far longer than a loopback round trip, so
+                    // the client cannot have seen the frame by accident —
+                    // and the assertion is on a count rather than on the
+                    // duration, so a slow machine changes nothing.
+                    let io = DelayFirstWrite::new(tcp, Duration::from_millis(300));
+                    let _ = serve_io(io, Arc::clone(&shared), Some(2)).await;
+                    shared.closed.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+    });
+
+    let fixture = Fixture { addr, shared };
+    let client = shared_client();
+    let calls = (0..6).map(|_| call(&client, fixture.url("/queue")));
+    let results = tokio::time::timeout(BOUND, futures_util::future::join_all(calls))
+        .await
+        .expect("the queued requests must still finish");
+    for r in results {
+        assert_eq!(
+            r.expect("no call may be refused: the client must not open a stream it has no evidence it may"),
+            200
+        );
+    }
+    assert_eq!(fixture.served(), 6);
+    assert_eq!(
+        fixture.most_open(),
+        2,
+        "the peer's advertised limit, never the six the client could have \
+         guessed at before the frame carrying it arrived"
     );
 }

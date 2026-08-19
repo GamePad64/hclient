@@ -358,6 +358,33 @@ where
     I: Read + Write + Unpin,
 {
     let mut builder = h2::client::Builder::new();
+    // **One stream until the peer has said how many it allows.**
+    //
+    // `h2`'s default for this is `usize::MAX`: until the server's SETTINGS
+    // frame arrives, a client may open as many streams as it likes, and
+    // `SendRequest::poll_ready` — which does respect this counter
+    // (`proto/streams/counts.rs`, `can_inc_num_send_streams`) — says yes
+    // to all of them. A caller who fires a burst of concurrent requests at
+    // a fresh connection therefore races the SETTINGS frame, and a server
+    // that allows fewer answers `RST_STREAM(REFUSED_STREAM)`.
+    //
+    // That failure is not one this client can repair after the fact:
+    // `send_request` consumes the head, so `exchange` can only report
+    // `Failed::Sent` and `Native::run` will not retry — see this module's
+    // own note on where it is weaker than HTTP/1. RFC 9113 §8.7 says the
+    // request was *not* processed and may be safely retried, which makes
+    // the hard failure a wrong answer rather than a cautious one.
+    //
+    // So the stream is not opened on a guess. The cost is one round trip
+    // once per connection — the peer's SETTINGS arrives in its first
+    // flight, and `counts.rs` overwrites this the moment it does, even
+    // where the frame names no limit at all.
+    //
+    // Not a `H2Opts` field, deliberately: every field there is `None`
+    // meaning *whatever h2 chooses*, and this is a correctness choice
+    // rather than a tuning knob. A caller who guessed high would be
+    // choosing a failure they cannot retry.
+    builder.initial_max_send_streams(1);
     // Field by field rather than through a helper, because each `Some`
     // has to reach a differently named method and there is nothing to
     // share between them but the shape.

@@ -1284,6 +1284,52 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### A stream opened on a guess, found by hunting a flake
+
+`h2`'s `initial_max_send_streams` defaults to `usize::MAX`: until the
+server's `SETTINGS` frame arrives a client may open as many streams as it
+likes, and `SendRequest::poll_ready` — which *does* respect the counter
+(`proto/streams/counts.rs`, `can_inc_num_send_streams`) — says yes to all
+of them. So a caller firing a burst of concurrent requests at a fresh
+multiplexed connection **races the frame that states the limit**, and a
+server allowing fewer answers `RST_STREAM(REFUSED_STREAM)`.
+
+**And this client could not repair it afterwards.** `send_request`
+consumes the head, so `http2::exchange` can only report `Failed::Sent` and
+`Native::run` will not retry — the weakness that module's own doc already
+recorded against HTTP/1. RFC 9113 §8.7 says a `REFUSED_STREAM` reset means
+the request was **never processed** and may be safely retried, which makes
+the hard failure a wrong answer rather than a cautious one.
+
+`Native` now asks for **one** stream until the peer has stated a number.
+The cost is one round trip once per connection — the peer's SETTINGS
+arrives in its first flight, and `counts.rs` overwrites the guess the
+moment it does, even where the frame names no limit at all. It is
+deliberately **not** an `H2Opts` field: every field there is `None` meaning
+*whatever h2 chooses*, and this is a correctness choice, not a knob. A
+caller who guessed high would be choosing a failure they cannot retry.
+
+**How it was found is the part worth copying.** It was a flake —
+`beyond_the_peers_stream_limit_requests_queue_on_one_connection` failing
+once in a while under a full-workspace run. Sixty runs at `-j16` and
+`-j28` were clean and proved nothing; **oversubscribing to `-j96`** turned
+it into 4 failures in 40, with identical captures every time:
+`Reset(StreamId(5), REFUSED_STREAM, Remote)`. Every run's whole output went
+to its own file — the session that lost two earlier sightings lost them to
+a `grep` in the pipeline.
+
+**The test is deterministic now, not statistical.** `DelayFirstWrite` holds
+the server's *first* write for 300 ms, which is the frame carrying
+`MAX_CONCURRENT_STREAMS` — the first write and no other, since delaying
+every write would also delay the `RST_STREAM`s the test is about. Without
+the fix it fails three times in three with the same reset on stream 5; the
+assertion is the server's high-water mark, a count, so a slow machine
+changes nothing.
+
+That makes four: `docs/v03-acceptance.md` records three timing-based
+assertions in this workspace that turned out to be flakes, one of them
+hiding a real defect. This is the fourth, and it was hiding one too.
+
 ### Unix-domain sockets, and the sibling trait that could not exist
 
 `Native::unix_socket(path)` — curl's `--unix-socket`, for reaching a local
