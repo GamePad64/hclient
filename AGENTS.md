@@ -263,25 +263,58 @@ fails closed if the invocation itself breaks or returns nothing. Measured
 while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
 graph, four in the native one.
 
-**Nothing here is published, and the version numbers are nominal.** Every
-crate says `0.1.0` while `main` carries all of v0.2 and the start of v0.3.
-That is deliberate, not drift: publishing is a promise not to break, and
-this workspace is not ready to make it — `TlsConnect` changed three times in
-one session (`reports_alpn`, the `TlsIdentity` extraction, the 0-RTT slots),
-`Timer` gained `type Sleep`, `TcpConnect` gained `APPLIES`, and `UdpBind`
-arrived from nothing.
+**The owner has pulled the trigger: 0.1.0 is the first published
+version.** Nothing bumps — every crate already said `0.1.0` — but it now
+says so **once**, in `[workspace.package]`, where the previous thirty
+copies were thirty chances to drift with no way to see the drift until a
+crate published at the wrong number.
 
-So: **do not bump versions, do not add a CHANGELOG, do not configure
-`publish`** as tidying-up work. The trigger is the owner's, and it is
-"full-featured" rather than a date — what is still missing is enumerated at
-the end of `docs/v01-acceptance.md`, `docs/v02-acceptance.md` and
-`docs/v03-acceptance.md`, which is where to look before asking whether it
-is time.
+Everything that used to be *do not do this as tidying-up work* is now
+either done or the owner's to time. What has **not** changed is the reason
+the rule existed, and it is worth reading before the first `cargo publish`
+rather than after: publishing is a promise not to break, and this
+workspace has been breaking things weekly on purpose.
 
-The freedom this buys is worth naming, because it is why the seams could
-move as often as they did: a change to a public trait costs a rebase here
-and nothing at all outside, so the right shape can be chosen on its merits
-rather than on what is already promised.
+**Measured rather than recalled, over the last 31 commits alone**: six
+public types took a change that would have been a major bump, and **not
+one of them is `#[non_exhaustive]`** — `TcpOpts` and `TcpOptsSupport`
+(6 fields to 10), `Timeouts` and `TimeoutSupport` (3 to 4, the `resolve`
+bound), `Phase` (a fifth variant, so an exhaustive `match` outside this
+workspace stops compiling), and `Connected::remote`, which became
+`Option<SocketAddr>` for the Unix-socket work. Before that week
+`TlsConnect` changed three times in one session (`reports_alpn`, the
+`TlsIdentity` extraction, the 0-RTT slots), `Timer` gained `type Sleep`,
+`TcpConnect` gained `APPLIES`, and `UdpBind` arrived from nothing.
+
+So the freedom that made those changes cheap is what ends here, and naming
+it is the point: a change to a public trait has cost a rebase in this
+repository and nothing at all outside it, which is why every seam could be
+chosen on its merits rather than on what was already promised. After the
+first publish it costs a major version, and the honest options are the
+ordinary ones — `#[non_exhaustive]` on the structs whose whole use is
+`Struct { one: .., ..Default::default() }`, or a `0.x` series where
+`0.2.0` is allowed to break. `H2Opts` and `TcpOpts` already carry the
+argument for *not* adding the attribute, in their own doc comments, and it
+is about ergonomics rather than about semver; the two now have to be
+weighed against each other rather than only one of them stated.
+
+What is still missing is enumerated at the end of
+`docs/v01-acceptance.md`, `docs/v02-acceptance.md`,
+`docs/v03-acceptance.md` and `docs/v04-acceptance.md`. Those lists are
+themselves the thing to check first: several entries on them were built
+after they were written.
+
+The mechanics are in place and were measured, not assumed. All 30 crates
+carry `description`, `license` and `repository`; inter-crate dependencies
+carry `version` beside `path`, without which nothing here could be
+published at all; `http-ng-rt-pair-check` is the only `publish = false`.
+`cargo publish -p http-ng-core --dry-run` packages **and verifies** clean,
+and `cargo package -p http-ng` correctly refuses, because its dependencies
+are not in the index — which is what the order is for: **five waves over
+29 crates**, `http-ng-core`/`-cache`/`-cookie`/`-idn` first and
+`http-ng`/`http-ng-select` last. Every publishable crate carries
+`[package.metadata.docs.rs] all-features = true`, because docs.rs builds
+`default` and `default` here is empty or near-empty by design.
 
 **Minimum supported Rust: the latest stable release** — currently **1.97**,
 declared once in the workspace manifest and shared by every crate. That is the
