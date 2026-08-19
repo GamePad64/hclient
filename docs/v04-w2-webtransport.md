@@ -157,7 +157,7 @@ Copying it into a second crate is the thing this workspace does not do, so
 1. `pub use runtime::SeamRuntime;` in `http-ng-h3` — one line, and it makes
    the adapter reusable by any crate that wants QUIC over the seam. The
    honest version of that is a move to a crate of its own
-   (`http-ng-rt-quinn`), which is the same shape `docs/w4-upgrade-seam.md`
+   (`http-ng-quinn`), which is the same shape `docs/w4-upgrade-seam.md`
    §8 argues for `tungstenite` inside `http-ng-native`;
 2. a **connect-only entry point** on `H3` handing back a live
    `quinn::Connection` for an origin — which is a bigger decision than it
@@ -166,7 +166,7 @@ Copying it into a second crate is the thing this workspace does not do, so
    connect-only entry point and that this is why a race races requests).
 
 **Since done — option 1, in its honest version:
-[`docs/rt-quinn-extraction.md`](rt-quinn-extraction.md).** `crates/http-ng-rt-quinn`
+[`docs/quinn-adapter-extraction.md`](quinn-adapter-extraction.md).** `crates/http-ng-quinn`
 holds `SeamRuntime`, `SeamTimer`, `WakeAll`, `SeamSocket`, `SeamPoller` and
 a now-`pub` `endpoint(&rt, local)`; `http-ng-h3` re-exports `QuinnTask` from
 it, so its public API is unchanged and its graph went 57 → 58, the one
@@ -184,7 +184,7 @@ fresh connection, because `H3` never hands out one it has not already
 claimed. So option 1 closes this gap and option 2 answers a different
 question (`docs/connect-only-seam.md`).
 
-What remains on this crate's side is its own dialling — `http_ng_rt_quinn::
+What remains on this crate's side is its own dialling — `http_ng_quinn::
 endpoint` plus a `QuicTlsConnect` and an address — and it is **not done**,
 for reasons about this crate rather than about the adapter:
 `Session::connect(conn, uri)` stays whatever else happens, so a dialling

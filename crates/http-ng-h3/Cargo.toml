@@ -33,12 +33,12 @@ http-ng-rt     = { path = "../http-ng-rt",       version = "0.1.0" }
 # an unreachable module stopped being good enough. `QuinnTask` is
 # re-exported from here, so `http_ng_h3::QuinnTask` still names the same
 # type alias it always did.
-http-ng-rt-quinn = { path = "../http-ng-rt-quinn", version = "0.1.0" }
+http-ng-quinn = { path = "../http-ng-quinn", version = "0.1.0" }
 http-ng-tls    = { path = "../http-ng-tls",      version = "0.1.0" }
 http-ng-tls-quic = { path = "../http-ng-tls-quic", version = "0.1.0" }
 pin-project-lite = "0.2"
 # No `runtime-*` feature: the runtime is ours, and it is
-# `http-ng-rt-quinn`'s — see that crate's doc. `futures-io` is not
+# `http-ng-quinn`'s — see that crate's doc. `futures-io` is not
 # optional, `h3-quinn` requires it. No `rustls-*` either: the TLS crypto
 # arrives as an already-built `Arc<dyn quinn_proto::crypto::ClientConfig>`
 # from `http-ng-tls-quic`, so this crate picks no TLS provider.
@@ -47,7 +47,7 @@ pin-project-lite = "0.2"
 # endpoint is the one operation here that wanted a crypto provider
 # independently of TLS — an HMAC key for stateless resets, an AEAD for
 # retry tokens, which is why `EndpointConfig` has no `Default` without one
-# — and that call now lives in `http-ng-rt-quinn`. `ring` is still in this
+# — and that call now lives in `http-ng-quinn`. `ring` is still in this
 # crate's graph, through that dependency and through rustls; it is simply
 # no longer asked for here, where nothing uses it.
 quinn          = { version = "0.11", default-features = false, features = ["futures-io"] }

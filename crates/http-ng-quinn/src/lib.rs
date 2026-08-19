@@ -7,7 +7,7 @@
 //! ```no_run
 //! # use std::fmt;
 //! # use http_ng_rt::{Spawn, Timer, UdpAdoptStd};
-//! # use http_ng_rt_quinn::QuinnTask;
+//! # use http_ng_quinn::QuinnTask;
 //! # async fn example<R>(
 //! #     rt: &R,
 //! #     client_cfg: quinn::ClientConfig,
@@ -18,7 +18,7 @@
 //! #     R::Sleep: Send + 'static,
 //! #     R::Socket: fmt::Debug + Send + Sync + 'static,
 //! # {
-//! let endpoint = http_ng_rt_quinn::endpoint(rt, "0.0.0.0:0".parse()?)?;
+//! let endpoint = http_ng_quinn::endpoint(rt, "0.0.0.0:0".parse()?)?;
 //! let conn = endpoint.connect_with(client_cfg, addr, "example.com")?.await?;
 //! # let _ = conn;
 //! # Ok(())

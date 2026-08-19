@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutation run for `http-ng-rt-quinn`.
+"""Mutation run for `http-ng-quinn`.
 
 The crate is a **move**, so the thing being checked is not new behaviour but
 that the four unit tests which travelled with the code still have their teeth
@@ -24,7 +24,7 @@ import time
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LIB = "crates/http-ng-rt-quinn/src/lib.rs"
+LIB = "crates/http-ng-quinn/src/lib.rs"
 ANCHOR = 5
 
 # (id, file, old, new, note)
@@ -102,7 +102,7 @@ MUTATIONS = [
 
 def run_tests():
     r = subprocess.run(
-        ["cargo", "nextest", "run", "-p", "http-ng-rt-quinn", "--no-fail-fast"],
+        ["cargo", "nextest", "run", "-p", "http-ng-quinn", "--no-fail-fast"],
         cwd=ROOT,
         capture_output=True,
         text=True,

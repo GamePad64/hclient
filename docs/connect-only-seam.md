@@ -16,7 +16,7 @@ measured, which were read, and which were argued.
 **The answer, first, because two of the three asks turn out not to want
 what they asked for.** It is *two* gaps rather than one or three. One of
 them — "expose a type" — is closed, by the extraction of `SeamRuntime` into
-`http-ng-rt-quinn` that landed while this was being written. The other is
+`http-ng-quinn` that landed while this was being written. The other is
 the race's, and what it needs is not a connect-only entry point on
 `Transport`, and not on `H3` either: it is a **staged pair on each backend
 that has a connector**, one phase further down the pipeline
@@ -78,7 +78,7 @@ this was written.
 | P10 | A connect that stops at "a connection that can carry a request" sends **no request** and is not silent: h1 writes nothing past the TLS handshake, h2 writes the client preface and SETTINGS (`h2::client::handshake`), h3 writes its SETTINGS on the control stream. | read, `crates/http-ng-native/src/http2.rs`, `src/h1.rs`, `crates/http-ng-h3/src/lib.rs` |
 | P11 | `H3` **never hands out a connection it has not already claimed**. `H3::connect` builds `h3::client::builder().build(h3_quinn::Connection::new(conn.clone()))` and spawns the driver before returning, and `checkout` inserts the result into the pool before its caller sees it. | read, `crates/http-ng-h3/src/lib.rs` |
 | P12 | `http_ng_webtransport::Session::connect` builds its **own** h3 client on the connection it is handed — `h3::client::builder().enable_extended_connect(true).build(..)`. Two h3 clients on one QUIC connection open two control streams, which RFC 9114 §6.2.1 makes `H3_STREAM_CREATION_ERROR`, a **connection** error. | read, `crates/http-ng-webtransport/src/lib.rs`; the rule is `docs/v04-w2-webtransport.md` §4b's, established there |
-| P13 | `SeamRuntime` has been extracted into a crate of its own, `http-ng-rt-quinn`, which exposes `SeamRuntime`, `QuinnTask` and `pub fn endpoint(&R, SocketAddr) -> io::Result<quinn::Endpoint>`. It carries `ring` unconditionally, because `quinn::EndpointConfig` has no `Default` without a crypto provider. | read, in flight — the sibling branch's `crates/http-ng-rt-quinn/{src/lib.rs,Cargo.toml}` |
+| P13 | `SeamRuntime` has been extracted into a crate of its own, `http-ng-quinn`, which exposes `SeamRuntime`, `QuinnTask` and `pub fn endpoint(&R, SocketAddr) -> io::Result<quinn::Endpoint>`. It carries `ring` unconditionally, because `quinn::EndpointConfig` has no `Default` without a crypto provider. | read, in flight — the sibling branch's `crates/http-ng-quinn/{src/lib.rs,Cargo.toml}` |
 | P14 | The race harness is two `execute` calls and says so about itself: *"This is **not** what a race in `http-ng-select` would look like — there is no shared budget, no capability check and no pool interaction."* | read, `crates/http-ng-select/tests/race_cost.rs`, `async fn race` |
 | P15 | At a **250 ms** head start the TCP arm opened **no socket at all**, 0 of 6; at 0 ms it opened one in 6 of 6 and the origin got a complete request in 5 of 6. | measured, §7.3 M3 — not re-measured here |
 | P16 | §7.4 derives the head start from the **success** side — *"a QUIC handshake that will succeed does so in ≈ 1 RTT plus the 1–3 ms of crypto measured above. The head start has to exceed that"* — and states that the honest form is an RTT observation the crate has nowhere to keep. | read, §7.4 |
@@ -140,7 +140,7 @@ build puts on the wire.
 
 **What WebTransport actually needs is a connection nobody has claimed**,
 and after §3.1 that is composition rather than a seam: an endpoint from
-`http_ng_rt_quinn::endpoint`, a `quinn::ClientConfig` built from
+`http_ng_quinn::endpoint`, a `quinn::ClientConfig` built from
 `http_ng_tls_quic::QuicTlsConnect::quic_client_config` (a public trait, and
 `Rustls` implements it behind its `quic` feature), an address from a
 `Resolve`, and `ALPN_H3`. That is `H3::connect` minus the h3 client and
@@ -553,7 +553,7 @@ against the bullets they belong to.
 - **Anything measured.** No number in this document was taken here. §7's
   and §4b's were re-read, not re-run, and P15/P16 are cited to their
   source.
-- **The sibling branch.** P13 describes `http-ng-rt-quinn` as it stood on
+- **The sibling branch.** P13 describes `http-ng-quinn` as it stood on
   another agent's worktree while this was written; §3.1 and §3.2 depend on
   the fact of the extraction rather than on its API, but the signature
   quoted may have moved.

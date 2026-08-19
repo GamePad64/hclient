@@ -91,7 +91,7 @@ that client's driver **before** it has anything to hand back, and `checkout`
 inserts the result into the pool before its caller sees it. There is no
 state in which `H3` holds a connection nobody has claimed — which is
 exactly why a connect-only entry point could never have served WebTransport
-(`docs/v04-w2-webtransport.md` §4b, and `docs/rt-quinn-extraction.md` §5).
+(`docs/v04-w2-webtransport.md` §4b, and `docs/quinn-adapter-extraction.md` §5).
 
 So `http_ng_h3::Staged` is a **claim on a connection the pool also holds**,
 where `http_ng_native::Staged` *owns* the connection it took out. Both

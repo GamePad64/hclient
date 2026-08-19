@@ -1064,7 +1064,7 @@ for 1.0* (design spec §10) list four:
 | condition | state |
 |---|---|
 | plugin traits validated against ≥3 backends | **met** — five: native, h3/select, wasi, fetch, urlsession |
-| ≥3 runtimes | **met** — tokio, smol, embassy, and quinn's through `http-ng-rt-quinn`. **`compio` is named in decision D10 as a CI runtime and does not exist here**; grepped, one hit, in a `tree-guard` *absence* check |
+| ≥3 runtimes | **met** — tokio, smol, embassy, and quinn's through `http-ng-quinn`. **`compio` is named in decision D10 as a CI runtime and does not exist here**; grepped, one hit, in a `tree-guard` *absence* check |
 | the `unversioned` quarantine is documented | not assessed here |
 | **`http-ng-rmcp` and `act` in production** | `http-ng-rmcp` **does not exist in this workspace**. It is named as "the second verification loop" in the v0.2 plan and as an `rmcp` adapter in the architecture diagram. `act` is the *first* loop and is present as `examples/portable.rs` |
 | **not a single foreign type remains in the public API** | **flatly contradicted by AGENTS.md**, which states that `http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API of ten crates and that this is necessary. See §8 |

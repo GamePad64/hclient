@@ -93,11 +93,25 @@ pub struct Wire {
 #[derive(Clone)]
 pub struct Releaser {
     hold_until: Arc<Mutex<Option<Instant>>>,
+    held: Arc<Mutex<Held>>,
 }
 
 impl Releaser {
     pub fn release(&self) {
         *self.hold_until.lock().unwrap() = None;
+    }
+
+    /// What the hold has caught **so far**, for a watcher deciding whether
+    /// releasing now would leave the test's premise unestablished.
+    ///
+    /// A watcher that releases on the server's event alone can win a race
+    /// against the relay: with early data the request rides in the client's
+    /// *first* flight, so the server can resolve it before its own reply
+    /// has reached this relay to be held at all. The release then happens
+    /// with nothing held, the handshake was never delayed, and the ordering
+    /// the test asserts is a coincidence rather than a guarantee.
+    pub fn held(&self) -> Held {
+        *self.held.lock().unwrap()
     }
 }
 
@@ -114,6 +128,17 @@ pub struct Held {
     pub datagrams: usize,
     /// The longest single wait it imposed.
     pub longest: Duration,
+    /// How many have **begun** waiting — the same datagrams, counted at the
+    /// other end of the wait.
+    ///
+    /// `datagrams` is incremented when a wait *finishes*, which makes it
+    /// useless to a watcher deciding whether to end the hold: while the
+    /// relay is holding something, that count is still zero, so a condition
+    /// written on it can never become true and the hold runs to its
+    /// backstop. This one is incremented when a wait *starts*, which is the
+    /// question a watcher is actually asking — *has the relay got anything
+    /// in hand yet*.
+    pub entered: usize,
 }
 
 impl std::fmt::Debug for Wire {
@@ -166,7 +191,12 @@ impl Wire {
                     if now >= t {
                         break;
                     }
-                    waited = true;
+                    if !waited {
+                        waited = true;
+                        // Visible NOW, not when the wait ends — see
+                        // `Held::entered`.
+                        holds.lock().unwrap().entered += 1;
+                    }
                     std::thread::sleep((t - now).min(Duration::from_millis(1)));
                 }
                 if waited {
@@ -267,6 +297,7 @@ impl Wire {
     pub fn releaser(&self) -> Releaser {
         Releaser {
             hold_until: self.hold_until.clone(),
+            held: self.held.clone(),
         }
     }
 

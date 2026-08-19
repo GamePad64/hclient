@@ -100,7 +100,7 @@ needs, which is what "builds the way a reader would build it" means.
 that could not fail.** `test-doc` counted five ```ignore fences as
 tests — rustdoc compiles none of them, so the recipe printed `ok` over
 five code blocks nothing had ever built. Four were real examples and
-are `no_run` now, with hidden setup lines; writing `http-ng-rt-quinn`'s
+are `no_run` now, with hidden setup lines; writing `http-ng-quinn`'s
 found that `UdpAdoptStd` is `http_ng_rt`'s rather than that crate's, so
 a reader copying the sketch would have imported it from the wrong
 place. The fifth quotes `embassy-net`'s own `Drop for TcpSocket` as
@@ -167,13 +167,13 @@ was written under in vertical 1.
 | `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
 | `http-ng-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
-| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **56 crates** in total; it was 58 when v0.4 moved `SeamRuntime` out into `http-ng-rt-quinn`, and two have left the graph since without anyone touching this crate — see the note under this table. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
-| `http-ng-rt-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **41 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `http-ng-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 41 rather than 56 and no opinion about HTTP |
+| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **56 crates** in total; it was 58 when v0.4 moved `SeamRuntime` out into `http-ng-quinn`, and two have left the graph since without anyone touching this crate — see the note under this table. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
+| `http-ng-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **41 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `http-ng-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 41 rather than 56 and no opinion about HTTP |
 
 **Every number in this table is a fact about a dependency *resolution*,
 not about this code, and they drift.** Re-measured on 2026-08-19 against
 the same commands: `http-ng-wasi` 28 → 27, `http-ng-h3` 58 → 56,
-`http-ng-rt-quinn` 42 → 41, `http-ng-webtransport` 49 → 48,
+`http-ng-quinn` 42 → 41, `http-ng-webtransport` 49 → 48,
 `http-ng-dns-doh` 22 → 23, `http-ng-proto` on Linux 37 → 36. Nothing in
 this workspace moved them — the same counts come out of the commit before
 the week's work as out of the commit after it — and one went **up**, which
@@ -186,7 +186,7 @@ are the ones with a large third-party subtree.
 
 So these are colour, and the load-bearing claims beside them are the
 *absences* — no `tokio` in either wasm graph, no `h3` under
-`http-ng-rt-quinn`, no reactor from `http-ng-native`'s `http2` feature.
+`http-ng-quinn`, no reactor from `http-ng-native`'s `http2` feature.
 Those are asserted on every push by `just graph`, which fails closed, and
 they do not go stale. **A CI check pinning the counts would be the wrong
 answer**: it would fail for an upstream release that broke nothing here,
@@ -925,7 +925,7 @@ the arm that would keep them is guarded by the flag a client cannot set. And
 lines — was unreachable and this crate takes a `quinn::Connection`
 instead.
 
-**That last one is closed: `SeamRuntime` is `crates/http-ng-rt-quinn`**, the
+**That last one is closed: `SeamRuntime` is `crates/http-ng-quinn`**, the
 same shape §8 argues for the WebSocket framing, and the crate is 41 crates
 with no `h3` in them against `http-ng-h3`'s 58. `http-ng-h3` re-exports
 `QuinnTask` from it and is otherwise unchanged — one visibility change in
@@ -942,7 +942,7 @@ clients on one QUIC connection is `H3_STREAM_CREATION_ERROR`, the same
 reason a session cannot share a *pooled* one. `http-ng-webtransport` still
 takes its connection from outside, and now because the remaining half is a
 **dial** it would be the second author of: measured at 48 → 56 crates,
-`ring` among them. `docs/rt-quinn-extraction.md` §5.
+`ring` among them. `docs/quinn-adapter-extraction.md` §5.
 
 A session cannot share an `http-ng-h3` pooled connection, for three reasons
 in increasing hardness: a second h3 client on one QUIC connection opens a
@@ -2496,7 +2496,7 @@ differently.
 to hold a dependency a feature would otherwise spread to every graph. The
 likeliest suspect passes it most sharply — `http-ng-tls-quic` is **153
 lines**, the smallest here, and it carries `quinn-proto`, which is exactly
-the dependency the argument is about. `http-ng-rt-quinn` has one in-tree
+the dependency the argument is about. `http-ng-quinn` has one in-tree
 consumer and an external reason (41 crates against `http-ng-h3`'s 56 for a
 caller who wants bare QUIC), enforced by a `just` recipe. Eleven crates have
 no in-workspace consumer at all and are terminal by design: a user picks the

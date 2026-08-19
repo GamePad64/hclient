@@ -19,7 +19,7 @@ the per-topic documents, because each of those knows only its own half.
 | The race, off by default, whose head start stopped being a safety mechanism | `v04-race.md` |
 | Hooks on all four backends, and `Head::version` becoming an `Option` | `v04-w2-hooks-ambient.md` |
 | `http-ng-webtransport` — sessions, streams, datagrams, close capsules | `v04-w2-webtransport.md`, `-datagrams.md`, `-capsules.md` |
-| `http-ng-rt-quinn` — `SeamRuntime` extracted, 42 crates against h3's 58 | `rt-quinn-extraction.md` |
+| `http-ng-quinn` — `SeamRuntime` extracted, 42 crates against h3's 58 | `quinn-adapter-extraction.md` |
 | `http-ng-tungstenite` — the WebSocket framing as its own crate | `w4-upgrade-seam.md` §8 |
 | h2 multiplexing, opt-in behind `Native::multiplexed()` | `h2-multiplexing.md` |
 | `TCP_NODELAY` asked for where the runtime says it applies | AGENTS.md, and the 41 ms it saves |
@@ -100,6 +100,19 @@ call; recorded here rather than taken.
 than in thirty manifests. `AGENTS.md` carries what that costs, measured:
 six public types took a semver-breaking change in the 31 commits before
 the trigger, and none of them is `#[non_exhaustive]`.
+
+**A third flake, found while verifying the second one's fix and
+deliberately not fixed here.**
+`http-ng-webtransport::goaway::a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us`
+fails 3 runs in 40 under `-j96` across the workspace, and it is captured
+rather than described: `goaway.rs:272` panics on
+`send.write_all(..).expect("loopback")` with `Stopped(267)` — 0x10B,
+`H3_REQUEST_REJECTED`. The test's claim is that the session opened
+*before* the `GOAWAY` still works; the stream it writes on is opened
+*after* it, and RFC 9114 §5.2 lets a peer reject a request whose stream id
+is above the one the `GOAWAY` named. So this is not a timing guard like
+the other two — it is a question about whether the claim holds at all, and
+it wants its own look rather than a widened window.
 
 ## What v0.4 has not checked
 

@@ -1,5 +1,5 @@
 [package]
-name = "http-ng-rt-quinn"
+name = "http-ng-quinn"
 version.workspace = true
 description = "quinn on http-ng's runtime seam: a quinn::Runtime over UdpBind, Spawn and Timer"
 edition.workspace = true

@@ -134,12 +134,12 @@ the output has to be read either way.
 
 `graph-quinn-adapter-is-shared` is the other user of `present`, and it uses
 it for something an `absent` check structurally cannot express. The claim is
-that `http-ng-rt-quinn` holds the `quinn::Runtime` adapter *and nothing else
+that `http-ng-quinn` holds the `quinn::Runtime` adapter *and nothing else
 holds a copy of it*, so one assertion bans HTTP/3 from the adapter's own
 graph and another **requires** `http-ng-h3` to depend on the adapter. The
 second is what fails when someone re-adds a private `mod runtime` and drops
 the dependency — a change no ban would notice, because nothing forbidden
-appears anywhere. `docs/rt-quinn-extraction.md` §7.
+appears anywhere. `docs/quinn-adapter-extraction.md` §7.
 
 ## Build and test
 

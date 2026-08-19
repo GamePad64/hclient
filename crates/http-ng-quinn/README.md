@@ -1,4 +1,4 @@
-# http-ng-rt-quinn
+# http-ng-quinn
 
 **The `quinn` adapter for `http-ng-rt`'s seams.**
 

@@ -200,7 +200,24 @@ async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handsha
                     .get(1)
                     .and_then(|t| t.first_request())
                     .is_some();
-                if resolved {
+                // Both, and the second half is not belt-and-braces. With
+                // early data the request rides in the client's FIRST
+                // flight, so the server can resolve it before its own reply
+                // has reached the relay to be held at all — and a watcher
+                // looking only at `resolved` then releases a hold that
+                // caught nothing. The handshake was never delayed, the
+                // ordering asserted below is a coincidence, and the
+                // fixture's own guard says so: 3 runs in 20 failed under
+                // `-j96` across the whole workspace.
+                //
+                // It must be `entered` and not `datagrams`. The first
+                // attempt used `datagrams`, which the relay increments when
+                // a wait *finishes* — so while it holds the flight the
+                // count is zero, the condition can never become true, and
+                // the hold runs to its backstop. That failed 3 times in 3,
+                // which is the useful kind of wrong: a deadlock is visible
+                // where a race is not.
+                if resolved && releaser.held().entered > 0 {
                     releaser.release();
                     return true;
                 }
