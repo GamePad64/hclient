@@ -1284,6 +1284,57 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Unix-domain sockets, and the sibling trait that could not exist
+
+`Native::unix_socket(path)` — curl's `--unix-socket`, for reaching a local
+daemon that speaks HTTP over a socket rather than a port. The URI still
+carries a host, because HTTP needs one for `Host:` and for the pool.
+
+**`docs/competitive-gaps.md` expected a sibling of `TcpConnect` and there
+cannot be one.** `Native`'s IO type *is* `TcpConnect::Stream`, so a second
+trait would have to produce the same associated type — at which point it is
+`TcpConnect` with an extra method. Putting `R: UnixConnect` on `Native`
+would tax every runtime with no file descriptors, and the `fn`-pointer
+trick that keeps `Spawn` off `Native`'s signature does not work here:
+`spawn` returns `()` where this returns a future, and boxing it drops auto
+traits (amendment C1).
+
+So it is `TcpConnect::connect_unix`, a **defaulted method** whose default
+is a refusal, beside `SUPPORTS_UNIX` defaulted to `false` — `reports_alpn`
+and `applies_ech`'s shape: a constant defaulted to the understating value,
+read by the layer above to decide whether to *ask*. Both shipped runtimes
+compute it with `cfg!(unix)`, and each holds an enum internally
+(`TokioIo`'s `Socket`, `http-ng-rt-smol`'s `SmolSocket`) because one
+associated type must cover both.
+
+**It replaces the whole resolve → discovery → Happy Eyeballs → connect
+block, which is `Proxy`'s slot exactly** — and a proxy and a socket
+together are a **refusal**, because both answer *where does this connection
+go* and a precedence rule between them would be one nobody could guess.
+The two orders are not symmetrical: `unix_socket` returns a `Result` and
+refuses politely, `proxy` panics, because it changes `P` and cannot hand
+back a `Result<Native<.., P2>, _>` without costing every caller who never
+touches a socket a `?`. Said where each is.
+
+**`Connected::remote` became `Option<SocketAddr>` for it, and that is the
+sharper half.** There is no address, and a fabricated `0.0.0.0:0` would
+give a hook a *wrong* answer where the absence gives it a missing one — the
+argument `Head::version` already settled one event over. Emitting no
+`Connected` at all was the alternative and is worse: the `Closed` that
+follows would announce the end of a connection whose beginning was never
+announced, which is the defect this file records about building one out of
+`wasi:http`'s error codes.
+
+No `TcpOpts` are applied, and that is not an omission: every field of it is
+a TCP or IP option `AF_UNIX` does not have. `https://` still works — the
+handshake is unchanged and the server name comes from the URI.
+
+The socket path is in the pool key, sharing `proxy`'s field since at most
+one can be set, and **that correctness is unobservable** — the second
+mutation control here, for the same structural reason as the proxy's:
+`unix_socket` is constant within one `Native`, so two requests through one
+transport cannot disagree about it.
+
 ### `Capabilities` has two kinds of field, and one of them is not a gate
 
 `docs/competitive-gaps.md` §7 asked whether `Capabilities::proxy` "should

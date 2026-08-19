@@ -635,7 +635,7 @@ fn won<H: Hooks, R: Timer>(
 ) -> Option<Box<Attempted>> {
     H::WATCHING.then(|| {
         Box::new(Attempted {
-            remote,
+            remote: Some(remote),
             dns,
             tcp: since::<R>(rt, launched),
             // Filled in by `attempt`, which is where the handshake is.
@@ -659,7 +659,10 @@ fn won<H: Hooks, R: Timer>(
 /// unavailable by naming rather than caught after the fact.
 #[derive(Debug)]
 pub(crate) struct Attempted {
-    pub(crate) remote: SocketAddr,
+    /// `None` for a connection with no IP address — a Unix-domain socket.
+    /// See [`http_ng_core::unversioned::Connected::remote`], which this
+    /// field feeds and which carries the argument.
+    pub(crate) remote: Option<SocketAddr>,
     pub(crate) dns: Duration,
     pub(crate) tcp: Duration,
     /// `None` for a plaintext connection and `Some` for one that
@@ -1003,11 +1006,76 @@ where
     Ok((Conn::Tls(stream), Some(info), attempted))
 }
 
+/// The TLS half of a Unix-domain connect, which is
+/// [`through_proxy`]'s tail and nothing else.
+///
+/// Split out rather than inlined so the two paths that reach TLS without
+/// Happy Eyeballs cannot drift: both must use the **origin's** name, and
+/// both hand back an `Attempted` with no address in it — there is no
+/// address, which is exactly what the caller should see rather than a
+/// fabricated one.
+async fn finish_unix<R, L, H>(
+    rt: &R,
+    tls: &L,
+    stream: R::Stream,
+    host: &str,
+    use_tls: bool,
+    alpn: &[&[u8]],
+    began: Option<R::Instant>,
+) -> Result<
+    (
+        Conn<R::Stream, L::Stream<R::Stream>>,
+        Option<TlsInfo>,
+        Option<Box<Attempted>>,
+    ),
+    Error,
+>
+where
+    R: TcpConnect + Timer,
+    L: TlsConnect,
+    R::Stream: 'static,
+    H: Hooks,
+{
+    // An `Attempted` **is** produced — `None` here would mean no
+    // `Connected` event, and then a `Closed` announcing the end of a
+    // connection whose beginning was never announced. `remote` is `None`
+    // inside it, which is the honest absence: there is no address. `dns`
+    // is zero because nothing was resolved, and `tcp` is the whole of the
+    // connect, since `connect_unix` is the only thing that dialled.
+    let mut attempted = began.map(|b| {
+        Box::new(Attempted {
+            remote: None,
+            dns: Duration::ZERO,
+            tcp: since::<R>(rt, Some(b)),
+            tls: None,
+        })
+    });
+    if !use_tls {
+        return Ok((Conn::Plain(stream), None, attempted));
+    }
+    // The name from the URI, because a certificate is checked against who
+    // the caller asked for — the socket is transport, exactly as a tunnel
+    // is.
+    let req = TlsRequest {
+        server_name: http_ng_core::bare_host(host),
+        alpn,
+        ech: None,
+        early_data: None,
+    };
+    let handshake_began = mark::<H, R>(rt);
+    let (tls_stream, info) = tls.connect(stream, req).await?;
+    if let Some(a) = attempted.as_mut() {
+        a.tls = Some(since::<R>(rt, handshake_began));
+    }
+    Ok((Conn::Tls(tls_stream), Some(info), attempted))
+}
+
 pub(crate) async fn connect<R, D, L, P, H>(
     rt: &R,
     dns: &D,
     tls: &L,
     proxies: &[crate::proxy::Proxy<P>],
+    unix_socket: Option<&std::path::Path>,
     uri: &Uri,
     opts: &TcpOpts,
     alpn: &[&[u8]],
@@ -1044,6 +1112,25 @@ where
     // bypassed origin must take the ordinary path in full — its resolver,
     // its discovery, its Happy Eyeballs — rather than a proxied path with
     // the proxy removed.
+    // **Before the proxy and before everything else**, because a Unix
+    // socket replaces the whole resolve → discovery → Happy Eyeballs →
+    // connect block rather than layering over it: there is no name to
+    // resolve, no family to race and no port. `Native::unix_socket`
+    // refuses to coexist with a proxy, so the order between these two is a
+    // statement about reading rather than a precedence anybody has to
+    // learn.
+    //
+    // There is no bypass list here and there should not be: a bypassed
+    // origin would have nowhere to go, since the whole point is that this
+    // process reaches the service only through this socket.
+    if let Some(path) = unix_socket {
+        let stream = rt
+            .connect_unix(path)
+            .await
+            .map_err(|e| Error::new(ErrorKind::Connect, e))?;
+        return finish_unix::<R, L, H>(rt, tls, stream, host, use_tls, alpn, began).await;
+    }
+
     // The list is walked here rather than by the caller, and the bypass
     // with it, so a bypassed origin takes the ordinary path *in full* —
     // its resolver, its discovery, its Happy Eyeballs — rather than a
@@ -2310,6 +2397,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2361,6 +2449,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2539,6 +2628,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2598,6 +2688,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2731,6 +2822,7 @@ mod tests {
                     &dns,
                     &NoOpTls,
                     &[],
+                    None,
                     &uri,
                     &opts,
                     &[],
@@ -2832,6 +2924,7 @@ mod tests {
                 &dns,
                 &NoOpTls,
                 &[],
+                None,
                 &uri,
                 &TcpOpts::default(),
                 &[],
@@ -2866,6 +2959,7 @@ mod tests {
                 &dns,
                 &NoOpTls,
                 &[],
+                None,
                 &uri,
                 &TcpOpts::default(),
                 &[],
@@ -2896,6 +2990,7 @@ mod tests {
                 &dns,
                 &NoOpTls,
                 &[],
+                None,
                 &uri,
                 &TcpOpts::default(),
                 &alpn,
@@ -2921,6 +3016,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2953,6 +3049,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],
@@ -2979,6 +3076,7 @@ mod tests {
             &dns,
             &NoOpTls,
             &[],
+            None,
             &uri,
             &TcpOpts::default(),
             &[],

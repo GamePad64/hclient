@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// has its own IO traits, and an extra layer through `FuturesIo` would only
 /// add a copy.
 pub struct TokioIo {
-    inner: tokio::net::TcpStream,
+    inner: Socket,
     /// The buffer is allocated and zeroed ONCE, in [`TokioIo::new`] — not
     /// on every `poll_read`.
     ///
@@ -32,6 +32,16 @@ const SCRATCH: usize = 8 * 1024;
 
 impl TokioIo {
     pub(crate) fn new(inner: tokio::net::TcpStream) -> Self {
+        Self::over(Socket::Tcp(inner))
+    }
+
+    /// The same, over a Unix-domain stream — `TcpConnect::connect_unix`.
+    #[cfg(unix)]
+    pub(crate) fn unix(inner: tokio::net::UnixStream) -> Self {
+        Self::over(Socket::Unix(inner))
+    }
+
+    fn over(inner: Socket) -> Self {
         Self {
             inner,
             scratch: vec![0u8; SCRATCH].into_boxed_slice(),
@@ -41,12 +51,71 @@ impl TokioIo {
     /// A reference to the underlying `tokio::net::TcpStream` — for example,
     /// to read applied `TcpOpts` back (`nodelay()`, …) in tests or
     /// diagnostics.
+    ///
+    /// # Panics
+    ///
+    /// On a Unix-domain stream, where there is no `TcpStream` to hand
+    /// back and every `TcpOpts` field this accessor exists to read has no
+    /// meaning. A `Result` or an `Option` was the alternative and is
+    /// worse: every caller of this method today holds a connection it made
+    /// with [`TcpConnect::connect`](http_ng_rt::TcpConnect::connect), and
+    /// `AF_UNIX` cannot be reached from there — so the failing arm would
+    /// be unreachable noise at each of them.
     pub fn get_ref(&self) -> &tokio::net::TcpStream {
-        &self.inner
+        match &self.inner {
+            Socket::Tcp(s) => s,
+            #[cfg(unix)]
+            Socket::Unix(_) => panic!("get_ref on a Unix-domain stream: there is no TcpStream"),
+        }
     }
 
+    /// # Panics
+    ///
+    /// On a Unix-domain stream, for [`get_ref`](Self::get_ref)'s reason.
     pub fn into_inner(self) -> tokio::net::TcpStream {
-        self.inner
+        match self.inner {
+            Socket::Tcp(s) => s,
+            #[cfg(unix)]
+            Socket::Unix(_) => panic!("into_inner on a Unix-domain stream: there is no TcpStream"),
+        }
+    }
+}
+
+/// What a [`TokioIo`] is actually over.
+///
+/// An enum here rather than a type parameter on `TokioIo`, because
+/// `TcpConnect::Stream` is one associated type and both connects must
+/// produce it — see `TcpConnect::connect_unix` for why that seam is one
+/// trait rather than two. The cost is one branch per `poll_*`, against a
+/// syscall.
+enum Socket {
+    Tcp(tokio::net::TcpStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
+}
+
+/// Delegates one method to whichever socket is underneath.
+///
+/// A macro rather than six hand-written matches: they differ only in the
+/// method name and its arguments, and a hand-written set is where one arm
+/// eventually gets a different body by accident.
+macro_rules! either {
+    ($self:expr, $io:ident => $call:expr) => {
+        match &mut $self.inner {
+            Socket::Tcp($io) => $call,
+            #[cfg(unix)]
+            Socket::Unix($io) => $call,
+        }
+    };
+}
+
+impl std::fmt::Debug for Socket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Socket::Tcp(s) => s.fmt(f),
+            #[cfg(unix)]
+            Socket::Unix(s) => s.fmt(f),
+        }
     }
 }
 
@@ -77,7 +146,12 @@ impl hyper::rt::Read for TokioIo {
         // each other.
         let Self { inner, scratch } = &mut *self;
         let mut rb = tokio::io::ReadBuf::new(&mut scratch[..want]);
-        std::task::ready!(Pin::new(inner).poll_read(cx, &mut rb))?;
+        let n = match inner {
+            Socket::Tcp(s) => Pin::new(s).poll_read(cx, &mut rb),
+            #[cfg(unix)]
+            Socket::Unix(s) => Pin::new(s).poll_read(cx, &mut rb),
+        };
+        std::task::ready!(n)?;
         let filled = rb.filled().len();
         buf.put_slice(&scratch[..filled]);
         Poll::Ready(Ok(()))
@@ -90,15 +164,15 @@ impl hyper::rt::Write for TokioIo {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
+        either!(self, s => Pin::new(s).poll_write(cx, buf))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        either!(self, s => Pin::new(s).poll_flush(cx))
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        either!(self, s => Pin::new(s).poll_shutdown(cx))
     }
 
     fn poll_write_vectored(
@@ -106,7 +180,7 @@ impl hyper::rt::Write for TokioIo {
         cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+        either!(self, s => Pin::new(s).poll_write_vectored(cx, bufs))
     }
 
     /// Unlike `FuturesIo` (where `futures_io::AsyncWrite` gives no way to
@@ -115,7 +189,11 @@ impl hyper::rt::Write for TokioIo {
     /// delegation to the underlying `TcpStream`, not a decision made on
     /// its behalf.
     fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
+        match &self.inner {
+            Socket::Tcp(s) => s.is_write_vectored(),
+            #[cfg(unix)]
+            Socket::Unix(s) => s.is_write_vectored(),
+        }
     }
 }
 

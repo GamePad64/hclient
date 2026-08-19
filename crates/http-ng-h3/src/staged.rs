@@ -376,7 +376,7 @@ where
             Some(m) => self.hooks.on(Event::Connected(Connected {
                 id,
                 uri: &uri,
-                remote: m.remote,
+                remote: Some(m.remote),
                 version: http::Version::HTTP_3,
                 timing: ConnectTiming {
                     dns: m.dns,

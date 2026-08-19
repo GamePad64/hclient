@@ -105,6 +105,11 @@ impl TcpConnect for Tokio {
     /// The direction of the `cfg` matters: an understated `APPLIES` costs
     /// a caller a named `Unsupported` error, an overstated one costs them
     /// an option silently not applied.
+    /// `cfg!(unix)`, which is what `tokio::net::UnixStream` compiles on.
+    /// Understated on Windows, where AF_UNIX exists in the OS but tokio
+    /// binds no stream type for it.
+    const SUPPORTS_UNIX: bool = cfg!(unix);
+
     const APPLIES: TcpOptsSupport = TcpOptsSupport {
         bind_device: cfg!(any(
             target_os = "android",
@@ -139,6 +144,17 @@ impl TcpConnect for Tokio {
             .connect(addr)
             .await?;
         Ok(TokioIo::new(tcp))
+    }
+
+    #[cfg(unix)]
+    async fn connect_unix(&self, path: &std::path::Path) -> std::io::Result<Self::Stream> {
+        // No `TcpOpts`, because `AF_UNIX` has none of them — see the
+        // trait's own doc. And no `socket2` dance either: there is nothing
+        // to set before the connect, so tokio's own connector is the whole
+        // of it.
+        Ok(crate::io::TokioIo::unix(
+            tokio::net::UnixStream::connect(path).await?,
+        ))
     }
 }
 

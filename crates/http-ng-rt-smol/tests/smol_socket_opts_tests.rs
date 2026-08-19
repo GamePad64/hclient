@@ -63,7 +63,7 @@ fn local_address_selects_the_connecting_source_ip() {
         let connected = Smol.connect(addr, &opts).await;
         if assignable {
             let s = connected.expect("connect");
-            let local = s.get_ref().local_addr().expect("local_addr query");
+            let local = s.get_ref().tcp().local_addr().expect("local_addr query");
             assert_eq!(
                 local.ip(),
                 IpAddr::V4(SECOND_LOOPBACK),
@@ -100,7 +100,7 @@ fn default_local_address_is_not_127_0_0_2() {
             .connect(addr, &TcpOpts::default())
             .await
             .expect("connect");
-        let local = s.get_ref().local_addr().expect("local_addr query");
+        let local = s.get_ref().tcp().local_addr().expect("local_addr query");
         assert_ne!(local.ip(), IpAddr::V4(SECOND_LOOPBACK));
     });
 }
@@ -120,7 +120,7 @@ fn send_buffer_size_is_applied_before_connect() {
             )
             .await
             .expect("small connect");
-        let small_size = socket2::SockRef::from(small.get_ref())
+        let small_size = socket2::SockRef::from(small.get_ref().tcp())
             .send_buffer_size()
             .expect("small send_buffer_size query");
 
@@ -135,7 +135,7 @@ fn send_buffer_size_is_applied_before_connect() {
             )
             .await
             .expect("large connect");
-        let large_size = socket2::SockRef::from(large.get_ref())
+        let large_size = socket2::SockRef::from(large.get_ref().tcp())
             .send_buffer_size()
             .expect("large send_buffer_size query");
 
@@ -162,7 +162,7 @@ fn recv_buffer_size_is_applied_before_connect() {
             )
             .await
             .expect("small connect");
-        let small_size = socket2::SockRef::from(small.get_ref())
+        let small_size = socket2::SockRef::from(small.get_ref().tcp())
             .recv_buffer_size()
             .expect("small recv_buffer_size query");
 
@@ -177,7 +177,7 @@ fn recv_buffer_size_is_applied_before_connect() {
             )
             .await
             .expect("large connect");
-        let large_size = socket2::SockRef::from(large.get_ref())
+        let large_size = socket2::SockRef::from(large.get_ref().tcp())
             .recv_buffer_size()
             .expect("large recv_buffer_size query");
 
@@ -198,7 +198,7 @@ fn reuse_address_is_applied_before_connect() {
     };
     futures_executor::block_on(async {
         let s = Smol.connect(addr, &opts).await.expect("connect");
-        let enabled = socket2::SockRef::from(s.get_ref())
+        let enabled = socket2::SockRef::from(s.get_ref().tcp())
             .reuse_address()
             .expect("reuse_address query");
         assert!(enabled, "TcpOpts::reuse_address did not set SO_REUSEADDR");
@@ -214,7 +214,7 @@ fn default_reuse_address_is_off() {
             .connect(addr, &TcpOpts::default())
             .await
             .expect("connect");
-        let enabled = socket2::SockRef::from(s.get_ref())
+        let enabled = socket2::SockRef::from(s.get_ref().tcp())
             .reuse_address()
             .expect("reuse_address query");
         assert!(

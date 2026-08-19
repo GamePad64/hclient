@@ -472,6 +472,7 @@ where
             &self.dns,
             &self.tls,
             &self.proxies,
+            self.unix_socket.as_deref(),
             &uri,
             &self.opts,
             alpn,

@@ -119,8 +119,95 @@ impl Blocking for Smol {
     }
 }
 
+/// What a [`Smol`] connection is actually over.
+///
+/// An enum rather than a type parameter on the stream, because
+/// `TcpConnect::Stream` is one associated type and both connects must
+/// produce it — the same shape `http-ng-rt-tokio`'s `Socket` has, and for
+/// the reason `TcpConnect::connect_unix` gives for being one trait rather
+/// than two.
+#[derive(Debug)]
+pub enum SmolSocket {
+    Tcp(async_net::TcpStream),
+    #[cfg(unix)]
+    Unix(async_net::unix::UnixStream),
+}
+
+/// Delegates one poll to whichever socket is underneath — a macro for the
+/// reason the tokio adapter's is one: the arms differ only in the name.
+macro_rules! either {
+    ($self:expr, $io:ident => $call:expr) => {
+        match $self.get_mut() {
+            SmolSocket::Tcp($io) => $call,
+            #[cfg(unix)]
+            SmolSocket::Unix($io) => $call,
+        }
+    };
+}
+
+impl SmolSocket {
+    /// The TCP stream underneath, for reading applied [`TcpOpts`] back in
+    /// tests and diagnostics.
+    ///
+    /// # Panics
+    ///
+    /// On a Unix-domain stream, where there is no TCP stream and every
+    /// option this exists to read has no meaning — `http-ng-rt-tokio`'s
+    /// `TokioIo::get_ref` has the same shape and the same argument for
+    /// why it is not a `Result`.
+    pub fn tcp(&self) -> &async_net::TcpStream {
+        match self {
+            SmolSocket::Tcp(s) => s,
+            #[cfg(unix)]
+            SmolSocket::Unix(_) => panic!("tcp() on a Unix-domain stream: there is none"),
+        }
+    }
+}
+
+impl futures_lite::io::AsyncRead for SmolSocket {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        either!(self, s => std::pin::Pin::new(s).poll_read(cx, buf))
+    }
+}
+
+impl futures_lite::io::AsyncWrite for SmolSocket {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        either!(self, s => std::pin::Pin::new(s).poll_write(cx, buf))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        either!(self, s => std::pin::Pin::new(s).poll_flush(cx))
+    }
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        either!(self, s => std::pin::Pin::new(s).poll_close(cx))
+    }
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        either!(self, s => std::pin::Pin::new(s).poll_write_vectored(cx, bufs))
+    }
+}
+
 impl TcpConnect for Smol {
-    type Stream = FuturesIo<async_net::TcpStream>;
+    type Stream = FuturesIo<SmolSocket>;
+
+    /// `cfg!(unix)`, which is what `async_net::unix` compiles on.
+    const SUPPORTS_UNIX: bool = cfg!(unix);
 
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
@@ -196,14 +283,28 @@ impl TcpConnect for Smol {
             return Err(err);
         }
 
-        Ok(FuturesIo::new(async_net::TcpStream::from(async_stream)))
+        Ok(FuturesIo::new(SmolSocket::Tcp(async_net::TcpStream::from(
+            async_stream,
+        ))))
+    }
+
+    #[cfg(unix)]
+    async fn connect_unix(&self, path: &std::path::Path) -> std::io::Result<Self::Stream> {
+        // No `TcpOpts` and no `socket2` dance, for the reason the trait's
+        // own doc gives: `AF_UNIX` has none of those options, so there is
+        // nothing to set before the connect.
+        Ok(FuturesIo::new(SmolSocket::Unix(
+            async_net::unix::UnixStream::connect(path).await?,
+        )))
     }
 }
 
 impl TcpAdoptStd for Smol {
     fn adopt(&self, std: std::net::TcpStream) -> std::io::Result<Self::Stream> {
         std.set_nonblocking(true)?;
-        Ok(FuturesIo::new(async_net::TcpStream::try_from(std)?))
+        Ok(FuturesIo::new(SmolSocket::Tcp(
+            async_net::TcpStream::try_from(std)?,
+        )))
     }
 }
 
@@ -342,7 +443,7 @@ mod tests {
             // `build_socket` silently ignored `opts`), but that
             // `nodelay: true` actually reached the socket: read the option
             // back, rather than relying on the call having happened.
-            let applied = s.get_ref().nodelay().expect("nodelay query");
+            let applied = s.get_ref().tcp().nodelay().expect("nodelay query");
             assert!(
                 applied,
                 "TcpOpts::nodelay was not applied to the connected socket"
@@ -378,7 +479,7 @@ mod tests {
                 )
                 .await
                 .expect("connect");
-            let enabled = socket2::SockRef::from(s.get_ref())
+            let enabled = socket2::SockRef::from(s.get_ref().tcp())
                 .keepalive()
                 .expect("keepalive query");
             assert!(

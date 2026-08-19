@@ -62,7 +62,9 @@ pub use http2::{H2Driver, H2Opts};
 pub use h1::{H1Opts, MaxBufSizeTooSmall};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
-pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxyScheme, ProxySpokeFirst};
+pub use proxy::{
+    Approach, NoProxy, Proxy, ProxyAndUnixSocket, ProxyProtocol, ProxyScheme, ProxySpokeFirst,
+};
 #[cfg(feature = "proxy")]
 pub use proxy::{
     HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,
@@ -311,6 +313,9 @@ where
     /// not want `h2`'s default. Constant within a `Native` and therefore
     /// within its pool, which is why it is not in `PoolKey` — the
     /// argument the TLS identity and the proxy already carry there.
+    /// Send every request over this Unix-domain socket instead of
+    /// resolving and dialling the origin — see [`Native::unix_socket`].
+    unix_socket: Option<std::sync::Arc<std::path::Path>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -625,6 +630,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         Self {
             watch_1xx: None,
             expect_continue: None,
+            unix_socket: None,
             h1_opts: crate::h1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
@@ -762,7 +768,22 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///   through a different one.
     /// - **A `407` is a connect error, never a response.** It is the
     ///   proxy's answer to us, not the origin's to the caller.
+    ///
+    /// # Panics
+    ///
+    /// If a Unix socket is already configured. The mirror of
+    /// [`unix_socket`](Self::unix_socket)'s refusal, and a panic rather
+    /// than a `Result` because this method already changes `P` and cannot
+    /// return `Result<Native<.., P2>, Error>` without making every caller
+    /// who never touches Unix sockets write a `?`. The two orders are not
+    /// symmetrical and the asymmetry is stated rather than hidden: put
+    /// `.proxy(..)` first and `unix_socket` refuses politely.
     pub fn proxy<P2>(self, proxy: crate::proxy::Proxy<P2>) -> Native<R, T, D, H, P2> {
+        assert!(
+            self.unix_socket.is_none(),
+            "a proxy and a Unix socket both answer `where does this connection go`; \
+             configure at most one"
+        );
         let mut caps = self.caps;
         // Read from the thing that knows, `client_certs`' lesson one field
         // over: this transport applies a proxy configuration of its own,
@@ -777,6 +798,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // does not change.
             watch_1xx: self.watch_1xx,
             expect_continue: self.expect_continue,
+            unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
@@ -926,6 +948,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // must not say it does.
             watch_1xx: None,
             expect_continue: self.expect_continue,
+            unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
@@ -1423,6 +1446,67 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// to hyper, which **panics** below 8192. A caller's number reaching a
     /// `panic!` inside a connect is not a refusal they can act on, so it
     /// is checked here and named.
+    /// Send every request over the Unix-domain socket at `path`, whatever
+    /// authority its URI names.
+    ///
+    /// This is how a caller reaches a local daemon that speaks HTTP over a
+    /// socket rather than a port — a container runtime, a systemd service,
+    /// a package manager. The URI still carries a host, because HTTP needs
+    /// one for `Host:` and for the pool: `http://localhost/v1.51/version`
+    /// over `/var/run/docker.sock` is the shape, and it is `curl`'s
+    /// `--unix-socket` exactly.
+    ///
+    /// ```no_run
+    /// # use http_ng_native::Native;
+    /// # use http_ng_rt::{TcpConnect, Timer};
+    /// # use http_ng_tls::TlsConnect;
+    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
+    /// # -> Result<Native<R, T, D>, http_ng_core::Error> {
+    /// t.unix_socket("/var/run/docker.sock")
+    /// # }
+    /// ```
+    ///
+    /// # What it replaces
+    ///
+    /// The whole resolve → HTTPS-record discovery → Happy Eyeballs →
+    /// `connect` block, which is [`Proxy`](crate::Proxy)'s slot exactly:
+    /// there is no name to resolve, no address family to race and no port.
+    /// It is **not** a proxy — nothing is tunnelled and the request head is
+    /// written origin-form — which is why it is a setting rather than a
+    /// `ProxyProtocol`.
+    ///
+    /// A proxy and a Unix socket together is a refusal rather than an
+    /// order of precedence: both answer *where does this connection go*,
+    /// and a rule about which wins would be a rule nobody could guess.
+    ///
+    /// # `https://` still works, and `TcpOpts` still does not
+    ///
+    /// The TLS handshake is unchanged and the server name comes from the
+    /// URI, so a daemon that speaks TLS over a socket is reachable. Every
+    /// [`TcpOpts`] field, on the other hand, is a TCP or IP option that
+    /// `AF_UNIX` does not have — they are simply not applied here, which
+    /// is what `TcpConnect::connect_unix` taking no options says.
+    ///
+    /// # It is refused where the runtime says it cannot
+    ///
+    /// [`TcpConnect::SUPPORTS_UNIX`](http_ng_rt::TcpConnect::
+    /// SUPPORTS_UNIX), which both shipped runtimes compute with `cfg!(unix)`
+    /// — so this fails at the call that configures it rather than on the
+    /// first request, which is `tcp_opts`' rule one method over.
+    pub fn unix_socket(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, Error> {
+        if !<R as TcpConnect>::SUPPORTS_UNIX {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                http_ng_rt::UnixSocketsUnsupported,
+            ));
+        }
+        if !self.proxies.is_empty() {
+            return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));
+        }
+        self.unix_socket = Some(std::sync::Arc::from(path.as_ref()));
+        Ok(self)
+    }
+
     pub fn h1_opts(mut self, opts: crate::h1::H1Opts) -> Result<Self, Error> {
         if let Some(asked) = opts.max_buf_size
             && asked < crate::h1::MINIMUM_MAX_BUF_SIZE
@@ -1520,13 +1604,33 @@ where
             // It is written correctly anyway for the reason the `proxy`
             // field is in `PoolKey` at all: the moment a pool is shared
             // between transports, the two stop being the same question.
-            proxy: crate::proxy::Proxy::choose(
-                &self.proxies,
-                matches!(security, Security::Tls(_)),
-                host,
-                port,
-            )
-            .map(|p| p.key().into_boxed_str()),
+            // **The socket path shares `proxy`'s slot in the key**, and it
+            // is the same argument: two connections that go to different
+            // places must not be interchangeable. They share one field
+            // because `Native::unix_socket` refuses to coexist with a
+            // proxy, so at most one is ever `Some` — a second field would
+            // be a state the constructor forbids.
+            //
+            // **Unreachable today, like the proxy beside it**, and for the
+            // same structural reason: `unix_socket` is constant within one
+            // `Native`, so two requests through one transport cannot
+            // disagree about it, and two transports have two pools.
+            // Removing it passes the whole suite — this work's second
+            // mutation control. Written correctly anyway for the moment a
+            // pool is shared between transports.
+            proxy: self
+                .unix_socket
+                .as_ref()
+                .map(|p| format!("unix:{}", p.display()).into_boxed_str())
+                .or_else(|| {
+                    crate::proxy::Proxy::choose(
+                        &self.proxies,
+                        matches!(security, Security::Tls(_)),
+                        host,
+                        port,
+                    )
+                    .map(|p| p.key().into_boxed_str())
+                }),
         })
     }
 
@@ -2434,6 +2538,7 @@ where
             &self.dns,
             &self.tls,
             &self.proxies,
+            self.unix_socket.as_deref(),
             &uri,
             &self.opts,
             alpn,

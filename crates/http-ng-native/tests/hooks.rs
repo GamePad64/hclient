@@ -54,7 +54,7 @@ enum Seen {
     Connected {
         id: u64,
         uri: String,
-        remote: SocketAddr,
+        remote: Option<SocketAddr>,
         version: http::Version,
         dns: Duration,
         tcp: Duration,
@@ -434,8 +434,11 @@ async fn the_connect_names_the_address_that_answered_and_the_protocol_spoken() {
         panic!("the first event must be the connect");
     };
     assert_eq!(
-        remote, addr,
-        "the address reported must be the one the server is listening on"
+        remote,
+        Some(addr),
+        "the address reported must be the one the server is listening on — \
+         `Some`, because a TCP connection has one; a Unix-domain socket is \
+         where the `None` lives"
     );
     assert_eq!(version, http::Version::HTTP_11);
     assert_eq!(uri, format!("http://{addr}/"));

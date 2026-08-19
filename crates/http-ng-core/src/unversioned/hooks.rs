@@ -292,7 +292,22 @@ pub struct Connected<'a> {
     /// The address that answered. One of possibly several tried:
     /// RFC 8305 races address families, and this is the winner, not the
     /// first candidate.
-    pub remote: SocketAddr,
+    ///
+    /// **`None` where the connection has no IP address**, which today
+    /// means a Unix-domain socket
+    /// (`http_ng_native::Native::unix_socket`): there was no name, no
+    /// family to race and no port. It is an `Option` rather than a
+    /// fabricated `0.0.0.0:0` for `Head::version`'s reason one event over
+    /// — a sentinel that is also an ordinary value gives a hook a *wrong*
+    /// answer where the absence gives it a missing one, and only the
+    /// second can be handled.
+    ///
+    /// The alternative was to emit no `Connected` at all for such a
+    /// connection, and it is worse: the `Closed` that follows would
+    /// announce the end of a connection whose beginning was never
+    /// announced, which is exactly the defect recorded for building a
+    /// `Closed::Failed` out of `wasi:http`'s error codes.
+    pub remote: Option<SocketAddr>,
     /// What will be spoken on it, as negotiated — not as offered.
     pub version: http::Version,
     pub timing: ConnectTiming,

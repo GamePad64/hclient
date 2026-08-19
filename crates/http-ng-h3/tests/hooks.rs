@@ -66,7 +66,7 @@ enum Seen {
     Connected {
         id: u64,
         uri: String,
-        remote: SocketAddr,
+        remote: Option<SocketAddr>,
         version: http::Version,
         dns: Duration,
         tcp: Duration,
@@ -161,7 +161,7 @@ impl Recorder {
         &self,
     ) -> (
         u64,
-        SocketAddr,
+        Option<SocketAddr>,
         Duration,
         Duration,
         Option<Duration>,
@@ -327,7 +327,8 @@ async fn a_fresh_request_reports_the_connection_it_paid_for_and_the_head_it_got(
     }
     let (id, remote, _dns, tcp, tls, total) = rec.only_connect();
     assert_eq!(
-        remote, s.addr,
+        remote,
+        Some(s.addr),
         "the address that answered is the server's own, read back from \
          quinn rather than from what was dialled"
     );

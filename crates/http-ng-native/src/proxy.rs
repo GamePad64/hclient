@@ -1091,3 +1091,12 @@ mod tests {
         assert!(Socks5::new().password_auth(&"x".repeat(255), "p").is_ok());
     }
 }
+
+/// A proxy and a Unix-domain socket were both configured.
+///
+/// Both answer *where does this connection go*, and a rule about which one
+/// wins would be a rule nobody could guess — so the second one is refused
+/// where it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a proxy and a Unix socket both decide where a connection goes; configure at most one")]
+pub struct ProxyAndUnixSocket;

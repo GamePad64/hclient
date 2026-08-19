@@ -360,7 +360,7 @@ fn a_hook_can_be_written_against_the_facade_alone() {
                     // Every field a caller would log, named through the
                     // facade: an id, an address, a version, four durations.
                     let _: http_ng::ConnectionId = e.id;
-                    let _: std::net::SocketAddr = e.remote;
+                    let _: Option<std::net::SocketAddr> = e.remote;
                     let _: http::Version = e.version;
                     let t: http_ng::ConnectTiming = e.timing;
                     let _ = t.dns + t.tcp + t.tls.unwrap_or_default() + t.total;

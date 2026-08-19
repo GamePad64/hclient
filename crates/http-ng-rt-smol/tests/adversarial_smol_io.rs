@@ -1,4 +1,4 @@
-//! Reviewer-written adversarial test suite for `FuturesIo<async_net::TcpStream>`
+//! Reviewer-written adversarial test suite for `FuturesIo<http_ng_rt_smol::SmolSocket>`
 //! driven through the real `Smol` runtime (Task 4 review, verdict item E),
 //! independent of the implementer's work. Adapted from the sibling suite for
 //! `TokioIo` (Task 3 review,
@@ -83,7 +83,7 @@ fn test_waker() -> Waker {
     ))))
 }
 
-async fn connected_pair() -> (FuturesIo<async_net::TcpStream>, std::net::TcpStream) {
+async fn connected_pair() -> (FuturesIo<http_ng_rt_smol::SmolSocket>, std::net::TcpStream) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || listener.accept().unwrap().0);
@@ -248,7 +248,7 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
 // ---------------------------------------------------------------------
 
 async fn read_exactly(
-    client: &mut FuturesIo<async_net::TcpStream>,
+    client: &mut FuturesIo<http_ng_rt_smol::SmolSocket>,
     dest_len: usize,
     expected_len: usize,
 ) -> Vec<u8> {

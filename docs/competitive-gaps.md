@@ -173,7 +173,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | local source address | Y | Y | — | Y | N | `TcpOpts::local_address` |
 | **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | N | closed — `TcpOpts::bind_device`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
 | TCP keepalive | Y\* | Y | — | Y | N | ng has `TcpOpts::keepalive` (one duration); rq has interval, retries and `TCP_USER_TIMEOUT` besides |
-| Unix domain socket transport | **N** | N | — | **Y** | N | `Easy2::unix_socket` / `unix_socket_path` over `CURLOPT_UNIX_SOCKET_PATH` (`curl-0.4.50/src/easy/handler.rs:782, :802`) |
+| Unix domain socket transport | Y | N | — | **Y** | N | closed — `Native::unix_socket(path)`, curl's `--unix-socket` exactly. **Not a sibling trait**, which is what this document expected: a second trait would have to produce `TcpConnect::Stream` anyway, so it is a defaulted method on that seam — `reports_alpn`'s shape. See G11 |
 | static host→address override (`--resolve`) | seam | Y | — | Y | N | rq: `resolve`/`resolve_to_addrs`; here it is a `Resolve` impl, which is more work and more general |
 | pluggable resolver | seam | Y | — | Y | N | rq: `dns_resolver`; ng: the `Resolve` trait, with three shipped backends |
 | Happy Eyeballs (RFC 8305) | Y | Y | — | Y | (browser's) | |
@@ -580,9 +580,34 @@ retransmission for minutes with keepalive never firing. It overlaps
 applies to a socket rather than an exchange, and is the only one of the two
 a build with no `Client` above it can reach.
 
-**A Unix-domain-socket transport is still absent**, and is the larger half
-as this section said: a sibling of `TcpConnect` rather than a field, since
-there is no `SocketAddr`, no Happy Eyeballs, no TLS by default and no port.
+**The Unix-domain socket is in too, and it is not the sibling trait this
+section expected.** A second trait would have to produce
+`TcpConnect::Stream` — `Native`'s IO type *is* that associated type — at
+which point it is `TcpConnect` with an extra method; and `R: UnixConnect`
+on `Native` would tax every runtime with no file descriptors. The
+`fn`-pointer trick that keeps `Spawn` off `Native`'s signature does not
+work either, because `spawn` returns `()` where this returns a future and
+boxing it drops auto traits (amendment C1).
+
+So it is `TcpConnect::connect_unix`, a **defaulted method** whose default
+is a refusal, beside `SUPPORTS_UNIX` defaulted to `false` — `reports_alpn`
+and `applies_ech`'s shape one seam over: a constant defaulted to the
+understating value, read by the layer above to decide whether to *ask*.
+`Native::unix_socket` refuses where the runtime says it cannot, at the call
+that configures it.
+
+It replaces the whole resolve → discovery → Happy Eyeballs → connect block,
+which is `Proxy`'s slot exactly — and a proxy and a socket together are a
+**refusal**, because both answer *where does this connection go* and a
+precedence rule between them would be one nobody could guess.
+
+`Connected::remote` became `Option<SocketAddr>` for it, and that is the
+sharper half: there is no address, and a fabricated `0.0.0.0:0` would give
+a hook a *wrong* answer where the absence gives it a missing one — the
+argument `Head::version` already settled one event over. Emitting no
+`Connected` at all was the alternative and is worse: the `Closed` that
+follows would announce the end of a connection whose beginning was never
+announced.
 
 ### G11a. No separate bound on name resolution — **closed**
 

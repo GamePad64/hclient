@@ -291,7 +291,75 @@ pub trait TcpConnect {
         addr: SocketAddr,
         opts: &TcpOpts,
     ) -> impl Future<Output = std::io::Result<Self::Stream>>;
+
+    /// Whether [`connect_unix`](Self::connect_unix) does anything.
+    ///
+    /// [`APPLIES`](Self::APPLIES)' shape, and defaulted the same way and
+    /// for the same reason: a claim made by silence must never be stronger
+    /// than the truth. A runtime that says nothing here refuses the
+    /// setting, where one that over-claimed would fail every connect at
+    /// the socket instead of at the call that asked.
+    ///
+    /// It is a `const` rather than something the connect discovers,
+    /// because the answer is a property of the runtime and the target and
+    /// a caller should learn it at configuration rather than on the wire —
+    /// which is what lets `http_ng_native::Native::unix_socket` refuse.
+    const SUPPORTS_UNIX: bool = false;
+
+    /// Connect to a Unix-domain socket at `path`.
+    ///
+    /// # Why it is here rather than on a seam of its own
+    ///
+    /// Because a seam of its own could not be reached. `Native`'s IO type
+    /// **is** [`Self::Stream`], so a second trait would have to produce
+    /// the same associated type — at which point it is this trait with an
+    /// extra method — and putting `R: UnixConnect` on `Native` would tax
+    /// every runtime that has no file descriptors. The `fn`-pointer trick
+    /// that keeps `Spawn` off `Native`'s signature does not work here:
+    /// `spawn` returns `()` where this returns a future, and boxing it
+    /// would drop auto traits (spec amendment C1).
+    ///
+    /// So it is a defaulted method on the seam that already exists —
+    /// `TlsConnect::reports_alpn`'s shape, `applies_ech`'s and
+    /// `TlsIdentity::presents_client_certs`': a constant defaulted to the
+    /// understating value, read by the layer above to decide whether to
+    /// **ask**.
+    ///
+    /// # No `TcpOpts`
+    ///
+    /// Not an omission: every field of [`TcpOpts`] is a TCP or IP socket
+    /// option, and `AF_UNIX` has none of them — no Nagle, no keepalive, no
+    /// source address, no interface. A parameter that could only ever be
+    /// ignored is worse than no parameter.
+    ///
+    /// The default is a refusal rather than a panic, and the error carries
+    /// [`std::io::ErrorKind::Unsupported`] so a caller who reached it
+    /// through some path that skipped [`SUPPORTS_UNIX`](Self::
+    /// SUPPORTS_UNIX) still gets an answer rather than an abort.
+    fn connect_unix(
+        &self,
+        path: &std::path::Path,
+    ) -> impl Future<Output = std::io::Result<Self::Stream>> {
+        let _ = path;
+        async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                UnixSocketsUnsupported,
+            ))
+        }
+    }
 }
+
+/// A runtime that declares no Unix-domain support was asked for a
+/// connection to one.
+///
+/// Reachable only past [`TcpConnect::SUPPORTS_UNIX`], which
+/// `http_ng_native::Native::unix_socket` checks at the call that
+/// configures it — so a caller normally meets the refusal where they
+/// wrote the path, not on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("this runtime does not connect to Unix-domain sockets")]
+pub struct UnixSocketsUnsupported;
 
 /// On platforms with file descriptors, the whole set of socket options is
 /// applied outside the runtime, and the runtime only adopts the finished
