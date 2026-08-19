@@ -171,7 +171,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | a reaper that closes idle sockets | Y\* | Y | — | Y | — | ng: `Native::with_reaper`, opt-in, bounded on `R: Spawn` |
 | `TCP_NODELAY` | Y | Y | — | Y | N | |
 | local source address | Y | Y | — | Y | N | `TcpOpts::local_address` |
-| **bind to an interface** (`SO_BINDTODEVICE`) | **N** | Y | — | Y | N | `reqwest…client.rs:1745`; grepped this tree for `SO_BINDTODEVICE`/`bind_device` — zero hits |
+| **bind to an interface** (`SO_BINDTODEVICE`) | Y\* | Y | — | Y | N | closed — `TcpOpts::bind_device`. Not `local_address` renamed: an address binds the *source address* and the kernel still routes by its table, where this binds the interface. Linux/Android/Fuchsia only, which is why `Tokio::APPLIES` stopped being `TcpOptsSupport::ALL`. See G11 |
 | TCP keepalive | Y\* | Y | — | Y | N | ng has `TcpOpts::keepalive` (one duration); rq has interval, retries and `TCP_USER_TIMEOUT` besides |
 | Unix domain socket transport | **N** | N | — | **Y** | N | `Easy2::unix_socket` / `unix_socket_path` over `CURLOPT_UNIX_SOCKET_PATH` (`curl-0.4.50/src/easy/handler.rs:782, :802`) |
 | static host→address override (`--resolve`) | seam | Y | — | Y | N | rq: `resolve`/`resolve_to_addrs`; here it is a `Resolve` impl, which is more work and more general |
@@ -528,20 +528,34 @@ megabyte against a 4 KiB limit.
 are now written next to each other: one counts what arrives, the other
 times what is sent, and each is on the side its own threat is on.
 
-### G11. Interface binding, TCP keepalive detail, Unix sockets
+### G11. Interface binding, TCP keepalive detail, Unix sockets — **the socket options are closed; the Unix socket is not**
 
-`TcpOpts` has six fields and covers `nodelay`, `keepalive` (one duration),
-`local_address`, buffer sizes and `reuse_address`. It has no
-`SO_BINDTODEVICE` (grepped: zero hits in this tree), no keepalive interval
-or retry count, no `TCP_USER_TIMEOUT`, and there is no Unix-domain-socket
-transport anywhere.
+`TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
+and `user_timeout`, with the matching `TcpOptsSupport` bools — the
+field-per-field mirror this section correctly called *the designed-for
+change*, since the error has to name the option a caller set.
 
-*What it takes*: three more `TcpOpts` fields and three more
-`TcpOptsSupport` bools, which is exactly the shape that already exists —
-and note that `TcpOptsSupport` is a field-per-field mirror *because* the
-error has to name the option, so growing it is the designed-for change. A
-Unix socket is a different `TcpConnect`, or rather a sibling trait, and is
-the larger of the two. *Forbidden?* No.
+**The interesting consequence is that `Tokio::APPLIES` stopped being
+`TcpOptsSupport::ALL`.** `SO_BINDTODEVICE` exists on Linux, Android and
+Fuchsia; `TCP_USER_TIMEOUT` on those plus Cygwin; and
+`TcpKeepalive::with_retries` is absent on three others. A constant
+claiming all of them everywhere would be a capability that lies on macOS
+and Windows — so `APPLIES` is now a `cfg!`-computed value, and `ALL` still
+means *every field* while no longer being a value a real runtime can claim
+on every target it builds for. Checked by compiling for
+`aarch64-apple-darwin` and `x86_64-pc-windows-msvc` as well as the host.
+
+**`user_timeout` is the one that catches a peer which vanished
+mid-transfer**, where keepalive only catches an idle one: probes are sent
+when nothing is in flight, so a connection with unacknowledged data sits in
+retransmission for minutes with keepalive never firing. It overlaps
+`Timeouts::between_bytes` without replacing it — this one is the kernel's,
+applies to a socket rather than an exchange, and is the only one of the two
+a build with no `Client` above it can reach.
+
+**A Unix-domain-socket transport is still absent**, and is the larger half
+as this section said: a sibling of `TcpConnect` rather than a field, since
+there is no `SocketAddr`, no Happy Eyeballs, no TLS by default and no port.
 
 ### G11a. No separate bound on name resolution — **closed**
 

@@ -1284,6 +1284,58 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### Four more socket options, and `APPLIES` stopped being a constant
+
+`TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
+and `user_timeout`, with the matching `TcpOptsSupport` bools — the
+field-per-field mirror exists precisely so the error can name the option a
+caller set, so growing it is the designed-for change.
+
+**The consequence worth knowing is that `Tokio::APPLIES` and
+`Smol::APPLIES` are no longer `TcpOptsSupport::ALL`.** `SO_BINDTODEVICE`
+is Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` those plus Cygwin, and
+`TcpKeepalive::with_retries` is missing on three more. A constant claiming
+all of them everywhere would be a capability that lies on macOS and
+Windows, so `APPLIES` is `cfg!`-computed now. `ALL` still means *every
+field*; it is simply no longer a value any real runtime can claim on every
+target it builds for. The direction matters: an understated `APPLIES`
+costs a caller a named `Unsupported` error, an overstated one costs them an
+option silently not applied.
+
+**Keepalive is one setting in three parts and the field names do not say
+so**, which is why the type says it: `set_tcp_keepalive` switches
+`SO_KEEPALIVE` on, so setting *any* of the three enables it and each part
+left `None` keeps the OS's value. A caller who sets only the interval has
+switched keepalive on with the OS's idle time — asserted, because it reads
+as a surprise otherwise.
+
+**`bind_device` is not `local_address` renamed.** An address binds the
+*source address* and the kernel still routes by its table, so a request can
+leave through a different interface that happens to hold the same address.
+This binds the interface, which is what a caller on a multi-homed host or
+inside a VRF means. Its test asserts an outcome consistent with the claim
+rather than success: `SO_BINDTODEVICE` needs `CAP_NET_RAW`, so either the
+socket reports the interface back or the connect fails `EPERM` — what must
+never happen is a silent success with nothing bound.
+
+**`user_timeout` is the one that catches a peer that vanished
+mid-transfer**, where keepalive catches only an idle one: probes go out
+when nothing is in flight, so a connection with unacknowledged data sits in
+retransmission for minutes with keepalive never firing. It overlaps
+`Timeouts::between_bytes` without replacing it — the kernel's, on a socket
+rather than an exchange, and the only one of the two a build with no
+`Client` above it can reach.
+
+**Two test defects surfaced, both from names rather than behaviour.**
+`each_unappliable_option_is_named_on_its_own` compared the error's
+*message* against every other option name as a substring — which worked
+while no two names shared a prefix, and reported that a withheld
+`keepalive_interval` had also named `keepalive`, which the message never
+did. It compares `names()` as data now, which is what its neighbour four
+lines down already did. And a fixture called `all_six_set` with a
+`[&str; 6]` beside it: a count in a name and a length in a type are both
+things to remember when a struct grows, and it grew.
+
 ### The browser's own `fetch` members, and the one that is refused
 
 `Fetch::opts(FetchOpts { .. })` — `mode`, `credentials`, `cache` and

@@ -43,7 +43,57 @@ pub struct TcpOpts {
     /// `TCP_NODELAY` — Nagle's algorithm off. See the type's own doc for
     /// why `default()` leaves it `false` and who turns it on.
     pub nodelay: bool,
+    /// `TCP_KEEPIDLE` — how long a connection may be idle before the
+    /// first probe.
+    ///
+    /// **One setting in three parts, with [`keepalive_interval`](Self::
+    /// keepalive_interval) and [`keepalive_retries`](Self::
+    /// keepalive_retries).** Setting *any* of the three turns
+    /// `SO_KEEPALIVE` on; each part left `None` keeps the operating
+    /// system's value for it. That is `socket2::TcpKeepalive`'s own shape
+    /// and it is stated here because the field names do not say it: a
+    /// caller who sets only the interval has switched keepalive on, with
+    /// the OS's idle time.
     pub keepalive: Option<Duration>,
+    /// `TCP_KEEPINTVL` — the gap between probes once they have started.
+    ///
+    /// Worth setting with [`keepalive`](Self::keepalive) rather than
+    /// instead of it: the idle time decides *when a dead peer starts being
+    /// noticed* and this decides *how fast the noticing then goes*, and
+    /// Linux's defaults are 7200 s and 75 s, so an untouched idle time
+    /// makes the interval nearly irrelevant.
+    pub keepalive_interval: Option<Duration>,
+    /// `TCP_KEEPCNT` — how many unanswered probes end the connection.
+    pub keepalive_retries: Option<u32>,
+    /// `SO_BINDTODEVICE` — the interface this socket must use, by name.
+    ///
+    /// Not [`local_address`](Self::local_address) under another name: an
+    /// address binds the *source address*, and the kernel still routes by
+    /// its table, so a request can leave through a different interface
+    /// that happens to hold the same address. This binds the **interface**,
+    /// which is what a caller on a multi-homed host or inside a VRF
+    /// actually means. Linux, Android and Fuchsia only — see
+    /// [`TcpOptsSupport`], which is where a runtime says so per target.
+    ///
+    /// A `String` rather than a `&'static str` because an interface name
+    /// is configuration a caller reads at run time, and rather than bytes
+    /// because every interface name on every platform that has this option
+    /// is ASCII.
+    pub bind_device: Option<String>,
+    /// `TCP_USER_TIMEOUT` — how long transmitted data may stay
+    /// unacknowledged before the connection is dropped.
+    ///
+    /// **The one option here that catches a peer which vanished
+    /// mid-transfer**, where keepalive only catches an *idle* one: probes
+    /// are sent when nothing is in flight, so a connection with unsent
+    /// acknowledgements sits in retransmission for minutes with keepalive
+    /// never firing. Linux, Android, Fuchsia and Cygwin only.
+    ///
+    /// It overlaps `Timeouts::between_bytes` and does not replace it: this
+    /// is the kernel's, applies to a socket rather than to an exchange, and
+    /// is the only one of the two that a build with no `Client` above it
+    /// can reach.
+    pub user_timeout: Option<Duration>,
     pub local_address: Option<IpAddr>,
     pub send_buffer_size: Option<usize>,
     pub recv_buffer_size: Option<usize>,
@@ -59,6 +109,17 @@ pub struct TcpOpts {
 pub struct TcpOptsSupport {
     pub nodelay: bool,
     pub keepalive: bool,
+    pub keepalive_interval: bool,
+    pub keepalive_retries: bool,
+    /// `SO_BINDTODEVICE`, which exists on Linux, Android and Fuchsia and
+    /// nowhere else — so a runtime that sets this **must** decide it per
+    /// target rather than in one constant. `TcpOptsSupport::ALL` is still
+    /// literally every field, and is therefore no longer a value any real
+    /// runtime can claim on every platform it builds for.
+    pub bind_device: bool,
+    /// `TCP_USER_TIMEOUT`, Linux/Android/Fuchsia/Cygwin — the same
+    /// per-target rule as [`bind_device`](Self::bind_device).
+    pub user_timeout: bool,
     pub local_address: bool,
     pub send_buffer_size: bool,
     pub recv_buffer_size: bool,
@@ -71,6 +132,10 @@ impl TcpOptsSupport {
     pub const ALL: Self = Self {
         nodelay: true,
         keepalive: true,
+        keepalive_interval: true,
+        keepalive_retries: true,
+        bind_device: true,
+        user_timeout: true,
         local_address: true,
         send_buffer_size: true,
         recv_buffer_size: true,
@@ -81,6 +146,10 @@ impl TcpOptsSupport {
     pub const NONE: Self = Self {
         nodelay: false,
         keepalive: false,
+        keepalive_interval: false,
+        keepalive_retries: false,
+        bind_device: false,
+        user_timeout: false,
         local_address: false,
         send_buffer_size: false,
         recv_buffer_size: false,
@@ -113,6 +182,10 @@ impl UnsupportedTcpOpts {
         [
             ("nodelay", m.nodelay),
             ("keepalive", m.keepalive),
+            ("keepalive_interval", m.keepalive_interval),
+            ("keepalive_retries", m.keepalive_retries),
+            ("bind_device", m.bind_device),
+            ("user_timeout", m.user_timeout),
             ("local_address", m.local_address),
             ("send_buffer_size", m.send_buffer_size),
             ("recv_buffer_size", m.recv_buffer_size),
@@ -164,6 +237,10 @@ impl TcpOpts {
         let missing = TcpOptsSupport {
             nodelay: self.nodelay && !can.nodelay,
             keepalive: self.keepalive.is_some() && !can.keepalive,
+            keepalive_interval: self.keepalive_interval.is_some() && !can.keepalive_interval,
+            keepalive_retries: self.keepalive_retries.is_some() && !can.keepalive_retries,
+            bind_device: self.bind_device.is_some() && !can.bind_device,
+            user_timeout: self.user_timeout.is_some() && !can.user_timeout,
             local_address: self.local_address.is_some() && !can.local_address,
             send_buffer_size: self.send_buffer_size.is_some() && !can.send_buffer_size,
             recv_buffer_size: self.recv_buffer_size.is_some() && !can.recv_buffer_size,
@@ -309,10 +386,19 @@ mod tests {
 
     /// Every field of `TcpOpts` set to something a runtime would have to
     /// act on, paired with the `TcpOptsSupport` field that covers it.
-    fn all_six_set() -> TcpOpts {
+    ///
+    /// Named for a count until the count changed, which is why it is not
+    /// named for one any more: the pairing is what the tests below read,
+    /// and a name carrying a number goes stale the first time the struct
+    /// grows.
+    fn every_field_set() -> TcpOpts {
         TcpOpts {
             nodelay: true,
             keepalive: Some(Duration::from_secs(30)),
+            keepalive_interval: Some(Duration::from_secs(5)),
+            keepalive_retries: Some(3),
+            bind_device: Some("lo".to_owned()),
+            user_timeout: Some(Duration::from_secs(20)),
             local_address: Some(IpAddr::from([127, 0, 0, 1])),
             send_buffer_size: Some(4096),
             recv_buffer_size: Some(4096),
@@ -320,9 +406,20 @@ mod tests {
         }
     }
 
-    const NAMES: [&str; 6] = [
+    /// Every option name, in `TcpOpts`' own field order — which is the
+    /// order `UnsupportedTcpOpts::names` walks, so this list going stale
+    /// is the same failure as that one going stale.
+    ///
+    /// The length is inferred rather than written: it was `[&str; 6]`, and
+    /// a number in a type is one more thing to remember when the struct
+    /// grows. It grew.
+    const NAMES: &[&str] = &[
         "nodelay",
         "keepalive",
+        "keepalive_interval",
+        "keepalive_retries",
+        "bind_device",
+        "user_timeout",
         "local_address",
         "send_buffer_size",
         "recv_buffer_size",
@@ -337,11 +434,15 @@ mod tests {
         match i {
             0 => can.nodelay = false,
             1 => can.keepalive = false,
-            2 => can.local_address = false,
-            3 => can.send_buffer_size = false,
-            4 => can.recv_buffer_size = false,
-            5 => can.reuse_address = false,
-            _ => unreachable!("NAMES has six entries"),
+            2 => can.keepalive_interval = false,
+            3 => can.keepalive_retries = false,
+            4 => can.bind_device = false,
+            5 => can.user_timeout = false,
+            6 => can.local_address = false,
+            7 => can.send_buffer_size = false,
+            8 => can.recv_buffer_size = false,
+            9 => can.reuse_address = false,
+            _ => unreachable!("one arm per NAMES entry"),
         }
         can
     }
@@ -352,7 +453,7 @@ mod tests {
         // runtimes: they apply the whole set, so the check they don't call
         // could not have refused anything anyway.
         assert!(
-            all_six_set()
+            every_field_set()
                 .reject_unsupported(TcpOptsSupport::ALL)
                 .is_ok()
         );
@@ -372,24 +473,34 @@ mod tests {
 
     #[test]
     fn each_unappliable_option_is_named_on_its_own() {
-        // Six separate cases, not one: an implementation that named a
-        // fixed option, or the first one it found, would pass a test that
-        // only ever withheld `nodelay`.
+        // One case per option, not one case: an implementation that named
+        // a fixed option, or the first one it found, would pass a test
+        // that only ever withheld `nodelay`.
+        //
+        // **Compared as data and not as substrings of the message**, which
+        // is what the neighbour above already does and this one did not.
+        // It worked while no two names shared a prefix; `keepalive` and
+        // `keepalive_interval` ended that, and the failure was the test
+        // reporting that a withheld `keepalive_interval` had *also* named
+        // `keepalive` — which the message never did.
         for (i, name) in NAMES.iter().enumerate() {
-            let err = all_six_set()
+            let err = every_field_set()
                 .reject_unsupported(all_but(i))
                 .expect_err("the one option this runtime cannot apply was set");
-            let msg = err.to_string();
-            assert!(
-                msg.contains(name),
-                "the error for a withheld {name} must name it, got: {msg}"
+            let named: Vec<&str> = err
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
+                .expect("typed payload")
+                .names()
+                .collect();
+            assert_eq!(
+                named,
+                [*name],
+                "a withheld {name} must be the only option named"
             );
-            for other in NAMES.iter().filter(|o| *o != name) {
-                assert!(
-                    !msg.contains(other),
-                    "only {name} was withheld, but the error also names {other}: {msg}"
-                );
-            }
+            // And the message really does carry it, since that is what a
+            // caller who does not downcast will read.
+            assert!(err.to_string().contains(name), "{err}");
         }
     }
 
@@ -401,7 +512,7 @@ mod tests {
         // measurement rather than by reading. The option's name sends
         // them to their `connect` body; the constant's name sends them to
         // the defect.
-        let err = all_six_set()
+        let err = every_field_set()
             .reject_unsupported(all_but(0))
             .expect_err("nodelay was withheld");
         let msg = err.to_string();
@@ -410,7 +521,7 @@ mod tests {
 
     #[test]
     fn all_offending_options_are_named_not_only_the_first() {
-        let err = all_six_set()
+        let err = every_field_set()
             .reject_unsupported(TcpOptsSupport::NONE)
             .expect_err("nothing can be applied and everything was asked for");
         let msg = err.to_string();
@@ -425,15 +536,21 @@ mod tests {
         // reachable as data rather than only by parsing the message —
         // otherwise a caller wanting to react per-option has to scrape
         // `Display`.
-        let err = all_six_set()
-            .reject_unsupported(all_but(2))
-            .expect_err("local_address was withheld");
+        // Indexed through `NAMES` rather than by a literal, so that a
+        // field inserted above this one moves the index and the expected
+        // name together. It was `all_but(2)` against `["local_address"]`
+        // and four fields arrived above it.
+        const I: usize = 6;
+        let err = every_field_set()
+            .reject_unsupported(all_but(I))
+            .expect_err("one option was withheld");
         assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
         let payload = err
             .get_ref()
             .and_then(|e| e.downcast_ref::<UnsupportedTcpOpts>())
             .expect("the typed payload survives the trip through io::Error");
-        assert_eq!(payload.names().collect::<Vec<_>>(), ["local_address"]);
+        assert_eq!(payload.names().collect::<Vec<_>>(), [NAMES[I]]);
+        assert_eq!(NAMES[I], "local_address", "the index still names it");
     }
 
     #[test]
@@ -518,7 +635,7 @@ mod tests {
         // And the consequence, not only the constant: a caller who asks
         // such a runtime for all six gets all six refused by name, rather
         // than silently honoured on paper.
-        let err = all_six_set()
+        let err = every_field_set()
             .reject_unsupported(<Forgetful as TcpConnect>::APPLIES)
             .expect_err("a runtime that applies nothing must refuse everything asked of it");
         let payload = err

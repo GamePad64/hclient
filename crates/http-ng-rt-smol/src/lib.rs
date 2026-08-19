@@ -125,7 +125,39 @@ impl TcpConnect for Smol {
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
     /// understate this runtime — see `TcpConnect::APPLIES`.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL;
+    /// **No longer `TcpOptsSupport::ALL`, and that is the point.** Two of
+    /// the fields are Linux socket options with no counterpart elsewhere —
+    /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
+    /// those plus Cygwin — and a constant claiming them on macOS or
+    /// Windows would be a capability that lies, refused at the wrong
+    /// moment or not at all. `ALL` still means *every field*; it is simply
+    /// no longer a value this runtime can honestly claim on every target
+    /// it builds for.
+    ///
+    /// The direction of the `cfg` matters: an understated `APPLIES` costs
+    /// a caller a named `Unsupported` error, an overstated one costs them
+    /// an option silently not applied.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport {
+        bind_device: cfg!(any(
+            target_os = "android",
+            target_os = "fuchsia",
+            target_os = "linux"
+        )),
+        user_timeout: cfg!(any(
+            target_os = "android",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "cygwin"
+        )),
+        // `socket2::TcpKeepalive::with_retries` does not exist on these
+        // three, so neither does this claim.
+        keepalive_retries: !cfg!(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        )),
+        ..TcpOptsSupport::ALL
+    };
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<Self::Stream> {
         // Options are applied here, on the `socket2::Socket`, BEFORE the
@@ -218,8 +250,42 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
     if opts.nodelay {
         sock.set_tcp_nodelay(true)?;
     }
-    if let Some(d) = opts.keepalive {
-        sock.set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(d))?;
+    // **One call for three fields**, because `SO_KEEPALIVE` is switched on
+    // by `set_tcp_keepalive` and each part left unset keeps the OS's — see
+    // `TcpOpts::keepalive`, where that is stated because the field names do
+    // not say it.
+    if opts.keepalive.is_some()
+        || opts.keepalive_interval.is_some()
+        || opts.keepalive_retries.is_some()
+    {
+        let mut k = socket2::TcpKeepalive::new();
+        if let Some(d) = opts.keepalive {
+            k = k.with_time(d);
+        }
+        if let Some(d) = opts.keepalive_interval {
+            k = k.with_interval(d);
+        }
+        #[cfg(not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")))]
+        if let Some(n) = opts.keepalive_retries {
+            k = k.with_retries(n);
+        }
+        sock.set_tcp_keepalive(&k)?;
+    }
+    // Linux, Android and Fuchsia only, which is why `APPLIES` is a
+    // `cfg` and not a constant: on every other target a caller who set
+    // this is refused before the connect rather than having it ignored.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    if let Some(dev) = &opts.bind_device {
+        sock.bind_device(Some(dev.as_bytes()))?;
+    }
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_os = "cygwin"
+    ))]
+    if let Some(d) = opts.user_timeout {
+        sock.set_tcp_user_timeout(Some(d))?;
     }
     Ok(sock)
 }

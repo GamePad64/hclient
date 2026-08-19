@@ -229,6 +229,18 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
     const APPLIES: TcpOptsSupport = TcpOptsSupport {
         nodelay: true,
         keepalive: true,
+        // smoltcp has one keepalive knob — an interval, set by
+        // `set_keep_alive` — and no separate idle time or probe count, so
+        // there is nothing here to map these two onto. Declaring them
+        // would be the understating default's opposite: a claim to apply
+        // something that has no setter.
+        keepalive_interval: false,
+        keepalive_retries: false,
+        // Both are Linux socket options and this runtime has no sockets:
+        // smoltcp *is* the stack, and there is no interface table to bind
+        // to nor a kernel retransmission timer to bound.
+        bind_device: false,
+        user_timeout: false,
         local_address: false,
         send_buffer_size: false,
         recv_buffer_size: false,

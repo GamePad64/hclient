@@ -93,7 +93,39 @@ impl TcpConnect for Tokio {
     /// Every field, and `build_socket` below is where each one is applied.
     /// Stated rather than left to the trait's `NONE` default, which would
     /// understate this runtime — see `TcpConnect::APPLIES`.
-    const APPLIES: TcpOptsSupport = TcpOptsSupport::ALL;
+    /// **No longer `TcpOptsSupport::ALL`, and that is the point.** Two of
+    /// the fields are Linux socket options with no counterpart elsewhere —
+    /// `SO_BINDTODEVICE` on Linux/Android/Fuchsia, `TCP_USER_TIMEOUT` on
+    /// those plus Cygwin — and a constant claiming them on macOS or
+    /// Windows would be a capability that lies, refused at the wrong
+    /// moment or not at all. `ALL` still means *every field*; it is simply
+    /// no longer a value this runtime can honestly claim on every target
+    /// it builds for.
+    ///
+    /// The direction of the `cfg` matters: an understated `APPLIES` costs
+    /// a caller a named `Unsupported` error, an overstated one costs them
+    /// an option silently not applied.
+    const APPLIES: TcpOptsSupport = TcpOptsSupport {
+        bind_device: cfg!(any(
+            target_os = "android",
+            target_os = "fuchsia",
+            target_os = "linux"
+        )),
+        user_timeout: cfg!(any(
+            target_os = "android",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "cygwin"
+        )),
+        // `socket2::TcpKeepalive::with_retries` does not exist on these
+        // three, so neither does this claim.
+        keepalive_retries: !cfg!(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        )),
+        ..TcpOptsSupport::ALL
+    };
 
     async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<TokioIo> {
         // Options are applied on the `socket2::Socket` **once**, and the
@@ -150,8 +182,42 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
     if opts.nodelay {
         sock.set_tcp_nodelay(true)?;
     }
-    if let Some(d) = opts.keepalive {
-        sock.set_tcp_keepalive(&socket2::TcpKeepalive::new().with_time(d))?;
+    // **One call for three fields**, because `SO_KEEPALIVE` is switched on
+    // by `set_tcp_keepalive` and each part left unset keeps the OS's — see
+    // `TcpOpts::keepalive`, where that is stated because the field names do
+    // not say it.
+    if opts.keepalive.is_some()
+        || opts.keepalive_interval.is_some()
+        || opts.keepalive_retries.is_some()
+    {
+        let mut k = socket2::TcpKeepalive::new();
+        if let Some(d) = opts.keepalive {
+            k = k.with_time(d);
+        }
+        if let Some(d) = opts.keepalive_interval {
+            k = k.with_interval(d);
+        }
+        #[cfg(not(any(target_os = "openbsd", target_os = "redox", target_os = "solaris")))]
+        if let Some(n) = opts.keepalive_retries {
+            k = k.with_retries(n);
+        }
+        sock.set_tcp_keepalive(&k)?;
+    }
+    // Linux, Android and Fuchsia only, which is why `APPLIES` is a
+    // `cfg` and not a constant: on every other target a caller who set
+    // this is refused before the connect rather than having it ignored.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    if let Some(dev) = &opts.bind_device {
+        sock.bind_device(Some(dev.as_bytes()))?;
+    }
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_os = "cygwin"
+    ))]
+    if let Some(d) = opts.user_timeout {
+        sock.set_tcp_user_timeout(Some(d))?;
     }
     Ok(sock)
 }
@@ -319,5 +385,130 @@ mod tests {
             "TcpOpts::keepalive was not applied to the connected socket"
         );
         assert_eq!(<Tokio as TcpConnect>::APPLIES.keepalive, enabled);
+    }
+    /// **The four options added in v0.4, read back off the connected
+    /// socket** — the same principle as the two tests above and for the
+    /// same reason: `connect()` returning `Ok` proves nothing about
+    /// whether an option was applied, and `build_socket` silently ignoring
+    /// one is the exact defect this file's own history records.
+    ///
+    /// Each is compared against `APPLIES` as well as against the socket,
+    /// so the constant is checked by the test that measures the behaviour
+    /// rather than by nobody — which is what makes it a claim instead of a
+    /// wish, and what would catch a `cfg` that drifted from the code.
+    #[tokio::test]
+    async fn connects_with_the_keepalive_parts_the_device_and_the_user_timeout() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..8 {
+                if l.accept().is_err() {
+                    break;
+                }
+            }
+        });
+
+        // The keepalive parts, together, because `set_tcp_keepalive` takes
+        // them as one value and a test that set them apart would not
+        // exercise the builder chain that assembles it.
+        let opts = TcpOpts {
+            keepalive: Some(Duration::from_secs(30)),
+            keepalive_interval: Some(Duration::from_secs(7)),
+            keepalive_retries: Some(4),
+            ..Default::default()
+        };
+        let s = Tokio.connect(addr, &opts).await.expect("connect");
+        let sock = socket2::SockRef::from(s.get_ref());
+        assert!(sock.keepalive().expect("keepalive query"));
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            assert_eq!(
+                sock.tcp_keepalive_interval().expect("interval query"),
+                Duration::from_secs(7)
+            );
+            assert_eq!(sock.tcp_keepalive_retries().expect("retries query"), 4);
+        }
+        // `const`-evaluable, so clippy asks for a `const` block — which
+        // is the right shape anyway: this is a claim about the constant
+        // and not about the socket this test just opened.
+        const { assert!(<Tokio as TcpConnect>::APPLIES.keepalive_interval) };
+
+        // **The interval alone switches keepalive on**, which is what
+        // `TcpOpts::keepalive`'s doc says and is otherwise a surprise: the
+        // field named `keepalive` reads like the on/off switch and is the
+        // idle time.
+        let s = Tokio
+            .connect(
+                addr,
+                &TcpOpts {
+                    keepalive_interval: Some(Duration::from_secs(9)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("connect");
+        assert!(
+            socket2::SockRef::from(s.get_ref())
+                .keepalive()
+                .expect("keepalive query"),
+            "an interval with no idle time still enables SO_KEEPALIVE"
+        );
+
+        // `SO_BINDTODEVICE` needs `CAP_NET_RAW` on Linux, so the assertion
+        // is on the *outcome being consistent with the claim* rather than
+        // on success: where the option applies and the process may use it,
+        // the socket reports the interface back; where the process may
+        // not, the connect fails with `EPERM` and that is the kernel's
+        // answer rather than this crate's. What must never happen is a
+        // silent success with nothing bound, which is what the readback
+        // rules out.
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            const { assert!(<Tokio as TcpConnect>::APPLIES.bind_device) };
+            let opts = TcpOpts {
+                bind_device: Some("lo".to_owned()),
+                ..Default::default()
+            };
+            match Tokio.connect(addr, &opts).await {
+                Ok(s) => {
+                    let got = socket2::SockRef::from(s.get_ref())
+                        .device()
+                        .expect("device query");
+                    assert_eq!(
+                        got.as_deref(),
+                        Some(&b"lo"[..]),
+                        "bound to a device and the socket does not say so"
+                    );
+                }
+                Err(e) => assert_eq!(
+                    e.kind(),
+                    std::io::ErrorKind::PermissionDenied,
+                    "the only acceptable failure is the kernel refusing the \
+                     capability: {e:?}"
+                ),
+            }
+        }
+
+        // `TCP_USER_TIMEOUT` has no `socket2` getter, so what is checked is
+        // that setting it neither fails nor is refused — and that the
+        // capability agrees. An assertion that it *took effect* would need
+        // a peer that stops acknowledging, which is a different test in a
+        // different crate.
+        #[cfg(any(
+            target_os = "android",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "cygwin"
+        ))]
+        {
+            const { assert!(<Tokio as TcpConnect>::APPLIES.user_timeout) };
+            let opts = TcpOpts {
+                user_timeout: Some(Duration::from_secs(20)),
+                ..Default::default()
+            };
+            opts.reject_unsupported(<Tokio as TcpConnect>::APPLIES)
+                .expect("declared, so not refused");
+            Tokio.connect(addr, &opts).await.expect("connect");
+        }
     }
 }

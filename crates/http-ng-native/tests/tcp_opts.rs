@@ -123,10 +123,14 @@ fn native<const MISSING: usize>() -> Native<FakeRt<MISSING>, Rustls, SystemDns<T
 /// on. Each test below starts from this and keeps exactly one field,
 /// which is what makes "the error names this option and no other"
 /// checkable at all.
-fn all_six_set() -> TcpOpts {
+fn every_field_set() -> TcpOpts {
     TcpOpts {
         nodelay: true,
         keepalive: Some(Duration::from_secs(30)),
+        keepalive_interval: Some(Duration::from_secs(5)),
+        keepalive_retries: Some(3),
+        bind_device: Some("lo".to_owned()),
+        user_timeout: Some(Duration::from_secs(20)),
         local_address: Some(IpAddr::from([127, 0, 0, 1])),
         send_buffer_size: Some(4096),
         recv_buffer_size: Some(4096),
@@ -174,7 +178,7 @@ fn nodelay_is_refused_by_name() {
 #[test]
 fn keepalive_is_refused_by_name() {
     let opts = TcpOpts {
-        keepalive: all_six_set().keepalive,
+        keepalive: every_field_set().keepalive,
         ..TcpOpts::default()
     };
     assert_eq!(refused_options::<1>(opts), ["keepalive"]);
@@ -183,7 +187,7 @@ fn keepalive_is_refused_by_name() {
 #[test]
 fn local_address_is_refused_by_name() {
     let opts = TcpOpts {
-        local_address: all_six_set().local_address,
+        local_address: every_field_set().local_address,
         ..TcpOpts::default()
     };
     assert_eq!(refused_options::<2>(opts), ["local_address"]);
@@ -192,7 +196,7 @@ fn local_address_is_refused_by_name() {
 #[test]
 fn send_buffer_size_is_refused_by_name() {
     let opts = TcpOpts {
-        send_buffer_size: all_six_set().send_buffer_size,
+        send_buffer_size: every_field_set().send_buffer_size,
         ..TcpOpts::default()
     };
     assert_eq!(refused_options::<3>(opts), ["send_buffer_size"]);
@@ -201,7 +205,7 @@ fn send_buffer_size_is_refused_by_name() {
 #[test]
 fn recv_buffer_size_is_refused_by_name() {
     let opts = TcpOpts {
-        recv_buffer_size: all_six_set().recv_buffer_size,
+        recv_buffer_size: every_field_set().recv_buffer_size,
         ..TcpOpts::default()
     };
     assert_eq!(refused_options::<4>(opts), ["recv_buffer_size"]);
@@ -227,7 +231,7 @@ fn a_runtime_that_applies_everything_refuses_nothing() {
         TcpOptsSupport::ALL,
         "the shipped tokio runtime is the control precisely because it applies all six"
     );
-    t.tcp_opts(all_six_set())
+    t.tcp_opts(every_field_set())
         .expect("a runtime with APPLIES = ALL has nothing to refuse");
 }
 
