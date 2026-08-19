@@ -9,7 +9,7 @@
 
 use http_ng::Client;
 use http_ng_dns::IpLiteralOnly;
-use http_ng_native::{HttpConnect, Native, Proxy, Socks5};
+use http_ng_native::{HttpConnect, Native, Proxy, Socks4, Socks5};
 use http_ng_rt_tokio::Tokio;
 use http_ng_tls::NoTls;
 use std::io::{Read, Write};
@@ -1015,4 +1015,186 @@ async fn a_bypass_belongs_to_its_own_proxy_and_falls_through_to_the_next() {
         only_seen.recv_timeout(Duration::from_millis(300)).is_err(),
         "a list that runs out is direct"
     );
+}
+
+// ── SOCKS4 / SOCKS4a ────────────────────────────────────────────────────
+
+/// A SOCKS4a proxy that reports the request it decoded and then answers
+/// HTTP itself, in `socks5_proxy`'s shape and for its reason: the origin's
+/// own behaviour is not what these tests are about.
+///
+/// `cd` is what it replies with, so a test can drive the refusal path.
+fn socks4_proxy(cd: u8) -> (SocketAddr, mpsc::Receiver<(String, String, u16)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            // VN, CD, DSTPORT(2), DSTIP(4) — fixed, then two
+            // NUL-terminated strings.
+            let mut head = [0u8; 8];
+            if s.read_exact(&mut head).is_err() {
+                continue;
+            }
+            let read_cstr = |s: &mut TcpStream| {
+                let mut out = Vec::new();
+                let mut b = [0u8; 1];
+                while s.read_exact(&mut b).is_ok() && b[0] != 0 {
+                    out.push(b[0]);
+                }
+                String::from_utf8_lossy(&out).into_owned()
+            };
+            let userid = read_cstr(&mut s);
+            // Only a SOCKS4a request has a hostname, and `0.0.0.x` with a
+            // non-zero last byte is exactly how the wire says so.
+            let host = if head[4..8] == [0, 0, 0, 1] {
+                read_cstr(&mut s)
+            } else {
+                String::new()
+            };
+            let port = u16::from_be_bytes([head[2], head[3]]);
+            let _ = tx.send((userid, host, port));
+
+            // VN=0 — zero, not four, which is the detail every
+            // implementation gets wrong once.
+            let _ = s.write_all(&[0x00, cd, 0, 0, 0, 0, 0, 0]);
+            if cd == 90 {
+                // Read the request before answering, as `socks5_proxy`
+                // does: a fixture that writes a response and drops the
+                // socket while the client is still writing gets an RST,
+                // and the RST discards the buffered response — which
+                // arrives as `ConnectionWentAwayBeforeTheRequest` and
+                // looks like a defect in the tunnel.
+                let _ = read_head(&mut s);
+                let _ = s.write_all(ok_response());
+            }
+            let _ = s.flush();
+        }
+    });
+    (addr, rx)
+}
+
+/// **The whole SOCKS4a exchange**: the userid and the *unresolved host*
+/// reach the proxy, and the response comes back through the tunnel.
+///
+/// The host is the assertion that matters. A connector that resolved
+/// locally and sent an address would be leaking exactly the DNS a proxy
+/// user is often there to hide — `docs/proxy-design.md`'s reason a proxy
+/// is not a `TcpConnect` decorator — and here it would also be sending
+/// SOCKS4 rather than 4a.
+#[tokio::test]
+async fn a_socks4a_tunnel_carries_the_userid_and_the_unresolved_host() {
+    let (proxy, seen) = socks4_proxy(90);
+    let transport = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
+        Socks4::new().userid("alice").expect("no NUL"),
+        proxy.ip().to_string(),
+        proxy.port(),
+    ));
+    let client = Client::builder(transport).build().expect("build");
+
+    let text = tokio::time::timeout(BOUND, async {
+        client
+            .get("http://origin.invalid:8080/x")
+            .send()
+            .await?
+            .collect()
+            .await
+    })
+    .await
+    .expect("must not hang")
+    .expect("the tunnel carries the exchange")
+    .text()
+    .expect("utf-8");
+    assert_eq!(text, "hi");
+
+    let (userid, host, port) = seen.recv_timeout(BOUND).expect("the proxy decoded it");
+    assert_eq!(userid, "alice");
+    assert_eq!(
+        host, "origin.invalid",
+        "by name — a resolved address here would be a DNS leak and a \
+         SOCKS4 request where 4a was meant"
+    );
+    assert_eq!(port, 8080);
+}
+
+/// A refusal is a typed `Connect` error naming the `CD`, never a response.
+/// `91` is *rejected or failed*, the value a proxy sends when it will not
+/// or cannot reach the origin.
+#[tokio::test]
+async fn a_socks4_refusal_is_a_typed_connect_error() {
+    use http_ng_native::Socks4Refused;
+
+    let (proxy, _seen) = socks4_proxy(91);
+    let transport = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
+        Socks4::new(),
+        proxy.ip().to_string(),
+        proxy.port(),
+    ));
+    let client = Client::builder(transport).build().expect("build");
+
+    let err = tokio::time::timeout(BOUND, client.get("http://origin.invalid/x").send())
+        .await
+        .expect("must not hang")
+        .expect_err("the proxy refused");
+    assert_eq!(*err.kind(), http_ng_core::ErrorKind::Connect, "{err:?}");
+    let refused = std::error::Error::source(&err)
+        .and_then(|s| s.downcast_ref::<Socks4Refused>())
+        .unwrap_or_else(|| panic!("the typed refusal carrying CD: {err:?}"));
+    assert_eq!(refused.cd, 91);
+}
+
+/// **The reply's version byte is zero, not four**, and a proxy that sends
+/// `4` there is refused by name rather than being read as a grant.
+#[tokio::test]
+async fn a_reply_version_of_four_is_refused_rather_than_read_as_a_grant() {
+    use http_ng_native::Socks4HandshakeError;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut s) = conn else { break };
+            let mut sink = [0u8; 64];
+            let _ = s.read(&mut sink);
+            // VN=4 where the protocol says 0, and CD=90 — a grant in every
+            // other respect, so only the version check can catch it.
+            let _ = s.write_all(&[0x04, 90, 0, 0, 0, 0, 0, 0]);
+            let _ = s.write_all(ok_response());
+            let _ = s.flush();
+            // Held open: the client must fail on the version byte rather
+            // than on a closed socket, or the assertion below would pass
+            // for the wrong reason.
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+
+    let transport = Native::new(Tokio, NoTls, IpLiteralOnly).proxy(Proxy::new(
+        Socks4::new(),
+        addr.ip().to_string(),
+        addr.port(),
+    ));
+    let client = Client::builder(transport).build().expect("build");
+    let err = tokio::time::timeout(BOUND, client.get("http://origin.invalid/x").send())
+        .await
+        .expect("must not hang")
+        .expect_err("VN must be 0");
+    assert_eq!(
+        std::error::Error::source(&err).and_then(|s| s.downcast_ref::<Socks4HandshakeError>()),
+        Some(&Socks4HandshakeError::BadReplyVersion(4)),
+        "{err:?}"
+    );
+}
+
+/// A `NUL` in the userid is refused at configuration rather than
+/// truncating the field on the wire — where the bytes after it would be
+/// read as the hostname.
+#[test]
+fn a_nul_in_the_userid_is_refused_where_it_is_written() {
+    use http_ng_native::Socks4HandshakeError;
+    assert_eq!(
+        Socks4::new().userid("al\0ice").map(|_| ()),
+        Err(Socks4HandshakeError::NulInUserid)
+    );
+    assert!(Socks4::new().userid("alice").is_ok());
 }

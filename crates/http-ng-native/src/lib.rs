@@ -63,7 +63,10 @@ pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 pub use proxy::{Approach, NoProxy, Proxy, ProxyProtocol, ProxyScheme, ProxySpokeFirst};
 #[cfg(feature = "proxy")]
-pub use proxy::{HttpConnect, ProxyRefused, Socks5, Socks5HandshakeError, Socks5Refused};
+pub use proxy::{
+    HttpConnect, ProxyRefused, Socks4, Socks4HandshakeError, Socks4Refused, Socks5,
+    Socks5HandshakeError, Socks5Refused,
+};
 pub use staged::{Refused, Staged, StagedConnect};
 pub use upgrade::{EndedBeforeTheResponse, NotSwitchingProtocols, Upgrading};
 

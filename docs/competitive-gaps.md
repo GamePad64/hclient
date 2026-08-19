@@ -203,7 +203,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | HTTP `CONNECT` tunnel | Y | Y | Y | Y | (browser's) | |
 | absolute-form for `http://` | Y | Y | — | Y | — | |
 | SOCKS5 | Y | Y\* | Y\* | Y | — | rq behind `socks`; uq behind `socks-proxy` |
-| SOCKS4/4a | **N** | Y | — | Y | — | `reqwest-0.13.4/src/proxy.rs:130` accepts `socks4`/`socks4a` |
+| SOCKS4/4a | Y | Y | — | Y | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. See G7 |
 | SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`http-ng-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
 | read the proxy from the environment | **N** | Y | Y\* | Y | n/a | **refused as policy** — see §4 |
 | `NO_PROXY` matching | Y\* | Y | — | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
@@ -457,8 +457,22 @@ exists: a host bypassed on an `https`-only proxy would take an `http://`
 request direct, past an `http` proxy that was never in the running. With
 one proxy — the overwhelming majority — the two rules coincide exactly.
 
-Still absent: **SOCKS4/4a**, and **reading the environment**, which stays
-refused as policy.
+**SOCKS4/4a is in too**, as one type: 4a is 4's own extension, signalled
+inside a SOCKS4 request by a `DSTIP` of `0.0.0.x` that cannot be a real
+address, so there is no version byte to distinguish them and a second type
+would be a choice the wire does not offer. This connector always sends the
+hostname form, because that is what `ProxyProtocol::tunnel` is given — the
+host is not resolved locally, which is the DNS leak a proxy user is often
+there to avoid.
+
+`Socks5` remains the answer unless a server forces otherwise, and the
+reasons are the protocol's: **no IPv6**, since the address field is four
+bytes, and **no authentication**, only a `USERID` the proxy may check
+against an identd. Said where the type is, and the `USERID` is
+deliberately not marked sensitive — marking it would claim a secrecy the
+protocol does not have.
+
+Still absent: **reading the environment**, which stays refused as policy.
 
 ### G8. HTTP/2 has no tuning surface — **closed for the settings frame**
 

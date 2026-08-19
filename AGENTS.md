@@ -1323,6 +1323,24 @@ on the proxy. It is written correctly anyway for the reason the `proxy`
 field is in `PoolKey` at all: a pool shared between transports ends the
 coincidence.
 
+**SOCKS4 and SOCKS4a are one type**, and that is the wire's decision rather
+than ours: 4a is 4's own extension, signalled inside a SOCKS4 request by a
+`DSTIP` of `0.0.0.x` — invalid as an address, therefore meaning *a hostname
+follows the userid*. There is no version byte to tell them apart and no
+handshake to negotiate in, so a second type would be a choice nobody can
+make. The hostname form goes out always, because that is what
+`ProxyProtocol::tunnel` is handed: resolving locally would leak the DNS a
+proxy user is often there to hide, which is the same reason a proxy is not
+a `TcpConnect` decorator.
+
+`Socks5` is the answer unless a server forces otherwise, for the protocol's
+own reasons: **no IPv6**, the address field being four bytes, and **no
+authentication**, only a `USERID` the proxy may check against an identd.
+The `USERID` is deliberately not marked sensitive — marking it would claim
+a secrecy the protocol does not have. Two details every implementation gets
+wrong once, both pinned: the reply's version byte is **zero**, not four,
+and the grant is `CD = 90`, not `0`.
+
 ### Four more socket options, and `APPLIES` stopped being a constant
 
 `TcpOpts` gains `bind_device`, `keepalive_interval`, `keepalive_retries`
