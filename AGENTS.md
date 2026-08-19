@@ -1284,6 +1284,53 @@ mutation surviving the whole suite until a fixture reached it.
 `docs/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
+### A caller gets a say over each redirect hop, after the policy rather than inside it
+
+`ClientBuilder::redirect_predicate(|hop| ..)` -> `RedirectVerdict::{Follow,
+Stop, Refuse}`. `RedirectPolicy` answers *how many* and this answers
+*whether this one* — no hop to a private address, none to another host,
+none off `https`.
+
+**It is not a third `RedirectPolicy` variant, and that was the obvious
+shape.** Two things kill it. `RedirectPolicy` lives in `http-ng-proto`,
+which is sans-io and clockless, and `redirect::decide` is a pure function
+of six values — a closure variant makes it *pure except for whatever the
+caller passed*. And `RedirectPolicy` is `Copy + PartialEq + Eq`, read out
+of a request's extensions with `.copied()`; a boxed closure ends all three.
+
+So `decide` is untouched and the predicate is asked **after** it, only
+about a hop it already approved — which is the better order rather than a
+concession, because what a predicate wants to see is `decide`'s *output*:
+the resolved target (a relative `Location` is already absolute), the
+method after any downgrade to `GET`, and `cross_origin`. That last is
+`Follow::strip_sensitive` handed over rather than recomputed, so a
+predicate refusing cross-origin hops and the client dropping
+`Authorization` cannot disagree about what an origin is.
+
+**Three verdicts, because two would lose the distinction at the one place
+it matters.** `redirect.rs` already states the rule — *"do not follow" is a
+`Stop`, not an error: the 3xx is the caller's answer* — and a predicate
+that could only `Stop` would make an SSRF guard hand back a `3xx` the
+caller must then remember to check. A caller who forgets gets a silent
+success where they asked for a refusal, which is this file's *capability
+that lies* one level up.
+
+Two more decisions. **`Fn`, not `FnMut`**: the closure is shared by every
+clone of the client and every request in flight, so `FnMut` means a lock
+taken on every hop of every request for the sake of predicates that mostly
+hold no state. And **no per-request form**, unlike `RedirectPolicy`: a
+per-request setting travels in `http::Extensions`, and `AllowEarlyData` is
+the type that made *may an extension cross an origin* a live question with
+a real answer — where a predicate is a rule about where *this client* may
+be sent.
+
+The `Send + Sync` is amendment C12's third site and deliberately not a new
+amendment: same argument, a value the caller owns reaching `Client` by
+erasure rather than by a type parameter, bound on the opt-in call and
+nowhere else. C10's rule against reusing an amendment by gesture is about
+bounds demanded by *someone else's* trait, where the argument turns on
+which external contract is being satisfied.
+
 ### `text()` learned a charset — as a second method, not a smarter first one
 
 `Collected::text_with_charset`, behind the `charset` feature, off by

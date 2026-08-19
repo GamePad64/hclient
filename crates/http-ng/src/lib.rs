@@ -36,6 +36,7 @@ mod deadline;
 mod decompress;
 mod erased;
 mod limit;
+mod predicate;
 /// Mock transport and controllable timer, re-exported from `http-ng-mock`.
 ///
 /// The doubles live in their own crate because a `Transport` implementation
@@ -60,6 +61,7 @@ pub use erased::AnyList;
 #[cfg(feature = "cache")]
 pub use erased::AnyStore;
 pub use limit::{Limited, ResponseTooLarge};
+pub use predicate::{ProposedRedirect, RedirectPredicate, RedirectRefused, RedirectVerdict};
 
 /// The response body a [`Client`] hands back: the transport's own body,
 /// with this client's three wrappers around it **in the order the client

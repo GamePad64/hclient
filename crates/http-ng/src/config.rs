@@ -35,6 +35,13 @@ pub struct Config {
     /// the caller wrote on the request is a decision about that request,
     /// and a default is a decision about the client.
     pub default_headers: http::HeaderMap,
+    /// A caller's own say over each redirect hop, or `None` for none.
+    ///
+    /// Consulted **after** `redirect::decide` and only about a hop it
+    /// already approved, which is why it is here and not a variant of
+    /// [`RedirectPolicy`] — see [`crate::predicate`] for that argument and
+    /// for the `Send + Sync` bound it costs.
+    pub redirect_predicate: Option<crate::RedirectPredicate>,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -311,9 +318,17 @@ pub fn check_supported(
         // to refuse. `http-ng-fetch` forbids `User-Agent` among others,
         // because the browser writes them.
         default_headers,
+        // Checked, and by the same rule as `redirect` two fields up rather
+        // than a new one: a predicate is a redirect decision, and a
+        // backend that follows the chain internally never asks it.
+        // Refused under its own name, because a caller who wrote
+        // `redirect_predicate` should not be told `redirect_policy` was
+        // the problem.
+        redirect_predicate,
         cookies,
         cache,
     } = cfg;
+    check_redirect_predicate_supported(redirect_predicate, caps, backend)?;
     check_default_headers_supported(default_headers, caps, backend)?;
     check_timeouts_supported(timeouts, caps, backend)?;
     check_redirect_supported(redirect, caps, backend)?;
@@ -585,6 +600,27 @@ fn check_default_headers_supported(
                 backend,
             });
         }
+    }
+    Ok(())
+}
+
+/// A redirect predicate against a transport that follows redirects itself
+/// is an error, for `check_redirect_supported`'s reason exactly: under
+/// [`RedirectSupport::Internal`] the chain is already walked by the time
+/// anything is handed back, so the predicate would never be asked and a
+/// caller's rule about where this client may be sent would silently not
+/// apply. That is the worst direction for this particular setting to fail
+/// in — the settings people write here are the ones that refuse a hop.
+pub(crate) fn check_redirect_predicate_supported(
+    predicate: &Option<crate::RedirectPredicate>,
+    caps: &Capabilities,
+    backend: &'static str,
+) -> Result<(), UnsupportedCapability> {
+    if predicate.is_some() && caps.redirects == RedirectSupport::Internal {
+        return Err(UnsupportedCapability {
+            what: "redirect_predicate",
+            backend,
+        });
     }
     Ok(())
 }

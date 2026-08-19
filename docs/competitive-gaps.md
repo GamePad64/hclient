@@ -217,7 +217,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 |---|---|---|---|---|---|---|
 | redirect limit | Y | Y | Y | Y | (browser's) | |
 | distinguish "do not follow" from "follow zero hops" | **Y** | Y | — | N | N | `RedirectPolicy::None` vs `Limited(0)` |
-| **custom redirect predicate** | **N** | Y | — | N | N | `reqwest-0.13.4/src/redirect.rs:102` |
+| **custom redirect predicate** | Y | Y | — | N | N | closed — `ClientBuilder::redirect_predicate`, asked **after** the policy about a hop it already approved, so it is handed the resolved target and the origin answer that drives credential stripping. Three verdicts where `reqwest-0.13.4/src/redirect.rs:102` also has three. See G9 |
 | strip `Authorization` across origins | Y | Y | — | Y\* | (browser's) | ng also strips `AllowEarlyData` there |
 | cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
 | **public-suffix rules in the jar** | **Y** | **N** | **N** | Y\* | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it |
@@ -453,22 +453,37 @@ mechanically small. *Rules*: the capability floor — none of these change a
 leak, which keepalive does not need since the ping is answered by whoever is
 polling. *Forbidden?* No. It is a plain absence.
 
-### G9. No custom redirect predicate
+### G9. No custom redirect predicate — **closed**
 
-`RedirectPolicy` is `None | Limited(u8)` (`http-ng-proto/src/redirect.rs:24`).
-reqwest has `Policy::custom(closure)`, which is how a caller refuses a
-redirect to a private address, or to a different host, or stops on a
-particular status.
+`ClientBuilder::redirect_predicate(|hop| ..)`, answering
+[`RedirectVerdict`]`::{Follow, Stop, Refuse}`.
 
-*What it takes*: a third variant carrying a function. *Rules*: the closure
-must not be bounded `Send + Sync` — the WebSocket seam's `!Send` allowance
-and the `Rc`-holding hook are the precedent, and the `1xx` work shows what
-it costs when an upstream crate forces the bound anyway. Since the redirect
-decision is made inside `Client::run` and nothing is spawned around it, no
-bound is needed. `RedirectPolicy` lives in the sans-io `http-ng-proto`,
-which is the interesting constraint: a closure there is fine, but it must
-stay clockless and io-free, which a redirect predicate naturally is.
-*Forbidden?* No.
+**The shape this document proposed — a third `RedirectPolicy` variant
+carrying a function — turned out to be wrong twice**, and finding out why
+was most of the work. `RedirectPolicy` lives in `http-ng-proto`, which is
+sans-io and clockless, and `redirect::decide` is a pure function of six
+values; a closure variant would make it *pure except for whatever the
+caller passed*. And `RedirectPolicy` is `Copy + PartialEq + Eq`, read out
+of a request's extensions with `.copied()` — a boxed closure ends all
+three.
+
+So `decide` is untouched and the predicate is asked **after** it, only
+about a hop it already approved. That ordering turned out to be the useful
+one rather than a concession: the predicate is handed the *resolved*
+target, the possibly-downgraded method, and `cross_origin` — which is the
+same value that drives the credential stripping, not a second opinion
+about what an origin is — and none of those exist before `decide` runs.
+
+**Three verdicts and not two**, because `Stop` alone would make an SSRF
+guard hand back a `3xx` the caller must remember to check, and a caller who
+forgets gets a silent success where they asked for a refusal.
+
+This document's rule prediction was half right. It said no `Send` bound
+was needed since nothing is spawned around the decision, and that is true
+of the *call* — but the closure is stored in a `Client`, which is meant to
+cross a `tokio::spawn`, so an unbounded one would make **every** `Client`
+`!Send`, predicate or not. The bound is on the opt-in setter alone, spec
+amendment C12, which is the same answer G6 reached one gap over.
 
 ### G10. No response body size limit — **closed**
 

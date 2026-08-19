@@ -2247,5 +2247,19 @@ about. `pluggable_stores.rs` asserts the negation.
 It is `Native::multiplexed()`'s shape: the bound sits on the opt-in call,
 no signature anyone else meets acquires one, and a caller handing in a
 `!Send` list gets `E0277` on the line where they asked. The marker is
-`send-bound-exception: amendment-C12`, and the sites are `erased.rs` and
-the two `where` clauses in `crates/http-ng/src/client.rs`.
+`send-bound-exception: amendment-C12`, and the sites are `erased.rs`,
+`predicate.rs`, and the three `where` clauses in
+`crates/http-ng/src/client.rs`.
+
+**A third site joined after this was written, and it belongs to this
+amendment rather than to one of its own**: `ClientBuilder::
+redirect_predicate` erases a caller's closure into `RedirectPredicate` for
+exactly the reason above, and the alternative — `Client<T, Tm, R>` — is
+the same arity change rejected here. C10's rule about not reusing an
+amendment by gesture is about a bound demanded by *someone else's* trait,
+where the argument turns on which external contract is being satisfied.
+This bound is chosen here, by us, for one purpose, and a second amendment
+restating that purpose would be the copy C10 is warning against. What a
+future site must share to cite C12 is the whole argument: a value the
+caller owns, reaching `Client` by erasure rather than by a type
+parameter, with the bound on the opt-in call and nowhere else.
