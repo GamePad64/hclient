@@ -1056,6 +1056,538 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "hclient"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "brotli-decompressor",
+ "bytes",
+ "encoding_rs",
+ "flate2",
+ "futures-core",
+ "futures-executor",
+ "getrandom 0.4.3",
+ "hclient-cache",
+ "hclient-cookie",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-dns-system",
+ "hclient-fetch",
+ "hclient-mock",
+ "hclient-native",
+ "hclient-proto",
+ "hclient-rt",
+ "hclient-rt-smol",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-rustls",
+ "http",
+ "http-body",
+ "http-body-util",
+ "md-5",
+ "multer",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "wasm-bindgen-test",
+ "web-sys",
+ "zstd",
+]
+
+[[package]]
+name = "hclient-cache"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "http",
+ "httpdate",
+ "rstest",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-cookie"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "http",
+ "httpdate",
+ "proptest",
+ "public-suffix",
+ "rstest",
+ "thiserror",
+ "time",
+]
+
+[[package]]
+name = "hclient-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "http-body",
+ "http-body-util",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-dns"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "dns-message-parser",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "hclient-core",
+ "rstest",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-dns-doh"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "dns-message-parser",
+ "futures-core",
+ "futures-util",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-native",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-rustls",
+ "http",
+ "http-body",
+ "http-body-util",
+ "rstest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "hclient-dns-hickory"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "hclient-core",
+ "hclient-dns",
+ "hickory-resolver",
+ "rstest",
+ "tokio",
+]
+
+[[package]]
+name = "hclient-dns-system"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "dns-message-parser",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-rt",
+ "rstest",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hclient-fetch"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "hclient",
+ "hclient-core",
+ "http",
+ "http-body",
+ "js-sys",
+ "thiserror",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "wasm-streams",
+ "web-sys",
+]
+
+[[package]]
+name = "hclient-h3"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-executor",
+ "futures-util",
+ "h3",
+ "h3-quinn",
+ "hclient",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-dns-system",
+ "hclient-quinn",
+ "hclient-rt",
+ "hclient-rt-smol",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-quic",
+ "hclient-tls-rustls",
+ "http",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
+ "quinn",
+ "quinn-proto",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "hclient-idn"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "idna",
+ "objc2-foundation",
+ "rstest",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hclient-mock"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-executor",
+ "hclient-core",
+ "http",
+ "http-body",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-native"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-executor",
+ "futures-sink",
+ "futures-util",
+ "h2",
+ "hclient",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-dns-system",
+ "hclient-proto",
+ "hclient-rt",
+ "hclient-rt-smol",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-rustls",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "hclient-proto"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "bytes",
+ "hclient-idn",
+ "http",
+ "proptest",
+ "rstest",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "hclient-quinn"
+version = "0.1.0"
+dependencies = [
+ "hclient-rt",
+ "pin-project-lite",
+ "quinn",
+]
+
+[[package]]
+name = "hclient-rt"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "futures-io",
+ "hclient-core",
+ "hyper",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-rt-embassy"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-net-tuntap",
+ "embassy-time",
+ "hclient",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-native",
+ "hclient-rt",
+ "hclient-tls",
+ "heapless",
+ "hyper",
+ "log",
+ "smoltcp",
+]
+
+[[package]]
+name = "hclient-rt-pair-check"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "hclient-rt",
+ "hclient-rt-smol",
+ "hclient-rt-tokio",
+ "hyper",
+ "tokio",
+]
+
+[[package]]
+name = "hclient-rt-smol"
+version = "0.1.0"
+dependencies = [
+ "async-executor",
+ "async-io",
+ "async-net",
+ "blocking",
+ "futures-executor",
+ "futures-lite",
+ "hclient-rt",
+ "hyper",
+ "libc",
+ "quinn-udp",
+ "socket2",
+]
+
+[[package]]
+name = "hclient-rt-tokio"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "hclient-rt",
+ "hyper",
+ "quinn-udp",
+ "socket2",
+ "tokio",
+]
+
+[[package]]
+name = "hclient-select"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "h3",
+ "h3-quinn",
+ "hclient",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-dns-system",
+ "hclient-h3",
+ "hclient-native",
+ "hclient-rt",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-rustls",
+ "http",
+ "http-body",
+ "http-body-util",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "hclient-tls"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "hclient-core",
+ "hyper",
+]
+
+[[package]]
+name = "hclient-tls-native-tls"
+version = "0.1.0"
+dependencies = [
+ "async-native-tls",
+ "futures-executor",
+ "futures-io",
+ "hclient-core",
+ "hclient-rt",
+ "hclient-tls",
+ "hyper",
+ "native-tls",
+]
+
+[[package]]
+name = "hclient-tls-quic"
+version = "0.1.0"
+dependencies = [
+ "hclient-core",
+ "hclient-tls",
+ "quinn-proto",
+]
+
+[[package]]
+name = "hclient-tls-rustls"
+version = "0.1.0"
+dependencies = [
+ "futures-executor",
+ "hclient-core",
+ "hclient-rt",
+ "hclient-rt-smol",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-quic",
+ "http-body-util",
+ "hyper",
+ "quinn-proto",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "socket2",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "hclient-tower"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-executor",
+ "hclient",
+ "hclient-core",
+ "hclient-mock",
+ "http",
+ "http-body",
+ "http-body-util",
+ "tower",
+ "tower-service",
+]
+
+[[package]]
+name = "hclient-tungstenite"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-executor",
+ "futures-sink",
+ "futures-util",
+ "hclient",
+ "hclient-core",
+ "hclient-dns",
+ "hclient-dns-system",
+ "hclient-native",
+ "hclient-rt",
+ "hclient-rt-tokio",
+ "hclient-tls",
+ "hclient-tls-rustls",
+ "http",
+ "http-body-util",
+ "hyper",
+ "thiserror",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
+name = "hclient-urlsession"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "bytes",
+ "futures-executor",
+ "hclient",
+ "hclient-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "objc2",
+ "objc2-foundation",
+ "thiserror",
+]
+
+[[package]]
+name = "hclient-wasi"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "hclient",
+ "hclient-core",
+ "http",
+ "http-body",
+ "serde_json",
+ "thiserror",
+ "wasip3",
+]
+
+[[package]]
+name = "hclient-webtransport"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "h3",
+ "h3-quinn",
+ "hclient-core",
+ "http",
+ "quinn",
+ "rcgen",
+ "rustls",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1178,538 +1710,6 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
-]
-
-[[package]]
-name = "http-ng"
-version = "0.1.0"
-dependencies = [
- "brotli",
- "brotli-decompressor",
- "bytes",
- "encoding_rs",
- "flate2",
- "futures-core",
- "futures-executor",
- "getrandom 0.4.3",
- "http",
- "http-body",
- "http-body-util",
- "http-ng-cache",
- "http-ng-cookie",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-dns-system",
- "http-ng-fetch",
- "http-ng-mock",
- "http-ng-native",
- "http-ng-proto",
- "http-ng-rt",
- "http-ng-rt-smol",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-rustls",
- "md-5",
- "multer",
- "ruzstd",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "wasm-bindgen-test",
- "web-sys",
- "zstd",
-]
-
-[[package]]
-name = "http-ng-cache"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "http",
- "httpdate",
- "rstest",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-cookie"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "http",
- "httpdate",
- "proptest",
- "public-suffix",
- "rstest",
- "thiserror",
- "time",
-]
-
-[[package]]
-name = "http-ng-core"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "http",
- "http-body",
- "http-body-util",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-dns"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "dns-message-parser",
- "futures-core",
- "futures-executor",
- "futures-util",
- "http-ng-core",
- "rstest",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-dns-doh"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "dns-message-parser",
- "futures-core",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-native",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-rustls",
- "rstest",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "http-ng-dns-hickory"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "futures-core",
- "futures-executor",
- "futures-util",
- "hickory-resolver",
- "http-ng-core",
- "http-ng-dns",
- "rstest",
- "tokio",
-]
-
-[[package]]
-name = "http-ng-dns-system"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "dns-message-parser",
- "futures-core",
- "futures-executor",
- "futures-util",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-rt",
- "rstest",
- "thiserror",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "http-ng-fetch"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "futures-util",
- "http",
- "http-body",
- "http-ng",
- "http-ng-core",
- "js-sys",
- "thiserror",
- "wasm-bindgen",
- "wasm-bindgen-test",
- "wasm-streams",
- "web-sys",
-]
-
-[[package]]
-name = "http-ng-h3"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-executor",
- "futures-util",
- "h3",
- "h3-quinn",
- "http",
- "http-body",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-dns-system",
- "http-ng-quinn",
- "http-ng-rt",
- "http-ng-rt-smol",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-quic",
- "http-ng-tls-rustls",
- "pin-project-lite",
- "quinn",
- "quinn-proto",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "http-ng-idn"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "idna",
- "objc2-foundation",
- "rstest",
- "thiserror",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "http-ng-mock"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-executor",
- "http",
- "http-body",
- "http-ng-core",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-native"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-executor",
- "futures-sink",
- "futures-util",
- "h2",
- "http",
- "http-body",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-dns-system",
- "http-ng-proto",
- "http-ng-rt",
- "http-ng-rt-smol",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-rustls",
- "hyper",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "http-ng-proto"
-version = "0.1.0"
-dependencies = [
- "assert_matches",
- "bytes",
- "http",
- "http-ng-idn",
- "proptest",
- "rstest",
- "thiserror",
- "url",
-]
-
-[[package]]
-name = "http-ng-quinn"
-version = "0.1.0"
-dependencies = [
- "http-ng-rt",
- "pin-project-lite",
- "quinn",
-]
-
-[[package]]
-name = "http-ng-rt"
-version = "0.1.0"
-dependencies = [
- "futures-executor",
- "futures-io",
- "http-ng-core",
- "hyper",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-rt-embassy"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "embassy-executor",
- "embassy-net",
- "embassy-net-tuntap",
- "embassy-time",
- "heapless",
- "http-ng",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-native",
- "http-ng-rt",
- "http-ng-tls",
- "hyper",
- "log",
- "smoltcp",
-]
-
-[[package]]
-name = "http-ng-rt-pair-check"
-version = "0.1.0"
-dependencies = [
- "futures-executor",
- "http-ng-rt",
- "http-ng-rt-smol",
- "http-ng-rt-tokio",
- "hyper",
- "tokio",
-]
-
-[[package]]
-name = "http-ng-rt-smol"
-version = "0.1.0"
-dependencies = [
- "async-executor",
- "async-io",
- "async-net",
- "blocking",
- "futures-executor",
- "futures-lite",
- "http-ng-rt",
- "hyper",
- "libc",
- "quinn-udp",
- "socket2",
-]
-
-[[package]]
-name = "http-ng-rt-tokio"
-version = "0.1.0"
-dependencies = [
- "futures-executor",
- "http-ng-rt",
- "hyper",
- "quinn-udp",
- "socket2",
- "tokio",
-]
-
-[[package]]
-name = "http-ng-select"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-util",
- "h3",
- "h3-quinn",
- "http",
- "http-body",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-dns-system",
- "http-ng-h3",
- "http-ng-native",
- "http-ng-rt",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-rustls",
- "quinn",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "http-ng-tls"
-version = "0.1.0"
-dependencies = [
- "futures-executor",
- "http-ng-core",
- "hyper",
-]
-
-[[package]]
-name = "http-ng-tls-native-tls"
-version = "0.1.0"
-dependencies = [
- "async-native-tls",
- "futures-executor",
- "futures-io",
- "http-ng-core",
- "http-ng-rt",
- "http-ng-tls",
- "hyper",
- "native-tls",
-]
-
-[[package]]
-name = "http-ng-tls-quic"
-version = "0.1.0"
-dependencies = [
- "http-ng-core",
- "http-ng-tls",
- "quinn-proto",
-]
-
-[[package]]
-name = "http-ng-tls-rustls"
-version = "0.1.0"
-dependencies = [
- "futures-executor",
- "http-body-util",
- "http-ng-core",
- "http-ng-rt",
- "http-ng-rt-smol",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-quic",
- "hyper",
- "quinn-proto",
- "rcgen",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "socket2",
- "tokio",
- "tokio-rustls",
- "webpki-roots",
-]
-
-[[package]]
-name = "http-ng-tower"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-executor",
- "http",
- "http-body",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "http-ng-mock",
- "tower",
- "tower-service",
-]
-
-[[package]]
-name = "http-ng-tungstenite"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-executor",
- "futures-sink",
- "futures-util",
- "http",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "http-ng-dns",
- "http-ng-dns-system",
- "http-ng-native",
- "http-ng-rt",
- "http-ng-rt-tokio",
- "http-ng-tls",
- "http-ng-tls-rustls",
- "hyper",
- "thiserror",
- "tokio",
- "tungstenite",
-]
-
-[[package]]
-name = "http-ng-urlsession"
-version = "0.1.0"
-dependencies = [
- "block2",
- "bytes",
- "futures-executor",
- "http",
- "http-body",
- "http-body-util",
- "http-ng",
- "http-ng-core",
- "objc2",
- "objc2-foundation",
- "thiserror",
-]
-
-[[package]]
-name = "http-ng-wasi"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures",
- "http",
- "http-body",
- "http-ng",
- "http-ng-core",
- "serde_json",
- "thiserror",
- "wasip3",
-]
-
-[[package]]
-name = "http-ng-webtransport"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-util",
- "h3",
- "h3-quinn",
- "http",
- "http-ng-core",
- "quinn",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-# Migrating `wasi-fetch` → `http-ng`
+# Migrating `wasi-fetch` → `hclient`
 
 `wasi-fetch` 0.2.0 is 548 lines of Rust across four files — `request.rs`
 278, `body.rs` 148, `lib.rs` 77, `error.rs` 45 — of which the redirect loop
@@ -10,28 +10,28 @@ Everything below was checked against the two sources, not inferred from
 memory: `wasi-fetch` 0.2.0 and this repository at the commit that added
 this file. A worked migration of a real consumer —
 `act/components/http-client`, which is what `wasi-fetch` was written for —
-is in [`crates/http-ng/examples/portable.rs`](../crates/http-ng/examples/portable.rs).
+is in [`crates/hclient/examples/portable.rs`](../crates/hclient/examples/portable.rs).
 That example and this table say the same thing about timeouts, redirects
 and the body; if they ever stop agreeing, the example is the one that is
 compiled and tested.
 
 ## The mapping
 
-| `wasi-fetch` 0.2.0 | `http-ng` |
+| `wasi-fetch` 0.2.0 | `hclient` |
 |---|---|
-| `Client` (a unit struct) + `get/post/put/delete/patch/head/request` | `http_ng::Client<T>` + the same methods |
+| `Client` (a unit struct) + `get/post/put/delete/patch/head/request` | `hclient::Client<T>` + the same methods |
 | `Client::query` (the `QUERY` verb) | `client.request(http::Method::from_bytes(b"QUERY")?, url)` |
 | `wasi_fetch::send(req)`, the free function | `Client::execute` |
-| `RequestBuilder::{header, headers, body}` | `http_ng::RequestBuilder::{header, headers, body}` |
+| `RequestBuilder::{header, headers, body}` | `hclient::RequestBuilder::{header, headers, body}` |
 | `RequestBuilder::json(&T)` | **no equivalent** — serialize yourself, set `content-type` yourself |
 | `timeout(d)` — sets the wasip3 `connect` **and** `first_byte` options from one `Duration` | `Timeouts { connect: Some(d), first_byte: Some(d), .. }` — **both** fields, or the connect timeout is silently lost |
 | `between_bytes_timeout(d)` | `Timeouts { between_bytes: Some(d), .. }`, the third field of the same struct |
 | `redirect_limit(n)`, `n > 0`, + the 66-line loop in `send` | `RedirectPolicy::Limited(n)`, on `ClientBuilder::redirect` or per request on `RequestBuilder::redirect`, carried out by the `Redirect` stage in `Client::execute` |
 | `redirect_limit(0)` | `RedirectPolicy::None` — **not** `Limited(0)`, see item 1 below |
-| `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `http-ng-wasi` — you no longer write any of it |
+| `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `hclient-wasi` — you no longer write any of it |
 | `Body::chunk` | `Response::chunk` (and it now reports errors, see below) |
 | `Body::{bytes, text, json}` | `Response::collect` → `Collected::{bytes, text, json}` (`json` behind the `json` feature) |
-| `Error::{Url, Transport, Utf8, Json}` | `http_ng::Error` with `ErrorKind::{Connect, Tls, Timeout, Redirect, Body, Decode, …}` |
+| `Error::{Url, Transport, Utf8, Json}` | `hclient::Error` with `ErrorKind::{Connect, Tls, Timeout, Redirect, Body, Decode, …}` |
 | the seven `let _ =` on wasip3 setters (`request.rs:209,210,213,234,235,237,239`) | `Capabilities` + `UnsupportedCapability` — an unsupported setting is an error, not a discarded return value |
 
 ## What the migration fixes
@@ -60,7 +60,7 @@ compiled and tested.
    of `send()` for a per-request one.
 5. **An invalid header is no longer dropped on the floor.**
    `wasi-fetch::RequestBuilder::header` was `if let (Ok(name), Ok(value)) =
-   … { insert }` with no `else`. `http_ng::RequestBuilder::header` records
+   … { insert }` with no `else`. `hclient::RequestBuilder::header` records
    the first failure and `send()` returns it.
 6. **`headers()` adds instead of replacing.** `wasi-fetch`'s assigned
    (`self.headers = headers`), discarding everything `header()` had set,
@@ -76,7 +76,7 @@ compiled and tested.
    destructured. `Collected` keeps status, headers and the final URL
    alongside the bytes.
 9. **One codebase covers three targets.** `wasi-fetch` is `wasip3` only.
-   The same consumer code on `http_ng::Client<T>` builds for native, for
+   The same consumer code on `hclient::Client<T>` builds for native, for
    `wasm32-wasip2` and for the browser with no `#[cfg]` — that is what
    `examples/portable.rs` and the `portable-example-three-targets` CI job
    check.
@@ -92,7 +92,7 @@ Four items, none of them papered over.
    In `wasi-fetch` the redirect loop was gated on
    `if redirect_limit > 0 && status.is_redirection()` (`request.rs:135`), so
    a limit of `0` skipped the branch entirely and returned the 3xx **to the
-   caller as an ordinary response**. `http-ng` spells that
+   caller as an ordinary response**. `hclient` spells that
    `RedirectPolicy::None`: `decide` answers `Stop` before any hop counting,
    and the response arrives with its `Location` intact.
 
@@ -134,11 +134,11 @@ Four items, none of them papered over.
 ## `wasi-fetch` 0.3
 
 The plan is for `wasi-fetch` to stay findable: a thin facade over
-`http_ng::Client<http_ng_wasi::WasiHttp>` keeping the old names, so users
+`hclient::Client<hclient_wasi::WasiHttp>` keeping the old names, so users
 migrate by changing a dependency rather than their code.
 
 It will not be a pure renaming, and the reason is item 3 above: `json()`
-has to keep existing on the request builder, and `http-ng` has it only on
+has to keep existing on the request builder, and `hclient` has it only on
 the response.
 
 `redirect_limit(0)` is no longer a reason. It was, while `RedirectPolicy`
@@ -149,5 +149,5 @@ every other `n` to `Limited(n)`. Everything else on the list — `header`, `head
 response, and the whole of `send_raw` — maps straight through.
 
 Note also that `wasi_fetch::Client` was a unit struct constructed per call
-(`Client::new().request(..)`), while `http_ng::Client<T>` owns a transport.
+(`Client::new().request(..)`), while `hclient::Client<T>` owns a transport.
 Build it once and share it; that is the point of holding one.

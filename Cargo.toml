@@ -29,43 +29,43 @@ futures-sink   = { version = "0.3", default-features = false }
 url            = "2.5"
 proptest       = "1"
 
-# `default-features = false`: `http-ng-proto`'s own default is `idn`, and
+# `default-features = false`: `hclient-proto`'s own default is `idn`, and
 # cargo forbids a member from overriding a workspace dependency's
 # `default-features` back to false. Consumers opt in by name instead —
-# `http-ng` forwards it as its own `idn` feature, which is where a consumer
-# of the facade can switch it off. Building `http-ng-proto` on its own
+# `hclient` forwards it as its own `idn` feature, which is where a consumer
+# of the facade can switch it off. Building `hclient-proto` on its own
 # still gets `idn`, since that is its own default.
-http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0", default-features = false }
-http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
-http-ng-mock  = { path = "crates/http-ng-mock",  version = "0.1.0" }
-# Default features left ON, unlike `http-ng-proto` above: that crate's
-# default (`idn`) is what `http-ng` forwards as a feature of its own, while
+hclient-proto = { path = "crates/hclient-proto", version = "0.1.0", default-features = false }
+hclient-core  = { path = "crates/hclient-core",  version = "0.1.0" }
+hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0" }
+# Default features left ON, unlike `hclient-proto` above: that crate's
+# default (`idn`) is what `hclient` forwards as a feature of its own, while
 # this one's (`public-suffix`) is what makes `Domain=co.uk` a refusal
 # rather than a cookie shared across every registrant under `.uk`. Turning
-# it off does not make the jar smaller in any way a consumer of `http-ng`
+# it off does not make the jar smaller in any way a consumer of `hclient`
 # asked for — it makes it host-only, which is a different jar, not a
-# cheaper one. A consumer who wants that build takes `http-ng-cookie`
+# cheaper one. A consumer who wants that build takes `hclient-cookie`
 # directly.
-http-ng-cookie = { path = "crates/http-ng-cookie", version = "0.1.0" }
+hclient-cookie = { path = "crates/hclient-cookie", version = "0.1.0" }
 # No features at all, default or otherwise: unlike the jar, whose default
 # is the public suffix list that makes `Domain=co.uk` a refusal, there is
 # nothing in this crate a build could sensibly do without. The store is a
 # seam rather than a feature (`CacheStore`), so "a smaller cache" is a
 # different `S`, not a thinner build.
-http-ng-cache = { path = "crates/http-ng-cache", version = "0.1.0" }
-# Default features left ON, for the same reason as `http-ng-cookie` and the
-# opposite of `http-ng-proto`: this crate's default is `platform`, which is
+hclient-cache = { path = "crates/hclient-cache", version = "0.1.0" }
+# Default features left ON, for the same reason as `hclient-cookie` and the
+# opposite of `hclient-proto`: this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
 # `idna` tables on Linux and wasm, `icuuc.dll` on Windows, Foundation on
 # Apple, resolved in its `build.rs`. Turning it off leaves the crate with
 # no backend at all, which its own `compile_error!` refuses. The switch a
-# consumer actually wants is one level up: `http-ng-proto`'s `idn`, which
+# consumer actually wants is one level up: `hclient-proto`'s `idn`, which
 # decides whether this crate is in the graph at all.
-http-ng-idn   = { path = "crates/http-ng-idn",   version = "0.1.0" }
+hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 assert_matches = "1.5"
-http-ng       = { path = "crates/http-ng",       version = "0.1.0" }
+hclient       = { path = "crates/hclient",       version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code       = "forbid"

@@ -1,16 +1,16 @@
 > **Re-measured against this workspace before merging.** The
-> `idna_adapter` pin below was checked here against `http-ng-proto`
+> `idna_adapter` pin below was checked here against `hclient-proto`
 > specifically, and the numbers differ from the survey's because the survey
 > measured a standalone probe crate:
 >
-> - `cargo tree -p http-ng-proto -e normal`: **35 crates -> 20** with
+> - `cargo tree -p hclient-proto -e normal`: **35 crates -> 20** with
 >   `idna_adapter` pinned to 1.1.0 (not 30 -> 10).
 > - The five ICU4X derive macros do go (`yoke-derive`, `zerofrom-derive`,
 >   `zerovec-derive`, `displaydoc`, `synstructure`), but **`syn`, `quote`
 >   and `proc-macro2` stay either way** — `thiserror-impl` needs them, and
 >   `thiserror` is approved for use throughout this workspace. "Zero
 >   proc-macros" does not hold here.
-> - `cargo nextest run -p http-ng-proto --all-features`: 130/130 green on
+> - `cargo nextest run -p hclient-proto --all-features`: 130/130 green on
 >   the pinned graph, so the URI differential corpus agrees on both
 >   backends.
 >
@@ -527,7 +527,7 @@ Measured trade, ICU4X → unicode-rs: **+126 KiB of binary** against a smaller
 graph. Two corrections to the first draft of this section, both from the
 re-measurement at the top of this document:
 
-- the crate delta against **`http-ng-proto`** is **35 → 20**, not the
+- the crate delta against **`hclient-proto`** is **35 → 20**, not the
   30 → 10 this survey's standalone probe crate showed;
 - **`syn`, `quote` and `proc-macro2` stay either way** — `thiserror-impl`
   needs them. Five ICU4X derive macros do leave (`yoke-derive`,
@@ -540,7 +540,7 @@ Source size does not improve either (`idna_mapping` 1.5M +
 
 There is also a structural limit worth keeping even now the trade is
 refused: **the pin lives in the top-level `Cargo.lock`, so a library cannot
-express it.** `http-ng` could document it, but only the final binary's
+express it.** `hclient` could document it, but only the final binary's
 author could choose it — which is why `idna_adapter` is a version-pin seam
 rather than a feature (Cargo has no `global-features`). So it was never a
 substitute for the platform crate, independently of the tables being stale.
@@ -613,7 +613,7 @@ This whole family — the invalid punycode row, the `""` row, and one this
 section did not predict, upper-case ASCII surviving unchanged — turned out
 not to be about browsers at all. It is what **any URL parser** does, and it
 is what `macos-latest` measured on Apple's Foundation the first time
-`http-ng-idn`'s corpus ran there: three rows of 32, `EXAMPLE.COM`, `""` and
+`hclient-idn`'s corpus ran there: three rows of 32, `EXAMPLE.COM`, `""` and
 `xn--zzzz.test`, exactly the shapes above.
 
 The cause is one sentence, and `swiftlang/swift-foundation` states it in
@@ -623,7 +623,7 @@ into the URL verbatim (`finalURLString += host`), so an ASCII host is never
 lower-cased, never has its `xn--` labels decoded, and never gets an error
 word. Chrome's `new URL()` behaves the same way for the same reason.
 
-`crates/http-ng-idn/src/policy.rs` closes it, for every backend rather than
+`crates/hclient-idn/src/policy.rs` closes it, for every backend rather than
 per platform: an all-ASCII name never reaches the platform at all, ACE
 labels are decoded there (RFC 3492 needs no Unicode data), and the answer
 is the platform's only for the labels that actually need Unicode. **The
@@ -641,7 +641,7 @@ URL()` would only ever be asked about a host with non-ASCII in it.
 
 ### Cost, and what is unknown
 
-`web-sys` **0.3.103 is already a dependency of `http-ng-fetch`**, and `Url`
+`web-sys` **0.3.103 is already a dependency of `hclient-fetch`**, and `Url`
 is one more feature on that existing entry — no new crate. On
 `wasm32-unknown-unknown` this needs **no `unsafe` at all**, which is a
 materially better position than the Windows path.
@@ -663,7 +663,7 @@ skips the mapping and validation steps, so it is a display convenience, not
 the inverse of `domain_to_ascii`.
 
 More to the point: **this crate's stated surface is one-directional** — a
-Unicode domain in, an A-label out — and `http-ng-proto`'s
+Unicode domain in, an A-label out — and `hclient-proto`'s
 `UriError::NonAsciiHost` path does not need the reverse. Confirm a caller
 exists before adding the dependency.
 
@@ -678,7 +678,7 @@ exists before adding the dependency.
 | `icu_capi` / ICU4X FFI | **rejected** | ICU4X is a Rust reimplementation with bundled data; `icu_capi` exposes it *to* C — wrong direction |
 | `icu_normalizer::uts46` alone | **partial** | separable and avoids the 1.9 MB crate (84 KiB), but mapping only — no punycode, no validation |
 | `idna_adapter` pinning | **rejected** (owner, 2026-08-08) | 35 → 20 crates for +126 KiB — but the unicode-rs tables lag, and a library cannot express a top-level pin anyway |
-| browser `URL.hostname` via `web_sys` | **fits — use it on wasm** | measured non-transitional, agrees with `idna` on all 12 IDN rows; `web-sys` already in `http-ng-fetch`; **no `unsafe`** — pre-filter with `AsciiDenyList::URL` first |
+| browser `URL.hostname` via `web_sys` | **fits — use it on wasm** | measured non-transitional, agrees with `idna` on all 12 IDN rows; `web-sys` already in `hclient-fetch`; **no `unsafe`** — pre-filter with `AsciiDenyList::URL` first |
 | macOS Foundation `URL`/`URLComponents` | **rejected on ergonomics** | genuinely UTS-46 non-transitional (`0x3C`, read from Apple's source) — but URL-parser-only, discards `UIDNAInfo.errors`, linked-SDK gated |
 | `libicucore.dylib` | **rejected** | private, no headers, App Store rejections, not on disk since Big Sur |
 | libidn2 | **rejected** | no Rust binding on crates.io; IDNA2008-by-default (UTS-46 only via `IDN2_NONTRANSITIONAL`); no presence guarantee |
@@ -688,7 +688,7 @@ exists before adding the dependency.
 ## Open items
 
 Ordered by value. Items 1-2 need a Windows runner and are the ones that
-gate `http-ng-idn`'s Windows path; they should land as a probe the crate's
+gate `hclient-idn`'s Windows path; they should land as a probe the crate's
 own CI job can carry, not as a one-off run.
 
 1. **`CoInitializeEx` before `uidna_openUTS46`** — unverified. Microsoft

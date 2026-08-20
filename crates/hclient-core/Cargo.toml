@@ -1,0 +1,34 @@
+[package]
+name = "hclient-core"
+version.workspace = true
+description = "Plugin contract for hclient: Transport, Capabilities, RequestBody, Error, Timer"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes     = { workspace = true }
+# The two halves of the WebSocket seam's shape, and nothing else from the
+# `futures` family: both are dependency-free type-only crates, and both
+# were already in every graph in this workspace that has any `futures` at
+# all (measured: `hclient-wasi` on wasm32-wasip2 and `hclient-fetch` on
+# wasm32-unknown-unknown both carry them today). So this is not behind a
+# feature — a seam a backend author can only name in some builds is worse
+# than two crates that are already there.
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
+http      = { workspace = true }
+http-body = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+
+
+[lints]
+workspace = true

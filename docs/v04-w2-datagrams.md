@@ -30,12 +30,12 @@ config.datagram_receive_buffer_size.map(..)`
 off.
 
 That matters here because this crate does not build the connection. The
-crate that would, in this workspace, is `http-ng-h3` — read-only for this
+crate that would, in this workspace, is `hclient-h3` — read-only for this
 task and checked rather than assumed: it touches `TransportConfig` in
 exactly one place, `keep_alive_interval`
-(`crates/http-ng-h3/src/lib.rs`), and with `without_keep_alive()` it does
+(`crates/hclient-h3/src/lib.rs`), and with `without_keep_alive()` it does
 not construct one at all. Every other field, including both datagram
-buffer sizes, is quinn's default. **A connection made by `http-ng-h3`
+buffer sizes, is quinn's default. **A connection made by `hclient-h3`
 carries datagrams**, and nothing in this task had to ask it to.
 
 It is still the caller's connection, so the crate reports the answer
@@ -69,7 +69,7 @@ builder setters and one doc comment, and nothing else. The transport is
 this crate already holds, and the HTTP/3 framing is one variable-length
 integer.
 
-**Executed, not only read.** `crates/http-ng-webtransport/tests/webtransport.rs`
+**Executed, not only read.** `crates/hclient-webtransport/tests/webtransport.rs`
 carries five datagram tests against `h3`'s own server on a real socket,
 and §4 of this document has the run against an implementation that shares
 no code with `h3`.
@@ -293,7 +293,7 @@ datagram, and the server records it before echoing.
 
 ## 7. The dependency graph, measured
 
-`cargo tree -p http-ng-webtransport -e normal --prefix none`, unique
+`cargo tree -p hclient-webtransport -e normal --prefix none`, unique
 crates, this tree:
 
 | | before datagrams | after |
@@ -321,7 +321,7 @@ Anchor verified before the first and after the last: **14 tests, 14
 passed** (7 before this work). Restore is `git checkout` plus an explicit
 `os.utime`, `--no-fail-fast`, and the harness re-runs the anchor at the end
 and refuses to report if it does not come back —
-`crates/http-ng-webtransport/mutations.py`.
+`crates/hclient-webtransport/mutations.py`.
 
 **Twenty-three mutations, twenty-one killed, two controls survived.** The
 eleven from `docs/v04-w2-webtransport.md` §8 were re-run rather than

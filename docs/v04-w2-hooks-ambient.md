@@ -1,20 +1,20 @@
 # The hooks seam on the two ambient backends (v0.4 W2)
 
-`http-ng-fetch` and `http-ng-wasi` now implement
-`http_ng_core::unversioned::Hooks`. They are the third and fourth
-implementations, after `http-ng-native` (`db61a06`) and `http-ng-h3`
+`hclient-fetch` and `hclient-wasi` now implement
+`hclient_core::unversioned::Hooks`. They are the third and fourth
+implementations, after `hclient-native` (`db61a06`) and `hclient-h3`
 (`f6d582e`), and they are the first two that own **no connection at all**:
 the browser makes, keeps, reuses and closes connections without telling a
 page, and `wasi:http`'s client interface is one function with no
 connection resource anywhere behind it.
 
-`http-ng-core` is **untouched** — no variant, no field, no bound.
+`hclient-core` is **untouched** — no variant, no field, no bound.
 
 ---
 
 ## 1. The answer, in one table
 
-| event | `http-ng-native` | `http-ng-h3` | `http-ng-fetch` | `http-ng-wasi` |
+| event | `hclient-native` | `hclient-h3` | `hclient-fetch` | `hclient-wasi` |
 |---|---|---|---|---|
 | `Connected` | yes | yes | **no emitter** | **no emitter** |
 | `Reused` | yes | yes | **no emitter** | **no emitter** |
@@ -25,8 +25,8 @@ connection resource anywhere behind it.
 
 **One event of four**, on both, and it is a result rather than an
 omission. It is the same shape the workspace has now recorded three times:
-`http-ng-native` refused to add a *request queued* variant it could not
-emit, `http-ng-h3` reported that `CloseReason::Ended` has no subject in
+`hclient-native` refused to add a *request queued* variant it could not
+emit, `hclient-h3` reported that `CloseReason::Ended` has no subject in
 QUIC, and this is the third. A variant nothing can emit is a capability
 that lies, and an event set is a capability.
 
@@ -39,7 +39,7 @@ set* rather than about either backend.
 
 ---
 
-## 2. `http-ng-fetch`: what a browser will tell a page
+## 2. `hclient-fetch`: what a browser will tell a page
 
 The Fetch Standard's shape is `fetch(Request) -> Promise<Response>`. There
 is no connection object, no connection identity, and no event that fires
@@ -55,7 +55,7 @@ measuring rather than a paragraph. `PerformanceResourceTiming` carries
 `secureConnectionStart`, `requestStart`, `responseStart` and
 `nextHopProtocol` — very nearly `ConnectTiming` plus `Connected::version`.
 
-`crates/http-ng-fetch/tests/hooks_timing.rs` is the answer. Four tests,
+`crates/hclient-fetch/tests/hooks_timing.rs` is the answer. Four tests,
 green on Chrome 151 and Firefox 153:
 
 1. **The control.** Same-origin, body drained: the entry *is* there, with
@@ -100,7 +100,7 @@ than most of the requests this measurement exists to explain.
 
 ---
 
-## 3. `http-ng-wasi`: what the WIT has in it
+## 3. `hclient-wasi`: what the WIT has in it
 
 The whole client interface is
 
@@ -174,8 +174,8 @@ measurement in either, and the tests say so in their names.
 
 ### 4.3 Both are recorded, neither is fixed
 
-This is `http-ng-h3`'s treatment of `ConnectTiming::tls` applied twice:
-the defect is in the seam's wording, and editing `http-ng-core` for one
+This is `hclient-h3`'s treatment of `ConnectTiming::tls` applied twice:
+the defect is in the seam's wording, and editing `hclient-core` for one
 backend's benefit is how an event set stops being a shape. **The task's
 own instruction was to stop and report if a new variant were needed; none
 is.** What would help is not a variant but two smaller things, and both
@@ -191,12 +191,12 @@ are listed in §8 as owed rather than done.
 
 ## 5. Zero cost when nobody is watching
 
-### 5.1 `http-ng-fetch`: a counting clock, and it is the browser's own
+### 5.1 `hclient-fetch`: a counting clock, and it is the browser's own
 
-`http-ng-native` and `http-ng-h3` count clock reads through a `Timer` they
+`hclient-native` and `hclient-h3` count clock reads through a `Timer` they
 were handed. This crate has no runtime seam — in a browser the runtime
 *is* the browser, the same fact that put `BrowserClock` in this crate
-rather than in an `http-ng-rt-browser` that does not exist. So
+rather than in an `hclient-rt-browser` that does not exist. So
 `tests/hooks_cost.rs` installs the counting clock where the clock lives:
 it replaces `Performance.prototype.now` with a tallying wrapper that
 delegates to the original.
@@ -217,7 +217,7 @@ The third row is not decoration: it pins the *shape* of the emission. A
 transport that reported a `Head` on the error path would read the clock
 twice there.
 
-### 5.2 `http-ng-wasi`: two halves, and the missing third is named
+### 5.2 `hclient-wasi`: two halves, and the missing third is named
 
 A counting clock is **not available here**, and the reason is the same
 fact the crate exists to state: a `wasi:http` guest needs no runtime, so
@@ -268,30 +268,30 @@ type parameter names the same type rather than a second one.
 **No `Send` bound arrives anywhere.** Both backends bound `H: Hooks` and
 nothing else.
 
-That is **one bound fewer than `http-ng-h3`, which was one fewer than
-`http-ng-native`**, and the reason is structural rather than luck: the
+That is **one bound fewer than `hclient-h3`, which was one fewer than
+`hclient-native`**, and the reason is structural rather than luck: the
 only event these backends have fires while `execute` still owns
-everything, so no response body has to hold a hook. `http-ng-native` needs
-`H: Clone + Unpin` because its body reports a `Closed`; `http-ng-h3` needs
+everything, so no response body has to hold a hook. `hclient-native` needs
+`H: Clone + Unpin` because its body reports a `Closed`; `hclient-h3` needs
 `H: Clone`; these need neither.
 
 Both directions are pinned, because either alone reads as an accident:
 
-- **`!Send` works.** `http-ng-fetch`'s recorder is `Rc<RefCell<..>>` and
-  runs all the way through `http_ng::Client`, which bounds only
-  `T::Error: Send + Sync` (amendment C1). `http-ng-wasi`'s guest recorder
+- **`!Send` works.** `hclient-fetch`'s recorder is `Rc<RefCell<..>>` and
+  runs all the way through `hclient::Client`, which bounds only
+  `T::Error: Send + Sync` (amendment C1). `hclient-wasi`'s guest recorder
   is the same shape under a real host.
 - **`Send` passes through.** A hook holding an `AtomicUsize` leaves
   `execute`'s future `Send` on both. Without this the seam could satisfy
   the first bullet by being unconditionally `!Send`-poisoning — which
-  would cost `http-ng-fetch` the property `promise.rs` carries the
-  project's one `unsafe impl` for, and `http-ng-wasi` what its
+  would cost `hclient-fetch` the property `promise.rs` carries the
+  project's one `unsafe impl` for, and `hclient-wasi` what its
   `send-bound-exception: amendment-C2` marker was spent on.
 
 `impl WebSocketConnect for Fetch<H>` was made generic in the same change,
 so switching observability on does not take an unrelated capability away.
 No event is emitted for a WebSocket — the vocabulary has no word for one —
-which is the call `http-ng-native` already made one seam over.
+which is the call `hclient-native` already made one seam over.
 
 ---
 
@@ -299,14 +299,14 @@ which is the call `http-ng-native` already made one seam over.
 
 Seventeen applied, **fourteen killed, three survived** — two of them
 deliberate controls, one a survivor that caused a change. Anchor counts
-were taken before each run and restored after: `http-ng-fetch` browser
-suites `hooks` 10, `hooks_cost` 4, `hooks_timing` 4; `http-ng-wasi`
+were taken before each run and restored after: `hclient-fetch` browser
+suites `hooks` 10, `hooks_cost` 4, `hooks_timing` 4; `hclient-wasi`
 wasip2 52, host `tests/hooks` + `tests/shape` 11. Restores are `git
 checkout` plus an explicit `utime` bump — a restore that preserves mtime
 leaves cargo using the mutated artifact, which has mis-scored a run in
 this workspace before.
 
-### 7.1 `http-ng-fetch` (Chrome 151)
+### 7.1 `hclient-fetch` (Chrome 151)
 
 | # | mutation | outcome |
 |---|---|---|
@@ -338,10 +338,10 @@ for the interval; this is the other half of it.
 specification, so the clamp can never fire and no test can distinguish its
 presence. It survived all three suites, which is what makes fourteen kills
 mean something other than a harness that reports "killed" unconditionally
-— the answer `http-ng-h3`'s M18 gave to four mis-scored runs, applied
+— the answer `hclient-h3`'s M18 gave to four mis-scored runs, applied
 here as method rather than as one report's footnote.
 
-### 7.2 `http-ng-wasi`
+### 7.2 `hclient-wasi`
 
 | # | mutation | outcome |
 |---|---|---|
@@ -372,7 +372,7 @@ first because it is the one `Option` that already carries the mark.
 
 ### 7.3 Where the live WASI tests ended up, and why it is not tidiness
 
-They were written in `crates/http-ng-wasi/tests/hooks.rs` and moved into
+They were written in `crates/hclient-wasi/tests/hooks.rs` and moved into
 `tests/live_roundtrip.rs`. `just test-wasi` names `--test
 live_roundtrip`, and it is the only recipe that runs with `wasmtime`
 installed — the matrix `test` job runs `cargo nextest run --workspace`
@@ -385,7 +385,7 @@ What stayed in `tests/hooks.rs` is the half that needs no host — the
 source check and the capability check — because those must run on the
 legs that have no `wasmtime`, which is most of them.
 
-Every `http-ng-wasi` mutation above was re-run after the move rather than
+Every `hclient-wasi` mutation above was re-run after the move rather than
 assumed to still score the same.
 
 ### 7.4 A false start in the source check
@@ -404,17 +404,17 @@ read, invisible to a `now()` needle.
 
 - ~~**A `ConnectionId` value meaning "there is no connection".**
   `UNWATCHED` is being borrowed for it, against its own doc. This is a
-  `http-ng-core` change and therefore not this task's; §4.1 is the
+  `hclient-core` change and therefore not this task's; §4.1 is the
   argument for it.~~ **Withdrawn — this was not a debt.** §9.1.
 - ~~**`Head::version` as an `Option`,** or an `http::Version`-shaped
   "unknown". Two of four backends have no honest value. Also
-  `http-ng-core`'s.~~ **Done.** §9.2.
+  `hclient-core`'s.~~ **Done.** §9.2.
 - **The cross-origin half of §2.1, measured.** Needs a second origin in
   the browser harness — a `wasm-bindgen-test-runner` change.
-- **A counting clock for `http-ng-wasi`.** Needs a clock seam on
+- **A counting clock for `hclient-wasi`.** Needs a clock seam on
   `WasiHttp`, declined in §5.2.
 - **Anything about a WebSocket.** Neither backend emits an event for one
-  and the vocabulary has no word for one; `http-ng-native` made the same
+  and the vocabulary has no word for one; `hclient-native` made the same
   call.
 - **Firefox was run for the behaviour and cost suites and for
   `hooks_timing`; the mutation table was run on Chrome only.** The two
@@ -426,7 +426,7 @@ read, invisible to a `now()` needle.
 
 ## 9. The two debts of §8, taken up — and they came out different ways
 
-§8's first two bullets were both written as "a `http-ng-core` change, and
+§8's first two bullets were both written as "a `hclient-core` change, and
 therefore not this task's". They were taken up together, on the assumption
 they were one finding with two faces — *the seam has no word for what these
 backends know* — and they are not. **`id` was never a debt. `version` was,
@@ -450,11 +450,11 @@ value never meant it.
 **A hook can only ever meet `UNWATCHED` in one sense.** Two things produce
 it:
 
-1. `Hooks::WATCHING == false`, where `http-ng-native`'s `connection_id::<H>`
-   and `http-ng-h3`'s `ConnState::new::<H>` skip the counter rather than pay
+1. `Hooks::WATCHING == false`, where `hclient-native`'s `connection_id::<H>`
+   and `hclient-h3`'s `ConnState::new::<H>` skip the counter rather than pay
    an atomic per connection for nobody;
-2. a transport with no connection to mint one for — `http-ng-fetch`,
-   `http-ng-wasi`.
+2. a transport with no connection to mint one for — `hclient-fetch`,
+   `hclient-wasi`.
 
 The first can never be observed, and that is a fact about the seam rather
 than about a backend: `WATCHING`'s own documented question is *"whether
@@ -475,7 +475,7 @@ What **is** load bearing is that a reader can act on the value, and it can:
 `UNWATCHED` is the only id `ConnectionId::next` never returns, so looking it
 up in a table of live connections misses, always. That property was
 undocumented and untested — the counter starting at `1` was a line nobody
-had watched fail. `crates/http-ng-core/tests/shape.rs`'s
+had watched fail. `crates/hclient-core/tests/shape.rs`'s
 `the_id_that_names_no_connection_is_one_the_counter_never_hands_out` is now
 that test, and mutation C1 is what it is worth.
 
@@ -488,14 +488,14 @@ meets the second.
 Any name names one of the two producers; a `NO_CONNECTION` would be exactly
 as inaccurate for the unwatched build as `UNWATCHED` is for the ambient
 ones — it would move the inaccuracy, at the cost of a public rename across
-four backends and the `http-ng` facade. No caller decision turns on the
+four backends and the `hclient` facade. No caller decision turns on the
 spelling either.
 
 ### 9.2 `version`: a real debt, and the fix is `Option<http::Version>`
 
-`Head::version` is now `Option<http::Version>`. `http-ng-native` and
-`http-ng-h3` report `Some(resp.version())`; `http-ng-fetch` and
-`http-ng-wasi` report `None`.
+`Head::version` is now `Option<http::Version>`. `hclient-native` and
+`hclient-h3` report `Some(resp.version())`; `hclient-fetch` and
+`hclient-wasi` report `None`.
 
 The difference from §9.1 is that **the ambiguity is fully reachable by a
 watching caller**. `ConnectionId::UNWATCHED` is a sentinel — no real
@@ -545,13 +545,13 @@ Three alternatives were weighed and are worth their lines:
 
 **One line each, plus one assertion in a test.**
 
-- `http-ng-native/src/lib.rs`: `report_head`'s `version: resp.version()` →
+- `hclient-native/src/lib.rs`: `report_head`'s `version: resp.version()` →
   `Some(resp.version())`, with a comment tying it to `version_reported: true`.
-- `http-ng-native/tests/hooks.rs`: `Seen::Head::version` is an
+- `hclient-native/tests/hooks.rs`: `Seen::Head::version` is an
   `Option<http::Version>` (a type error otherwise), and the one assertion that
   reads it now reads `Some(http::Version::HTTP_11)`. Forced by the compiler.
-- `http-ng-h3/src/lib.rs`: the same one line.
-- `http-ng-h3/tests/hooks.rs`: the same field type — and **one assertion that
+- `hclient-h3/src/lib.rs`: the same one line.
+- `hclient-h3/tests/hooks.rs`: the same field type — and **one assertion that
   was not forced**. `Head::version` was read by nothing in that crate, so
   `Some(..)` → `None` there survived every test. It is asserted inside
   `Recorder::only_head`, through which every head in the file passes, because
@@ -559,9 +559,9 @@ Three alternatives were weighed and are worth their lines:
   That is the one place this change went past "whatever the seam change
   forces" in a crate it was told not to touch, and it is three lines.
 
-Nothing else in the workspace reads `Head`: `http-ng-select` does not
-implement or consume `Hooks` at all, `http-ng-core/tests/shape.rs` builds a
-`Closed` and not a `Head`, and `http-ng/tests/facade.rs` reads `status` and
+Nothing else in the workspace reads `Head`: `hclient-select` does not
+implement or consume `Hooks` at all, `hclient-core/tests/shape.rs` builds a
+`Closed` and not a `Head`, and `hclient/tests/facade.rs` reads `status` and
 `elapsed` off the facade's re-export and not `version`.
 
 ### 9.4 Mutations
@@ -573,16 +573,16 @@ which is the interesting row.
 Anchors taken immediately before each run and restored after with `git
 checkout` plus a `touch` (a restore that preserves mtime leaves cargo using
 the mutated artifact, which has mis-scored a run in this workspace before):
-`http-ng-core` **34**, `http-ng-native --test hooks` **16**, `http-ng-h3
---test hooks` **17**, `http-ng-wasi --all-features` **70** (host + the 16
-live wasip2 tests, wasmtime present), `http-ng-fetch` on Firefox `hooks`
+`hclient-core` **34**, `hclient-native --test hooks` **16**, `hclient-h3
+--test hooks` **17**, `hclient-wasi --all-features` **70** (host + the 16
+live wasip2 tests, wasmtime present), `hclient-fetch` on Firefox `hooks`
 **11**, `hooks_cost` **4**, `hooks_timing` **4**, whole crate **119**.
 
 | # | crate | mutation | outcome |
 |---|---|---|---|
 | C1 | core | `NEXT_CONNECTION_ID: AtomicU64::new(1)` → `new(0)` | **killed** — 33/34, `the_id_that_names_no_connection_is_one_the_counter_never_hands_out` |
 | C2 | core | *control:* `Ordering::Relaxed` → `SeqCst` in `ConnectionId::next` | **SURVIVED as intended** — 34/34 |
-| C3 | core | `UNWATCHED = ConnectionId(0)` → `ConnectionId(u64::MAX)` | **survived in core** (34/34), **killed in `http-ng-wasi`** (69/70) |
+| C3 | core | `UNWATCHED = ConnectionId(0)` → `ConnectionId(u64::MAX)` | **survived in core** (34/34), **killed in `hclient-wasi`** (69/70) |
 | N1 | native | `report_head`: `Some(resp.version())` → `None` | **killed** — 15/16, `the_head_reports_the_status_the_server_sent` |
 | H1 | h3 | `report_head`: `Some(resp.version())` → `None` | **killed** — 13/17, four tests through `only_head` |
 | W1 | wasi | the `Head`'s `version: None` → `Some(out.version())` | **killed** — 69/70, the live transcript's `version=None` |
@@ -593,11 +593,11 @@ live wasip2 tests, wasmtime present), `http-ng-fetch` on Firefox `hooks`
 | F3 | fetch | *control:* `.max(0.0)` → `.max(-1.0)` in `hooks::since` | **SURVIVED as intended** — `hooks` 11/11, `hooks_cost` 4/4, `hooks_timing` 4/4 |
 
 **C3 is the row worth reading.** Changing the sentinel's *literal value*
-cannot be seen by `http-ng-core` at all — its own new test asserts the
+cannot be seen by `hclient-core` at all — its own new test asserts the
 property (`next()` never returns it) rather than the number, and
-`http-ng-fetch`'s `the_id_names_no_connection_because_there_is_none_to_name`
+`hclient-fetch`'s `the_id_names_no_connection_because_there_is_none_to_name`
 is written against `ConnectionId::UNWATCHED` rather than against `0`, on
-purpose. What kills it is `http-ng-wasi`'s guest transcript, which compares
+purpose. What kills it is `hclient-wasi`'s guest transcript, which compares
 `id=0` as text because a guest prints and a harness greps. Two ways of
 writing the same assertion, and only one of them is sensitive to this — worth
 knowing before someone "tidies" either.
@@ -616,7 +616,7 @@ the same subject as the original F9 control, mutated rather than deleted.
 the capability, and the `hooks` suite still fails — because
 `the_event_says_no_version_exactly_where_the_capability_does` reads both. Two
 spellings of one fact are worth having only while something checks they still
-say the same thing; `http-ng-wasi` gets the same check through W2, from the
+say the same thing; `hclient-wasi` gets the same check through W2, from the
 `CAPS version_reported=false` line the guest now prints beside its event.
 
 ### 9.5 What was not verified
@@ -629,7 +629,7 @@ say the same thing; `http-ng-wasi` gets the same check through W2, from the
   mirror image of this — the original table was Chrome only — so the two
   engines have now each been the sole witness for one half of this work, and
   neither half has been checked on both.
-- **The `Some` on `http-ng-h3` is pinned by this work's own assertion and by
+- **The `Some` on `hclient-h3` is pinned by this work's own assertion and by
   nothing older.** H1 survived before that assertion was added; it is killed
   now, but the test came with the mutation rather than before it.
 - **No backend has a per-request split.** The rule "`Head::version` is `Some`

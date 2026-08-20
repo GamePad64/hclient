@@ -1,0 +1,29 @@
+[package]
+name = "hclient-dns-hickory"
+version.workspace = true
+description = "hclient's Resolve over hickory-resolver — the backend that can actually answer SVCB"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes            = { workspace = true }
+futures-core     = "0.3"
+futures-util     = { version = "0.3", default-features = false, features = ["std"] }
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+hclient-core     = { workspace = true }
+hclient-dns      = { path = "../hclient-dns", version = "0.1.0" }
+
+[dev-dependencies]
+assert_matches   = { workspace = true }
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+rstest           = { workspace = true }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

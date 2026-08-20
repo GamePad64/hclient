@@ -12,18 +12,18 @@ do.
 
 | claim | proof |
 |---|---|
-| Dropping an in-flight request stops the exchange | `crates/http-ng-native/tests/cancel.rs`, `crates/http-ng-wasi/tests/live_roundtrip.rs`, `crates/http-ng-fetch/tests/transport.rs` — one per backend, and in every case the **observer is outside the client**: a server reporting the socket closed, a wasmtime guest that outlives its own drop, and the browser rejecting its own promise with `AbortError`, which our side cannot synthesise |
-| Connections are reused | `crates/http-ng-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
-| …and on WASI they are **not**, which is now measured rather than assumed | `crates/http-ng-wasi/tests/live_roundtrip.rs` — the same accept-counting observer, on a host thread outside the sandbox, with the guest under `wasmtime`. Two sequential requests to one origin: **two** accepts. `wasmtime_wasi_http::p3::default_send_request` opens the socket and runs the HTTP/1 handshake inside the per-request function, so there is no pool for the second request to find, and the request heads carry no `Connection: close` either. `WasiHttp` declares `ReuseSupport::None`, pinned in the same file; the control is two requests down one socket from a native client, which the same server counts once |
-| Two clients with different trust cannot share a socket | `crates/http-ng-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
-| A response that never starts, or a body that goes silent, is cut | `crates/http-ng-native/tests/timeouts.rs` — three misbehaving servers (answers never; head then silence; stalls mid-body), each paired with a control that must **hang** with the bound unset, plus a dribbling server that takes twice the bound in total and must not be cut. `first_byte` and `between_bytes` were declared `true` in the same commit that enforced them, which is the rule v0.2 W4's middle bullet was written under |
-| An operation as a whole can be bounded | `crates/http-ng/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
+| Dropping an in-flight request stops the exchange | `crates/hclient-native/tests/cancel.rs`, `crates/hclient-wasi/tests/live_roundtrip.rs`, `crates/hclient-fetch/tests/transport.rs` — one per backend, and in every case the **observer is outside the client**: a server reporting the socket closed, a wasmtime guest that outlives its own drop, and the browser rejecting its own promise with `AbortError`, which our side cannot synthesise |
+| Connections are reused | `crates/hclient-native/tests/pool.rs` — a server counting *accepted* connections, not a counter we also wrote. Two requests, one accept with the pool on; two accepts with `PoolConfig::disabled()` |
+| …and on WASI they are **not**, which is now measured rather than assumed | `crates/hclient-wasi/tests/live_roundtrip.rs` — the same accept-counting observer, on a host thread outside the sandbox, with the guest under `wasmtime`. Two sequential requests to one origin: **two** accepts. `wasmtime_wasi_http::p3::default_send_request` opens the socket and runs the HTTP/1 handshake inside the per-request function, so there is no pool for the second request to find, and the request heads carry no `Connection: close` either. `WasiHttp` declares `ReuseSupport::None`, pinned in the same file; the control is two requests down one socket from a native client, which the same server counts once |
+| Two clients with different trust cannot share a socket | `crates/hclient-tls-rustls/tests/config_id.rs` — fails a `TypeId`-shaped or per-call `config_id`, which is what a naive implementation would reach for |
+| A response that never starts, or a body that goes silent, is cut | `crates/hclient-native/tests/timeouts.rs` — three misbehaving servers (answers never; head then silence; stalls mid-body), each paired with a control that must **hang** with the bound unset, plus a dribbling server that takes twice the bound in total and must not be cut. `first_byte` and `between_bytes` were declared `true` in the same commit that enforced them, which is the rule v0.2 W4's middle bullet was written under |
+| An operation as a whole can be bounded | `crates/hclient/tests/deadline.rs` — a server that answers in milliseconds and then drips one byte every 20 ms for ever. The test cannot pass without the bound |
 | …including a body that goes **completely silent** after the head | the same file — a server that sends the head under a `Content-Length` of ten million and then nothing at all. Nothing will wake the body wrapper, so only the sleep it holds can end this; with the sleep never polled, the bound fires at 6 s instead of 400 ms, off a wake the test harness happened to supply, and the tightness assertion catches it. The observer is the server watching for the client's FIN |
-| Idle connections are closed, not merely refused | `crates/http-ng-native/tests/reaper.rs` — the server watches its own end of the socket and reports when the client's `FIN` arrives: 299.7 ms (`Tokio`) and 300.6 ms (`Smol`) after the response, under a 300 ms idle timeout. Its control differs in one call (`pool` where the claim has `with_reaper`) and requires the socket still be open 1200 ms later |
-| Adding a bound does not change the client's type | `crates/http-ng/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
-| A cookie the server set comes back on the next request | `crates/http-ng/tests/cookies.rs` — a loopback server recording the `Cookie` header it was actually sent, never the jar's view of itself, plus the same server with no jar configured as the control. A jar that stores perfectly and attaches nothing passes every test in `http-ng-cookie` and fails this one |
+| Idle connections are closed, not merely refused | `crates/hclient-native/tests/reaper.rs` — the server watches its own end of the socket and reports when the client's `FIN` arrives: 299.7 ms (`Tokio`) and 300.6 ms (`Smol`) after the response, under a 300 ms idle timeout. Its control differs in one call (`pool` where the claim has `with_reaper`) and requires the socket still be open 1200 ms later |
+| Adding a bound does not change the client's type | `crates/hclient/tests/deadline_client_type.rs` — `struct App { http: Client }` with `total_timeout` applied. The `: Client` annotations are the assertion; the `assert_eq!` beside them is what stops the file passing if `total_timeout` stored nothing |
+| A cookie the server set comes back on the next request | `crates/hclient/tests/cookies.rs` — a loopback server recording the `Cookie` header it was actually sent, never the jar's view of itself, plus the same server with no jar configured as the control. A jar that stores perfectly and attaches nothing passes every test in `hclient-cookie` and fails this one |
 | Cookies are handled per redirect hop, not per operation | the same file, in both directions: a `Set-Cookie` on a 302 reaches the very next hop, and a cookie scoped `Path=/one` does **not** ride a same-origin 302 into `/two` — `next_hop` clones the previous hop's headers and `SENSITIVE_HEADERS` strips `Cookie` only across origins, so nothing but re-deriving it per hop gets this right |
-| A server that answers without reading the request body does not lose its response | `crates/http-ng-native/tests/stream_reset.rs` — a real `h2::server` that answers and then drops the request stream, which is what makes h2 send `RST_STREAM(NO_ERROR)`. Head **and** body are asserted, because the defect had two halves and fixing one leaves a `200` whose body fails. Three controls sit beside it: a connection that dies at the same moment, a reset whose reason is not `NO_ERROR`, and a stalled streaming body that puts the reset at a different write |
+| A server that answers without reading the request body does not lose its response | `crates/hclient-native/tests/stream_reset.rs` — a real `h2::server` that answers and then drops the request stream, which is what makes h2 send `RST_STREAM(NO_ERROR)`. Head **and** body are asserted, because the defect had two halves and fixing one leaves a `200` whose body fails. Three controls sit beside it: a connection that dies at the same moment, a reset whose reason is not `NO_ERROR`, and a stalled streaming body that puts the reset at a different write |
 | A client-side jar against a jar-owning backend is refused, not ignored | the same file — `UnsupportedCapability { what: "cookie_jar" }` at `build()`, with both controls beside it: the same jar against a backend that keeps none builds, and a client that never mentioned cookies builds against one that does (which is the line `Client::new()` takes in a browser) |
 
 ## The rule this vertical kept applying
@@ -61,7 +61,7 @@ request.
 
 **`Spawn` was never usable here, so the pool never had a choice** — **and
 this, the origin of a sentence three later pieces of work built on, is
-wrong.** It read: "`http_ng_rt::Spawn<F>` requires `F: Send + 'static`, and
+wrong.** It read: "`hclient_rt::Spawn<F>` requires `F: Send + 'static`, and
 the native IO is deliberately not `Send` — `connect.rs`'s `FakeStream` holds
 an `Rc<()>` for the sole purpose of proving it. So 'a pool driven by a
 spawned background task' does not compile on this seam at all." Measured
@@ -102,7 +102,7 @@ option; it was not an option.
 ## The defect v0.3 reported here, and the half of it the report did not see
 
 `docs/v03-acceptance.md` ends its `STOP_SENDING` section with a sentence
-about this crate: *"`http-ng-native`'s HTTP/2 path has the same shape …
+about this crate: *"`hclient-native`'s HTTP/2 path has the same shape …
 Same discard, different protocol."* It does, it was, and it is fixed. What
 the report could not see from reading is that the discard happened **twice**
 on this path, and that fixing the half it named leaves the other half
@@ -170,7 +170,7 @@ can be processed in between, since the connection is only driven from
 
 ### What the tests pin, and what they do not
 
-`crates/http-ng-native/tests/stream_reset.rs`, four tests against a real
+`crates/hclient-native/tests/stream_reset.rs`, four tests against a real
 `h2::server` on a real socket. A one-megabyte request body — sixteen times
 the 65 535-byte default flow-control window, which these servers never
 enlarge because they never read a request body — takes the race out, so
@@ -178,7 +178,7 @@ they measure the decision rather than the scheduler. The defect reproduced
 on the first run and on every run.
 
 Eight mutations, against an anchor of **124 tests** in `cargo nextest run -p
-http-ng-native --all-features` (1025 workspace-wide). Seven killed, one
+hclient-native --all-features` (1025 workspace-wide). Seven killed, one
 survived:
 
 | mutation | verdict | killed by |
@@ -208,7 +208,7 @@ cannot be written.** "Move the tolerance before the request head" has no
 expression here: the tolerance *is* "stop pumping and let `resp_fut`
 answer", and before `send_request` returns there is no `SendStream` to ask
 and no `resp_fut` to defer to — the compiler refuses, which is the same
-by-construction argument `http-ng-h3`'s `write_after_head` makes. The
+by-construction argument `hclient-h3`'s `write_after_head` makes. The
 nearest expressible mutation instead deletes `exchange`'s two **pre-head**
 `Failed::NotSent` returns, and all 124 tests stay green. That is a real
 gap, and it is not this defect's: **no test in this repository exercises a
@@ -219,7 +219,7 @@ is new coverage for the pool rather than a fix for the discard.
 
 **Unrelated, found while counting anchors, and left alone:** that same
 HTTP/1 test is flaky on `main` — two failures in twelve consecutive
-full-suite runs of `http-ng-native`, always
+full-suite runs of `hclient-native`, always
 `Connect / hyper::Error(Io, ConnectionReset)`, and never once in 35 isolated
 runs. It has nothing to do with h2 (`http2.rs` is only reachable when ALPN
 selects `h2`, and this test speaks `http://`), but anyone doing mutation
@@ -277,7 +277,7 @@ barrier is on the two neighbours with the identical race
 it is not separately measured and the code says so.
 
 Three mutations, against an anchor of **124 tests** in `cargo nextest run
--p http-ng-native --all-features`, all 124 green before each:
+-p hclient-native --all-features`, all 124 green before each:
 
 | mutation | verdict | killed by |
 |---|---|---|
@@ -325,7 +325,7 @@ someone to "fix" an item whose absence is the decision.
   of the socket, under a 300 ms idle timeout: closed 299.7 ms after the
   response on `Tokio` and 300.6 ms on `Smol`, against a control differing in
   that one call which still held the socket 1200 ms later
-  (`crates/http-ng-native/tests/reaper.rs`).
+  (`crates/hclient-native/tests/reaper.rs`).
 
   What it still cannot promise, because no bound can: `Spawn::spawn`
   returns `()`, so an executor nobody drives accepts the task, drops it, and
@@ -395,7 +395,7 @@ someone to "fix" an item whose absence is the decision.
   entry. A body dripping a byte every 50 ms for an hour passes
   `between_bytes` and is cut by `total`; a transfer that legitimately takes
   an hour and stalls for ten minutes in the middle is the reverse. Both are
-  now reachable on `http-ng-native`, and neither replaces the other: a
+  now reachable on `hclient-native`, and neither replaces the other: a
   caller that sets only one of them has bounded only one of those two
   shapes.
 - ~~**A `Client` cannot be given a jar over a caller-supplied public suffix
@@ -404,18 +404,18 @@ someone to "fix" an item whose absence is the decision.
   stores is `jar.map_suffixes(AnyList::new)` — `AnyList` being a
   `Box<dyn PublicSuffixList + Send>` that *implements the trait it erases*,
   so `CookieJar<AnyList>` keeps the jar's whole API rather than a subset.
-  The conversion is written in `http-ng` rather than in `http-ng-cookie`,
+  The conversion is written in `hclient` rather than in `hclient-cookie`,
   which the paragraph below expected to be impossible: `map_suffixes` is a
   public method on the jar, so the private field is never touched. The
   `Send` bound sits on this one opt-in call and nowhere else — amendment
   C12, the same shape `redirect_predicate` takes — so no signature a
-  single-threaded caller meets gains a bound. `crates/http-ng/src/erased.rs`,
+  single-threaded caller meets gains a bound. `crates/hclient/src/erased.rs`,
   and `AnyStore` beside it does the same for the response cache. The
   original text follows, because the route it rejected is still the right
   one to reject.
 
   `CookieJar<P>` is generic over the list — that is the seam
-  `http-ng-cookie` built so a caller can supply a fresher snapshot than
+  `hclient-cookie` built so a caller can supply a fresher snapshot than
   the compiled-in one — and `ClientBuilder::cookie_jar` takes
   `CookieJar<BuiltinList>` only.
 
@@ -424,10 +424,10 @@ someone to "fix" an item whose absence is the decision.
   the client's type" is a claim in the table above, and a jar is a far
   smaller reason to grow the type than a timeout was), or a
   `CookieJar<P> -> CookieJar<Box<dyn PublicSuffixList>>` conversion, which
-  has to be written in `http-ng-cookie` because the field is private —
-  and which would need a `Send + Sync` on the trait object that `http-ng`
+  has to be written in `hclient-cookie` because the field is private —
+  and which would need a `Send + Sync` on the trait object that `hclient`
   is not allowed to declare (the crate's own no-declared-auto-traits
-  invariant). Reachable by taking `http-ng-cookie` directly and driving
+  invariant). Reachable by taking `hclient-cookie` directly and driving
   the jar by hand; not reachable through this builder.
 - **No per-request cookie control**, and no `Client`-level way to turn the
   jar off for one call. Same reasoning as the missing per-request `total`
@@ -437,7 +437,7 @@ someone to "fix" an item whose absence is the decision.
   though note that "leave alone" covers the attaching half only, and the
   jar still stores what comes back.
 - **`SameSite` is parsed, reported and not enforced** — inherited from
-  `http-ng-cookie`, which says so, and unchanged by the wiring: acting on
+  `hclient-cookie`, which says so, and unchanged by the wiring: acting on
   it needs an initiating browsing context that a non-browser client does
   not have.
 - **The concurrency limit bounds requests, not sockets.** `tower` releases
@@ -461,7 +461,7 @@ someone to "fix" an item whose absence is the decision.
 - **A `tower::buffer::Buffer` in the stack breaks the cancellation
   contract**, because it spawns a worker and the request outlives the
   dropped future. Such a stack must declare `None` even when the transport
-  underneath can cancel. Written down in `http-ng-tower`.
+  underneath can cancel. Written down in `hclient-tower`.
 
 ## One decision taken against the brief, and why
 
@@ -491,7 +491,7 @@ gate.
 
 ## What remains unverified
 
-- **`http-ng-fetch` declares `ReuseSupport::Supported` with no external
+- **`hclient-fetch` declares `ReuseSupport::Supported` with no external
   observer.** Browsers do keep connections alive and declaring `None` would
   be a lie in the other direction — but from inside the browser we cannot
   watch sockets, and CI does not check it. This is the one declaration in
@@ -499,10 +499,10 @@ gate.
 
   **Not WASI, which was wrongly included here — and the observer it was
   missing has now been written, and it did not confirm the declaration.**
-  `http-ng-wasi`'s live suite already runs a real `TcpListener` on a host
+  `hclient-wasi`'s live suite already runs a real `TcpListener` on a host
   thread, with the guest as a wasmtime subprocess, so an accept-counting
   observer was available there on the same terms as the native pool's. It is
-  in `crates/http-ng-wasi/tests/live_roundtrip.rs` now
+  in `crates/hclient-wasi/tests/live_roundtrip.rs` now
   (`two_guest_requests_to_one_origin_open_two_connections`), and two
   sequential requests from one guest to one origin arrive on **two**
   connections. `caps.connection_reuse` is `ReuseSupport::None` accordingly;
@@ -510,7 +510,7 @@ gate.
 - **No test covers a dead *pooled* HTTP/2 connection being walked past to a
   fresh one.** Found by mutation while fixing the `RST_STREAM(NO_ERROR)`
   discard: deleting both of `http2::exchange`'s pre-head `Failed::NotSent`
-  returns leaves all 124 tests in `http-ng-native` green. The HTTP/1
+  returns leaves all 124 tests in `hclient-native` green. The HTTP/1
   equivalent is pinned (`pool.rs`'s
   `checkout_walks_past_a_dead_connection_to_a_live_one`, ~~itself flaky~~ —
   the flake was its fixture and is fixed, see the section above); h2 has no
@@ -530,11 +530,11 @@ gate.
   socket from smoltcp before the queued FIN can become a packet. W7 must
   either declare `CancelSupport::None` or own a closing list the stack task
   drains. Recorded in `docs/w7-embassy-research.md`.
-- **`http-ng-tls-native-tls` sends a proposed ALPN and cannot report the
+- **`hclient-tls-native-tls` sends a proposed ALPN and cannot report the
   selected one.** Harmless while `http/1.1` is the only proposal; the moment
   h2 is proposed it becomes a `PROTOCOL_ERROR` per request. `reports_alpn()`
   is the fix and it is in W3's scope, not yet landed.
-- **Two things about `http-ng-idn` that no test reaches.** The gate that
+- **Two things about `hclient-idn` that no test reaches.** The gate that
   refuses to trust an ICU until it has answered `straße.de` correctly has
   covered *content* and uncovered *presence*: deleting the filter leaves
   every test green, because killing that mutation needs a machine where ICU

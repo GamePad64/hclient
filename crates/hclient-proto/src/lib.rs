@@ -1,0 +1,12 @@
+//! Pure state machines for hclient's protocol layers.
+//!
+//! Crate invariant: no `async fn`, no runtime dependency, anywhere. Anything
+//! that depends on time takes `now` as a parameter. Enforced in CI.
+#![forbid(unsafe_code)]
+
+pub mod backoff;
+pub mod encode;
+pub mod happy_eyeballs;
+pub mod redirect;
+pub mod sse;
+pub mod uri;

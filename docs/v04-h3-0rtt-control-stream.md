@@ -2,7 +2,7 @@
 
 `docs/v04-staged-connect.md` §"The flake this branch may have introduced"
 recorded a failure of
-`http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection`
+`hclient-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection`
 twice, could not reproduce it in 41 further runs, and said the honest thing:
 *"`H3::execute` was refactored in this branch into `stage` + `finish`, so 'not
 reproduced' is a weaker statement than 'not there'."*
@@ -26,16 +26,16 @@ earlier h3 campaign found and this document repeats because it is the whole
 technique: **concurrency, not repetition**, and **keep every run's output**
 rather than grepping for a `FAIL` line.
 
-Eight concurrent `cargo nextest run -p http-ng-h3 --all-features` processes on
+Eight concurrent `cargo nextest run -p hclient-h3 --all-features` processes on
 a 28-core host, each run's complete stdout+stderr written to its own file.
 **2 failures in 277 runs of the whole suite.** Both failures are one test each,
 and both say the same thing:
 
 ```
-FAIL [   0.248s] (61/74) http-ng-h3::live a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it
+FAIL [   0.248s] (61/74) hclient-h3::live a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it
 
 thread 'a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it' panicked at
-crates/http-ng-h3/tests/live.rs:275:10:
+crates/hclient-h3/tests/live.rs:275:10:
 a rejected 0-RTT request is replayed, not surfaced: Error {
     kind: Connect,
     source: Custom { kind: Other, error:
@@ -52,7 +52,7 @@ line, with the same string.
 
 `Error { kind: Connect, source: Custom { kind: Other, .. } }` is the whole
 diagnosis in one value, because exactly one site in this crate builds that
-shape — `crates/http-ng-h3/src/lib.rs`, the `h3::client::builder().build(..)`
+shape — `crates/hclient-h3/src/lib.rs`, the `h3::client::builder().build(..)`
 call, the only `ErrorKind::Connect` here whose source is a **string**:
 
 ```rust
@@ -116,7 +116,7 @@ setting itself up on it, and the caller was handed the rejection as a
 `Connect` error.**
 
 That is precisely the outcome this crate promises cannot happen.
-`crates/http-ng-h3/src/early.rs` states three 0-RTT failure paths and says two
+`crates/hclient-h3/src/early.rs` states three 0-RTT failure paths and says two
 of them are handled here — *"the server rejected the 0-RTT keys → replayed on
 the same connection once the handshake completes; the caller sees a normal
 response"*. The replay lives in `H3::finish` and it is real; what it covers is
@@ -164,7 +164,7 @@ complete in one go:
 
 So the fixture takes a `stream_receive_window`
 (`server::start_two_sharing_a_certificate_and_a_tiny_window`), and
-`crates/http-ng-h3/tests/live.rs` carries the test, next to the sibling that
+`crates/hclient-h3/tests/live.rs` carries the test, next to the sibling that
 covers the same rejection arriving one stream later.
 
 ### 3.1 That was half of it, and the other half was found the same way
@@ -214,10 +214,10 @@ error string as the captured flake, including on
 the record names:
 
 ```
-FAIL http-ng-h3::live  a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it
-FAIL http-ng-h3::hooks a_replayed_0_rtt_request_reports_one_head_and_one_connection
+FAIL hclient-h3::live  a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it
+FAIL hclient-h3::hooks a_replayed_0_rtt_request_reports_one_head_and_one_connection
 
-crates/http-ng-h3/tests/hooks.rs:922:37:
+crates/hclient-h3/tests/hooks.rs:922:37:
 replayed, not surfaced: Error { kind: Connect, source: Custom { kind: Other, error:
   "Local error: Application { code: H3_CLOSED_CRITICAL_STREAM,
     reason: \"an error occurred on the control stream 0-RTT rejected\" }" } }
@@ -257,7 +257,7 @@ already falls through to a full handshake, and its sentence holds here
 verbatim: *"nothing was sent, so falling through to a full handshake risks
 nothing and tells the caller nothing."* Nothing had been sent. The request has
 not been formed at this point, let alone written, so this is **not a retry**
-and needs no `RetryKind` — the same distinction `http-ng-native` draws with
+and needs no `RetryKind` — the same distinction `hclient-native` draws with
 *"this is not a second request, it is the first one, which never left."*
 
 Four decisions inside it are worth reading, because three of them are the
@@ -293,7 +293,7 @@ below.
 `H3::stage`, after `checkout` returns, and the fallback lives beneath it in
 `connect` — so a caller counting connections still sees one per request rather
 than one it can never use again. `Closed` is not emitted either, and that is
-the same rule `http-ng-wasi` reaches from the far end of the workspace: the
+the same rule `hclient-wasi` reaches from the far end of the workspace: the
 discarded connection never had a `ConnectionId`, and *a `Closed` built from one
 would announce the end of a connection whose beginning was never announced*.
 `hooks::a_0_rtt_connection_lost_to_the_rejection_reports_one_connection_and_no_close`
@@ -303,7 +303,7 @@ not also what a transport that never fell back would report.
 
 ## 5. Mutation testing
 
-Anchor **213 tests**, `cargo nextest run -p http-ng-h3 -p http-ng-select
+Anchor **213 tests**, `cargo nextest run -p hclient-h3 -p hclient-select
 --all-features --no-fail-fast`, verified before the run and after every
 restore. Each patch had to match exactly once. Restores are `git checkout`
 followed by `os.utime`, and the tests were committed before the first mutation.
@@ -362,7 +362,7 @@ has to be one it cannot satisfy by scraping nothing.
 
 ## 6. Reproduction rate, before and after
 
-One recipe throughout: **8 concurrent `cargo nextest run -p http-ng-h3
+One recipe throughout: **8 concurrent `cargo nextest run -p hclient-h3
 --all-features` processes** on a 28-core host, each run's complete output kept
 on disk, on the same machine and against the same suite.
 
@@ -400,7 +400,7 @@ rather than absent would show up in it.
   servers here do; that this is *benign* is an observation about two
   implementations rather than a claim about the protocol, and no test pins it.
 - **M5**, §5.
-- **Anything outside `http-ng-h3`.** `http-ng-select` was in the mutation
+- **Anything outside `hclient-h3`.** `hclient-select` was in the mutation
   anchor because it drives `H3::connect` through `StagedConnect`, but no test
   there marks a request for early data, so the fallback is unexercised from
   that side.

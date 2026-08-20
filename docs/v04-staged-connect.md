@@ -3,7 +3,7 @@
 `docs/connect-only-seam.md` is the investigation. This is what came of
 building it: the seam, an implementation on each backend that has a
 connector, and the consumer that made it worth having — Alt-Svc's negative
-half in `http-ng-select`, the memory of *"HTTP/3 did not get through to
+half in `hclient-select`, the memory of *"HTTP/3 did not get through to
 this origin"*.
 
 Nothing here re-argues the investigation. What it records is the three
@@ -17,7 +17,7 @@ needed, and what is still not verified.
 `exchange`.
 
 ```rust
-// http-ng-native
+// hclient-native
 pub trait StagedConnect: Transport {
     type Staged;
     fn connect(&self, prepared: Prepared) -> impl Future<Output = Result<Self::Staged, Refused>>;
@@ -25,7 +25,7 @@ pub trait StagedConnect: Transport {
         -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
 }
 
-// http-ng-h3 — the same shape, declared separately
+// hclient-h3 — the same shape, declared separately
 pub trait StagedConnect: Transport {
     type Staged;
     fn connect(&self, req: http::Request<RequestBody>)
@@ -37,10 +37,10 @@ pub trait StagedConnect: Transport {
 
 **Not a method on `Transport`**, for §4's reason and not by family
 resemblance. `wasi:http` 0.3's client interface is one function with no
-connection resource anywhere in the WIT, so `http-ng-wasi` could answer
+connection resource anywhere in the WIT, so `hclient-wasi` could answer
 nothing; the browser's one connect-shaped API is a `<link rel="preconnect">`
 hint with no handle, no readiness signal and no way to bind a later
-`fetch()` to it, so `http-ng-fetch` would be implementing *"ask nicely, then
+`fetch()` to it, so `hclient-fetch` would be implementing *"ask nicely, then
 return `Ok(())`"*. Two of four backends `Unsupported`, one of them
 dishonestly — the shape this workspace refuses.
 
@@ -58,7 +58,7 @@ retry — there is no second request, because the first one never left.
 
 ### 1.1 What each backend could honestly implement
 
-| | `http-ng-native` | `http-ng-h3` | `http-ng-wasi` | `http-ng-fetch` |
+| | `hclient-native` | `hclient-h3` | `hclient-wasi` | `hclient-fetch` |
 |---|---|---|---|---|
 | connect as a phase | yes — `run`'s steps 1 and 2 | yes — resolve, then checkout | **no** — one `send` function, no connection resource in the WIT | **no** — `preconnect` is a hint |
 | what the handle owns | the connection, taken out of the pool | a **claim** on a connection the pool also holds | — | — |
@@ -93,8 +93,8 @@ state in which `H3` holds a connection nobody has claimed — which is
 exactly why a connect-only entry point could never have served WebTransport
 (`docs/v04-w2-webtransport.md` §4b, and `docs/quinn-adapter-extraction.md` §5).
 
-So `http_ng_h3::Staged` is a **claim on a connection the pool also holds**,
-where `http_ng_native::Staged` *owns* the connection it took out. Both
+So `hclient_h3::Staged` is a **claim on a connection the pool also holds**,
+where `hclient_native::Staged` *owns* the connection it took out. Both
 satisfy the property the seam exists for, because that property is about
 the second call's code path and not about who owns the socket. Letting
 `H3` answer for itself rather than shaping it to `Native`'s answer is what
@@ -106,14 +106,14 @@ produced that sentence.
 **handle nobody spends**, and it is now defined on both stacks, differently,
 to the same observable end:
 
-- **`http-ng-native`**: `Staged` has a `Drop` that checks the connection in.
+- **`hclient-native`**: `Staged` has a `Drop` that checks the connection in.
   A connection made for a request that went elsewhere is a **warm**
   connection rather than a closed socket. Nothing was spoken on it, so
   nothing makes it unfit; `is_reusable` polls it at the next checkout as it
   polls every other entry. With `Native::without_pool()` there is no
   check-in and the drop closes the socket — which is the control that
   attributes the reuse to the pool rather than to the fixture.
-- **`http-ng-h3`**: no `Drop` at all is needed, because `checkout` pooled
+- **`hclient-h3`**: no `Drop` at all is needed, because `checkout` pooled
   the connection before the caller saw it. Dropping the handle drops a
   `SendRequest` clone.
 
@@ -132,7 +132,7 @@ consumer here, which connects on the arm it intends to use.
 It works, and the handle carrying its own `PoolKey` is why.
 
 `Pool`, `PoolKey`, `CheckIn` and `Established` are all `pub(crate)`, so *"a
-connection produced outside `http-ng-native`"* is not expressible — and
+connection produced outside `hclient-native`"* is not expressible — and
 `Staged` keeps it that way: produced by `connect`, consumed by `exchange`,
 and the fact that a caller holds it in between changes nothing about who
 made it. The check-in is minted in `connect`, from the key that connect
@@ -165,7 +165,7 @@ protecting them"*, because the fallback would be *"request-level retry with
 a `RequestBody::retry_kind()` condition on it"*.** With a staged connect it
 is sequential and it is not a retry: `Selecting` asks `H3` to connect, and
 where that fails it routes the request — untouched, unsent, never handed to
-a transport — over TCP. `http-ng-native`'s sentence is true of it verbatim:
+a transport — over TCP. `hclient-native`'s sentence is true of it verbatim:
 *this is not a second request, it is the first one, which never left.* The
 memory therefore costs a **slow** first request per window per origin, not a
 failed one.
@@ -260,7 +260,7 @@ record with a request it was not fetched for, so the TCP member does its own
 lookup exactly as it does for a request that never met this crate.
 
 Measured at the fixture's port it is **zero** extra, because
-`http-ng-native` does no discovery away from an origin's default port. The
+`hclient-native` does no discovery away from an origin's default port. The
 default-port row is inferred rather than measured, for §9.6's own reason: an
 unprivileged test process cannot put a server on 443.
 
@@ -271,10 +271,10 @@ one hop.
 
 | file | tests | what it watches |
 |---|---|---|
-| `crates/http-ng-native/tests/staged.rs` | 7 | a counting TCP server: connections accepted and request heads read |
-| `crates/http-ng-h3/tests/staged.rs` | 5 | the h3 fixture's `accepted`/`requests` counters over real QUIC |
-| `crates/http-ng-select/tests/h3_failure.rs` | 6 | the two real servers behind one authority, with a QUIC arm that refuses |
-| `crates/http-ng-select/tests/failure_memory.rs` | 10 | the memory itself, `now` handed in |
+| `crates/hclient-native/tests/staged.rs` | 7 | a counting TCP server: connections accepted and request heads read |
+| `crates/hclient-h3/tests/staged.rs` | 5 | the h3 fixture's `accepted`/`requests` counters over real QUIC |
+| `crates/hclient-select/tests/h3_failure.rs` | 6 | the two real servers behind one authority, with a QUIC arm that refuses |
+| `crates/hclient-select/tests/failure_memory.rs` | 10 | the memory itself, `now` handed in |
 
 The select fixture gained two things. **`Quic::Rejecting`** — a real quinn
 server offering an ALPN this client will not accept, so a connect fails
@@ -299,8 +299,8 @@ the second.
 
 ## 5. Mutation testing
 
-Anchor **416 tests**, `cargo nextest run -p http-ng-native -p
-http-ng-h3 -p http-ng-select --all-features`, verified before the run and
+Anchor **416 tests**, `cargo nextest run -p hclient-native -p
+hclient-h3 -p hclient-select --all-features`, verified before the run and
 again after every restore. Each patch had to match exactly once or the
 mutation was not run. The harness scores from the **names** of failing tests
 and refuses to score a run where the count of names disagrees with nextest's
@@ -323,7 +323,7 @@ total is not the anchor's — and the second run carries the flag.
 | **N3** | the handle from the pool is minted with no way home | **killed** (1) | `a_staged_exchange_returns_its_connection_to_the_pool` |
 | **N4** | a fresh connection is staged with no check-in | **killed** (2) | `a_handle_nobody_spends_leaves_a_warm_connection`, `a_staged_exchange_returns_its_connection_to_the_pool` |
 | **N5** | **CONTROL** — `Staged`'s `Debug` reports nothing instead of what it holds | **survived, as intended** (0) | nothing, and nothing should: no test asserts on that `Debug` output and no code path reads it. Without a control, nineteen kills would be indistinguishable from a harness that reports "killed" unconditionally |
-| **H1** | the staged connect emits no `Connected`/`Reused` event | **killed** (13) | every `http-ng-h3::hooks` arm, plus `hooks_cost::the_same_two_requests_with_a_hook_do_read_it` |
+| **H1** | the staged connect emits no `Connected`/`Reused` event | **killed** (13) | every `hclient-h3::hooks` arm, plus `hooks_cost::the_same_two_requests_with_a_hook_do_read_it` |
 | **H2** | the exchange never replays a request whose early data was refused | **killed** (2) | `h3::live::a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it`, `h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection` |
 | **H3** | the version demand is not answered before the connect | **killed** (3) | both `h3::require_version` arms, plus `h3::staged::a_version_demand_this_stack_cannot_meet_hands_the_request_back` |
 | **H4** | the scheme is not checked, so `http://` reaches the QUIC dial | **killed** (2) | `h3::live::plaintext_http_is_refused_rather_than_silently_upgraded`, `h3::staged::a_refused_connect_hands_the_request_back` |
@@ -351,7 +351,7 @@ the new test covers both, and N3 and N4 are the pair that says so.
 300 ms connect bound and points at an origin with no QUIC server; the bound
 is spent, nothing is left, and the fallback does not run — so the count
 stays at one. Hand the fallback a fresh copy of the bound and it runs,
-`http-ng-native`'s connector makes its own type-65 query, and the count
+`hclient-native`'s connector makes its own type-65 query, and the count
 becomes two. A DNS test noticing a timeout arithmetic error is the same
 shape as `docs/v04-w1-acceptance.md` §9.8's M22, and it is the second
 witness the budget rule deserved.
@@ -369,7 +369,7 @@ demanded request first, where nothing was suppressed yet.
   `max_idle_timeout` rather than anything of ours, and it is a
   `Timeouts::connect` question rather than this memory's.
 - **The default-port DNS row** — §3.4. Inferred, for §9.6's reason.
-- **`http-ng-native`'s staged pair has no consumer for its `exchange`**,
+- **`hclient-native`'s staged pair has no consumer for its `exchange`**,
   and the race — since built, `docs/v04-race.md` — did not give it one.
   It uses `connect`, which is the half that carries the trait's whole
   argument, and then routes the winner through `Prefetch::execute_prepared`.
@@ -396,9 +396,9 @@ demanded request first, where nothing was suppressed yet.
 - ~~**One flake, seen once and not since.**~~ **A defect, and an old one** —
   [`docs/v04-h3-0rtt-control-stream.md`](v04-h3-0rtt-control-stream.md). In
   the first mutation pass
-  `http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_
+  `hclient-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_
   connection` failed under a mutation that cannot reach it — `S1`, in
-  `http-ng-select`. It passed 15 times in isolation afterwards and did not
+  `hclient-select`. It passed 15 times in isolation afterwards and did not
   recur in the 21 full-suite runs of the second pass, so it read as a
   load-dependent flake rather than a defect this work introduced; but
   `H3::execute` was refactored into `stage` + `finish` in this branch, and
@@ -440,13 +440,13 @@ happen. `H3::connect` now dials once more without the shortcut. `H3::execute`'s
 
 ---
 
-`http-ng-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection`
+`hclient-h3::hooks::a_replayed_0_rtt_request_reports_one_head_and_one_connection`
 failed once during the branch's own mutation run, under a mutation that
 cannot reach it, and once again during the merge review — in a full
 workspace run, which is the condition CI uses.
 
 It did not reproduce afterwards: **0 failures in 20 isolated runs, 15 runs
-of the whole `http-ng-h3` suite, and 6 full-workspace runs**, all
+of the whole `hclient-h3` suite, and 6 full-workspace runs**, all
 immediately after the observed failure and on the same machine.
 
 Recorded rather than dismissed, and with the fact that matters: **`H3::execute`

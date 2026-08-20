@@ -23,7 +23,7 @@ and an EXCEPTIONS entry naming a step that no longer exists is an error too —
 the same rule `unsafe-code-policy.sh` applies to its ALLOWED map, for the same
 reason.
 
-The shape is `crates/http-ng-wasi/tests/live_roundtrip.rs`'s
+The shape is `crates/hclient-wasi/tests/live_roundtrip.rs`'s
 `the_job_that_installs_wasmtime_exports_the_marker_this_guard_keys_on`: a
 check that reads the workflow file and asserts a symmetry, rather than a
 comment asserting it in prose.

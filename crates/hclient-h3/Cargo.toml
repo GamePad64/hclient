@@ -1,0 +1,78 @@
+[package]
+name = "hclient-h3"
+version.workspace = true
+description = "HTTP/3 transport for hclient: QUIC over the runtime seam's UDP capability"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Its own crate, not a feature of `hclient-native`, and the reason is in the
+# type system rather than in the dependency count. This transport's bounds
+# are `R: UdpBind + Spawn<..>` and `T: QuicTlsConnect` — neither of which
+# `Native<R, T, D>` has, and Cargo's features are additive, so a
+# `hclient-native/http3` feature would have to make them unconditional for
+# every build in the graph. The 55-crate stack behind it is the second
+# reason, not the first.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes          = { workspace = true }
+h3             = "0.0.8"
+h3-quinn       = "0.0.10"
+http           = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http-body      = { workspace = true }
+hclient-core   = { workspace = true }
+hclient-dns    = { path = "../hclient-dns",      version = "0.1.0" }
+hclient-rt     = { path = "../hclient-rt",       version = "0.1.0" }
+# The `quinn::Runtime` over `hclient_rt::{Timer, Spawn, UdpBind}` — this
+# crate's `mod runtime` until v0.4 W3, when its second consumer arrived and
+# an unreachable module stopped being good enough. `QuinnTask` is
+# re-exported from here, so `hclient_h3::QuinnTask` still names the same
+# type alias it always did.
+hclient-quinn = { path = "../hclient-quinn", version = "0.1.0" }
+hclient-tls    = { path = "../hclient-tls",      version = "0.1.0" }
+hclient-tls-quic = { path = "../hclient-tls-quic", version = "0.1.0" }
+pin-project-lite = "0.2"
+# No `runtime-*` feature: the runtime is ours, and it is
+# `hclient-quinn`'s — see that crate's doc. `futures-io` is not
+# optional, `h3-quinn` requires it. No `rustls-*` either: the TLS crypto
+# arrives as an already-built `Arc<dyn quinn_proto::crypto::ClientConfig>`
+# from `hclient-tls-quic`, so this crate picks no TLS provider.
+#
+# And no `ring`: it went with the endpoint that needs it. Binding an
+# endpoint is the one operation here that wanted a crypto provider
+# independently of TLS — an HMAC key for stateless resets, an AEAD for
+# retry tokens, which is why `EndpointConfig` has no `Default` without one
+# — and that call now lives in `hclient-quinn`. `ring` is still in this
+# crate's graph, through that dependency and through rustls; it is simply
+# no longer asked for here, where nothing uses it.
+quinn          = { version = "0.11", default-features = false, features = ["futures-io"] }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+futures-executor   = { version = "0.3", default-features = false, features = ["std"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0" }
+http-body-util     = { workspace = true }
+hclient            = { workspace = true }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0", features = ["udp"] }
+# The second runtime, for `tests/two_runtimes.rs`. A dev-dependency only:
+# this crate is generic over `R` and names neither backend.
+hclient-rt-smol    = { path = "../hclient-rt-smol", version = "0.1.0", features = ["udp"] }
+# `webpki-roots` is here for the module doc's example, not for a test:
+# without it that example compiles only under `--workspace`, where feature
+# unification hands it a constructor its own dev-dependencies never asked
+# for. Found when `cargo test --doc -p hclient-h3 --all-features` was run
+# alone for the first time -- no job had ever run it.
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["quic", "webpki-roots"] }
+quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
+quinn-proto        = { version = "0.11", default-features = false }
+rcgen              = "0.14"
+rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio              = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[lints]
+workspace = true

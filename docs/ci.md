@@ -35,14 +35,14 @@ into a failure.** No headless browser, no `wasmtime`, no `/dev/net/tun`, no
 nightly toolchain: on a laptop each of those prints a `NOTICE` and moves on,
 because a laptop that cannot run the browser suite is a limitation and not a
 regression. In the job that *promised to install the thing*, a marker —
-`HTTP_NG_REQUIRE_BROWSERS`, `HTTP_NG_REQUIRE_WASMTIME`,
-`HTTP_NG_REQUIRE_TUNTAP`, `HTTP_NG_REQUIRE_NIGHTLY` — makes the same skip a
+`HCLIENT_REQUIRE_BROWSERS`, `HCLIENT_REQUIRE_WASMTIME`,
+`HCLIENT_REQUIRE_TUNTAP`, `HCLIENT_REQUIRE_NIGHTLY` — makes the same skip a
 red step with a message naming what is missing. The strictness sits exactly
 where the promise was made; everywhere else the run degrades honestly. Two of
 the four predate this arrangement and are the pattern the other two copy.
 
 **There is a fifth marker with no job behind it, deliberately.**
-`HTTP_NG_REQUIRE_NETWORK` gates `just test-doh-live`, the only suite in this
+`HCLIENT_REQUIRE_NETWORK` gates `just test-doh-live`, the only suite in this
 repository that talks to servers nobody here runs (Cloudflare's and Google's
 public DoH endpoints). It is in no workflow, and the reasoning is written out
 in `docs/v03-acceptance.md`'s "Should this be in CI?": what that suite
@@ -89,7 +89,7 @@ what `rustc --version` reports, because an override that silently fails to
 apply is the same defect one level down. Measured: `cargo --version` → 1.97.1
 plain, 1.97.0 with `RUSTUP_TOOLCHAIN=1.97.0`. The export lives in the recipe
 rather than in the job's `env:` so that running it by hand does the same
-thing; what the job supplies is `HTTP_NG_REQUIRE_NIGHTLY`, which decides
+thing; what the job supplies is `HCLIENT_REQUIRE_NIGHTLY`, which decides
 whether a missing nightly is a skip or a failure.
 
 ---
@@ -120,10 +120,10 @@ Two graph invariants moved to `cargo deny` configs in `.github/deny/`:
 
 Both were mutation-tested in the direction that matters: deleting the
 `[[bans.features]]` block makes the tokio path pass, and emptying
-`ambient.toml`'s deny list makes `http-ng-native` pass. Restoring either
+`ambient.toml`'s deny list makes `hclient-native` pass. Restoring either
 turns it red again.
 
-**One check stays hand-rolled, on purpose.** `http-ng-proto pulls in no
+**One check stays hand-rolled, on purpose.** `hclient-proto pulls in no
 async runtime` bans a *family* by prefix — `^(tokio|futures-|async-|smol|
 compio)`. `cargo deny` bans crates by name, so enumerating today's names
 would pass for tomorrow's `futures-whatever`, which is precisely the
@@ -134,9 +134,9 @@ the output has to be read either way.
 
 `graph-quinn-adapter-is-shared` is the other user of `present`, and it uses
 it for something an `absent` check structurally cannot express. The claim is
-that `http-ng-quinn` holds the `quinn::Runtime` adapter *and nothing else
+that `hclient-quinn` holds the `quinn::Runtime` adapter *and nothing else
 holds a copy of it*, so one assertion bans HTTP/3 from the adapter's own
-graph and another **requires** `http-ng-h3` to depend on the adapter. The
+graph and another **requires** `hclient-h3` to depend on the adapter. The
 second is what fails when someone re-adds a private `mod runtime` and drops
 the dependency — a change no ban would notice, because nothing forbidden
 appears anywhere. `docs/quinn-adapter-extraction.md` §7.
@@ -188,21 +188,21 @@ this job actually needs.
 
 ### `embassy-tests-link-under-a-strict-linker`
 
-`cargo test -p http-ng-rt-embassy --no-run` and the same with
+`cargo test -p hclient-rt-embassy --no-run` and the same with
 `--all-features`, both under `RUSTFLAGS=-C link-arg=-Wl,--no-gc-sections`.
 
 Linkers disagree about a reference that only dead code makes. `ld
 --gc-sections` and macOS `ld64`'s dead-strip drop the section before
 anything has to resolve it; MSVC's `link.exe` resolves first and runs
 `/OPT:REF` afterwards. So an undefined symbol nothing calls is green twice
-and red once — which is exactly how `http-ng-rt-embassy`'s `lib test` came
+and red once — which is exactly how `hclient-rt-embassy`'s `lib test` came
 to fail on windows-latest alone with `LNK2019: unresolved external symbol
 __embassy_time_queue_item_from_waker`, while the Linux and macOS legs of
 `test` ran the whole suite.
 
 This job puts the strict rule on the cheap runner. It was broken on purpose
 first: with the `use embassy_executor as _` removed from
-`crates/http-ng-rt-embassy/src/lib.rs` it names that same symbol, out of
+`crates/hclient-rt-embassy/src/lib.rs` it names that same symbol, out of
 the same `TimerQueueItem::from_embassy_waker` that Windows named.
 
 **Both feature sets, because the first version of this job ran
@@ -214,7 +214,7 @@ alone either way — and the only difference was which archive members each
 link happened to need. A guard that covers one configuration of a crate
 whose other configuration CI also builds is worse than it looks: it reads
 as "this is settled". `idn-feature-is-real` runs
-`cargo nextest run -p http-ng-rt-embassy` with no features at all, because
+`cargo nextest run -p hclient-rt-embassy` with no features at all, because
 `an_address_family_left_out_of_the_build_is_a_typed_error` lives under
 `#[cfg(not(feature = "proto-ipv6"))]` and cannot compile with them on.
 
@@ -253,7 +253,7 @@ was written beside the implementation it observes, which is the arrangement
 in which a fixture agrees with a bug; this is the job that does not have
 that property. The table and the verdict are in `docs/v03-acceptance.md`.
 
-`HTTP_NG_REQUIRE_DOCKER` is set here and only here: this is the job that
+`HCLIENT_REQUIRE_DOCKER` is set here and only here: this is the job that
 promises a daemon, so a missing one is a broken runner rather than a laptop.
 Without the marker the recipe prints a NOTICE and skips.
 
@@ -284,12 +284,12 @@ checked even on the machines that skip the run itself.
 
 ### `wasip2`
 
-Runs `http-ng-wasi`'s tests under a real `wasmtime` host, via the target
+Runs `hclient-wasi`'s tests under a real `wasmtime` host, via the target
 runner in `.cargo/config.toml`.
 
 `tests/live_roundtrip.rs` is the only automated protection of the property
 this backend exists for, and it used to skip silently when `wasmtime` was
-absent. `HTTP_NG_REQUIRE_WASMTIME` turns that skip into a panic, and the job
+absent. `HCLIENT_REQUIRE_WASMTIME` turns that skip into a panic, and the job
 greps for the skip notice as a second belt in case the variable never reaches
 the test.
 
@@ -306,7 +306,7 @@ deleted.
 
 ### `browser` (chrome, firefox)
 
-`wasm-pack test --headless` for `http-ng-fetch` and for `http-ng`'s own
+`wasm-pack test --headless` for `hclient-fetch` and for `hclient`'s own
 browser tests, each with a minimum passing count — a suite that silently
 stops running tests is the failure mode, not a suite that fails.
 
@@ -322,7 +322,7 @@ per target, which is the one thing this acceptance exists to disprove.
 
 ### `fetch-must-fail-under-wasm-threads`
 
-`http-ng-fetch` carries an `unsafe impl Send` that is sound only because
+`hclient-fetch` carries an `unsafe impl Send` that is sound only because
 `wasm32-unknown-unknown` is single-threaded. With `-C target-feature=+atomics`
 the build must FAIL, with a specific `E0277` about `Send` — not merely fail
 for any reason, which a typo in the flag would also achieve.
@@ -366,7 +366,7 @@ tests, then the scan.
   stripped, which matters here: the file's own module doc and its closing
   `println!` both mention `#[cfg]` on purpose, and a scan that read them would
   go red on the honest file.
-- **`http-ng-proto` contains no `async fn`** (`no-async-fn-in-the-sans-io-crate`).
+- **`hclient-proto` contains no `async fn`** (`no-async-fn-in-the-sans-io-crate`).
   It is the sans-io crate. Strictly stronger than the grep it replaced, which
   missed `const async unsafe extern "C" fn` — the two words are not adjacent
   there — and needed a second grep to subtract lines *beginning* with a
@@ -377,7 +377,7 @@ tests, then the scan.
   enforces the absence of `unsafe` — a `forbid` cannot be overridden by a
   local `allow`. What CI has to check is the one thing the compiler cannot:
   that no crate quietly downgrades `forbid` to `deny` or `allow`.
-  `http-ng-fetch`, `http-ng-dns-system` and `http-ng-idn` are the three
+  `hclient-fetch`, `hclient-dns-system` and `hclient-idn` are the three
   allowed to, for amendments C7, C8 and C9, and their `allow(unsafe_code)`
   sites must name the amendment *and* sit in a file that amendment names.
 - **No `Send`/`Sync` bounds in the core surface**
@@ -385,7 +385,7 @@ tests, then the scan.
   `dyn Trait` drops auto-traits (spec amendment C1), so declaring the bound
   in the seam forces it on backends that cannot satisfy it. Exceptions carry
   a `send-bound-exception: amendment-C…` marker. The runtime crates and
-  `http-ng-dns-system` are excluded by name — an exclusion list that grew to
+  `hclient-dns-system` are excluded by name — an exclusion list that grew to
   cover the whole workspace would make this check scan nothing, so the job
   fails if it does.
 
@@ -411,9 +411,9 @@ tests, then the scan.
 
 ### `dependency-graph` — `cargo tree`, no build
 
-- **`http-ng-proto` pulls in no async runtime.**
-- **The ambient builds contain no `tokio`, `hyper` or `h2`**: `http-ng-fetch`
-  on `wasm32-unknown-unknown` and `http-ng-wasi` on `wasm32-wasip2`. Both
+- **`hclient-proto` pulls in no async runtime.**
+- **The ambient builds contain no `tokio`, `hyper` or `h2`**: `hclient-fetch`
+  on `wasm32-unknown-unknown` and `hclient-wasi` on `wasm32-wasip2`. Both
   named with `--target` explicitly — without it the check described the host
   graph while claiming to police a wasm one. It fails closed if `cargo tree`
   itself errors or returns nothing, because an empty tree is a broken
@@ -440,7 +440,7 @@ mutation: reinstating the merged step is reported at the exact line.
 
 ## Deliberately not separate jobs
 
-**`two-runtimes`** ran `cargo nextest run -p http-ng --test two_runtimes` on
+**`two-runtimes`** ran `cargo nextest run -p hclient --test two_runtimes` on
 three operating systems. The workspace `test` matrix already runs that file
 on the same three, so the job was paying for three extra runners to repeat
 it. Its dependency-graph half moved to `dependency-graph`.

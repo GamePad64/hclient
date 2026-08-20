@@ -4,7 +4,7 @@ Three pieces of work in this workspace reached for the same missing thing
 without any of them going looking for it: the two-stack race measurement
 (`docs/v04-w1-acceptance.md` §7.6), WebTransport's need for a live
 `quinn::Connection` (`docs/v04-w2-webtransport.md` §4a), and the
-observation in the same section that `http-ng-h3`'s quinn runtime glue is
+observation in the same section that `hclient-h3`'s quinn runtime glue is
 unreachable from outside the crate. When three tasks independently hit one
 gap it stops being anybody's inconvenience, so this document reads all
 three, checks every premise it can against this tree, and decides.
@@ -16,11 +16,11 @@ measured, which were read, and which were argued.
 **The answer, first, because two of the three asks turn out not to want
 what they asked for.** It is *two* gaps rather than one or three. One of
 them — "expose a type" — is closed, by the extraction of `SeamRuntime` into
-`http-ng-quinn` that landed while this was being written. The other is
+`hclient-quinn` that landed while this was being written. The other is
 the race's, and what it needs is not a connect-only entry point on
 `Transport`, and not on `H3` either: it is a **staged pair on each backend
 that has a connector**, one phase further down the pipeline
-`http_ng_native::Prefetch` already stages. WebTransport's ask is a third
+`hclient_native::Prefetch` already stages. WebTransport's ask is a third
 thing that a connect-only entry point on `H3` would answer *wrongly*, and
 §3.2 is the argument.
 
@@ -49,10 +49,10 @@ two things that would close its gap:
 
 **C. Reachability** — the same section, as the first of the two:
 
-> `SeamRuntime`, the `quinn::Runtime` over `http_ng_rt::{Timer, Spawn,
+> `SeamRuntime`, the `quinn::Runtime` over `hclient_rt::{Timer, Spawn,
 > UdpBind}`, is therefore unreachable: 302 lines of code (494 with its
 > documentation) … **What would close it** is one of: 1. `pub use
-> runtime::SeamRuntime;` in `http-ng-h3` — one line …
+> runtime::SeamRuntime;` in `hclient-h3` — one line …
 
 §4a presents B and C as alternatives — "one of". §3 below finds that they
 are not alternatives: C closes B, and B does not close B.
@@ -66,30 +66,30 @@ this was written.
 
 | # | premise | how known |
 |---|---|---|
-| P1 | `Transport` has exactly one method that does I/O — `execute`. The other two are `capabilities` (a `&Capabilities` fixed at construction) and `to_error` (a pure classification hook). | read, `crates/http-ng-core/src/unversioned/transport.rs` |
+| P1 | `Transport` has exactly one method that does I/O — `execute`. The other two are `capabilities` (a `&Capabilities` fixed at construction) and `to_error` (a pure classification hook). | read, `crates/hclient-core/src/unversioned/transport.rs` |
 | P2 | `wasi:http` 0.3's client interface is **one function**: `send: async func(request) -> result<response, error-code>`. There is no connection resource anywhere in the WIT, and `handler.handle` has the same signature by design ("the type signature of `client.send` is the same as `handler.handle`"). | read, `wasip3-0.7.0+wasi-0.3.0/wit/deps/http.wit`, `interface client` |
 | P3 | `wasi:http` **can bound** the connect phase and can never observe it: `request-options` has `get-connect-timeout`/`set-connect-timeout`, and nothing else connect-shaped. | read, same file, `resource request-options` |
-| P4 | `http-ng-fetch` declares `timeouts.connect = false`, with the reason written where the field is set: *"`AbortSignal` is one deadline for the whole exchange; none of the three phase timeouts (`connect`/`first_byte`/`between_bytes`) can be expressed through it individually. Declaring any of the three would be a capability that lies."* | read, `crates/http-ng-fetch/src/caps.rs` |
+| P4 | `hclient-fetch` declares `timeouts.connect = false`, with the reason written where the field is set: *"`AbortSignal` is one deadline for the whole exchange; none of the three phase timeouts (`connect`/`first_byte`/`between_bytes`) can be expressed through it individually. Declaring any of the three would be a capability that lies."* | read, `crates/hclient-fetch/src/caps.rs` |
 | P5 | The browser's only connect-shaped API is `<link rel="preconnect">`, and it is a **hint**: MDN calls it *"a hint to browsers … the browser can likely improve the user experience by preemptively initiating a connection"*. It yields no handle, and there is no way to bind a later `fetch()` to a particular connection — the browser's connection pool is not addressable from script at all. | read, MDN `Web/HTML/Reference/Attributes/rel/preconnect`, and P4 for the in-tree half |
-| P6 | `http-ng-native` **already has a staged entry point**, and it is deliberately not on `Transport`: `Prefetch::prepare` → `Prepared` → `Prefetch::execute_prepared`. Its own doc gives the reason: *"`Transport` is the seam **every** backend fills in, and this is a question exactly one kind of backend can be asked: a `fetch`-shaped transport has no DNS of its own to save, and a `wasi:http` one has no connector at all. Putting it on the seam would make every other backend answer for a thing it does not have — the mistake `Capabilities::upgrade` was deleted for."* | read, `crates/http-ng-native/src/lib.rs` |
-| P7 | `http-ng-native` **already has a connect-and-hand-back entry point**: `Native::upgrade(req) -> Upgrading`, then `Upgrading::head()` and `Upgrading::finish() -> (I, Bytes)`. It dials with this transport's own connector, TLS and resolver, offers `http/1.1` alone, reads `Timeouts::connect` out of the request's extensions, and **never consults the pool**. There is also `Native::runtime() -> &R`. | read, `crates/http-ng-native/src/upgrade.rs` |
-| P8 | `Native`'s pool is **entirely `pub(crate)`**: `Pool`, `PoolKey`, `CheckIn` and `Established` all are. Nothing outside `http-ng-native` can put a connection in or take one out, and `Established` is the type the pool stores — a *handshaken* connection, not a socket. | read, `crates/http-ng-native/src/pool.rs`, `src/established.rs` |
+| P6 | `hclient-native` **already has a staged entry point**, and it is deliberately not on `Transport`: `Prefetch::prepare` → `Prepared` → `Prefetch::execute_prepared`. Its own doc gives the reason: *"`Transport` is the seam **every** backend fills in, and this is a question exactly one kind of backend can be asked: a `fetch`-shaped transport has no DNS of its own to save, and a `wasi:http` one has no connector at all. Putting it on the seam would make every other backend answer for a thing it does not have — the mistake `Capabilities::upgrade` was deleted for."* | read, `crates/hclient-native/src/lib.rs` |
+| P7 | `hclient-native` **already has a connect-and-hand-back entry point**: `Native::upgrade(req) -> Upgrading`, then `Upgrading::head()` and `Upgrading::finish() -> (I, Bytes)`. It dials with this transport's own connector, TLS and resolver, offers `http/1.1` alone, reads `Timeouts::connect` out of the request's extensions, and **never consults the pool**. There is also `Native::runtime() -> &R`. | read, `crates/hclient-native/src/upgrade.rs` |
+| P8 | `Native`'s pool is **entirely `pub(crate)`**: `Pool`, `PoolKey`, `CheckIn` and `Established` all are. Nothing outside `hclient-native` can put a connection in or take one out, and `Established` is the type the pool stores — a *handshaken* connection, not a socket. | read, `crates/hclient-native/src/pool.rs`, `src/established.rs` |
 | P9 | `Native::run` applies `Timeouts::connect` to the **fresh-connect path only** (`with_connect_timeout(.., timeouts.connect, connect_fut)` wraps `connect::connect`); a pooled checkout is not inside it, and does no I/O. `H3::execute` puts its checkout inside the bound, and says why in a comment: *"A pooled checkout does no I/O at all, so it is inside the bound for want of a reason to write a second path rather than because it needs one."* | read, both crates' `lib.rs` |
-| P10 | A connect that stops at "a connection that can carry a request" sends **no request** and is not silent: h1 writes nothing past the TLS handshake, h2 writes the client preface and SETTINGS (`h2::client::handshake`), h3 writes its SETTINGS on the control stream. | read, `crates/http-ng-native/src/http2.rs`, `src/h1.rs`, `crates/http-ng-h3/src/lib.rs` |
-| P11 | `H3` **never hands out a connection it has not already claimed**. `H3::connect` builds `h3::client::builder().build(h3_quinn::Connection::new(conn.clone()))` and spawns the driver before returning, and `checkout` inserts the result into the pool before its caller sees it. | read, `crates/http-ng-h3/src/lib.rs` |
-| P12 | `http_ng_webtransport::Session::connect` builds its **own** h3 client on the connection it is handed — `h3::client::builder().enable_extended_connect(true).build(..)`. Two h3 clients on one QUIC connection open two control streams, which RFC 9114 §6.2.1 makes `H3_STREAM_CREATION_ERROR`, a **connection** error. | read, `crates/http-ng-webtransport/src/lib.rs`; the rule is `docs/v04-w2-webtransport.md` §4b's, established there |
-| P13 | `SeamRuntime` has been extracted into a crate of its own, `http-ng-quinn`, which exposes `SeamRuntime`, `QuinnTask` and `pub fn endpoint(&R, SocketAddr) -> io::Result<quinn::Endpoint>`. It carries `ring` unconditionally, because `quinn::EndpointConfig` has no `Default` without a crypto provider. | read, in flight — the sibling branch's `crates/http-ng-quinn/{src/lib.rs,Cargo.toml}` |
-| P14 | The race harness is two `execute` calls and says so about itself: *"This is **not** what a race in `http-ng-select` would look like — there is no shared budget, no capability check and no pool interaction."* | read, `crates/http-ng-select/tests/race_cost.rs`, `async fn race` |
+| P10 | A connect that stops at "a connection that can carry a request" sends **no request** and is not silent: h1 writes nothing past the TLS handshake, h2 writes the client preface and SETTINGS (`h2::client::handshake`), h3 writes its SETTINGS on the control stream. | read, `crates/hclient-native/src/http2.rs`, `src/h1.rs`, `crates/hclient-h3/src/lib.rs` |
+| P11 | `H3` **never hands out a connection it has not already claimed**. `H3::connect` builds `h3::client::builder().build(h3_quinn::Connection::new(conn.clone()))` and spawns the driver before returning, and `checkout` inserts the result into the pool before its caller sees it. | read, `crates/hclient-h3/src/lib.rs` |
+| P12 | `hclient_webtransport::Session::connect` builds its **own** h3 client on the connection it is handed — `h3::client::builder().enable_extended_connect(true).build(..)`. Two h3 clients on one QUIC connection open two control streams, which RFC 9114 §6.2.1 makes `H3_STREAM_CREATION_ERROR`, a **connection** error. | read, `crates/hclient-webtransport/src/lib.rs`; the rule is `docs/v04-w2-webtransport.md` §4b's, established there |
+| P13 | `SeamRuntime` has been extracted into a crate of its own, `hclient-quinn`, which exposes `SeamRuntime`, `QuinnTask` and `pub fn endpoint(&R, SocketAddr) -> io::Result<quinn::Endpoint>`. It carries `ring` unconditionally, because `quinn::EndpointConfig` has no `Default` without a crypto provider. | read, in flight — the sibling branch's `crates/hclient-quinn/{src/lib.rs,Cargo.toml}` |
+| P14 | The race harness is two `execute` calls and says so about itself: *"This is **not** what a race in `hclient-select` would look like — there is no shared budget, no capability check and no pool interaction."* | read, `crates/hclient-select/tests/race_cost.rs`, `async fn race` |
 | P15 | At a **250 ms** head start the TCP arm opened **no socket at all**, 0 of 6; at 0 ms it opened one in 6 of 6 and the origin got a complete request in 5 of 6. | measured, §7.3 M3 — not re-measured here |
 | P16 | §7.4 derives the head start from the **success** side — *"a QUIC handshake that will succeed does so in ≈ 1 RTT plus the 1–3 ms of crypto measured above. The head start has to exceed that"* — and states that the honest form is an RTT observation the crate has nowhere to keep. | read, §7.4 |
-| P17 | `Selecting`'s constructor already **refuses** `Native::without_pool()` against `H3`, on the `connection_reuse` field, and that is the one refusal reachable from the two members this workspace ships. | read, `crates/http-ng-select/src/caps.rs` |
+| P17 | `Selecting`'s constructor already **refuses** `Native::without_pool()` against `H3`, on the `connection_reuse` field, and that is the one refusal reachable from the two members this workspace ships. | read, `crates/hclient-select/src/caps.rs` |
 
 ## 3. It is three asks, two gaps, and one of them is closed
 
 ### 3.1 Ask C wants a type exposed. That is not a seam, and it is done
 
 Nothing about `SeamRuntime` is a question of shape. It is a `quinn::Runtime`
-implemented over `http_ng_rt::{Timer, Spawn, UdpBind}`; it names no
+implemented over `hclient_rt::{Timer, Spawn, UdpBind}`; it names no
 transport, decides no policy and has no alternative implementation to
 abstract over. The whole of the gap was that it sat behind `mod runtime` in
 a crate whose subject is HTTP, and the whole of the fix is that it now sits
@@ -99,7 +99,7 @@ Two things worth keeping from it, because they generalise.
 
 **A pluggable thing that is not its own crate is unreachable, which is the
 other way a shared thing stops being shared.** `docs/w4-upgrade-seam.md` §8
-made this argument about `tungstenite` inside `http-ng-native`, where the
+made this argument about `tungstenite` inside `hclient-native`, where the
 symptom was Cargo's additive features; here the symptom was the opposite
 one — no feature at all, and therefore no way in. Same rule, both failure
 modes.
@@ -132,20 +132,20 @@ established this for the *pool* — three reasons in increasing hardness, of
 which this is the first. What is new here is that the pool is not the
 subject: `H3` has no state in which it holds an unclaimed connection, so
 there is nothing for a connect-only entry point to return. Add the second
-of §4b's reasons and it gets worse rather than better — `http-ng-h3`
+of §4b's reasons and it gets worse rather than better — `hclient-h3`
 announces `ENABLE_CONNECT_PROTOCOL = 0` in the SETTINGS of every connection
 it has ever made, at handshake time, so even a connection with no h3 client
-on it would be the wrong connection unless `http-ng-h3` changed what every
+on it would be the wrong connection unless `hclient-h3` changed what every
 build puts on the wire.
 
 **What WebTransport actually needs is a connection nobody has claimed**,
 and after §3.1 that is composition rather than a seam: an endpoint from
-`http_ng_quinn::endpoint`, a `quinn::ClientConfig` built from
-`http_ng_tls_quic::QuicTlsConnect::quic_client_config` (a public trait, and
+`hclient_quinn::endpoint`, a `quinn::ClientConfig` built from
+`hclient_tls_quic::QuicTlsConnect::quic_client_config` (a public trait, and
 `Rustls` implements it behind its `quic` feature), an address from a
 `Resolve`, and `ALPN_H3`. That is `H3::connect` minus the h3 client and
-minus the pool — a few dozen lines in `http-ng-webtransport`, owing nothing
-to `http-ng-h3`.
+minus the pool — a few dozen lines in `hclient-webtransport`, owing nothing
+to `hclient-h3`.
 
 It is not free, and the cost is countable: owning an endpoint means owning
 `quinn::EndpointConfig`, which means `ring` (P13). `docs/v04-w2-webtransport.md`
@@ -180,7 +180,7 @@ than cited, because a bad seam is not refuted by a family resemblance.
 **What the two ambient backends could honestly answer, from their own
 code and their own platform rather than from the protocol.**
 
-`http-ng-wasi` could answer *nothing at all*. `wasi:http` 0.3's client
+`hclient-wasi` could answer *nothing at all*. `wasi:http` 0.3's client
 interface is one function (P2). There is no connection resource in the WIT,
 no way to name one, and no state between two `send` calls that a guest can
 observe. The phase is not merely unexposed — it is not in the ambient API's
@@ -189,7 +189,7 @@ vocabulary as a value. It **is** in it as a deadline
 a backend can be able to *bound* a phase it can never *reach*, and a seam
 that confuses the two would look satisfiable here and not be.
 
-`http-ng-fetch` could answer *less than nothing*, in the sense that it
+`hclient-fetch` could answer *less than nothing*, in the sense that it
 cannot even do the part WASI can. It declares `timeouts.connect = false`
 and gives the reason where the field is set: one `AbortSignal` for the
 whole exchange, and *"declaring any of the three would be a capability that
@@ -218,11 +218,11 @@ WebSocket and WebTransport.
 
 **Decision.** A staged connect lives on the backends that have a connector,
 as `Prefetch` does: a trait declared by the crate that implements it, not
-by `http-ng-core`. A trait rather than inherent methods for `Prefetch`'s own
+by `hclient-core`. A trait rather than inherent methods for `Prefetch`'s own
 mechanical reason — *"a caller generic over `Native<R, T, D>` reaches it
 through a `where` bound, and an inherent method would make that caller
 repeat every structural bound `Native`'s exchange impl declares"* — and one
-per crate rather than one shared, because `http-ng-select` owns both members
+per crate rather than one shared, because `hclient-select` owns both members
 concretely and needs no polymorphism between them.
 
 ## 5. Decision 2 — "connect-only" is a misnomer; the shape is `connect → handle → exchange`
@@ -252,7 +252,7 @@ have to hold, and only one of them is about connecting:
    stack connects faster and paid for the answer twice.
 
 Condition 1 also fixes something the finding does not name. §7.6 observes
-that a race *"is the second thing to break the sentence `http-ng-native`
+that a race *"is the second thing to break the sentence `hclient-native`
 leans on for needing no idempotency judgement"* — *"this is not a second
 request, it is the first one, which never left."* With the request handed
 over once, after the race, that sentence is **true again**: nothing left,
@@ -330,7 +330,7 @@ stacks. On `Native` it wraps the fresh-connect path only; a pooled checkout
 is outside it and does no I/O (P9). On `H3` the checkout is inside the
 bound, with the reason recorded as "for want of a reason to write a second
 path". `TimeoutSupport::connect` is the capability that declares it, and
-`http-ng-fetch` sets it `false` (P4).
+`hclient-fetch` sets it `false` (P4).
 
 **What a staged pair does to it.** The connect call spends it — and it must
 be *able* to, which is why the connect call takes a request rather than a
@@ -357,7 +357,7 @@ staged pair is arranged so that it can only be spent once. The capability
 `TimeoutSupport::connect` is untouched: it is a claim about
 `Transport::execute`, and `execute` is unchanged.
 
-**One thing this does not settle**, and it is `http-ng-select`'s rather than
+**One thing this does not settle**, and it is `hclient-select`'s rather than
 the seam's: with a head start `H` and a connect bound `C`, the second arm
 gets `C − H` and not `C` (§7.5). That is the caller's arithmetic, it is
 already written down, and a staged pair neither helps nor hinders it.
@@ -371,7 +371,7 @@ assumed, it has four, and three of them are already satisfied by the shape
 
 **It cannot be asked from outside, and must not become askable.** `Pool`,
 `PoolKey`, `CheckIn` and `Established` are all `pub(crate)` (P8). So
-"a connection produced outside `http-ng-native` and handed to `execute`" is
+"a connection produced outside `hclient-native` and handed to `execute`" is
 not expressible today, and shape H keeps it that way: `Connected` is
 produced by `Native` and consumed by `Native`, and the fact that a caller
 holds it in between changes nothing about who made it.
@@ -424,7 +424,7 @@ out is the part of this investigation that changed the answer.
 unbuilt, and gives two blockers. The first:
 
 > **Without a fallback it degrades the caller rather than protecting
-> them.** A windowed suppression on `http-ng-native`'s model would cost one
+> them.** A windowed suppression on `hclient-native`'s model would cost one
 > *failed* request per window per origin — where native's own costs none,
 > because native falls back to the origin's addresses inside the same
 > connect. The equivalent here is falling back from QUIC to TCP inside
@@ -437,7 +437,7 @@ connect removes it without any race at all. Sequentially: `Selecting` asks
 `H3` to connect; if the connect fails or hits `Timeouts::connect`, it routes
 the request — untouched, unsent, never handed to a transport — over TCP. No
 retry, no `retry_kind()`, no idempotence judgement, because there is no
-second request. `http-ng-native`'s own sentence applies verbatim: it is the
+second request. `hclient-native`'s own sentence applies verbatim: it is the
 first request, which never left.
 
 This is cheaper than a race in every dimension. It opens one connection in
@@ -480,10 +480,10 @@ out clean:
 
 **Since built, and three of these are now answered** —
 [`docs/v04-staged-connect.md`](v04-staged-connect.md). The seam is
-`StagedConnect` on `http-ng-native` and on `http-ng-h3` (one trait per
+`StagedConnect` on `hclient-native` and on `hclient-h3` (one trait per
 crate, §4's decision, and building it produced the concrete reason: the two
 do not agree on what `connect` takes). The first customer is §8's, and is
-built: Alt-Svc's negative half in `http-ng-select`. Read the answers below
+built: Alt-Svc's negative half in `hclient-select`. Read the answers below
 against the bullets they belong to.
 
 
@@ -524,15 +524,15 @@ against the bullets they belong to.
   it.
 
   **Answered as "a warm connection", on both stacks, by different means to
-  the same observable end.** `http_ng_native::Staged` has a `Drop` that
+  the same observable end.** `hclient_native::Staged` has a `Drop` that
   checks the connection in — nothing was spoken on it, so it is exactly the
   connection the pool would have held had the request never been staged;
   with `without_pool()` there is no check-in and the drop closes the
-  socket, which is the control. `http_ng_h3::Staged` needs no `Drop`,
+  socket, which is the control. `hclient_h3::Staged` needs no `Drop`,
   because `checkout` pooled the connection before the caller saw it. The
   pinging is real and is stated rather than fixed: it matters to a race,
   and the one consumer connects on the arm it intends to use.
-- **Anything about `http-ng-select`'s capability set.** `Selecting`'s
+- **Anything about `hclient-select`'s capability set.** `Selecting`'s
   `Capabilities` is combined at construction and its rule — *"the stored
   value must be true whichever member serves the request"* — is unaffected
   by how a member is asked to connect. If a race is ever built,
@@ -548,12 +548,12 @@ against the bullets they belong to.
   §4.6.8 processing model for the link type was not reachable through the
   fetch this document had available. The decision does not rest on it:
   even an observable preconnect gives no handle and no way to bind a
-  `fetch()` to a connection, so `http-ng-fetch` could satisfy neither
+  `fetch()` to a connection, so `hclient-fetch` could satisfy neither
   condition 3 nor the "tell me when it can carry a request" half.
 - **Anything measured.** No number in this document was taken here. §7's
   and §4b's were re-read, not re-run, and P15/P16 are cited to their
   source.
-- **The sibling branch.** P13 describes `http-ng-quinn` as it stood on
+- **The sibling branch.** P13 describes `hclient-quinn` as it stood on
   another agent's worktree while this was written; §3.1 and §3.2 depend on
   the fact of the extraction rather than on its API, but the signature
   quoted may have moved.
@@ -565,7 +565,7 @@ against the bullets they belong to.
   only shows up at the caller.
 
   **It does**, and the projection was the one place it showed: the caller
-  (`http-ng-select`) names the two member bodies through
+  (`hclient-select`) names the two member bodies through
   `<Native<..> as Transport>::Body` in a `where` clause, exactly as it
   already did, and the staged pair adds no new one. The handle is named
   `Staged` rather than `Connected` for a duller reason than any of this:

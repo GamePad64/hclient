@@ -20,7 +20,7 @@
 # is what the ALLOWED map below is for.
 set -uo pipefail
 
-EXEMPT="http-ng-fetch http-ng-dns-system http-ng-idn http-ng-urlsession"   # amendments C7, C8, C9 and C11
+EXEMPT="hclient-fetch hclient-dns-system hclient-idn hclient-urlsession"   # amendments C7, C8, C9 and C11
 
 # The one file each amendment excuses, and the token it must be cited by.
 # A directory is never enough: "a marker that excuses a directory excuses
@@ -29,12 +29,12 @@ EXEMPT="http-ng-fetch http-ng-dns-system http-ng-idn http-ng-urlsession"   # ame
 # nothing. This mapping is what makes both of those true; before it existed
 # the check accepted `amendment-C[78]` anywhere under an exempt crate's
 # `src`, which the spec already described it as not doing.
-ALLOWED="crates/http-ng-fetch/src/promise.rs:amendment-C7
-crates/http-ng-dns-system/src/sys/res_query.rs:amendment-C8
-crates/http-ng-dns-system/src/sys/windows.rs:amendment-C8
-crates/http-ng-idn/src/icu/windows.rs:amendment-C9
-crates/http-ng-urlsession/src/delegate.rs:amendment-C11
-crates/http-ng-urlsession/src/session.rs:amendment-C11"
+ALLOWED="crates/hclient-fetch/src/promise.rs:amendment-C7
+crates/hclient-dns-system/src/sys/res_query.rs:amendment-C8
+crates/hclient-dns-system/src/sys/windows.rs:amendment-C8
+crates/hclient-idn/src/icu/windows.rs:amendment-C9
+crates/hclient-urlsession/src/delegate.rs:amendment-C11
+crates/hclient-urlsession/src/session.rs:amendment-C11"
 fail=0
 
 # A renamed or deleted excused file must fail this check, not quietly stop

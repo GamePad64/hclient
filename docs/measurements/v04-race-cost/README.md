@@ -1,7 +1,7 @@
 # v0.4 W1 deliverable 5 — the race's cost, raw
 
 `release-run.txt` is one verbatim run of
-`crates/http-ng-select/tests/race_cost.rs`, kept so that the tables in
+`crates/hclient-select/tests/race_cost.rs`, kept so that the tables in
 `docs/v04-w1-acceptance.md` §7.3 have a provenance a reader can check
 without spending three minutes.
 
@@ -10,7 +10,7 @@ job reads it, and it will go stale the moment quinn changes a default. The
 harness is the artefact; this is a receipt.
 
 ```
-cargo nextest run --release -p http-ng-select --test race_cost \
+cargo nextest run --release -p hclient-select --test race_cost \
     --run-ignored all --no-capture -j1
 ```
 

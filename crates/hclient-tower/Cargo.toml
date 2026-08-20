@@ -1,0 +1,35 @@
+[package]
+name = "hclient-tower"
+version.workspace = true
+description = "hclient's Transport as a tower::Service, so the tower-http middleware stack applies"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes         = { workspace = true }
+http          = { workspace = true }
+http-body     = { workspace = true }
+hclient-core  = { workspace = true }
+tower-service = "0.3"
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+hclient          = { workspace = true, features = ["test-util"] }
+hclient-mock     = { workspace = true }
+http-body-util   = { workspace = true }
+tower-service    = "0.3"
+# "limit" alongside "util": `tests/concurrency.rs` drives
+# `tower::limit::ConcurrencyLimit` through both adapters. A DEV-dependency
+# deliberately — the limit is tower's, not this crate's, and taking it as a
+# normal dependency would put `tokio` (`sync`) and `tokio-util` into the
+# graph of every consumer of this crate for a layer they may never use.
+tower            = { version = "0.5", default-features = false, features = ["util", "limit"] }
+
+[lints]
+workspace = true

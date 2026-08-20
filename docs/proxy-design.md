@@ -10,10 +10,10 @@ in passing as *"a proxy feature nobody has asked for"* while deleting
 
 | backend | can it proxy | why |
 |---|---|---|
-| `http-ng-native` | **yes** | it owns the socket |
-| `http-ng-fetch` | no | the browser applies the system proxy and exposes no API for one; a `fetch`-shaped transport has no connect step to intercept |
-| `http-ng-wasi` | no | `wasi:http@0.3.0`'s client interface is one function with **no connection resource in the WIT** — the same fact that gave hooks only `Head` on this backend. The host may proxy; the guest cannot ask |
-| `http-ng-h3` | not with an ordinary proxy | HTTP proxies carry TCP. Carrying QUIC needs `CONNECT-UDP` (RFC 9298, MASQUE) over an HTTP/3 proxy, which is a different protocol against a different kind of server — not this feature with a wider bound |
+| `hclient-native` | **yes** | it owns the socket |
+| `hclient-fetch` | no | the browser applies the system proxy and exposes no API for one; a `fetch`-shaped transport has no connect step to intercept |
+| `hclient-wasi` | no | `wasi:http@0.3.0`'s client interface is one function with **no connection resource in the WIT** — the same fact that gave hooks only `Head` on this backend. The host may proxy; the guest cannot ask |
+| `hclient-h3` | not with an ordinary proxy | HTTP proxies carry TCP. Carrying QUIC needs `CONNECT-UDP` (RFC 9298, MASQUE) over an HTTP/3 proxy, which is a different protocol against a different kind of server — not this feature with a wider bound |
 
 So this is **not a method on `Transport`**, for the reason `StagedConnect`
 and `WebSocketConnect` are not: a seam three of four backends answer
@@ -23,8 +23,8 @@ implemented.
 ## 2. Why not a `TcpConnect` decorator, which would cost nothing
 
 The tempting shape is a wrapper `R` implementing
-[`TcpConnect`](../crates/http-ng-rt/src/caps.rs) that dials the proxy and
-tunnels — **zero changes to `http-ng-native`**, its own crate, done.
+[`TcpConnect`](../crates/hclient-rt/src/caps.rs) that dials the proxy and
+tunnels — **zero changes to `hclient-native`**, its own crate, done.
 
 It is rejected on the signature:
 
@@ -50,7 +50,7 @@ feature rather than a detail:
 
 ## 3. Where it goes instead
 
-`http_ng_native::connect::connect` already takes `uri: &Uri`, so the
+`hclient_native::connect::connect` already takes `uri: &Uri`, so the
 origin is available **by name** at exactly the point that decides how to
 reach it. A proxy **replaces** the resolve → Happy-Eyeballs → connect
 block rather than decorating any part of it.
@@ -72,14 +72,14 @@ are listed because getting one wrong is silent:
   and then an ordinary TLS handshake carrying the **origin's** SNI, not
   the proxy's.
 - **`Proxy-Authorization` is the proxy's, and is not the origin's.**
-  `http-ng-proto`'s redirect logic already strips it across origins.
+  `hclient-proto`'s redirect logic already strips it across origins.
 - **The pool key must name the proxy.** Two proxies to one origin are two
   connections, and a pooled tunnel reused through a different proxy would
   be a security defect rather than a redundancy — the same argument
   `PoolKey`'s TLS-identity field is already kept for.
 - **`Timeouts::connect` bounds the whole approach** — dialling the proxy
   *and* the `CONNECT` exchange — and is spent once, which is
-  `http-ng-select`'s arithmetic for the h3→TCP fallback one layer down.
+  `hclient-select`'s arithmetic for the h3→TCP fallback one layer down.
 - **A `407` from the proxy is not a response to the caller's request.**
   Surfacing it as one would report the proxy's refusal as the origin's
   answer. It is a typed connect error.
@@ -94,7 +94,7 @@ field has a producer, and the fix is the one `client_certs` just took:
 give it the doc comment it has never had.
 
 Its meaning has to be pinned in that comment, because the honest answer
-for `http-ng-fetch` is `false` while a browser may well be proxying: the
+for `hclient-fetch` is `false` while a browser may well be proxying: the
 field says **this transport applies a proxy configuration of its own**,
 which is `owns_cookie_jar`'s phrasing and for the same reason. What the
 host does behind a transport that owns no connection is not a fact this
@@ -125,7 +125,7 @@ origin **by name**, so the DNS leak that killed the `TcpConnect`
 decorator is not a property of proxying — it is a property of a seam that
 only carries a `SocketAddr`.
 
-Both ship in `http-ng-native` behind one `proxy` feature, off by default.
+Both ship in `hclient-native` behind one `proxy` feature, off by default.
 Neither needs a third-party crate, so the argument that moved the
 WebSocket framing out — a feature is additive, and `tungstenite` would
 land in every build in the graph that switched it on — has no subject
@@ -139,7 +139,7 @@ not have to live here.
   environment is a policy decision (which variables, `NO_PROXY` matching
   rules, whether a library may read the environment at all) and is
   separable from being able to proxy at all.
-- **`CONNECT-UDP` / MASQUE for `http-ng-h3`.** §1's last row.
+- **`CONNECT-UDP` / MASQUE for `hclient-h3`.** §1's last row.
 
 ## 8. What building it found, which the design above did not predict
 
@@ -154,7 +154,7 @@ not have to live here.
 - **The request line needed nothing from hyper.** It writes `http::Uri`'s
   `Display` verbatim (`role.rs:1212`), so authority-form for `CONNECT` and
   absolute-form for `http://` are both just a matter of handing it the
-  right `Uri` — which is what `http-ng-native` already does for
+  right `Uri` — which is what `hclient-native` already does for
   origin-form.
 - **`NoProxy` is an empty enum**, so a transport nobody configured a proxy
   on holds an `Option` that cannot be `Some` — by construction rather than
@@ -182,7 +182,7 @@ not have to live here.
 
 ### Mutations
 
-Anchor **189** (`http-ng-native`, `--features proxy`), `--no-fail-fast`.
+Anchor **189** (`hclient-native`, `--features proxy`), `--no-fail-fast`.
 
 | # | mutation | verdict | killed |
 |---|---|---|---|

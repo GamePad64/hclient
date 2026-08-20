@@ -1,0 +1,35 @@
+[package]
+name = "hclient-proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hclient-proto = { path = ".." }
+
+[[bin]]
+name = "sse"
+path = "fuzz_targets/sse.rs"
+test = false
+doc  = false
+bench = false
+
+[[bin]]
+name = "sse_accounting"
+path = "fuzz_targets/sse_accounting.rs"
+test = false
+doc  = false
+bench = false
+
+[[bin]]
+name = "happy_eyeballs"
+path = "fuzz_targets/happy_eyeballs.rs"
+test = false
+doc  = false
+bench = false
+
+[workspace]

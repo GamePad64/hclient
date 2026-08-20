@@ -5,7 +5,7 @@ command and its output; every "it cannot" is the compiler's own words;
 everything that could not be checked here is marked **unverified** together
 with what would settle it.
 
-**Amended after the implementation (`http-ng-rt-embassy`, W7).** Four
+**Amended after the implementation (`hclient-rt-embassy`, W7).** Four
 claims below were measured again by code that had to work rather than by a
 spike, and three of them moved. Each is marked **[corrected by the
 implementation]** where it stands; they are, in order: §1.4 `TcpOpts` (two
@@ -25,7 +25,7 @@ Spikes live in `spikes/` (untracked, outside `crates/`): `lifetime`,
 Environment: `rustc 1.97.1 (8bab26f4f 2026-07-14)` for everything on the
 host; `nightly-x86_64-unknown-linux-gnu` (`rustc 1.99.0-nightly`) only where
 `-Zbuild-std` is needed for an esp-idf target. Base commit: `8870d5b`
-(`origin/main`), `crates/http-ng-core/src/caps.rs` contains `CancelSupport`,
+(`origin/main`), `crates/hclient-core/src/caps.rs` contains `CancelSupport`,
 so W1 is in.
 
 ---
@@ -35,7 +35,7 @@ so W1 is in.
 | question | answer | how |
 |---|---|---|
 | Q1 `'static` | **Not fatal, and the seam does not change.** `embassy-net`'s own `TcpClient`/`TcpClientState` is the bounded buffer pool; `TcpConnection<'static, N, TX, RX>` satisfies `TcpConnect::Stream` as it stands. | compiles + runs, §1 |
-| Q1, third sub-point | **The strongest outcome is real.** The shipped `http-ng-rt-smol`, unmodified, type-checks for `riscv32imc-esp-espidf`, and the whole `http_ng::Client` runs under `embassy_executor` on a std host. | §2 |
+| Q1, third sub-point | **The strongest outcome is real.** The shipped `hclient-rt-smol`, unmodified, type-checks for `riscv32imc-esp-espidf`, and the whole `hclient::Client` runs under `embassy_executor` on a std host. | §2 |
 | Q2 hyper | **hyper + tokio(`sync`) type-check for `riscv32imc-esp-espidf`.** No link step, so this is a `cargo check` claim, not a flashed binary. | §3 |
 | Q3 `Spawn` | Implementable via `raw::TaskStorage` at the cost of one leaked `TaskStorage<F>` per call — **and not needed**: `Native` never asks for it. | §4 |
 | Q3 `Blocking` | Not needed either, *unless* `SystemDns` is used. `IpLiteralOnly` and an embassy-net DNS resolver need nothing. | §4 |
@@ -110,8 +110,8 @@ $ cargo check --features v2_leak
 The assertion that made this worth running is in the spike:
 
 ```rust
-fn assert_transport<T: http_ng_core::unversioned::Transport>() {}
-assert_transport::<http_ng_native::Native<EmbassyNetLeak, NoTls, IpLiteralOnly>>();
+fn assert_transport<T: hclient_core::unversioned::Transport>() {}
+assert_transport::<hclient_native::Native<EmbassyNetLeak, NoTls, IpLiteralOnly>>();
 ```
 
 So `TcpConnect`'s associated type is *not* what stands in the way — the
@@ -135,8 +135,8 @@ error: lifetime may not live long enough
 ```
 
 That is worth stating precisely, because it moves the blame: **the `'static`
-is not in `http_ng_rt::TcpConnect`. It is in `http-ng-native`**, at
-`crates/http-ng-native/src/lib.rs:166-171`:
+is not in `hclient_rt::TcpConnect`. It is in `hclient-native`**, at
+`crates/hclient-native/src/lib.rs:166-171`:
 
 ```rust
 impl<R, T, D> Transport for Native<R, T, D>
@@ -148,7 +148,7 @@ where
 ```
 
 and it is there because `NativeBody` type-erases hyper's `Connection`
-(`crates/http-ng-native/src/h1.rs:130`):
+(`crates/hclient-native/src/h1.rs:130`):
 
 ```rust
 type ConnFuture = Pin<Box<dyn Future<Output = hyper::Result<()>>>>;
@@ -200,8 +200,8 @@ pool makes it sound; the pool is `TcpClientState<N, TX_SZ, RX_SZ>`, it is
 **owned by the application**, not by our backend, exactly as the `Stack`
 already is — the backend takes a `&'static TcpClient<'static, N, TX, RX>`
 the same way it would take a `Stack<'static>`. `N`, `TX_SZ` and `RX_SZ`
-become const parameters of the backend type. Nothing in `http-ng-rt` or
-`http-ng-native` changes.
+become const parameters of the backend type. Nothing in `hclient-rt` or
+`hclient-native` changes.
 
 **Answer to the second bullet.** No change to `TcpConnect` is required, so
 none is proposed. If one ever were, the honest smallest version is *not* a
@@ -212,7 +212,7 @@ together, because the `'static` is theirs.
 
 `spikes/tuntap` puts the v4 shape on a real wire: `embassy-net` over a TAP
 device inside an unprivileged user+network namespace, `hyper` on top through
-the adapter, `http_ng::Client` on top of that, all inside
+the adapter, `hclient::Client` on top of that, all inside
 `embassy_executor::Executor`. No `std::net` socket anywhere on the client
 path — the TCP state machine is smoltcp's. The far end is an ordinary
 blocking `std::net::TcpListener` on the kernel side of the tap.
@@ -220,7 +220,7 @@ blocking `std::net::TcpListener` on the kernel side of the tap.
 ```
 $ unshare -Ur --net -- ./run.sh target-spike/debug/tuntap-spike
 stack up: Some(Cidr { address: 192.168.69.2, prefix_len: 24 })
-embassy-net + hyper + http-ng: status=200 OK body="hello from the tap" in 904us
+embassy-net + hyper + hclient: status=200 OK body="hello from the tap" in 904us
 request 2 ok (pool N=2)
 request 3 ok (pool N=2)
 request 4 ok (pool N=2)
@@ -243,7 +243,7 @@ it. Nothing to design.
 > **[corrected by the implementation]** "an embassy-net backend can honour
 > none of them" is true of `TcpConnection`, which is what this section
 > looked at, and false of a backend that owns the `TcpSocket` itself — which
-> `http-ng-rt-embassy` does, because the closing list of §6 requires it.
+> `hclient-rt-embassy` does, because the closing list of §6 requires it.
 > `TcpSocket::set_nagle_enabled` and `set_keep_alive`
 > (`embassy-net-0.9.1/src/tcp.rs:353,363`) make **two of the six** real:
 > `nodelay` and `keepalive`. The remaining four are structurally absent, not
@@ -251,18 +251,18 @@ it. Nothing to design.
 > receive buffer sizes are the const parameters the pool was built with, and
 > smoltcp has no `SO_REUSEADDR` to set. The shipped answer is
 > `TcpConnect::APPLIES` plus `TcpOpts::reject_unsupported`, both added to
-> `http-ng-rt`: what a runtime cannot apply, it refuses by name.
+> `hclient-rt`: what a runtime cannot apply, it refuses by name.
  `Native`
 passes `&TcpOpts` straight into `TcpConnect::connect`; an embassy-net
 backend can honour none of `nodelay`, `keepalive`, `local_address`,
 `send_buffer_size`, `recv_buffer_size`, `reuse_address` — smoltcp has
 `set_keep_alive` and `set_nagle_enabled` on the raw `tcp::Socket`, neither
 reachable through `TcpConnection`. There is **no mechanism anywhere in
-`http-ng-rt` for a runtime to report which options it applied**: `connect`
+`hclient-rt` for a runtime to report which options it applied**: `connect`
 returns `io::Result<Stream>` and nothing else. `Capabilities` is the wrong
 place for it (that is trap #1 from the design doc — it describes the
 transport's contract with the caller, not the socket's), so this needs its
-own answer at the `http-ng-rt` seam, or a documented "silently ignored",
+own answer at the `hclient-rt` seam, or a documented "silently ignored",
 which this project does not accept. **This is the one place W7 genuinely
 does touch a seam, and it is `TcpOpts`, not `TcpConnect::Stream`.**
 
@@ -287,7 +287,7 @@ buf.put_slice(&this.scratch[..n]);
 Two costs, both real and both recorded rather than smoothed over:
 
 - one copy through a 2 KiB scratch buffer per read, same as
-  `http_ng_rt::FuturesIo` already pays and for the same reason (zero-copy
+  `hclient_rt::FuturesIo` already pays and for the same reason (zero-copy
   needs `unsafe`, the workspace forbids it);
 - **`poll_shutdown` cannot do what hyper asks.** `embedded_io_async::Write`
   has no shutdown, and `TcpConnection` exposes nothing else. The spike
@@ -296,7 +296,7 @@ Two costs, both real and both recorded rather than smoothed over:
   performed and did not. Related to §6.
 
   > **[corrected by the implementation]** Also an artefact of using
-  > `TcpConnection`. `http-ng-rt-embassy` owns the `TcpSocket`, so
+  > `TcpConnection`. `hclient-rt-embassy` owns the `TcpSocket`, so
   > `poll_shutdown` is `close()` followed by `flush()` — the FIN hyper asked
   > for, actually sent. It turns out to carry more weight than "tidier":
   > with connection reuse off it is hyper's shutdown, not the pool's `Drop`,
@@ -322,19 +322,19 @@ no `#[cfg]` and no mention of embassy.
 ```
 $ cargo run
 A embassy-executor + EmbassyStd: body="under-embassy!!" in 607us
-B embassy-executor + http_ng_rt_smol::Smol (unmodified): body="under-embassy!!"
+B embassy-executor + hclient_rt_smol::Smol (unmodified): body="under-embassy!!"
 C embassy_time::Timer::after(250ms) under embassy executor: 250.149989ms
 OK
 ```
 
 Line B is the load-bearing one: **the crate that ships today,
-`http-ng-rt-smol`, unmodified, drives a real HTTP/1.1 request while running
+`hclient-rt-smol`, unmodified, drives a real HTTP/1.1 request while running
 inside `embassy_executor::Executor`.** This works because `async-io` runs
 its reactor on its own thread, so `Async<T>` futures are polled by whatever
 executor holds them.
 
 **Sensitivity control** — otherwise the above proves nothing about the
-executor. `http_ng_rt_tokio::Tokio` must *not* work there:
+executor. `hclient_rt_tokio::Tokio` must *not* work there:
 
 ```
 $ cargo run --bin tokio_control
@@ -362,9 +362,9 @@ $ cargo +nightly check --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abor
     Checking blocking v1.6.2
     Checking socket2 v0.6.5
     Checking async-net v2.0.0
-    Checking http-ng-native v0.1.0
-    Checking http-ng-dns-system v0.1.0
-    Checking http-ng-rt-smol v0.1.0
+    Checking hclient-native v0.1.0
+    Checking hclient-dns-system v0.1.0
+    Checking hclient-rt-smol v0.1.0
     Checking espidf-asyncio v0.0.0
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.19s
 ```
@@ -404,7 +404,7 @@ $ cargo +nightly check --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abor
   price of being "hard-coded to the `select` syscall" with no timers. It is
   API-compatible with `async_io::Async`. So the real esp-idf build would
   most likely swap the crate, not the code — but **unverified**: I did not
-  compile `async-io-mini`, and `http-ng-rt-smol` uses `async-net` and
+  compile `async-io-mini`, and `hclient-rt-smol` uses `async-net` and
   `blocking` as well as `async-io`. What would settle it: a
   `cargo check --target riscv32imc-esp-espidf` of a runtime crate written
   against `async-io-mini` directly.
@@ -420,15 +420,15 @@ $ cargo +nightly check --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abor
 ## 3. Q2 — is hyper usable there at all
 
 **Yes, as far as a compile can tell.** `spikes/espidf-check` puts `hyper`
-1.11, `http-ng-native`, `http-ng`, `embassy-net`, `embassy-time` and
+1.11, `hclient-native`, `hclient`, `embassy-net`, `embassy-time` and
 `embassy-executor` in one crate and checks them for the real target:
 
 ```
 $ cargo +nightly check --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
     Checking tokio v1.53.1
     Checking hyper v1.11.0
-    Checking http-ng v0.1.0
-    Checking http-ng-native v0.1.0
+    Checking hclient v0.1.0
+    Checking hclient-native v0.1.0
     Checking embassy-net v0.9.1
     Checking espidf-check v0.0.0
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.02s
@@ -453,7 +453,7 @@ links, fits in flash, or runs. Settling that needs
 `espup`/`esp-idf-template` and either hardware or QEMU — **unverified**.
 
 **One thing that measurably does *not* check**, and it matters for a real
-device: `http-ng-tls-rustls`.
+device: `hclient-tls-rustls`.
 
 ```
 $ cargo +nightly check --target riscv32imc-esp-espidf -Zbuild-std=std,panic_abort
@@ -488,7 +488,7 @@ esp-idf *with* `std`, stated by the owner and consistent with everything
 above.
 
 **Recommendation on the two shapes.** Build the hyper shape, not the
-"embassy backend drives `http-ng-proto` directly" shape.
+"embassy backend drives `hclient-proto` directly" shape.
 
 - The hyper shape is measured working end to end, today, twice (§1.3, §2.1).
 - The sans-io shape would be a second HTTP/1 implementation in this
@@ -540,14 +540,14 @@ cannot be sized by a generic `impl<F>`.
 
 **Not implementing it is sufficient, and that is verified in the code, not
 trusted from a sentence.** `grep -rn "Spawn" crates/` finds it only in
-`http-ng-rt` itself, the two runtime crates, and `http-ng-rt-pair-check`'s
-property test — nothing in `http-ng-native` or `http-ng` uses it. Two
+`hclient-rt` itself, the two runtime crates, and `hclient-rt-pair-check`'s
+property test — nothing in `hclient-native` or `hclient` uses it. Two
 independent confirmations:
 
 ```
-$ cargo nextest run -p http-ng-native --test h1
-        PASS [   0.004s] (1/2) http-ng-native::h1 works_on_a_bare_futures_executor_with_no_spawn
-        PASS [   0.004s] (2/2) http-ng-native::h1 body_keeps_driving_the_connection_after_headers
+$ cargo nextest run -p hclient-native --test h1
+        PASS [   0.004s] (1/2) hclient-native::h1 works_on_a_bare_futures_executor_with_no_spawn
+        PASS [   0.004s] (2/2) hclient-native::h1 body_keeps_driving_the_connection_after_headers
      Summary [   0.004s] 2 tests run: 2 passed, 0 skipped
 ```
 
@@ -559,9 +559,9 @@ Transport` resolved and six requests went over the wire (§1.3).
 
 **Also not needed, with one named consequence.** `Native`'s `Transport`
 impl asks for `R: TcpConnect + Timer` and nothing else
-(`crates/http-ng-native/src/lib.rs:166`). What breaks without `Blocking` is
+(`crates/hclient-native/src/lib.rs:166`). What breaks without `Blocking` is
 exactly one thing: `SystemDns<B>` is `impl<B: Blocking> Resolve for
-SystemDns<B>` (`crates/http-ng-dns-system/src/lib.rs:177`), so the
+SystemDns<B>` (`crates/hclient-dns-system/src/lib.rs:177`), so the
 `getaddrinfo` resolver becomes unusable. That is not a loss on this target:
 `IpLiteralOnly` works, and `embassy_net::Stack` has its own `dns_query`,
 which is an `async fn` needing no thread pool at all — a `Resolve` impl over
@@ -647,7 +647,7 @@ everything, so dropping it drops the socket. With embassy-net, dropping the
 socket does not close anything the peer can see.
 
 `spikes/tuntap/src/bin/cancel.rs` — same observer as
-`crates/http-ng-native/tests/cancel.rs`, i.e. the server's own socket, never
+`crates/hclient-native/tests/cancel.rs`, i.e. the server's own socket, never
 the client's task. The client drops the `send` future via
 `embassy_time::with_timeout` while the server is deliberately not
 responding:
@@ -696,11 +696,11 @@ is written:
 
    > **[corrected by the implementation]** There is nowhere to report it
    > from. `Capabilities` belongs to the `Transport`, and the transport here
-   > is `http_ng_native::Native`, which sets `cancel_on_drop =
+   > is `hclient_native::Native`, which sets `cancel_on_drop =
    > CancelSupport::Supported` unconditionally
-   > (`crates/http-ng-native/src/lib.rs`) on the strength of reasoning about
+   > (`crates/hclient-native/src/lib.rs`) on the strength of reasoning about
    > its own future. A runtime plugged in underneath has no channel to lower
-   > it, and giving it one is a change to `http-ng-native`. So option 1 is
+   > it, and giving it one is a change to `hclient-native`. So option 1 is
    > not the cheaper of two choices — it is unavailable without that change,
    > and would leave the capability lying meanwhile. The shipped backend
    > takes option 2.
@@ -718,10 +718,10 @@ is written:
 ## Found while implementing (not in the original research)
 
 Two behaviours that no spike hit, both measured by
-`http-ng-rt-embassy`'s acceptance and both now shaping its code.
+`hclient-rt-embassy`'s acceptance and both now shaping its code.
 
 **`embassy_time` cannot be used below `TcpConnect::connect`.**
-`http_ng_native::connect::drive` polls its connect attempts through
+`hclient_native::connect::drive` polls its connect attempts through
 `futures_util::stream::FuturesUnordered`, which polls each future with a
 waker of its own; embassy's *integrated* timer queue refuses any waker it
 did not make:
@@ -732,7 +732,7 @@ panicked at embassy-executor-0.9.1/src/raw/waker.rs:38:
   `embassy_time::Timer` only works with the Embassy executor.
   ...
   <FuturesUnordered<..connect..> as Stream>::poll_next
-  http_ng_native::connect::drive::{closure#0}
+  hclient_native::connect::drive::{closure#0}
 ```
 
 The backend's own `Timer::sleep` is unaffected — `with_connect_timeout` and
@@ -828,12 +828,12 @@ to expect an RST.
 
 ## Recommendation
 
-**The shape I would build:** `http-ng-rt-espidf` — `Timer` on
+**The shape I would build:** `hclient-rt-espidf` — `Timer` on
 `embassy_time` (driver from `esp-idf-svc`'s `embassy-time-driver` feature,
 not `embassy-time/std`), `TcpConnect`/`TcpAdoptStd` on esp-idf's real `std`
 sockets through `async-io-mini`, `Blocking` on `blocking::unblock`, run
 under `embassy_executor` — because it is the only variant where the shipped
-`http-ng-rt-smol` already type-checks for `riscv32imc-esp-espidf` unchanged,
+`hclient-rt-smol` already type-checks for `riscv32imc-esp-espidf` unchanged,
 the whole client already runs under an embassy executor with zero CPU spin,
 and cancellation keeps working; keep the `embassy-net` backend of §1 as the
 `no-std`-stack fallback for boards where `std` sockets are not the network
@@ -841,20 +841,20 @@ path, since it too compiles and runs.
 
 **The seam change it needs:** none in `TcpConnect`, `Timer`, `Spawn`,
 `Blocking`, `Transport` or `Capabilities` — one only, and it is `TcpOpts`:
-`http_ng_rt::TcpConnect::connect` gives a runtime no way to say which socket
+`hclient_rt::TcpConnect::connect` gives a runtime no way to say which socket
 options it could not apply, and both embassy shapes would silently ignore
 several, which this project does not allow.
 
 > **[done, W7 implementation]** `TcpOptsSupport`, `TcpConnect::APPLIES`
 > (defaulting to `NONE`, so silence understates rather than overstates) and
-> `TcpOpts::reject_unsupported` now live in `http-ng-rt`; the two shipped
+> `TcpOpts::reject_unsupported` now live in `hclient-rt`; the two shipped
 > runtimes declare `ALL` and are otherwise untouched. What is still open is
 > enforcement above the runtime: `Native::tcp_opts` could refuse once at
 > build time instead of once per connect, and that line belongs in
-> `http-ng-native`.
+> `hclient-native`.
 
 **The one thing that would kill it:** the link step. Everything about
 esp-idf in this report is `cargo check` — if `hyper` + `rustls`/`ring` +
 ESP-IDF's newlib do not link, or do not fit in the flash and RAM budget of
 the part, the hyper shape dies and the replacement is
-`http-ng-proto`-over-`embedded-io-async`, a vertical rather than a task.
+`hclient-proto`-over-`embedded-io-async`, a vertical rather than a task.

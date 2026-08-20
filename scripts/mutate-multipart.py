@@ -3,8 +3,8 @@
 import subprocess, sys, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-M = "crates/http-ng/src/multipart.rs"
-R = "crates/http-ng/src/request.rs"
+M = "crates/hclient/src/multipart.rs"
+R = "crates/hclient/src/request.rs"
 
 # (id, file, find, replace, description)
 MUTATIONS = [
@@ -97,7 +97,7 @@ def main():
             continue
         open(full, "w").write(src.replace(find, repl))
         run(f"touch {path}")
-        out = run("cargo nextest run -p http-ng --all-features --no-fail-fast 2>&1")
+        out = run("cargo nextest run -p hclient --all-features --no-fail-fast 2>&1")
         text = out.stdout + out.stderr
         if "error[E" in text or "error: could not compile" in text:
             verdict = "KILLED (compile)"

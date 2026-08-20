@@ -9,7 +9,7 @@ one external answer that has not changed (W6).
 
 v0.3 did not begin with this document. **HTTP/3 shipped first**, planned by
 [`docs/h3-research.md`](h3-research.md) and accounted for by
-[`docs/v03-acceptance.md`](v03-acceptance.md); `http-ng-h3` is in the tree,
+[`docs/v03-acceptance.md`](v03-acceptance.md); `hclient-h3` is in the tree,
 over QUIC, multiplexed, with a caller-owned 0-RTT gate. This document plans
 what is left, and is written at `38f29d2`.
 
@@ -31,8 +31,8 @@ fourth section was stale for its whole length:
 - **§W7 said embassy's `'static` problem sat in the `TcpConnect` seam.** It
   did not: `embassy_net::tcp::TcpSocket` holds no buffers at all
   (`docs/w7-embassy-research.md` §1.1), and the `'static` was
-  `http-ng-native`'s own — `R::Stream: 'static` in `impl Transport for
-  Native` (`crates/http-ng-native/src/lib.rs:754-760`), which the research
+  `hclient-native`'s own — `R::Stream: 'static` in `impl Transport for
+  Native` (`crates/hclient-native/src/lib.rs:754-760`), which the research
   traced to `H1Body` storing hyper's `Connection` as a `Pin<Box<dyn
   Future>>`.
 
@@ -40,7 +40,7 @@ fourth section was stale for its whole length:
   worth noticing here rather than being surprised by later: v0.2 W2 replaced
   the box with the concrete `hyper::client::conn::http1::Connection`,
   precisely because `Box<dyn Future>` is never `Send`
-  (`crates/http-ng-native/src/h1.rs:29-45`). So what the two `'static`s are
+  (`crates/hclient-native/src/h1.rs:29-45`). So what the two `'static`s are
   holding up **today** is *unverified*, and the check is to delete them and
   read the errors. That matters to anyone taking the embassy path further,
   and it is the same shape of staleness this document is written against.
@@ -50,11 +50,11 @@ fourth section was stale for its whole length:
   from the `Tokio` and `Smol` impls. What actually blocks it is that the
   future is a type parameter of the *trait*, so a bound must **name** it —
   and an `async` block has no name. `Native::with_reaper`
-  (`crates/http-ng-native/src/lib.rs:361`) is the shipped counter-example.
+  (`crates/hclient-native/src/lib.rs:361`) is the shipped counter-example.
 - **§W6 said native buffers a streaming request body and WASI takes only
   `Full`.** Neither was true when it was written, and the item stayed
   blocked on that for the whole vertical. The real content was one backend,
-  `http-ng-fetch`, and one browser difference nobody had measured.
+  `hclient-fetch`, and one browser difference nobody had measured.
 
 Those four are not embarrassing because they were wrong — a plan is allowed
 to be wrong, and this project's whole review technique is built on finding
@@ -84,15 +84,15 @@ disagreeing with one is allowed, re-discovering it is waste.
 
 | the question | the answer | where it was settled |
 |---|---|---|
-| Can library code `spawn` on this seam? | Yes, with a **named** future type. `Spawn<F>` declares no bounds; `Send + 'static` belong to the `Tokio`/`Smol` impls. An `async` block cannot be spawned because it cannot be named — that, not auto traits, is the wall. | `docs/v02-design.md` §W2 correction; `crates/http-ng-native/src/lib.rs:341-375` (`with_reaper`, `Reaper`) |
-| Does `'static` in the seam shut out embassy? | No. The `'static` is `http-ng-native`'s (`lib.rs:754-760`), and embassy's own `TcpClient`/`TcpClientState` is the bounded buffer pool that satisfies it. Four variants compiled, one runs over a TAP device. Its *stated cause* is stale — see the bullet above | `docs/w7-embassy-research.md` §1.1–1.3 |
-| Can hyper's HTTP/2 client be used without a spawner? | No, and not for reasons of cost: the trait is sealed. Use `h2` directly. | `hyper-1.11.0/src/rt/bounds.rs:51-52`; `crates/http-ng-native/src/http2.rs` |
-| Which UTS-46 option word does this project need? | `0x3C` — non-transitional both ways, plus the two context checks. `UIDNA_DEFAULT` is `0`, which is *transitional*, agrees with IDNA2003, and therefore disagrees with us on `straße.de`. Apple's `swift-foundation` uses the same word. | `docs/v02-design.md` "Platform IDN"; `docs/icu-ecosystem-survey.md`; the `OPTIONS` unit test in `crates/http-ng-idn/src/lib.rs` |
+| Can library code `spawn` on this seam? | Yes, with a **named** future type. `Spawn<F>` declares no bounds; `Send + 'static` belong to the `Tokio`/`Smol` impls. An `async` block cannot be spawned because it cannot be named — that, not auto traits, is the wall. | `docs/v02-design.md` §W2 correction; `crates/hclient-native/src/lib.rs:341-375` (`with_reaper`, `Reaper`) |
+| Does `'static` in the seam shut out embassy? | No. The `'static` is `hclient-native`'s (`lib.rs:754-760`), and embassy's own `TcpClient`/`TcpClientState` is the bounded buffer pool that satisfies it. Four variants compiled, one runs over a TAP device. Its *stated cause* is stale — see the bullet above | `docs/w7-embassy-research.md` §1.1–1.3 |
+| Can hyper's HTTP/2 client be used without a spawner? | No, and not for reasons of cost: the trait is sealed. Use `h2` directly. | `hyper-1.11.0/src/rt/bounds.rs:51-52`; `crates/hclient-native/src/http2.rs` |
+| Which UTS-46 option word does this project need? | `0x3C` — non-transitional both ways, plus the two context checks. `UIDNA_DEFAULT` is `0`, which is *transitional*, agrees with IDNA2003, and therefore disagrees with us on `straße.de`. Apple's `swift-foundation` uses the same word. | `docs/v02-design.md` "Platform IDN"; `docs/icu-ecosystem-survey.md`; the `OPTIONS` unit test in `crates/hclient-idn/src/lib.rs` |
 | Does `Timer` need an absolute-deadline sleep for QUIC? | No. quinn's `Instant` *is* `std::time::Instant` (`quinn-0.11.11/src/lib.rs:56`), so `reset(i)` is `sleep(i - now)`. The recommendation was measured away rather than implemented. | `docs/v03-acceptance.md` "The seam changes" |
 | Can `tokio` leave a `hyper` build? | No, and it never could: `hyper` depends on it unconditionally. What is checkable is that the `tokio` present is the inert `sync` leaf, and CI checks exactly that. | `AGENTS.md` "What's in the dependency graph"; hyper#3428, hyper#3767; `.github/deny/smol-path.toml` per `docs/ci.md` |
-| Does `tower`'s concurrency limit bound sockets? | No — the permit is released at the response **head**, so a streaming body holds its connection outside the limit. | `docs/v02-design.md` §W4 correction; `crates/http-ng-tower/tests/concurrency.rs` |
+| Does `tower`'s concurrency limit bound sockets? | No — the permit is released at the response **head**, so a streaming body holds its connection outside the limit. | `docs/v02-design.md` §W4 correction; `crates/hclient-tower/tests/concurrency.rs` |
 | How is a browser's request-stream support detected? | Behaviourally, never by `'duplex' in Request.prototype`. Firefox 153 does not refuse a stream body — it **replaces** it with the 23 bytes `[object ReadableStream]`, and nothing inside the page can see that. | `docs/v02-design.md` §W6; `docs/measurements/w6-request-streams/` |
-| Does dropping a `wasi:http` exchange cancel it? | Yes — the Component Model subtask is cancelled, measured on a live wasmtime host with the server's own socket as the observer. All three v0.1 backends cancel. | `docs/v02-design.md` §W1; `crates/http-ng-wasi/tests/live_roundtrip.rs` |
+| Does dropping a `wasi:http` exchange cancel it? | Yes — the Component Model subtask is cancelled, measured on a live wasmtime host with the server's own socket as the observer. All three v0.1 backends cancel. | `docs/v02-design.md` §W1; `crates/hclient-wasi/tests/live_roundtrip.rs` |
 | Can the 0-RTT acceptance verdict be a field on a handshake result? | No. On QUIC it resolves *after* the response — 8.63 ms against 8.58 ms — so a field could only hold it by waiting for the handshake, which is the round trip 0-RTT skips. | `docs/h3-research.md` §3.2–3.3 |
 | Is `full_duplex` allowed to be optimistic? | No, and it is the one field where that is a category difference: over-claiming `streaming_request_body` costs a buffered copy, over-claiming `full_duplex` costs a **deadlock**. Capabilities report the floor. | `docs/v02-design.md` §W3 "DECIDED" |
 | Does a variant of a capability enum earn its place? | Only if a caller decision turns on it. `CancelSupport` and `ReuseSupport` each shipped with two values for that reason; `RedirectSupport::Internal` earns a third because `check_supported` *refuses* on it. | `docs/v02-acceptance.md` "The rule this vertical kept applying" |
@@ -129,7 +129,7 @@ below is preference, and can be reordered by whoever is doing the work.
    vertical, and it carries the one ordering constraint above.
 3. **W3 next**, because it is the same theme as W2 and consumes one thing W2
    produces: the RFC 9460 client-semantics layer, moved out of
-   `http-ng-dns-system` where both resolvers can reach it.
+   `hclient-dns-system` where both resolvers can reach it.
 4. **W4 last** — the largest, the only one adding a public seam, and the one
    nothing else depends on, so its slipping costs least. Its first act is a
    measurement that may turn it into a bug fix before it is a feature.
@@ -144,9 +144,9 @@ below is preference, and can be reordered by whoever is doing the work.
 **Why first.** It is the cheapest thing in this document and it defends a
 claim rather than adding a feature. "The runtime seam is real" is one of the
 four things v0.1 set out to prove, and what proves it is
-`crates/http-ng/tests/two_runtimes.rs` — the same generic function under two
+`crates/hclient/tests/two_runtimes.rs` — the same generic function under two
 runtimes, over a real socket. The UDP half of that seam has **one**
-implementation (`crates/http-ng-rt-tokio/src/udp.rs`), so `http-ng-h3` has
+implementation (`crates/hclient-rt-tokio/src/udp.rs`), so `hclient-h3` has
 no two-runtime acceptance and the portability claim for `UdpBind`/
 `UdpDatagrams` rests on the crate they were designed against. A seam with
 one implementation is a design, not a seam; `docs/v03-acceptance.md` records
@@ -154,12 +154,12 @@ this as one of its "deliberately not done" items, and it is the one that
 should not stay there.
 
 **Deliverable.** `UdpBind`/`UdpAdoptStd`/`UdpDatagrams` on
-`http_ng_rt_smol::Smol`, behind a `udp` feature mirroring
-`crates/http-ng-rt-tokio/Cargo.toml:17-19`; plus `http-ng-h3`'s live suite
+`hclient_rt_smol::Smol`, behind a `udp` feature mirroring
+`crates/hclient-rt-tokio/Cargo.toml:17-19`; plus `hclient-h3`'s live suite
 instantiated under both runtimes the way `two_runtimes.rs` does for HTTP/1,
 so that the acceptance is *the same generic code* rather than two similar
 test files. The ECN read-back the tokio backend performs
-(`crates/http-ng-rt-tokio/src/udp.rs:18-29` — it asks the kernel with
+(`crates/hclient-rt-tokio/src/udp.rs:18-29` — it asks the kernel with
 `getsockopt` rather than trusting `quinn-udp`'s documented graceful
 degradation) is part of the deliverable, not an extra: a backend that
 reports what it *attempted* is exactly the over-claim this seam exists to
@@ -169,10 +169,10 @@ prevent.
 
 | claim | how to refute it | status |
 |---|---|---|
-| The only thing standing between `Smol` and h3 is the UDP triple | Write `fn assert<R: H3Runtime>()` and instantiate it with `Smol`; the error list must name `UdpBind`, `UdpAdoptStd` and nothing else. `H3Runtime` is `Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static` (`crates/http-ng-h3/src/lib.rs:353`), and `Smol` already has `Timer`, `Spawn`, `Blocking`, `TcpConnect`, `TcpAdoptStd` (`crates/http-ng-rt-smol/src/lib.rs:19,46,74,105,154`) | **unverified** — read from the two files, not compiled |
-| `async_io::Async<UdpSocket>` gives `quinn-udp` the descriptor it needs | `docs/h3-research.md` §2.4 measured `gso=64 gro=64` through it | measured **in a spike**, not in this crate; the check that transfers it is `crates/http-ng-rt-tokio/tests/udp.rs` run against the new backend |
-| It costs no new dependency beyond the one tokio pays | `async-io = "2"` is already a direct dependency (`crates/http-ng-rt-smol/Cargo.toml:12`); only `quinn-udp` arrives, optional, exactly as on tokio | measured here |
-| `Spawn` is not a problem for the h3 driver on smol | `QuinnTask` is `Pin<Box<dyn Future<Output = ()> + Send>>` (`crates/http-ng-h3/src/runtime.rs:66`) — a **named** type, so the naming wall does not apply; `Smol`'s impl takes `F: Send + 'static` (`lib.rs:46`) | measured here by reading, not compiled |
+| The only thing standing between `Smol` and h3 is the UDP triple | Write `fn assert<R: H3Runtime>()` and instantiate it with `Smol`; the error list must name `UdpBind`, `UdpAdoptStd` and nothing else. `H3Runtime` is `Timer + UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Clone + Send + Sync + 'static` (`crates/hclient-h3/src/lib.rs:353`), and `Smol` already has `Timer`, `Spawn`, `Blocking`, `TcpConnect`, `TcpAdoptStd` (`crates/hclient-rt-smol/src/lib.rs:19,46,74,105,154`) | **unverified** — read from the two files, not compiled |
+| `async_io::Async<UdpSocket>` gives `quinn-udp` the descriptor it needs | `docs/h3-research.md` §2.4 measured `gso=64 gro=64` through it | measured **in a spike**, not in this crate; the check that transfers it is `crates/hclient-rt-tokio/tests/udp.rs` run against the new backend |
+| It costs no new dependency beyond the one tokio pays | `async-io = "2"` is already a direct dependency (`crates/hclient-rt-smol/Cargo.toml:12`); only `quinn-udp` arrives, optional, exactly as on tokio | measured here |
+| `Spawn` is not a problem for the h3 driver on smol | `QuinnTask` is `Pin<Box<dyn Future<Output = ()> + Send>>` (`crates/hclient-h3/src/runtime.rs:66`) — a **named** type, so the naming wall does not apply; `Smol`'s impl takes `F: Send + 'static` (`lib.rs:46`) | measured here by reading, not compiled |
 | The separated `try_send`/`poll_writable` shape fits a second runtime | The separation was justified by what *quinn* needs — waiting to write with no datagram in hand — and never by what a second runtime can express. Refuted if `async-io`'s readiness API cannot register a write waker without one | **unverified**, and it is the only place this item could turn out to be a seam change rather than a backend |
 
 **Watch for.** Two.
@@ -194,13 +194,13 @@ path (`docs/v03-acceptance.md`: "0-RTT ACCEPTANCE has not been observed end
 to end here; rejection has"). The material exists — the test server already
 sets `max_early_data_size = u32::MAX` — and what is missing is the timing
 instrumentation the research spike had. It is a test, not a feature, and it
-belongs to whoever is already inside `crates/http-ng-h3/tests/live.rs`.
+belongs to whoever is already inside `crates/hclient-h3/tests/live.rs`.
 
 ---
 
 ## W2 — Discovery, tier 2: the HTTPS record we already fetch
 
-**Why.** `http-ng-h3` chose HTTP/3 by being constructed. That is honest, and
+**Why.** `hclient-h3` chose HTTP/3 by being constructed. That is honest, and
 it is tier 1 of `docs/h3-research.md` §4's ladder. Tier 2 — "consume the
 `alpn` field that already exists, on the resolvers that already answer" —
 was assessed there as *a task rather than a vertical*, and its argument is
@@ -208,11 +208,11 @@ the strongest in that research: **the cache with a lifetime already exists
 and is not ours.** It is the DNS record's TTL.
 
 The plumbing has been in the tree since v0.2 and is used by nothing:
-`SvcbEndpoint` (`crates/http-ng-dns/src/lib.rs:85`) carries `alpn`, `port`,
+`SvcbEndpoint` (`crates/hclient-dns/src/lib.rs:85`) carries `alpn`, `port`,
 `ipv4hint`, `ipv6hint` and `ech_config_list`; `Resolve::supports_svcb`
 (`:144`) says whether a resolver can ask; the system resolver answers
 through `res_query`/`DnsQueryRaw` and the hickory one through its own
-queries. `crates/http-ng-native/src/connect.rs:83-91` says in its own module
+queries. `crates/hclient-native/src/connect.rs:83-91` says in its own module
 doc that the plumbing was built and never used, and `:595` passes
 `ech: None`.
 
@@ -220,8 +220,8 @@ doc that the plumbing was built and never used, and `:595` passes
 
 1. **The ECH slot stops being a silent drop. DONE — refuse.** Of the three
    TLS backends, two refused a non-`None` `TlsRequest::ech` by name and
-   said why (`crates/http-ng-tls-native-tls/src/lib.rs:129`,
-   `crates/http-ng-tls-rustls/src/quic.rs:76`). The third — the rustls TCP
+   said why (`crates/hclient-tls-native-tls/src/lib.rs:129`,
+   `crates/hclient-tls-rustls/src/quic.rs:76`). The third — the rustls TCP
    path, which is the default backend — **neither refused nor honoured it:
    it never read the field.** It does now, and refuses, which unblocks
    part 2: `connect.rs` may fill `TlsRequest::ech` without any backend
@@ -229,7 +229,7 @@ doc that the plumbing was built and never used, and `:595` passes
 
    The decision was taken against the alternative rather than by default,
    and the three obstacles are recorded at the refusal
-   (`ech_refused`'s doc comment, `crates/http-ng-tls-rustls/src/lib.rs`),
+   (`ech_refused`'s doc comment, `crates/hclient-tls-rustls/src/lib.rs`),
    measured against rustls 0.23.43: the HPKE suites `EchConfig::new` needs
    exist only in rustls's `aws_lc_rs` provider — `src/crypto/ring/` has no
    `hpke.rs` — and this crate pins `ring` so that it agrees with
@@ -250,13 +250,13 @@ doc that the plumbing was built and never used, and `:595` passes
 
 **What is deliberately *not* in the deliverable, and it is the structural
 finding of this section.** Tier 2 cannot choose HTTP/3. `SvcbEndpoint::alpn`
-containing `h3` is a fact `http-ng-native` can read and cannot act on:
-`http-ng-h3` is a different crate with different bounds (`R: UdpBind +
+containing `h3` is a fact `hclient-native` can read and cannot act on:
+`hclient-h3` is a different crate with different bounds (`R: UdpBind +
 Spawn<QuinnTask>`, `T: QuicTlsConnect`), `Native<R, T, D>` has neither, and
 `Client<T>` names exactly one transport type. **There is nowhere in this
 codebase for "choose between two protocol stacks" to live.** That is a
 transport owning both — a racing transport, with the fallback and the
-broken-backoff the original spec sketched (`docs/superpowers/specs/2026-08-05-http-ng-design.md`
+broken-backoff the original spec sketched (`docs/superpowers/specs/2026-08-05-hclient-design.md`
 §5.6) — and it is a vertical, not a task. So tier 2 delivers everything an
 HTTPS record says *except* the protocol choice: hints, port, the ALPN offer
 for the TCP stack, and ECH.
@@ -269,13 +269,13 @@ one v0.2 gave ("a cache with a lifetime, closer to a browser's job").
 
 | claim | how to refute it | status |
 |---|---|---|
-| Two shipped resolvers can answer SVCB | `supports_svcb()` is `cfg`-accurate rather than optimistic, and its own test says so (`crates/http-ng-dns-system/src/lib.rs:332`); hickory overrides both methods together (`crates/http-ng-dns-hickory/src/lib.rs:221-225`) | measured here |
-| The RFC 9460 client-semantics layer would have to be written | **False, and it is why this is a task.** It exists: `crates/http-ng-dns-system/src/svcb.rs`, 1537 lines with its tests, deciding AliasMode against ServiceMode, `mandatory`, and what "no records" means. It is `pub(crate)` (`:41`), so the deliverable includes moving it where both resolvers and a DoH one can reach it | measured here |
-| "The cache with a lifetime is the resolver's, so we need none" | **Half false, and worth checking before relying on it.** `http-ng-dns-hickory` caches and shares one cache across clones (`crates/http-ng-dns-hickory/src/lib.rs:63`). `http-ng-dns-system` caches **nothing** — grep it for `cache`, zero hits — so an SVCB lookup there is a fresh `res_query` per request unless the OS stub resolver happens to cache. What would settle the cost: time two consecutive `lookup_svcb` calls through `SystemDns`, on a machine with `systemd-resolved` and on one without | the absence of a cache in our code is measured here; the cost is **unverified** |
-| A TTL is available to cache with | `ResolvedAddr::ttl` exists (`crates/http-ng-dns/src/lib.rs:76`), hickory fills it (`crates/http-ng-dns-hickory/src/lib.rs:105-117`), `getaddrinfo` cannot and leaves it `None` — and **nothing anywhere reads it**: grep `.ttl` outside the resolvers | measured here |
-| A negative cache belongs to Alt-Svc, so tier 2 needs none | **False**, and this is what the h3 research's four-item Alt-Svc scope loses when tier 2 is read carefully. UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken backoff mandatory — and a record advertising `h3` on such a network produces a failed attempt per request whether the advertisement came from DNS or from a header. The cache of *what failed* is h3's; only the cache of *what was advertised* is Alt-Svc's | argued from `docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with a race and without one, would settle it |
+| Two shipped resolvers can answer SVCB | `supports_svcb()` is `cfg`-accurate rather than optimistic, and its own test says so (`crates/hclient-dns-system/src/lib.rs:332`); hickory overrides both methods together (`crates/hclient-dns-hickory/src/lib.rs:221-225`) | measured here |
+| The RFC 9460 client-semantics layer would have to be written | **False, and it is why this is a task.** It exists: `crates/hclient-dns-system/src/svcb.rs`, 1537 lines with its tests, deciding AliasMode against ServiceMode, `mandatory`, and what "no records" means. It is `pub(crate)` (`:41`), so the deliverable includes moving it where both resolvers and a DoH one can reach it | measured here |
+| "The cache with a lifetime is the resolver's, so we need none" | **Half false, and worth checking before relying on it.** `hclient-dns-hickory` caches and shares one cache across clones (`crates/hclient-dns-hickory/src/lib.rs:63`). `hclient-dns-system` caches **nothing** — grep it for `cache`, zero hits — so an SVCB lookup there is a fresh `res_query` per request unless the OS stub resolver happens to cache. What would settle the cost: time two consecutive `lookup_svcb` calls through `SystemDns`, on a machine with `systemd-resolved` and on one without | the absence of a cache in our code is measured here; the cost is **unverified** |
+| A TTL is available to cache with | `ResolvedAddr::ttl` exists (`crates/hclient-dns/src/lib.rs:76`), hickory fills it (`crates/hclient-dns-hickory/src/lib.rs:105-117`), `getaddrinfo` cannot and leaves it `None` — and **nothing anywhere reads it**: grep `.ttl` outside the resolvers | measured here |
+| A negative cache belongs to Alt-Svc, so tier 2 needs none | **False**, and this is what the h3 research's four-item Alt-Svc scope loses when tier 2 is read carefully. UDP/443 is blocked on ~2–5% of networks, which is why the original spec made the broken backoff mandatory — and a record advertising `h3` on such a network produces a failed attempt per request whether the advertisement came from DNS or from a header. The cache of *what failed* is h3's; only the cache of *what was advertised* is Alt-Svc's | argued from `docs/superpowers/specs/2026-08-05-hclient-design.md` §5.6; the size of the cost is **unverified** — a firewall rule dropping UDP/443 and ten timed requests, with a race and without one, would settle it |
 | What Alt-Svc adds over SVCB is only a positive cache | Partly: also a host/port *change* for an origin, and coverage of origins whose DNS carries no HTTPS RR. How many origins that is, nobody here has counted | **unverified**; one sweep over a list of origins, comparing HTTPS RR presence against the `Alt-Svc` header, settles it |
-| An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/http-ng-tls-rustls/src/lib.rs` → no matches | measured here, and **since fixed**: the same grep now finds the refusal, and `crates/http-ng-tls-rustls/tests/ech.rs` measures it from the peer's side of a loopback socket — nothing on the wire with `ech: Some(_)`, and, as its control, the server name in the clear with `ech: None` |
+| An ECH config from DNS would reach a backend that uses it | `grep -n ech crates/hclient-tls-rustls/src/lib.rs` → no matches | measured here, and **since fixed**: the same grep now finds the refusal, and `crates/hclient-tls-rustls/tests/ech.rs` measures it from the peer's side of a loopback socket — nothing on the wire with `ech: Some(_)`, and, as its control, the server name in the clear with `ech: None` |
 
 **Watch for.** The capability question arrives again, and its answer already
 exists: a transport whose ALPN offer is decided per origin, by a record it
@@ -285,7 +285,7 @@ inherited by accident (`docs/h3-research.md` §4, fourth bullet).
 
 One trap is specific to this item. An HTTPS record is attacker-influenced
 input on the path that decides **which host is contacted** — the same
-sentence `http-ng-idn` is written under. `svcb.rs` already refuses a record
+sentence `hclient-idn` is written under. `svcb.rs` already refuses a record
 that makes an unrecognised key mandatory (`RECOGNISED_KEYS`, `:54`), and
 that refusal is the thing to keep rather than relax when the list is
 revisited for `dohpath` in W3.
@@ -318,7 +318,7 @@ choice is expensive to walk back because it shows in the constructor.
    available, always someone else's problem, and the right default for a
    build that has no system resolver at all.
 4. **RFC 9461 `dohpath`** — SVCB key 7, which `svcb.rs` deliberately does
-   **not** recognise today (`RECOGNISED_KEYS`, `crates/http-ng-dns-system/src/svcb.rs:54`,
+   **not** recognise today (`RECOGNISED_KEYS`, `crates/hclient-dns-system/src/svcb.rs:54`,
    and its comment names `dohpath` as the example of a key that is real,
    registered, and acted on by nothing here). Discovering a DoH endpoint by
    DNS to avoid using DNS is circular for the *first* lookup and useful for
@@ -337,7 +337,7 @@ next to the claim: **any `Arc<dyn Resolve>` erasure reopens the cycle**, so
 the guard is a property of not erasing, and a later convenience that boxes
 the resolver would remove it silently.
 
-**Deliverable.** `http-ng-dns-doh`: a `Resolve` implementation over any
+**Deliverable.** `hclient-dns-doh`: a `Resolve` implementation over any
 `Transport`, answering `lookup_ips` and — the point of the crate —
 `lookup_svcb` with `supports_svcb() == true`, filling `ResolvedAddr::ttl`
 from the answer, with the bootstrap chosen from the list above and stated in
@@ -347,12 +347,12 @@ the constructor rather than in prose.
 
 | claim | how to refute it | status |
 |---|---|---|
-| The DNS codec would have to be chosen, and hickory-proto is the candidate the spec named | **The codec is already in this tree.** `dns-message-parser = "0.9"` is a normal dependency of `http-ng-dns-system` (`Cargo.toml:18`), decodes HTTPS RR (type 65 — `rr/enums.rs:203`, `rr/draft_ietf_dnsop_svcb_https.rs`), and has an `encode()` on its message type. `svcb.rs`'s module doc records why it was chosen: no `unsafe` in its `src`, and name decompression that terminates by tracking visited offsets | measured here |
-| Reaching for `hickory-proto` instead is a small cost | **No.** `cargo tree -p http-ng-dns-hickory -e normal` is **92 unique crates** against **25** for `http-ng-dns-system`, and it brings back `url`, `idna` and the ICU data crates — the graph `http-ng-proto` spent a whole task removing. `hickory-proto`'s `std` feature includes `url/std` | measured here |
-| `dns-message-parser` can encode a *query*, not only decode a response | The decode path is what `http-ng-dns-system` uses; the encode path is used by nothing here. Check: build a `Dns` with one question for `A`/`HTTPS`, call `encode()`, and compare the bytes against `dig +qr` | **unverified** |
+| The DNS codec would have to be chosen, and hickory-proto is the candidate the spec named | **The codec is already in this tree.** `dns-message-parser = "0.9"` is a normal dependency of `hclient-dns-system` (`Cargo.toml:18`), decodes HTTPS RR (type 65 — `rr/enums.rs:203`, `rr/draft_ietf_dnsop_svcb_https.rs`), and has an `encode()` on its message type. `svcb.rs`'s module doc records why it was chosen: no `unsafe` in its `src`, and name decompression that terminates by tracking visited offsets | measured here |
+| Reaching for `hickory-proto` instead is a small cost | **No.** `cargo tree -p hclient-dns-hickory -e normal` is **92 unique crates** against **25** for `hclient-dns-system`, and it brings back `url`, `idna` and the ICU data crates — the graph `hclient-proto` spent a whole task removing. `hickory-proto`'s `std` feature includes `url/std` | measured here |
+| `dns-message-parser` can encode a *query*, not only decode a response | The decode path is what `hclient-dns-system` uses; the encode path is used by nothing here. Check: build a `Dns` with one question for `A`/`HTTPS`, call `encode()`, and compare the bytes against `dig +qr` | **unverified** |
 | A cert with an IP SAN validates through the default verifier | One request to an IP-literal DoH endpoint, on each of the three matrix platforms | **unverified** |
 | The cycle is a compile error rather than a runtime guard | Write the recursive type and read the error | **unverified**, and the escape hatch (`dyn Resolve`) is named above |
-| DoH over HTTP/1.1 is adequate | RFC 8484 says HTTP/2 SHOULD be used; our h2 is a feature and off by default, and the pool hands an h2 connection out **exclusively** (`crates/http-ng-native/src/pool.rs:155`), so h2 buys nothing for concurrent queries here either. The honest consequence is one connection per outstanding query on the default build | reasoned here from measured facts; the *latency* cost is **unverified** |
+| DoH over HTTP/1.1 is adequate | RFC 8484 says HTTP/2 SHOULD be used; our h2 is a feature and off by default, and the pool hands an h2 connection out **exclusively** (`crates/hclient-native/src/pool.rs:155`), so h2 buys nothing for concurrent queries here either. The honest consequence is one connection per outstanding query on the default build | reasoned here from measured facts; the *latency* cost is **unverified** |
 
 **Watch for.** Three.
 
@@ -384,23 +384,23 @@ matter for a wasm build that wants an HTTPS record's `alpn` or ECH, and
 seam to the public surface, and nothing else in this document depends on it
 — so if the vertical runs short, this is the item whose slipping costs
 least. It is also the one the original spec called "what nobody else has"
-(`docs/superpowers/specs/2026-08-05-http-ng-design.md`, v0.3 roadmap), and
+(`docs/superpowers/specs/2026-08-05-hclient-design.md`, v0.3 roadmap), and
 the one whose central decision that spec asked to be taken *before the pool
 architecture is frozen*. The pool froze in v0.2 W2 without it. The cost of
 that is measurable rather than hypothetical, and it is written below.
 
-`Capabilities::upgrade` exists (`crates/http-ng-core/src/caps.rs:277`, field
+`Capabilities::upgrade` exists (`crates/hclient-core/src/caps.rs:277`, field
 at `:492`) and is `UpgradeSupport::None` in every backend and in the default
-(`caps.rs:522`, `http-ng-native/src/lib.rs:259`, `http-ng-wasi/src/lib.rs:194`,
-`http-ng-fetch/src/caps.rs:407`, `http-ng-h3/src/lib.rs:342`). Four variants,
+(`caps.rs:522`, `hclient-native/src/lib.rs:259`, `hclient-wasi/src/lib.rs:194`,
+`hclient-fetch/src/caps.rs:407`, `hclient-h3/src/lib.rs:342`). Four variants,
 zero uses: exactly the shape v0.2's rule was written against.
 
 ### The finding that decides the seam
 
 **The browser cannot implement "upgrade" at all, and can implement
-"WebSocket" perfectly well.** `http-ng-fetch` says so where it sets the
+"WebSocket" perfectly well.** `hclient-fetch` says so where it sets the
 capability: *"`WebSocket` in the browser is a wholly separate global,
-unreachable from a `fetch`-shaped `Transport`"* (`crates/http-ng-fetch/src/caps.rs:405-406`).
+unreachable from a `fetch`-shaped `Transport`"* (`crates/hclient-fetch/src/caps.rs:405-406`).
 On Apple platforms the same is true one level down —
 `NSURLSessionWebSocketTask` is **message-framed** and hands back no byte
 stream. `wasi:http` has no upgrade either: the protocol has an
@@ -464,22 +464,22 @@ proto::Dispatched::Upgrade(pending) => {
 ```
 
 "The exchange completed successfully" and "the upgrade was destroyed" are
-therefore the *same observation*, and `crates/http-ng-native/src/h1.rs`
+therefore the *same observation*, and `crates/hclient-native/src/h1.rs`
 polls `Connection` as a `Future` precisely this way (its module doc,
 "What happens when `Connection` finishes first, or fails"). A 101 must be
 detected by **status**, before the connection is polled to completion.
 
 ### The check to run before any code is written — RUN, and the answer is no
 
-Nothing in `http-ng-native` mentions 101 or Switching Protocols — grep the
+Nothing in `hclient-native` mentions 101 or Switching Protocols — grep the
 crate. So today, a server that answers `101` to an ordinary request produces
 a response with a body that ends immediately, and `checkin_for`
-(`crates/http-ng-native/src/lib.rs:527`) hands the connection back to the
+(`crates/hclient-native/src/lib.rs:527`) hands the connection back to the
 pool when the body ends cleanly. **If that is what happens, the pool is
 being poisoned with a connection that is no longer speaking HTTP, and that
 is a bug today rather than a WebSocket feature.**
 
-It is not what happens. `crates/http-ng-native/tests/switching_protocols.rs`
+It is not what happens. `crates/hclient-native/tests/switching_protocols.rs`
 is the experiment this paragraph asked for, with the accept count and the
 upgraded socket as the observer, in both shapes — a `101` on a fresh
 connection and a `101` on one the pool really did hand out. Neither reuses
@@ -530,14 +530,14 @@ stands, and *more* reachable than the original spec thought:
 
 And yet it buys nothing here, for a reason that belongs to the pool rather
 than to h2: **an h2 connection is checked out exclusively, one stream at a
-time** (`crates/http-ng-native/src/pool.rs:155-172`, which states the policy
+time** (`crates/hclient-native/src/pool.rs:155-172`, which states the policy
 and the `Spawn` argument behind it). A WebSocket over h2 would therefore
 occupy an entire connection for its lifetime — exactly what it does over
 h1, plus framing overhead. RFC 8441 exists to put a tunnel *alongside*
 ordinary requests; with exclusive checkout there is no alongside.
 
 Lifting the exclusivity needs a connection driven by somebody who is not a
-request future, which is the decision `http-ng-h3` already took and wrote
+request future, which is the decision `hclient-h3` already took and wrote
 down (`docs/v03-acceptance.md`, "HTTP/3 requires `R: Spawn`, and connections
 are shared"). So: **WebSocket over h1 in v0.3; WebSocket over h2 only
 together with a multiplexing pool**, which is its own work item and carries
@@ -556,11 +556,11 @@ of that miss.
 | hyper hands back the IO without a `Send` bound | `into_parts`/`poll_without_shutdown` bounds at `hyper-1.11.0/src/client/conn/http1.rs:68-113` | measured here |
 | `hyper::upgrade::Upgraded` cannot be used | It is `Rewind<Box<dyn Io + Send>>` (`src/upgrade.rs:66-67`) | measured here |
 | Polling `Connection` to completion destroys an upgrade | `src/client/conn/http1.rs:313-320` | measured here |
-| A 101 today poisons the pool | The loopback experiment above | **run, and the answer is no** — `crates/http-ng-native/tests/switching_protocols.rs`. The connection is never offered to the pool (`exchange` sees it finished before the response exists), and four further checks would each stop it alone; measured by disabling them |
+| A 101 today poisons the pool | The loopback experiment above | **run, and the answer is no** — `crates/hclient-native/tests/switching_protocols.rs`. The connection is never offered to the pool (`exchange` sees it finished before the response exists), and four further checks would each stop it alone; measured by disabling them |
 | RFC 8441 is reachable through the `h2` crate we already drive | `h2-0.4.15/src/client.rs:547`, `proto/streams/streams.rs:227` | measured here by reading; no request has been sent |
 | WS-over-h2 is worth having under the current pool | It is not, and the reason is `pool.rs:155-172`, not h2 | argued here |
 | A framing library exists that does not force a runtime | `tungstenite` 0.30's `WebSocketContext::read/write` take the stream per call (`tungstenite-0.30.0/src/protocol/mod.rs:449,491`) — a state machine separate from the socket, but typed against `std::io::{Read, Write}`. `async-tungstenite` 0.35 bridges it with `AllowStd` + `AtomicWaker` over `futures_io`, and its only `unsafe` is in `gio.rs` | measured here |
-| That bridge can be built here without `unsafe` | `crates/http-ng-rt/src/futures_io.rs` already bridges `futures_io -> hyper::rt` unsafe-free, through a scratch buffer, and documents the one-copy cost. WebSocket needs the **reverse** direction, which that file does not have | **unverified**; writing it under `#![forbid(unsafe_code)]` is the check |
+| That bridge can be built here without `unsafe` | `crates/hclient-rt/src/futures_io.rs` already bridges `futures_io -> hyper::rt` unsafe-free, through a scratch buffer, and documents the one-copy cost. WebSocket needs the **reverse** direction, which that file does not have | **unverified**; writing it under `#![forbid(unsafe_code)]` is the check |
 | The handshake needs a dependency | `Sec-WebSocket-Accept` is SHA-1 of the key plus a fixed GUID, base64. `tungstenite`'s `generate_key`/`derive_accept_key` sit behind its `handshake` feature, which pulls `http`, `httparse`, `sha1` and `data-encoding` | measured here; which way to go is a decision, not a fact |
 
 **Watch for.** Four.
@@ -577,7 +577,7 @@ browser backend, which has its own message type.
 
 *Reconnection is not this seam's job.* `SseStream` and
 `ReconnectingSseStream` are the precedent: a stream, and a separate type
-that opens a fresh one (`crates/http-ng/src/sse.rs`).
+that opens a fresh one (`crates/hclient/src/sse.rs`).
 
 *Masking, and the `Close` handshake, are the parts a naive implementation
 gets wrong quietly.* A client MUST mask; an unmasked frame is a protocol
@@ -608,7 +608,7 @@ is the decision).
 
 ### A commit, not an item
 
-**`http-ng-h3`'s `connect` timeout.** All three `TimeoutSupport` fields are
+**`hclient-h3`'s `connect` timeout.** All three `TimeoutSupport` fields are
 honestly `false`; `docs/v03-acceptance.md` calls `connect` "the cheapest to
 add and not added, because a declaration and its enforcement belong in the
 same change". That rule is v0.2 W4's, it is already written, and the change
@@ -618,21 +618,21 @@ is one commit that moves both together.
 `docs/v02-acceptance.md` lists it as the one declaration no test stands
 behind, on the grounds that *"from inside the sandbox we cannot watch
 sockets"*. The observer does not have to be inside the sandbox, and in this
-suite it already is not: `crates/http-ng-wasi/tests/live_roundtrip.rs` runs
+suite it already is not: `crates/hclient-wasi/tests/live_roundtrip.rs` runs
 the mock server as a plain `std::net::TcpListener` on a **host** thread and
 the guest as a wasmtime subprocess — that division is the file's whole
 design, and it is what made the cancellation measurement possible. Counting
 *accepted* connections across two guest requests is the same observer
-`crates/http-ng-native/tests/pool.rs` uses. The claim it yields is narrower
+`crates/hclient-native/tests/pool.rs` uses. The claim it yields is narrower
 than the capability ("this wasmtime host reuses"), and narrower than the
 capability is still infinitely more than nothing.
 
-**`http_ng_idn::testing::bundled` is called by nothing — and cannot be
-useful as written.** Zero callers: `crates/http-ng-idn/tests/differential.rs`
+**`hclient_idn::testing::bundled` is called by nothing — and cannot be
+useful as written.** Zero callers: `crates/hclient-idn/tests/differential.rs`
 uses `platform`, `platform_name`, `selected` and `policy_over`, and nothing
 else in the workspace names it. The reason is structural rather than an
 oversight. `build.rs` sets `idna_backend` only when the target has neither
-ICU nor Foundation (`crates/http-ng-idn/build.rs`, the last three `if`s),
+ICU nor Foundation (`crates/hclient-idn/build.rs`, the last three `if`s),
 and `idna` is a dependency only under
 `cfg(not(any(windows, target_vendor = "apple")))` (`Cargo.toml:75-83`). So
 on every target where `testing::bundled` exists, it *is* the backend
@@ -646,7 +646,7 @@ for. **Delete it.**
 
 ### A line, and the reason
 
-- **No streaming request body and no full duplex on `http-ng-h3`.** HTTP/3
+- **No streaming request body and no full duplex on `hclient-h3`.** HTTP/3
   does both; `execute` writes the whole body and then reads the head, and
   the capabilities describe the implementation. The technique for lifting it
   without touching `Transport` is already written down twice — carry the
@@ -662,13 +662,13 @@ for. **Delete it.**
   The estimate was right and one item short: past the builder there is also
   no HPKE at all in the `ring` provider this crate pins, so honouring ECH
   starts by adding `aws-lc-rs`. See `ech_refused` in
-  `crates/http-ng-tls-rustls/src/lib.rs`.
+  `crates/hclient-tls-rustls/src/lib.rs`.
 - **No reaper for dead pooled h3 connections.** Same shape and same reason
   as v0.2 W2's HTTP/1 pool: a connection the peer closed is dropped at the
   next checkout.
 - **`Native::with_reaper` after `pool()` watches a discarded pool.** Already
   documented where the code is, as "Start it last"
-  (`crates/http-ng-native/src/lib.rs:341-348`): `pool()`/`without_pool()`
+  (`crates/hclient-native/src/lib.rs:341-348`): `pool()`/`without_pool()`
   install a *new* pool, and a reaper started earlier holds a `Weak` to the
   old one and ends quietly. The type-level fix is a typestate builder, which
   is a large change to a constructor for a mis-ordering that has not
@@ -689,12 +689,12 @@ for. **Delete it.**
   so the next occurrence says whether the connection was replaced.
 - **The h3 idle A/B's timings are loose on purpose.** They would rather pass
   on a loaded runner than measure anything precisely.
-- **`http-ng-fetch`'s `ReuseSupport::Supported` still has no observer**, and
+- **`hclient-fetch`'s `ReuseSupport::Supported` still has no observer**, and
   unlike WASI's it cannot get one from inside the suite: every line of a
   `wasm-bindgen-test` runs in the browser, so a listener cannot be started
   by the test. What would settle it is a server started by CI outside the
   browser, counting accepts — a job-shaped change, not a test-shaped one.
-- **Three `http-ng-idn` gaps stay open**: the ICU acceptance gate covers
+- **Three `hclient-idn` gaps stay open**: the ICU acceptance gate covers
   *content* and not *presence* (killing that mutation needs a machine where
   ICU is present but wrong); the Windows 1703 floor is checked by nothing;
   and whether `CoInitializeEx` must precede `uidna_openUTS46` is unverified.
@@ -706,8 +706,8 @@ for. **Delete it.**
   browsing context.
 - **The concurrency limit bounds requests, not sockets.** Bounding sockets
   needs a limiter that carries its permit into the response body — the shape
-  `http_ng::Deadline` and `http-ng-wasi`'s `Body` both use — owned by
-  `http-ng-tower` rather than borrowed from `tower`.
+  `hclient::Deadline` and `hclient-wasi`'s `Body` both use — owned by
+  `hclient-tower` rather than borrowed from `tower`.
 - **`MockTransport` reports `Capabilities::none()`**, which is honest: its
   `execute` completes synchronously and there is nothing to cancel.
 - **A `tower::buffer::Buffer` in the stack breaks the cancellation
@@ -746,7 +746,7 @@ comment is this project's owner's, dated 2026-08-08) and
 
 **Correction one: it is ten crates, not seven.** `AGENTS.md` says
 `http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API
-of seven crates here. `http` is a normal dependency of **ten**: `http-ng`,
+of seven crates here. `http` is a normal dependency of **ten**: `hclient`,
 `-core`, `-cookie`, `-fetch`, `-h3`, `-mock`, `-native`, `-proto`, `-tower`,
 `-wasi`. Check: `grep -rn '^http *=' crates/*/Cargo.toml`. Whether all ten
 *expose* it is a narrower question and was not counted — it does not need to
@@ -765,13 +765,13 @@ request at all**: 25 open issues and pull requests, not one of them about
 **Correction three, and it is the useful one: our own code is not the
 obstacle.** Measured on this tree:
 
-- `http-ng-proto` — the sans-io crate, the one that would matter for a
+- `hclient-proto` — the sans-io crate, the one that would matter for a
   microcontroller — uses exactly four `std::` paths outside its tests:
   `collections::VecDeque`, `net::IpAddr`, `borrow::Cow` and (in a test only)
   `time::Instant`. Three of those are `alloc`/`core` items with a stable
   home (`core::net::IpAddr` since 1.77). Check:
-  `grep -rho 'std::[a-z_]*' crates/http-ng-proto/src`.
-- `http-ng-core` adds `error::Error` — stable in `core` since 1.81, which
+  `grep -rho 'std::[a-z_]*' crates/hclient-proto/src`.
+- `hclient-core` adds `error::Error` — stable in `core` since 1.81, which
   this project's "latest stable" MSRV comfortably clears — plus `fmt`,
   `task`, `pin`, `future` and `sync::Arc`.
 
@@ -785,8 +785,8 @@ hyperium has merged #740 or #749.
 corrections to `AGENTS.md`, the measurements above recorded once, and
 nothing in `crates/`. Everything else about constrained targets is already
 covered by what exists: `NoTls`, `IpLiteralOnly`,
-`crates/http-ng-native/examples/minimal.rs`, and — for parts that do have
-`std` — `http-ng-rt-embassy`, which is where the microcontroller story
+`crates/hclient-native/examples/minimal.rs`, and — for parts that do have
+`std` — `hclient-rt-embassy`, which is where the microcontroller story
 actually lives.
 
 ---
@@ -808,9 +808,9 @@ shows in a signature and is expensive to walk back.
    — a raw upgrade or `CONNECT` tunnel exposed to callers — which nobody has
    asked for.
 3. **Where the WebSocket seam lives.** The trait has to be somewhere every
-   backend can implement it, which argues for `http-ng-core` beside
+   backend can implement it, which argues for `hclient-core` beside
    `Transport`; the framing implementation has to be somewhere a browser
-   build never links, which argues for a leaf crate. The `http-ng-h3`
+   build never links, which argues for a leaf crate. The `hclient-h3`
    precedent (its own crate, because of bounds and because Cargo's features
    are additive) applies to the second half and not to the first.
 4. **The DoH bootstrap default.** (W3.) IP-literal endpoint, system
@@ -845,7 +845,7 @@ and it is where a per-origin cache would finally have an owner.
 **WebSocket over HTTP/2**, with the multiplexing pool it actually needs.
 Deferred together, because RFC 8441 buys nothing while an h2 connection is
 handed out exclusively, and because lifting that exclusivity moves v0.2 W1's
-cancellation rule from "free" to "owed" (`crates/http-ng-native/src/pool.rs:184-189`
+cancellation rule from "free" to "owed" (`crates/hclient-native/src/pool.rs:184-189`
 says so where the policy is).
 
 **HTTP/3 streaming request bodies and full duplex** — W5's first line, with
@@ -860,11 +860,11 @@ of three.
 **A compio backend, and event hooks / connection observability.** Both were
 on the original spec's v0.3 list. Neither has a consumer asking, and the
 evidence a third runtime would buy is arriving more cheaply elsewhere: W1
-gives the seam its second UDP implementation, and `http-ng-rt-embassy`
+gives the seam its second UDP implementation, and `hclient-rt-embassy`
 already gave it a third executor model with a different set of things it
 cannot do.
 
-**`http-ng-rmcp`, and the `act` acceptance.** The spec put "the second
+**`hclient-rmcp`, and the `act` acceptance.** The spec put "the second
 verification loop" in v0.2 and made both a condition for 1.0; neither
 happened, and this document does not schedule them either. Worth saying why
 they keep being worth more than they look: a consumer refutes capability

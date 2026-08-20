@@ -1,4 +1,4 @@
-# http-ng
+# hclient
 
 **An HTTP client complete enough to build a new curl on — or a browser.**
 

@@ -1,11 +1,11 @@
-# http-ng
+# hclient
 
 Cross-platform async HTTP client. The same application code
 builds for native, browser and WASI — the transport is swapped out, not
 buried under `#[cfg]`.
 
 ```rust
-let client = http_ng::Client::builder(transport).build()?;
+let client = hclient::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
@@ -15,7 +15,7 @@ code without manually choosing a transport: `Client::new()` resolves
 system `getaddrinfo`) itself, by target, not by a feature the user picks.
 
 ```rust
-let client = http_ng::Client::new()?; // requires an ambient tokio runtime
+let client = hclient::Client::new()?; // requires an ambient tokio runtime
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
@@ -23,44 +23,44 @@ The same two lines in a browser, on `wasm32-unknown-unknown`. `Client::new()`
 is infallible there, so there is no `?` on it — that is the only difference:
 
 ```rust
-let client = http_ng::Client::new();
+let client = hclient::Client::new();
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
 End-to-end proof that this SAME generic code (not two
 separate examples) actually runs over the network on two different runtimes
 without a single `#[cfg]` —
-[`crates/http-ng/tests/two_runtimes.rs`](crates/http-ng/tests/two_runtimes.rs):
-`cargo nextest run -p http-ng --test two_runtimes` instantiates the same
-`fetch_once<R>` under `http_ng_rt_tokio::Tokio` (a real `tokio::runtime::
-Runtime`) and under `http_ng_rt_smol::Smol` (a bare `futures_executor::block_on`,
+[`crates/hclient/tests/two_runtimes.rs`](crates/hclient/tests/two_runtimes.rs):
+`cargo nextest run -p hclient --test two_runtimes` instantiates the same
+`fetch_once<R>` under `hclient_rt_tokio::Tokio` (a real `tokio::runtime::
+Runtime`) and under `hclient_rt_smol::Smol` (a bare `futures_executor::block_on`,
 no spawn and no `tokio` in the smol path's graph — see the next section).
 
 A working end-to-end example that actually builds and runs under
 `wasmtime` (not just compiles) —
-[`crates/http-ng-wasi/examples/fetch.rs`](crates/http-ng-wasi/examples/fetch.rs):
+[`crates/hclient-wasi/examples/fetch.rs`](crates/hclient-wasi/examples/fetch.rs):
 
 ```
-cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
+cargo build -p hclient-wasi --example fetch --target wasm32-wasip2
 wasmtime run -S http -- target/wasm32-wasip2/debug/examples/fetch.wasm
 ```
 
 The acceptance for the whole `Transport` shape — a live consumer, written
 against another library *before* this one existed, ported line for line and
 building for all three targets from one source with no `#[cfg]` at all —
-[`crates/http-ng/examples/portable.rs`](crates/http-ng/examples/portable.rs):
+[`crates/hclient/examples/portable.rs`](crates/hclient/examples/portable.rs):
 
 ```
-cargo build -p http-ng --example portable
-cargo build -p http-ng --example portable --target wasm32-wasip2
-cargo build -p http-ng --example portable --target wasm32-unknown-unknown
+cargo build -p hclient --example portable
+cargo build -p hclient --example portable --target wasm32-wasip2
+cargo build -p hclient --example portable --target wasm32-unknown-unknown
 ```
 
 The original is `act`'s `http-client` component on `wasi-fetch`. What the
 port keeps, what it fixes and the four things it changes are written down in
 [`docs/porting-wasi-fetch.md`](docs/porting-wasi-fetch.md); the behaviours
 the example claims to have ported are pinned by
-[`crates/http-ng/tests/portable_example.rs`](crates/http-ng/tests/portable_example.rs),
+[`crates/hclient/tests/portable_example.rs`](crates/hclient/tests/portable_example.rs),
 because three green builds on their own would also be green for an example
 that never streams and never sets a timeout.
 
@@ -83,13 +83,13 @@ That job is younger than the recipe, and the gap between them is the point.
 `test-doc` existed and nothing called it — not `just ci`, not any workflow
 step — which is worse than no recipe at all, because it is the one people
 trust before pushing. Two examples were broken the whole time it was
-unwatched. `http-ng-h3`'s called `Rustls::with_webpki_roots()`, which lives
-behind `http-ng-tls-rustls`'s `webpki-roots` feature while that crate's own
+unwatched. `hclient-h3`'s called `Rustls::with_webpki_roots()`, which lives
+behind `hclient-tls-rustls`'s `webpki-roots` feature while that crate's own
 dev-dependency enabled `quic` alone; it compiled under `--workspace` only
 because another member turned the feature on and Cargo unifies features
 across the graph, so the workspace-wide run was green over an example that
 did not build the way a reader would build it. The second broke the day the
-WebSocket framing became its own crate — its example names `http_ng::Client`,
+WebSocket framing became its own crate — its example names `hclient::Client`,
 because borrowing a transport a `Client` already owns is the whole reason
 `Tungstenite` borrows — and the job caught it rather than a reader.
 
@@ -100,8 +100,8 @@ needs, which is what "builds the way a reader would build it" means.
 that could not fail.** `test-doc` counted five ```ignore fences as
 tests — rustdoc compiles none of them, so the recipe printed `ok` over
 five code blocks nothing had ever built. Four were real examples and
-are `no_run` now, with hidden setup lines; writing `http-ng-quinn`'s
-found that `UdpAdoptStd` is `http_ng_rt`'s rather than that crate's, so
+are `no_run` now, with hidden setup lines; writing `hclient-quinn`'s
+found that `UdpAdoptStd` is `hclient_rt`'s rather than that crate's, so
 a reader copying the sketch would have imported it from the wrong
 place. The fifth quotes `embassy-net`'s own `Drop for TcpSocket` as
 evidence and is ```text, because someone else's code cited in an
@@ -148,45 +148,45 @@ Browser tests: those go through `wasm-pack test --headless
 ## What's in the dependency graph
 
 The first row of the table, as before, is verifiable directly in this
-repository: `cargo tree -p http-ng-wasi -e normal --prefix none` contains no
+repository: `cargo tree -p hclient-wasi -e normal --prefix none` contains no
 `tokio` at all (27 unique crates total). The second and third rows, unlike
 their counterparts in the vertical 1 report, are now measured too, not
-predicted: vertical 2 (`http-ng-native`, `http-ng-rt-tokio`, `http-ng-rt-smol`,
-`http-ng-tls-rustls`, `http-ng-dns-system`) is built, and as of Task 14
-`http-ng` has a `DefaultTransport` (native, HTTP/1.1 only) — the
+predicted: vertical 2 (`hclient-native`, `hclient-rt-tokio`, `hclient-rt-smol`,
+`hclient-tls-rustls`, `hclient-dns-system`) is built, and as of Task 14
+`hclient` has a `DefaultTransport` (native, HTTP/1.1 only) — the
 `default-transport` feature, pulling in exactly these four crates. The HTTP/2
-row remains the same prior-research row it always was: `http-ng-h2` does not
+row remains the same prior-research row it always was: `hclient-h2` does not
 exist in this repository (not merely "not built yet" — not in the v0.1 plan at
 all), kept untouched for the same rationale behind the HTTP/1-first choice it
 was written under in vertical 1.
 
 | build | tokio |
 |---|---|
-| ambient (`http-ng` + `-wasi` / `-fetch`) — measured | **none at all** |
-| `http-ng` with the `default-transport` feature (native, HTTP/1.1 only) — measured, Task 14 | real: `[default, libc, mio, net, rt, socket2, sync, time]` — the `http-ng-rt-tokio` reactor is needed for real `TcpConnect`/`Timer`, this is not "just a type dragged along", see below |
-| `http-ng-rt-smol` in isolation (without `http-ng`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
-| `http-ng-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
+| ambient (`hclient` + `-wasi` / `-fetch`) — measured | **none at all** |
+| `hclient` with the `default-transport` feature (native, HTTP/1.1 only) — measured, Task 14 | real: `[default, libc, mio, net, rt, socket2, sync, time]` — the `hclient-rt-tokio` reactor is needed for real `TcpConnect`/`Timer`, this is not "just a type dragged along", see below |
+| `hclient-rt-smol` in isolation (without `hclient`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
+| `hclient-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
-| `http-ng-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **56 crates** in total; it was 58 when v0.4 moved `SeamRuntime` out into `http-ng-quinn`, and two have left the graph since without anyone touching this crate — see the note under this table. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
-| `http-ng-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **41 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `http-ng-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 41 rather than 56 and no opinion about HTTP |
+| `hclient-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **56 crates** in total; it was 58 when v0.4 moved `SeamRuntime` out into `hclient-quinn`, and two have left the graph since without anyone touching this crate — see the note under this table. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
+| `hclient-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **41 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `hclient-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 41 rather than 56 and no opinion about HTTP |
 
 **Every number in this table is a fact about a dependency *resolution*,
 not about this code, and they drift.** Re-measured on 2026-08-19 against
-the same commands: `http-ng-wasi` 28 → 27, `http-ng-h3` 58 → 56,
-`http-ng-quinn` 42 → 41, `http-ng-webtransport` 49 → 48,
-`http-ng-dns-doh` 22 → 23, `http-ng-proto` on Linux 37 → 36. Nothing in
+the same commands: `hclient-wasi` 28 → 27, `hclient-h3` 58 → 56,
+`hclient-quinn` 42 → 41, `hclient-webtransport` 49 → 48,
+`hclient-dns-doh` 22 → 23, `hclient-proto` on Linux 37 → 36. Nothing in
 this workspace moved them — the same counts come out of the commit before
 the week's work as out of the commit after it — and one went **up**, which
 is what says it is upstream churn rather than a systematic miscount.
 
-The three `http-ng-proto` rows that did **not** move are the ones worth
+The three `hclient-proto` rows that did **not** move are the ones worth
 noticing: Windows 13, macOS 15 and `--no-default-features` 10 are all
 unchanged, because those graphs are this crate's own. The rows that drifted
 are the ones with a large third-party subtree.
 
 So these are colour, and the load-bearing claims beside them are the
 *absences* — no `tokio` in either wasm graph, no `h3` under
-`http-ng-quinn`, no reactor from `http-ng-native`'s `http2` feature.
+`hclient-quinn`, no reactor from `hclient-native`'s `http2` feature.
 Those are asserted on every push by `just graph`, which fails closed, and
 they do not go stale. **A CI check pinning the counts would be the wrong
 answer**: it would fail for an upstream release that broke nothing here,
@@ -195,22 +195,22 @@ about a check that cannot fail.
 
 **Both middle rows are the same `hyper` fact, measured in two different places
 in the graph, not two independent observations.** `hyper` depends on `tokio`
-**unconditionally, not behind a feature** — `http-ng-rt`'s own `hyper = {
+**unconditionally, not behind a feature** — `hclient-rt`'s own `hyper = {
 version = "1.11", default-features = false }` (zero feature set) still pulls
-in `tokio` with the `sync` feature, verified with `cargo tree -p http-ng-rt -e
+in `tokio` with the `sync` feature, verified with `cargo tree -p hclient-rt -e
 normal -i tokio` in this tree. This is the same conclusion vertical 1 drew
 about the HTTP/1 path from hyper's source (`tokio::sync::oneshot::Receiver` in
 `src/upgrade.rs`, the only place it's used) — now confirmed by measurement,
-not just by reading the code. The `http-ng-rt-smol` crate depends on
-`http-ng-rt`, and therefore on `hyper`, and therefore transitively on this
-same `tokio` leaf — **regardless of the fact that `http-ng-rt-smol` itself
+not just by reading the code. The `hclient-rt-smol` crate depends on
+`hclient-rt`, and therefore on `hyper`, and therefore transitively on this
+same `tokio` leaf — **regardless of the fact that `hclient-rt-smol` itself
 pulls in neither `tokio` nor `async-compat` directly** (`cargo tree -p
-http-ng-rt-smol -e normal` contains neither crate among its DIRECT
+hclient-rt-smol -e normal` contains neither crate among its DIRECT
 dependencies — checked by the `two-runtimes` CI job). The difference between
 the table rows isn't "the smol path has no tokio, native does" — it's which
-REACTOR actually stands behind that leaf: for `http-ng-rt-smol` in isolation,
+REACTOR actually stands behind that leaf: for `hclient-rt-smol` in isolation,
 none (the `sync` leaf is inert, `tokio::sync::oneshot` is never driven), for
-`http-ng` with `default-transport`, a real one (`http-ng-rt-tokio`, Task 3,
+`hclient` with `default-transport`, a real one (`hclient-rt-tokio`, Task 3,
 pulls in `mio` + `net` + `rt` + `time` for real sockets and timers) — and both
 facts hold at once: the smol runtime still doesn't execute a single line of
 tokio, the `tokio` crate simply sits on disk as the same leaf it would for any
@@ -226,7 +226,7 @@ that we could never remove"*. [hyper#3767](https://github.com/hyperium/hyper/iss
 closed as *not planned*.
 
 **A second fact, also measured, not assumed: the test-only busy-spin never
-reaches production code.** `http_ng_native::testing::blocking_io` (Task 12) —
+reaches production code.** `hclient_native::testing::blocking_io` (Task 12) —
 a `hyper::rt::Read`/`Write` wrapper over `std::net::TcpStream` for testing on
 a bare `futures` executor with no reactor at all; on `WouldBlock` it calls
 `cx.waker().wake_by_ref()` immediately instead of actually waiting for
@@ -234,31 +234,31 @@ readiness through the OS. Measured by CPU time (`/proc/self/stat`) around a
 request to a server that responds after 600ms: under `blocking_io` — wall
 600.4ms, **cpu 600ms** (an honest busy-spin for 100% of the wait time); the
 same exchange code (`h1::exchange`/`NativeBody`), but with IO from
-`http_ng_rt_tokio::Tokio::connect` (a real `tokio::net::TcpStream`, registered
+`hclient_rt_tokio::Tokio::connect` (a real `tokio::net::TcpStream`, registered
 with the reactor) — wall 601.1ms, **cpu 0ms** (Task 12 review, section B).
 `two_runtimes.rs` (Task 14) confirms the same section's prediction of "won't
 happen under tokio or smol" in practice: both tests run `Native` over real
-`http_ng_rt_tokio::Tokio`/`http_ng_rt_smol::Smol`, never touching
+`hclient_rt_tokio::Tokio`/`hclient_rt_smol::Smol`, never touching
 `testing::blocking_io` — it exists only under `#[doc(hidden)] pub mod
 testing` and is used only in this same crate's `tests/h1.rs`.
 
 ## Status
 
-v0.1: the core (`http-ng-core`, `http-ng-proto`, `http-ng`) and three backends
-— `http-ng-wasi` on top of `wasi:http` 0.3 (vertical 1), `http-ng-native` on
-top of `hyper` + `rustls` + system DNS (vertical 2), and `http-ng-fetch` on the
+v0.1: the core (`hclient-core`, `hclient-proto`, `hclient`) and three backends
+— `hclient-wasi` on top of `wasi:http` 0.3 (vertical 1), `hclient-native` on
+top of `hyper` + `rustls` + system DNS (vertical 2), and `hclient-fetch` on the
 browser's `fetch` (vertical 3).
 
 | target | transport | tokio in the graph |
 |---|---|---|
-| native | `http-ng-native` — TCP + HTTP/1, HTTP/2 behind the `http2` feature, TLS pluggable | yes, on the h1 path |
-| native | `http-ng-h3` — QUIC + HTTP/3, its own crate, TLS through a second seam | yes |
-| WASI | `http-ng-wasi` — `wasi:http` 0.3 | **no** |
-| browser | `http-ng-fetch` — `fetch` | **no** |
+| native | `hclient-native` — TCP + HTTP/1, HTTP/2 behind the `http2` feature, TLS pluggable | yes, on the h1 path |
+| native | `hclient-h3` — QUIC + HTTP/3, its own crate, TLS through a second seam | yes |
+| WASI | `hclient-wasi` — `wasi:http` 0.3 | **no** |
+| browser | `hclient-fetch` — `fetch` | **no** |
 
 Both "no"s are machine-checked on every push rather than asserted here:
-`ambient-has-no-tokio` runs `cargo tree` for `http-ng-fetch` against
-`wasm32-unknown-unknown` and for `http-ng-wasi` against `wasm32-wasip2`, and
+`ambient-has-no-tokio` runs `cargo tree` for `hclient-fetch` against
+`wasm32-unknown-unknown` and for `hclient-wasi` against `wasm32-wasip2`, and
 fails closed if the invocation itself breaks or returns nothing. Measured
 while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
 graph, four in the native one.
@@ -307,12 +307,12 @@ after they were written.
 The mechanics are in place and were measured, not assumed. All 30 crates
 carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
-published at all; `http-ng-rt-pair-check` is the only `publish = false`.
-`cargo publish -p http-ng-core --dry-run` packages **and verifies** clean,
-and `cargo package -p http-ng` correctly refuses, because its dependencies
+published at all; `hclient-rt-pair-check` is the only `publish = false`.
+`cargo publish -p hclient-core --dry-run` packages **and verifies** clean,
+and `cargo package -p hclient` correctly refuses, because its dependencies
 are not in the index — which is what the order is for: **five waves over
-29 crates**, `http-ng-core`/`-cache`/`-cookie`/`-idn` first and
-`http-ng`/`http-ng-select` last. Every publishable crate carries
+29 crates**, `hclient-core`/`-cache`/`-cookie`/`-idn` first and
+`hclient`/`hclient-select` last. Every publishable crate carries
 `[package.metadata.docs.rs] all-features = true`, because docs.rs builds
 `default` and `default` here is empty or near-empty by design.
 
@@ -322,7 +322,7 @@ support policy, not a snapshot: the floor moves with stable, and a release that
 needs a newer compiler than the one you have is expected rather than a bug.
 
 The trade is deliberate. There is no window in which this crate builds on an
-older toolchain, so if you pin an older Rust, pin an older `http-ng` with it.
+older toolchain, so if you pin an older Rust, pin an older `hclient` with it.
 In exchange nothing here carries version-shim code, and there is no MSRV
 matrix to maintain.
 
@@ -336,8 +336,8 @@ which is the promise, so the pin would add a way to be wrong and no way to
 be right.
 
 **Two TLS backends, both behind the same `TlsConnect` seam.**
-`http-ng-tls-rustls` is the default: memory-safe, and it behaves the same on
-every platform. `http-ng-tls-native-tls` uses the platform's own stack —
+`hclient-tls-rustls` is the default: memory-safe, and it behaves the same on
+every platform. `hclient-tls-native-tls` uses the platform's own stack —
 SChannel, Security.framework, OpenSSL — and exists for deployments whose
 trust decisions live in the OS store: enterprise roots pushed by policy,
 smartcard client certificates, a FIPS-validated provider. That is a fact
@@ -346,22 +346,22 @@ module doc says exactly what; in particular it cannot report the negotiated
 ALPN, so protocol selection driven by ALPN needs the rustls one.
 
 **A second TLS seam, for QUIC, and it is not a widening of the first.**
-`http-ng-tls-quic`'s `QuicTlsConnect` exists because the intersection of
+`hclient-tls-quic`'s `QuicTlsConnect` exists because the intersection of
 `TlsConnect`'s four methods with `quinn_proto::crypto::Session`'s eleven is
 **empty** — QUIC wants key schedules per encryption level and CRYPTO-frame
 payloads, `TlsConnect` can only hand back a wrapped byte stream — and the
 failure mode is worse than a compile error: an adapter between them
-type-checks *with an empty body*. `http-ng-tls-rustls` implements it behind
-a `quic` feature; `http-ng-tls-native-tls` implements nothing and using it
+type-checks *with an empty body*. `hclient-tls-rustls` implements it behind
+a `quic` feature; `hclient-tls-native-tls` implements nothing and using it
 for HTTP/3 is a compile error, which is honest rather than harsh, because
 `native-tls` binds no QUIC API at any level. It is a separate crate rather
-than a feature of `http-ng-tls` because Cargo unifies features: a feature
+than a feature of `hclient-tls` because Cargo unifies features: a feature
 would put `quinn-proto` in the graph of every build in which any crate
 wanted h3, including `NoTls` ones. `TlsConnect` and `QuicTlsConnect` share
 `TlsIdentity`, so a connector has one configuration identity rather than
 two.
 
-`NoTls` in `http-ng-tls` is the third choice: no TLS at all, for a build
+`NoTls` in `hclient-tls` is the third choice: no TLS at all, for a build
 that has no room for a stack. `https://` then fails at connect with a typed
 error, and `Capabilities::tls_config` reads `TlsSupport::None` rather than
 claiming otherwise.
@@ -372,24 +372,24 @@ forbids `no_std` outright — `src/lib.rs` carries a commented-out
 `compile_error!("`std` feature currently required, support for `no_std` may
 be added later")` — and `http::{Request, Response, HeaderMap, Uri, Method}`
 appear in the public API of ten crates here, including the sans-io
-`http-ng-proto`. `bytes` is a genuine `no_std` + `alloc` crate, and `url` is
+`hclient-proto`. `bytes` is a genuine `no_std` + `alloc` crate, and `url` is
 gone from the graph entirely (see below), so the remaining obstacle is
 `http` itself; a feature flag that claimed otherwise would not build.
 
 For constrained targets that *do* have `std` — static musl binaries, small
 containers, embedded Linux — see `NoTls` and `IpLiteralOnly`, and
-`crates/http-ng-native/examples/minimal.rs`.
+`crates/hclient-native/examples/minimal.rs`.
 
 **Bare-metal microcontrollers are not reachable today, and that sentence
 used to be broader than the truth.** A device with `std` — an esp-idf
-target, say — already is: `http-ng-rt-embassy` implements `TcpConnect`
+target, say — already is: `hclient-rt-embassy` implements `TcpConnect`
 over a real `embassy-net` stack, with live scenarios over a TAP device in
 CI, so `Native<Embassy, NoTls, IpLiteralOnly>` is the embedded transport
 and no separate backend is owed. What is still out is `no_std`, and the
 obstacle there is a dependency rather than a design:
 
 - **`http` 1.x, external.** The `compile_error!` above.
-- **`url`, ours — and now removed.** `http-ng-proto` used it at exactly one
+- **`url`, ours — and now removed.** `hclient-proto` used it at exactly one
   functional site — `Url::parse().join()` for RFC 3986 reference
   resolution — and that one call pulled `idna` -> `icu_normalizer` +
   `icu_properties`: measured at 1.9 MB, 1004 KB, 820 KB and 452 KB of
@@ -397,50 +397,50 @@ obstacle there is a dependency rather than a design:
   names. On a part with 256-512 KB of flash that is the entire budget, for
   a feature such a device rarely needs.
 
-  `crates/http-ng-proto/src/uri.rs` now implements RFC 3986 §5.2 directly,
+  `crates/hclient-proto/src/uri.rs` now implements RFC 3986 §5.2 directly,
   and `url` has moved to `[dev-dependencies]`, where it is the oracle for
   `tests/uri_resolution.rs` — a 96-pair differential corpus (all 42 RFC
   3986 §5.4 reference examples, plus the forms a client actually meets)
   that pins both implementations' answers and enumerates every place they
   deliberately differ. IDN survives as the `idn` feature of
-  `http-ng-proto`, forwarded by `http-ng` and **on by default**, so a plain
+  `hclient-proto`, forwarded by `hclient` and **on by default**, so a plain
   build behaves as before; `--no-default-features` removes the whole IDN
   implementation and turns a non-ASCII host into a typed
   `UriError::NonAsciiHost` naming the A-label to send instead. The
   `idn-feature-is-real` CI job checks all of that, in both directions, and
   runs the feature-off test suite that `--all-features` cannot reach.
 
-  **The feature no longer names `idna`; it names `http-ng-idn`**, which
+  **The feature no longer names `idna`; it names `hclient-idn`**, which
   chooses the implementation by target in its own `build.rs`. `uri.rs`
-  calls `http_ng_idn::domain_to_ascii` and maps two error variants, and
-  nothing in `http-ng-proto` mentions `idna` any more. What that changes
+  calls `hclient_idn::domain_to_ascii` and maps two error variants, and
+  nothing in `hclient-proto` mentions `idna` any more. What that changes
   is where the Unicode tables are, not what a host converts to: on Linux
   and the other ELF unixes, and on wasm, the backend *is*
   `idna::domain_to_ascii_cow(…, AsciiDenyList::URL)` — the same call
   `uri.rs` used to make itself, with the same arguments. Measured before
   believing: the 96-pair corpus is unchanged and green in both feature
-  settings, and `http_ng_idn::domain_to_ascii` against `idna` directly
+  settings, and `hclient_idn::domain_to_ascii` against `idna` directly
   over 9,739 inputs on this host gave 0 differences.
 
   So the crate count is now a fact about the target rather than one
   number. Measured `cargo tree -e normal`, unique crates, this tree:
 
-  | build of `http-ng-proto` | crates | what supplies UTS 46 |
+  | build of `hclient-proto` | crates | what supplies UTS 46 |
   |---|---|---|
   | default (`idn`), x86-64 Linux | **36** | `idna` + the ICU data crates |
   | default (`idn`), `--target x86_64-pc-windows-msvc` | **13** | `icuuc.dll`, through `windows-sys` |
   | default (`idn`), `--target aarch64-apple-darwin` | **15** | Foundation, through `objc2-foundation` |
   | `--no-default-features` | **10** | nothing — `NonAsciiHost` |
 
-  The Linux row is the old **36** plus `http-ng-idn` itself and nothing
+  The Linux row is the old **36** plus `hclient-idn` itself and nothing
   else: `thiserror` was already there, and no new Unicode crate arrives.
   There is no `url` in any of them.
 
 **Name resolution has a third backend, and its problem was never the wire
-format.** `http-ng-dns-doh` (v0.3) puts DNS-over-HTTPS behind the same
+format.** `hclient-dns-doh` (v0.3) puts DNS-over-HTTPS behind the same
 `Resolve` seam, and the two questions worth knowing the answers to are
 both about bootstrapping rather than about parsing. What makes the
-request is a `Transport`, **never an `http_ng::Client`** — a cookie jar,
+request is a `Transport`, **never an `hclient::Client`** — a cookie jar,
 a redirect policy and `Authorization` belong to `Client`, which
 `Transport` has never heard of, so "a resolver's client is not the
 user's client" is a thing that does not typecheck rather than a thing
@@ -452,7 +452,7 @@ literal. Failing closed is the default and failing open is visible in
 the type — `Doh<C>` is `Doh<C, NoFallback>` — so it travels into every
 transport that holds it rather than hiding in a builder call.
 
-SVCB parsing moved from `http-ng-dns-system` up into `http-ng-dns`
+SVCB parsing moved from `hclient-dns-system` up into `hclient-dns`
 behind a `codec` feature, so an `IpLiteralOnly` build carries no DNS
 decoder: 13 crates without it, 16 with, and the DoH crate itself is 22
 with no `tokio`, `hyper` or `h2`.
@@ -465,7 +465,7 @@ which a connector must not do silently. The record's port, address
 hints and ALPN offer are used; **its `ech_config_list` is passed on only
 to a TLS backend that says it applies one** (`TlsConnect::applies_ech`,
 defaulted `false` beside `reports_alpn`), and no backend in this
-workspace does. That is not caution: `http-ng-tls-rustls` *refuses* a
+workspace does. That is not caution: `hclient-tls-rustls` *refuses* a
 non-`None` `ech`, so a connector that filled the field from every record
 would make every ECH-publishing origin unreachable. Measured before it
 was decided — zero bytes on the wire. The privacy cost of the gate is
@@ -480,10 +480,10 @@ cost 404.6 ms of extra DNS time and now costs 0.8 ms.
 
 Runtimes exercised in CI: tokio and smol. Connection reuse landed in v0.2
 (W2) and `Native::new` now pools by default; **HTTP/2 landed in v0.2 (W3)**,
-behind `http-ng-native`'s `http2` feature, off by default; **HTTP/3 landed
-in v0.3**, in its own crate `http-ng-h3`, over QUIC. **WebSocket landed in
+behind `hclient-native`'s `http2` feature, off by default; **HTTP/3 landed
+in v0.3**, in its own crate `hclient-h3`, over QUIC. **WebSocket landed in
 v0.3 (W4)**, and in v0.4 became a crate of its own,
-`http-ng-tungstenite` — and not as a method on `Transport`: it is its
+`hclient-tungstenite` — and not as a method on `Transport`: it is its
 own trait pair,
 `WebSocketConnect` (what a backend implements — a backend is not a
 connection) and `WebSocket` (the message channel), so a transport that
@@ -510,12 +510,12 @@ call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
 calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
 measurements and the decisions.
 
-**It is `http-ng-tungstenite`, its own crate, and until v0.4 it was a
-`websocket` feature of `http-ng-native` — the one pluggable thing here
+**It is `hclient-tungstenite`, its own crate, and until v0.4 it was a
+`websocket` feature of `hclient-native` — the one pluggable thing here
 that was not its own crate** (`docs/w4-upgrade-seam.md` §8). Features are
 additive, so that feature put `tungstenite` into every build in any graph
-that switched it on: the argument that kept `http-ng-h3` out of
-`http-ng-native` and `http-ng-tls-quic` out of `http-ng-tls`, applied to
+that switched it on: the argument that kept `hclient-h3` out of
+`hclient-native` and `hclient-tls-quic` out of `hclient-tls`, applied to
 the one place it was not. A dependency in the other direction cannot be
 switched on from outside, and `graph-no-framing-in-the-transport` checks
 it with `--all-features` on the transport rather than asserting it.
@@ -525,7 +525,7 @@ hyper had already read past" — the shape §2 rejects as the public seam.**
 Both hold at once and they are about different levels: as the public seam
 it excludes three of four backends, the browser among them; between a
 transport and a framing crate it is only ever asked of the one backend
-that can answer it. `http_ng_native::Upgrading` is that seam, and it is
+that can answer it. `hclient_native::Upgrading` is that seam, and it is
 two-step on purpose — it lends out the `101`'s head and is dismantled only
 by a separate `finish`, so the checks that decide whether this is *your*
 `101` cannot run after the connection has been taken apart.
@@ -540,7 +540,7 @@ put the feature straight back on the transport. It borrows rather than
 owns, unlike `Selecting`, because `Native` is not `Clone` and
 `Client::builder` takes its transport by value: owning would cost either a
 second transport with a second pool or a `Transport` impl on a type that
-sends no requests. `http-ng-fetch` is untouched by all of this and needs
+sends no requests. `hclient-fetch` is untouched by all of this and needs
 no connector — a browser hands back *messages* — which is the asymmetry
 that says the seam is in the right place.
 
@@ -551,7 +551,7 @@ meaningless for a connection meant to outlive its exchange and
 normal state — so the bound is RFC 6455's ping/pong, off by default,
 because a default that pings sends traffic nobody asked for. It is not on
 the trait because a browser has neither `send(ping)` nor `onping`, the same
-fact that keeps `Ping`/`Pong` out of `Message`; asking `http-ng-fetch` for
+fact that keeps `Ping`/`Pong` out of `Message`; asking `hclient-fetch` for
 it does not compile.
 
 **Two clocks, answering to different events**, which is the part that took
@@ -568,7 +568,7 @@ a second ping had simply died 100 ms later. Same error, different fact. The
 fixture now counts pings and the test asserts exactly one.
 
 The missed-pong error is `ErrorKind::Body` with a public `PongNotReceived`
-source, deliberately agreeing with `http-ng-fetch`'s treatment of a
+source, deliberately agreeing with `hclient-fetch`'s treatment of a
 `wasClean == false` close rather than inventing a second vocabulary, and
 deliberately not `ErrorKind::Timeout`, since no `Timeouts` field is in
 force. Nothing is spawned: the caller's `poll_next` is the only thing
@@ -600,7 +600,7 @@ spawned pump would keep uploading behind a caller that walked away, with
 nowhere for its errors to go.
 
 The claim is pinned **causally, not by a clock** — in
-`crates/http-ng-h3/tests/streaming.rs` the caller's body has no second
+`crates/hclient-h3/tests/streaming.rs` the caller's body has no second
 chunk until `execute` has returned a head, so a transport that read the
 head only after finishing the body cannot complete the exchange at any
 speed. That shape is worth copying: three separate timing-based
@@ -621,10 +621,10 @@ for a body that never existed.
 ### HTTP/3: three more things that are not obvious from the outside
 
 **It is its own crate, and could not have been a feature of
-`http-ng-native`.** The reason is the type system rather than the 57-crate
+`hclient-native`.** The reason is the type system rather than the 57-crate
 QUIC stack: this transport is bounded on `R: UdpBind + Spawn<..>` and
 `T: QuicTlsConnect`, neither of which `Native<R, T, D>` has, and Cargo's
-features are additive — so a `http-ng-native/http3` feature would make both
+features are additive — so a `hclient-native/http3` feature would make both
 unconditional for every build in the graph.
 
 **It requires `R: Spawn`, and it shares connections.** An idle HTTP/1 socket
@@ -635,7 +635,7 @@ v0.2 W3's reason for handing out h2 connections *exclusively* has no
 subject: that argument was explicitly conditional on there being no
 background task, and a driver that is nobody's request future cannot be
 stalled by a caller that stops polling. Both halves are written next to
-their own policy — `http_ng_h3`'s module doc and `http-ng-native`'s
+their own policy — `hclient_h3`'s module doc and `hclient-native`'s
 `pool.rs` — so that changing one does not silently import the other's
 justification.
 
@@ -679,7 +679,7 @@ capturing the failure rather than reasoning about it. The suspicion that
 the recent `stage`/`finish` split had caused it was **wrong and checked**:
 `connect` was last touched 85 commits earlier, and the 0-RTT shortcut
 arrived 292 commits back. `425 Too Early` is the third failure path and is not
-the transport's: a `425` leaves `http-ng-h3` untouched, with a test pinning
+the transport's: a `425` leaves `hclient-h3` untouched, with a test pinning
 it. The one line it owed back — `AllowEarlyData` removed from the replayed
 request, because the mark is part of the pool key, so a marked replay would
 ask for the early-data connection and, if that one had since been evicted,
@@ -693,11 +693,11 @@ precedent: a browser build would be linking decoders that cannot run
 there. With any of them on, a client asks for the codings it can actually
 reverse and reverses whatever the server chose — unless the transport says it did that already.
 That is a capability of its own, `Capabilities::response_decompression`,
-and deliberately NOT read off `forbidden_request_headers`: `http-ng-fetch`
+and deliberately NOT read off `forbidden_request_headers`: `hclient-fetch`
 both forbids `Accept-Encoding` and decompresses internally, so the two
 coincide there by accident, and a transport that forbids the header while
 decoding nothing must still have its responses decoded.
-`crates/http-ng/tests/compression_capability.rs` pins both directions.
+`crates/hclient/tests/compression_capability.rs` pins both directions.
 The body comes back as `ClientBody<B, Tm>` = `Decompressed<Deadline<B,
 Tm>>`, and that order is load-bearing: the deadline is polled once per
 COMPRESSED frame, or a slow server sending well-compressing padding would
@@ -708,11 +708,11 @@ with the elapsed time, so `total` also cuts a body that goes completely
 silent after the head — the one case an elapsed-time check structurally
 cannot reach, since nothing will ever poll the wrapper again. That was
 written down as impossible (`Timer::sleep` was an RPITIT), then as
-possible-but-deferred, and is now done; `crates/http-ng/tests/deadline.rs`
+possible-but-deferred, and is now done; `crates/hclient/tests/deadline.rs`
 carries the server that sends a head and then nothing, for ever.
 `between_bytes` is a different promise — it bounds the gap between two
 frames and restarts on each — and it landed in the same week, on
-`http-ng-native`: `Native` declares and enforces `first_byte` and
+`hclient-native`: `Native` declares and enforces `first_byte` and
 `between_bytes`, the latter through `IdleTimeout<B, Tm>`, a body wrapper
 holding a sleep of its own. Neither bound implies the other, and a caller
 that sets only one has bounded only one shape: a body dripping a byte
@@ -720,13 +720,13 @@ every 50 ms for an hour passes `between_bytes` and is cut by `total`; a
 transfer that legitimately takes an hour and stalls for ten minutes in the
 middle is the reverse. Measured from outside the client against three
 misbehaving servers, each with a control that must hang with the bound
-unset — `crates/http-ng-native/tests/timeouts.rs`.
+unset — `crates/hclient-native/tests/timeouts.rs`.
 
 **A cookie jar landed in `Client`, behind the `cookies` feature** (off by
-default — `http-ng-cookie`'s compiled-in public suffix list is +77 KiB, and
+default — `hclient-cookie`'s compiled-in public suffix list is +77 KiB, and
 the browser, where paying that is certainly wrong, keeps its own jar
 anyway). `ClientBuilder::cookie_jar(jar)` switches it on; the rules are
-`http-ng-cookie`'s, sans-io and clockless, and what `Client` adds is *when*
+`hclient-cookie`'s, sans-io and clockless, and what `Client` adds is *when*
 (once per redirect hop, and re-derived rather than carried, so a cookie
 scoped to `/one` cannot ride a same-origin 302 to `/two`), *whether*, and a
 `now`.
@@ -735,7 +735,7 @@ scoped to `/one` cannot ride a same-origin 302 to `/two`), *whether*, and a
 a backend that reports it is an `UnsupportedCapability` at `build()` — the
 same shape as a `RedirectPolicy` against `RedirectSupport::Internal`, and
 exactly the arm that capability's own doc comment said would arrive with
-the setting. `http-ng-fetch` is the backend: the browser attaches and
+the setting. `hclient-fetch` is the backend: the browser attaches and
 stores cookies itself and forbids the `Cookie` header, so a second jar
 there would store every `Set-Cookie` twice — including the ones the browser
 refused — while the header it produced was dropped on the way out.
@@ -764,7 +764,7 @@ replay lives **inside the future `Client::execute` wraps in `within(..)`**
 after reading the clock once, so it spends what is left of
 `Timeouts.total` rather than a fresh copy of it — a bound a server can
 double by answering `425` is not a bound. Watched from the server's side
-of the wire in `crates/http-ng/tests/too_early.rs`: the same request
+of the wire in `crates/hclient/tests/too_early.rs`: the same request
 arriving twice byte for byte, a server wedged on `425` getting exactly two
 requests and the caller getting the second `425`, and a 600 ms bound
 against 400 ms answers ending in `Timeout(Total)` with two requests on the
@@ -809,7 +809,7 @@ decision, and either alone reads as an accident.
 It is worth knowing *why* the strip is real rather than theoretical, because
 the obvious argument says otherwise: by the time a `425` comes back the
 handshake completed long ago, and streams opened afterwards are 1-RTT
-whatever the request asks for. True — of the connection `http-ng-h3`
+whatever the request asks for. True — of the connection `hclient-h3`
 happens to still have pooled. The mark is part of that pool's key, so a
 marked replay asks for the early-data connection *specifically*; if that
 entry has been evicted, closed by the peer or timed out, the replay opens a
@@ -825,8 +825,8 @@ is `RetryKind::Free` and is precisely what must never go into early data.
 
 ### Every backend now reports events, and two of them report one thing (v0.4 W2)
 
-Hooks landed on `http-ng-native`, then `http-ng-h3`, then the two that own
-no connections at all. **`http-ng-fetch` and `http-ng-wasi` emit exactly one
+Hooks landed on `hclient-native`, then `hclient-h3`, then the two that own
+no connections at all. **`hclient-fetch` and `hclient-wasi` emit exactly one
 of the four events — `Head` — and they reached that answer without sharing
 any reasoning.** `Connected`, `Reused` and `Closed` have no emitter in
 either, and for `wasi:http` that is checkable rather than argued: `client`
@@ -844,7 +844,7 @@ which request it belongs to (`requestId`, `id`, `connectionId`,
 **Two of `Head`'s five fields had no source, and they are the same two on
 both backends — and the two answers came out different, which is the part
 worth knowing.** `id` and `version` were recorded together as debts owed by
-`http-ng-core`; taken up together, they separated on one question: **is the
+`hclient-core`; taken up together, they separated on one question: **is the
 ambiguity reachable by a reader at all?**
 
 `id` was **not** a debt, and `ConnectionId::UNWATCHED` was not being
@@ -880,16 +880,16 @@ two fewer than native, because the only event fires while `execute` still
 owns everything and no body holds a hook.
 
 **One CI gap fell out of it**, the same shape as the doctests nobody ran:
-`http-ng-wasi`'s live tests sat in a file `just test-wasi` did not name, so
+`hclient-wasi`'s live tests sat in a file `just test-wasi` did not name, so
 they printed a `NOTICE` and reported `ok` for ever — the exact defect the
-`HTTP_NG_REQUIRE_WASMTIME` marker exists to prevent. Moved: the recipe runs
+`HCLIENT_REQUIRE_WASMTIME` marker exists to prevent. Moved: the recipe runs
 16 live tests where it ran 12.
 
 ### WebTransport runs on this h3, and the spec's reasons for not writing it are gone (v0.4 W2)
 
-`http-ng-webtransport` opens a session over `http-ng-h3`'s QUIC:
+`hclient-webtransport` opens a session over `hclient-h3`'s QUIC:
 `Session::connect`, `Session::id`, `Session::open_bi`. Its own crate, for
-the reason `http-ng-h3` is not a feature of `http-ng-native` — features are
+the reason `hclient-h3` is not a feature of `hclient-native` — features are
 additive. 48 crates, `tokio` with no reactor, and `quinn` arrives with
 `futures-io` alone and **no `ring`**, which is the visible consequence of
 owning no endpoint.
@@ -913,7 +913,7 @@ for the same reason. The draft's *"clients MUST NOT attempt a session until
 they have received the settings"* cannot be satisfied by reading the value
 alone.
 
-**Five things `h3` and `http-ng-h3` do not expose, found and not patched
+**Five things `h3` and `hclient-h3` do not expose, found and not patched
 around.** `h3` 0.0.8's client **cannot announce WebTransport** at all —
 `enable_webtransport` is on the *server* builder and `Config::settings`'
 fields are `pub(crate)` — so the draft's client-side MUST is unsatisfiable
@@ -921,17 +921,17 @@ today; that is **asserted in a test** rather than described, so an `h3` that
 grows the setter fails a line instead of leaving a stale paragraph.
 Server-initiated unidirectional streams are consequently unreachable, since
 the arm that would keep them is guarded by the flag a client cannot set. And
-`http-ng-h3` exposed no `quinn::Connection`, so its `SeamRuntime` — 302
+`hclient-h3` exposed no `quinn::Connection`, so its `SeamRuntime` — 302
 lines — was unreachable and this crate takes a `quinn::Connection`
 instead.
 
-**That last one is closed: `SeamRuntime` is `crates/http-ng-quinn`**, the
+**That last one is closed: `SeamRuntime` is `crates/hclient-quinn`**, the
 same shape §8 argues for the WebSocket framing, and the crate is 41 crates
-with no `h3` in them against `http-ng-h3`'s 58. `http-ng-h3` re-exports
+with no `h3` in them against `hclient-h3`'s 58. `hclient-h3` re-exports
 `QuinnTask` from it and is otherwise unchanged — one visibility change in
 the whole move, `endpoint` from `pub(crate)` to `pub`. `just
 graph-quinn-adapter-is-shared` checks both directions, including the one no
-`absent` check can see: `http-ng-h3` must still *depend* on it, or someone
+`absent` check can see: `hclient-h3` must still *depend* on it, or someone
 has re-added a private copy.
 
 **What that settled is that the two options recorded for closing it were
@@ -939,21 +939,21 @@ never alternatives.** A connect-only entry point on `H3` cannot serve
 WebTransport at any price, because `H3::connect` builds an h3 client on the
 connection and spawns its driver before it has one to hand back — and two h3
 clients on one QUIC connection is `H3_STREAM_CREATION_ERROR`, the same
-reason a session cannot share a *pooled* one. `http-ng-webtransport` still
+reason a session cannot share a *pooled* one. `hclient-webtransport` still
 takes its connection from outside, and now because the remaining half is a
 **dial** it would be the second author of: measured at 48 → 56 crates,
 `ring` among them. `docs/quinn-adapter-extraction.md` §5.
 
-A session cannot share an `http-ng-h3` pooled connection, for three reasons
+A session cannot share an `hclient-h3` pooled connection, for three reasons
 in increasing hardness: a second h3 client on one QUIC connection opens a
 second control stream (`H3_STREAM_CREATION_ERROR`); extended CONNECT is
-announced in SETTINGS at handshake and `http-ng-h3` announces it nowhere, so
+announced in SETTINGS at handshake and `hclient-h3` announces it nowhere, so
 making pooled connections capable would change what **every** build puts on
 the wire; and `PoolKey` has no field to tell the two apart.
 
 **Datagrams work, and the premise broke into four links each measured
 separately.** quinn derives `max_datagram_frame_size` from a
-`TransportConfig` default `http-ng-h3` never touches, so the connection
+`TransportConfig` default `hclient-h3` never touches, so the connection
 already carries them; `h3::client::Builder::enable_datagram` **exists on the
 client**, which is exactly where `enable_webtransport` does not, so this was
 not the same finding one feature over; the peer's answer is readable through
@@ -989,7 +989,7 @@ is the whole feature.** `Session::close(code, reason)` writes RFC 9297's
 `Session::closed()` answers `Ok` for a clean end — a capsule, or a bare FIN,
 which the draft makes `{code: 0, reason: ""}` — and `Err` for a reset stream,
 a lost connection or an unreadable capsule. `ErrorKind::Body`, agreeing with
-`http-ng-fetch`'s treatment of a `wasClean == false` close rather than
+`hclient-fetch`'s treatment of a `wasClean == false` close rather than
 inventing a second vocabulary.
 
 **It needed nothing spawned, and that disproves this workspace's own guess.**
@@ -1020,7 +1020,7 @@ streams, and more than one session per connection.
 ### A connect can be asked for on its own, and the first thing that wanted one was not the race (v0.4)
 
 `StagedConnect` — `connect` -> an opaque handle -> `exchange` — on
-`http-ng-native` and on `http-ng-h3`, **one trait per crate and not a method
+`hclient-native` and on `hclient-h3`, **one trait per crate and not a method
 on `Transport`**: `wasi:http` 0.3's client interface is one function with no
 connection resource in the WIT, and the browser's only connect-shaped API is
 a `<link rel="preconnect">` hint with no handle, so a seam on `Transport`
@@ -1037,11 +1037,11 @@ the same bound off the same request and applies it again — a caller who set
 need a comment and a test, but **absent**.
 
 **The handle is not the same thing on the two stacks, and that was found by
-letting `H3` answer for itself.** `http_ng_native::Staged` *owns* the
+letting `H3` answer for itself.** `hclient_native::Staged` *owns* the
 connection it took out of the pool, and needs a `Drop` that checks it back
 in, so a connection made for a request that went elsewhere is warm rather
 than closed (`without_pool()` is the control: no check-in, and the drop
-closes the socket). `http_ng_h3::Staged` is a **claim on a connection the
+closes the socket). `hclient_h3::Staged` is a **claim on a connection the
 pool already holds** — `connect` builds an h3 client and spawns its driver
 before it has anything to hand back, which is the same fact that makes a
 connect-only entry point useless to WebTransport — so it needs no `Drop` at
@@ -1056,10 +1056,10 @@ the rule with an exception.
 **The first customer is Alt-Svc's negative half**, not the race — the
 reverse of the order both were written in. `Selecting` asks `H3` to
 *connect*; where that fails it records the origin in
-`http_ng_select::H3Failures` and routes the request — untouched, unsent,
+`hclient_select::H3Failures` and routes the request — untouched, unsent,
 never handed to a transport — over TCP. So the fallback is not
 request-level retry and needs no `retry_kind()` condition:
-`http-ng-native`'s own sentence is true of it verbatim, *this is not a
+`hclient-native`'s own sentence is true of it verbatim, *this is not a
 second request, it is the first one, which never left.*
 
 Three things about that memory are decisions rather than mechanics. **The
@@ -1087,15 +1087,15 @@ the bound *spent*. Twenty mutations, nineteen killed, one control.
 
 ### One transport can now choose between the two stacks (v0.4 W1)
 
-`http-ng-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an
+`hclient-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an
 `H3<R, T, D>` and sends each request over one of them, deciding from the
 origin's **HTTPS record**: `alpn` containing `h3` chooses QUIC, anything
-else chooses TCP. That closes a gap `http-ng-native`'s discovery module had
+else chooses TCP. That closes a gap `hclient-native`'s discovery module had
 written down about itself — *"an `alpn` containing `h3` is a fact this crate
 can read and cannot act on … there is nowhere in this codebase for 'choose
 between two protocol stacks' to live"*. It is a crate rather than a feature
-of either member for the reason `http-ng-h3` is not a feature of
-`http-ng-native`: features are additive, and one on either would put the
+of either member for the reason `hclient-h3` is not a feature of
+`hclient-native`: features are additive, and one on either would put the
 whole QUIC stack into every build in any graph that switched it on.
 
 **Discovery has two tiers and the race is neither.** Browsers do not race an
@@ -1112,7 +1112,7 @@ on a network that blocks them.
 un-framed it again.** §7 recorded the danger: a race made of two
 `Transport::execute` calls races *requests*, not connections, so with no head
 start the losing arm's request reached the origin — measured, 5 arms of 6.
-That contradicted the sentence `http-ng-native` leans on for needing no
+That contradicted the sentence `hclient-native` leans on for needing no
 idempotency judgement. The staged connect removed the cause rather than
 mitigating it: **neither `stage` writes a request byte**, and the property is
 structural rather than promised — the request is never handed to a stream
@@ -1168,10 +1168,10 @@ is said where the setter is.
 
 **The negative half is built now, and not by the race** (v0.4). It took
 reading to establish that it was missing rather than misplaced:
-`http-ng-native`'s `NegativeCache` is a different fact — a TCP connect
+`hclient-native`'s `NegativeCache` is a different fact — a TCP connect
 through a discovered endpoint failed — and it never sees an h3 attempt,
 because when `Selecting` routes to `H3` the native transport is not called
-at all. `http_ng_select::H3Failures` is the memory that was owed; the
+at all. `hclient_select::H3Failures` is the memory that was owed; the
 **staged connect** is what unblocked it, and the section below is that.
 
 `docs/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
@@ -1184,8 +1184,8 @@ rule: **the stored value must be true whichever member serves the request.**
 Six fields disagree today — measured, not taken from the design document,
 whose two examples had both been fixed under it while it was being written.
 It was seven until the seventh turned out not to be a disagreement at all:
-`client_certs` was `true` from a constant in `http-ng-h3` and
-`Capabilities::none()`'s `false` in `http-ng-native`, so **one** TLS backend
+`client_certs` was `true` from a constant in `hclient-h3` and
+`Capabilities::none()`'s `false` in `hclient-native`, so **one** TLS backend
 gave two answers depending on which stack was holding it, and the v0.4
 table recorded the row as "same shape" as `full_duplex`. Both read
 `TlsIdentity::presents_client_certs` now — a defaulted-false constant on
@@ -1193,7 +1193,7 @@ the seam the two connect traits share, `reports_alpn`'s shape — and the
 same connector carrying a client certificate is reported by both members
 and by the pair. Five take the weaker claim, `full_duplex` among them,
 which is the same
-answer `http-ng-native` already gives one level down for the same reason: an
+answer `hclient-native` already gives one level down for the same reason: an
 over-claimed `full_duplex` deadlocks a caller and an under-claimed one costs
 a buffered copy. Where the two values are *different claims* rather than a
 stronger and a weaker one — every remaining enum, and the two *the transport
@@ -1207,7 +1207,7 @@ that is about what the variant says rather than an exception to the rule:
 `Supported` means the transport *can* place a marked request into early
 data, which stays true of the pair, where `None` — "never offers early data"
 — is false of it, and false in the direction that matters, since nothing in
-`http-ng` reads the field and a marked request would reach the QUIC stack
+`hclient` reads the field and a marked request would reach the QUIC stack
 anyway. The contrast three lines below it in the same function is
 `CancelSupport`, where `Supported` is a **duty owed on every dropped
 future** and a member that does not owe it makes the claim false.
@@ -1217,9 +1217,9 @@ query per request that has a name to ask about, whichever stack answers. A
 `RequireVersion` demand, `http://` and an IP literal cost none at all.
 
 It was two on the TCP path at an origin's default port, because
-`http-ng-native` fetched the record again inside its own connector, and the
+`hclient-native` fetched the record again inside its own connector, and the
 fix is the part worth knowing: **the record is not handed to the connector,
-it is fetched by it.** `http_ng_native::Prefetch::prepare` does the
+it is fetched by it.** `hclient_native::Prefetch::prepare` does the
 connector's own lookup — its resolver, its rule about where discovery
 applies, its negative cache — and hands back a `Prepared`, which is the
 request *with* the answer; `execute_prepared` then does not look again. A
@@ -1232,7 +1232,7 @@ carrying one would let any code that can build a request move the
 connection somewhere else. `docs/v04-w1-acceptance.md` §3.1 has the
 argument and §3.3 the eleven mutations behind it (ten killed, one control).
 
-The other half of the rule is what keeps `http-ng-select` from owning a
+The other half of the rule is what keeps `hclient-select` from owning a
 copy of the connector's: where the member did **not** look — a non-default
 port, whose record lives under a name only the selecting transport
 constructs — it answers `Discovered::NotConsulted`, which is not an answer,
@@ -1250,11 +1250,11 @@ what it says.
 
 ### A response cache landed, and it is the counterpart `owns_cache` never had
 
-`http-ng-cache` — RFC 9111 freshness, validation, `Vary` and the
+`hclient-cache` — RFC 9111 freshness, validation, `Vary` and the
 directives on both sides — **sans-io and clockless**, exactly as
-`http-ng-cookie` is, and a leaf: `bytes`, `http`, `thiserror`, and not
-`http-ng-core`. `ClientBuilder::cache(HttpCache::new())` switches it on
-behind `http-ng`'s `cache` feature, off by default. `Client` supplies the
+`hclient-cookie` is, and a leaf: `bytes`, `http`, `thiserror`, and not
+`hclient-core`. `ClientBuilder::cache(HttpCache::new())` switches it on
+behind `hclient`'s `cache` feature, off by default. `Client` supplies the
 `now` as `SystemTime::now()` for the reason the jar does — `Date`,
 `Expires` and `Age` are calendar values and `Timer::Instant` is a
 stopwatch with no epoch.
@@ -1266,7 +1266,7 @@ credential in its `Selector` rather than refused — a narrowing of §3.5
 that a private cache needs and the RFC does not require.
 
 **`Capabilities::owns_cache` finally has a reader.** It had been a `bool`
-set by one backend — `http-ng-fetch`, because the browser caches inside
+set by one backend — `hclient-fetch`, because the browser caches inside
 `fetch()` — and branched on nowhere, which is the shape `proxy` and
 `client_certs` were found in this same week. A client-side cache against
 a transport reporting `true` is now an `UnsupportedCapability` at
@@ -1278,14 +1278,14 @@ send it at all* are three instructions and an `Option` carries two. **A
 validator alone is enough to store on**, and the absence of heuristic
 freshness is load-bearing rather than a gap. **A `304` does not relabel
 the stored bytes** — `Content-Encoding` is excluded from the update set,
-which `http-ng`'s decompressor makes concrete. And `stale-while-
+which `hclient`'s decompressor makes concrete. And `stale-while-
 revalidate` is deliberately absent: it needs somewhere to run the
 revalidation after the response has been handed over, and this client
 does not spawn on a caller's behalf — the same sentence the h3 body pump
 and the WebSocket keep-alive are written under.
 
 **The wiring's own defect was found by a stack overflow three crates
-away.** With the feature on, `http-ng-native`'s
+away.** With the feature on, `hclient-native`'s
 `checkout_walks_past_a_dead_connection_to_a_live_one` aborted with
 `SIGABRT` — a test that configures no cache at all. Measured: the
 `execute` future is 4,232 bytes without the feature and 4,344 with it,
@@ -1472,7 +1472,7 @@ is a refusal, beside `SUPPORTS_UNIX` defaulted to `false` — `reports_alpn`
 and `applies_ech`'s shape: a constant defaulted to the understating value,
 read by the layer above to decide whether to *ask*. Both shipped runtimes
 compute it with `cfg!(unix)`, and each holds an enum internally
-(`TokioIo`'s `Socket`, `http-ng-rt-smol`'s `SmolSocket`) because one
+(`TokioIo`'s `Socket`, `hclient-rt-smol`'s `SmolSocket`) because one
 associated type must cover both.
 
 **It replaces the whole resolve → discovery → Happy Eyeballs → connect
@@ -1536,7 +1536,7 @@ clears it, because a transport reporting `true` while reporting nothing is
 a capability that lies.
 
 The classification is enforced rather than described.
-`every_capability_is_a_gate_or_a_report` lives in `http-ng-core`, because
+`every_capability_is_a_gate_or_a_report` lives in `hclient-core`, because
 `#[non_exhaustive]` allows an exhaustive destructure only inside the
 defining crate (amendment C6) — so a field added later is a compile error
 in **two** places until somebody decides which kind it is. Checked by
@@ -1703,7 +1703,7 @@ back a `3xx` a caller can act on: a cross-origin response comes back
 `Location`. So `Capabilities::redirects` could not honestly move from
 `Internal` to `Transparent`, and claiming otherwise would promise `Client`
 a policy it could act on for exactly the case where redirects matter.
-`http-ng-urlsession` is the backend that genuinely reports `Transparent` —
+`hclient-urlsession` is the backend that genuinely reports `Transparent` —
 its delegate can refuse a hop — and the asymmetry is why both are worth
 having. `redirect: "error"` is a third thing, *fail rather than follow*,
 which is `RedirectPolicy::None` with the answer thrown away.
@@ -1718,7 +1718,7 @@ The control is the default arm: without it, a test setting `Include` and
 reading `Include` back would pass for a transport that hard-coded it.
 
 **And the browser suite had not compiled since 2026-08-16.**
-`Event::Informational` landed with the `1xx` work and `http-ng-fetch`'s
+`Event::Informational` landed with the `1xx` work and `hclient-fetch`'s
 `tests/hooks.rs` never gained an arm, so every browser binary in that
 crate failed to build through six merges that were each green on
 `cargo nextest run --workspace --all-features` — which does not build for
@@ -1726,7 +1726,7 @@ crate failed to build through six merges that were each green on
 `Event` not being `#[non_exhaustive]` is what turned a new variant into a
 compile error rather than silence: **the design worked and the running of
 it did not.** The cheap check that would have caught it needs no browser at
-all — `cargo test -p http-ng-fetch --target wasm32-unknown-unknown
+all — `cargo test -p hclient-fetch --target wasm32-unknown-unknown
 --no-run`.
 
 ### `error_for_status`, and the defect it found one line away
@@ -1765,7 +1765,7 @@ somewhere a caller would read it.
 ### A separate bound on resolution, and it bounds something that is not a phase
 
 `Timeouts::resolve`, `TimeoutSupport::resolve` and `Phase::Resolve`, in one
-change — the rule that kept `connect` off `http-ng-h3` until v0.4 W1 and
+change — the rule that kept `connect` off `hclient-h3` until v0.4 W1 and
 `first_byte`/`between_bytes` off native until v0.2 W4.
 
 **What it bounds took working out.** Happy Eyeballs interleaves resolution
@@ -1803,7 +1803,7 @@ Three decisions came out of the shape:
   `TimeoutSupport` bool was ever honestly `false` on arrival.**
   `wasi:http` 0.3's `request-options` carries three timeouts and nothing
   for resolution — the host resolves — and `fetch` collapses everything
-  into one `AbortController`. `http-ng-dns-doh` sets `None` for a third
+  into one `AbortController`. `hclient-dns-doh` sets `None` for a third
   reason: it is the resolver's own client, so a `resolve` bound there would
   bound resolving the name of the thing that resolves names.
 
@@ -1946,7 +1946,7 @@ Stop, Refuse}`. `RedirectPolicy` answers *how many* and this answers
 none off `https`.
 
 **It is not a third `RedirectPolicy` variant, and that was the obvious
-shape.** Two things kill it. `RedirectPolicy` lives in `http-ng-proto`,
+shape.** Two things kill it. `RedirectPolicy` lives in `hclient-proto`,
 which is sans-io and clockless, and `redirect::decide` is a pure function
 of six values — a closure variant makes it *pure except for whatever the
 caller passed*. And `RedirectPolicy` is `Copy + PartialEq + Eq`, read out
@@ -2014,7 +2014,7 @@ from `encoding_rs::Encoding::decode` and pinned rather than assumed.
 
 The `charset` parameter is read here rather than by a `mime` crate, for
 the reason `url` was removed and base64 is twenty lines in
-`http-ng-proto`. It splits on `;` **outside quotes**, with backslash
+`hclient-proto`. It splits on `;` **outside quotes**, with backslash
 escapes honoured, because `boundary="a;charset=utf-8;b"` is a header a
 server can send and a naive `split(';')` reads a parameter out of it. An
 escaped quote is reachable from a server too, so it is a test rather than
@@ -2097,23 +2097,23 @@ while two of them are still listed in `docs/v01-acceptance.md` as
 deliberately not done — a list that was updated for its DoH half and not
 for these.
 
-- **`http-ng-mock`** — `MockTransport`, behind `http-ng`'s `test-util`
+- **`hclient-mock`** — `MockTransport`, behind `hclient`'s `test-util`
   feature. It is how every capability refusal in this workspace is tested,
   because "a jar against a jar-owning backend is refused at `build()`" is
   a fact about a type that never sends anything.
-- **`http-ng-tower`** — the `tower::Service` adapter, so this client fits
+- **`hclient-tower`** — the `tower::Service` adapter, so this client fits
   a stack that already speaks that vocabulary.
-- **`http-ng-dns-hickory`** — the third `Resolve` backend, beside the
+- **`hclient-dns-hickory`** — the third `Resolve` backend, beside the
   system resolver and DoH.
-- **`http-ng-rt-embassy`** — a `TcpConnect`/`Timer` runtime over
+- **`hclient-rt-embassy`** — a `TcpConnect`/`Timer` runtime over
   `embassy-net`, which is what makes the embedded target reachable at all;
   see the `std` paragraph above.
 
 ### A fifth backend: Apple's `URLSession`, and the three things it refuses to take
 
-`http-ng-urlsession` puts `URLSession` behind `Transport` — the fourth
-**ambient** backend, owning no connection of its own, after `http-ng-wasi`
-and `http-ng-fetch`. It exists for the list a userspace stack cannot reach
+`hclient-urlsession` puts `URLSession` behind `Transport` — the fourth
+**ambient** backend, owning no connection of its own, after `hclient-wasi`
+and `hclient-fetch`. It exists for the list a userspace stack cannot reach
 on an Apple platform: per-app VPN, the system proxy and its PAC, and
 background transfer.
 
@@ -2128,7 +2128,7 @@ reason to reach for this backend, and the sentence stood for about an
 hour before `docs/competitive-gaps.md` caught it. The other three items
 stand, and so does the redirect argument below, which is the stronger one
 anyway. That is a fact about the
-device rather than a preference, which is `http-ng-tls-native-tls`'s
+device rather than a preference, which is `hclient-tls-native-tls`'s
 argument one seam over.
 
 **What it refuses to take from the OS is the decision worth knowing.**
@@ -2137,12 +2137,12 @@ you, and this turns all three off. None of them is in the list above; all
 three are portable behaviour this workspace already implements once; and
 leaving them on would make this the second backend reporting
 `owns_cookie_jar` and `owns_cache`, so a caller porting from
-`http-ng-native` would lose two features by changing one line.
+`hclient-native` would lose two features by changing one line.
 
 **Redirects are the sharpest, and this backend is stronger than the
 browser one.** `URLSession` lets a delegate refuse a redirect and a
 browser does not — so this reports `RedirectSupport::Transparent` where
-`http-ng-fetch` must report `Internal`, and `Client`'s hop limit and its
+`hclient-fetch` must report `Internal`, and `Client`'s hop limit and its
 `Authorization` stripping across origins work here and cannot there.
 Measured rather than read off Apple's documentation: a server that would
 have answered a second request receives exactly one.
@@ -2168,8 +2168,8 @@ The two items this crate had recorded as deliberately not done, taken up
 together — and they came out opposite ways.
 
 **More than one session per connection works, and the blocker recorded
-for it was not the true one.** `PoolKey` is `http-ng-h3`'s problem;
-`http-ng-webtransport` takes its `quinn::Connection` from outside, so
+for it was not the true one.** `PoolKey` is `hclient-h3`'s problem;
+`hclient-webtransport` takes its `quinn::Connection` from outside, so
 what actually binds is the peer's `SETTINGS_WEBTRANSPORT_MAX_SESSIONS`.
 `Session::open_session` opens a sibling on the same connection, the limit
 is **read off the SETTINGS frame** rather than assumed, a slot returns
@@ -2252,10 +2252,10 @@ and the two are not interchangeable. A space is `+` and only `*-._`
 survive as punctuation; `uri.rs`'s `percent_encode_into` is the other set
 and a query built with it reaches a form parser as different data — a `+`
 sent as itself reads back as a space. Both are now written down beside
-each other, in `http-ng-proto`'s `encode` module.
+each other, in `hclient-proto`'s `encode` module.
 
 **That module is where `base64` moved to**, and it is one function each:
-`http-ng-native`'s proxy had written its own for
+`hclient-native`'s proxy had written its own for
 `Proxy-Authorization: Basic`, and `Authorization: Basic` is the same
 encoding for the same reason. Neither pulls a crate — `url` was removed
 from this graph at real cost, and its `form_urlencoded` would bring it
@@ -2313,7 +2313,7 @@ ignoring `Expect` sends no `100`. And it is not a `Timeouts` field:
 ending in **proceeding** — same clock, opposite outcome.
 
 That overflow produced the more general lesson. There are now two future
--size guards, `http-ng/tests/future_size.rs` and `http-ng-native`'s, and
+-size guards, `hclient/tests/future_size.rs` and `hclient-native`'s, and
 **neither ceiling is a round number**: `Client::execute`'s future is
 4,344 bytes and `Native::execute`'s is 15,480, but the figure that sets
 both is what one extra `async fn` layer costs — measured at **1.81×**, so
@@ -2323,7 +2323,7 @@ direction by reintroducing the layer. `docs/expect-continue.md` §7.
 
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
-`Native::proxy(Proxy::new(protocol, host, port))`, behind `http-ng-native`'s
+`Native::proxy(Proxy::new(protocol, host, port))`, behind `hclient-native`'s
 `proxy` feature, off by default. It changes `P` the way `.hooks(..)` changes
 `H`. Two protocols ship and they **share no bytes** — one is HTTP, one is
 RFC 1928 — which is what makes the seam evidence rather than a claim, the
@@ -2494,27 +2494,27 @@ differently.
 
 **Nothing is redundant.** The test is this workspace's own: a crate exists
 to hold a dependency a feature would otherwise spread to every graph. The
-likeliest suspect passes it most sharply — `http-ng-tls-quic` is **153
+likeliest suspect passes it most sharply — `hclient-tls-quic` is **153
 lines**, the smallest here, and it carries `quinn-proto`, which is exactly
-the dependency the argument is about. `http-ng-quinn` has one in-tree
-consumer and an external reason (41 crates against `http-ng-h3`'s 56 for a
+the dependency the argument is about. `hclient-quinn` has one in-tree
+consumer and an external reason (41 crates against `hclient-h3`'s 56 for a
 caller who wants bare QUIC), enforced by a `just` recipe — **and it was
 misnamed, which this pass checked it for redundancy and missed.** It was
-`http-ng-rt-quinn`, and the arrow points the other way from the rest of
-that family: `http-ng-rt-tokio` and its siblings implement *our* seam using
+`hclient-rt-quinn`, and the arrow points the other way from the rest of
+that family: `hclient-rt-tokio` and its siblings implement *our* seam using
 someone else's runtime, where this implements *quinn's* — `quinn::Runtime`,
 `AsyncTimer`, `AsyncUdpSocket`, `UdpPoller` — using ours. Its own first line
 had always said so. It is not a fourth runtime; it is what lets quinn run on
 whichever runtime the caller already chose, and the family name made the
-wrong reading the default. `http-ng-tower`'s bare-foreign-name shape is the
+wrong reading the default. `hclient-tower`'s bare-foreign-name shape is the
 one it takes now, and `docs/quinn-adapter-extraction.md` went with it. Eleven crates have
 no in-workspace consumer at all and are terminal by design: a user picks the
 backend.
 
-**`http-ng-rt-pair-check` is the one that looks superfluous and is not.** A
+**`hclient-rt-pair-check` is the one that looks superfluous and is not.** A
 5-line lib whose own doc says *deliberately empty*, 500 lines of tests, an
 empty `[dependencies]`, `publish = false` — and it must depend on
-`http-ng-rt-tokio` **and** `http-ng-rt-smol` at once, with `udp` on both,
+`hclient-rt-tokio` **and** `hclient-rt-smol` at once, with `udp` on both,
 which no shipped crate may do. Its name sits in the runtime-implementation
 namespace while being a test harness, and it is left alone deliberately: the
 name never reaches crates.io, and it is cited as evidence in seventeen doc
@@ -2522,27 +2522,27 @@ comments across the workspace, so it has become a landmark whose renaming
 costs prose and buys nothing outside the repository.
 
 **One name was wrong, and the interesting part is that the missing crate it
-implied should not exist.** Three families follow `http-ng-<seam>-<impl>`
-and each has a seam crate: `http-ng-rt` (which carries **hyper**),
-`http-ng-tls` (**hyper** again) and `http-ng-dns` (`dns-message-parser`
-behind `codec`). Each head exists to hold something `http-ng-core` must
-not. `http-ng-ws-tungstenite` was the fourth `-<impl>` name and had no head
+implied should not exist.** Three families follow `hclient-<seam>-<impl>`
+and each has a seam crate: `hclient-rt` (which carries **hyper**),
+`hclient-tls` (**hyper** again) and `hclient-dns` (`dns-message-parser`
+behind `codec`). Each head exists to hold something `hclient-core` must
+not. `hclient-ws-tungstenite` was the fourth `-<impl>` name and had no head
 — and it should not have one: the `WebSocketConnect`/`WebSocket` pair is
-**161 lines over `futures_core` and `futures_sink`**, nothing `http-ng-core`
-does not already have, so an `http-ng-ws` would be a crate with nothing to
+**161 lines over `futures_core` and `futures_sink`**, nothing `hclient-core`
+does not already have, so an `hclient-ws` would be a crate with nothing to
 carry. The name promised a crate the dependency rule forbids.
 
-It is **`http-ng-tungstenite`** now, which keeps the framing library in the
+It is **`hclient-tungstenite`** now, which keeps the framing library in the
 name — that choice is argued in `docs/w4-upgrade-seam.md`, `tungstenite`
 over `tokio-tungstenite` because `WebSocketContext` takes the stream as a
 parameter and needs no `*mut Context` — and promises no family. Renaming
 before the first publish is free and after it is not, which is why the
 question was worth asking at this exact moment. The reason lives in the
-crate's own README, where a reader looking for `http-ng-ws` will be.
+crate's own README, where a reader looking for `hclient-ws` will be.
 
-Two softer observations, recorded and not acted on. `http-ng-select` agrees
+Two softer observations, recorded and not acted on. `hclient-select` agrees
 with its `Selecting` type but does not say what it selects between.
-`http-ng-idn` is not about HTTP at all — it is a UTS 46 crate that picks its
+`hclient-idn` is not about HTTP at all — it is a UTS 46 crate that picks its
 implementation by target, worth more to the ecosystem than the prefix lets
 anyone find. Both are the owner's call and neither is wrong.
 
@@ -2577,7 +2577,7 @@ crate had one, `readme` was set nowhere, so 29 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
 says the thing this workspace's own arguments turn on — **why it is its own
 crate** — because that is the question a reader landing on
-`http-ng-tls-quic` actually has.
+`hclient-tls-quic` actually has.
 
 `just packaging` is the check, in the `lint` job, and it asserts against
 the **packaged file list** rather than the working tree, because the tree
@@ -2595,11 +2595,11 @@ for, where two examples compiled only because another member turned a
 feature on.
 
 **It failed on its first run, and the cause would have blocked the entire
-publication.** `http-ng-fetch` and `http-ng-native` each dev-depend on
-`http-ng`, which depends on both — `DefaultTransport` is `Fetch` on wasm and
+publication.** `hclient-fetch` and `hclient-native` each dev-depend on
+`hclient`, which depends on both — `DefaultTransport` is `Fetch` on wasm and
 `Native` elsewhere. Cargo allows that cycle inside a workspace and refuses
 it at package time, because a dev-dependency carrying a version has to
-resolve from the registry and `http-ng` cannot be there until those two
+resolve from the registry and `hclient` cannot be there until those two
 are. Nothing else could see it: not `cargo check`, not `cargo nextest`, and
 not `just packaging`, which packages with `--no-verify`. Both are path-only
 now, so cargo strips them from the published manifest, and the reason is
@@ -2648,7 +2648,7 @@ on.
 **The sharpest case in this group was found by the compiler rather than by
 reading, and it splits a class this workspace had treated as uniform.**
 Fourteen error enums were already `#[non_exhaustive]`, so `SvcbRecordError`
-looked like the fifteenth — and `http-ng-dns-system` and `http-ng-dns-doh`
+looked like the fifteenth — and `hclient-dns-system` and `hclient-dns-doh`
 both refused to compile, because both **translate** it variant by variant
 into their own error types. **An error's answer depends on who stands on
 the other side.** One that reaches an end caller can afford the attribute:
@@ -2727,16 +2727,16 @@ surface and publishes the same.
 ### Vertical 2 (native): what's proven
 
 **The runtime seam is real, not decorative.** The same generic code
-(`fetch_once<R>` in `crates/http-ng/tests/two_runtimes.rs`, bounded by
-`http_ng_rt::{TcpConnect, Timer, Blocking} + Clone`, with no `#[cfg]` anywhere
+(`fetch_once<R>` in `crates/hclient/tests/two_runtimes.rs`, bounded by
+`hclient_rt::{TcpConnect, Timer, Blocking} + Clone`, with no `#[cfg]` anywhere
 in the test code — the file's only conditional is the `#![cfg(not(target_family
 = "wasm"))]` gate excluding it from wasm targets, where its native
 dev-dependencies do not build) actually drives an HTTP/1.1 request over real TCP to a real
-server on loopback — once under `http_ng_rt_tokio::Tokio` inside a
-`tokio::runtime::Runtime`, once under `http_ng_rt_smol::Smol` on a bare
+server on loopback — once under `hclient_rt_tokio::Tokio` inside a
+`tokio::runtime::Runtime`, once under `hclient_rt_smol::Smol` on a bare
 `futures_executor::block_on`. The property is confirmed by more than a green
 run: adding `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s
-bound (the same mutation trick `http-ng-rt-pair-check`'s `pair_property.rs`
+bound (the same mutation trick `hclient-rt-pair-check`'s `pair_property.rs`
 already applied to runtime capabilities individually) breaks instantiation on
 `Tokio` (`Instant = tokio::time::Instant`, a wrapper, `E0277: can't compare
 tokio::time::Instant with std::time::Instant`) and does not break `Smol`
@@ -2744,30 +2744,30 @@ tokio::time::Instant with std::time::Instant`) and does not break `Smol`
 regression of the seam, not just to whether the file compiles at all.
 
 **The HTTP/1 exchange runs without spawn and without a reactor where there
-isn't one.** `http-ng-native/tests/h1.rs`'s
+isn't one.** `hclient-native/tests/h1.rs`'s
 `works_on_a_bare_futures_executor_with_no_spawn` checks this on IO with no
 reactor at all (Task 12); `two_runtimes.rs` above checks the same property of
 the transport (`Native`), now under real runtime backends, not just under the
 test busy-spin.
 
 **`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** — the
-`default-transport` feature (not in `http-ng`'s `default`, as for every
+`default-transport` feature (not in `hclient`'s `default`, as for every
 crate in the vertical — opt in explicitly; `default` carries `idn` alone,
 see the `url` bullet above). On any non-wasm target it resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
 not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves
-to `http_ng_fetch::Fetch`, and `Client::new()` there returns `Self` rather than
+to `hclient_fetch::Fetch`, and `Client::new()` there returns `Self` rather than
 a `Result`, because fetch's constructor cannot fail. Without the feature, or on
 `wasm32-wasip2` (`target_os = "wasi"`), the type doesn't exist at all — an
 ordinary compile error, not a silently weaker transport; on wasip2/wasip1 there's deliberately no branch that reuses the
-already-built `http_ng_wasi::WasiHttp` through this mechanism — `http-ng`
-doesn't depend on `http-ng-wasi` (an invariant recorded in
-`http-ng-wasi/Cargo.toml`), and adding that dependency here would mean a path
-that no CI job in this repository builds (the `wasip2` job runs `http-ng-wasi`
-directly). The direct path on WASI remains `Client::builder(http_ng_wasi::
+already-built `hclient_wasi::WasiHttp` through this mechanism — `hclient`
+doesn't depend on `hclient-wasi` (an invariant recorded in
+`hclient-wasi/Cargo.toml`), and adding that dependency here would mean a path
+that no CI job in this repository builds (the `wasip2` job runs `hclient-wasi`
+directly). The direct path on WASI remains `Client::builder(hclient_wasi::
 WasiHttp::new())`, same as before this task. Resolution details are in the
-`DefaultTransport` doc comment in `crates/http-ng/src/lib.rs`.
+`DefaultTransport` doc comment in `crates/hclient/src/lib.rs`.
 
 **`TCP_NODELAY` is asked for when the runtime says it can apply it, and the
 41 ms it saves is the head of every connection.** Measured from the server's
@@ -2793,10 +2793,10 @@ that `tcp_opts` replaces the whole set, so a caller setting only `keepalive`
 turns `nodelay` back off — pinned by a test.
 
 It also made a latent defect visible, which is worth more than the
-milliseconds: `http-ng-select`'s Alt-Svc fixture answered once and closed
+milliseconds: `hclient-select`'s Alt-Svc fixture answered once and closed
 **without `Connection: close`**, which RFC 9112 §9.6 makes a MUST. The
 client pooled a connection the peer had already closed and the next request
-raced the FIN — `http-ng-native`'s pooled-reuse window, recorded in `h1.rs`
+raced the FIN — `hclient-native`'s pooled-reuse window, recorded in `h1.rs`
 as residual and still there. Nagle's 41 ms had been padding the gap; with it
 gone the suite failed 7 runs in 12 under `-j16`. The fixture now announces
 its close, and the library's race is one look narrower than it was — see
@@ -2838,14 +2838,14 @@ concurrent calls, **one** accept, eight streams open at once by the
 server's own count.
 
 **The bound sits on that constructor and nowhere else, which is the whole
-of the design.** `http_ng_rt::Spawn` declares zero bounds, so
+of the design.** `hclient_rt::Spawn` declares zero bounds, so
 `<R as Spawn<F>>::spawn` coerces to `fn(&R, F)` and lives in a field that
 demands nothing of `R` — no signature a `Spawn`-less runtime meets
 changes, and `two_runtimes.rs` still runs `Native` on a bare
 `futures_executor::block_on`. A runtime with no `Spawn` gets `E0277` where
 it wrote `multiplexed()`, and so does a hook holding an `Rc`, because the
 driver carries `H` so that a shared connection's `Closed` has an emitter
-at all — the collision `http-ng-h3` met from the other side and could not
+at all — the collision `hclient-h3` met from the other side and could not
 close.
 
 **Three prices, and each is said where a caller meets them.** A spawner
@@ -2880,7 +2880,7 @@ the **floor** — the value that holds on the worst protocol the transport
 might negotiate — because over-claiming `full_duplex` costs a caller a
 deadlock rather than a degradation, and because Cargo unifies features across
 a graph, so a library can never know whether some other crate turned h2 on.
-`crates/http-ng-native/tests/http2.rs` pins both halves: an `h2::server` on a
+`crates/hclient-native/tests/http2.rs` pins both halves: an `h2::server` on a
 real socket answers the client (an HTTP/1.1 request would get nothing at all
 from it) and `Response::version()` reads `HTTP_2`, while
 `capabilities_report_the_floor_with_the_feature_on` asserts `full_duplex ==
@@ -2894,9 +2894,9 @@ crate underneath it is used directly instead, its `Connection` polled by hand
 exactly as hyper's HTTP/1 one already is (`src/http2.rs`'s module doc, and
 the correction in `docs/v02-design.md` §W3). And **h2 is offered only over a
 TLS backend that can report the negotiated ALPN** — `TlsConnect::reports_alpn`,
-defaulting to `false`, overridden to `true` by `http-ng-tls-rustls`: a backend
+defaulting to `false`, overridden to `true` by `hclient-tls-rustls`: a backend
 that sends the ALPN list and cannot read the answer back (which is exactly
-`http-ng-tls-native-tls`) would otherwise leave the client speaking HTTP/1
+`hclient-tls-native-tls`) would otherwise leave the client speaking HTTP/1
 into a connection the server had switched to HTTP/2.
 
 An h2 connection is **checked out of the pool exclusively, one stream at a
@@ -2915,12 +2915,12 @@ reconnection; `act` acceptance.
 **Deliberately not done in v0.1** (recorded, not hidden): connection pooling
 (one connection per request — **since done in v0.2 W2**, and `Native::new`
 pools by default; `Native::without_pool()` restores this v0.1 behaviour);
-streaming request bodies (**since done — v0.2 W6 on `http-ng-native`, v0.3
-on `http-ng-h3`, where they arrive with real full duplex**); `first_byte`/
+streaming request bodies (**since done — v0.2 W6 on `hclient-native`, v0.3
+on `hclient-h3`, where they arrive with real full duplex**); `first_byte`/
 `between_bytes` timeouts (declared unsupported via `Capabilities`, rather than
 silently unimplemented — **since done in v0.2 W4**, declared and enforced in
 one commit, and measured against servers that answer never, fall silent after
-the head, and stall mid-body: `crates/http-ng-native/tests/timeouts.rs`); a
+the head, and stall mid-body: `crates/hclient-native/tests/timeouts.rs`); a
 single `getaddrinfo` call for both address families
 instead of separate v4/v6 slots; h1 upgrade.
 
@@ -2928,7 +2928,7 @@ instead of separate v4/v6 slots; h1 upgrade.
 
 **Proven.** The `Transport` shape actually works against an ambient backend
 with no socket of its own on the guest side — not in theory, but under a real
-`wasmtime` host (`crates/http-ng-wasi/tests/live_roundtrip.rs`). A setting the
+`wasmtime` host (`crates/hclient-wasi/tests/live_roundtrip.rs`). A setting the
 transport doesn't support becomes a typed `UnsupportedCapability` error
 already at `ClientBuilder::build()`, rather than being silently ignored; the
 same holds one level down — the `wasi:http` host rejecting a request-option
@@ -2938,7 +2938,7 @@ held in place by static analysis in CI (the `no-discarded-wasi-setter-result`
 ast-grep rule, with the corpus it was accepted against next to it in
 `scripts/ast-grep/rule-tests`) on every push.
 
-**`full_duplex` is declared `false` — and that's about the `http-ng-wasi`
+**`full_duplex` is declared `false` — and that's about the `hclient-wasi`
 implementation, not about the shape of the seam.** The `wasi:http` 0.3
 protocol itself supports duplex request bodies: body data can flow while the
 host hasn't yet returned a response. The shipped `WasiHttp::execute` doesn't
@@ -2949,9 +2949,9 @@ response already existed on the server at t≈0.10s, but the caller saw it only
 at t≈2.00s, once the body finished writing; for a body with no end, it would
 never see it.
 
-The limitation is lifted **inside `http-ng-wasi`, without touching
+The limitation is lifted **inside `hclient-wasi`, without touching
 `Transport`.** `Transport::execute` returns `http::Response<Self::Body>`, and
-`Self::Body` is `http_ng_wasi::Body`, a type from that same crate: the
+`Self::Body` is `hclient_wasi::Body`, a type from that same crate: the
 unfinished write future is carried into it and polled further from
 `poll_frame`, and a transfer failure becomes a terminal body error. The
 branch's final review implemented this as a proof of concept — around forty
@@ -2971,6 +2971,6 @@ write is not a success" moves from an `execute`-level error to a body-level
 error, i.e. gets weaker; (3) a caller that never reads the response body never
 finishes writing the request body either — that's inherent to duplex without
 `spawn` and needs documenting. Vertical 2's work, entirely inside
-`http-ng-wasi`.
+`hclient-wasi`.
 
-Design: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
+Design: [`docs/superpowers/specs/2026-08-05-hclient-design.md`](docs/superpowers/specs/2026-08-05-hclient-design.md).

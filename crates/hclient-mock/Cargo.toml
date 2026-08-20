@@ -1,0 +1,35 @@
+[package]
+name = "hclient-mock"
+version.workspace = true
+description = "Mock transport and controllable timer for testing hclient transports and clients"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Depends on `hclient-core` ONLY, never on the `hclient` facade. That is the
+# whole reason this crate exists separately: a transport implementation lives
+# below the facade, so reaching the test doubles through it meant depending
+# upward on everything the facade pulls in. Anyone writing a `Transport` —
+# in this workspace or outside it — now gets `MockTransport` for the cost of
+# `hclient-core`.
+#
+# Keep it that way. A dependency on `hclient` here would re-create exactly
+# the coupling this split removed, and would do it silently, since the
+# facade already dev-depends on nothing that would flag the cycle.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes         = { workspace = true }
+http          = { workspace = true }
+http-body     = { workspace = true }
+hclient-core  = { workspace = true }
+thiserror     = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }

@@ -1,16 +1,16 @@
-# `SeamRuntime` is `http-ng-quinn`
+# `SeamRuntime` is `hclient-quinn`
 
 `docs/v04-w2-webtransport.md` §4 recorded a debt and named the two ways to
 pay it. This is the second one.
 
-> `http-ng-h3` exposes no `quinn::Connection`, or an endpoint. […] `mod
+> `hclient-h3` exposes no `quinn::Connection`, or an endpoint. […] `mod
 > runtime` is private — of which only the `QuinnTask` type alias is
 > re-exported. **`SeamRuntime`**, the `quinn::Runtime` over
-> `http_ng_rt::{Timer, Spawn, UdpBind}`, is therefore unreachable: 302
+> `hclient_rt::{Timer, Spawn, UdpBind}`, is therefore unreachable: 302
 > lines of code (494 with its documentation), including the `WakeAll`
 > fan-out. […] **What would close it** is one of: 1. `pub use
 > runtime::SeamRuntime;` — one line. The honest version of that is a move
-> to a crate of its own (`http-ng-quinn`) […]; 2. a **connect-only
+> to a crate of its own (`hclient-quinn`) […]; 2. a **connect-only
 > entry point** on `H3`.
 
 Option 1, in its honest version. Option 2 is a separate question and
@@ -23,7 +23,7 @@ The same argument every other pluggable thing in this workspace is made
 of, and it survives the fact that this one was never a feature.
 
 `docs/w4-upgrade-seam.md` §8's version is about additivity: `tungstenite`
-was a `websocket` feature of `http-ng-native`, and Cargo's features are
+was a `websocket` feature of `hclient-native`, and Cargo's features are
 additive, so one crate anywhere in a graph switching it on put the framing
 into every other crate's build of the transport. A dependency in the other
 direction cannot be switched on from outside.
@@ -32,13 +32,13 @@ direction cannot be switched on from outside.
 unchanged. It was private, which is the other way a shared thing stops
 being shared, and the failure mode is different in a way that matters:
 a feature that is on when it should be off costs a graph, and an adapter
-that cannot be reached costs a **copy**. `http-ng-webtransport` did not
+that cannot be reached costs a **copy**. `hclient-webtransport` did not
 copy it, and the cost of not copying it was that the crate takes a
 `quinn::Connection` from its caller.
 
 Where the additive argument *does* bind is on the alternative nobody
 proposed and somebody eventually would have: a `quinn` feature on
-`http-ng-rt`. That would put `quinn-proto`, `quinn-udp` and `ring` into
+`hclient-rt`. That would put `quinn-proto`, `quinn-udp` and `ring` into
 every build of the seam in any graph that switched it on — and the seam
 re-declares `RecvMeta` and `EcnCodepoint` rather than re-exporting
 `quinn-udp`'s precisely so that cannot happen (`just graph-no-quic`). So
@@ -46,19 +46,19 @@ the QUIC vocabulary and the seam's vocabulary meet in exactly one place,
 and that place is a crate of its own.
 
 The `pub use` would have worked. It would also have left every future
-consumer of the adapter depending on `http-ng-h3` — 57 crates, `h3`,
+consumer of the adapter depending on `hclient-h3` — 57 crates, `h3`,
 `h3-quinn`, `tokio-util` — to obtain a `quinn::Runtime` that needs none of
 them.
 
 ## 2. What moved, and what did not
 
-`git mv crates/http-ng-h3/src/runtime.rs crates/http-ng-quinn/src/lib.rs`.
+`git mv crates/hclient-h3/src/runtime.rs crates/hclient-quinn/src/lib.rs`.
 The whole file, with its documentation, its four unit tests and every
 `send-bound-exception: amendment-C10` marker.
 
 | item | where it is now |
 |---|---|
-| `QuinnTask` | `http-ng-quinn`, re-exported by `http-ng-h3` |
+| `QuinnTask` | `hclient-quinn`, re-exported by `hclient-h3` |
 | `SeamRuntime<R>` + `quinn::Runtime` impl | moved, `pub` as before |
 | `SeamTimer<R>` + `quinn::AsyncTimer` impl | moved, private as before |
 | `WakeAll` | moved, private as before |
@@ -69,7 +69,7 @@ The whole file, with its documentation, its four unit tests and every
 | `endpoint(&rt, local)` | moved, **`pub(crate)` → `pub`** |
 
 **One visibility change and no signature changes.** `endpoint` is the
-crate's reason to exist for anyone who is not `http-ng-h3`: it is the
+crate's reason to exist for anyone who is not `hclient-h3`: it is the
 function that knows to use `new_with_abstract_socket` rather than
 `Endpoint::client`, so that the capability actually required is
 [`UdpBind`] — the trait every runtime here can implement — rather than
@@ -77,14 +77,14 @@ function that knows to use `new_with_abstract_socket` rather than
 `wrap_udp_socket` demands. That reasoning was already written down beside
 the function; it was simply unreadable from outside.
 
-**What stayed in `http-ng-h3`:**
+**What stayed in `hclient-h3`:**
 
 - `H3::endpoint`, the v4/v6 slot cache and its lazily-on-first-use policy.
-  It calls `http_ng_quinn::endpoint` and is otherwise untouched. The
+  It calls `hclient_quinn::endpoint` and is otherwise untouched. The
   policy is `H3`'s (one endpoint per address family, per transport), not
   the adapter's.
-- `H3Runtime`. It is `http-ng-h3`'s public API and it is named for
-  `http-ng-h3`; moving it would have renamed a trait for no gain. It also
+- `H3Runtime`. It is `hclient-h3`'s public API and it is named for
+  `hclient-h3`; moving it would have renamed a trait for no gain. It also
   buys less than it looks, and the reason is worth knowing before anyone
   tries to reuse it: a supertrait list cannot carry associated-type
   bounds, so `R: H3Runtime` tells the compiler nothing about `R::Sleep` or
@@ -93,13 +93,13 @@ the function; it was simply unreadable from outside.
   as the function did before it moved.
 - Everything else: `H3`, the pool, `H3Body`, the pump, the hooks, 0-RTT.
 
-**`ring` went with the endpoint.** `http-ng-h3`'s `quinn` is now
+**`ring` went with the endpoint.** `hclient-h3`'s `quinn` is now
 `default-features = false, features = ["futures-io"]`; `ring` is
-`http-ng-quinn`'s. Binding an endpoint is the single operation in
+`hclient-quinn`'s. Binding an endpoint is the single operation in
 either crate that wants a crypto provider independently of any TLS
 session — an HMAC key for stateless resets, an AEAD for retry tokens,
 which is why `quinn::EndpointConfig` has no `Default` without one — and
-that call is not in `http-ng-h3` any more. Nothing about the resolved
+that call is not in `hclient-h3` any more. Nothing about the resolved
 graph changes: `ring` is still there, through this dependency and through
 rustls. What changes is which manifest asks for it, and therefore which
 comment is true.
@@ -110,23 +110,23 @@ comment is true.
 
 | crate | before | after |
 |---|---|---|
-| `http-ng-h3` | 57 | **58** |
-| `http-ng-h3 --all-features` | 57 | **58** |
-| `http-ng-quinn` | — | **42** |
-| `http-ng-webtransport` | 49 | 49 (untouched) |
+| `hclient-h3` | 57 | **58** |
+| `hclient-h3 --all-features` | 57 | **58** |
+| `hclient-quinn` | — | **42** |
+| `hclient-webtransport` | 49 | 49 (untouched) |
 
-The diff of `http-ng-h3`'s two lists is one line long and it is
-`http-ng-quinn` itself. Nothing arrived, nothing left, no feature of any
+The diff of `hclient-h3`'s two lists is one line long and it is
+`hclient-quinn` itself. Nothing arrived, nothing left, no feature of any
 third-party crate changed.
 
-The 42 are `http-ng-rt`'s graph plus `quinn`, `quinn-proto`, `quinn-udp`,
+The 42 are `hclient-rt`'s graph plus `quinn`, `quinn-proto`, `quinn-udp`,
 `ring` and what those pull. `hyper` and its inert `tokio` `sync` leaf are
-in it because `http-ng-rt` depends on hyper unconditionally — the fact
+in it because `hclient-rt` depends on hyper unconditionally — the fact
 AGENTS.md's dependency table already states twice, measured in a third
 place here and not a new one.
 
 What is **not** in the 42 is the point: no `h3`, no `h3-quinn`, no
-`tokio-util`, no `http-ng-tls`, no `http-ng-dns`. A crate that wants bare
+`tokio-util`, no `hclient-tls`, no `hclient-dns`. A crate that wants bare
 QUIC over this workspace's runtime seam takes 42 crates rather than 58,
 and takes no opinion about HTTP at all.
 
@@ -171,10 +171,10 @@ shape a real socket has the moment its send buffer drains. It is the only
 test added by this work, and it is an addition rather than a change: the
 four that moved are byte-identical to the four that left.
 
-## 5. Can `http-ng-webtransport` build its own connection now?
+## 5. Can `hclient-webtransport` build its own connection now?
 
 **Mechanically yes, and it still should not, and the reason is not the one
-§4 implied.** `http-ng-webtransport` is untouched by this work.
+§4 implied.** `hclient-webtransport` is untouched by this work.
 
 §4's list reads as if options 1 and 2 were alternatives — either the
 adapter becomes reachable, or `H3` grows a connect-only entry point.
@@ -191,7 +191,7 @@ just as hard to a fresh one, because `H3` never hands out a connection it
 has not already claimed.
 
 So option 1 is the one that closes the gap, and what remains on
-`http-ng-webtransport`'s side is its own dialling: `http_ng_quinn::
+`hclient-webtransport`'s side is its own dialling: `hclient_quinn::
 endpoint`, a `QuicTlsConnect` for the crypto with ALPN `h3`, and an
 address from somewhere. That is a small amount of code. It is not done
 here, for two reasons that are about the crate rather than about the
@@ -204,10 +204,10 @@ the tests use it. So the question was never "can it stop taking a
 connection from outside" but "should it gain a second constructor beside
 that one", which is a different decision and not this one.
 
-**And it is measured rather than free.** Adding `http-ng-quinn`,
-`http-ng-tls-quic` and `http-ng-dns` to that crate takes it from **49
-crates to 58** — measured, then reverted — and the nine are `http-ng-rt`,
-`http-ng-quinn`, `http-ng-tls`, `http-ng-tls-quic`, `http-ng-dns`,
+**And it is measured rather than free.** Adding `hclient-quinn`,
+`hclient-tls-quic` and `hclient-dns` to that crate takes it from **49
+crates to 58** — measured, then reverted — and the nine are `hclient-rt`,
+`hclient-quinn`, `hclient-tls`, `hclient-tls-quic`, `hclient-dns`,
 `hyper`, `ring`, `untrusted` and `getrandom`. `ring` is the one AGENTS.md
 names as *"the visible consequence of owning no endpoint"*, so the
 sentence would have to change with the code.
@@ -216,22 +216,22 @@ The part that would want deciding first is the one the crate count hints
 at rather than states: a dialling constructor there would be a **second**
 place in this workspace where "how a QUIC connection is made" is settled —
 which crypto, which ALPN, which keep-alive, whether 0-RTT, which endpoint
-per address family — with nothing making it agree with `http-ng-h3`'s.
+per address family — with nothing making it agree with `hclient-h3`'s.
 That is the duplication this extraction removed one layer down, reappearing
 one layer up. It wants the same answer (a shared thing, in one place) and
-that shared thing cannot be `http-ng-quinn`, because `QuicTlsConnect`
+that shared thing cannot be `hclient-quinn`, because `QuicTlsConnect`
 and `Resolve` would drag TLS and DNS into an adapter whose whole claim is
 that it has neither.
 
 **Recorded, not done.** What it needs: a decision about where a shared QUIC
-*dial* lives, given that `http-ng-h3`'s is entangled with its pool and its
+*dial* lives, given that `hclient-h3`'s is entangled with its pool and its
 h3 client.
 
 ## 6. Mutations
 
 Anchor verified before the first and after the last: **5 tests, 5 passed**.
-The harness is `crates/http-ng-quinn/mutations.py` — the
-`http-ng-webtransport` one with a new table — and restore is `git checkout`
+The harness is `crates/hclient-quinn/mutations.py` — the
+`hclient-webtransport` one with a new table — and restore is `git checkout`
 plus an explicit `os.utime`.
 
 The run's purpose is not the usual one. This is a **move**, so what is
@@ -285,53 +285,53 @@ before a mutation run; the anchor check is what tells you when you did not.
 `just graph-quinn-adapter-is-shared`, in the `dependency-graph` job. Three
 assertions, and the third is the one that is not obvious:
 
-- **absent** `^(h3|h3-quinn|http-ng-h3) ` from `http-ng-quinn
+- **absent** `^(h3|h3-quinn|hclient-h3) ` from `hclient-quinn
   --all-features`. The adapter must stay usable by anything that wants
   bare QUIC over the seam.
-- **present** `^quinn ` in `http-ng-quinn`, or the ban above would pass
+- **present** `^quinn ` in `hclient-quinn`, or the ban above would pass
   a crate that had been emptied out.
-- **present** `^http-ng-quinn ` in `http-ng-h3`. This is the one that
+- **present** `^hclient-quinn ` in `hclient-h3`. This is the one that
   fires when someone re-adds a private `mod runtime` and drops the
   dependency — the shape "no copying" takes when it goes wrong, which no
   `absent` check can see.
 
 All three were verified failing before being committed: `h3 = "0.0.8"`
 added to the adapter fires the first, deleting the dependency from
-`http-ng-h3` fires the third, and a malformed manifest fires
+`hclient-h3` fires the third, and a malformed manifest fires
 `tree-guard.sh`'s own cannot-run-must-not-pass arm.
 
 ## 8. Unchanged, and checked to be
 
-- **`http-ng-h3`'s public API.** `QuinnTask` is a type alias, so a
-  re-export of it *is* it; `http_ng_h3::QuinnTask` names the same
+- **`hclient-h3`'s public API.** `QuinnTask` is a type alias, so a
+  re-export of it *is* it; `hclient_h3::QuinnTask` names the same
   `Pin<Box<dyn Future<Output = ()> + Send>>` it always did.
-  `crates/http-ng-h3/tests/hooks_cost.rs` implements `Spawn<QuinnTask>`
+  `crates/hclient-h3/tests/hooks_cost.rs` implements `Spawn<QuinnTask>`
   through that path and is unmodified apart from one doc-comment
   cross-reference.
-- **`H3<R, T, D, H = NoHooks>`** and every bound on it. `http-ng-select`
+- **`H3<R, T, D, H = NoHooks>`** and every bound on it. `hclient-select`
   compiles unchanged and was not opened.
 - **`tests/two_runtimes.rs`**, including its sensitivity: adding
   `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s where
   clause still produces three `E0277: can't compare tokio::time::Instant
   with std::time::Instant` and **no** error mentioning `Smol`. Re-run for
   this change, not quoted from the file's own doc.
-- **Test counts.** `http-ng-h3` went from 73 to 69 and `http-ng-quinn`
+- **Test counts.** `hclient-h3` went from 73 to 69 and `hclient-quinn`
   from 0 to 5 — the four unit tests that moved, plus the one added in §4.
 
 ## 9. Not done
 
 - **A second consumer.** §5. The adapter is reachable now; nothing but
-  `http-ng-h3` reaches it yet, which means the "second consumer" argument
+  `hclient-h3` reaches it yet, which means the "second consumer" argument
   for the crate is still an argument rather than a demonstration.
 - **`H3Runtime` as a shared bound.** §2 says why it stayed. If a second
   consumer does arrive, the 8-term `where` clause is what it will copy,
-  and *that* is when a named bound in `http-ng-quinn` earns its keep —
+  and *that* is when a named bound in `hclient-quinn` earns its keep —
   with the caveat that the associated-type bounds cannot travel in it.
-- **`http-ng-quinn` under `smol`.** Its own five tests are unit tests
+- **`hclient-quinn` under `smol`.** Its own five tests are unit tests
   with a hand-written socket; the two-runtime evidence for this code lives
-  in `http-ng-h3`'s `two_runtimes.rs`, which exercises it under
+  in `hclient-h3`'s `two_runtimes.rs`, which exercises it under
   `TokioHandle` and `Smol` and still does. A pair test in the new crate
   would duplicate that rather than add to it.
 
-[`UdpBind`]: ../crates/http-ng-rt/src/caps.rs
-[`UdpDatagrams::poll_writable`]: ../crates/http-ng-rt/src/caps.rs
+[`UdpBind`]: ../crates/hclient-rt/src/caps.rs
+[`UdpDatagrams::poll_writable`]: ../crates/hclient-rt/src/caps.rs

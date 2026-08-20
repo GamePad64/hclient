@@ -1,0 +1,60 @@
+[package]
+name = "hclient-dns-doh"
+version.workspace = true
+description = "DNS-over-HTTPS (RFC 8484) resolver for hclient, over any Transport"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes          = { workspace = true }
+dns-message-parser = "0.9"
+futures-core   = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http           = { workspace = true }
+http-body      = { workspace = true }
+http-body-util = { workspace = true }
+hclient-core   = { workspace = true }
+# `codec`: the RFC 9460 client semantics and the `ServiceBinding` ->
+# `RawBinding` conversion, shared with `hclient-dns-system` rather than
+# copied — see `hclient_dns::svcb`'s module doc for why a second copy of
+# those rules was not an option.
+hclient-dns    = { path = "../hclient-dns", version = "0.1.0", features = ["codec"] }
+thiserror      = { workspace = true }
+
+[dev-dependencies]
+assert_matches   = { workspace = true }
+rstest           = { workspace = true }
+# The tests drive this resolver through a REAL transport against a real
+# loopback server, rather than through a mock: the claims being made are
+# about what goes over the wire (`tests/query_bytes.rs`) and about what a
+# caller gets back, and a mock transport would let both be true of a
+# `Transport` impl that exists only in this crate's tests.
+#
+# `NoTls` + `IpLiteralOnly` is not a shortcut either — it is the shape
+# `Doh::pinned` is for, and it means these tests link no TLS stack and no
+# system resolver. dev-dependencies are outside `-e normal`, so none of
+# this reaches a consumer's graph.
+#
+# Not a dependency cycle: `hclient-native` depends on `hclient-dns`, never
+# on this crate.
+hclient-native   = { path = "../hclient-native",   version = "0.1.0" }
+hclient-rt-tokio = { path = "../hclient-rt-tokio", version = "0.1.0" }
+hclient-tls      = { path = "../hclient-tls",      version = "0.1.0" }
+# `tests/live.rs` alone, and `platform-verifier` is the whole point of it
+# rather than a convenience. The unverified row that suite exists to settle
+# is whether a certificate presented for an IP ADDRESS validates through the
+# PLATFORM's own verifier — `Doh::pinned` takes an IP literal, so that is the
+# handshake every pinned deployment makes. `webpki-roots` would answer a
+# different question (rustls's bundled roots, its own webpki path) and leave
+# the one asked exactly where it was.
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["platform-verifier"] }
+tokio            = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,228 @@
+[package]
+name = "hclient-fetch"
+version.workspace = true
+description = "hclient transport over the browser fetch API"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Task 1 added `js-sys` and `wasm-bindgen` for the `Send`-compatible promise
+# adapter (`src/promise.rs`). Task 2 (`src/caps.rs`, runtime capability
+# probing) adds `http` (for `HeaderName` in `FORBIDDEN_HEADERS`) and
+# `hclient-core` (for `Capabilities` and its constituent enums); it does
+# NOT need `web-sys`, since `supports_duplex()` only has to read
+# `Request.prototype.duplex`'s existence, which `js_sys::Reflect` alone can
+# do without a typed `web_sys::Request` binding.
+#
+# Task 3 (`src/convert.rs`, request conversion) is the first one that
+# actually builds a `web_sys::Request`, so it adds `web-sys` — with only
+# the five features `convert.rs` names a type from (`Request`,
+# `RequestInit`, `Headers`, `AbortController`, `AbortSignal`; verified by
+# compiling with exactly this feature list, not copied from a bigger
+# preset). It deliberately still does NOT add `bytes` or `http-body`:
+# `RequestBody::Full`'s payload is turned into a `js_sys::Uint8Array`
+# immediately (via `&b[..]`, resolved through `Bytes`'s inherent `Deref`,
+# which needs no local naming of the `bytes` crate — an inherent method on
+# a type reachable through a direct dependency's public API doesn't
+# require that type's own defining crate to be a direct dependency too),
+# and `RequestBody::Streaming`'s payload is matched as `_` and never
+# touched, so nothing in this file ever names `bytes::Bytes` or
+# `http_body::Body`. It does NOT add `wasm-streams` either — Task 3 cannot
+# build a `ReadableStream` from a `RequestBody::Streaming`, and says so:
+# see `convert::resolve_body`'s doc comment for why that's a typed error
+# today, not silent truncation, and why the MSRV conflict below is
+# unaffected.
+#
+# `wasm-streams` was pinned to 0.5 for one reason, and that reason is gone.
+# The workspace floor used to be 1.85; `wasm-streams` 0.6.0 declares
+# `rust-version = "1.88"`, so it could not be used, and ~90 lines here
+# recorded the search for an alternative — an older release, driving
+# `ReadableStreamDefaultReader` through `web-sys` directly, and so on.
+#
+# The MSRV policy is now "the latest stable", so 0.6 is simply available.
+# Verified rather than assumed before moving: `cargo check -p hclient-fetch
+# --all-features --all-targets --target wasm32-unknown-unknown` is clean on
+# 0.6.0, and the crate's 65 browser tests pass on both Chrome and Firefox
+# against it. `Cargo.lock` resolves 0.6.0.
+#
+# The old archaeology was deleted rather than annotated. It argued from a
+# floor that no longer exists, and a reader who trusted it would have been
+# told the crate is constrained by something this branch removed — the same
+# defect this repository keeps finding, a declaration and the code written
+# at different times. What it was protecting no longer needs protecting.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+http          = { workspace = true }
+hclient-core  = { workspace = true }
+js-sys        = "0.3"
+wasm-bindgen  = "0.2.126"
+# v0.3 W4 step 3 (`src/websocket.rs`) adds the last four names, and they
+# are the whole cost of the browser's WebSocket backend: `WebSocket` (the
+# global, its three `on*` setters, `send`, `close`, `readyState`),
+# `BinaryType` (the enum `set_binary_type` takes — without
+# `"arraybuffer"` every binary message would arrive as a `Blob` and need an
+# asynchronous read before its bytes existed), `MessageEvent` (`.data`) and
+# `CloseEvent` (`.code`, `.reason`, `.wasClean`). No new crate: the RFC 6455
+# implementation is the browser's, which is why this backend has no cargo
+# feature where `hclient-native`'s has one — measured with `cargo tree -p
+# hclient-fetch -e normal --target wasm32-unknown-unknown`.
+#
+# `ErrorEvent` is deliberately NOT here: `src/websocket.rs` installs no
+# `onerror` handler, because a WebSocket `error` event is a bare `Event`
+# carrying no information at all and the standard fires `close` after every
+# one of them. See that file's module doc.
+web-sys       = { version = "0.3.103", features = [
+    "Request",
+    "RequestInit",
+    "Headers",
+    "AbortController",
+    "AbortSignal",
+    "Window",
+    "Response",
+    "ReadableStream",
+    "WebSocket",
+    "BinaryType",
+    "MessageEvent",
+    "CloseEvent",
+    # v0.4 W2 (`src/hooks.rs`): `Head::elapsed` is a duration, and
+    # `Performance::now` is the browser's monotonic clock. `BrowserClock`'s
+    # `Date.now()` is the wrong instrument for one — it can step backwards
+    # mid-request and its resolution is a whole millisecond, which is
+    # longer than most of the requests this measurement exists to explain.
+    # No new crate: `web-sys` is already here, this is one more feature
+    # name on it.
+    "Performance",
+    # v0.4 (`src/opts.rs`): the four `RequestInit` members a browser
+    # caller could not reach. Each is an enum web-sys already binds, so
+    # this is four feature names and no crate — measured, the graph is
+    # unchanged.
+    "RequestMode",
+    "RequestCredentials",
+    "RequestCache",
+    "ReferrerPolicy",
+] }
+# Task 4 (`src/body.rs`) is the first file in this crate to actually
+# implement `http_body::Body`, so `bytes`/`http-body`/`futures-core` move
+# here from `[dev-dependencies]` (where Task 3 left `bytes`/`http-body` for
+# `tests/convert.rs` only — see that entry's own history below) into real
+# dependencies; a shipped public type's `type Data = Bytes` and
+# `impl http_body::Body` can't be satisfied from a dev-only crate.
+bytes        = { workspace = true }
+http-body    = { workspace = true }
+futures-core = { workspace = true }
+# v0.3 W4 step 3: `src/websocket.rs`'s `FetchWebSocket` is a `Sink<Message>`,
+# which is what `hclient_core::unversioned::WebSocket` requires of it. A new
+# DIRECT dependency and no new crate in the graph: `hclient-core` already
+# depends on `futures-sink` for the trait's own definition, so `cargo tree`
+# for this crate is unchanged.
+futures-sink = { workspace = true }
+# `default-features = false, features = ["std"]` — the same exact form
+# already used by `hclient-native`, `hclient-dns`, and `hclient-dns-system`
+# for the identical need (`StreamExt::map`), not a preset copied blind.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# See the note above `[dependencies]` for why this moved off the 0.5 line.
+wasm-streams = "0.6"
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+# `sink` on top of the `[dependencies]` entry above, for `tests/websocket.rs`
+# alone: `SinkExt::send`/`close` are how a caller actually drives the
+# `Sink` half of the seam, and `futures-util`'s `std` feature does not imply
+# `sink`. Costs no crate — `futures-sink` is already in this graph, as a
+# dependency of `hclient-core`, where the `WebSocket` trait names it. Placed
+# here rather than in `[dependencies]` for the reason the `web-sys` entry
+# further down states: a `[dev-dependencies]` feature list is unified with
+# `[dependencies]`'s only when building test targets, and `src/` needs
+# nothing from it.
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Task 5 (`tests/transport.rs`): the brief's own tests go through
+# `hclient::Client`, not `Fetch` directly — the same reason
+# `hclient-native`/`hclient-wasi` both carry `hclient` as a DEV dependency
+# only (`hclient`'s own `default-transport` doc comment records the
+# invariant: `hclient` never depends on any backend crate, backend crates
+# may depend on `hclient` for their own tests). No `default-features = false`
+# override (tried first; Cargo rejects overriding `default-features` on a
+# workspace-inherited dependency whose `[workspace.dependencies]` entry
+# doesn't itself set the field: "`default-features = false` cannot override
+# workspace's `default-features`", verified by attempting it): `hclient`'s
+# own default is already `default = []` (see its `lib.rs`), so there is
+# nothing extra for a default feature set to pull in regardless — this
+# crate needs `Client`/`Timeouts`/`RequestBody` only, and gets exactly that
+# with a plain workspace inheritance, the same form `hclient-native`'s
+# Cargo.toml already uses.
+# Path only, deliberately, where every other workspace dependency here is
+# `{ workspace = true }`. This one is a **cycle**: `hclient` depends on this
+# crate, and this crate's tests depend on `hclient`. Cargo allows that inside
+# a workspace and refuses it at `cargo package`, because a dev-dependency
+# carrying a version requirement has to be resolvable from the registry —
+# and `hclient` cannot be there until this crate is. Dropping the version
+# makes cargo strip the dev-dependency from the published manifest, which is
+# the documented way through and changes nothing about how the tests build
+# here. Caught by `just package-build` rather than by reading.
+hclient = { path = "../hclient" }
+# `tests/convert.rs` needed to construct a `RequestBody::Streaming` (to prove
+# it's rejected as a typed error, never silently emptied — see
+# `resolve_body`'s doc comment) and a `RequestBody::Full` (to check the
+# actual bytes survive the trip) — that used to be the only reason `bytes`/
+# `http-body` appeared in this manifest at all, as a `dev-dependency` only
+# (Task 3). Task 4 (`src/body.rs`) made both real dependencies (see above),
+# so this entry is gone; `tests/convert.rs` keeps compiling unchanged, now
+# drawing `bytes`/`http-body` from `[dependencies]` like everything else in
+# `tests/`.
+#
+# `tests/body.rs` needs to build its own, fully Rust-controlled
+# `web_sys::ReadableStream` (a `pull`/`cancel` callback pair via
+# `js_sys::Object` + `js_sys::Reflect`) to exercise a mid-stream error, a
+# non-byte chunk, and cancel-on-drop deterministically — none of which a
+# real network `fetch()` can be made to do on demand. That needs
+# `ReadableStreamDefaultController` (to `enqueue`/`close`/`error` from the
+# `pull` callback) and `ResponseInit` (to build a synthetic
+# `web_sys::Response` around that stream, with caller-chosen headers, via
+# `Response::new_with_opt_readable_stream_and_init`) — neither named by
+# `src/`, so both are added here rather than to the real `[dependencies]`
+# `web-sys` entry above: a `[dev-dependencies]` feature list for the same
+# crate is unified with `[dependencies]`'s only when building test targets,
+# never for the plain library build the published crate ships.
+#
+# `DomException` — fix round 1, review finding 2: `tests/body.rs`'s abort
+# coverage constructs the exact `DOMException` shape (name `"AbortError"`)
+# a real `AbortController::abort()` errors a fetch response's stream with,
+# via `DomException::new_with_message_and_name`, rather than a generic
+# `js_sys::Error` — proving the abort-specific shape, not just "some error",
+# takes the same code path in `Body::poll_frame`.
+#
+# `Location` — Task 5, `tests/transport.rs`'s `end_to_end_through_the_
+# client`: reads `window.location().href()` to get a real, currently-
+# loaded `http://` URL to fetch (the brief's own `data:` URL can never
+# reach `Fetch` at all through `hclient::Client` — see that test's own
+# comment and the task report). Not needed by `src/`, so it goes here
+# rather than the real `[dependencies]` `web-sys` entry, same reasoning as
+# the three features above it.
+web-sys = { version = "0.3.103", features = [
+    "ReadableStreamDefaultController",
+    "ResponseInit",
+    "DomException",
+    "Location",
+] }
+
+# NOT `[lints] workspace = true`. The workspace table sets `unsafe_code =
+# "forbid"`, and `forbid` cannot be relaxed from inside a crate (`E0453`,
+# verified: `[lints] workspace = true` + a local `#[allow(unsafe_code)]`
+# fails to compile with two E0453s). This crate carries the project's one
+# `unsafe impl` (see `src/promise.rs`), which needs `deny` — overridable by
+# a scoped `#[allow]` right next to the block — not `forbid`. Every other
+# crate keeps `forbid`; see `docs/superpowers/specs/2026-08-05-hclient-design.md`
+# amendment C7.
+#
+# Opting out of the workspace table also drops `missing_debug_implementations`
+# and `unexpected_cfgs`, which every other crate gets from it — restated
+# below rather than lost silently.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }

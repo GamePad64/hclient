@@ -3,7 +3,7 @@
 # Two claims, one config, applied per crate by `--manifest-path` in the
 # `dependency-graph` job.
 #
-# `http-ng-rt` gained `UdpBind`/`UdpDatagrams` for QUIC and declares
+# `hclient-rt` gained `UdpBind`/`UdpDatagrams` for QUIC and declares
 # `RecvMeta` and `EcnCodepoint` itself rather than re-exporting `quinn-udp`'s
 # identical structs. That costs a field-for-field conversion in two places
 # and buys this: a runtime seam that any UDP backend can implement —
@@ -11,8 +11,8 @@
 # QUIC stack in its graph. The conversion is only worth its price while this
 # holds, so it is checked rather than asserted.
 #
-# `http-ng-tls` is the same claim one crate over, and the reason
-# `http-ng-tls-quic` exists as a separate crate rather than as a `quic`
+# `hclient-tls` is the same claim one crate over, and the reason
+# `hclient-tls-quic` exists as a separate crate rather than as a `quic`
 # feature here: Cargo unifies features across a graph, so a feature would
 # put `quinn-proto` into every build in which *any* crate wanted h3 —
 # including the `NoTls` builds whose whole point is having no room for a

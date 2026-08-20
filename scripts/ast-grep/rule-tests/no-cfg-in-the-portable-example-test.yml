@@ -17,7 +17,7 @@ valid:
   - |
     fn main() {
         println!(
-            "act's http-client component on http-ng: one source, no #[cfg], \
+            "act's http-client component on hclient: one source, no #[cfg], \
              built for native, wasm32-wasip2 and wasm32-unknown-unknown"
         );
     }

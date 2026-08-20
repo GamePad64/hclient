@@ -14,7 +14,7 @@ specific about the wire, and almost every line of it is a demand on the
 HTTP client underneath rather than on the RPC layer above. If this client
 can carry gRPC, it can carry the class of protocol gRPC belongs to.
 
-The audit is `crates/http-ng-native/tests/grpc_shape.rs`: fifteen tests,
+The audit is `crates/hclient-native/tests/grpc_shape.rs`: fifteen tests,
 every one of them against a real `h2::server` on a real socket, with every
 claim about what the client sent read from what that server decoded.
 
@@ -27,7 +27,7 @@ the place the reason already lived.
 ## The rows
 
 Every row was run. "Where" names the test in
-`crates/http-ng-native/tests/grpc_shape.rs`.
+`crates/hclient-native/tests/grpc_shape.rs`.
 
 | # | What the specification asks | Verdict | Where |
 |---|---|---|---|
@@ -85,14 +85,14 @@ pool, no handshake left to save — sharing costs *more* CPU (110 ms against
 
 gRPC's transport model is many concurrent calls on one HTTP/2 connection.
 An h2 connection here is **checked out of the pool exclusively** and
-carries one stream at a time (`crates/http-ng-native/src/pool.rs`'s module
+carries one stream at a time (`crates/hclient-native/src/pool.rs`'s module
 doc, and `http2.rs`'s "One stream per connection", which is also where the
 policy would have to change).
 
 The reason is `Spawn`: without a background task the only thing driving a
 connection is the in-flight request futures, so a caller that stopped
 polling one stream would stall its neighbours. It is the same question
-`http-ng-h3` answers the other way and for a stated reason — a QUIC
+`hclient-h3` answers the other way and for a stated reason — a QUIC
 connection nobody polls is dying, so it *must* spawn a driver, and once it
 has, exclusivity has no subject.
 
@@ -213,8 +213,8 @@ Named here so that nobody mistakes an absence for a gap:
 Twelve mutations plus one control, applied one at a time to library code
 with `tests/grpc_shape.rs` unchanged, and scored by
 `cargo nextest run --workspace --all-features -E 'binary(grpc_shape)'`.
-`--workspace --all-features` rather than `-p http-ng-native --all-features`
-on purpose: the second leaves `http-ng` on its default features, and rows
+`--workspace --all-features` rather than `-p hclient-native --all-features`
+on purpose: the second leaves `hclient` on its default features, and rows
 19 and 20 are only meaningful with `gzip`/`brotli` compiled in.
 
 **Anchor: 15 tests, 15 passing, verified before every run.** Restore is
@@ -251,17 +251,17 @@ be reporting the twelve above without having run them.
 - **Real TLS.** The fixture's `TlsConnect` reports `h2` and encrypts
   nothing, so what is pinned is the transport's behaviour *given* a
   negotiated ALPN, not rustls's ability to negotiate one. That half is
-  `http-ng-tls-rustls`'s, where it belongs, and `tests/http2.rs`'s module
+  `hclient-tls-rustls`'s, where it belongs, and `tests/http2.rs`'s module
   doc argues the technique at length.
 - **A real gRPC server.** Everything here is measured against frames
   written by hand, which is what every other fixture in this workspace
   does and is the reason no dependency was added. An interop run against
   `tonic` or `grpc-go` would be a different kind of evidence and is not
   reachable from this test suite.
-- **HTTP/3.** `http-ng-h3` speaks a protocol gRPC has a separate mapping
+- **HTTP/3.** `hclient-h3` speaks a protocol gRPC has a separate mapping
   for, and none of this transfers. `Capabilities::response_trailers` is
   `false` there for a real reason — that crate sends no request trailers at
-  all — where on `http-ng-native` the same `false` is the HTTP/1.1 floor.
+  all — where on `hclient-native` the same `false` is the HTTP/1.1 floor.
 - **The `Capabilities` question a gRPC caller would actually ask.** With
   `http2` compiled in, `full_duplex` and `response_trailers` still report
   the floor — the value that holds on HTTP/1.1, because Cargo unifies

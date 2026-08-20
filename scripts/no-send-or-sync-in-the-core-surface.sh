@@ -20,7 +20,7 @@
 #
 #   - it MISSES markers on `field_declaration` and `enum_variant`, where the
 #     separating `,` sits between the node and its comment, so
-#     `crates/http-ng-core/src/error.rs:64` and `body.rs:58` would be reported
+#     `crates/hclient-core/src/error.rs:64` and `body.rs:58` would be reported
 #     as unexcused when they are marked;
 #   - it EXCUSES too much when it does fire, because with `stopBy: end` any
 #     ancestor followed by a marker comment excuses everything inside it —
@@ -51,7 +51,7 @@ all=(crates/*/src)
 dirs=()
 for d in "${all[@]}"; do
   case "$d" in
-    crates/http-ng-rt-tokio/src|crates/http-ng-rt-smol/src|crates/http-ng-dns-system/src) ;;
+    crates/hclient-rt-tokio/src|crates/hclient-rt-smol/src|crates/hclient-dns-system/src) ;;
     *) dirs+=("$d") ;;
   esac
 done

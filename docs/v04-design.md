@@ -15,9 +15,9 @@ task of its workstream must settle before the rest of it means anything.
 
 ## 0. What changed under the roadmap
 
-The original spec's v0.4 (`docs/superpowers/specs/2026-08-05-http-ng-design.md`)
+The original spec's v0.4 (`docs/superpowers/specs/2026-08-05-hclient-design.md`)
 is headed *"`http3` becomes default"*, and it was written when h3 was
-expected to be a feature of `http-ng-native`. It is not, and could not have
+expected to be a feature of `hclient-native`. It is not, and could not have
 been: the transport is bounded on `R: UdpBind + Spawn<..>` and
 `T: QuicTlsConnect`, `Native<R, T, D>` has neither, and Cargo's features
 are additive.
@@ -25,13 +25,13 @@ are additive.
 So "default" is not a flag to flip. v0.3 W2 hit the consequence while
 wiring HTTPS-record discovery and wrote it down:
 
-> `SvcbEndpoint::alpn` containing `h3` is a fact `http-ng-native` can read
+> `SvcbEndpoint::alpn` containing `h3` is a fact `hclient-native` can read
 > and cannot act on… **There is nowhere in this codebase for "choose
 > between two protocol stacks" to live.**
 
 That is W1 below, and it is the centre of this vertical.
 
-Two further items move. `http-ng-nyquest` is **out** — the wrapper's own
+Two further items move. `hclient-nyquest` is **out** — the wrapper's own
 model would sit between ours and the platform's, which is two translations
 and a foreign type in the middle; W3 writes on `objc2-foundation` directly.
 And gRPC arrived as a question during v0.3's close, so W2 carries what it
@@ -44,18 +44,18 @@ needs — none of which is gRPC-specific.
 | # | premise | how it is known |
 |---|---|---|
 | P1 | One value can own both stacks and still be a `Transport` | **Measured.** A probe crate compiles a two-stack type over `Native<TokioHandle, Rustls, SystemDns<TokioHandle>>` and `H3<TokioHandle, Rustls, SystemDns<TokioHandle>>` and calls `Transport::capabilities` on it. One runtime type satisfies both bound sets |
-| P2 | …but only with `http-ng-rt-tokio`'s `udp` feature on | **Measured.** Without it the same probe fails `E0277: TokioHandle: UdpAdoptStd is not satisfied`. Cargo unifies features, so a build that wants both gets it and an h1-only build does not pay |
-| P3 | The selecting transport must **store** its capabilities | **Measured.** `Transport::capabilities(&self) -> &Capabilities` returns a reference (`http-ng-core/src/unversioned/transport.rs:92`), so a floor computed per call cannot be returned |
-| P4 | The floor is not always defined | **Measured, and the instance it was found on is closed.** It read: `Native` declares `RedirectSupport::Configurable`, `H3` declares `Transparent`, and those two have no meet. Both declare `Transparent` since W1 deliverable 1, so `redirects` has a meet today **because the members agree**, not because an order was found. The premise survives its own fix: the three remaining variants are still unordered, and `Internal` against `Transparent` — a selecting transport over `Native` and an `http-ng-urlsession` background session (W3) — has no meet either. W1's answer, *constrain the members rather than invent an order*, is unchanged |
-| P5 | …and P4 has a cause worth fixing first | **Measured, and fixed — W1 deliverable 1, landed independently.** Only `RedirectSupport::Internal` was branched on anywhere (`http-ng/src/config.rs`), `Configurable`'s entire doc was one sentence — *"We set the policy."* — and `http-ng-native` contains **no redirect handling at all** (zero matches for `Location` or a 3xx status in its `src/`). The declaration was not merely unforced, it was wrong: `Native` says `Transparent` now, and `Configurable` and `Inspectable` are **deleted** — no branch, no carrier, one-sentence docs, which is what `UpgradeSupport` was deleted for in v0.3 W4. See §W1 deliverable 1 for the URLSession evidence that no carrier is arriving, and for the mutation run that says which variants are distinguishable at all |
-| P6 | `full_duplex: false` on `http-ng-native` is not a declaration, it is the code | **Measured, and no longer true of the code — W2 deliverable 1 landed.** It was: `http2::exchange` wrote the whole request body before awaiting the response. The loop lost exactly one branch (`Poll::Pending => return Poll::Pending`), which *was* that implementation. The `false` **stands**, and now for its only real reason: it is the FLOOR, and the floor is HTTP/1.1, which cannot do duplex at all |
-| P7 | The h2 path already *handles* trailers | **Measured, and it turned out to be three rows rather than two — see Appendix C.** The HTTP/1.1 path sends them too when the caller declares `Trailer:`, and dropped them silently when not, which was the defect. `http-ng-native` declares `request_trailers: true` since v0.4 and the silence is a typed error; `http-ng-h3` keeps `false` and keeps refusing |
-| P8 | `objc2-foundation` is already in this workspace's Apple graph | **Measured.** `http-ng-idn` pulls `objc2-foundation 0.3.2` on `aarch64-apple-darwin`, so W3 adds no new vendor to that target |
+| P2 | …but only with `hclient-rt-tokio`'s `udp` feature on | **Measured.** Without it the same probe fails `E0277: TokioHandle: UdpAdoptStd is not satisfied`. Cargo unifies features, so a build that wants both gets it and an h1-only build does not pay |
+| P3 | The selecting transport must **store** its capabilities | **Measured.** `Transport::capabilities(&self) -> &Capabilities` returns a reference (`hclient-core/src/unversioned/transport.rs:92`), so a floor computed per call cannot be returned |
+| P4 | The floor is not always defined | **Measured, and the instance it was found on is closed.** It read: `Native` declares `RedirectSupport::Configurable`, `H3` declares `Transparent`, and those two have no meet. Both declare `Transparent` since W1 deliverable 1, so `redirects` has a meet today **because the members agree**, not because an order was found. The premise survives its own fix: the three remaining variants are still unordered, and `Internal` against `Transparent` — a selecting transport over `Native` and an `hclient-urlsession` background session (W3) — has no meet either. W1's answer, *constrain the members rather than invent an order*, is unchanged |
+| P5 | …and P4 has a cause worth fixing first | **Measured, and fixed — W1 deliverable 1, landed independently.** Only `RedirectSupport::Internal` was branched on anywhere (`hclient/src/config.rs`), `Configurable`'s entire doc was one sentence — *"We set the policy."* — and `hclient-native` contains **no redirect handling at all** (zero matches for `Location` or a 3xx status in its `src/`). The declaration was not merely unforced, it was wrong: `Native` says `Transparent` now, and `Configurable` and `Inspectable` are **deleted** — no branch, no carrier, one-sentence docs, which is what `UpgradeSupport` was deleted for in v0.3 W4. See §W1 deliverable 1 for the URLSession evidence that no carrier is arriving, and for the mutation run that says which variants are distinguishable at all |
+| P6 | `full_duplex: false` on `hclient-native` is not a declaration, it is the code | **Measured, and no longer true of the code — W2 deliverable 1 landed.** It was: `http2::exchange` wrote the whole request body before awaiting the response. The loop lost exactly one branch (`Poll::Pending => return Poll::Pending`), which *was* that implementation. The `false` **stands**, and now for its only real reason: it is the FLOOR, and the floor is HTTP/1.1, which cannot do duplex at all |
+| P7 | The h2 path already *handles* trailers | **Measured, and it turned out to be three rows rather than two — see Appendix C.** The HTTP/1.1 path sends them too when the caller declares `Trailer:`, and dropped them silently when not, which was the defect. `hclient-native` declares `request_trailers: true` since v0.4 and the silence is a typed error; `hclient-h3` keeps `false` and keeps refusing |
+| P8 | `objc2-foundation` is already in this workspace's Apple graph | **Measured.** `hclient-idn` pulls `objc2-foundation 0.3.2` on `aarch64-apple-darwin`, so W3 adds no new vendor to that target |
 | P9 | The platform verifier matches a name against an **IP SAN** on Linux | **Measured** in v0.3's live-DoH run, and **only** on Linux — `rustls-platform-verifier` delegates to Security.framework and CryptoAPI elsewhere |
 | P10 | NSURLSession hands bytes to a delegate that cannot be polled | **Prior research, not re-measured.** The spec cites `frakt` 0.1.0's push-based `mpsc::Receiver<Bytes>` for exactly this |
 | P11 | Background transfer outlives the process | **Unverified, and W3's first task.** `Transport::execute` returns a future in our address space; a transfer that survives process death may not fit behind it at all |
 | P12 | Discovery has two tiers and a race is neither of them | **Researched here; the race's cost measured afterwards — `docs/v04-w1-acceptance.md` §7.** Browsers do not race on first contact — they "only try QUIC if they know the server supports it", so an unknown origin gets TCP. Alt-Svc is the slow tier: cached from a response header, so QUIC starts from the *next* connection and the first page load is never h3. An HTTPS record is the fast tier and exists precisely to remove that penalty — it arrives at resolution time, so QUIC can be used on the first connection. Racing is a **third** thing, applied *after* the choice as a hedge against networks that block UDP: "connection racing is still needed in practice" ([Marx, Smashing Magazine](https://www.smashingmagazine.com/2021/09/http3-practical-deployment-options-part3/)) |
-| P13 | An observability hook can avoid a `Send` bound | **Answered yes, by construction — W2 deliverable 3.** A probe in `http-ng-core/tests/shape.rs` holds an `Rc<Cell<usize>>` hook past the end of `execute` and calls it from `poll_frame`, asserting the call *happened*; the complement asserts a `Send` hook leaves the transport `Send`. Cost: `H: Clone`, and `H: Unpin` on the TCP backend only. **The answer has a consequence nobody predicted**: it is what shuts the one place HTTP/3 could observe a graceful close promptly, since `quinn::Runtime::spawn` wants `Send` and a future capturing `H` does not coerce — so `CloseReason::Ended` has no emitter there |
+| P13 | An observability hook can avoid a `Send` bound | **Answered yes, by construction — W2 deliverable 3.** A probe in `hclient-core/tests/shape.rs` holds an `Rc<Cell<usize>>` hook past the end of `execute` and calls it from `poll_frame`, asserting the call *happened*; the complement asserts a `Send` hook leaves the transport `Send`. Cost: `H: Clone`, and `H: Unpin` on the TCP backend only. **The answer has a consequence nobody predicted**: it is what shuts the one place HTTP/3 could observe a graceful close promptly, since `quinn::Runtime::spawn` wants `Send` and a future capturing `H` does not coerce — so `CloseReason::Ended` has no emitter there |
 | P14 | Android has no crate to lean on | **Prior research, not re-measured.** Cronet is C++ with a C API; OkHttp is JVM and needs JNI, which puts a VM handle in a constructor no other backend has |
 
 **P4 and P5 together are the finding of this document.** The selecting
@@ -103,7 +103,7 @@ was made.
 
 1. **Settle `RedirectSupport` first — done, and it landed independently of
    everything else here**, so a selecting transport is not the reason it
-   was fixed. `http-ng-native` says `Transparent`, which is what it always
+   was fixed. `hclient-native` says `Transparent`, which is what it always
    did; `Configurable` and `Inspectable` are deleted. Three variants left:
    nobody follows, `Client` follows, the backend follows.
 
@@ -119,7 +119,7 @@ was made.
    the one variant whose name promises to honour it.
 
    **URLSession was the carrier to check for, and it is not one.** W3's own
-   text predicts `RedirectSupport::Internal` for `http-ng-urlsession`, and
+   text predicts `RedirectSupport::Internal` for `hclient-urlsession`, and
    that prediction stands with a caveat that is now written down. Apple's
    hook is
    `urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`,
@@ -138,7 +138,7 @@ was made.
    answering `nil` so the 3xx becomes the task's response and `Client`'s
    stage does the chain. A third reading — follow inside the delegate and
    count hops there — is not a platform affordance, it is a second
-   implementation of `http_ng_proto::redirect`, and it would silently drop
+   implementation of `hclient_proto::redirect`, and it would silently drop
    what that stage carries per hop: `SENSITIVE_HEADERS` stripped across an
    origin, cookies re-derived rather than carried, the `AllowEarlyData`
    mark taken off. Reason enough to prefer `Transparent` even where the
@@ -149,11 +149,11 @@ was made.
    defined in terms of a deleted one is not defined.
 
    **What the mutation run found, and it belongs here rather than in a
-   commit message.** Anchor 362 tests (`-p http-ng-native -p http-ng
+   commit message.** Anchor 362 tests (`-p hclient-native -p hclient
    --all-features`), `Native` made to declare each variant in turn:
    `Internal` fails **two** — the capability read-back in
-   `http-ng-native/tests/transport.rs`, and
-   `http-ng::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
+   `hclient-native/tests/transport.rs`, and
+   `hclient::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
    which dies at `build()` with `UnsupportedCapability { what:
    "redirect_policy" }` — while `None` and `Transparent` (and
    `Configurable`, before it was deleted) fail **one**, the read-back, and
@@ -197,10 +197,10 @@ was made.
    the unsafe direction and is written where the setter is.
 
    **"Its negative half" assumed a home that turns out not to exist.**
-   `http-ng-native`'s `NegativeCache` is about a TCP connect that used a
+   `hclient-native`'s `NegativeCache` is about a TCP connect that used a
    *discovered endpoint* — it never sees an HTTP/3 attempt, because
    `Native` cannot make one, and it is `pub(crate)` behind a private
-   module besides. `http-ng-h3` has nothing of the kind. So the failure
+   module besides. `hclient-h3` has nothing of the kind. So the failure
    half is **not built**, and it is blocked on the same two things
    deliverable 5 is: without a fallback it costs the caller a failed
    request per window, and loopback cannot produce a UDP-blocked failure
@@ -301,13 +301,13 @@ concern out of one that is not.
 
 ---
 
-## W3 — `http-ng-urlsession`, and what it is really for
+## W3 — `hclient-urlsession`, and what it is really for
 
 **Why, and it is not speed.** App Transport Security, the system trust
 store, CAs pushed by MDM, per-app VPN, the system proxy and its PAC, and
 background transfer. Every one is a fact about an environment rather than a
 preference, which is the same argument that justifies
-`http-ng-tls-native-tls`.
+`hclient-tls-native-tls`.
 
 **The reason it is worth more than a fourth point on a line.** URLSession
 decides redirects, cookies, caching and proxying itself — like the browser.
@@ -342,12 +342,12 @@ citation and the reasoning are in `RedirectSupport`'s own doc comment.
    upgrade at all"*, which is how the WebSocket seam got decided. Report it
    rather than working around it.
 2. The push→poll bridge for the delegate (P10). The technique is in this
-   tree twice already — `http-ng-fetch`'s body streaming and its
+   tree twice already — `hclient-fetch`'s body streaming and its
    `FetchWebSocket`, which needed no `unsafe impl Send` because no `Client`
    sits between that seam and its caller.
 3. The refusals. URLSession will not carry everything a request can, and
    naming precisely what it drops is the deliverable, not an afterthought —
-   `http-ng-fetch`'s WebSocket does this and it is the model.
+   `hclient-fetch`'s WebSocket does this and it is the model.
 
 **Deliberately not in it: Android.** Not on size but on shape. Apple has a
 crate and it is our ordinary kind; Android has none (P14), and the answer
@@ -418,7 +418,7 @@ cannot proceed over HTTP/1.1, and wrong for a browser-shaped client that
 should degrade quietly. Only the caller knows which of the two it is, which
 is the same argument that put `AllowEarlyData` in the caller's hands.
 
-**Built.** `http_ng_core::RequireVersion(http::Version)`, refused with
+**Built.** `hclient_core::RequireVersion(http::Version)`, refused with
 `VersionNotAvailable` under `ErrorKind::Unsupported`, compared by one
 shared `check_version`. The acceptance is
 `docs/v03-acceptance.md`'s "v0.4 W2 — a per-request version demand"; three
@@ -434,10 +434,10 @@ things it settled that this appendix left open:
   least HTTP/2" is useful: a caller needing h2 framing does not want
   HTTP/3, and one needing HTTP/1.1 wants strictly less.
 - **`version_select: true` means "honours a demand", not "chooses a
-  version".** `http-ng-h3` speaks one protocol and reports `true`, because
+  version".** `hclient-h3` speaks one protocol and reports `true`, because
   `false` would make `Client`'s gate refuse `RequireVersion(HTTP_3)` — the
-  one demand it satisfies by construction. `http-ng-fetch` and
-  `http-ng-wasi` keep `false`: neither selects the version *nor learns
+  one demand it satisfies by construction. `hclient-fetch` and
+  `hclient-wasi` keep `false`: neither selects the version *nor learns
   it*, so neither has a moment at which it could compare anything.
 
 **And one boundary this appendix got wrong by analogy.** `AllowEarlyData`
@@ -464,17 +464,17 @@ before committing to a shape that would deadlock without it.
 
 ## Appendix B — `request_trailers`, one decision for two crates
 
-Found while making h2 duplex: `http-ng-native` declares
+Found while making h2 duplex: `hclient-native` declares
 `request_trailers: false` while its pump calls `send_trailers`, and
-`http-ng-h3` declares the same `false` and **enforces** it with a typed
+`hclient-h3` declares the same `false` and **enforces** it with a typed
 `RequestTrailersNotSent`. Two crates, one field, opposite behaviours — and
 v0.2 W4's rule is that a declaration and its enforcement belong in the same
 change.
 
-`http-ng-h3` is the one that followed the rule. The gRPC case does not
+`hclient-h3` is the one that followed the rule. The gRPC case does not
 argue otherwise: what gRPC needs is *response* trailers, which already
 reach a caller on an h2 connection, and `grpc-status` is the server's to
-send. So the fix is to make `http-ng-native` enforce what it declares
+send. So the fix is to make `hclient-native` enforce what it declares
 rather than to raise the declaration — unless the h1 path turns out to send
 them too, in which case the field has a second carrier and the answer is
 worth re-opening with that measurement in hand.
@@ -485,7 +485,7 @@ worth re-opening with that measurement in hand.
 `http://` so HTTP/1.1 with certainty: an ordinary `Native`, a streaming
 body whose second frame is a trailers frame, and a `Trailer: grpc-status`
 request header put `0\r\ngrpc-status: 0\r\n\r\n` on the wire
-(`crates/http-ng-native/tests/request_trailers.rs`). So the field has two
+(`crates/hclient-native/tests/request_trailers.rs`). So the field has two
 carriers, not one, and the proposed fix would have **deleted a working
 HTTP/1.1 feature** rather than closed a gap. Nothing was changed.
 
@@ -498,9 +498,9 @@ one decision has to cover is now three behaviours under one field:
 
 | path | declared | actual |
 |---|---|---|
-| `http-ng-native` h1 | `false` | sent when declared in `Trailer:`; **silently dropped** when not |
-| `http-ng-native` h2 | `false` | sent, unconditionally |
-| `http-ng-h3` | `false` | refused, typed `RequestTrailersNotSent` |
+| `hclient-native` h1 | `false` | sent when declared in `Trailer:`; **silently dropped** when not |
+| `hclient-native` h2 | `false` | sent, unconditionally |
+| `hclient-h3` | `false` | refused, typed `RequestTrailersNotSent` |
 
 Both h1 behaviours are pinned by tests, so whoever takes the decision
 meets the silent drop rather than discovering it. The decision itself is
@@ -514,9 +514,9 @@ decision it proposed was wrong and is superseded here.
 
 | path | what it does today | declared |
 |---|---|---|
-| `http-ng-native`, HTTP/1.1 | sends them **when the caller declared `Trailer:`**, and **drops them silently** when not — measured, `0\r\ngrpc-status: 0\r\n\r\n` off the wire in the first case, a successful request with the trailers gone in the second | `false` |
-| `http-ng-native`, HTTP/2 | sends them, unconditionally | `false` |
-| `http-ng-h3` | refuses, typed, `RequestTrailersNotSent` | `false` |
+| `hclient-native`, HTTP/1.1 | sends them **when the caller declared `Trailer:`**, and **drops them silently** when not — measured, `0\r\ngrpc-status: 0\r\n\r\n` off the wire in the first case, a successful request with the trailers gone in the second | `false` |
+| `hclient-native`, HTTP/2 | sends them, unconditionally | `false` |
+| `hclient-h3` | refuses, typed, `RequestTrailersNotSent` | `false` |
 
 **The silent drop is the defect, and it is the one this project exists to
 kill.** A caller who attached trailers and omitted the `Trailer:` header
@@ -526,14 +526,14 @@ the silence is not. It becomes a typed error naming the header that was
 missing, the same shape as every discarded-setter this workspace has
 already refused to tolerate.
 
-**`http-ng-native` then declares `request_trailers: true`.** It sends them
+**`hclient-native` then declares `request_trailers: true`.** It sends them
 on both protocols it speaks, and the HTTP/1.1 condition is not a limitation
 of ours to hide behind a `false`: `Trailer:` is what the RFC requires of
 any sender, so a request that omits it is malformed rather than
 unsupported. A capability says what the transport will do with a
 well-formed request, and this one will.
 
-**`http-ng-h3` keeps `false` and keeps enforcing it.** It genuinely does
+**`hclient-h3` keeps `false` and keeps enforcing it.** It genuinely does
 not send them, and it is the crate that already followed v0.2 W4's rule.
 
 The asymmetry that remains — native `true`, h3 `false` — is a real
@@ -550,7 +550,7 @@ wrong or left open, in the order it was found:
    error is raised when the trailers frame arrives, which is the first
    moment the fact exists — a streaming body's trailer names are unknown
    at `execute` time, so nothing earlier can see them, and a check after
-   the response is `http-ng-wasi`'s shape, forced there by the host
+   the response is `hclient-wasi`'s shape, forced there by the host
    owning the encoder. What that placement buys is the last-chunk marker:
    the message is aborted rather than completed. But *how much has
    already gone* turned out to depend on the caller's body, measured both
@@ -570,7 +570,7 @@ wrong or left open, in the order it was found:
    killed exactly one test, and it is the one written for this change.
    The "sends them, unconditionally" row of the table above was true and
    unguarded.
-4. **`http-ng-select` is left red, on purpose.** `combine` needs no
+4. **`hclient-select` is left red, on purpose.** `combine` needs no
    change — the conjunction `true && false` still stores `false`, the
    correct weaker claim, and the constructor does not refuse — but
    `the_two_stacks_disagree_on_exactly_six_fields_today` asserts the
@@ -588,6 +588,6 @@ that MUST is exactly the case a streaming trailer is for. hyper is
 enforcing a MUST, which makes the argument for `request_trailers: true`
 stronger rather than weaker: a request that omits the header is one the
 RFC forbids sending. The code and the acceptance section cite §6.6.2;
-§6.5.1, which `http-ng-wasi` cites for the same neighbourhood, is
+§6.5.1, which `hclient-wasi` cites for the same neighbourhood, is
 "Limitations on Use of Trailers" and is about which *fields* may be
 trailers at all.

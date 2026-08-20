@@ -1,6 +1,6 @@
 # The corpus this rule was accepted against. Every snippet below was run
 # through BOTH `no_discarded_wasi_setters.py` (the 235-line scanner this
-# replaces, rooted at the corpus instead of crates/http-ng-wasi/src) and this
+# replaces, rooted at the corpus instead of crates/hclient-wasi/src) and this
 # rule, and the two agreed on every one of them — same verdict, same line.
 # The one input on which they deliberately DISAGREE lives in
 # `no-wasi-setter-inside-a-macro-test.yml`, with the reason.

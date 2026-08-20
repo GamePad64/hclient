@@ -1,0 +1,54 @@
+[package]
+name = "hclient-idn-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Default features, i.e. whatever backend this target resolves to. The
+# properties fuzzed here are the crate's OWN safe layer — the deny list,
+# the error mask, the ASCII and A-label handling — and that layer sits in
+# front of every backend, so this target is meaningful on a Linux runner
+# even though Linux has no platform backend.
+#
+# `idn_policy` itself is deliberately NOT a differential target, and the
+# reason has not changed: on a target with the bundled backend
+# `domain_to_ascii` *is* `idna::domain_to_ascii_cow`, so comparing the two
+# would be comparing `idna` with itself — a fuzzer that cannot fail.
+hclient-idn = { path = ".." }
+
+# `idn_policy_vs_idna` IS one, and the difference is that it does not
+# compare `domain_to_ascii` with anything. `testing::policy_over` takes the
+# backend as an argument, so handing it `idna` cancels `idna` out of both
+# sides: what is left is this crate's own layer, including the
+# hand-written RFC 3492 decoder that `src/policy.rs` added — around sixty
+# lines of arithmetic in the path that decides which host is contacted,
+# where a wrong answer is a different domain rather than a crash.
+#
+# This is a dependency of the FUZZ crate, not of `hclient-idn`: the CI
+# tree-guards that check no `idna` reaches a platform target inspect
+# `-p hclient-idn`, and this manifest has its own `[workspace]`.
+idna = { version = "1.1", default-features = false, features = [
+    "std",
+    "compiled_data",
+] }
+
+[[bin]]
+name = "idn_policy"
+path = "fuzz_targets/idn_policy.rs"
+test = false
+doc  = false
+bench = false
+
+[[bin]]
+name = "idn_policy_vs_idna"
+path = "fuzz_targets/idn_policy_vs_idna.rs"
+test = false
+doc  = false
+bench = false
+
+[workspace]

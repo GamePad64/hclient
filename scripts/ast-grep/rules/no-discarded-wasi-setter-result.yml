@@ -2,11 +2,11 @@ id: no-discarded-wasi-setter-result
 language: rust
 severity: error
 files:
-  - crates/http-ng-wasi/src/**/*.rs
+  - crates/hclient-wasi/src/**/*.rs
 
 message: >-
   the Result of this wasi:http setter is discarded — every host refusal must
-  become a typed Error, see crates/http-ng-wasi/src/convert.rs
+  become a typed Error, see crates/hclient-wasi/src/convert.rs
 note: >-
   `wasi:http` setters return `result<_, _>` precisely so the host can refuse;
   the predecessor library discarded seven of them with `let _ =`. The forms

@@ -5,7 +5,7 @@ it exists because the question v0.2 W6 had to answer could not be answered
 from inside the browser at all, and could not be answered by reading
 documentation either.
 
-The question: if `http-ng-fetch` hands a `ReadableStream` to `fetch()` as a
+The question: if `hclient-fetch` hands a `ReadableStream` to `fetch()` as a
 request body, **what bytes does the server receive?** Not "did the promise
 reject" — bytes.
 
@@ -83,7 +83,7 @@ merely discarded. This is identical on HTTP/1.1 and HTTP/2 — it happens
 during `Request` construction, before a protocol is chosen, so the protocol
 cannot matter.
 
-This is the reason `http-ng-fetch` must decide **before** it hands anything
+This is the reason `hclient-fetch` must decide **before** it hands anything
 to `fetch`, and may not adopt a "try it and map the error" strategy: there
 is no error to map.
 
@@ -125,5 +125,5 @@ read ahead of time. `PerformanceResourceTiming.nextHopProtocol` reports it
 universally available.
 
 So there is no per-request prediction available, and `Capabilities` has no
-per-origin dimension to put it in. See `crates/http-ng-fetch/src/caps.rs`
+per-origin dimension to put it in. See `crates/hclient-fetch/src/caps.rs`
 for what the crate declares as a result and why.

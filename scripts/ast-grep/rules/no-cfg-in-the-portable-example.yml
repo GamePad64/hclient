@@ -2,7 +2,7 @@ id: no-cfg-in-the-portable-example
 language: rust
 severity: error
 files:
-  - crates/http-ng/examples/portable.rs
+  - crates/hclient/examples/portable.rs
 
 message: >-
   the acceptance example must contain no cfg switch — if it needs one to build,

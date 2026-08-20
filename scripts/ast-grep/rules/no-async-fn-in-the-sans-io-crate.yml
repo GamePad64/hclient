@@ -2,11 +2,11 @@ id: no-async-fn-in-the-sans-io-crate
 language: rust
 severity: error
 files:
-  - crates/http-ng-proto/src/**/*.rs
+  - crates/hclient-proto/src/**/*.rs
 
 message: the sans-io crate contains an `async fn`
 note: >-
-  `http-ng-proto` is the sans-io crate: it parses and decides, and the IO
+  `hclient-proto` is the sans-io crate: it parses and decides, and the IO
   belongs to whoever calls it. An `async fn` here is the seam leaking. This
   replaces `grep -rn "async fn"` plus a filter for lines that begin with a
   comment; the node it matches is the function's modifier list, so a mention

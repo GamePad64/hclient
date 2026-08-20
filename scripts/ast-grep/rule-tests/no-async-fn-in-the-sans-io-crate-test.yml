@@ -1,5 +1,5 @@
 # Checked against `grep -rn "async fn" | grep -v <comment lines>`, the scan
-# this replaces. Both are silent on crates/http-ng-proto/src today. On the
+# this replaces. Both are silent on crates/hclient-proto/src today. On the
 # adversarial file they agree on four of five: the rule also catches
 # `const async unsafe extern "C" fn`, where the two words are not adjacent
 # and the grep pattern therefore missed it. Stricter, in the direction the

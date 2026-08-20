@@ -1,0 +1,41 @@
+[package]
+name = "hclient-rt-tokio"
+version.workspace = true
+description = "hclient runtime capabilities implemented on top of tokio"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# UDP is behind a feature, off by default, for one reason that is a
+# measurement rather than a preference: the GSO/GRO/ECN work is `cmsg` on a
+# descriptor, `quinn-udp` already does it correctly for six platforms, and
+# reimplementing it here would be a second copy of the hardest part of a
+# UDP stack in a crate whose job is to adapt a runtime. So the feature
+# pulls `quinn-udp` — and a build that only ever speaks HTTP/1 or HTTP/2
+# does not pay for it.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = []
+udp = ["dep:quinn-udp"]
+
+[dependencies]
+hclient-rt = { path = "../hclient-rt", version = "0.1.0" }
+quinn-udp  = { version = "0.5", default-features = false, optional = true }
+hyper      = { version = "1.11", default-features = false }
+socket2    = { version = "0.6", features = ["all"] }
+tokio      = { version = "1", features = ["net", "rt", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `TokioHandle`'s tests drive tokio futures on an executor that is not
+# tokio: the claim is that a `Sleep` built through a carried handle is
+# afterwards pollable by anyone, and `#[tokio::test]` cannot check that
+# because it is itself the runtime.
+futures-executor = "0.3"
+
+[lints]
+workspace = true

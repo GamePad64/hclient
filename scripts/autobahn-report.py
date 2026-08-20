@@ -71,7 +71,7 @@ MINIMUM_CASES = 517
 EXPECTED = {
     "12.": "permessage-deflate is not implemented. `docs/w4-upgrade-seam.md` "
     "leaves it open and the WebSocket seam's own module doc records it as "
-    "absent; `http-ng-tungstenite` never offers the extension in its handshake, so "
+    "absent; `hclient-tungstenite` never offers the extension in its handshake, so "
     "the suite marks every compressed case UNIMPLEMENTED rather than running "
     "it. 90 cases.",
     "13.": "permessage-deflate again: 13.x is 12.x re-run across the parameter "
@@ -203,7 +203,7 @@ def main():
     if undeclared:
         die(
             f"{len(undeclared)} Autobahn cases did not pass and are not declared. Each is "
-            "either a defect in crates/http-ng-tungstenite/src/lib.rs or a decision that "
+            "either a defect in crates/hclient-tungstenite/src/lib.rs or a decision that "
             "belongs in EXPECTED/NON_STRICT with its reason written out — not silenced."
         )
     if stale:

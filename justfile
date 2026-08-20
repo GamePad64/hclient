@@ -1,4 +1,4 @@
-# Task runner for http-ng. `just` with no arguments lists the recipes.
+# Task runner for hclient. `just` with no arguments lists the recipes.
 #
 # These mirror what CI runs, deliberately: a recipe that drifts from the job
 # it stands for is worse than no recipe, because it is the one people trust
@@ -20,8 +20,8 @@
 # `just ci` is slow (the fuzz targets alone are three minutes) and it SKIPS
 # rather than fails where the environment cannot answer: no browser, no
 # wasmtime, no /dev/net/tun, no nightly. CI sets a marker for each of those —
-# `HTTP_NG_REQUIRE_BROWSERS`, `HTTP_NG_REQUIRE_WASMTIME`,
-# `HTTP_NG_REQUIRE_TUNTAP`, `HTTP_NG_REQUIRE_NIGHTLY` — and the marker turns
+# `HCLIENT_REQUIRE_BROWSERS`, `HCLIENT_REQUIRE_WASMTIME`,
+# `HCLIENT_REQUIRE_TUNTAP`, `HCLIENT_REQUIRE_NIGHTLY` — and the marker turns
 # the skip into a failure, in the job that promised to install the thing.
 # A skip nobody notices is the defect docs/ci.md was written about.
 
@@ -38,7 +38,7 @@ default:
 test *ARGS:
     cargo nextest run --workspace --all-features --no-fail-fast {{ARGS}}
 
-# one crate, optionally one test: `just t http-ng-proto uri`
+# one crate, optionally one test: `just t hclient-proto uri`
 t PKG *FILTER:
     cargo nextest run -p {{PKG}} --all-features --no-fail-fast {{FILTER}}
 
@@ -92,7 +92,7 @@ test-sse-complexity:
     #!/usr/bin/env bash
     set -euo pipefail
     rc=0
-    out="$(cargo nextest run -p http-ng-proto --all-features --color never \
+    out="$(cargo nextest run -p hclient-proto --all-features --color never \
       -E 'test(=sse::lines::tests::parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
     printf '%s\n' "$out"
     [ "$rc" -eq 0 ] || exit "$rc"
@@ -122,30 +122,30 @@ macos-loopback:
         sys.exit(f"::error::127.0.0.2 is still not bindable after `ifconfig lo0 alias`: {e}")
     PY
 
-# `http-ng-rt-embassy`'s live scenarios drive a real embassy-net stack over a
+# `hclient-rt-embassy`'s live scenarios drive a real embassy-net stack over a
 # TAP device and are the only thing proving the W1 cancellation contract
-# holds there. Without HTTP_NG_REQUIRE_TUNTAP they SKIP — quietly, which is
+# holds there. Without HCLIENT_REQUIRE_TUNTAP they SKIP — quietly, which is
 # what this is here to prevent. Measured on the ubuntu-24.04 image: `unshare
 # -Ur --net` fails, and the marker turned that into a red job instead of nine
 # silent skips. The cause is AppArmor's restriction on unprivileged user
 # namespaces, lifted the documented way, and only when the marker is set —
 # a laptop does not get its sysctls rewritten by a test runner.
 
-# the embassy tuntap scenarios (they skip without HTTP_NG_REQUIRE_TUNTAP)
+# the embassy tuntap scenarios (they skip without HCLIENT_REQUIRE_TUNTAP)
 test-embassy-live:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -n "${HTTP_NG_REQUIRE_TUNTAP:-}" ]; then
+    if [ -n "${HCLIENT_REQUIRE_TUNTAP:-}" ]; then
       # `|| true`: if a future image drops the knob, the run below is what
       # reports it, with the test's own message, rather than this line
       # failing with a sysctl error.
       sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       unshare -Ur --net true || {
-        echo "::error::unprivileged user namespaces are still unavailable after lifting the AppArmor restriction — the embassy live scenarios cannot run on this image. Do not paper over this by dropping HTTP_NG_REQUIRE_TUNTAP: that returns nine silent skips."
+        echo "::error::unprivileged user namespaces are still unavailable after lifting the AppArmor restriction — the embassy live scenarios cannot run on this image. Do not paper over this by dropping HCLIENT_REQUIRE_TUNTAP: that returns nine silent skips."
         exit 1
       }
     fi
-    cargo nextest run -p http-ng-rt-embassy --all-features --color never
+    cargo nextest run -p hclient-rt-embassy --all-features --color never
 
 # Linkers disagree about a reference that only dead code makes: `ld
 # --gc-sections` and macOS `ld64` drop the section before anything resolves
@@ -157,17 +157,17 @@ test-embassy-live:
 # `--all-features` alone and passed while the default build had no
 # `critical-section` implementation either.
 
-# http-ng-rt-embassy's tests must link under a strict linker
+# hclient-rt-embassy's tests must link under a strict linker
 embassy-strict-link:
     #!/usr/bin/env bash
     set -euo pipefail
     export RUSTFLAGS="-C link-arg=-Wl,--no-gc-sections"
     for features in "" "--all-features"; do
       rc=0
-      out="$(cargo test -p http-ng-rt-embassy $features --no-run --color never 2>&1)" || rc=$?
+      out="$(cargo test -p hclient-rt-embassy $features --no-run --color never 2>&1)" || rc=$?
       printf '%s\n' "$out"
       if [ "$rc" -ne 0 ]; then
-        echo "::error::http-ng-rt-embassy's tests do not link with --no-gc-sections for [${features:-default features}]. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/http-ng-rt-embassy/src/lib.rs and the critical-section note in its Cargo.toml. Do not silence this by dropping the flag or a feature set."
+        echo "::error::hclient-rt-embassy's tests do not link with --no-gc-sections for [${features:-default features}]. An undefined symbol above is a Windows LNK2019 waiting to happen: see the embassy_executor note in crates/hclient-rt-embassy/src/lib.rs and the critical-section note in its Cargo.toml. Do not silence this by dropping the flag or a feature set."
         exit 1
       fi
       # Fail closed, per binary: a renamed package or test file would
@@ -180,7 +180,7 @@ embassy-strict-link:
       done
     done
 
-# `crates/http-ng-dns-doh/tests/live.rs` queries Cloudflare and Google. It is
+# `crates/hclient-dns-doh/tests/live.rs` queries Cloudflare and Google. It is
 # the only test in this repository that talks to a server nobody here runs,
 # and every other test in that crate answers itself: the fixture and the
 # parser share an author.
@@ -194,7 +194,7 @@ embassy-strict-link:
 # code, and the two do not belong on the same signal.
 #
 # So it is a recipe a human runs, and its findings are dated in the docs.
-# Without HTTP_NG_LIVE_DOH (which this recipe sets) every test in the file
+# Without HCLIENT_LIVE_DOH (which this recipe sets) every test in the file
 # prints a NOTICE and returns, so `just test` stays hermetic.
 #
 # The receipt count is the belt, and it is the one that matters: a gate that
@@ -211,31 +211,31 @@ embassy-strict-link:
 test-doh-live:
     #!/usr/bin/env bash
     set -euo pipefail
-    export HTTP_NG_LIVE_DOH=1
+    export HCLIENT_LIVE_DOH=1
     rc=0
-    out="$(cargo nextest run -p http-ng-dns-doh --test live \
+    out="$(cargo nextest run -p hclient-dns-doh --test live \
       --color never --no-capture --no-fail-fast 2>&1)" || rc=$?
     printf '%s\n' "$out"
     [ "$rc" -eq 0 ] || exit "$rc"
     ran="$(printf '%s\n' "$out" | grep -c '^LIVE-DOH-RAN ' || true)"
     echo "live DoH exchanges that actually happened: $ran (minimum 16)"
     if [ "$ran" -lt 16 ]; then
-      if [ -n "${HTTP_NG_REQUIRE_NETWORK:-}" ]; then
-        echo "::error::only $ran of the expected 16 live DoH exchanges happened, and HTTP_NG_REQUIRE_NETWORK is set — this run promised the network and skipped instead. Do not answer this by lowering the number: a live suite that skips is a green run that checked nothing, which is the defect this count exists to catch."
+      if [ -n "${HCLIENT_REQUIRE_NETWORK:-}" ]; then
+        echo "::error::only $ran of the expected 16 live DoH exchanges happened, and HCLIENT_REQUIRE_NETWORK is set — this run promised the network and skipped instead. Do not answer this by lowering the number: a live suite that skips is a green run that checked nothing, which is the defect this count exists to catch."
         exit 1
       fi
-      echo "NOTICE: only $ran of 16 live DoH exchanges happened — this environment could not reach every endpoint, so the suite skipped rather than checked. Set HTTP_NG_REQUIRE_NETWORK to make that a failure."
+      echo "NOTICE: only $ran of 16 live DoH exchanges happened — this environment could not reach every endpoint, so the suite skipped rather than checked. Set HCLIENT_REQUIRE_NETWORK to make that a failure."
     fi
 
 # ── the other two targets ───────────────────────────────────────────────
 
 # the wasi example, built as a component
 build-wasi-example:
-    cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
+    cargo build -p hclient-wasi --example fetch --target wasm32-wasip2
 
 # `live_roundtrip.rs` is the only automated protection of the property this
 # backend exists for, and it used to skip silently when `wasmtime` was
-# absent. HTTP_NG_REQUIRE_WASMTIME turns that skip into a panic; the grep is
+# absent. HCLIENT_REQUIRE_WASMTIME turns that skip into a panic; the grep is
 # a second belt in case the variable never reaches the test. It needs
 # `--no-capture`: nextest replays a test's output only on failure, so a
 # PASSING skipped test prints nothing and the grep would be vacuous.
@@ -244,20 +244,20 @@ build-wasi-example:
 test-wasi:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo nextest run -p http-ng-wasi --target wasm32-wasip2 || exit $?
+    cargo nextest run -p hclient-wasi --target wasm32-wasip2 || exit $?
     rc=0
-    out="$(cargo nextest run -p http-ng-wasi --test live_roundtrip \
+    out="$(cargo nextest run -p hclient-wasi --test live_roundtrip \
       --color never --no-capture 2>&1)" || rc=$?
     printf '%s\n' "$out"
     [ "$rc" -eq 0 ] || exit "$rc"
     if printf '%s\n' "$out" | grep -q 'NOTICE: `wasmtime` not found'; then
-      if [ -n "${HTTP_NG_REQUIRE_WASMTIME:-}" ]; then
-        echo "::error::the live wasip2 run skipped the tests instead of executing them — HTTP_NG_REQUIRE_WASMTIME did not reach the test, or wasmtime is not on PATH"
+      if [ -n "${HCLIENT_REQUIRE_WASMTIME:-}" ]; then
+        echo "::error::the live wasip2 run skipped the tests instead of executing them — HCLIENT_REQUIRE_WASMTIME did not reach the test, or wasmtime is not on PATH"
         exit 1
       fi
       echo "NOTICE: no wasmtime on PATH — the live wasip2 roundtrip was skipped, not run."
     fi
-    cargo nextest run -p http-ng-wasi --test shape
+    cargo nextest run -p hclient-wasi --test shape
 
 # The `--features` below are wasm-pack's own arguments, not a `cargo test --`
 # passthrough — `-- --features ...` is rejected outright.
@@ -284,7 +284,7 @@ test-browser BROWSER="chrome":
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v wasm-pack >/dev/null 2>&1; then
-      if [ -n "${HTTP_NG_REQUIRE_BROWSERS:-}" ]; then
+      if [ -n "${HCLIENT_REQUIRE_BROWSERS:-}" ]; then
         echo "::error::wasm-pack is not on PATH, and this job promised to install it — the browser suites must run, not skip"
         exit 1
       fi
@@ -307,19 +307,19 @@ test-browser BROWSER="chrome":
       fi
       echo "$crate on {{BROWSER}}: $passed browser tests passed (minimum $min)"
     }
-    run_browser_suite crates/http-ng-fetch 123
-    run_browser_suite crates/http-ng 6 --features default-transport,test-util
+    run_browser_suite crates/hclient-fetch 123
+    run_browser_suite crates/hclient 6 --features default-transport,test-util
 
 # both browser suites, on both engines — CI runs one engine per matrix leg
 test-browsers: (test-browser "chrome") (test-browser "firefox")
 
 # the Transport acceptance: one source, no #[cfg], three targets
 build-three-targets:
-    cargo build -p http-ng --example portable
-    cargo build -p http-ng --example portable --target wasm32-wasip2
-    cargo build -p http-ng --example portable --target wasm32-unknown-unknown
+    cargo build -p hclient --example portable
+    cargo build -p hclient --example portable --target wasm32-wasip2
+    cargo build -p hclient --example portable --target wasm32-unknown-unknown
 
-# `http-ng-fetch` carries an `unsafe impl Send` that is sound only because
+# `hclient-fetch` carries an `unsafe impl Send` that is sound only because
 # wasm32-unknown-unknown is single-threaded. With `+atomics` the build must
 # FAIL, and with a specific E0277 about Send — not merely fail for any
 # reason, which a typo in the flag would also achieve.
@@ -332,17 +332,17 @@ fetch-must-fail-under-atomics:
     # `-Z build-std` needs nightly.
     export RUSTUP_TOOLCHAIN=nightly
     if ! rustc --version 2>/dev/null | grep -q nightly; then
-      if [ -n "${HTTP_NG_REQUIRE_NIGHTLY:-}" ]; then
+      if [ -n "${HCLIENT_REQUIRE_NIGHTLY:-}" ]; then
         echo "::error::this check needs nightly for -Z build-std — RUSTUP_TOOLCHAIN did not take effect"
         exit 1
       fi
       echo "NOTICE: no nightly toolchain — skipping the +atomics rejection check."
       exit 0
     fi
-    [ -d crates/http-ng-fetch ] || { echo "::error::crates/http-ng-fetch is missing — this check must run, not skip"; exit 1; }
+    [ -d crates/hclient-fetch ] || { echo "::error::crates/hclient-fetch is missing — this check must run, not skip"; exit 1; }
     log="$(mktemp)"
     if RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
-        cargo check -p http-ng-fetch --tests \
+        cargo check -p hclient-fetch --tests \
         --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
         > "$log" 2>&1; then
       echo "::error::expected a compile error under +atomics — the Send guarantee SingleThreaded<T> exists to provide is not being enforced"
@@ -358,7 +358,7 @@ fetch-must-fail-under-atomics:
 
 # ── the external oracle ─────────────────────────────────────────────────
 
-# Every fixture in `crates/http-ng-tungstenite/tests/websocket.rs` was
+# Every fixture in `crates/hclient-tungstenite/tests/websocket.rs` was
 # written beside the implementation it observes, which is the arrangement
 # in which a fixture agrees with a bug. The Autobahn TestSuite is the
 # answer to that: 517 client cases nobody here wrote, served by `wstest
@@ -368,9 +368,9 @@ fetch-must-fail-under-atomics:
 # 517 external cases passed, so it must be checked on every machine and
 # not only on the ones with Docker — `autobahn-parser-selftest` needs
 # nothing and always runs. The RUN needs a container, so it skips without
-# one, and `HTTP_NG_REQUIRE_DOCKER` turns that skip into a failure in the
+# one, and `HCLIENT_REQUIRE_DOCKER` turns that skip into a failure in the
 # job that promised to provide it — the same shape as
-# HTTP_NG_REQUIRE_WASMTIME and HTTP_NG_REQUIRE_TUNTAP.
+# HCLIENT_REQUIRE_WASMTIME and HCLIENT_REQUIRE_TUNTAP.
 #
 # Neither is in `just test`: that is the everyday recipe and it must not
 # need Docker. Both are in `just ci`. The whole run takes about 20s on
@@ -385,12 +385,12 @@ autobahn-parser-selftest:
 test-autobahn: autobahn-parser-selftest
     #!/usr/bin/env bash
     set -euo pipefail
-    agent=http-ng-tungstenite
+    agent=hclient-tungstenite
     reports="$PWD/target/autobahn"
-    container=http-ng-autobahn
+    container=hclient-autobahn
     if ! docker info >/dev/null 2>&1; then
-      if [ -n "${HTTP_NG_REQUIRE_DOCKER:-}" ]; then
-        echo "::error::docker is unusable, and this job promised to provide it — the Autobahn run must happen, not skip. Do not paper over this by dropping HTTP_NG_REQUIRE_DOCKER: that returns a green job that tested nothing."
+      if [ -n "${HCLIENT_REQUIRE_DOCKER:-}" ]; then
+        echo "::error::docker is unusable, and this job promised to provide it — the Autobahn run must happen, not skip. Do not paper over this by dropping HCLIENT_REQUIRE_DOCKER: that returns a green job that tested nothing."
         exit 1
       fi
       echo "NOTICE: no usable docker — the Autobahn TestSuite run was skipped, not run."
@@ -398,7 +398,7 @@ test-autobahn: autobahn-parser-selftest
     fi
     # The driver is built before the container starts, so a compile error
     # is a compile error rather than a connection timeout.
-    cargo build -p http-ng-tungstenite --example autobahn || exit $?
+    cargo build -p hclient-tungstenite --example autobahn || exit $?
     rm -rf "$reports" && mkdir -p "$reports" || exit $?
     docker rm -f "$container" >/dev/null 2>&1
     trap 'docker rm -f "$container" >/dev/null 2>&1' EXIT
@@ -456,12 +456,12 @@ test-autobahn: autobahn-parser-selftest
 
 # `--all-features` turns `idn` ON, so every `#[cfg(not(feature = "idn"))]`
 # test — the typed NonAsciiHost error, the divergence list — runs only here.
-# The same is true of `http-ng-cookie`'s `public-suffix`, and of
-# `http-ng-native`'s h1-only build, which went uncompiled from the moment h2
+# The same is true of `hclient-cookie`'s `public-suffix`, and of
+# `hclient-native`'s h1-only build, which went uncompiled from the moment h2
 # landed behind a feature.
 #
 # **This recipe is the one place where CI now does MORE than it did**, and
-# deliberately: `http-ng-cookie --no-default-features` was in this recipe and
+# deliberately: `hclient-cookie --no-default-features` was in this recipe and
 # NOT in the job it claimed to mirror, so `tests/without_the_list.rs` — the
 # only thing checking that a no-list build is NARROWER than a list build,
 # rather than quietly wider — ran on laptops and nowhere else. 78 tests.
@@ -478,11 +478,11 @@ test-no-default:
     # dead-code errors under `--no-default-features` sat on `main` while this
     # recipe — and the CI job that calls it — stayed green.
     set -euo pipefail
-    for args in "-p http-ng-proto --no-default-features" \
-                "-p http-ng-native --no-default-features" \
-                "-p http-ng-rt-embassy" \
-                "-p http-ng-cookie --no-default-features" \
-                "-p http-ng --no-default-features --features test-util"; do
+    for args in "-p hclient-proto --no-default-features" \
+                "-p hclient-native --no-default-features" \
+                "-p hclient-rt-embassy" \
+                "-p hclient-cookie --no-default-features" \
+                "-p hclient --no-default-features --features test-util"; do
       rc=0
       out="$(cargo nextest run $args --color never --no-fail-fast 2>&1)" || rc=$?
       printf '%s\n' "$out"
@@ -492,15 +492,15 @@ test-no-default:
         exit 1
       fi
     done
-    cargo clippy -p http-ng-proto --all-targets --no-default-features -- -D warnings
-    cargo clippy -p http-ng-native --all-targets --no-default-features -- -D warnings
-    cargo clippy -p http-ng-rt-embassy --all-targets -- -D warnings
-    cargo clippy -p http-ng --all-targets --no-default-features --features test-util -- -D warnings
+    cargo clippy -p hclient-proto --all-targets --no-default-features -- -D warnings
+    cargo clippy -p hclient-native --all-targets --no-default-features -- -D warnings
+    cargo clippy -p hclient-rt-embassy --all-targets -- -D warnings
+    cargo clippy -p hclient --all-targets --no-default-features --features test-util -- -D warnings
 
-# The whole claim of `http-ng-idn` is that the platform's ICU answers what
+# The whole claim of `hclient-idn` is that the platform's ICU answers what
 # the bundled `idna` crate answers. The platform column of
 # `tests/differential.rs` does not compile where there is no platform
-# backend, which is why HTTP_NG_IDN_REQUIRE_PLATFORM is set off Linux only.
+# backend, which is why HCLIENT_IDN_REQUIRE_PLATFORM is set off Linux only.
 # The default (`platform`, resolved by target) AND `--all-features`, which is
 # what the workspace suite runs: features have to stay additive, so
 # `system-icu` off Windows and `bundled` on it are no-ops, not errors.
@@ -511,7 +511,7 @@ test-idn:
     set -euo pipefail
     for args in "" "--all-features"; do
       rc=0
-      out="$(cargo nextest run -p http-ng-idn $args --color never --no-fail-fast 2>&1)" || rc=$?
+      out="$(cargo nextest run -p hclient-idn $args --color never --no-fail-fast 2>&1)" || rc=$?
       printf '%s\n' "$out"
       [ "$rc" -eq 0 ] || exit "$rc"
       if ! printf '%s\n' "$out" | grep -qE '[0-9]+ tests? run:'; then
@@ -520,10 +520,10 @@ test-idn:
       fi
     done
 
-# clippy on http-ng-idn's two feature settings
+# clippy on hclient-idn's two feature settings
 lint-idn:
-    cargo clippy -p http-ng-idn --all-targets -- -D warnings
-    cargo clippy -p http-ng-idn --all-targets --all-features -- -D warnings
+    cargo clippy -p hclient-idn --all-targets -- -D warnings
+    cargo clippy -p hclient-idn --all-targets --all-features -- -D warnings
 
 # the doctests, which nextest cannot run
 test-doc:
@@ -565,11 +565,11 @@ package-build:
     # than the way this workspace sits on disk, which is the defect
     # `test-doc` was written for one level up.
     #
-    # It found a real one on its first run: `http-ng-fetch` and
-    # `http-ng-native` each dev-depend on `http-ng`, which depends on them —
+    # It found a real one on its first run: `hclient-fetch` and
+    # `hclient-native` each dev-depend on `hclient`, which depends on them —
     # a cycle cargo allows inside a workspace and refuses at package time,
     # because a dev-dependency carrying a version has to resolve from the
-    # registry and `http-ng` cannot be there until they are. Both are path-
+    # registry and `hclient` cannot be there until they are. Both are path-
     # only now, so cargo strips them from the published manifest.
     #
     # Deliberately not `cargo publish --dry-run`: that does this and also
@@ -661,7 +661,7 @@ docs:
 
 # fuzz one target for N seconds: `just fuzz sse_accounting 30`
 fuzz TARGET="sse" SECONDS="60":
-    cd crates/http-ng-proto/fuzz && \
+    cd crates/hclient-proto/fuzz && \
       RUSTUP_TOOLCHAIN=nightly cargo fuzz run \
         --target "$(rustc -vV | sed -n 's/^host: //p')" \
         {{TARGET}} -- -max_total_time={{SECONDS}}
@@ -672,7 +672,7 @@ fuzz-smoke:
     set -euo pipefail
     export RUSTUP_TOOLCHAIN=nightly
     if ! rustc --version 2>/dev/null | grep -q nightly || ! cargo fuzz --version >/dev/null 2>&1; then
-      if [ -n "${HTTP_NG_REQUIRE_NIGHTLY:-}" ]; then
+      if [ -n "${HCLIENT_REQUIRE_NIGHTLY:-}" ]; then
         echo "::error::cargo fuzz is about to run on a non-nightly toolchain, or cargo-fuzz is missing — RUSTUP_TOOLCHAIN did not take effect, or \`bins:\` did not install it"
         exit 1
       fi
@@ -681,10 +681,10 @@ fuzz-smoke:
     fi
     host="$(rustc -vV | sed -n 's/^host: //p')"
     [ -n "$host" ] || { echo "::error::could not read the host triple out of rustc -vV"; exit 1; }
-    ( cd crates/http-ng-proto/fuzz && \
+    ( cd crates/hclient-proto/fuzz && \
       cargo fuzz run --target "$host" sse -- -max_total_time=60 && \
       cargo fuzz run --target "$host" sse_accounting -- -max_total_time=30 -max_len=256 ) || exit 1
-    # `http-ng-idn`'s own safe layer — the deny list, the error mask, the
+    # `hclient-idn`'s own safe layer — the deny list, the error mask, the
     # ASCII/A-label handling — which sits in front of every backend and so is
     # worth fuzzing on a Linux runner even though Linux has no platform
     # backend. The first is deliberately NOT differential against `idna`:
@@ -694,7 +694,7 @@ fuzz-smoke:
     # `idna` cancels `idna` out of both sides and leaves only this crate's
     # code — the hand-written RFC 3492 decoder in src/policy.rs, sixty lines
     # of arithmetic in the path that decides which host is contacted.
-    ( cd crates/http-ng-idn/fuzz && \
+    ( cd crates/hclient-idn/fuzz && \
       cargo fuzz run --target "$host" idn_policy -- -max_total_time=45 -max_len=512 && \
       cargo fuzz run --target "$host" idn_policy_vs_idna -- -max_total_time=45 -max_len=512 ) || exit 1
 
@@ -744,22 +744,22 @@ supply-chain:
 
 # the browser and wasi graphs must contain no tokio, hyper or h2 at all
 tree-ambient:
-    cargo deny --manifest-path crates/http-ng-fetch/Cargo.toml \
+    cargo deny --manifest-path crates/hclient-fetch/Cargo.toml \
         --config .github/deny/ambient.toml -t wasm32-unknown-unknown check bans
-    cargo deny --manifest-path crates/http-ng-wasi/Cargo.toml \
+    cargo deny --manifest-path crates/hclient-wasi/Cargo.toml \
         --config .github/deny/ambient.toml -t wasm32-wasip2 check bans
 
 # The two seams v0.3 changed for HTTP/3 must stay implementable without a
-# QUIC stack: `http-ng-rt` re-declares `RecvMeta`/`EcnCodepoint` instead of
-# re-exporting `quinn-udp`'s, and `http-ng-tls-quic` is a separate crate
-# rather than a feature of `http-ng-tls`. Both are trades paid in conversion
+# QUIC stack: `hclient-rt` re-declares `RecvMeta`/`EcnCodepoint` instead of
+# re-exporting `quinn-udp`'s, and `hclient-tls-quic` is a separate crate
+# rather than a feature of `hclient-tls`. Both are trades paid in conversion
 # code and crate count, and both are worthless the moment this stops holding.
 
 # the runtime and TLS seams contain no QUIC
 graph-no-quic:
     #!/usr/bin/env bash
     set -euo pipefail
-    for c in http-ng-rt http-ng-tls; do
+    for c in hclient-rt hclient-tls; do
       cargo deny --manifest-path "crates/$c/Cargo.toml" \
         --config .github/deny/no-quic-in-the-seams.toml check bans
     done
@@ -773,14 +773,14 @@ graph-no-quic:
 graph-udp-pulls-quic:
     #!/usr/bin/env bash
     set -euo pipefail
-    out="$(cargo tree -p http-ng-rt-tokio --features udp -e normal --prefix none)"
+    out="$(cargo tree -p hclient-rt-tokio --features udp -e normal --prefix none)"
     printf '%s\n' "$out" | grep -q '^quinn-udp ' || {
-      echo "::error::http-ng-rt-tokio/udp no longer pulls quinn-udp — either the feature is dead or the ban in graph-no-quic is now vacuous"
+      echo "::error::hclient-rt-tokio/udp no longer pulls quinn-udp — either the feature is dead or the ban in graph-no-quic is now vacuous"
       exit 1
     }
-    off="$(cargo tree -p http-ng-rt-tokio -e normal --prefix none)"
+    off="$(cargo tree -p hclient-rt-tokio -e normal --prefix none)"
     if printf '%s\n' "$off" | grep -q '^quinn-udp '; then
-      echo "::error::quinn-udp is in http-ng-rt-tokio's default graph; the udp feature is not off by default"
+      echo "::error::quinn-udp is in hclient-rt-tokio's default graph; the udp feature is not off by default"
       exit 1
     fi
 
@@ -789,12 +789,12 @@ graph-smol-path:
     #!/usr/bin/env bash
     set -euo pipefail
     for t in x86_64-unknown-linux-gnu x86_64-apple-darwin x86_64-pc-windows-msvc; do
-      cargo deny --manifest-path crates/http-ng-rt-smol/Cargo.toml \
+      cargo deny --manifest-path crates/hclient-rt-smol/Cargo.toml \
         --config .github/deny/smol-path.toml -t "$t" check bans
     done
 
 # `docs/w4-upgrade-seam.md` §8, machine-checked in both directions. The
-# framing used to be a `websocket` feature of `http-ng-native`, and the
+# framing used to be a `websocket` feature of `hclient-native`, and the
 # argument for moving it out was that Cargo's features are additive: one
 # crate anywhere in a graph switching it on put `tungstenite` into every
 # other crate's build of the transport. `--all-features` is therefore the
@@ -810,78 +810,78 @@ graph-no-framing-in-the-transport:
     #!/usr/bin/env bash
     set -euo pipefail
     ./scripts/tree-guard.sh absent '^(tungstenite|sha1|data-encoding) ' \
-        "http-ng-native has the WebSocket framing in its graph again. It lives in http-ng-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
-        -- -p http-ng-native --all-features
+        "hclient-native has the WebSocket framing in its graph again. It lives in hclient-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
+        -- -p hclient-native --all-features
     ./scripts/tree-guard.sh present '^tungstenite ' \
-        "http-ng-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
-        -- -p http-ng-tungstenite
+        "hclient-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
+        -- -p hclient-tungstenite
 
 # The same argument one seam down, and in the direction that catches a
 # COPY rather than a feature. `SeamRuntime` was `mod runtime` inside
-# `http-ng-h3` — private, so unreachable rather than additive, which is the
-# other way a shared thing stops being shared. It is `http-ng-quinn` now,
+# `hclient-h3` — private, so unreachable rather than additive, which is the
+# other way a shared thing stops being shared. It is `hclient-quinn` now,
 # and the two things that would undo that are: the adapter growing an
 # HTTP/3 dependency (so it is no longer usable by anything else that wants
-# QUIC over the seam), or `http-ng-h3` growing a private copy again and
+# QUIC over the seam), or `hclient-h3` growing a private copy again and
 # dropping the dependency. One `absent` and one `present` catch one each.
 
 # the quinn/seam adapter carries no HTTP/3, and h3 has not taken a copy back
 graph-quinn-adapter-is-shared:
     #!/usr/bin/env bash
     set -euo pipefail
-    ./scripts/tree-guard.sh absent '^(h3|h3-quinn|http-ng-h3) ' \
-        "http-ng-quinn has HTTP/3 in its graph. It is the quinn::Runtime over http_ng_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3 (docs/v04-w2-webtransport.md §4)" \
-        -- -p http-ng-quinn --all-features
+    ./scripts/tree-guard.sh absent '^(h3|h3-quinn|hclient-h3) ' \
+        "hclient-quinn has HTTP/3 in its graph. It is the quinn::Runtime over hclient_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3 (docs/v04-w2-webtransport.md §4)" \
+        -- -p hclient-quinn --all-features
     ./scripts/tree-guard.sh present '^quinn ' \
-        "http-ng-quinn does not depend on quinn, so the ban above is vacuous — it would pass a workspace where the adapter had been emptied out" \
-        -- -p http-ng-quinn
-    ./scripts/tree-guard.sh present '^http-ng-quinn ' \
-        "http-ng-h3 no longer depends on http-ng-quinn — either the adapter moved back in as a private copy, or the extraction was reverted. Copying is what this workspace does not do" \
-        -- -p http-ng-h3
+        "hclient-quinn does not depend on quinn, so the ban above is vacuous — it would pass a workspace where the adapter had been emptied out" \
+        -- -p hclient-quinn
+    ./scripts/tree-guard.sh present '^hclient-quinn ' \
+        "hclient-h3 no longer depends on hclient-quinn — either the adapter moved back in as a private copy, or the extraction was reverted. Copying is what this workspace does not do" \
+        -- -p hclient-h3
 
 # Still `tree-guard`, and deliberately: `cargo deny` bans crates by name, and
 # this one bans a FAMILY by prefix. Enumerating today's names would pass for
 # tomorrow's `futures-whatever`, which is the regression the check exists
 # for. docs/ci.md says so.
 
-# http-ng-proto pulls in no async runtime, on any target
+# hclient-proto pulls in no async runtime, on any target
 graph-proto-sans-io:
     #!/usr/bin/env bash
     set -euo pipefail
     for t in "" "--target wasm32-unknown-unknown"; do
       ./scripts/tree-guard.sh absent '^(tokio|futures-|async-|smol|compio)' \
-        "http-ng-proto picked up an async dependency ${t:-on the host} — this crate must stay sans-io on every target, not just the host" \
-        -- -p http-ng-proto $t
+        "hclient-proto picked up an async dependency ${t:-on the host} — this crate must stay sans-io on every target, not just the host" \
+        -- -p hclient-proto $t
     done
 
-# The `cookies` feature is off by default because `http-ng-cookie`'s
+# The `cookies` feature is off by default because `hclient-cookie`'s
 # compiled-in public suffix list is +77 KiB — a claim nothing checked until
 # here. Exact analogue of the idna/ICU guard below.
 
-# the default http-ng build carries no cookie jar
+# the default hclient build carries no cookie jar
 graph-no-cookie-jar:
-    ./scripts/tree-guard.sh absent '^(http-ng-cookie|public-suffix) ' \
-        "http-ng's default build pulled in the cookie jar and its public suffix list — the feature is off by default precisely so this does not happen" \
-        -- -p http-ng
+    ./scripts/tree-guard.sh absent '^(hclient-cookie|public-suffix) ' \
+        "hclient's default build pulled in the cookie jar and its public suffix list — the feature is off by default precisely so this does not happen" \
+        -- -p hclient
 
-# `url` is gone from the graph either way: http-ng-proto writes out RFC 3986
+# `url` is gone from the graph either way: hclient-proto writes out RFC 3986
 # §5.2 in src/uri.rs precisely so that it does not depend on `url`, which
 # belongs in [dev-dependencies] where it is the oracle for
 # tests/uri_resolution.rs.
 
-# url is absent from http-ng-proto, with the idn feature and without
+# url is absent from hclient-proto, with the idn feature and without
 graph-no-url:
     #!/usr/bin/env bash
     set -euo pipefail
     for flags in "" "--no-default-features"; do
       ./scripts/tree-guard.sh absent '^(url|form_urlencoded|percent-encoding) ' \
-        "http-ng-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
-        -- -p http-ng-proto $flags
+        "hclient-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
+        -- -p hclient-proto $flags
     done
 
 # icu_properties_data alone is 1.9 MB of vendored source; that is the entire
 # measurable benefit of the feature. The usual cause of a failure is some
-# crate depending on http-ng-proto WITH default features, unioning idn back
+# crate depending on hclient-proto WITH default features, unioning idn back
 # on — see [workspace.dependencies].
 
 # without idn there is no IDN implementation, with it there is
@@ -890,34 +890,34 @@ graph-idn-feature:
     set -euo pipefail
     ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
       "--no-default-features still pulls in idna/ICU" \
-      -- -p http-ng-proto --no-default-features
+      -- -p hclient-proto --no-default-features
     ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-      "http-ng --no-default-features still pulls in idna/ICU — the facade's idn feature is not forwarding, or something else in its graph turns it on" \
-      -- -p http-ng --no-default-features
+      "hclient --no-default-features still pulls in idna/ICU — the facade's idn feature is not forwarding, or something else in its graph turns it on" \
+      -- -p hclient --no-default-features
     # Without this the two checks above would also pass if idn had simply
     # been deleted. Since `idn` stopped naming `idna` and started naming
-    # `http-ng-idn` (which picks its backend by target), the implementation
+    # `hclient-idn` (which picks its backend by target), the implementation
     # being in the graph is the target-independent claim.
-    ./scripts/tree-guard.sh present '^http-ng-idn ' \
-      "the default build of http-ng-proto has no http-ng-idn — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
-      -- -p http-ng-proto
+    ./scripts/tree-guard.sh present '^hclient-idn ' \
+      "the default build of hclient-proto has no hclient-idn — the idn feature is in [features] default, so either it was removed or the dependency is no longer reached" \
+      -- -p hclient-proto
     # What it COSTS on this runner, and deliberately not target-independent:
     # measured, `--target x86_64-pc-windows-msvc` brings `windows-sys` and no
     # `idna`, `aarch64-apple-darwin` brings `objc2-foundation` and no `idna`.
     # This is the line that must MOVE rather than be widened if this ever
     # runs anywhere but Linux.
     ./scripts/tree-guard.sh present '^idna ' \
-      "the default build of http-ng-proto on Linux has no idna — http-ng-idn takes the bundled tables on every target that is not Windows or Apple, so these are the tables the feature is supposed to bring here" \
-      -- -p http-ng-proto
+      "the default build of hclient-proto on Linux has no idna — hclient-idn takes the bundled tables on every target that is not Windows or Apple, so these are the tables the feature is supposed to bring here" \
+      -- -p hclient-proto
     # And that the feature is the ONLY thing bringing it, stated
     # target-independently: the idna|icu_ absence above passes trivially on
     # Windows and Apple, where those never appear.
-    ./scripts/tree-guard.sh absent '^http-ng-idn ' \
-      "--no-default-features still pulls in http-ng-idn — the idn feature is the only thing that should" \
-      -- -p http-ng-proto --no-default-features
-    ./scripts/tree-guard.sh absent '^http-ng-idn ' \
-      "http-ng --no-default-features still pulls in http-ng-idn — the facade's idn feature is not forwarding" \
-      -- -p http-ng --no-default-features
+    ./scripts/tree-guard.sh absent '^hclient-idn ' \
+      "--no-default-features still pulls in hclient-idn — the idn feature is the only thing that should" \
+      -- -p hclient-proto --no-default-features
+    ./scripts/tree-guard.sh absent '^hclient-idn ' \
+      "hclient --no-default-features still pulls in hclient-idn — the facade's idn feature is not forwarding" \
+      -- -p hclient --no-default-features
 
 # The saving the crate exists for, on the two targets that get it. Its size
 # in bytes is unverified on both — no Windows or Apple linker produced this
@@ -928,33 +928,33 @@ graph-idn-feature:
 # though nothing references it now — the ELF dlopen backend was removed on
 # purpose, and its name is the tripwire.
 
-# http-ng-idn's Unicode tables come from the platform, or from idna — by target
+# hclient-idn's Unicode tables come from the platform, or from idna — by target
 graph-idn-backend:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ "{{os()}}" = "linux" ]; then
       ./scripts/tree-guard.sh present '^idna ' \
-        "http-ng-idn on Linux has no idna, so this target has no IDN implementation at all" \
-        -- -p http-ng-idn
+        "hclient-idn on Linux has no idna, so this target has no IDN implementation at all" \
+        -- -p hclient-idn
       ./scripts/tree-guard.sh absent '^(libloading|windows-sys|objc2-foundation) ' \
-        "http-ng-idn on Linux pulls in a loader or a platform binding — the ELF dlopen backend was removed on purpose, see the crate docs" \
-        -- -p http-ng-idn --all-features
+        "hclient-idn on Linux pulls in a loader or a platform binding — the ELF dlopen backend was removed on purpose, see the crate docs" \
+        -- -p hclient-idn --all-features
     else
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-        "the default http-ng-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
-        -- -p http-ng-idn
+        "the default hclient-idn build on this target pulls in idna/ICU — the whole point of a platform backend is that the OS supplies the tables" \
+        -- -p hclient-idn
       ./scripts/tree-guard.sh absent '^(idna|idna_adapter|icu_)' \
-        "--all-features drags idna back into http-ng-idn on a target with a platform backend" \
-        -- -p http-ng-idn --all-features
+        "--all-features drags idna back into hclient-idn on a target with a platform backend" \
+        -- -p hclient-idn --all-features
       ./scripts/tree-guard.sh present '^(windows-sys|objc2-foundation) ' \
-        "http-ng-idn on this target links neither windows-sys nor objc2-foundation, so no platform backend is compiled in at all" \
-        -- -p http-ng-idn
+        "hclient-idn on this target links neither windows-sys nor objc2-foundation, so no platform backend is compiled in at all" \
+        -- -p hclient-idn
     fi
 
 # `cargo hack --each-feature` enumerates combinations instead of listing
 # them. Two crates are excluded, and not for convenience: their features are
-# not independent. `http-ng-idn` needs at least one backend and says so with
-# a `compile_error!`; `http-ng-rt-embassy` forwards to `smoltcp`, which
+# not independent. `hclient-idn` needs at least one backend and says so with
+# a `compile_error!`; `hclient-rt-embassy` forwards to `smoltcp`, which
 # demands at least one protocol and one medium the same way. Isolating one
 # feature of either is a build the crate deliberately refuses, so those two
 # keep the targeted checks they already have.
@@ -964,7 +964,7 @@ features:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo hack --workspace \
-        --exclude http-ng-idn --exclude http-ng-rt-embassy \
+        --exclude hclient-idn --exclude hclient-rt-embassy \
         --each-feature --no-dev-deps check
     # And the POWERSET over the four response codings, which
     # `--each-feature` does not reach: it builds each feature on its own,
@@ -974,7 +974,7 @@ features:
     # `not(any(..))` of four, so exactly one of the sixteen sets is the
     # boundary for each. Two of sixteen were checked before this line, and
     # `cargo hack --each-feature` would have gone on saying `ok`.
-    cargo hack -p http-ng --feature-powerset \
+    cargo hack -p hclient --feature-powerset \
         --include-features gzip,brotli,deflate,zstd \
         --no-dev-deps check
 

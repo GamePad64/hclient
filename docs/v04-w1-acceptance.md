@@ -15,22 +15,22 @@ it is known, and a claim that is not pinned by a test says so.
 
 ## 1. Where it lives, and why a crate
 
-**`crates/http-ng-select`**, one public type: `Selecting<R, T, D>`, owning a
+**`crates/hclient-select`**, one public type: `Selecting<R, T, D>`, owning a
 `Native<R, T, D>` and an `H3<R, T, D>`.
 
-A crate rather than a feature of either member, for the reason `http-ng-h3`
-is not a feature of `http-ng-native`: **Cargo's features are additive**. A
-`http-ng-native/select` feature would put the whole QUIC stack — and the
+A crate rather than a feature of either member, for the reason `hclient-h3`
+is not a feature of `hclient-native`: **Cargo's features are additive**. A
+`hclient-native/select` feature would put the whole QUIC stack — and the
 `UdpBind + Spawn` bounds it needs from the runtime — into every build in
 any graph in which any crate switched it on, including the builds that will
 only ever speak HTTP/1.1. A crate is opt-in by being named.
 
-Measured, `cargo tree -p http-ng-select -e normal --prefix none`, unique
-crates: **66**, against `http-ng-h3`'s 57. The 9 are what
-`http-ng-native` adds that `http-ng-h3` did not already have.
+Measured, `cargo tree -p hclient-select -e normal --prefix none`, unique
+crates: **66**, against `hclient-h3`'s 57. The 9 are what
+`hclient-native` adds that `hclient-h3` did not already have.
 
 P2 is the condition, and it is inherited rather than declared here:
-`http-ng-rt-tokio` needs its `udp` feature, or `TokioHandle` does not
+`hclient-rt-tokio` needs its `udp` feature, or `TokioHandle` does not
 implement `UdpAdoptStd` and `Selecting<TokioHandle, …>` cannot be named at
 all. That is not this crate's dependency — it is `H3`'s — and the failure is
 a compile error at the call site rather than a weaker transport.
@@ -41,7 +41,7 @@ generic pair would have to be *told* which member speaks HTTP/3 — nothing in
 HTTP/1.1 stacks and get a transport that "chooses" between them on the
 strength of a record neither honours. With the two named, that is
 unrepresentable. The generality is not free to add later either, but it is
-also not free of a decision: a third member (`http-ng-urlsession`, §W3)
+also not free of a decision: a third member (`hclient-urlsession`, §W3)
 brings `RedirectSupport::Internal` and `owns_cookie_jar: true`, both of
 which §2's rule **refuses** against either member here, so admitting it is a
 capability question and not a type-parameter question.
@@ -70,7 +70,7 @@ Measured in this tree, `Native::new(rt, Rustls, dns)` against
 `the_two_stacks_disagree_on_exactly_six_fields_today` — **six fields, not
 the two the design document's examples name.** The count has moved twice
 and in both directions. It was six when this section was written;
-`request_trailers` joined in v0.4 Appendix C, when `http-ng-native`
+`request_trailers` joined in v0.4 Appendix C, when `hclient-native`
 stopped under-declaring what it sends, and that one runs the *other* way
 from the rest — there the TCP member is the one that can. Then
 `client_certs` **left**, and that is the more interesting of the two: the
@@ -82,11 +82,11 @@ fixed under it while it was being written (`RedirectSupport::Configurable`
 deleted in `b2289c4`; `version_select` turned on for both in `4e9805f`), and
 four of the six were never in it.
 
-| field | `http-ng-native` | `http-ng-h3` | stored | why |
+| field | `hclient-native` | `hclient-h3` | stored | why |
 |---|---|---|---|---|
-| `full_duplex` | `false` | `true` | **`false`** | `false` asks the caller to assume less and forbids nothing. This is the answer `http-ng-native` already gives one level down for the same question — HTTP/1.1 cannot do duplex, HTTP/2 can, one transport reports one value — beside the cost that decided it: over-claiming deadlocks a caller structured for bidirectional streaming, under-claiming costs a buffered copy. The rule is imported from the crate that already had to make it |
+| `full_duplex` | `false` | `true` | **`false`** | `false` asks the caller to assume less and forbids nothing. This is the answer `hclient-native` already gives one level down for the same question — HTTP/1.1 cannot do duplex, HTTP/2 can, one transport reports one value — beside the cost that decided it: over-claiming deadlocks a caller structured for bidirectional streaming, under-claiming costs a buffered copy. The rule is imported from the crate that already had to make it |
 | `response_trailers` | `false` | `true` | **`false`** | same shape: `false` costs a caller trailers it would not have looked for, `true` would have it look for trailers on a connection that cannot carry them |
-| ~~`client_certs`~~ | ~~`false`~~ | ~~`true`~~ | — | **Not a disagreement, and the row is struck rather than deleted because "same shape" was the wrong reading and is worth not repeating.** Neither member asked the component that knows: `http-ng-h3` set `true` unconditionally — two lines under its own comment reading *"Read from the TLS backend, never from a constant"* — and `http-ng-native` had no line, so it took `Capabilities::none()`'s `false`. Both were wrong, in opposite directions: `http-ng-tls-native-tls` has an `identity()` setter and `Rustls::from_config` accepts a config built `with_client_auth_cert`, so the TCP path can present one; and the QUIC path claimed it for every `T`, including one that cannot. `TlsIdentity::presents_client_certs` is where it is answered now, and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` is the test that could not have existed while this row did |
+| ~~`client_certs`~~ | ~~`false`~~ | ~~`true`~~ | — | **Not a disagreement, and the row is struck rather than deleted because "same shape" was the wrong reading and is worth not repeating.** Neither member asked the component that knows: `hclient-h3` set `true` unconditionally — two lines under its own comment reading *"Read from the TLS backend, never from a constant"* — and `hclient-native` had no line, so it took `Capabilities::none()`'s `false`. Both were wrong, in opposite directions: `hclient-tls-native-tls` has an `identity()` setter and `Rustls::from_config` accepts a config built `with_client_auth_cert`, so the TCP path can present one; and the QUIC path claimed it for every `T`, including one that cannot. `TlsIdentity::presents_client_certs` is where it is answered now, and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` is the test that could not have existed while this row did |
 | `timeouts.first_byte` | `true` | `false` | **`false`** | and this is the field where the two disagree in the *other* direction. Declaring a bound one stack silently ignores is the exact no-op v0.2 W4 created `TimeoutSupport` to prevent |
 | `timeouts.between_bytes` | `true` | `false` | **`false`** | same |
 | `early_data` | `None` | `Supported` | **`Supported`** | the one field whose *stronger* value is the true one — see below |
@@ -102,8 +102,8 @@ that reports killed unconditionally.
 |---|---|---|---|
 | M1 | `Rustls::presents_client_certs` returns `true` always | killed | 2 |
 | M2 | …returns `false` always | killed | 1 |
-| M3 | `http-ng-h3` back to `c.client_certs = true` | killed | 3 |
-| M4 | `http-ng-native` drops its line, taking `Capabilities::none()`'s `false` | killed | 2 — `client_certs_is_read_from_the_tls_backend_not_from_a_constant` and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` |
+| M3 | `hclient-h3` back to `c.client_certs = true` | killed | 3 |
+| M4 | `hclient-native` drops its line, taking `Capabilities::none()`'s `false` | killed | 2 — `client_certs_is_read_from_the_tls_backend_not_from_a_constant` and `a_client_certificate_is_reported_by_both_stacks_and_by_the_pair` |
 | M5 | **control** — `NoTls` overrides the method with the value it already defaults to | **survived, as intended** | 0 |
 
 M2 kills one where M1 kills two, and that asymmetry is the shape of the
@@ -121,14 +121,14 @@ asserts it, along with `streaming_request_body`, `version_select`,
 
 `EarlyDataSupport::Supported` says the transport **can** place a request the
 caller marked with `AllowEarlyData` into early data. It promises nothing
-about any particular request — `http-ng-h3` alone already does not place the
+about any particular request — `hclient-h3` alone already does not place the
 *first* request to an origin there, because there is no session ticket yet.
 So "this transport can offer early data for a marked request" is true of the
 pair, and `None` — "this transport never offers early data" — is false of
 it.
 
-False in the direction that matters, too: **nothing in `http-ng` reads this
-field** (grep `crates/http-ng/src` for `early_data`: no matches), so
+False in the direction that matters, too: **nothing in `hclient` reads this
+field** (grep `crates/hclient/src` for `early_data`: no matches), so
 reporting `None` would not stop a marked request reaching the QUIC stack and
 going out in 0-RTT. The weaker-looking value is the lie.
 
@@ -166,21 +166,21 @@ the other side.
 ships**, and it is an ordinary mistake rather than a contrived one:
 `Native::without_pool()` (a documented setting — it restores v0.1's
 one-connection-per-request behaviour) reports `ReuseSupport::None` against
-`http-ng-h3`'s `Supported`, and `ReuseSupport::None` is not a weaker
+`hclient-h3`'s `Supported`, and `ReuseSupport::None` is not a weaker
 `Supported`: it says every request gets a fresh connection, which is false
 the moment the QUIC stack answers one.
 `a_pooling_disagreement_is_refused_at_construction_naming_the_field` reads
 the field name and both values off the error, and
 `the_same_two_stacks_with_the_pool_on_are_one_transport` is its control.
 
-The other arms are pinned through `http_ng_select::combine`, which is public
+The other arms are pinned through `hclient_select::combine`, which is public
 for exactly this reason: a rule whose arms can only be exercised by a member
 that does not exist yet would otherwise ship unpinned.
 
 ### A field added to `Capabilities` later
 
 There is no compile-time guard. `Capabilities` is `#[non_exhaustive]`, so a
-destructuring `let` outside `http-ng-core` needs `..` and cannot be made
+destructuring `let` outside `hclient-core` needs `..` and cannot be made
 exhaustive — a new field would simply arrive in `combine`'s output as
 `Capabilities::none()`'s value, decided by nobody.
 `every_capability_field_is_accounted_for_and_a_new_one_fails_this_test`
@@ -214,9 +214,9 @@ It is a tripwire, not a mechanism, and it is named after what it is.
    (`priority: 0`, every parameter empty) skipped. A lookup error is not
    fatal.
 
-Two of those need a note because `http-ng-native` decided them differently.
+Two of those need a note because `hclient-native` decided them differently.
 
-**The prefixed name.** `http-ng-native`'s connector refuses to build it, and
+**The prefixed name.** `hclient-native`'s connector refuses to build it, and
 says why: *"it would then have to decide what `lookup_ipv4`/`lookup_ipv6`
 are asked for (the prefixed name has no addresses), and that is a
 resolver-facing question the `Resolve` seam does not answer today"* — so it
@@ -235,13 +235,13 @@ origin.
 
 ### What it costs in DNS
 
-Counted, not reasoned about — `crates/http-ng-select/tests/dns_cost.rs`
+Counted, not reasoned about — `crates/hclient-select/tests/dns_cost.rs`
 counts the calls a resolver received.
 
 | request | type-65 queries | |
 |---|---|---|
 | `https://origin/` chosen onto TCP | **1** | **was 2**, see §3.1 — one for the choice and one for the connection, and they are the same one now |
-| `https://origin/` chosen onto QUIC | **1** | unchanged — `http-ng-h3` does no SVCB lookup at all |
+| `https://origin/` chosen onto QUIC | **1** | unchanged — `hclient-h3` does no SVCB lookup at all |
 | `https://origin:port/` | **1** | unchanged — the connector does no discovery away from the default port, so this transport asks for the prefixed record itself |
 | any request carrying `RequireVersion` | **0** | unchanged |
 | `http://` or an IP literal | **0** | unchanged |
@@ -256,12 +256,12 @@ serves the request.
 
 **There is still no cache here, deliberately.** One remembered answer per
 origin would turn one query per request into one per origin, and the reason
-not to is `http-ng-native`'s own, about the other half of the same problem:
+not to is `hclient-native`'s own, about the other half of the same problem:
 *"this origin has no HTTPS record" is a DNS answer with a TTL of its own,
 which `SvcbEndpoint` does not carry, and inventing a lifetime for someone
 else's answer is how a resolver's cache and ours drift apart.* A resolver
-that caches (`http-ng-dns-hickory`, with the real TTLs) already removes the
-cost; one that does not (`http-ng-dns-doh`, by an explicit decision of its
+that caches (`hclient-dns-hickory`, with the real TTLs) already removes the
+cost; one that does not (`hclient-dns-doh`, by an explicit decision of its
 own) would not have it removed by a second cache here that no caller can
 turn off. **Nothing below needed one:** not asking twice *within one
 request* needs no lifetime at all, which is what makes it a different
@@ -270,10 +270,10 @@ problem from the one that has no honest answer.
 ### 3.1 The duplicate, and the shape that closed it
 
 Written up as a finding when this section was first written — *"closing it
-is a change to `http-ng-native`"* — with three candidate shapes. It is
+is a change to `hclient-native`"* — with three candidate shapes. It is
 closed now, and this is which one and why the other two lost.
 
-**What was built: `http_ng_native::Prefetch`**, a trait with two methods,
+**What was built: `hclient_native::Prefetch`**, a trait with two methods,
 implemented by `Native` alone.
 
 ```rust
@@ -315,7 +315,7 @@ not a stylistic one:
   stop it (carry the origin inside the extension, compare it with the URI)
   is exactly the shape the brief asked to avoid, and it would still be a
   check against a value the caller chose.
-- **It would also have to live in `http-ng-core`**, beside the other three
+- **It would also have to live in `hclient-core`**, beside the other three
   extension types, where every transport that never resolves a name would
   meet it.
 
@@ -327,7 +327,7 @@ connector that skipped discovery because someone else had done it would
 connect to the origin's own endpoint and silently lose all four. The count
 would improve by dropping a capability. That failure has a test of its own
 (`the_record_this_transport_fetched_is_the_one_the_connection_is_made_under`
-in `crates/http-ng-select/tests/record_handover.rs`) precisely because
+in `crates/hclient-select/tests/record_handover.rs`) precisely because
 `dns_cost.rs` cannot see it: a connector that took the answer and threw it
 away asks exactly as few questions as one that used it. M49 in §3.3 is that
 mutation.
@@ -355,7 +355,7 @@ The second judged point, and the half a plain `Option` gets wrong.
 | `Record { alpn }` | the first-ranked ServiceMode record's ALPN list | uses it, and does not look |
 
 **The capability belongs in the first row, and putting it there was a
-change to `http-ng-native`.** `Resolve::supports_svcb() == false` used to
+change to `hclient-native`.** `Resolve::supports_svcb() == false` used to
 be `discovery::lookup`'s own early `None`, indistinguishable from "asked
 and found nothing" — which is right for the connector, where both mean
 *no record to act on*, and wrong the moment the answer leaves the crate:
@@ -373,20 +373,20 @@ resolver has to reach an authoritative answer to say so. That is M46 in
 having written it.
 
 `NotConsulted` is load-bearing in the other direction too, and it is what
-keeps `http-ng-select` from owning a copy of `http-ng-native`'s rule about
+keeps `hclient-select` from owning a copy of `hclient-native`'s rule about
 where discovery applies. The rule in the caller is now: **ask the
 connector, because it was going to ask anyway; where it did not look, look
 for yourself.** At a non-default port the connector answers `NotConsulted`
 — the record there lives under `_<port>._https.<host>`, a name only
-`http-ng-select` constructs — and this transport then makes exactly the
+`hclient-select` constructs — and this transport then makes exactly the
 lookup it always made. A copy of the gate would have been a second place
 for it to live, and the two would have drifted into asking twice again or
 into never asking at all (M51).
 
 ### 3.3 Mutation testing
 
-Anchor **313 tests** — `cargo nextest run --no-fail-fast -p http-ng-select
--p http-ng-native --all-features`, 100 + 209 as they stood, plus the four
+Anchor **313 tests** — `cargo nextest run --no-fail-fast -p hclient-select
+-p hclient-native --all-features`, 100 + 209 as they stood, plus the four
 new arms in `record_handover.rs` — verified before the run **and again
 after every restore**. Each patch had to match exactly once or the mutation
 was not run. The harness reads the **names** of the failing tests and
@@ -408,14 +408,14 @@ survived unintentionally.**
 |---|---|---|---|
 | M45 | the handed-over record is ignored, so the connector queries again | **killed** (3) | `a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_once`, `an_origin_that_publishes_no_record_is_not_asked_about_twice`, `the_record_this_transport_fetched_is_the_one_the_connection_is_made_under` |
 | M46 | `Looked(None)` conflated with `NotConsulted` — "no record" read as "nobody looked" | **killed** (1) | `an_origin_that_publishes_no_record_is_not_asked_about_twice` |
-| M47 | the record is fetched for the wrong origin: the port gate goes, so the default-port record is used at a URI that named its own port | **killed** (8) | `a_record_is_not_applied_to_a_uri_that_named_its_own_port` (`http-ng-native`), `a_record_this_transport_fetched_under_a_prefixed_name_does_not_move_the_connection`, `away_from_the_default_port_only_this_transport_asks`, `an_ip_literal_has_no_record_to_look_up_and_is_served_over_tcp`, and 4 more |
+| M47 | the record is fetched for the wrong origin: the port gate goes, so the default-port record is used at a URI that named its own port | **killed** (8) | `a_record_is_not_applied_to_a_uri_that_named_its_own_port` (`hclient-native`), `a_record_this_transport_fetched_under_a_prefixed_name_does_not_move_the_connection`, `away_from_the_default_port_only_this_transport_asks`, `an_ip_literal_has_no_record_to_look_up_and_is_served_over_tcp`, and 4 more |
 | M48 | discovery is skipped when nothing was handed over — a plain `Native::execute` never looks | **killed** (14) | `the_port_from_the_record_is_where_the_connection_goes`, `the_address_hints_reach_happy_eyeballs`, `the_record_narrows_the_alpn_offer`, `a_failed_discovery_is_not_repeated_by_the_next_request`, `the_record_and_the_addresses_are_asked_at_once`, and 9 more |
 | M49 | the record is dropped on the way over: `prepare` reports what it found and hands over nothing | **killed** (1) | `the_record_this_transport_fetched_is_the_one_the_connection_is_made_under` |
-| M50 | `http-ng-select` asks its own resolver instead of the connector, so the duplicate comes back | **killed** (3) | the three M45 killed |
+| M50 | `hclient-select` asks its own resolver instead of the connector, so the duplicate comes back | **killed** (3) | the three M45 killed |
 | M51 | `NotConsulted` is read as an answer, so this transport never asks where the connector does not | **killed** (12) | `away_from_the_default_port_only_this_transport_asks`, `a_record_offering_h3_puts_the_request_on_the_quic_server`, `an_origin_with_no_record_is_served_over_tcp`, `the_first_request_is_tcp_and_the_second_is_quic`, and 8 more |
 | M52 | an inert record counts as one in play (the `is_inert` filter moved and could have been lost with it) | **killed** (1) | `a_record_that_sets_nothing_does_not_buy_a_second_race` |
 | M54 | a resolver that says it cannot ask is read as an origin that publishes no record | **killed** (1) | `a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks` — see below, because it survived first |
-| M55 | the capability is not asked at all, so a resolver that says it cannot answer SVCB is asked anyway | **killed** (2) | `a_resolver_that_says_it_cannot_ask_is_not_asked` (`http-ng-native`), `a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks` |
+| M55 | the capability is not asked at all, so a resolver that says it cannot answer SVCB is asked anyway | **killed** (2) | `a_resolver_that_says_it_cannot_ask_is_not_asked` (`hclient-native`), `a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks` |
 | **M53** | **CONTROL** — `Prepared`'s `Debug` reports a constant instead of what was discovered | **survived, as intended** (0) | nothing, and nothing should: no test formats a `Prepared` and no code path reads that `Debug`. Without a control, eight kills would be indistinguishable from a harness that reports "killed" unconditionally |
 
 **M54 survived its first run, and the test was wrong rather than the
@@ -427,7 +427,7 @@ fixture was not touched: the arm moved to the origin's *default* port,
 which is the only place the capability gate is reached, and where nothing
 can listen, so what it observes is the **question** on two resolver logs
 rather than the connection. M54 then died to it, and M55 — the capability
-not asked at all — died to it and to `http-ng-native`'s own arm, which is
+not asked at all — died to it and to `hclient-native`'s own arm, which is
 the pair one wants: the gate is in one place and both sides of it are
 watched.
 
@@ -462,7 +462,7 @@ is settled by the time the response is in hand. Each request carries a
 10-second wall-clock bound, which is never an assertion — it is there so a
 mutation that turns a choice into a hang is red rather than eternal.
 
-`crates/http-ng-select/tests/`: `capabilities.rs` (10), `choice.rs` (12),
+`crates/hclient-select/tests/`: `capabilities.rs` (10), `choice.rs` (12),
 `dns_cost.rs` (3), `body.rs` (3), plus the two fixtures. **28 tests.**
 
 > As of deliverable 4 the crate has **100**, and `dns_cost.rs` has 5 —
@@ -477,7 +477,7 @@ mutation that turns a choice into a hang is red rather than eternal.
 
 ## 5. Mutation testing
 
-Anchor **28 tests**, `cargo nextest run -p http-ng-select --all-features`,
+Anchor **28 tests**, `cargo nextest run -p hclient-select --all-features`,
 all passing, verified before each run. Each mutation was applied at one
 site — the patch had to match exactly once or it was not run — the whole
 crate suite was run, and the **names** of the tests that turned red were
@@ -524,7 +524,7 @@ to do with the tests.
 ## 6. What is not verified
 
 - **`SelectedBody`'s `Unpin` bound is a fact about today's members**, not a
-  proof. Both are `Unpin` — `http_ng::Deadline` requires it of any body a
+  proof. Both are `Unpin` — `hclient::Deadline` requires it of any body a
   `Client` wraps, so a body that were not could not reach a caller through
   this library at all — and the bound is what lets the projection be
   `Pin::new(&mut …)` in a crate that forbids `unsafe`. Nothing checks that a
@@ -534,8 +534,8 @@ to do with the tests.
 - **`Transport::to_error` is the identity here and no test distinguishes it
   from the default**, which recognises an `Error` and passes it through
   unchanged. The line states the intent where it is read and survives the
-  default changing; that is the same position `http-ng-native` and
-  `http-ng-h3` take about their own, and it is equally untested there.
+  default changing; that is the same position `hclient-native` and
+  `hclient-h3` take about their own, and it is equally untested there.
 - **Cancellation is not tested through this transport.** Dropping a
   `Selecting::execute` future drops the member's future, whose `Drop` is the
   one that matters, and both members' cancellation is measured in their own
@@ -554,7 +554,7 @@ to do with the tests.
 - **0-RTT through this transport is not exercised.** `early_data` is
   reported `Supported` and the reasoning is in §2, but no test marks a
   request with `AllowEarlyData` and watches it enter early data through
-  `Selecting`. `http-ng-h3`'s own suite does that for the member.
+  `Selecting`. `hclient-h3`'s own suite does that for the member.
 
 And four about the handover (§3.1), each of which is a claim this document
 makes and a measurement it does not:
@@ -601,7 +601,7 @@ the four predictions was the reason the work had not started.
 This subsection is what was predicted before the work; §9 is what the work
 found. Four of the five bullets held. The one that did not is the negative
 half, and it did not hold in the direction the bullet expects: the failure
-cache `http-ng-native` already has is **not** the one this needed, and the
+cache `hclient-native` already has is **not** the one this needed, and the
 one this needs is still not built — §9.3.
 
 It is a **response header**, so it can only help the *next* connection: the
@@ -611,18 +611,18 @@ needs, and none of it is in this crate:
 
 - **A parser** for RFC 7838 §3's field value — `h3=":443"; ma=86400;
   persist=1`, a list, with quoted alt-authorities and parameters. Closest
-  precedent in this tree: `http-ng-cookie`'s `Set-Cookie` parsing, which is
+  precedent in this tree: `hclient-cookie`'s `Set-Cookie` parsing, which is
   sans-io and clockless for the same reasons this would want to be.
 - **A cache**, and this is the part that makes it deliverable 4 rather than
   3. Keyed by origin, holding the advertised protocol and alt-authority,
   with `ma` as its lifetime — a real TTL, supplied by the server, which is
   the thing `SvcbEndpoint` does not carry and the reason §3 gives for having
   no cache at all today. It needs `Timer` (the seam through which time
-  reaches a transport here — `http-ng-native`'s negative cache is the model,
+  reaches a transport here — `hclient-native`'s negative cache is the model,
   including its refusal to use `std::time::Instant::now()` so that a caller
   testing under `tokio::time::pause()` sees what the transport sees).
 - **A negative half**, and the argument for it is already written in
-  `http-ng-native`'s `discovery` module: *the cache of what was advertised
+  `hclient-native`'s `discovery` module: *the cache of what was advertised
   is Alt-Svc's, the cache of what failed is the connector's*, and the
   advertisement's source does not change what a blocked port costs. So the
   failure half may already have a home, and the first task is to check
@@ -638,7 +638,7 @@ needs, and none of it is in this crate:
 ### The race — a hedge, not a chooser (deliverable 5) — **measured, and since built**
 
 > **Built.** [`docs/v04-race.md`](v04-race.md) is the work.
-> `http_ng_select::Selecting::hedging(head_start)`, off until it is called.
+> `hclient_select::Selecting::hedging(head_start)`, off until it is called.
 > Everything below is what this section predicted and argued for **before**
 > the staged connect existed, and it is kept because one of its central
 > claims has since stopped being true — §7.6's *"a race made of two
@@ -668,7 +668,7 @@ this.
 > *"A fixture that can actually block UDP/443, which loopback cannot."*
 
 It can, and one has been sitting in this repository since v0.3.
-`crates/http-ng-h3/tests/live.rs`'s `black_hole()` binds a UDP socket, never
+`crates/hclient-h3/tests/live.rs`'s `black_hole()` binds a UDP socket, never
 answers, and **holds** it. Holding it is the whole thing: an *unbound* port
 makes the kernel send ICMP port-unreachable, which is a firewall `REJECT`; a
 bound socket that never replies emits nothing at all, which is a `DROP` —
@@ -694,13 +694,13 @@ well, so the ICMP is emitted *and* delivered — and quinn ignores it: neither
 
 #### 7.2 Where the harness is and how the numbers were taken
 
-`crates/http-ng-select/tests/race_cost.rs`. Every test in it is
+`crates/hclient-select/tests/race_cost.rs`. Every test in it is
 `#[ignore]`d and **prints rather than asserts**, which is the only shape a
 timing-based harness is allowed here: the file's output is numbers, not a
 verdict, so it cannot become the fourth flake. Run it with
 
 ```text
-cargo nextest run -p http-ng-select --test race_cost --run-ignored all \
+cargo nextest run -p hclient-select --test race_cost --run-ignored all \
     --no-capture -j1
 ```
 
@@ -736,7 +736,7 @@ functions of the path at all.
 #### 7.3 The four measurements
 
 **M1 — what a QUIC connect to a black hole costs today, end to end.**
-`http_ng_h3::H3::execute` with no `Timeouts::connect` set, three runs:
+`hclient_h3::H3::execute` with no `Timeouts::connect` set, three runs:
 **30.005 s, 30.003 s, 30.005 s** (debug), **30.002 s, 30.002 s, 30.006 s**
 (release) — a spread of 4 milliseconds across six runs on two profiles.
 v0.3's 30 s is confirmed for this shape rather than reused.
@@ -800,11 +800,11 @@ every run, debug and release alike. It is entirely in the head —
 `execute`-to-head 42.9 ms, head-to-end-of-body 8.7 µs — it is unchanged by
 an IP literal, so it is not RFC 8305's `resolution_delay`, and it is
 unchanged between debug and release, so it is not crypto. It is **Nagle
-meeting the peer's delayed ACK**: `http_ng_rt::TcpOpts::default()` is
+meeting the peer's delayed ACK**: `hclient_rt::TcpOpts::default()` is
 all-off — *"the user turns nodelay on, not us"*, `caps.rs` — so every
 `Native` connection this workspace makes carries Nagle, and turning it off
 takes the same head to 0.72 ms. Recorded in §8 as a finding for
-`http-ng-native`'s neighbourhood rather than fixed here.
+`hclient-native`'s neighbourhood rather than fixed here.
 
 **M3 — what a race costs when QUIC wins.** The hedge's whole justification.
 Four head starts against a live QUIC origin, both members real, counters
@@ -849,7 +849,7 @@ they are different ones is wrong.
 | nothing bound on UDP (`REJECT`, ICMP) | **30.001 – 30.003 s** | tcp wins in 45.0 – 50.9 ms | tcp wins in 343.6 – 347.2 ms |
 
 **Both time out, at the same 30 s.** An origin with no HTTP/3 server at all
-is indistinguishable to `http-ng-h3` from a firewall dropping every packet
+is indistinguishable to `hclient-h3` from a firewall dropping every packet
 — §7.1 has the mechanism. So there is no cheap "this origin has no h3"
 signal to build a policy on; a race, or a memory, or nothing.
 
@@ -878,12 +878,12 @@ exceed that, or M3's zero-head-start row is what happens — the hedge stops
 being a hedge and becomes a coin toss that duplicates requests.
 
 The honest derived form is **an RTT observation for that origin**, and
-`http-ng-select` has nowhere to keep one. The Alt-Svc cache added in §9 is
+`hclient-select` has nowhere to keep one. The Alt-Svc cache added in §9 is
 keyed by origin and holds a server-supplied lifetime; an RTT is neither
 server-supplied nor covered by `ma`, so it is a second store rather than a
 field. Until that exists the head start is a constant, and the constant this
 workspace should use is **250 ms** — not a new number, but
-`http_ng_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
+`hclient_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
 which is RFC 8305 §5's recommended Connection Attempt Delay and is already
 the answer this codebase gives to the structurally identical question one
 layer down ("how long do I give the preferred family before trying the
@@ -934,7 +934,7 @@ moment there is no connection, so there is no driver — `H3` spawns one after
 finding.** Dropping the future stops *this side*, exactly as
 `Transport::execute`'s MUST requires — and the origin still received a
 complete HTTP request in nine of the twelve zero- and one-millisecond arms,
-with Nagle on and with it off. That is not a defect in `http-ng-native`, and
+with Nagle on and with it off. That is not a defect in `hclient-native`, and
 it cannot be fixed there: it is what `execute`'s own
 doc says the promise excludes: *"This is a claim about this side, and
 deliberately not about the server's — the request may already have arrived
@@ -960,7 +960,7 @@ buffered body is `RetryKind::Free`. `docs/h3-research.md` §3.5's whole
 argument for 0-RTT applies here unchanged.
 
 **And a race is the second thing to break the sentence that section quotes
-as the reason `http-ng-native` needed no idempotency judgement.** W2's one
+as the reason `hclient-native` needed no idempotency judgement.** W2's one
 retry is safe because *"nothing to decide about idempotency: this is not a
 second request, it is the first one, which never left"* — hands the request
 back only when not a byte reached the wire. §3.5 already noted that 0-RTT
@@ -1002,7 +1002,7 @@ make. That is the strongest argument that the answer is the seam.
    the same gap was reached twice more from v0.4 W2. Three things it settles
    that this item states loosely. It is **not** a method on `Transport`
    (`wasi:http` 0.3's client interface is one function with no connection
-   resource; `http-ng-fetch` declares `timeouts.connect = false` because
+   resource; `hclient-fetch` declares `timeouts.connect = false` because
    `AbortSignal` is one deadline) but a staged pair on the backends that
    have a connector, which is `Prefetch`'s decision one phase later. It has
    to hand back a **handle** rather than warm a pool, because only a handle
@@ -1016,7 +1016,7 @@ make. That is the strongest argument that the answer is the seam.
    with a second caller and a number.
 
    **Since built**, for §9.3's caller rather than for this one —
-   `http_ng_select::H3Failures`,
+   `hclient_select::H3Failures`,
    [`docs/v04-staged-connect.md`](v04-staged-connect.md) §3. Item 3 is
    discharged too: the seam exists, on both stacks. Items 1 and 2 are where
    they were, and item 2 is *nearly* where it was — the sequential fallback
@@ -1047,23 +1047,23 @@ vertical, one claim.
 All are in read-only territory for this workstream and are recorded here
 rather than fixed.
 
-1. ~~**`http-ng-native` has no way to be told a record has already been
+1. ~~**`hclient-native` has no way to be told a record has already been
    fetched**, so the type-65 query is made twice on the TCP path at the
    default port (§3). Three possible shapes are listed there.~~
-   **Closed** — §3.1. The shape is `http_ng_native::Prefetch`, and it is
+   **Closed** — §3.1. The shape is `hclient_native::Prefetch`, and it is
    not any of the three as they were stated: the record is not *handed to*
    the connector, it is fetched **by** the connector and handed back
    attached to the request it was fetched for, which is what keeps a
    caller from supplying one. The kept row of the DNS table is 1.
-2. **`http-ng-h3`'s doc example does not compile on its own.** `cargo test
-   --doc -p http-ng-h3 --all-features` fails: the example calls
+2. **`hclient-h3`'s doc example does not compile on its own.** `cargo test
+   --doc -p hclient-h3 --all-features` fails: the example calls
    `Rustls::with_webpki_roots()`, which lives behind
-   `http-ng-tls-rustls`'s `webpki-roots` feature, and that crate's
+   `hclient-tls-rustls`'s `webpki-roots` feature, and that crate's
    dev-dependency on it enables `quic` alone. It passes under
    `--workspace` only because another member's dev-dependency turns
    `webpki-roots` on and Cargo unifies features. Found while checking that
    *this* crate's own example compiles — which needed a
-   `http-ng-dns-system` dev-dependency it did not have, so the same defect
+   `hclient-dns-system` dev-dependency it did not have, so the same defect
    was one line away here. No CI job runs `cargo test --doc` at all, which
    is why it has been able to sit there; `AGENTS.md`'s "Running the tests"
    section now says so.
@@ -1088,7 +1088,7 @@ rather than fixed.
    plaintext `http://` — where the request head is the connection's first
    write — never stalls at all.
 
-   The policy question this bullet handed to `http-ng-rt` was answered
+   The policy question this bullet handed to `hclient-rt` was answered
    the other way. `TcpOpts::default()` is **unchanged**: a set option
    there is a *refusal*, so every backend that left `TcpConnect::APPLIES`
    at its `NONE` default would start failing every connect for an option
@@ -1103,7 +1103,7 @@ rather than fixed.
    pooled-reuse race it never used to reach — 9 failing runs in 20 at
    `-j16` against 0 in 20 at `-j1`, on the same binary, all of them
    `Connect / hyper::Error(Shutdown, BrokenPipe)`. It is the residual
-   window `http-ng-native`'s `h1.rs` names in its own comment, and the
+   window `hclient-native`'s `h1.rs` names in its own comment, and the
    fixture here is what makes it reachable: one response per connection,
    then a close, with no `Connection: close`.
 5. **`TokioHandle` cannot be asked for `nodelay`, though it applies it.**
@@ -1118,13 +1118,13 @@ rather than fixed.
    `TokioHandle` is the runtime `Selecting` requires — `H3` needs `Spawn` —
    so the finding above is unfixable from a selecting build until the
    constant is restated. One line in
-   `crates/http-ng-rt-tokio/src/handle.rs`.
+   `crates/hclient-rt-tokio/src/handle.rs`.
    **Closed** — `handle.rs:181` declares `TcpOptsSupport::ALL`. It is
    also now load-bearing rather than merely correct: `Native::new` reads
    `APPLIES` to decide whether to ask for `nodelay` at all, so a
    `TokioHandle` that had kept the trait's `NONE` would silently keep the
    41 ms of finding 4 for every `Selecting` build.
-   `http-ng-native`'s `tcp_opts.rs` carries the tripwire for all three
+   `hclient-native`'s `tcp_opts.rs` carries the tripwire for all three
    shipped runtimes, in `const` blocks, so a regression is a build
    failure rather than a red test.
 
@@ -1132,7 +1132,7 @@ rather than fixed.
 
 ## 9. Alt-Svc — the slow tier, built (deliverable 4)
 
-`crates/http-ng-select/src/altsvc.rs`, plus about thirty lines in
+`crates/hclient-select/src/altsvc.rs`, plus about thirty lines in
 `src/lib.rs`. §7 above is the prediction; this is the work.
 
 **What it is.** An origin that publishes no HTTPS record can still say
@@ -1149,7 +1149,7 @@ other origin is ever chosen, and it is what browsers actually rely on.
 ### 9.1 The inversion, and it is the thing to read first
 
 This crate has **no cache for the fast tier, deliberately**, and §3 gives
-the reason in `http-ng-native`'s words: *"this origin has no HTTPS record"
+the reason in `hclient-native`'s words: *"this origin has no HTTPS record"
 is a DNS answer with a TTL of its own, which `SvcbEndpoint` does not carry,
 and inventing a lifetime for someone else's answer is how a resolver's cache
 and ours drift apart.*
@@ -1169,7 +1169,7 @@ It is said in the module doc as well as here, because the next reader will
 meet the code before the document.
 
 The clock is `R: Timer`, which meant `Selecting::new` gained an `R`
-parameter. Never `std::time::Instant::now()` — `http-ng-native`'s negative
+parameter. Never `std::time::Instant::now()` — `hclient-native`'s negative
 cache gives that reason for its own, and it is that `Timer` is the one seam
 through which time reaches a transport here, so a caller testing under
 `tokio::time::pause()` sees what the transport sees. `AltSvcCache` itself
@@ -1181,7 +1181,7 @@ without waiting 24 hours.
 
 Hand-written, ~200 lines, **no new dependency**. That is a decision and not
 a default: the grammar is a comma list of `token "=" quoted-string` with
-two parameters, `http-ng-cookie`'s `Set-Cookie` parser is the in-tree
+two parameters, `hclient-cookie`'s `Set-Cookie` parser is the in-tree
 precedent for exactly this shape, and a crate would put a third party
 between this workspace and a field a remote peer controls for less code
 than the crate's own manifest. `cargo deny --all-features check` is green
@@ -1222,7 +1222,7 @@ returns.
 deliberate: `AltSvcCache` keeps one bit per origin — *this origin advertised
 `h3` at its own authority* — because that is the only part this transport
 can act on, and *"a field carried but never read is how the previous round
-of this plumbing came to sit unused"* (`http-ng-native`'s `discovery`).
+of this plumbing came to sit unused"* (`hclient-native`'s `discovery`).
 
 **An alternative at another host or port is understood and not acted on**,
 and this is a finding rather than a shortcut. RFC 7838 §2: *"the Host header
@@ -1243,9 +1243,9 @@ are discharged, and how is recorded at the end of it.
 
 
 §7 predicted that *"the failure half may already have a home"* in
-`http-ng-native`'s connector. **Read before building, and it does not.**
+`hclient-native`'s connector. **Read before building, and it does not.**
 
-`http_ng_native::discovery::NegativeCache` is about a different fact. Its
+`hclient_native::discovery::NegativeCache` is about a different fact. Its
 subject is *"a TCP connect that used a discovered endpoint's port, hints,
 ALPN or ECH failed, so stop applying that origin's HTTPS record for five
 minutes"*. Three things follow, each checked in the source rather than
@@ -1257,14 +1257,14 @@ inferred:
   `use_tls && port == 443`). When `Selecting` routes a request to `H3`,
   `Native` is not called at all: the cache is neither read nor written.
 - **It is unreachable from here.** `mod discovery;` is private in
-  `http-ng-native`, `NegativeCache` is `pub(crate)`, and `Native`'s
-  `svcb_failures` field has no accessor. `http-ng-h3` has nothing of the
+  `hclient-native`, `NegativeCache` is `pub(crate)`, and `Native`'s
+  `svcb_failures` field has no accessor. `hclient-h3` has nothing of the
   kind — no negative cache, no suppression, no failure memory at all.
 - **Its own doc's sentence is still right, and it is about the other
   half.** *"The cache of what was advertised is Alt-Svc's, the cache of what
   failed is the connector's"* — the cache of what was advertised is now
   built, here. The cache of what failed is the connector's, and the
-  connector that would own an h3 failure is `http-ng-h3`, which has none.
+  connector that would own an h3 failure is `hclient-h3`, which has none.
 
 So there is no second cache and no disagreement. What there is instead is a
 **gap, stated rather than filled**: if an Alt-Svc entry sends a request to
@@ -1273,7 +1273,7 @@ transport remembers nothing about it. Two things stop it being built here,
 and they are the two that stop the race:
 
 1. **Without a fallback it degrades the caller rather than protecting
-   them.** A windowed suppression on `http-ng-native`'s model would cost one
+   them.** A windowed suppression on `hclient-native`'s model would cost one
    *failed* request per window per origin — where native's own costs none,
    because native falls back to the origin's addresses inside the same
    connect. The equivalent here is falling back from QUIC to TCP inside
@@ -1284,7 +1284,7 @@ and they are the two that stop the race:
    of the fallback** — [`docs/connect-only-seam.md`](connect-only-seam.md)
    §8. Ask the QUIC stack to *connect*, and a failed connect routes a
    request that was never handed to a transport at all: no retry, no
-   idempotence judgement, and `http-ng-native`'s own sentence true again —
+   idempotence judgement, and `hclient-native`'s own sentence true again —
    *"this is not a second request, it is the first one, which never left."*
    That makes this blocker the staged connect's first customer and the race
    its second, which is the reverse of the order both were written in.
@@ -1292,11 +1292,11 @@ and they are the two that stop the race:
    does not reliably surface to quinn, so the arm under test would be a
    multi-second handshake timeout — a clock-driven assertion, which is the
    shape three flakes in this workspace already came from. It wants the
-   `HTTP_NG_REQUIRE_TUNTAP` fixture §7 names for the race.
+   `HCLIENT_REQUIRE_TUNTAP` fixture §7 names for the race.
 
 Recorded in §6's spirit: **the failure half is not implemented and not
 tested**, and where it would live if the alt-authority were ever acted on is
-`http-ng-native`'s cache after all, because *"the alternative's port is
+`hclient-native`'s cache after all, because *"the alternative's port is
 blocked"* is a connector fact.
 
 **Both blockers are discharged, and the second one was the right worry
@@ -1304,7 +1304,7 @@ about the wrong premise.**
 
 1. Discharged by the staged connect, exactly as the note above predicted:
    `Selecting` asks `H3` to *connect*, and a failed connect routes a request
-   that was never handed to a transport. `http_ng_select::H3Failures` is the
+   that was never handed to a transport. `hclient_select::H3Failures` is the
    memory; the veto sits **after both tiers**, so a record listing `h3` at a
    UDP-blocked origin is covered too, and `RequireVersion(HTTP_3)` is
    answered before it as it is before the resolver and the cache.
@@ -1314,7 +1314,7 @@ about the wrong premise.**
    accept fails causally in one round trip, which produces that fact without
    producing a clock-driven test. The black hole is still used once, where a
    test needs the bound *spent* rather than a connect failed — the budget
-   A/B in `crates/http-ng-select/tests/h3_failure.rs`.
+   A/B in `crates/hclient-select/tests/h3_failure.rs`.
 
 The scope answer is `network_changed()`'s, and it is **not** the cache's
 answer: the failure memory clears *everything*, with no `persist` notion,
@@ -1328,7 +1328,7 @@ RFC 7838 §2.2 asks for something this crate cannot do, and says so in the
 same sentence: *"clients SHOULD remove from cache all alternative services
 that lack the 'persist' flag with the value '1' when they detect such a
 change, **when information about network state is available**."* To a
-`Transport` it is not — nothing in `http-ng-rt` reports an interface coming
+`Transport` it is not — nothing in `hclient-rt` reports an interface coming
 up, a route changing or a VPN connecting, and inventing one would be a
 runtime seam rather than a transport.
 
@@ -1386,14 +1386,14 @@ asserts zero lookups on both hops.
 
 ### 9.6 What it costs in DNS — the §3 table, re-run and extended
 
-`crates/http-ng-select/tests/dns_cost.rs`, five arms now. **The three
+`crates/hclient-select/tests/dns_cost.rs`, five arms now. **The three
 measured before this deliverable are unchanged**, re-run on this branch:
 
 | request | type-65 queries | |
 |---|---|---|
-| `https://origin/` chosen onto TCP | **2** | unchanged *by this deliverable* — this transport's, then `http-ng-native`'s own connector's. **It is 1 now**, and §3.1 is where that happened; nothing in this section moved it |
-| `https://origin/` chosen onto QUIC | **1** | unchanged — `http-ng-h3` does no SVCB lookup at all |
-| `https://origin:port/` | **1** | unchanged — `http-ng-native` skips discovery away from the default port |
+| `https://origin/` chosen onto TCP | **2** | unchanged *by this deliverable* — this transport's, then `hclient-native`'s own connector's. **It is 1 now**, and §3.1 is where that happened; nothing in this section moved it |
+| `https://origin/` chosen onto QUIC | **1** | unchanged — `hclient-h3` does no SVCB lookup at all |
+| `https://origin:port/` | **1** | unchanged — `hclient-native` skips discovery away from the default port |
 | any request carrying `RequireVersion` | **0** | unchanged |
 | `http://` or an IP literal | **0** | unchanged |
 
@@ -1407,7 +1407,7 @@ And the two the slow tier adds:
 One row is **inferred rather than measured**, and is marked as such in the
 file: a request the slow tier puts on QUIC at an origin's *default* port
 costs **1** rather than the 2 the same request costs on TCP, because the
-duplicate is `http-ng-native`'s and `http-ng-h3` makes no lookup — both
+duplicate is `hclient-native`'s and `hclient-h3` makes no lookup — both
 measured, in the first two rows. It is not measured directly for the same
 reason those two rows cannot connect at all: an advertisement has to arrive
 in a response, and an unprivileged test process cannot put a server on port
@@ -1423,12 +1423,12 @@ one addition: either can be made to send an `Alt-Svc` field, and the field
 can be changed **between** requests — which is what makes the tier testable
 at all, since an origin has to be able to advertise, then withdraw.
 
-`crates/http-ng-select/tests/`: `alt_svc.rs` (20 — end to end, request 1 on
+`crates/hclient-select/tests/`: `alt_svc.rs` (20 — end to end, request 1 on
 TCP and request 2 on QUIC), `altsvc_parse.rs` (31 — the parser, no socket
 and no clock), `altsvc_cache.rs` (19 — the cache, `now` handed in), and two
 more arms in `dns_cost.rs` (3 → 5). With the 25 that stand unchanged
 (`choice.rs` 12, `capabilities.rs` 10, `body.rs` 3): **100 tests**, all
-passing, `cargo nextest run -p http-ng-select --all-features`. (**104**
+passing, `cargo nextest run -p hclient-select --all-features`. (**104**
 since §3.1 added `record_handover.rs`; this section's count is the one
 §9.8's table was run against.)
 
@@ -1448,7 +1448,7 @@ company, and §3 decides it explicitly.
 
 ### 9.8 Mutation testing
 
-Anchor **100 tests**, `cargo nextest run -p http-ng-select --all-features`,
+Anchor **100 tests**, `cargo nextest run -p hclient-select --all-features`,
 verified before the run and again after every restore. Each patch had to
 match exactly once or the mutation was not run. The harness reads the
 **names** of the failing tests and refuses to score a run where the count of

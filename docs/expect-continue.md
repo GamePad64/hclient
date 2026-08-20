@@ -90,10 +90,10 @@ the same argument `Timeouts` is built on and the reason this is not a new
 
 - **The wrapper was the defect.** The bound was first a combinator *around*
   the exchange, and it held that whole future by value inside `execute`'s.
-  `http-ng-native`'s hook suite — **56 tests** — aborted with `SIGABRT` on
+  `hclient-native`'s hook suite — **56 tests** — aborted with `SIGABRT` on
   a stack overflow. It is folded into `within_first_byte` now: one race,
   two sleeps, no extra nesting. The cache work met the same edge one crate
-  over in the same week, which is why `http-ng/tests/future_size.rs`
+  over in the same week, which is why `hclient/tests/future_size.rs`
   exists — and why that guard did not catch this one: it measures
   `Client<MockTransport>`, and this grew `Native`'s own future.
 - **The fixture answered whether or not the body arrived**, so a client
@@ -111,7 +111,7 @@ the same argument `Timeouts` is built on and the reason this is not a new
 
 ### Mutations
 
-Anchor 273 (`http-ng-native --all-features`), `--no-fail-fast`.
+Anchor 273 (`hclient-native --all-features`), `--no-fail-fast`.
 
 | # | mutation | verdict | killed |
 |---|---|---|---|

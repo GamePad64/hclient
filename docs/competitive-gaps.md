@@ -78,7 +78,7 @@ written and was not re-read. What changed:
 evidence of staleness** — both had to be checked, and the cheap half is
 diffing the public surface rather than reading the changelog.
 
-`http-ng` was this tree at `96e8b28` when the document was written, and
+`hclient` was this tree at `96e8b28` when the document was written, and
 the `ng` column has been kept current since — ten of the thirteen ranked
 gaps closed between then and `5dc452d`, each row updated with the change
 that closed it.
@@ -99,7 +99,7 @@ reqwest's wasm branch is gated on
 `cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))`
 (`reqwest-0.13.4/Cargo.toml:245`), so `wasm32-wasip2` — whose `target_os` is
 `wasi` — falls into the *native* branch and drags in `hyper`, `tokio` and
-`mio`. `http-ng-wasi` builds for the same target in 3.9 s, also executed.
+`mio`. `hclient-wasi` builds for the same target in 3.9 s, also executed.
 
 **ureq 3.4.0 does build for `wasm32-wasip2`, and it actually works.** This
 one was a surprise, and it is the single most important comparator fact in
@@ -117,10 +117,10 @@ wasmtime 47.0.3, a real request over a real socket, TLS included. So "reaches
 WASI" is not unique to this workspace. What *is* different is the route, and
 the difference is not cosmetic: ureq goes through `wasi:sockets` (a raw TCP
 socket, with `rustls` + `ring` compiled to wasm doing the handshake inside
-the guest), where `http-ng-wasi` goes through `wasi:http` — the host's own
+the guest), where `hclient-wasi` goes through `wasi:http` — the host's own
 HTTP client, with no socket and no TLS stack in the guest at all. A component
 host that grants outbound HTTP and *not* raw sockets — which is the common
-sandbox policy, and the reason `wasi:http` exists — runs `http-ng-wasi` and
+sandbox policy, and the reason `wasi:http` exists — runs `hclient-wasi` and
 cannot run ureq. **Neither was tested against a host with sockets denied**,
 so that last sentence is an argument from the WIT rather than a measurement.
 
@@ -132,7 +132,7 @@ Legend: **Y** = a caller writes one call; **Y\*** = present with a stated
 restriction, named in the notes; **seam** = not a call, but reachable by
 implementing a public trait; **N** = absent; **—** = not checked.
 
-Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
+Columns: **ng** = `hclient` (all features, native), **rq** = reqwest 0.13.4,
 **uq** = ureq 3.4.0, **cu** = the `curl` 0.4.50 binding / `isahc` 2.0.1,
 **br** = the browser story (reqwest's wasm build, `gloo-net` 0.7.0).
 
@@ -163,12 +163,12 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 |---|---|---|---|---|---|---|
 | streaming response body | Y | Y | Y | Y | Y | ng hands back an `http_body::Body`; rq adds `bytes_stream()` behind `stream` |
 | streaming request body | Y | Y | Y | Y | Y\* | |
-| **full duplex** | Y\* | — | N | — | Y\* | ng: `true` on `http-ng-h3` and on h2, and the capability still reports the HTTP/1.1 **floor** — see §5 |
+| **full duplex** | Y\* | — | N | — | Y\* | ng: `true` on `hclient-h3` and on h2, and the capability still reports the HTTP/1.1 **floor** — see §5 |
 | replay contract knowable before sending | **Y** | N | N | N | N | `RetryKind::{Free, ViaFactory, Impossible}`, and multipart derives it from its parts |
 | streaming multipart | Y | Y | — | Y | — | ng: any streaming part makes the whole form `Streaming`/`Impossible` |
 | response trailers reach the caller | Y | N | N | **Y** | N | ng on h2 and h3; read via `into_parts()`, not `collect()`. `isahc` 2.0.1 has a `Trailer` handle with `try_get`, `wait` and `wait_timeout` (`src/trailer.rs:26-107`) — a *blocking* read, which is the shape a curl-backed client can offer and an async one cannot |
 | request trailers | Y\* | N | N | — | N | sent on h1 and h2, and `Capabilities::request_trailers` understates the h2 path — a known mismatch, `v03-acceptance.md:3132` |
-| a response body size limit | Y | N | **Y** | Y | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `http-ng`/`http-ng-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
+| a response body size limit | Y | N | **Y** | Y | N | closed — `ClientBuilder::response_limit`, counting **decompressed** bytes, which is the axis a decompression bomb lives on. Unset by default, unlike ureq: a ceiling this crate chose would fail a caller's legitimate large download. **ureq defaults to 10 MB** on `read_to_string`/`read_to_vec`/`read_json` and says so where the raw reader is handed over — *"a malicious server could send gigabytes"* (`ureq-3.4.0/src/body/mod.rs:36, :215-217`). ng has none anywhere in `hclient`/`hclient-core`: grepped `max_body`/`size_limit`/`body_limit`, and the only hits are the cache's own `Limits` |
 | header size / count limits | Y | — | Y | Y | n/a | closed on both protocols — `Native::h1_opts` (`max_headers`, `max_buf_size`) and `H2Opts::max_header_list_size`. Neither is complete without the other: a transport that negotiates ALPN speaks whichever the server picked. `h1_opts` is **fallible** where `h2_opts` is not, because hyper panics below 8192 and a caller's number must not reach a `panic!` inside a connect. `ureq…/src/config.rs:586` |
 | non-destructive body read | Y | N | — | — | — | `Collected` keeps status/headers/url after `.text()` — reqwest #1542 |
 
@@ -177,12 +177,12 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | capability | ng | rq | uq | cu | br | note |
 |---|---|---|---|---|---|---|
 | HTTP/1.1 | Y | Y | Y | Y | (browser's) | |
-| HTTP/2 | Y\* | Y | N | Y | — | ng behind `http-ng-native/http2`, off by default |
+| HTTP/2 | Y\* | Y | N | Y | — | ng behind `hclient-native/http2`, off by default |
 | h2 multiplexing on by default | N | Y | — | Y | — | ng: `Native::multiplexed()`, opt-in, because it needs `R: Spawn` |
 | h2 tuning (window, frame size, keepalive PING, prior knowledge) | Y\* | Y | N | Y | N | closed for the settings frame — `Native::h2_opts`: both windows, `max_frame_size`, `max_header_list_size`. Keepalive, an adaptive window and prior knowledge are still absent, each for its own reason rather than as a batch. See G8; reqwest's eight are `reqwest-0.13.4/src/async_impl/client.rs:1563-1674` |
 | HTTP/3 | Y | Y\*\* | N | Y\* | — | **rq requires `RUSTFLAGS='--cfg reqwest_unstable'`** (`src/lib.rs:252`) **and a per-request `.version(HTTP_3)`** — the only dispatch site matches on the request's version (`async_impl/client.rs:2638`), so `http3_prior_knowledge()` does not route anything; cu depends on the libcurl build — and `isahc` 2.0.1 makes that dependence readable rather than a build-time surprise: `VersionNegotiation::http3()` exists and `info.rs:47` asks `curl_info().feature_http3()` at run time, so a caller can find out whether the linked libcurl has it |
 | WebSocket | Y | **N** | N | **N** | Y | zero matches for `websocket` in all of `reqwest-0.13.4/src/`. And **libcurl 8.21 has a WebSocket API that the Rust binding does not expose** — zero files matching `CURLWS`/`ws_send`/`ws_recv`/`websocket` in either `curl-0.4.50/src/` or `curl-sys-0.4.90/src/`, so the capability exists in the C library and not in Rust |
-| WebTransport | **Y** | N | N | N | N | `http-ng-webtransport`: sessions, bidi streams, datagrams, close capsules |
+| WebTransport | **Y** | N | N | N | N | `hclient-webtransport`: sessions, bidi streams, datagrams, close capsules |
 | Server-Sent Events | **Y** | **N** | N | N | Y | zero matches for `eventsource`/`text/event-stream` in `reqwest-0.13.4/src/`; ng has a decoder *and* reconnection with `Last-Event-ID` |
 | `1xx` / `103 Early Hints` observable | **Y** | N | — | — | N | `Native::watching_1xx()` + `Event::Informational` |
 | `Expect: 100-continue` | **Y** | N | **Y** | Y | N | `Native::expect_continue(after)`; **hyper's client does not do this**, so reqwest cannot. uq has it *and* a dedicated `timeout_await_100` (`src/config.rs:721`), which is the same "a wait ending in *proceeding*, not in failure" distinction this workspace argues for keeping out of `Timeouts`. **`isahc` 2.0.1 does it by default** and lets a caller turn it off (`ExpectContinue`, `src/config/mod.rs:209`) — the opposite default from ng's, where a default that waited would be a default that hangs against a server ignoring `Expect` |
@@ -205,8 +205,8 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | Happy Eyeballs (RFC 8305) | Y | Y | — | Y | (browser's) | |
 | HTTPS/SVCB records consulted | **Y** | N | N | Y\* | (browser's) | asked in the same round as A/AAAA — measured, 404.6 ms → 0.8 ms |
 | Alt-Svc | **Y** | **N** | N | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/`, and `isahc` 2.0.1 says so about itself — its version-negotiation doc reads *"In the future, headers such as `Alt-Svc` will be used"* (`src/config/mod.rs:788`), which is a comparator naming its own absence |
-| DNS-over-HTTPS | Y | N | N | Y | N | `http-ng-dns-doh`, 22 crates, no tokio/hyper/h2 |
-| choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `http-ng-select`, from the HTTPS record, with a negative cache |
+| DNS-over-HTTPS | Y | N | N | Y | N | `hclient-dns-doh`, 22 crates, no tokio/hyper/h2 |
+| choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `hclient-select`, from the HTTPS record, with a negative cache |
 | race the two stacks | **Y** | N | N | Y\* | (browser's) | off by default; `curl` has `--http3-only`/Happy-Eyeballs-for-h3 at the libcurl level |
 
 ### 2.5 TLS
@@ -214,9 +214,9 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | capability | ng | rq | uq | cu | br | note |
 |---|---|---|---|---|---|---|
 | rustls backend | Y | Y | Y | — | n/a | |
-| platform TLS backend | Y | Y | Y | Y | n/a | `http-ng-tls-native-tls` |
+| platform TLS backend | Y | Y | Y | Y | n/a | `hclient-tls-native-tls` |
 | system trust store | Y | Y | Y | Y | n/a | `Rustls::with_platform_verifier` |
-| add a root, use only supplied roots, client certs, min version, disable verification | seam | Y | Y | Y | n/a | **`Rustls::from_config(Arc<rustls::ClientConfig>)`** (`http-ng-tls-rustls/src/lib.rs:53`) makes every one of these expressible, at the cost of writing rustls directly instead of a named setter |
+| add a root, use only supplied roots, client certs, min version, disable verification | seam | Y | Y | Y | n/a | **`Rustls::from_config(Arc<rustls::ClientConfig>)`** (`hclient-tls-rustls/src/lib.rs:53`) makes every one of these expressible, at the cost of writing rustls directly instead of a named setter |
 | ALPN reported back | Y | Y | — | Y | n/a | `TlsConnect::reports_alpn`, and h2 is only offered over a backend that answers `true` |
 | 0-RTT / early data | **Y** | N | N | Y\* | n/a | admitted per request by `AllowEarlyData` and by nothing else |
 | ECH | N\* | N | N | Y\* | n/a | refused deliberately: no backend here applies one, so the record's `ech_config_list` is gated behind `TlsConnect::applies_ech` |
@@ -230,7 +230,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | absolute-form for `http://` | Y | Y | — | Y | — | |
 | SOCKS5 | Y | Y\* | Y\* | Y | — | rq behind `socks`; uq behind `socks-proxy` |
 | SOCKS4/4a | Y | Y | — | Y | — | closed — one type, since 4a is signalled inside a SOCKS4 request rather than negotiated. The hostname form always, so nothing is resolved locally. `isahc` 2.0.1 takes all four as proxy URI schemes — `socks4`, `socks4a`, `socks5`, `socks5h` (`src/config/mod.rs:471-474`) — which is libcurl's spelling and makes the remote-DNS choice a scheme rather than a decision. See G7 |
-| SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`http-ng-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
+| SOCKS remote DNS | **Y, always** | Y\* | — | Y | — | ng sends `ATYP=0x03 DOMAINNAME` unconditionally (`hclient-native/src/proxy.rs:534`, doc at `:425` — *"a name, never an…"*), so the leak is not reachable. rq picks from the **scheme**: `socks4`/`socks5` → `DnsResolve::Local`, `socks4a`/`socks5h` → `DnsResolve::Proxy` (`src/connect.rs:540-541`), so a `socks5://` URL leaks DNS by default |
 | read the proxy from the environment | **N** | Y | Y\* | Y | n/a | **refused as policy** — see §4 |
 | `NO_PROXY` matching | Y\* | Y | — | Y | n/a | ng: `Proxy::bypass([..])` takes a list the caller wrote; it does not read `NO_PROXY`, and has **no CIDR** deliberately, where `hyper-util` 0.1.20's matcher does |
 | a per-request/per-URL proxy rule | Y\* | Y | — | Y | n/a | closed for the per-scheme rule — an ordered list, `Proxy::only_for` and first-match-wins. No closure, and one proxy *protocol* per transport: erasing `P` would erase the IO with it. See G7 |
@@ -249,7 +249,7 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 | cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
 | **public-suffix rules in the jar** | **Y** | **N** | **N** | **Y\*, and a third answer** | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it. **`isahc` 2.0.1 does exactly that, and it is the third answer to this question rather than a fourth vote for one of the two above.** Behind its `psl` feature (not in `default`) it carries *both* a compiled-in list, through the `psl` crate, *and* a copy downloaded from `publicsuffix::LIST_URL` on a 24-hour TTL, refreshed on a background thread and falling back to the compiled-in one when the network fails (`src/cookies/psl.rs:33-137`). Its module doc gives the argument against this workspace's choice in as many words: *"HTTP clients tend to be used in a much different way and are often embedded into long-lived software without frequent (or any) updates, [so] it is better for us to download a fresh copy from the Internet every once in a while"* — and then answers itself, *"a stale list is better than no list at all"*. ng reaches the same end differently: the list is a seam (`CookieJar<P>`), and since G6 a caller can hand a fresher one through `Client`, so what isahc does by default is here a decision the caller makes and pays for |
 | **a pluggable cookie store** | Y | Y | — | Y\* | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
-| RFC 9111 response cache | **Y** | N | N | N | (browser's) | `http-ng-cache`: freshness, validation, `Vary`, both sides' directives |
+| RFC 9111 response cache | **Y** | N | N | N | (browser's) | `hclient-cache`: freshness, validation, `Vary`, both sides' directives |
 | **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
 | gzip | Y\* | Y\* | Y\* | Y | (browser's) | |
 | brotli | Y\* | Y\* | Y\* | Y | (browser's) | |
@@ -289,10 +289,10 @@ Columns: **ng** = `http-ng` (all features, native), **rq** = reqwest 0.13.4,
 On the last row: ureq ships `Middleware` in the crate
 (`src/middleware.rs:16`, bounded `Send + Sync + 'static`); reqwest does not
 and the ecosystem answer is the separate `reqwest-middleware` crate; here it
-is `http-ng-tower`, which goes **both** ways — `TransportService` makes a
+is `hclient-tower`, which goes **both** ways — `TransportService` makes a
 `Transport` into a `tower::Service` so `tower-http`'s stack applies, and
 `ServiceTransport` makes any `tower::Service` into a `Transport`
-(`crates/http-ng-tower/src/lib.rs:265`), which is how someone would put
+(`crates/hclient-tower/src/lib.rs:265`), which is how someone would put
 `hyper-util`'s own client underneath this facade. The second direction has
 to be told its capabilities as an argument, *"because a `Service` has none,
 and this adapter must not invent them"* — the capability rule applied to a
@@ -349,7 +349,7 @@ comparison. `ureq` exists entirely to serve it, and reqwest ships
 `blocking` for it.
 
 The refusal is coherent with everything else: a blocking facade needs a
-runtime to block on, and picking one is exactly the choice `http-ng-rt`
+runtime to block on, and picking one is exactly the choice `hclient-rt`
 exists to avoid. A caller can already write
 `futures_executor::block_on(client.get(u).send())` on a bare executor —
 `two_runtimes.rs` proves that path works with no reactor — so what is
@@ -375,7 +375,7 @@ response, status `0`, empty header list, null body, no readable
 `Location`. So `Capabilities::redirects` could not honestly move from
 `Internal` to `Transparent`; it would claim a policy `Client` could act on
 for exactly the case where redirects matter and the browser gives nothing.
-`http-ng-urlsession` is the backend that genuinely reports `Transparent`,
+`hclient-urlsession` is the backend that genuinely reports `Transparent`,
 which is what makes the two comparable at all. `redirect: "error"` is a
 third thing — fail rather than follow — and it is `RedirectPolicy::None`
 with the answer thrown away.
@@ -391,7 +391,7 @@ request; what the browser does with it afterwards is the browser's.
 
 **Finding this also found that the browser suite had not compiled since
 2026-08-16.** `Event::Informational` landed with the `1xx` work and
-`http-ng-fetch`'s `tests/hooks.rs` never gained an arm, so every browser
+`hclient-fetch`'s `tests/hooks.rs` never gained an arm, so every browser
 binary in that crate failed to build through six green merges —
 `cargo nextest run --workspace --all-features` does not build for
 `wasm32-unknown-unknown`, and `just test-browsers` is its own CI job.
@@ -441,7 +441,7 @@ the first: a recording body holds a cache handle, so `S` on the cache is
 `S` on the public `ClientBody` alias, and the arity of a public alias must
 not change with a feature Cargo may unify on. The second is that a
 defaulted parameter needs a default **type**, and both crates are optional
-dependencies — `Client<T, Tm, P = http_ng_cookie::BuiltinList, ..>` names
+dependencies — `Client<T, Tm, P = hclient_cookie::BuiltinList, ..>` names
 a type that does not exist without the feature, so the declaration would
 fork four ways over a `Client` that is already forked once.
 
@@ -542,7 +542,7 @@ client's `max_frame_size`.
 
 **The shape this document proposed — a third `RedirectPolicy` variant
 carrying a function — turned out to be wrong twice**, and finding out why
-was most of the work. `RedirectPolicy` lives in `http-ng-proto`, which is
+was most of the work. `RedirectPolicy` lives in `hclient-proto`, which is
 sans-io and clockless, and `redirect::decide` is a pure function of six
 values; a closure variant would make it *pure except for whatever the
 caller passed*. And `RedirectPolicy` is `Copy + PartialEq + Eq`, read out
@@ -639,11 +639,11 @@ announced.
 
 `Timeouts::resolve`, `TimeoutSupport::resolve` and `Phase::Resolve`, all in
 one change — the rule this field had to land under, and the one that kept
-`connect` off `http-ng-h3` until W1.
+`connect` off `hclient-h3` until W1.
 
 **What it bounds is not a phase, and finding that out was the work.**
 Happy Eyeballs interleaves resolution with connecting on purpose — the
-resolver is a `Stream` and `http-ng-native` starts dialling the first
+resolver is a `Stream` and `hclient-native` starts dialling the first
 address while the rest are still arriving — so there is no instant at which
 *resolution finished* for a bound to attach to. What is bounded is the wait
 for the **first address from either family**, which is exactly the failure
@@ -707,11 +707,11 @@ Removing that needs per-origin state with a lifetime nobody states, the
 question that made a cache dishonest for SVCB and honest for `Alt-Svc`.
 
 **NTLM and Negotiate are unchanged and still refused**: both need the
-platform's GSSAPI or SSPI, which is `http-ng-tls-native-tls`'s argument one
+platform's GSSAPI or SSPI, which is `hclient-tls-native-tls`'s argument one
 seam over and its own crate. Neither is a challenge/response this code
 could grow into.
 
-### G13. There is no way to name "any http-ng client"
+### G13. There is no way to name "any hclient client"
 
 `Transport::execute` is an `async fn` in a trait, so `dyn Transport` is not
 a thing, and `Native<R, T, D, H, P>` carries five type parameters where
@@ -719,7 +719,7 @@ a thing, and `Native<R, T, D, H, P>` carries five type parameters where
 generically writes `fn f<T: Transport>(c: &Client<T>)` and pushes the
 parameter to its own callers.
 
-`http-ng-tower::TransportService` is the erasure route — it boxes the future
+`hclient-tower::TransportService` is the erasure route — it boxes the future
 — and its own module doc records that the box is `!Send` and cannot be fixed
 here until return type notation stabilises (rust-lang/rust#109417).
 **Re-checked on 2026-08-19 against rustc 1.97.1: still `E0658`, "return
@@ -739,7 +739,7 @@ one — which nothing here had written down.
 `Transport` needs three things erased and only one of them is a wall:
 `type Body: http_body::Body<Data = Bytes>` boxes; `type Error` is already
 normalised, since `Client::execute` bounds it `Send + Sync + 'static`
-under amendment C1 and every backend here produces `http_ng_core::Error`
+under amendment C1 and every backend here produces `hclient_core::Error`
 anyway; and `execute`'s RPITIT future is the RTN wall.
 
 **`Timer` needs `type Instant: Copy + PartialOrd` erased, and `Copy` on a
@@ -750,9 +750,9 @@ here disagree:
 
 | clock | `type Instant` |
 |---|---|
-| `http_ng_rt_tokio::Tokio` | `tokio::time::Instant` |
-| `http_ng_rt_smol::Smol` | `std::time::Instant` |
-| `http_ng::NoClock` | `()` |
+| `hclient_rt_tokio::Tokio` | `tokio::time::Instant` |
+| `hclient_rt_smol::Smol` | `std::time::Instant` |
+| `hclient::NoClock` | `()` |
 
 A `NoClock` whose instant is `()` is not an accident to be tidied away, and
 its own doc says why in one line: *"`Copy + PartialOrd`, which is all
@@ -765,7 +765,7 @@ when it explains why the jar's `now` is `SystemTime::now()` and not the
 client's `Timer`.
 
 And the difference between the other two is **load-bearing on purpose**.
-`crates/http-ng/tests/two_runtimes.rs`'s module doc records it as the
+`crates/hclient/tests/two_runtimes.rs`'s module doc records it as the
 mutation that proves the runtime seam is real rather than decorative:
 adding `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s bounds
 breaks instantiation on `Tokio` (a wrapper type) and does not break it on
@@ -777,7 +777,7 @@ trait object would delete the property that test exists to demonstrate.
 - **A `!Send` erasure, now.** A `BoxTransport` whose `execute` returns
   `Pin<Box<dyn Future + '_>>` satisfies `Transport::execute`, which returns
   `impl Future` and is happy with any concrete future type — the same trick
-  `http-ng-tower` already plays one seam over. It gives one concrete client
+  `hclient-tower` already plays one seam over. It gives one concrete client
   type at `TransportService`'s recorded price: no `tokio::spawn`, no
   `axum`. Natural for a browser build, and it takes the main use away from
   a native one.
@@ -786,7 +786,7 @@ trait object would delete the property that test exists to demonstrate.
   wherever the concrete type is known. So a second trait with **no default
   body** — each backend that can, boxes its own future and says so — gives
   `Send` erasure on stable. That is `TcpConnect::connect_unix`'s shape
-  minus the default: `http-ng-native` could implement it, `http-ng-fetch`
+  minus the default: `hclient-native` could implement it, `hclient-fetch`
   structurally cannot, and its inability would be a compile error rather
   than a runtime surprise. It buys nothing for `Tm`, which is the paragraph
   above.
@@ -808,18 +808,18 @@ this document could fail.
 
 | absence | the rule that refuses it | where |
 |---|---|---|
-| ~~`deflate` and `zstd` decoding~~ | **reversed, and the row is kept because the reversal is the interesting part.** The `deflate` rule — *a client must not advertise a coding it may guess wrong about* — assumed the guess had to be made after a failure, as curl's is; it is answered from the first two bytes, which is a rule with no window. The `zstd` rule was *a third dependency for a coding no server sends unasked*, and the answer is that both premises were checked rather than argued: `deflate` costs **no** crate at all, and `zstd` costs two | `http-ng/src/decompress.rs` |
-| `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `http-ng/src/decompress.rs` |
+| ~~`deflate` and `zstd` decoding~~ | **reversed, and the row is kept because the reversal is the interesting part.** The `deflate` rule — *a client must not advertise a coding it may guess wrong about* — assumed the guess had to be made after a failure, as curl's is; it is answered from the first two bytes, which is a rule with no window. The `zstd` rule was *a third dependency for a coding no server sends unasked*, and the answer is that both premises were checked rather than argued: `deflate` costs **no** crate at all, and `zstd` costs two | `hclient/src/decompress.rs` |
+| `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `hclient/src/decompress.rs` |
 | request-body compression | server support is inconsistent; a clean manual path instead | design spec §9 |
 | reading `HTTP_PROXY`/`NO_PROXY` from the environment | reading the environment is *policy* and belongs to whoever builds the transport; a list the caller wrote is not policy | AGENTS.md, proxy section |
 | a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound | `docs/proxy-design.md` §1 |
 | a blocking API | out of scope by the problem statement | design spec §9 |
 | JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway | design spec §9 |
 | `no_std` / bare metal | `http` 1.x carries `compile_error!` for it; not this project's to reverse | AGENTS.md |
-| `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `http-ng-core/src/unversioned/websocket.rs:35` |
+| `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `hclient-core/src/unversioned/websocket.rs:35` |
 | permessage-deflate, subprotocol checking | left open in `docs/w4-upgrade-seam.md`; the browser negotiates extensions itself and exposes no control | same file, `:46` |
 | a `RequestBuilder::extension` setter | adding one for `AllowEarlyData` and not `RequireVersion` would be arbitrary; both is a facade question | `docs/v03-acceptance.md:3394` |
-| ECH | no backend here applies one, and `http-ng-tls-rustls` *refuses* a non-`None` ech — filling the field would make every ECH-publishing origin unreachable | AGENTS.md |
+| ECH | no backend here applies one, and `hclient-tls-rustls` *refuses* a non-`None` ech — filling the field would make every ECH-publishing origin unreachable | AGENTS.md |
 | RFC 6724 destination address selection | the full rule needs source address selection, i.e. a routing table, which no seam here provides; a partial one would look like compliance without being it | design spec §9 |
 | `stale-while-revalidate` | it needs somewhere to run the revalidation after the response was handed over, and this client does not spawn on a caller's behalf | AGENTS.md, cache section |
 | a WebSocket keep-alive by default, an h2 driver by default, an idle-socket reaper by default | a default stronger than the truth: not every `R` can `Spawn`, and a default that pings sends traffic nobody asked for | AGENTS.md, several places |
@@ -829,12 +829,12 @@ this document could fail.
 
 ---
 
-## 5. The reverse column: what `http-ng` has and the others do not
+## 5. The reverse column: what `hclient` has and the others do not
 
 Each row was checked against the comparators rather than assumed.
 
 **One `Transport` seam across five backends, and the same source builds for
-three targets.** `crates/http-ng/examples/portable.rs` compiles for native,
+three targets.** `crates/hclient/examples/portable.rs` compiles for native,
 `wasm32-wasip2` and `wasm32-unknown-unknown` from one file with **no
 `#[cfg]`**, and a CI job (`portable-example-three-targets`) fails if that
 stops being true. reqwest cannot do this and the reason is structural rather
@@ -854,7 +854,7 @@ for.** `fetch` requires `duplex: "half"` whenever the body is a
 setter among its fifty methods — surveyed exhaustively, not sampled. So
 `gloo-net` **cannot** send a streaming request body at all (`body` takes
 `impl Into<JsValue>`, `src/http/request.rs:52`, and nothing sets `duplex`),
-and `http-ng-fetch`'s `js_sys::Reflect` write through an unchecked ref
+and `hclient-fetch`'s `js_sys::Reflect` write through an unchecked ref
 (`convert.rs:519-527`) is the only route rather than a shortcut past a
 proper one. Worth knowing before anyone "cleans it up".
 
@@ -878,7 +878,7 @@ ureq installed a list, on nothing but plausibility, and reading
 `src/cookies.rs:172-180` is what corrected it.
 
 **A capability model that refuses at `build()` rather than ignoring at run
-time.** `check_supported` (`http-ng/src/config.rs:261`) turns a cookie jar
+time.** `check_supported` (`hclient/src/config.rs:261`) turns a cookie jar
 against a jar-owning backend, a cache against a caching backend, a
 `RedirectPolicy` against an internally-redirecting backend, and an
 unsupported timeout into a typed `UnsupportedCapability` **before a request
@@ -887,7 +887,7 @@ compiling a smaller API on wasm, which catches a subset at compile time and
 silently ignores nothing — but also cannot express "this backend does
 decompress internally, so do not decode again", which
 `DecompressionSupport::Internal` does. The rule that keeps the model honest
-is that a capability reports the **floor**, and `http-ng-select` is where
+is that a capability reports the **floor**, and `hclient-select` is where
 that rule bites hardest: five of six disagreeing fields take the weaker
 value and the rest make the constructor **refuse, naming the field**.
 
@@ -895,7 +895,7 @@ value and the rest make the constructor **refuse, naming the field**.
 `connect` / `first_byte` / `between_bytes` in `Timeouts` plus `total` on the
 client, settable per request (`RequestBuilder::timeouts`), and each measured
 against a server that misbehaves in exactly that way
-(`crates/http-ng-native/tests/timeouts.rs`, `crates/http-ng/tests/deadline.rs`).
+(`crates/hclient-native/tests/timeouts.rs`, `crates/hclient/tests/deadline.rs`).
 reqwest has `timeout`, `read_timeout`, `connect_timeout` and
 `pool_idle_timeout` on the **client** and one `timeout` per request.
 
@@ -920,7 +920,7 @@ settings.
 **HTTP/3 without an unstable flag, and WebTransport at all.** reqwest's
 `http3` feature refuses to compile without
 `RUSTFLAGS='--cfg reqwest_unstable'` (`reqwest-0.13.4/src/lib.rs:252`) and
-has done for two years. `http-ng-webtransport` — sessions, bidi streams,
+has done for two years. `hclient-webtransport` — sessions, bidi streams,
 datagrams, RFC 9297 close capsules — has no counterpart in any comparator;
 it was checked against `wtransport` 0.7.2, which shares no code with `h3`.
 
@@ -928,7 +928,7 @@ it was checked against `wtransport` 0.7.2, which shares no code with `h3`.
 matches for `eventsource` or `text/event-stream` in all of
 `reqwest-0.13.4/src/`; the ecosystem answer is `reqwest-eventsource` over
 `eventsource-stream`, whose specific defects the design spec §4.10
-enumerates. `http-ng` has the decoder *and* `Client::sse`'s reconnect with
+enumerates. `hclient` has the decoder *and* `Client::sse`'s reconnect with
 `Last-Event-ID`.
 
 **`Expect: 100-continue` and `1xx` observability.** hyper's client does not
@@ -947,7 +947,7 @@ VPN with hostname fidelity (an `NEAppProxyProvider` sees the name from a
 `URLSession` flow and only an address from a raw socket), the cellular /
 constrained / expensive / ultra-constrained network policy flags, App
 Transport Security's declarative pinning, and NTLM/Negotiate challenges.
-And it reports `RedirectSupport::Transparent` where `http-ng-fetch` must
+And it reports `RedirectSupport::Transparent` where `hclient-fetch` must
 report `Internal`, because a delegate can refuse a redirect and a browser
 cannot. One item of the four AGENTS.md lists is not actually on it — see
 §8.
@@ -972,10 +972,10 @@ which is exactly the signature `docs/proxy-design.md` §2 rejects here for
 the DNS-leak reason — and the reason `Prefetch::prepare` can hand a
 connector a fetched HTTPS record where `hyper-util` has no channel for one.
 
-**Sans-io crates a third party can use without the client.** `http-ng-proto`
+**Sans-io crates a third party can use without the client.** `hclient-proto`
 (RFC 3986 resolution, redirect rules, SSE decoding, the two URL encoders),
-`http-ng-cookie` (RFC 6265bis, clockless), `http-ng-cache` (RFC 9111,
-clockless, and not even depending on `http-ng-core`). reqwest has none.
+`hclient-cookie` (RFC 6265bis, clockless), `hclient-cache` (RFC 9111,
+clockless, and not even depending on `hclient-core`). reqwest has none.
 
 **ureq 3 is a much closer architectural relative than expected, and the
 difference between the two is worth stating exactly rather than claimed
@@ -996,11 +996,11 @@ difference.** ureq's is a *byte stream*:
 `buffers()`, `transmit_output(amount, timeout)`, `await_input(timeout)`,
 `is_open()`, `is_tls()` (`src/unversioned/transport/mod.rs:266-311`),
 bounded `Debug + Send + Sync + 'static`. It sits where
-`http_ng_rt::TcpConnect` sits, not where `http_ng_core::Transport` does, and
+`hclient_rt::TcpConnect` sits, not where `hclient_core::Transport` does, and
 that placement decides two things at once: a `wasi:http` or `fetch` backend
 **cannot implement it**, because neither has a byte stream to hand over, and
 a single-threaded backend cannot either, because of the `Send + Sync` bound.
-Both of those are exactly what `http_ng_core::Transport`'s shape — taken
+Both of those are exactly what `hclient_core::Transport`'s shape — taken
 from `wasi:http/client.send`, *"the poorest of the ambient APIs"*
 (`transport.rs:5-11`) — was chosen to allow. ureq's seam does what ureq
 needs, which is SOCKS, TLS and test doubles; it is not a smaller version of
@@ -1011,10 +1011,10 @@ this one.
 
 | build | crates |
 |---|---|
-| `http-ng`, `--no-default-features` | **18** |
-| `http-ng-rt-tokio` alone | 22 |
-| `http-ng-native`, `--no-default-features` | 32 |
-| `http-ng` + `default-transport` (native, tokio, rustls, system DNS) | **83** |
+| `hclient`, `--no-default-features` | **18** |
+| `hclient-rt-tokio` alone | 22 |
+| `hclient-native`, `--no-default-features` | 32 |
+| `hclient` + `default-transport` (native, tokio, rustls, system DNS) | **83** |
 | ureq 3.4.0, `--no-default-features --features rustls` | 23 |
 | ureq 3.4.0, default | 28 |
 | reqwest 0.13.4, `--no-default-features --features rustls` | 81 |
@@ -1064,13 +1064,13 @@ for 1.0* (design spec §10) list four:
 | condition | state |
 |---|---|
 | plugin traits validated against ≥3 backends | **met** — five: native, h3/select, wasi, fetch, urlsession |
-| ≥3 runtimes | **met** — tokio, smol, embassy, and quinn's through `http-ng-quinn`. **`compio` is named in decision D10 as a CI runtime and does not exist here**; grepped, one hit, in a `tree-guard` *absence* check |
+| ≥3 runtimes | **met** — tokio, smol, embassy, and quinn's through `hclient-quinn`. **`compio` is named in decision D10 as a CI runtime and does not exist here**; grepped, one hit, in a `tree-guard` *absence* check |
 | the `unversioned` quarantine is documented | not assessed here |
-| **`http-ng-rmcp` and `act` in production** | `http-ng-rmcp` **does not exist in this workspace**. It is named as "the second verification loop" in the v0.2 plan and as an `rmcp` adapter in the architecture diagram. `act` is the *first* loop and is present as `examples/portable.rs` |
+| **`hclient-rmcp` and `act` in production** | `hclient-rmcp` **does not exist in this workspace**. It is named as "the second verification loop" in the v0.2 plan and as an `rmcp` adapter in the architecture diagram. `act` is the *first* loop and is present as `examples/portable.rs` |
 | **not a single foreign type remains in the public API** | **flatly contradicted by AGENTS.md**, which states that `http::{Request, Response, HeaderMap, Uri, Method}` appear in the public API of ten crates and that this is necessary. See §8 |
 
 Two further planned crates named in the version plan are absent:
-`http-ng-espidf` and `http-ng-nyquest` (both v0.4).
+`hclient-espidf` and `hclient-nyquest` (both v0.4).
 
 So the honest answer to "is it full-featured yet" is: the *hard* half was
 done and the *ordinary* half was not. Every protocol capability a
@@ -1086,7 +1086,7 @@ paragraph was making. It sharpens it. Every one was found by *writing this
 document*, not by the test suite, which was green throughout and is green
 now; each took under a day once named. That is the signature of the class:
 cheap to fix, invisible from inside, and found only by someone trying to
-use the thing. A second real consumer — `http-ng-rmcp` — is still the
+use the thing. A second real consumer — `hclient-rmcp` — is still the
 argument, because whatever is next is equally invisible from here and this
 document cannot be written twice by the same reader.
 
@@ -1171,7 +1171,7 @@ sets `Accept-Encoding` keeps it exactly (`grpc-yardstick.md` row 20).
   from the WIT, not a measurement — nothing here was run against a host with
   `wasi:sockets` denied and `wasi:http` allowed.
 - **Nothing here was checked on Windows or macOS.** The Apple `URLSession`
-  rows rest on `http-ng-urlsession`'s own record, which states its four live
+  rows rest on `hclient-urlsession`'s own record, which states its four live
   tests are green on macOS 27.
 - ~~**`Capabilities::proxy` has a producer and still no reader.**~~
   **Answered, and the answer is bigger than the field.** `proxy` is not one
@@ -1213,16 +1213,16 @@ there are five backends rather than three. It is the first file a reader
 opens.
 
 **2. AGENTS.md does not mention four crates that exist.**
-`http-ng-tower`, `http-ng-rt-embassy`, `http-ng-dns-hickory` and
-`http-ng-mock` appear nowhere in it (grepped). Two of them are listed in
+`hclient-tower`, `hclient-rt-embassy`, `hclient-dns-hickory` and
+`hclient-mock` appear nowhere in it (grepped). Two of them are listed in
 `docs/v01-acceptance.md`'s *Deliberately not done* as things v0.1 would not
-do — *"hickory and DoH; middleware and `http-ng-tower`"* — and both now
+do — *"hickory and DoH; middleware and `hclient-tower`"* — and both now
 exist. The DoH half of that sentence *was* updated (AGENTS.md has a section
-on `http-ng-dns-doh`); the hickory and tower halves were not.
+on `hclient-dns-doh`); the hickory and tower halves were not.
 
 **3. "Microcontrollers are not reachable today" is now half true.**
 AGENTS.md says so and names two obstacles, `http` 1.x and `url`. `url` is
-gone and `http-ng-rt-embassy` exists — `embassy-net` sockets, `embassy-time`
+gone and `hclient-rt-embassy` exists — `embassy-net` sockets, `embassy-time`
 clock, running under `embassy_executor::Executor`, with a CI job
 (`embassy-tests-link-under-a-strict-linker`) watching it. The crate still
 imports `std::time::Duration`, so the `http` 1.x obstacle is intact and a
@@ -1237,7 +1237,7 @@ These cannot both stand. AGENTS.md is the contract and the spec is the older
 document, so the spec's condition is the one that should move — but it is
 currently the only written statement of what 1.0 requires.
 
-**5. The first item in `http-ng-urlsession`'s justification is already
+**5. The first item in `hclient-urlsession`'s justification is already
 reachable without it.** AGENTS.md says the crate *"exists for the list a
 userspace stack cannot reach on an Apple platform: enterprise roots pushed
 by MDM, per-app VPN, the system proxy and its PAC, background transfer."*

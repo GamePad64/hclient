@@ -6,7 +6,7 @@ seam**, not the WebSocket one, and said the primitives were present in `h3`
 crate it produced, and the four things the reading did not say.
 
 Nothing here re-litigates §4. The multiplexer-versus-message-channel
-argument stands and `crates/http-ng-webtransport/src/lib.rs`'s module doc
+argument stands and `crates/hclient-webtransport/src/lib.rs`'s module doc
 carries it; `Message` is not reused and no adapter between the two seams
 exists.
 
@@ -17,7 +17,7 @@ webtransport` can leave this workspace's HTTP/3 stack and be accepted by a
 server that speaks WebTransport.
 
 **First proof — `h3`'s own server**, in tree, on a real socket:
-`crates/http-ng-webtransport/tests/webtransport.rs`'s
+`crates/hclient-webtransport/tests/webtransport.rs`'s
 `an_extended_connect_carries_the_webtransport_protocol_to_the_server`. A
 `quinn` endpoint with an `rcgen` certificate, `h3::server` on top of it, and
 the value asserted is what that server's **own QPACK decoder** took off the
@@ -47,7 +47,7 @@ bytes in both directions all work against a third party's decoder.
 **The spike is not kept as a test, and the reason is a number**:
 `wtransport` is **114 crates** (`cargo tree -p wtransport -e normal`,
 unique), including `url` and the ICU stack this workspace spent a whole
-task removing from `http-ng-proto`. A dev-dependency is not a shipped
+task removing from `hclient-proto`. A dev-dependency is not a shipped
 dependency, but 114 crates to re-check a fact that does not change between
 runs is the wrong trade. The spike source is in §10 so it can be re-run
 rather than believed.
@@ -84,10 +84,10 @@ on it:
 
 Only the last group touches an existing item, and it **relaxes**: removing
 `non_exhaustive` lets more patterns compile and stops none. That is what
-makes Cargo's feature unification harmless — `http-ng-h3` gets strictly
+makes Cargo's feature unification harmless — `hclient-h3` gets strictly
 more surface from the same `h3` build and the same behaviour. Checked by
 running it: `cargo nextest run --workspace --all-features` is **1360
-passed, 0 failed** with the feature on, `http-ng-h3`'s 
+passed, 0 failed** with the feature on, `hclient-h3`'s 
 suite included.
 
 The name is a warning and it is a real one: `h3` reserves the right to
@@ -134,9 +134,9 @@ a limit of zero. In practice `h3`'s own `Settings::from` defaults it to
 zero and its server sends whatever it was configured with, so the check
 would be meaningful — it is simply not available.
 
-## 4. What `http-ng-h3` does not expose — and why a session cannot share a pooled connection
+## 4. What `hclient-h3` does not expose — and why a session cannot share a pooled connection
 
-`crates/http-ng-h3` is read-only for this task. Two things are needed from
+`crates/hclient-h3` is read-only for this task. Two things are needed from
 it and neither is reachable; this section is the finding, stated precisely
 enough to act on.
 
@@ -145,20 +145,20 @@ enough to act on.
 `without_keep_alive` and `Transport::execute`. `endpoint`, `checkout` and
 `connect` are private, and so is `mod runtime` — of which only the
 `QuinnTask` type alias is re-exported. **`SeamRuntime`**, the
-`quinn::Runtime` over `http_ng_rt::{Timer, Spawn, UdpBind}`, is therefore
+`quinn::Runtime` over `hclient_rt::{Timer, Spawn, UdpBind}`, is therefore
 unreachable: 302 lines of code (494 with its documentation), including the
 `WakeAll` fan-out that exists because `UdpDatagrams::poll_writable` stores
 one waker where `quinn` creates a `UdpPoller` per connection.
 
 Copying it into a second crate is the thing this workspace does not do, so
-`http-ng-webtransport` does not have an endpoint and takes a
+`hclient-webtransport` does not have an endpoint and takes a
 `quinn::Connection` instead (§5). **What would close it** is one of:
 
-1. `pub use runtime::SeamRuntime;` in `http-ng-h3` — one line, and it makes
+1. `pub use runtime::SeamRuntime;` in `hclient-h3` — one line, and it makes
    the adapter reusable by any crate that wants QUIC over the seam. The
    honest version of that is a move to a crate of its own
-   (`http-ng-quinn`), which is the same shape `docs/w4-upgrade-seam.md`
-   §8 argues for `tungstenite` inside `http-ng-native`;
+   (`hclient-quinn`), which is the same shape `docs/w4-upgrade-seam.md`
+   §8 argues for `tungstenite` inside `hclient-native`;
 2. a **connect-only entry point** on `H3` handing back a live
    `quinn::Connection` for an origin — which is a bigger decision than it
    looks, because it is also what a two-stack *race* would need
@@ -166,9 +166,9 @@ Copying it into a second crate is the thing this workspace does not do, so
    connect-only entry point and that this is why a race races requests).
 
 **Since done — option 1, in its honest version:
-[`docs/quinn-adapter-extraction.md`](quinn-adapter-extraction.md).** `crates/http-ng-quinn`
+[`docs/quinn-adapter-extraction.md`](quinn-adapter-extraction.md).** `crates/hclient-quinn`
 holds `SeamRuntime`, `SeamTimer`, `WakeAll`, `SeamSocket`, `SeamPoller` and
-a now-`pub` `endpoint(&rt, local)`; `http-ng-h3` re-exports `QuinnTask` from
+a now-`pub` `endpoint(&rt, local)`; `hclient-h3` re-exports `QuinnTask` from
 it, so its public API is unchanged and its graph went 57 → 58, the one
 addition being the new crate. 42 crates on their own, with no `h3` in them.
 
@@ -184,7 +184,7 @@ fresh connection, because `H3` never hands out one it has not already
 claimed. So option 1 closes this gap and option 2 answers a different
 question (`docs/connect-only-seam.md`).
 
-What remains on this crate's side is its own dialling — `http_ng_quinn::
+What remains on this crate's side is its own dialling — `hclient_quinn::
 endpoint` plus a `QuicTlsConnect` and an address — and it is **not done**,
 for reasons about this crate rather than about the adapter:
 `Session::connect(conn, uri)` stays whatever else happens, so a dialling
@@ -192,7 +192,7 @@ constructor is an addition rather than a replacement; it costs a measured
 49 → 58 crates, `ring` among them, which is the count §7 names as *"the
 visible consequence of owning no endpoint"*; and it would be a second place
 in this workspace where "how a QUIC connection is made" is decided, with
-nothing making it agree with `http-ng-h3`'s.
+nothing making it agree with `hclient-h3`'s.
 
 **(b) A session cannot share one of `H3`'s pooled connections, and this is
 not a matter of plumbing.** Three independent reasons, in increasing order
@@ -206,13 +206,13 @@ of how hard they are to change:
   `SendRequest`, not sharing the socket.
 - **SETTINGS are fixed at handshake and are connection-wide.**
   `enable_extended_connect` goes into the SETTINGS frame `h3` sends when
-  the client is built. `http-ng-h3` sets it nowhere, so **every connection
+  the client is built. `hclient-h3` sets it nowhere, so **every connection
   it has ever made announces `ENABLE_CONNECT_PROTOCOL = 0`**, and it cannot
   be changed afterwards. Making a pooled connection WebTransport-capable
-  therefore means changing what *every* `http-ng-h3` build puts on the
+  therefore means changing what *every* `hclient-h3` build puts on the
   wire — which is exactly why this is a separate crate and not a feature:
   Cargo's features are additive, so a `webtransport` feature on
-  `http-ng-h3` would make that wire change unconditional in any graph that
+  `hclient-h3` would make that wire change unconditional in any graph that
   switched it on.
 - **The pool key has no room for the distinction.** `PoolKey` is `{host,
   port, tls, early_data}`. A WebTransport-capable connection and a plain
@@ -221,11 +221,11 @@ of how hard they are to change:
   class of mistake `early_data` is a key field to prevent.
 
 The conclusion is not "sessions must never share": WebTransport is designed
-to multiplex with ordinary requests, and a future `http-ng-h3` that
+to multiplex with ordinary requests, and a future `hclient-h3` that
 announced extended CONNECT on every connection and handed out its
 `SendRequest` could do it. The conclusion is that **it is a decision about
 what every connection announces**, taken at handshake time, and it is
-`http-ng-h3`'s to take.
+`hclient-h3`'s to take.
 
 ## 5. The seam's shape
 
@@ -248,7 +248,7 @@ hands back *sessions and streams*, so a browser backend would implement the
 session API directly and need no connection at all — the QUIC connection is
 asked only of the backend that has one.
 
-**There is no trait.** `WebSocketConnect` is in `http-ng-core::unversioned`
+**There is no trait.** `WebSocketConnect` is in `hclient-core::unversioned`
 because two backends implement it and the second one is what proved the
 shape. Here there is one implementation, in this crate, so a trait would be
 a shape nobody has tested — the objection the W4 document raises against
@@ -263,7 +263,7 @@ written before the pair is handed back, so what the caller receives is
 positioned at its own first application byte and there is no second step
 whose omission would put application bytes where a header belongs.
 
-**Nothing is spawned.** `http-ng-h3` spawns a driver because a **pooled**
+**Nothing is spawned.** `hclient-h3` spawns a driver because a **pooled**
 QUIC connection that nobody polls is dying and between requests the pool is
 the only thing holding it. Neither half applies: the QUIC connection is
 driven by the endpoint driver `quinn` already runs, and a session is the
@@ -299,7 +299,7 @@ the control stream, and a control stream that ends is
   said a real `close()` *"needs the reading half"* was the join.
   `Session::close(code, reason)` writes a `CLOSE_WEBTRANSPORT_SESSION`
   capsule and `Session::closed()` reads the peer's, so a clean close is
-  `Ok` and a connection that vanished is `Err` — `http-ng-fetch`'s
+  `Ok` and a connection that vanished is `Err` — `hclient-fetch`'s
   `wasClean`, for a session. `DRAIN_WEBTRANSPORT_SESSION` is skipped along
   with every other unknown capsule type, which is what RFC 9297 §3.2 asks
   of a receiver; surfacing it needs a second observation channel, since a
@@ -335,15 +335,15 @@ the control stream, and a control stream that ends is
 
 | crate | crates | tokio | notes |
 |---|---|---|---|
-| `http-ng-webtransport` | **49** | `[bytes, default, io-util, sync]` | no reactor — the same `h3`/`h3-quinn` leaf `http-ng-h3` has |
-| `http-ng-h3`, for comparison | 57 | same | it also carries DNS, TLS and the runtime seam |
+| `hclient-webtransport` | **49** | `[bytes, default, io-util, sync]` | no reactor — the same `h3`/`h3-quinn` leaf `hclient-h3` has |
+| `hclient-h3`, for comparison | 57 | same | it also carries DNS, TLS and the runtime seam |
 
 Both rows are unchanged by the datagram work: it added no crate and no
 feature, because the transport is a method on the `quinn::Connection` this
 crate already holds — `docs/v04-w2-datagrams.md` §7.
 
 `quinn` arrives with the feature set **`futures-io` alone** — no `ring`.
-That is the visible consequence of owning no endpoint: `http-ng-h3`'s
+That is the visible consequence of owning no endpoint: `hclient-h3`'s
 manifest records that `ring` is not optional there because a QUIC
 *endpoint* needs an HMAC key for stateless resets and an AEAD for retry
 tokens, and `EndpointConfig` has no `Default` without one. This crate
@@ -358,7 +358,7 @@ Anchor verified before the first and after the last: **7 tests, 7 passed**.
 Restore is `git checkout` **plus an explicit `os.utime`** — a copy that
 preserves mtime leaves cargo believing the mutated artifact is current, and
 every run after the first would then score a stale binary. The harness is
-`crates/http-ng-webtransport/mutations.py`; it re-runs the anchor at the
+`crates/hclient-webtransport/mutations.py`; it re-runs the anchor at the
 end and refuses to report if it does not come back.
 
 **M11 is a control that nothing can observe**, and it is in the table for
@@ -439,7 +439,7 @@ this one:
 
 ```toml
 [dependencies]
-http-ng-webtransport = { path = "…/crates/http-ng-webtransport" }
+hclient-webtransport = { path = "…/crates/hclient-webtransport" }
 http = "1"
 quinn = { version = "0.11", default-features = false, features = ["futures-io", "ring", "runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -476,5 +476,5 @@ after the echo has been received.
   `open_bi`'s eager header write in particular has never met a connection
   whose stream credit was exhausted.
 - **Cancellation.** Dropping the `Session::connect` future mid-handshake is
-  not tested. `http-ng-h3` has a `CancelSupport` claim to honour and this
+  not tested. `hclient-h3` has a `CancelSupport` claim to honour and this
   crate makes none, which is honest but unproven.

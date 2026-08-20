@@ -21,15 +21,15 @@ versions under test: `quinn 0.11.11`, `quinn-proto 0.11.16`,
 |---|---|---|
 | Q1 sealed? | **Nothing is sealed.** All four `quinn` runtime traits and all five `h3::quic` traits are implemented from outside their crates in one file that compiles. The h2 disaster does not repeat. | §1.1 |
 | Q1 no-spawn? | **Yes, measured end to end.** A real HTTP/3 GET over real QUIC on loopback, driven by one `futures_executor::block_on(poll_fn(..))`, with a `quinn::Runtime` whose `spawn` only queues. `wall=2.9ms`. Not a busy-spin: `wall 608.9ms / cpu 10ms` against a server that answers after 600 ms. | §1.2, §1.3 |
-| Q1 `Send` leaks | **Three, all quotable, none in the protocol layer.** `quinn::Runtime`, `AsyncTimer` and `AsyncUdpSocket` are each `Send + Sync + Debug + 'static`; `http_ng_rt`'s `Timer` and `TcpConnect` promise none of that. The h3 layer itself demands nothing. | §1.4 |
+| Q1 `Send` leaks | **Three, all quotable, none in the protocol layer.** `quinn::Runtime`, `AsyncTimer` and `AsyncUdpSocket` are each `Send + Sync + Debug + 'static`; `hclient_rt`'s `Timer` and `TcpConnect` promise none of that. The h3 layer itself demands nothing. | §1.4 |
 | **not asked, and it is the real blocker** | **An idle QUIC connection nobody polls dies.** Same gap, same config: unpolled → request 2 fails; driven → request 2 succeeds. So h3 cannot be pooled the way W2 pools h1 unless *something* drives the connection between requests. | §1.5 |
-| **correction, after this document shipped** | The row above originally added "without `Spawn`, which does not compile on this seam". **That was measured and is false** — quinn's driver is a named `Send + 'static` type that the shipped `Tokio` impl already accepts, and spawning it through `http_ng_rt::Spawn` keeps the connection alive across the same gap. What remains of the objection is policy, not compilation. | §1.5 |
+| **correction, after this document shipped** | The row above originally added "without `Spawn`, which does not compile on this seam". **That was measured and is false** — quinn's driver is a named `Send + 'static` type that the shipped `Tokio` impl already accepts, and spawning it through `hclient_rt::Spawn` keeps the connection alive across the same gap. What remains of the objection is policy, not compilation. | §1.5 |
 | Q2 the trait | Unconnected, batch, caller-owned buffers, per-datagram ECN + segment size. Signatures in §2.3. GSO/GRO/ECN are three separate capabilities, not one. | §2 |
 | Q2 measured | GSO 64, GRO 64, ECN round-trips (`Ect0` in, `Some(Ect0)` out), `may_fragment=false` — one `sendmsg`, 3 datagrams, one `recvmmsg`. tokio and smol both expose the descriptor; embassy-net has none, quoted. | §2.1, §2.4 |
 | Q3 the TLS seam | `TlsConnect` cannot carry QUIC, and it is not close. A **second trait**, rustls-only, is the only honest option. `native-tls` is out — not "reports less", out. | §3.1, §3.6 |
 | **Q3, 0-RTT** | **Works, measured, and it breaks W3's reserved `TlsInfo::early_data_accepted`.** The acceptance answer is a *future* that resolved at `8.6ms`, after the response arrived at `8.5ms`. On rejection the request fails with `ZeroRttRejected` and must be replayed. | §3.2, §3.3 |
 | Q3, replay policy | **`RetryKind` covers the wrong half.** It answers "can I resend this", which 0-RTT also needs; it does not answer "may an attacker resend this", which is method safety — a notion this codebase deliberately does not have (quoted). And early data fails in **three** places, not one: no key material, `ZeroRttRejected`, and HTTP `425 Too Early`. **The third is now closed** — `Client` replays a `425` once, inside the operation's own budget; the other two remain the transport's. | §3.5 |
-| Q4 discovery | **Alt-Svc is not the first cut, and need not be.** `http_ng_dns::SvcbEndpoint` already carries `alpn` and `port`, and real HTTPS/SVCB lookup already ships. That is a discovery path with a TTL owned by the resolver, not a cache we invent. | §4 |
+| Q4 discovery | **Alt-Svc is not the first cut, and need not be.** `hclient_dns::SvcbEndpoint` already carries `alpn` and `port`, and real HTTPS/SVCB lookup already ships. That is a discovery path with a TTL owned by the resolver, not a cache we invent. | §4 |
 | Q5 CI | **Not compile-only.** The whole h3 client + server ran on loopback in this environment in single-digit milliseconds with an `rcgen` cert. The uncertain part is GSO/GRO/ECN on a GitHub runner, which is a capability report, not a pass/fail. | §5 |
 
 ---
@@ -84,7 +84,7 @@ Connection` today.
 `spawn` pushes into an `Arc<Mutex<VecDeque<Pin<Box<dyn Future + Send>>>>>`,
 timers are `async_io::Timer`, the socket is `async_io::Async<UdpSocket>`
 plus `quinn_udp::UdpSocketState` — i.e. the same reactor
-`http-ng-rt-smol` already uses, so "no spawn" does not secretly mean "no
+`hclient-rt-smol` already uses, so "no spawn" does not secretly mean "no
 reactor, therefore a busy-spin".
 
 The client in `nospawn.rs` is one `futures_executor::block_on`, no tokio,
@@ -121,7 +121,7 @@ server answers after 600ms: status=200 OK body="slow" wall=608.910435ms cpu=10ms
 ```
 
 `wall 608.9ms, cpu 10ms` — one scheduler tick, i.e. the loop actually
-parks. (`http_ng_native::testing::blocking_io`, the honest busy-spin, is
+parks. (`hclient_native::testing::blocking_io`, the honest busy-spin, is
 `wall 600.4ms / cpu 600ms` on the same measurement.)
 
 ### 1.4 The three bounds that do leak
@@ -152,7 +152,7 @@ error[E0277]: `R` cannot be sent between threads safely
    ... same site, `Send` instead of `Sync`
 ```
 
-**(b) The timer future.** `http_ng_core::unversioned::Timer::sleep`
+**(b) The timer future.** `hclient_core::unversioned::Timer::sleep`
 returns `impl Future<Output = ()>` with no `Send`, no `'static`, no
 `Debug`. `quinn::AsyncTimer` wants all three:
 
@@ -219,7 +219,7 @@ $ cargo check --features t_ok
 
 **What this costs, stated plainly.** `TcpConnect::Stream` is
 `hyper::rt::Read + Write + Unpin` and nothing else, and
-`http-ng-native/src/connect.rs:666`'s `FakeStream` holds an `Rc<()>` for
+`hclient-native/src/connect.rs:666`'s `FakeStream` holds an `Rc<()>` for
 the sole purpose of proving no path needs `Send`. A UDP capability that
 feeds quinn cannot keep that property: its socket must be
 `Send + Sync + 'static`. That is not fatal — a socket being `Send` is
@@ -256,7 +256,7 @@ Now put that next to the two facts v0.2 had established when this was
 written — **both of which have since been measured and corrected**, see the
 box below:
 
-- `http_ng_rt::Spawn<F>`'s implementations require `F: Send + 'static`,
+- `hclient_rt::Spawn<F>`'s implementations require `F: Send + 'static`,
   and "a pool driven by a spawned background task does not compile on
   this seam at all" (`docs/v02-acceptance.md`).
 - W2's pool therefore has no reaper, by the same argument.
@@ -271,14 +271,14 @@ box below:
 > `src/runtime.rs:21`), a named `Send + 'static` type which
 > `impl<F: Future<Output=()> + Send + 'static> Spawn<F> for Tokio` accepts
 > verbatim. Measured: the same A/B as above, with a `quinn::Runtime` whose
-> `spawn` forwards to `http_ng_rt::Spawn::spawn` — request 2 goes from
+> `spawn` forwards to `hclient_rt::Spawn::spawn` — request 2 goes from
 > `Err("read error: connection lost")` to `Ok("pong")` across a 1500 ms gap
 > under a 1000 ms idle timeout. The reverse also holds and constrains the
 > design: `quinn::Runtime` is declared `Send + Sync + Debug + 'static`
 > (`runtime.rs:16`), so a single-threaded runtime type is refused by quinn
 > itself — h3 wants a handle-carrying `Tokio`, not a `!Send` one.
 >
-> **That handle-carrying type now exists**: `http_ng_rt_tokio::TokioHandle`,
+> **That handle-carrying type now exists**: `hclient_rt_tokio::TokioHandle`,
 > `Send + Sync + Clone`, whose `Spawn` impl is `Handle::spawn` and therefore
 > total off a runtime thread where the ZST's `tokio::spawn` panics. Its
 > module doc has the measured table of what carrying the handle does and
@@ -327,7 +327,7 @@ what `Client` means, and it belongs in the design doc, not in a backend.
 
 ### 1.6 `quinn` vs `quinn-proto`
 
-`quinn-proto` is genuinely sans-io — the same shape as `http-ng-proto` —
+`quinn-proto` is genuinely sans-io — the same shape as `hclient-proto` —
 and its driving surface is public (`Endpoint`, `Connection`,
 `ConnectionHandle`, `Transmit`, `EndpointEvent`, `ConnectionEvent`,
 `Event`, `StreamEvent`, `Dir`, `StreamId`, all asserted nameable in
@@ -482,7 +482,7 @@ returns `io::Result<()>` for a feature that was silently not applied.
 
 Two of these types (`RecvMeta`, `EcnCodepoint`) already exist in
 `quinn-udp` with these exact fields. Whether to re-declare them or
-re-export is an implementation choice; re-declaring keeps `http-ng-rt`
+re-export is an implementation choice; re-declaring keeps `hclient-rt`
 free of a QUIC dependency, which is worth more than the conversion costs.
 
 ### 2.4 What each runtime can actually provide
@@ -582,7 +582,7 @@ a wrapper.
 
 `spikes/q1-quic/src/bin/zero_rtt.rs`. Two connections to the same server
 through **one** `rustls::ClientConfig` — which is where the session store
-lives, and which is exactly what `http_ng_tls_rustls::Rustls::from_config`
+lives, and which is exactly what `hclient_tls_rustls::Rustls::from_config`
 already holds one of. Three scenarios; the third arranges a *rejection*
 on purpose by pointing the second connection at a different server
 instance with the same certificate and its own ticketer.
@@ -667,7 +667,7 @@ The coordinator's note says part of the machinery assembled itself as a
 side effect of W2. **Checked, and it is half true, which is the useful
 half to know.**
 
-**True.** `http_ng_tls_rustls::Rustls` holds `base: Arc<rustls::ClientConfig>`
+**True.** `hclient_tls_rustls::Rustls` holds `base: Arc<rustls::ClientConfig>`
 (`lib.rs:27`), and rustls keeps resumption there:
 `ClientConfig` is `#[derive(Clone)]` (`client_conn.rs:163`) and
 `Resumption { store: Arc<dyn ClientSessionStore>, .. }`
@@ -701,7 +701,7 @@ nothing about it needs redesigning.
   h3 is in most often (§1.5). The key is right; the code path is not the
   pool's.
 - **`enable_early_data` is off by default** in rustls and our `Rustls`
-  never sets it, so today's `http-ng` stores tickets and never offers
+  never sets it, so today's `hclient` stores tickets and never offers
   early data. That is the correct default and should stay the default.
 
 ### 3.5 Replay is policy — and `RetryKind` answers the other half
@@ -725,7 +725,7 @@ should therefore never invoke non-idempotent operations"*
 
 **The notion that answers it — method safety/idempotency — does not
 exist in this codebase, and its absence is deliberate and written down.**
-`http-ng-native/src/lib.rs:400-411`, W2's one retry:
+`hclient-native/src/lib.rs:400-411`, W2's one retry:
 
 > *"…it hands the request back only when not a byte of it reached the
 > wire (`h1::Failed`), so what is resent below is the original request
@@ -797,8 +797,8 @@ sent again, and inside the same `Timeouts.total` as the rest of the
 operation, because the replay sits in the future `Client::execute` already
 wraps in `within(..)`. A body that cannot be replayed leaves the `425`
 standing as the answer, since it is the server's and not ours.
-`crates/http-ng/src/client.rs` (`replay_for_too_early` and the comment at
-its call site) and `crates/http-ng/tests/too_early.rs`, which watches all
+`crates/hclient/src/client.rs` (`replay_for_too_early` and the comment at
+its call site) and `crates/hclient/tests/too_early.rs`, which watches all
 of it from the server's side of the wire — including the control where a
 server wedged on `425` must produce two requests rather than a loop, and
 the budget test where answers cost 400 ms each under a 600 ms bound.
@@ -810,7 +810,7 @@ exactly one merge.
 `425` branch was written no transport here could put anything into early
 data, so the replay satisfied RFC 8470 §5.2 by there being nothing to
 satisfy, and what the branch carried was the invariant plus the site a
-future strip would go at. `http-ng-h3` merged first and `AllowEarlyData`
+future strip would go at. `hclient-h3` merged first and `AllowEarlyData`
 with it, which turned that note into a live MUST NOT violation on `main`
 for the length of one commit. It is now paid, in `Client::run`'s `425`
 branch: `retry.extensions.remove::<AllowEarlyData>()`, on a clone of the
@@ -840,14 +840,14 @@ is the mistake this paragraph exists to prevent.
 
 | option | what it costs | verdict |
 |---|---|---|
-| **A second trait beside `TlsConnect`**, for QUIC key schedules, implemented only by backends that can | one new trait in `http-ng-tls` (or its own crate); `http-ng-tls-rustls` gains an impl that is mostly a wrapper over `quinn_proto::crypto::rustls::QuicClientConfig`; `http-ng-tls-native-tls` gains **nothing** and implements **nothing** — it is a compile error to use it for h3, which is the honest outcome | **this one** |
+| **A second trait beside `TlsConnect`**, for QUIC key schedules, implemented only by backends that can | one new trait in `hclient-tls` (or its own crate); `hclient-tls-rustls` gains an impl that is mostly a wrapper over `quinn_proto::crypto::rustls::QuicClientConfig`; `hclient-tls-native-tls` gains **nothing** and implements **nothing** — it is a compile error to use it for h3, which is the honest outcome | **this one** |
 | The h3 path depends on `rustls` directly, and "two TLS backends behind one seam" is declared not to extend to it | cheapest today, and wrong later for the same reason `TlsConnect` exists: it forecloses SChannel and Security.framework, both of which *do* support QUIC natively, and it hard-codes a crypto library into a transport | no |
 | Widen `TlsConnect` with QUIC methods, defaulted | every existing implementation silently gains a QUIC story it cannot honour, and `NoTls`'s uninhabited `Stream<S>` — currently a nice piece of type-level honesty — becomes meaningless | no |
 
 **What A costs the two existing TLS crates, concretely.**
-`http-ng-tls-rustls`: one impl, plus the `enable_early_data` cache
+`hclient-tls-rustls`: one impl, plus the `enable_early_data` cache
 dimension of §3.3(3), plus a decision about a separate session store
-(§3.4). `http-ng-tls-native-tls`: **nothing at all** — and the reason is
+(§3.4). `hclient-tls-native-tls`: **nothing at all** — and the reason is
 stronger than the ALPN one already documented. It is not that
 `async-native-tls` fails to expose the negotiated protocol; it is that
 SChannel's and Security.framework's QUIC support is a *different API
@@ -882,7 +882,7 @@ a backend that cannot report ALPN cannot implement the QUIC trait at all.
 did not have — it need not be, because a second discovery mechanism
 already ships in this repository.**
 
-`http_ng_dns::SvcbEndpoint` (`crates/http-ng-dns/src/lib.rs:85`) is:
+`hclient_dns::SvcbEndpoint` (`crates/hclient-dns/src/lib.rs:85`) is:
 
 ```rust
 pub struct SvcbEndpoint {
@@ -909,7 +909,7 @@ that file's module doc, explaining that Task 6 built the plumbing and
 Task 7 did not use it). So the first cut has three tiers, in increasing
 cost:
 
-1. **Explicit opt-in.** `Client::builder(http_ng_h3::H3::new(..))`, or a
+1. **Explicit opt-in.** `Client::builder(hclient_h3::H3::new(..))`, or a
    scheme/extension that names h3. No discovery, no cache, no state. This
    is what a first h3 backend ships with, and it is honest: h3 is a
    deployment decision the caller makes.
@@ -947,7 +947,7 @@ strictly cheaper after tier 2 exists than before.
 
 **Not compile-only.** Everything in §1, §2 and §3 ran here, on loopback,
 against a real quinn + h3 server, with a self-signed certificate from
-`rcgen` (already a dev-dependency of `http-ng-tls-rustls`). The whole
+`rcgen` (already a dev-dependency of `hclient-tls-rustls`). The whole
 `nospawn` exchange is `wall=2.9ms`; the 0-RTT scenario set, including two
 server instances and two 200 ms ticket waits, is under a second.
 
@@ -967,7 +967,7 @@ Three things about the environment, stated as what they are:
   needs elevated privileges: it is two `UdpSocket::bind("127.0.0.1:0")`.
 - **Certificates are already solved.** `rcgen` +
   `rustls::ClientConfig::with_root_certificates`, exactly as
-  `crates/http-ng-tls-rustls/tests/server.rs` does for TCP. QUIC adds
+  `crates/hclient-tls-rustls/tests/server.rs` does for TCP. QUIC adds
   only `QuicServerConfig::try_from` and `alpn_protocols = ["h3"]`, and
   requires TLS 1.3 (`builder_with_protocol_versions(&[&TLS13])`).
 - **Unverified: GSO/GRO/ECN on GitHub runners.** Measured `64/64/ECN
@@ -980,7 +980,7 @@ Three things about the environment, stated as what they are:
   numbers are **reported**, not what they are.
 
 One measurement for the dependency table, since this project keeps one.
-An `http-ng-h3` would take `quinn` with **no** `runtime-*` feature (the
+An `hclient-h3` would take `quinn` with **no** `runtime-*` feature (the
 runtime is ours) — which builds:
 
 ```
@@ -1029,12 +1029,12 @@ inside a target whose whole claim is that it has none.
 
 ## Recommendation
 
-**The shape I would build:** `http-ng-h3`, its own crate, on `quinn` +
+**The shape I would build:** `hclient-h3`, its own crate, on `quinn` +
 `h3` + `h3-quinn` with a `quinn::Runtime` of ours whose `spawn` queues
 into the exchange's own poll loop (measured working, no spawn, no tokio
 on the client, not a busy-spin) — not `quinn-proto`, which would be a
 second QUIC event loop for no measured gain; its own crate rather than a
-feature of `http-ng-native`, because its `Transport` impl needs
+feature of `hclient-native`, because its `Transport` impl needs
 `R: UdpBind` and a QUIC TLS trait that `Native`'s bounds do not have and
 cargo's additive features would make unconditional; and with the QUIC
 connection's two driver futures owned by a value the caller polls,
@@ -1042,7 +1042,7 @@ because §1.5 shows an unpolled connection dies and this seam has no
 `Spawn` to hide that in.
 
 **The seam changes it needs:** three, and one of them is not the one the
-design doc names. (1) `http-ng-rt` gains `UdpBind`/`UdpDatagrams` —
+design doc names. (1) `hclient-rt` gains `UdpBind`/`UdpDatagrams` —
 unconnected, batched, caller-owned buffers, with GSO/GRO/ECN as three
 separately-defaulted capability values and a socket type that must be
 `Send + Sync + 'static` where `TcpConnect::Stream` need not be. (2)
@@ -1065,10 +1065,10 @@ the second visit — pays off across requests, and this seam had no `Spawn`
 that compiles and no reaper for the pool it already has. **Both halves of
 that last clause have since changed**, and §1.5's correction box above is
 where the first one is argued: `Spawn` does compile here, and
-`http_ng_native::Native::with_reaper` is a real background task on it —
+`hclient_native::Native::with_reaper` is a real background task on it —
 opt-in, bounded on `R: Spawn<Reaper<R, I>>`, measured closing an idle
 socket at its deadline on both shipped runtimes
-(`crates/http-ng-native/tests/reaper.rs`). What that does *not* settle is
+(`crates/hclient-native/tests/reaper.rs`). What that does *not* settle is
 the question this paragraph is actually about: a reaper closes idle
 connections, it does not *drive* one, and an h3 connection needs driving
 between requests, not reaping. If the answer is

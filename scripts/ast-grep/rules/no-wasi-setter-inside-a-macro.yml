@@ -2,7 +2,7 @@ id: no-wasi-setter-inside-a-macro
 language: rust
 severity: error
 files:
-  - crates/http-ng-wasi/src/**/*.rs
+  - crates/hclient-wasi/src/**/*.rs
 
 message: >-
   a wasi:http setter is called inside a macro invocation, where no structural

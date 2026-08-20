@@ -1,0 +1,24 @@
+[package]
+name = "hclient-rt"
+version.workspace = true
+description = "Runtime capabilities needed by hclient's native transport"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+futures-io   = { version = "0.3", default-features = false, features = ["std"] }
+hclient-core = { workspace = true }
+hyper        = { version = "1.11", default-features = false }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+futures-executor = { version = "0.3", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

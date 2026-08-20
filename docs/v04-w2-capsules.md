@@ -93,7 +93,7 @@ of the CONNECT stream must still exist, and something must poll it.
 The first is (a). The second is the caller: `Session::closed()` is the
 caller's own future, and nothing is spawned — the same trade
 `Session::recv_datagram` makes and the same one
-`http-ng-tungstenite`'s keep-alive makes. **A caller that never awaits
+`hclient-tungstenite`'s keep-alive makes. **A caller that never awaits
 it never learns the session ended.** That is stated where the method is,
 because it is the cost of the shape rather than a defect in it: a session
 is the caller's object, and the QUIC connection is driven by the endpoint
@@ -148,13 +148,13 @@ whole argument, and it is a number:
 
 | | crates | notes |
 |---|---|---|
-| `http-ng-webtransport` today | **49** | `quinn` with `futures-io` alone, no `ring` |
+| `hclient-webtransport` today | **49** | `quinn` with `futures-io` alone, no `ring` |
 | `web-transport-proto` 0.6.0 alone | **48** | **ten** of them `url`, `idna` and the ICU stack |
 
 `cargo tree -p web-transport-proto -e normal --prefix none | sort -u`, in a
 scratch crate outside this workspace. It would roughly double the graph of
 a crate whose whole story is that it owns no endpoint, and it would bring
-back the exact dependency `http-ng-proto` spent a task removing —
+back the exact dependency `hclient-proto` spent a task removing —
 `docs/icu-ecosystem-survey.md`. `sfv` and `tokio/io-util` come with it.
 
 Against that: this crate already owns the QUIC varint, for the reason on
@@ -183,7 +183,7 @@ THEIRS 0xffffffff "the whole thing"      -> 68 43 13 ff ff ff ff 74 68 65 20 77 
 
 Byte for byte what `close_capsule` writes. Those four rows are now the
 corpus of `close_capsules_match_two_other_implementations`, **measured
-first and pinned second** — the technique `http-ng-proto`'s 96-pair URI
+first and pinned second** — the technique `hclient-proto`'s 96-pair URI
 corpus uses. The first row is additionally `wtransport-proto` 0.7.2's own
 unit-test vector (`Frame::new_data(vec![104, 67, 4, 0, 0, 0, 0u8])`), so
 the smallest capsule is checked against two crates that do not know about
@@ -265,8 +265,8 @@ pub struct AlreadyClosed;
 
 **`Ok` against `Err` is the distinction, and it is not a new vocabulary.**
 An unclean end is `ErrorKind::Body`, deliberately agreeing with
-`http-ng-fetch`'s treatment of a `wasClean == false` WebSocket close and
-with `http-ng-tungstenite`'s `PongNotReceived`, and deliberately not
+`hclient-fetch`'s treatment of a `wasClean == false` WebSocket close and
+with `hclient-tungstenite`'s `PongNotReceived`, and deliberately not
 `ErrorKind::Timeout`, since no `Timeouts` field is in force on an open
 session.
 
@@ -376,7 +376,7 @@ the peer, which is where a session's state really lives.
 
 ## 8. The dependency graph, measured
 
-`cargo tree -p http-ng-webtransport -e normal --prefix none`, unique
+`cargo tree -p hclient-webtransport -e normal --prefix none`, unique
 crates, this tree:
 
 | | before capsules | after |
@@ -401,7 +401,7 @@ Anchor verified before the first and after the last: **34 tests, 34
 passed** (14 before this work). Restore is `git checkout` plus an explicit
 `os.utime`, `--no-fail-fast`, and the harness re-runs the anchor at the end
 and refuses to report if it does not come back —
-`crates/http-ng-webtransport/mutations.py`.
+`crates/hclient-webtransport/mutations.py`.
 
 **Forty mutations, thirty-seven killed, three controls survived.** The
 twenty-three from `docs/v04-w2-datagrams.md` §8 were re-run rather than
@@ -510,7 +510,7 @@ not enter this one:
 
 ```toml
 [dependencies]
-http-ng-webtransport = { path = "…/crates/http-ng-webtransport" }
+hclient-webtransport = { path = "…/crates/hclient-webtransport" }
 http = "1"
 quinn = { version = "0.11", default-features = false, features = ["futures-io", "ring", "runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

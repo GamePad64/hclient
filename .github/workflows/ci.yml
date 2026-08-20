@@ -40,7 +40,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: just macos-loopback
-      # `http-ng-rt-embassy`'s live scenarios drive a real embassy-net stack
+      # `hclient-rt-embassy`'s live scenarios drive a real embassy-net stack
       # over a TAP device and are the only thing proving the W1 cancellation
       # contract holds there. Without the marker they SKIP — quietly, which
       # is what this file exists to prevent. Its own step, Linux only, so a
@@ -51,13 +51,13 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         env:
-          HTTP_NG_REQUIRE_TUNTAP: "1"
+          HCLIENT_REQUIRE_TUNTAP: "1"
         run: just test-embassy-live
       - shell: bash
         run: just test-workspace
       # nextest cannot run doctests. Until v0.4 nothing did: the recipe
       # existed and no job called it, so a broken example sat in
-      # `http-ng-h3` compiling only under feature unification.
+      # `hclient-h3` compiling only under feature unification.
       - name: the doctests, which nextest cannot run
         shell: bash
         run: just test-doc
@@ -107,7 +107,7 @@ jobs:
   # `link.exe` resolves first and only then runs `/OPT:REF`. That asymmetry
   # cost this repository a windows-only
   # `LNK2019: unresolved external symbol __embassy_time_queue_item_from_waker`
-  # in `http-ng-rt-embassy`'s `lib test`, which no amount of green Linux and
+  # in `hclient-rt-embassy`'s `lib test`, which no amount of green Linux and
   # macOS could have found.
   #
   # This job puts the strict linker's rule on the cheap runner. Which flags,
@@ -146,7 +146,7 @@ jobs:
         env:
           # Turns "wasmtime not found, skipping" into a failure. Set here and
           # only here — this is the job that promises to install it.
-          HTTP_NG_REQUIRE_WASMTIME: "1"
+          HCLIENT_REQUIRE_WASMTIME: "1"
         run: just test-wasi
 
   browser:
@@ -167,13 +167,13 @@ jobs:
       - name: browser tests
         shell: bash
         env:
-          # Same shape as HTTP_NG_REQUIRE_WASMTIME, and set only here: this
+          # Same shape as HCLIENT_REQUIRE_WASMTIME, and set only here: this
           # is the job that installs wasm-pack, so here a missing one is a
           # broken runner rather than a laptop without a headless browser.
-          HTTP_NG_REQUIRE_BROWSERS: "1"
+          HCLIENT_REQUIRE_BROWSERS: "1"
         run: just test-browser ${{ matrix.browser }}
 
-  # Every fixture in `crates/http-ng-tungstenite/tests/websocket.rs` was
+  # Every fixture in `crates/hclient-tungstenite/tests/websocket.rs` was
   # written beside the implementation it observes, which is the arrangement
   # in which a fixture agrees with a bug. This job is the external oracle:
   # `crossbario/autobahn-testsuite` in `fuzzingserver` mode, 517 client
@@ -199,10 +199,10 @@ jobs:
       - name: the WebSocket client against the Autobahn TestSuite
         shell: bash
         env:
-          # Same shape as HTTP_NG_REQUIRE_WASMTIME, and set only here:
+          # Same shape as HCLIENT_REQUIRE_WASMTIME, and set only here:
           # this is the job that promises a Docker daemon, so here a
           # missing one is a broken runner rather than a laptop.
-          HTTP_NG_REQUIRE_DOCKER: "1"
+          HCLIENT_REQUIRE_DOCKER: "1"
         run: just test-autobahn
 
   fuzz-smoke:
@@ -220,7 +220,7 @@ jobs:
           # nightly. The recipe sets RUSTUP_TOOLCHAIN and asserts it took
           # effect; this marker is what turns "no nightly here" from a skip
           # into a failure, in the job that installed one.
-          HTTP_NG_REQUIRE_NIGHTLY: "1"
+          HCLIENT_REQUIRE_NIGHTLY: "1"
         run: just fuzz-smoke
 
   idn-feature-is-real:
@@ -242,7 +242,7 @@ jobs:
         shell: bash
         run: just test-no-default
 
-  # The whole claim of `http-ng-idn` is that the platform's ICU answers
+  # The whole claim of `hclient-idn` is that the platform's ICU answers
   # what the bundled `idna` crate answers.
   #
   # **Two targets have a platform backend, and Linux is not one of them.**
@@ -255,7 +255,7 @@ jobs:
   #
   # The platform column of `tests/differential.rs` does not compile at all
   # where there is no platform backend, which is why
-  # `HTTP_NG_IDN_REQUIRE_PLATFORM` is set on Windows and macOS only:
+  # `HCLIENT_IDN_REQUIRE_PLATFORM` is set on Windows and macOS only:
   # asking for it on Linux would demand a test that is not there.
   #
   # The Linux leg is not decoration. It checks the opposite invariant —
@@ -283,7 +283,7 @@ jobs:
           # Empty on Linux, so the guard test — which does not exist there
           # — is not asked for. `env:` cannot be conditional, so the value
           # is, and the test reads presence, not truth.
-          HTTP_NG_IDN_REQUIRE_PLATFORM: ${{ runner.os != 'Linux' && '1' || '' }}
+          HCLIENT_IDN_REQUIRE_PLATFORM: ${{ runner.os != 'Linux' && '1' || '' }}
         run: just test-idn
       - name: the Unicode tables come from the platform, or from idna
         shell: bash
@@ -321,7 +321,7 @@ jobs:
         env:
           # As in `fuzz-smoke`: `rust-toolchain.toml` pins stable, and
           # `-Z build-std` needs nightly.
-          HTTP_NG_REQUIRE_NIGHTLY: "1"
+          HCLIENT_REQUIRE_NIGHTLY: "1"
         run: just fetch-must-fail-under-atomics
 
   # Text scans. No build — six checks' worth of runner setup collapsed into
@@ -393,9 +393,9 @@ jobs:
       - name: every feature combination compiles
         shell: bash
         run: just features
-      - name: the default http-ng build carries no cookie jar
+      - name: the default hclient build carries no cookie jar
         shell: bash
         run: just graph-no-cookie-jar
-      - name: http-ng-proto pulls in no async runtime, on any target
+      - name: hclient-proto pulls in no async runtime, on any target
         shell: bash
         run: just graph-proto-sans-io

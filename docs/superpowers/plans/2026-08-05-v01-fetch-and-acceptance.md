@@ -1,4 +1,4 @@
-# http-ng v0.1, vertical 3: fetch and acceptance — implementation plan
+# hclient v0.1, vertical 3: fetch and acceptance — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -7,7 +7,7 @@ runtime model is verified by the one backend whose capabilities differ **at
 runtime**; SSE can reconnect; and all of this is confirmed by a live
 consumer — the `act` component.
 
-**Architecture:** `http-ng-fetch` is the third `Transport`, depending only on
+**Architecture:** `hclient-fetch` is the third `Transport`, depending only on
 Tier A. The key point: our own promise adapter on `Arc<Mutex<..>>` instead of
 `wasm_bindgen_futures::JsFuture`, because the latter has an `Rc<RefCell<..>>`
 inside and is `!Send` **needlessly**. `Capabilities` gets filled from runtime
@@ -22,11 +22,11 @@ that already exists.
 
 Inherited from verticals 1 and 2, and extended:
 
-- **`http-ng-fetch` depends only on Tier A** (`http-ng-core`, `http-ng-proto`).
-  Neither hyper, nor tokio, nor `http-ng-rt` may appear in its graph —
+- **`hclient-fetch` depends only on Tier A** (`hclient-core`, `hclient-proto`).
+  Neither hyper, nor tokio, nor `hclient-rt` may appear in its graph —
   checked in CI.
 - **The only `unsafe impl Send` in the entire project** lives in
-  `http-ng-fetch`, on a single type, under `#[cfg(not(target_feature =
+  `hclient-fetch`, on a single type, under `#[cfg(not(target_feature =
   "atomics"))]`, and mirrors exactly what wasm-bindgen itself does for
   `JsValue`. The crate carries `#![deny(unsafe_code)]` with one
   narrowly-scoped `#[allow]` and a justification comment.
@@ -39,28 +39,28 @@ Inherited from verticals 1 and 2, and extended:
 ## File layout
 
 ```
-crates/http-ng-proto/
+crates/hclient-proto/
   src/backoff.rs             pure backoff with jitter (task 6)
-crates/http-ng-fetch/
+crates/hclient-fetch/
   src/lib.rs                 Fetch: Transport
   src/promise.rs             SendJsFuture — a Send-compatible promise adapter
   src/caps.rs                runtime capability probes
   src/convert.rs             http <-> web_sys, forbidden headers
   src/body.rs                response body over ReadableStream
-crates/http-ng/
+crates/hclient/
   src/sse.rs                 reconnect (modification)
 ```
 
 ---
 
-### Task 1: `http-ng-fetch` — Send-compatible promise adapter
+### Task 1: `hclient-fetch` — Send-compatible promise adapter
 
 Verified by a spike beforehand: the technique compiles without atomics and
 is **correctly rejected by the compiler** with atomics.
 
 **Files:**
-- Create: `crates/http-ng-fetch/Cargo.toml`, `src/lib.rs`, `src/promise.rs`
-- Test: `crates/http-ng-fetch/tests/promise.rs` (wasm-bindgen-test)
+- Create: `crates/hclient-fetch/Cargo.toml`, `src/lib.rs`, `src/promise.rs`
+- Test: `crates/hclient-fetch/tests/promise.rs` (wasm-bindgen-test)
 
 **Interfaces:**
 - Produces:
@@ -71,7 +71,7 @@ is **correctly rejected by the compiler** with atomics.
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng-fetch/tests/promise.rs
+// crates/hclient-fetch/tests/promise.rs
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen_test::*;
@@ -80,14 +80,14 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen_test]
 async fn resolves_a_promise() {
     let p = js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_str("ok"));
-    let v = http_ng_fetch::testing::send_js_future(p).await.unwrap();
+    let v = hclient_fetch::testing::send_js_future(p).await.unwrap();
     assert_eq!(v.as_string().as_deref(), Some("ok"));
 }
 
 #[wasm_bindgen_test]
 async fn propagates_rejection() {
     let p = js_sys::Promise::reject(&wasm_bindgen::JsValue::from_str("nope"));
-    let e = http_ng_fetch::testing::send_js_future(p).await.unwrap_err();
+    let e = hclient_fetch::testing::send_js_future(p).await.unwrap_err();
     assert_eq!(e.as_string().as_deref(), Some("nope"));
 }
 
@@ -96,23 +96,23 @@ fn future_is_send_on_the_default_target() {
     // The main claim: `!Send` is a property of building with wasm threads,
     // not of the browser. Without `+atomics`, everything is Send.
     fn assert_send<T: Send>() {}
-    assert_send::<http_ng_fetch::testing::SendJsFutureAlias>();
+    assert_send::<hclient_fetch::testing::SendJsFutureAlias>();
 }
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
+Run: `cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL — the crate doesn't exist.
 
 - [ ] **Step 3: Create the crate**
 
 ```toml
-# crates/http-ng-fetch/Cargo.toml
+# crates/hclient-fetch/Cargo.toml
 [package]
-name = "http-ng-fetch"
+name = "hclient-fetch"
 version = "0.1.0"
-description = "http-ng transport over the browser fetch API"
+description = "hclient transport over the browser fetch API"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -123,7 +123,7 @@ bytes         = { workspace = true }
 futures-core  = { workspace = true }
 http          = { workspace = true }
 http-body     = { workspace = true }
-http-ng-core  = { workspace = true }
+hclient-core  = { workspace = true }
 js-sys        = "0.3"
 wasm-bindgen  = "0.2.126"
 wasm-streams  = "0.6"
@@ -146,7 +146,7 @@ workspace = true
 - [ ] **Step 4: Implement the adapter**
 
 ```rust
-// crates/http-ng-fetch/src/promise.rs
+// crates/hclient-fetch/src/promise.rs
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -221,10 +221,10 @@ impl Future for SendJsFuture {
 ```
 
 ```rust
-// crates/http-ng-fetch/src/lib.rs
-//! http-ng transport over the browser's `fetch`.
+// crates/hclient-fetch/src/lib.rs
+//! hclient transport over the browser's `fetch`.
 //!
-//! Depends **only** on Tier A: neither hyper, tokio, nor `http-ng-rt` in the graph.
+//! Depends **only** on Tier A: neither hyper, tokio, nor `hclient-rt` in the graph.
 #![deny(unsafe_code)]
 
 mod body;
@@ -246,17 +246,17 @@ pub mod testing {
 - [ ] **Step 5: Run the wasm tests**
 
 Run: `cargo install wasm-bindgen-cli --locked` (if not already installed),
-then `wasm-pack test --headless --chrome crates/http-ng-fetch` or
-`cargo test -p http-ng-fetch --target wasm32-unknown-unknown`
+then `wasm-pack test --headless --chrome crates/hclient-fetch` or
+`cargo test -p hclient-fetch --target wasm32-unknown-unknown`
 Expected: PASS, three tests.
 
 If there's no headless browser in the environment, leave
-`cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests` as the
+`cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests` as the
 gate and file an issue; the browser run gets wired into CI (Task 9).
 
 - [ ] **Step 6: Check that the build honestly breaks with atomics**
 
-Run: `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check -p http-ng-fetch --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort`
+Run: `RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" cargo +nightly check -p hclient-fetch --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort`
 Expected: FAIL with `*mut u8 cannot be sent between threads safely` — this is
 the **desired** behavior, not a defect: with wasm threads the technique is
 unsafe, and the compiler is obligated to say so.
@@ -264,20 +264,20 @@ unsafe, and the compiler is obligated to say so.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/http-ng-fetch
+git add crates/hclient-fetch
 git commit -m "feat(fetch): Send-capable promise adapter mirroring wasm-bindgen's own reasoning"
 ```
 
 ---
 
-### Task 2: `http-ng-fetch` — runtime capability probes
+### Task 2: `hclient-fetch` — runtime capability probes
 
 The only place in the project where `Capabilities` **actually** change at
 runtime. This is exactly why we chose a registry over `cfg`.
 
 **Files:**
-- Create: `crates/http-ng-fetch/src/caps.rs`
-- Test: `crates/http-ng-fetch/tests/caps.rs`
+- Create: `crates/hclient-fetch/src/caps.rs`
+- Test: `crates/hclient-fetch/tests/caps.rs`
 
 **Interfaces:**
 - Produces:
@@ -289,14 +289,14 @@ runtime. This is exactly why we chose a registry over `cfg`.
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng-fetch/tests/caps.rs
+// crates/hclient-fetch/tests/caps.rs
 #![cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 fn declares_what_fetch_genuinely_cannot_do() {
-    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    let c = hclient_fetch::Fetch::new().capabilities_for_test();
     // No trailers, no 1xx, no version selection — whatwg/fetch#772 proposes
     // removing the trailers API altogether.
     assert!(!c.request_trailers);
@@ -305,19 +305,19 @@ fn declares_what_fetch_genuinely_cannot_do() {
     assert!(!c.version_select);
     assert!(!c.version_reported);
     // No TLS, no client certificates, no proxy.
-    assert_eq!(c.tls_config, http_ng_core::TlsSupport::None);
+    assert_eq!(c.tls_config, hclient_core::TlsSupport::None);
     assert!(!c.client_certs);
     assert!(!c.proxy);
     // Cookies and cache are ambient, owned by the browser.
     assert!(c.owns_cookie_jar);
     assert!(c.owns_cache);
     // Upgrade is unreachable: WebSocket in the browser is a separate global.
-    assert_eq!(c.upgrade, http_ng_core::UpgradeSupport::None);
+    assert_eq!(c.upgrade, hclient_core::UpgradeSupport::None);
 }
 
 #[wasm_bindgen_test]
 fn only_the_connect_deadline_exists_and_it_is_one_for_everything() {
-    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    let c = hclient_fetch::Fetch::new().capabilities_for_test();
     // AbortSignal is one deadline for the whole exchange. Declaring three
     // separate timeouts would be a lie.
     assert!(!c.timeouts.connect);
@@ -327,7 +327,7 @@ fn only_the_connect_deadline_exists_and_it_is_one_for_everything() {
 
 #[wasm_bindgen_test]
 fn forbidden_headers_are_listed_not_silently_dropped() {
-    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    let c = hclient_fetch::Fetch::new().capabilities_for_test();
     let names: Vec<_> = c.forbidden_request_headers.iter()
         .map(|h| h.as_str()).collect();
     for must in ["host", "connection", "content-length", "cookie", "origin",
@@ -339,7 +339,7 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
 #[wasm_bindgen_test]
 fn duplex_support_is_probed_not_assumed() {
     // In Chrome 131+ — true, in Firefox and Safari — false. One binary.
-    let c = http_ng_fetch::Fetch::new().capabilities_for_test();
+    let c = hclient_fetch::Fetch::new().capabilities_for_test();
     assert_eq!(c.streaming_request_body, c.full_duplex,
                "in fetch, duplex and streaming request bodies are the same thing");
 }
@@ -347,14 +347,14 @@ fn duplex_support_is_probed_not_assumed() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
+Run: `cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL — `Fetch` not found.
 
 - [ ] **Step 3: Implement the probes**
 
 ```rust
-// crates/http-ng-fetch/src/caps.rs
-use http_ng_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport,
+// crates/hclient-fetch/src/caps.rs
+use hclient_core::{Capabilities, RedirectSupport, TimeoutSupport, TlsSupport,
                    UpgradeSupport};
 
 /// Headers that fetch forbids setting. The list comes from the WHATWG Fetch
@@ -424,8 +424,8 @@ pub(crate) fn probe() -> Capabilities {
 - [ ] **Step 4: Add `Fetch` with a skeleton and a test accessor**
 
 ```rust
-// in crates/http-ng-fetch/src/lib.rs
-use http_ng_core::Capabilities;
+// in crates/hclient-fetch/src/lib.rs
+use hclient_core::Capabilities;
 
 #[derive(Debug)]
 pub struct Fetch {
@@ -447,24 +447,24 @@ impl Default for Fetch {
 
 - [ ] **Step 5: Run the tests**
 
-Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
+Run: `wasm-pack test --headless --chrome crates/hclient-fetch`
 Expected: PASS. In Chrome `streaming_request_body == true`; the same binary
 in Firefox will give `false` — that's exactly what CI checks (Task 9).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/http-ng-fetch
+git add crates/hclient-fetch
 git commit -m "feat(fetch): runtime capability probing, the reason the registry exists"
 ```
 
 ---
 
-### Task 3: `http-ng-fetch` — request conversion
+### Task 3: `hclient-fetch` — request conversion
 
 **Files:**
-- Create: `crates/http-ng-fetch/src/convert.rs`
-- Test: `crates/http-ng-fetch/tests/convert.rs`
+- Create: `crates/hclient-fetch/src/convert.rs`
+- Test: `crates/hclient-fetch/tests/convert.rs`
 
 **Interfaces:**
 - Consumes: `FORBIDDEN_HEADERS`, `supports_duplex` (Task 2).
@@ -475,38 +475,38 @@ git commit -m "feat(fetch): runtime capability probing, the reason the registry 
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng-fetch/tests/convert.rs
+// crates/hclient-fetch/tests/convert.rs
 #![cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use http_ng_core::RequestBody;
+use hclient_core::RequestBody;
 
 #[wasm_bindgen_test]
 fn rejects_a_forbidden_header_instead_of_dropping_it() {
-    let f = http_ng_fetch::Fetch::new();
+    let f = hclient_fetch::Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
         .header("host", "evil.example")
         .body(RequestBody::Empty).unwrap();
-    let err = http_ng_fetch::testing::to_web_request(&f, req).unwrap_err();
-    assert!(matches!(err.kind(), http_ng_core::ErrorKind::Unsupported), "{err}");
+    let err = hclient_fetch::testing::to_web_request(&f, req).unwrap_err();
+    assert!(matches!(err.kind(), hclient_core::ErrorKind::Unsupported), "{err}");
     assert!(err.to_string().contains("host"), "{err}");
 }
 
 #[wasm_bindgen_test]
 fn ordinary_headers_pass_through() {
-    let f = http_ng_fetch::Fetch::new();
+    let f = hclient_fetch::Fetch::new();
     let req = http::Request::builder()
         .uri("https://example.com/")
         .header("x-custom", "v")
         .body(RequestBody::Empty).unwrap();
-    assert!(http_ng_fetch::testing::to_web_request(&f, req).is_ok());
+    assert!(hclient_fetch::testing::to_web_request(&f, req).is_ok());
 }
 
 #[wasm_bindgen_test]
 fn streaming_body_is_rejected_where_duplex_is_absent() {
-    let f = http_ng_fetch::Fetch::new();
+    let f = hclient_fetch::Fetch::new();
     if f.capabilities_for_test().streaming_request_body {
         return; // supported in Chrome — nothing to check
     }
@@ -514,20 +514,20 @@ fn streaming_body_is_rejected_where_duplex_is_absent() {
         .uri("https://example.com/")
         .body(RequestBody::rewindable(|| RequestBody::Empty)).unwrap();
     // Rewindable is bufferable, so it passes; Streaming does not.
-    assert!(http_ng_fetch::testing::to_web_request(&f, req).is_ok());
+    assert!(hclient_fetch::testing::to_web_request(&f, req).is_ok());
 }
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
+Run: `cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-fetch/src/convert.rs
-use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
+// crates/hclient-fetch/src/convert.rs
+use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
 use wasm_bindgen::{JsCast, JsValue};
 
 #[derive(Debug)]
@@ -633,28 +633,28 @@ pub(crate) fn to_web_request(
 
 ```rust
 // in the testing module of lib.rs
-    pub fn to_web_request(f: &crate::Fetch, req: http::Request<http_ng_core::RequestBody>)
-        -> Result<(web_sys::Request, Option<web_sys::AbortController>), http_ng_core::Error>
+    pub fn to_web_request(f: &crate::Fetch, req: http::Request<hclient_core::RequestBody>)
+        -> Result<(web_sys::Request, Option<web_sys::AbortController>), hclient_core::Error>
     { crate::convert::to_web_request(req, f.capabilities_for_test()) }
 ```
 
-Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
+Run: `wasm-pack test --headless --chrome crates/hclient-fetch`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-fetch
+git add crates/hclient-fetch
 git commit -m "feat(fetch): request conversion rejecting forbidden headers explicitly"
 ```
 
 ---
 
-### Task 4: `http-ng-fetch` — response body over ReadableStream
+### Task 4: `hclient-fetch` — response body over ReadableStream
 
 **Files:**
-- Create: `crates/http-ng-fetch/src/body.rs`
-- Test: `crates/http-ng-fetch/tests/body.rs`
+- Create: `crates/hclient-fetch/src/body.rs`
+- Test: `crates/hclient-fetch/tests/body.rs`
 
 **Interfaces:**
 - Produces: `pub struct Body`; `impl http_body::Body for Body { type Data = Bytes; type Error = Error }`;
@@ -663,7 +663,7 @@ git commit -m "feat(fetch): request conversion rejecting forbidden headers expli
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng-fetch/tests/body.rs
+// crates/hclient-fetch/tests/body.rs
 #![cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
@@ -671,32 +671,32 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen_test]
 async fn streams_a_response_body_in_chunks() {
     // A data: URL gives a deterministic response with no network.
-    let f = http_ng_fetch::Fetch::new();
-    let body = http_ng_fetch::testing::fetch_body(
+    let f = hclient_fetch::Fetch::new();
+    let body = hclient_fetch::testing::fetch_body(
         &f, "data:text/plain,hello%20world").await.unwrap();
     assert_eq!(&body[..], b"hello world");
 }
 
 #[wasm_bindgen_test]
 async fn empty_body_is_end_stream() {
-    let b = http_ng_fetch::Body::empty();
+    let b = hclient_fetch::Body::empty();
     assert!(http_body::Body::is_end_stream(&b));
 }
 ```
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
+Run: `cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-fetch/src/body.rs
+// crates/hclient-fetch/src/body.rs
 use crate::convert::js_err;
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
-use http_ng_core::Error;
+use hclient_core::Error;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::JsCast;
@@ -773,23 +773,23 @@ Add `futures-util` with the `std` feature, for `StreamExt::map`.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
+Run: `wasm-pack test --headless --chrome crates/hclient-fetch`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-fetch
+git add crates/hclient-fetch
 git commit -m "feat(fetch): streaming response body over ReadableStream"
 ```
 
 ---
 
-### Task 5: `http-ng-fetch` — `impl Transport for Fetch`
+### Task 5: `hclient-fetch` — `impl Transport for Fetch`
 
 **Files:**
-- Modify: `crates/http-ng-fetch/src/lib.rs`
-- Test: `crates/http-ng-fetch/tests/transport.rs`
+- Modify: `crates/hclient-fetch/src/lib.rs`
+- Test: `crates/hclient-fetch/tests/transport.rs`
 
 **Interfaces:**
 - Consumes: Tasks 1–4.
@@ -798,13 +798,13 @@ git commit -m "feat(fetch): streaming response body over ReadableStream"
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng-fetch/tests/transport.rs
+// crates/hclient-fetch/tests/transport.rs
 #![cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-use http_ng::Client;
-use http_ng_fetch::Fetch;
+use hclient::Client;
+use hclient_fetch::Fetch;
 
 #[wasm_bindgen_test]
 async fn end_to_end_through_the_client() {
@@ -817,7 +817,7 @@ async fn end_to_end_through_the_client() {
 #[wasm_bindgen_test]
 async fn build_rejects_timeouts_fetch_cannot_express() {
     let err = Client::builder(Fetch::new())
-        .timeouts(http_ng::Timeouts {
+        .timeouts(hclient::Timeouts {
             connect: Some(std::time::Duration::from_secs(1)), ..Default::default() })
         .build().unwrap_err();
     assert_eq!(err.what, "connect_timeout");
@@ -827,15 +827,15 @@ async fn build_rejects_timeouts_fetch_cannot_express() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng-fetch --target wasm32-unknown-unknown --tests`
+Run: `cargo check -p hclient-fetch --target wasm32-unknown-unknown --tests`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// in crates/http-ng-fetch/src/lib.rs
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Error, ErrorKind, RequestBody};
+// in crates/hclient-fetch/src/lib.rs
+use hclient_core::unversioned::Transport;
+use hclient_core::{Error, ErrorKind, RequestBody};
 use wasm_bindgen::JsCast;
 
 impl Transport for Fetch {
@@ -886,38 +886,38 @@ impl Transport for Fetch {
         builder.body(body).map_err(|e| Error::new(ErrorKind::Other, e))
     }
 
-    fn capabilities(&self) -> &http_ng_core::Capabilities { &self.caps }
+    fn capabilities(&self) -> &hclient_core::Capabilities { &self.caps }
 }
 ```
 
 - [ ] **Step 4: Run the tests**
 
-Run: `wasm-pack test --headless --chrome crates/http-ng-fetch`
+Run: `wasm-pack test --headless --chrome crates/hclient-fetch`
 Expected: PASS.
 
 - [ ] **Step 5: Check that hyper and tokio aren't in the graph**
 
-Run: `cargo tree -p http-ng-fetch -e normal --prefix none | grep -E '^(hyper|tokio)' && exit 1 || echo OK`
+Run: `cargo tree -p hclient-fetch -e normal --prefix none | grep -E '^(hyper|tokio)' && exit 1 || echo OK`
 Expected: `OK` — **this is exactly the "ambient build with no tokio" promise**.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/http-ng-fetch
+git add crates/hclient-fetch
 git commit -m "feat(fetch): Transport implementation, ambient build with zero tokio"
 ```
 
 ---
 
-### Task 6: `http-ng-proto` — jittered backoff
+### Task 6: `hclient-proto` — jittered backoff
 
 A pure state machine: it takes the attempt number and "randomness" as
 parameters, so it's tested without a clock and without a generator. **Not
 one** of the four existing SSE crates jitters.
 
 **Files:**
-- Create: `crates/http-ng-proto/src/backoff.rs`
-- Modify: `crates/http-ng-proto/src/lib.rs`
+- Create: `crates/hclient-proto/src/backoff.rs`
+- Modify: `crates/hclient-proto/src/lib.rs`
 - Test: inside `backoff.rs`
 
 **Interfaces:**
@@ -929,7 +929,7 @@ one** of the four existing SSE crates jitters.
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-proto/src/backoff.rs
+// crates/hclient-proto/src/backoff.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -978,13 +978,13 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-proto backoff`
+Run: `cargo test -p hclient-proto backoff`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-proto/src/backoff.rs
+// crates/hclient-proto/src/backoff.rs
 //! Exponential backoff with full jitter. Pure: randomness comes in as a
 //! parameter, so behavior is tested without a generator and without a clock.
 
@@ -1031,25 +1031,25 @@ impl Backoff {
 
 - [ ] **Step 4: Wire it up and run**
 
-Add `pub mod backoff;` to `crates/http-ng-proto/src/lib.rs`.
+Add `pub mod backoff;` to `crates/hclient-proto/src/lib.rs`.
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-proto
+git add crates/hclient-proto
 git commit -m "feat(proto): jittered exponential backoff that cannot overflow"
 ```
 
 ---
 
-### Task 7: `http-ng` — SSE reconnect
+### Task 7: `hclient` — SSE reconnect
 
 **Files:**
-- Modify: `crates/http-ng/src/sse.rs`
-- Test: `crates/http-ng/tests/sse_reconnect.rs`
+- Modify: `crates/hclient/src/sse.rs`
+- Test: `crates/hclient/tests/sse_reconnect.rs`
 
 **Interfaces:**
 - Consumes: `Backoff` (Task 6), `SseDecoder`, `Client` (vertical 1).
@@ -1064,9 +1064,9 @@ git commit -m "feat(proto): jittered exponential backoff that cannot overflow"
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/tests/sse_reconnect.rs
-use http_ng::mock::MockTransport;
-use http_ng::{Client, SseEvent};
+// crates/hclient/tests/sse_reconnect.rs
+use hclient::mock::MockTransport;
+use hclient::{Client, SseEvent};
 
 fn sse(body: &'static str) -> http::Response<&'static str> {
     http::Response::builder().status(200)
@@ -1136,7 +1136,7 @@ fn oversized_event_is_fatal_and_not_retried() {
 
     let c = Client::builder(m).build().unwrap();
     let mut s = futures_executor::block_on(
-        c.sse("https://a/stream").options(http_ng::SseOptions {
+        c.sse("https://a/stream").options(hclient::SseOptions {
             max_event_size: 8, ..Default::default() }).connect()).unwrap();
 
     assert!(futures_executor::block_on(s.next()).unwrap().is_err());
@@ -1147,21 +1147,21 @@ fn oversized_event_is_fatal_and_not_retried() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng --features test-util --test sse_reconnect`
+Run: `cargo test -p hclient --features test-util --test sse_reconnect`
 Expected: FAIL — `no method named sse`.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng/src/sse.rs
+// crates/hclient/src/sse.rs
 use crate::client::Client;
 use crate::response::Response;
 use bytes::Bytes;
 use http_body::Body as HttpBody;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Error, ErrorKind, RequestBody};
-use http_ng_proto::backoff::Backoff;
-use http_ng_proto::sse::{SseDecoder, SseEvent};
+use hclient_core::unversioned::Transport;
+use hclient_core::{Error, ErrorKind, RequestBody};
+use hclient_proto::backoff::Backoff;
+use hclient_proto::sse::{SseDecoder, SseEvent};
 use std::time::Duration;
 
 const MIME: &str = "text/event-stream";
@@ -1176,7 +1176,7 @@ pub struct SseOptions {
 impl Default for SseOptions {
     fn default() -> Self {
         Self {
-            max_event_size: http_ng_proto::sse::DEFAULT_MAX_EVENT_SIZE,
+            max_event_size: hclient_proto::sse::DEFAULT_MAX_EVENT_SIZE,
             backoff: Backoff::default(),
             reconnect: true,
         }
@@ -1350,37 +1350,37 @@ fn jitter_source() -> f64 {
 client's configuration; it wasn't there in vertical 1, because there was no
 reconnect.
 
-Add `getrandom = "0.4"` to `http-ng`'s dependencies.
+Add `getrandom = "0.4"` to `hclient`'s dependencies.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng --features test-util`
+Run: `cargo test -p hclient --features test-util`
 Expected: PASS, four reconnect tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): SSE reconnect with Last-Event-ID, jitter and WHATWG terminal rules"
+git add crates/hclient
+git commit -m "feat(hclient): SSE reconnect with Last-Event-ID, jitter and WHATWG terminal rules"
 ```
 
 ---
 
-### Task 8: `http-ng` — `Client::new()` in the browser
+### Task 8: `hclient` — `Client::new()` in the browser
 
 **Files:**
-- Modify: `crates/http-ng/Cargo.toml`, `src/lib.rs`
-- Test: `crates/http-ng/tests/wasm_default.rs`
+- Modify: `crates/hclient/Cargo.toml`, `src/lib.rs`
+- Test: `crates/hclient/tests/wasm_default.rs`
 
 **Interfaces:**
-- Produces: `DefaultTransport = http_ng_fetch::Fetch` for
+- Produces: `DefaultTransport = hclient_fetch::Fetch` for
   `wasm32-unknown-unknown`; `Client::new()` with no `Result`, because
   fetch's constructor can never fail.
 
 - [ ] **Step 1: Write a failing test**
 
 ```rust
-// crates/http-ng/tests/wasm_default.rs
+// crates/hclient/tests/wasm_default.rs
 #![cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
@@ -1388,7 +1388,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen_test]
 async fn the_two_line_example_from_the_readme_works_in_a_browser() {
     // Exactly the same code that works on native in vertical 2.
-    let client = http_ng::Client::new();
+    let client = hclient::Client::new();
     let text = client.get("data:text/plain,portable")
         .send().await.unwrap()
         .collect().await.unwrap()
@@ -1399,24 +1399,24 @@ async fn the_two_line_example_from_the_readme_works_in_a_browser() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo check -p http-ng --target wasm32-unknown-unknown --tests --features default-transport`
+Run: `cargo check -p hclient --target wasm32-unknown-unknown --tests --features default-transport`
 Expected: FAIL — `DefaultTransport` isn't defined for this target.
 
 - [ ] **Step 3: Add the target dependency and the type**
 
 ```toml
-# crates/http-ng/Cargo.toml
+# crates/hclient/Cargo.toml
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
-http-ng-fetch = { path = "../http-ng-fetch", version = "0.1.0", optional = true }
+hclient-fetch = { path = "../hclient-fetch", version = "0.1.0", optional = true }
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 ```
 
 ```rust
-// in crates/http-ng/src/lib.rs
+// in crates/hclient/src/lib.rs
 #[cfg(all(feature = "default-transport", target_family = "wasm", target_os = "unknown"))]
-pub type DefaultTransport = http_ng_fetch::Fetch;
+pub type DefaultTransport = hclient_fetch::Fetch;
 
 #[cfg(all(feature = "default-transport", target_family = "wasm", target_os = "unknown"))]
 impl Client<DefaultTransport> {
@@ -1425,7 +1425,7 @@ impl Client<DefaultTransport> {
     /// No `Result`: fetch's constructor can't fail, and incompatible
     /// settings are rejected in `build()`.
     pub fn new() -> Self {
-        Self::builder(http_ng_fetch::Fetch::new())
+        Self::builder(hclient_fetch::Fetch::new())
             .build()
             .expect("fetch transport with default config is always supported")
     }
@@ -1434,14 +1434,14 @@ impl Client<DefaultTransport> {
 
 - [ ] **Step 4: Run the wasm test**
 
-Run: `wasm-pack test --headless --chrome crates/http-ng -- --features default-transport,test-util`
+Run: `wasm-pack test --headless --chrome crates/hclient -- --features default-transport,test-util`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): Client::new() on the browser target"
+git add crates/hclient
+git commit -m "feat(hclient): Client::new() on the browser target"
 ```
 
 ---
@@ -1468,8 +1468,8 @@ git commit -m "feat(http-ng): Client::new() on the browser target"
       - uses: jetli/wasm-pack-action@v0.4
       - name: browser tests
         run: |
-          wasm-pack test --headless --${{ matrix.browser }} crates/http-ng-fetch
-          wasm-pack test --headless --${{ matrix.browser }} crates/http-ng \
+          wasm-pack test --headless --${{ matrix.browser }} crates/hclient-fetch
+          wasm-pack test --headless --${{ matrix.browser }} crates/hclient \
             -- --features default-transport,test-util
 
   ambient-has-no-tokio:
@@ -1480,11 +1480,11 @@ git commit -m "feat(http-ng): Client::new() on the browser target"
         with: { targets: wasm32-unknown-unknown }
       - name: fetch build must contain neither tokio nor hyper
         run: |
-          cargo tree -p http-ng-fetch -e normal --prefix none \
+          cargo tree -p hclient-fetch -e normal --prefix none \
             | grep -E '^(tokio|hyper|h2)' && exit 1 || true
       - name: proto must stay sans-io
         run: |
-          cargo tree -p http-ng-proto -e normal --prefix none \
+          cargo tree -p hclient-proto -e normal --prefix none \
             | grep -Ei '^(tokio|futures-|async-)' && exit 1 || true
 
   fetch-must-fail-under-wasm-threads:
@@ -1496,7 +1496,7 @@ git commit -m "feat(http-ng): Client::new() on the browser target"
       - name: the unsafe Send must be rejected when atomics are on
         run: |
           RUSTFLAGS="-Ctarget-feature=+atomics,+bulk-memory" \
-            cargo +nightly check -p http-ng-fetch \
+            cargo +nightly check -p hclient-fetch \
             --target wasm32-unknown-unknown -Zbuild-std=std,panic_abort \
             && { echo "expected a compile error"; exit 1; } || echo OK
 ```
@@ -1508,7 +1508,7 @@ only one browser, the runtime registry doesn't work.
 
 - [ ] **Step 2: Run locally what can be run**
 
-Run: `cargo tree -p http-ng-fetch -e normal --prefix none | grep -E '^(tokio|hyper|h2)' && echo FAIL || echo OK`
+Run: `cargo tree -p hclient-fetch -e normal --prefix none | grep -E '^(tokio|hyper|h2)' && echo FAIL || echo OK`
 Expected: `OK`.
 
 - [ ] **Step 3: Commit**
@@ -1526,7 +1526,7 @@ The central test of the `Transport` shape: a live consumer, written
 **before** our library, must fit onto it with no rework.
 
 **Files:**
-- Create: `crates/http-ng/examples/portable.rs`
+- Create: `crates/hclient/examples/portable.rs`
 - Create: `docs/porting-wasi-fetch.md`
 
 **Interfaces:** nothing for code.
@@ -1534,15 +1534,15 @@ The central test of the `Transport` shape: a live consumer, written
 - [ ] **Step 1: Write an example that mirrors `components/http-client`**
 
 ```rust
-// crates/http-ng/examples/portable.rs
-//! Mirrors the logic of `act/components/http-client/src/lib.rs` on http-ng.
+// crates/hclient/examples/portable.rs
+//! Mirrors the logic of `act/components/http-client/src/lib.rs` on hclient.
 //!
 //! Builds for three targets with not a single `#[cfg]` in this file:
 //!   cargo build --example portable
 //!   cargo build --example portable --target wasm32-wasip2
 //!   cargo build --example portable --target wasm32-unknown-unknown
 
-use http_ng::{Client, RequestBody, Timeouts};
+use hclient::{Client, RequestBody, Timeouts};
 
 pub async fn fetch<T>(
     client: &Client<T>,
@@ -1551,9 +1551,9 @@ pub async fn fetch<T>(
     headers: &[(String, String)],
     body: Option<Vec<u8>>,
     timeout_ms: Option<u64>,
-) -> Result<(u16, http::HeaderMap, Vec<u8>), http_ng::Error>
+) -> Result<(u16, http::HeaderMap, Vec<u8>), hclient::Error>
 where
-    T: http_ng_core::unversioned::Transport,
+    T: hclient_core::unversioned::Transport,
     T::Body: http_body::Body<Data = bytes::Bytes> + Unpin,
     <T::Body as http_body::Body>::Error: std::error::Error + 'static,
 {
@@ -1594,9 +1594,9 @@ If `Response::new` turns out to be `pub(crate)`, write the example via
 
 Run:
 ```
-cargo build -p http-ng --example portable
-cargo build -p http-ng --example portable --target wasm32-wasip2
-cargo build -p http-ng --example portable --target wasm32-unknown-unknown
+cargo build -p hclient --example portable
+cargo build -p hclient --example portable --target wasm32-wasip2
+cargo build -p hclient --example portable --target wasm32-unknown-unknown
 ```
 Expected: three successful builds. **If even one needs a `#[cfg]` in the
 example itself, the `Transport` shape is wrong, and that's the stop
@@ -1606,20 +1606,20 @@ criterion from the spec.**
 
 ```markdown
 <!-- docs/porting-wasi-fetch.md -->
-# Migrating `wasi-fetch` → `http-ng`
+# Migrating `wasi-fetch` → `hclient`
 
 `wasi-fetch` 0.2.0 (571 lines) breaks down like this:
 
 | was | becomes |
 |---|---|
-| `Client` + `get/post/...` | `http_ng::Client<T>` |
-| `RequestBuilder::{header, headers, body, json}` | `http_ng::RequestBuilder` |
+| `Client` + `get/post/...` | `hclient::Client<T>` |
+| `RequestBuilder::{header, headers, body, json}` | `hclient::RequestBuilder` |
 | `timeout` (set connect **and** first_byte) | `Timeouts { connect, first_byte, between_bytes }` |
 | `between_bytes_timeout` | same struct, as the third field |
-| `redirect_limit` + a ~60-line loop | the `Redirect` stage in `http-ng` |
-| `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `http-ng-wasi` |
-| `Body::{chunk, bytes, text, json}` | `http_ng::Response`/`Collected` methods |
-| `Error::Transport(String)` | `http_ng::Error` with `ErrorKind` |
+| `redirect_limit` + a ~60-line loop | the `Redirect` stage in `hclient` |
+| `send_raw`, `BodyWriter`, `join!`, `to_wasi_method` | `hclient-wasi` |
+| `Body::{chunk, bytes, text, json}` | `hclient::Response`/`Collected` methods |
+| `Error::Transport(String)` | `hclient::Error` with `ErrorKind` |
 | seven `let _ =` on setters | `Capabilities` + `UnsupportedCapability` |
 
 What the migration fixes:
@@ -1631,14 +1631,14 @@ What the migration fixes:
 4. **Host rejections in option setters stop being silent.**
 
 `wasi-fetch` 0.3 stays a thin facade (~40 lines) over
-`http_ng::Client<WasiHttp>` with the old names: the crate stays findable,
+`hclient::Client<WasiHttp>` with the old names: the crate stays findable,
 users migrate with one line.
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/http-ng/examples docs/porting-wasi-fetch.md
+git add crates/hclient/examples docs/porting-wasi-fetch.md
 git commit -m "docs: portable example building for all three targets, wasi-fetch porting guide"
 ```
 
@@ -1657,9 +1657,9 @@ git commit -m "docs: portable example building for all three targets, wasi-fetch
 
 | target | transport | tokio in the graph |
 |---|---|---|
-| native | `http-ng-native` (TCP + rustls + h1) | yes, `sync` on the h1 path |
-| WASI | `http-ng-wasi` (`wasi:http` 0.3) | **no** |
-| browser | `http-ng-fetch` | **no** |
+| native | `hclient-native` (TCP + rustls + h1) | yes, `sync` on the h1 path |
+| WASI | `hclient-wasi` (`wasi:http` 0.3) | **no** |
+| browser | `hclient-fetch` | **no** |
 
 Runtimes in CI: tokio, smol. HTTP/2, HTTP/3, connection pooling, WebSocket — v0.2+.
 ```
@@ -1674,10 +1674,10 @@ The four claims from spec §10, and what proves each one.
 
 | claim | proof |
 |---|---|
-| The runtime seam is real | `crates/http-ng/tests/two_runtimes.rs` — one generic piece of code on tokio and smol, zero `#[cfg]`. Plus `crates/http-ng-native/tests/h1.rs` — an exchange on a bare `futures` executor with no spawn and no timer |
-| The delegation seam is real | `http-ng-wasi` on top of `wasi:http` 0.3, where there's no socket at all |
-| The capability model degrades honestly | `crates/http-ng-fetch/tests/caps.rs` in the Chrome + Firefox CI matrix: `streaming_request_body` differs **in one binary** |
-| The `Transport` shape was guessed correctly | `crates/http-ng/examples/portable.rs` builds for three targets with no `#[cfg]` in the example itself |
+| The runtime seam is real | `crates/hclient/tests/two_runtimes.rs` — one generic piece of code on tokio and smol, zero `#[cfg]`. Plus `crates/hclient-native/tests/h1.rs` — an exchange on a bare `futures` executor with no spawn and no timer |
+| The delegation seam is real | `hclient-wasi` on top of `wasi:http` 0.3, where there's no socket at all |
+| The capability model degrades honestly | `crates/hclient-fetch/tests/caps.rs` in the Chrome + Firefox CI matrix: `streaming_request_body` differs **in one binary** |
+| The `Transport` shape was guessed correctly | `crates/hclient/examples/portable.rs` builds for three targets with no `#[cfg]` in the example itself |
 
 ## Deliberately not done in v0.1
 
@@ -1685,14 +1685,14 @@ Connection pooling; HTTP/2 and HTTP/3; streaming request bodies;
 `first_byte` and `between_bytes` timeouts on native (declared unsupported,
 not silently unimplemented); two `getaddrinfo` slots instead of one; h1
 upgrade and WebSocket; hickory and DoH; Alt-Svc; middleware and
-`http-ng-tower`; `http-ng-rmcp`.
+`hclient-tower`; `hclient-rmcp`.
 
 ## What remains unverified
 
 `RequestBody::Streaming` doesn't pass through any transport: native buffers
 it, fetch rejects it via `Capabilities`, wasi only takes `Full`. The replay
 contract is covered by unit tests, but not by an end-to-end scenario. The
-first real consumer is `http-ng-rmcp` in v0.2.
+first real consumer is `hclient-rmcp` in v0.2.
 ```
 
 - [ ] **Step 3: Run everything**
@@ -1700,8 +1700,8 @@ first real consumer is `http-ng-rmcp` in v0.2.
 Run:
 ```
 cargo test --workspace --all-features
-cargo check -p http-ng-wasi --target wasm32-wasip2
-cargo check -p http-ng-fetch --target wasm32-unknown-unknown
+cargo check -p hclient-wasi --target wasm32-wasip2
+cargo check -p hclient-fetch --target wasm32-unknown-unknown
 ```
 Expected: PASS.
 
@@ -1719,6 +1719,6 @@ git commit -m "docs: v0.1 acceptance report mapping spec claims to their proofs"
 Everything from spec §10 for v0.2 and beyond: h2 via ALPN with the executor
 as typestate; a pool with body draining and idle eviction; `AltSvcCache`;
 decompression; async `CookieStore`; retry with a typed replayable body;
-middleware and `http-ng-tower`; `http-ng-dns-hickory` with SVCB;
-`http-ng-tls-native`; multipart, proxy, base URL; and `http-ng-rmcp` as the
+middleware and `hclient-tower`; `hclient-dns-hickory` with SVCB;
+`hclient-tls-native`; multipart, proxy, base URL; and `hclient-rmcp` as the
 second verification loop.

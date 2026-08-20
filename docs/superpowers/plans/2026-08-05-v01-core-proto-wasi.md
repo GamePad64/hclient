@@ -1,4 +1,4 @@
-# http-ng v0.1, vertical 1: core + proto + WASI — implementation plan
+# hclient v0.1, vertical 1: core + proto + WASI — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -6,15 +6,15 @@
 `wasi:http` 0.3, with a portable core that knows nothing about hyper or
 sockets.
 
-**Architecture:** Three crates. `http-ng-proto` — pure state machines with no
-`async` (SSE decoder, redirect logic). `http-ng-core` — the plugin contract:
+**Architecture:** Three crates. `hclient-proto` — pure state machines with no
+`async` (SSE decoder, redirect logic). `hclient-core` — the plugin contract:
 the `Transport` trait, `Capabilities`, `RequestBody`, `Error`, `Timer`.
-`http-ng` — the user-facing surface: `Client<T>`, builder, stages, `Response`,
-the SSE stream. `http-ng-wasi` — the first transport. The core and the stages
+`hclient` — the user-facing surface: `Client<T>`, builder, stages, `Response`,
+the SSE stream. `hclient-wasi` — the first transport. The core and the stages
 are tested on the host against a mock transport; wasm is only needed for the
 transport's integration tests.
 
-**Tech Stack:** Rust edition 2024, MSRV 1.85 (1.90 for `http-ng-wasi`).
+**Tech Stack:** Rust edition 2024, MSRV 1.85 (1.90 for `hclient-wasi`).
 `http` 1.5, `http-body` 1.1, `bytes` 1.12, `futures-core` 0.3, `url` 2.5,
 `wasip3` 0.7.0+wasi-0.3.0. Tests: `proptest` 1.x, `http-body-util` 0.1.
 No async runtimes in this vertical's graph.
@@ -22,25 +22,25 @@ No async runtimes in this vertical's graph.
 ## Global Constraints
 
 These requirements implicitly apply to every task. Values are copied from the
-spec, `docs/superpowers/specs/2026-08-05-http-ng-design.md`.
+spec, `docs/superpowers/specs/2026-08-05-hclient-design.md`.
 
-- **`http-ng-proto` has no `tokio`, `futures-*`, or `async-*` in its graph**
+- **`hclient-proto` has no `tokio`, `futures-*`, or `async-*` in its graph**
   and contains not a single `async fn`. Checked in CI (Task 1).
-- **`http-ng-core` and `http-ng` don't declare a single `Send`/`Sync` bound,
+- **`hclient-core` and `hclient` don't declare a single `Send`/`Sync` bound,
   don't have a single `Box<dyn ...>` on the hot path, and don't have a single
   `#[cfg]`-switched trait alias.** `Send` is inferred as an auto-trait through
   `impl Future`.
 - **Plugin traits live in the `unversioned` module** (`Transport`, `Timer`)
   with a doc string: "breaking changes in this module ship in minor, not
   major."
-- **No foreign type appears in the public API** of `http-ng` and
-  `http-ng-core`, other than `http`, `http-body`, `bytes`, `futures-core`. In
+- **No foreign type appears in the public API** of `hclient` and
+  `hclient-core`, other than `http`, `http-body`, `bytes`, `futures-core`. In
   particular, `wasip3::*` is not re-exported.
 - **An unsupported setting is a typed error, never a silent no-op.** Not a
   single `let _ =` on a `Result` from a capability setter.
 - **`default = []` in every crate.**
-- `edition = "2024"`, `rust-version = "1.85"` (except `http-ng-wasi`: `"1.90"`).
-- Every crate: `#![deny(unsafe_code)]`, except `http-ng-wasi` (which also has
+- `edition = "2024"`, `rust-version = "1.85"` (except `hclient-wasi`: `"1.90"`).
+- Every crate: `#![deny(unsafe_code)]`, except `hclient-wasi` (which also has
   none, but keep the deny anyway).
 - Commits — at every "Commit" step, message in the imperative, prefix
   `feat:`/`test:`/`chore:`/`docs:`.
@@ -50,21 +50,21 @@ spec, `docs/superpowers/specs/2026-08-05-http-ng-design.md`.
 ```
 Cargo.toml                             workspace, [workspace.dependencies], lints
 .github/workflows/ci.yml               matrix + invariant checks
-crates/http-ng-proto/
+crates/hclient-proto/
   src/lib.rs                           re-exports, we don't claim #![no_std] compatibility
   src/sse/mod.rs                       SseDecoder — public API
   src/sse/lines.rs                     BOM + line splitting across chunk boundaries
   src/sse/decode.rs                    fields, event accumulation, dispatch
   src/redirect.rs                      decide() — the pure redirect decision
   fuzz/fuzz_targets/sse.rs             fuzzing the decoder
-crates/http-ng-core/
+crates/hclient-core/
   src/lib.rs
   src/error.rs                         Error, ErrorKind, Phase
   src/body.rs                          RequestBody, RetryKind
   src/caps.rs                          Capabilities, UnsupportedCapability
   src/timer.rs                         Timer            (unversioned module)
   src/transport.rs                     Transport        (unversioned module)
-crates/http-ng/
+crates/hclient/
   src/lib.rs
   src/config.rs                        Config, Timeouts, RedirectConfig, lookup
   src/client.rs                        Client<T>, ClientBuilder<T>
@@ -74,29 +74,29 @@ crates/http-ng/
   src/stages/redirect.rs               applying the decision from proto
   src/sse.rs                           SseStream — reconnect on top of the decoder
   src/mock.rs                          MockTransport, behind the `test-util` feature
-crates/http-ng-wasi/
+crates/hclient-wasi/
   src/lib.rs                           WasiHttp: Transport
   src/body.rs                          Body: http_body::Body
   src/convert.rs                       http <-> wasi, including honoring setters
 ```
 
-**Not part of this vertical:** `http-ng-native`, `http-ng-rt*`, `http-ng-tls*`,
-`http-ng-dns*`, `http-ng-fetch`, the pool, h2/h3, `Negotiate`. The default
+**Not part of this vertical:** `hclient-native`, `hclient-rt*`, `hclient-tls*`,
+`hclient-dns*`, `hclient-fetch`, the pool, h2/h3, `Negotiate`. The default
 parameter `Client<T = DefaultTransport>` shows up in vertical 2, once a native
 transport exists; adding a default type parameter isn't a breaking change.
 
-**Deliberate deviation from spec §10.** The spec assigns `http-ng-fetch` to
+**Deliberate deviation from spec §10.** The spec assigns `hclient-fetch` to
 v0.1 on the grounds that fetch is the only backend with runtime differences in
 capabilities (duplex in Chrome 131+, absent in Safari), and is therefore the
 only test of the runtime-registry decision for `Capabilities`. Here it's
 deferred to vertical 3, so vertical 1 delivers a runnable result. **Consequence:
 until vertical 3, the "runtime-`Capabilities` instead of cfg" decision remains
 unverified.** If vertical 3 shows the registry doesn't work, the rework touches
-`http-ng-core` — i.e., Task 8.
+`hclient-core` — i.e., Task 8.
 
 **In another repository:** the `wasi-fetch` 0.3 compatibility facade lives in
 `/mnt/devenv/workspace/act/wasi-fetch` and isn't planned here. It's done after
-`http-ng-wasi` works, as a separate change in that repository.
+`hclient-wasi` works, as a separate change in that repository.
 
 ---
 
@@ -136,9 +136,9 @@ futures-core   = { version = "0.3", default-features = false }
 url            = "2.5"
 proptest       = "1"
 
-http-ng-proto = { path = "crates/http-ng-proto", version = "0.1.0" }
-http-ng-core  = { path = "crates/http-ng-core",  version = "0.1.0" }
-http-ng       = { path = "crates/http-ng",       version = "0.1.0" }
+hclient-proto = { path = "crates/hclient-proto", version = "0.1.0" }
+hclient-core  = { path = "crates/hclient-core",  version = "0.1.0" }
+hclient       = { path = "crates/hclient",       version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code       = "deny"
@@ -199,7 +199,7 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=""
-          for p in http-ng-proto http-ng-core http-ng; do
+          for p in hclient-proto hclient-core hclient; do
             if [ -d "crates/$p" ]; then pkgs="$pkgs -p $p"; fi
           done
           if [ -z "$pkgs" ]; then
@@ -217,11 +217,11 @@ jobs:
       - shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d crates/http-ng-wasi ]; then
-            echo "::notice::http-ng-wasi doesn't exist yet — wasip2 build skipped"
+          if [ ! -d crates/hclient-wasi ]; then
+            echo "::notice::hclient-wasi doesn't exist yet — wasip2 build skipped"
             exit 0
           fi
-          cargo check -p http-ng-wasi --target wasm32-wasip2
+          cargo check -p hclient-wasi --target wasm32-wasip2
 
   # ── invariants from the spec ────────────────────────────────────────────
   proto-is-sans-io:
@@ -229,28 +229,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: no async deps in http-ng-proto
+      - name: no async deps in hclient-proto
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d crates/http-ng-proto ]; then
-            echo "::notice::http-ng-proto doesn't exist yet — check skipped"
+          if [ ! -d crates/hclient-proto ]; then
+            echo "::notice::hclient-proto doesn't exist yet — check skipped"
             exit 0
           fi
-          if cargo tree -p http-ng-proto -e normal --prefix none \
+          if cargo tree -p hclient-proto -e normal --prefix none \
                | grep -Ei '^(tokio|futures-|async-|smol|compio)'; then
-            echo "::error::http-ng-proto picked up an async dependency"
+            echo "::error::hclient-proto picked up an async dependency"
             exit 1
           fi
-      - name: no async fn in http-ng-proto
+      - name: no async fn in hclient-proto
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d crates/http-ng-proto/src ]; then
-            echo "::notice::http-ng-proto doesn't exist yet — check skipped"
+          if [ ! -d crates/hclient-proto/src ]; then
+            echo "::notice::hclient-proto doesn't exist yet — check skipped"
             exit 0
           fi
-          if grep -rn "async fn" crates/http-ng-proto/src; then
+          if grep -rn "async fn" crates/hclient-proto/src; then
             echo "::error::a sans-io crate contains async fn"
             exit 1
           fi
@@ -265,7 +265,7 @@ jobs:
         run: |
           set -euo pipefail
           dirs=""
-          for d in crates/http-ng-core/src crates/http-ng/src; do
+          for d in crates/hclient-core/src crates/hclient/src; do
             if [ -d "$d" ]; then dirs="$dirs $d"; fi
           done
           if [ -z "$dirs" ]; then
@@ -291,18 +291,18 @@ git commit -m "chore: workspace skeleton with spec invariants enforced in CI"
 
 ---
 
-### Task 2: `http-ng-proto` — splitting the SSE stream into lines
+### Task 2: `hclient-proto` — splitting the SSE stream into lines
 
 The trickiest part of SSE: exactly one BOM gets stripped, three line
 terminators (CRLF/LF/CR), and all of it has to survive being split at a chunk
 boundary — including a split inside the BOM and a split between CR and LF.
 
 **Files:**
-- Create: `crates/http-ng-proto/Cargo.toml`
-- Create: `crates/http-ng-proto/src/lib.rs`
-- Create: `crates/http-ng-proto/src/sse/mod.rs`
-- Create: `crates/http-ng-proto/src/sse/lines.rs`
-- Test: inside `crates/http-ng-proto/src/sse/lines.rs` (`#[cfg(test)] mod tests`)
+- Create: `crates/hclient-proto/Cargo.toml`
+- Create: `crates/hclient-proto/src/lib.rs`
+- Create: `crates/hclient-proto/src/sse/mod.rs`
+- Create: `crates/hclient-proto/src/sse/lines.rs`
+- Test: inside `crates/hclient-proto/src/sse/lines.rs` (`#[cfg(test)] mod tests`)
 
 **Interfaces:**
 - Consumes: nothing
@@ -314,7 +314,7 @@ boundary — including a split inside the BOM and a split between CR and LF.
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-proto/src/sse/lines.rs
+// crates/hclient-proto/src/sse/lines.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,17 +376,17 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm the tests fail**
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: FAIL — `cannot find type LineSplitter`.
 
 - [ ] **Step 3: Create the manifest and crate root**
 
 ```toml
-# crates/http-ng-proto/Cargo.toml
+# crates/hclient-proto/Cargo.toml
 [package]
-name = "http-ng-proto"
+name = "hclient-proto"
 version = "0.1.0"
-description = "Pure state machines for http-ng's protocol layers: no I/O, no async, no runtime"
+description = "Pure state machines for hclient's protocol layers: no I/O, no async, no runtime"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -405,8 +405,8 @@ workspace = true
 ```
 
 ```rust
-// crates/http-ng-proto/src/lib.rs
-//! Pure state machines for http-ng's protocol layers.
+// crates/hclient-proto/src/lib.rs
+//! Pure state machines for hclient's protocol layers.
 //!
 //! Crate invariant: not a single `async fn`, not a single dependency on a
 //! runtime. Anything time-dependent takes `now` as a parameter. Checked in CI.
@@ -417,7 +417,7 @@ pub mod sse;
 ```
 
 ```rust
-// crates/http-ng-proto/src/sse/mod.rs
+// crates/hclient-proto/src/sse/mod.rs
 mod lines;
 pub(crate) use lines::LineSplitter;
 ```
@@ -425,7 +425,7 @@ pub(crate) use lines::LineSplitter;
 - [ ] **Step 4: Implement `LineSplitter`**
 
 ```rust
-// crates/http-ng-proto/src/sse/lines.rs
+// crates/hclient-proto/src/sse/lines.rs
 
 /// Splits a byte stream into lines per the WHATWG EventSource rules:
 /// exactly one leading BOM is stripped, terminators are CRLF, LF, or a lone
@@ -501,7 +501,7 @@ impl LineSplitter {
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: PASS, seven tests.
 
 - [ ] **Step 6: Add a property test for the invariant "chunking doesn't affect the result"**
@@ -524,23 +524,23 @@ proptest! {
 
 - [ ] **Step 7: Run it and confirm the property test passes**
 
-Run: `cargo test -p http-ng-proto -- --include-ignored`
+Run: `cargo test -p hclient-proto -- --include-ignored`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/http-ng-proto
+git add crates/hclient-proto
 git commit -m "feat(proto): SSE line splitter surviving chunk boundaries and BOM"
 ```
 
 ---
 
-### Task 3: `http-ng-proto` — the SSE event decoder
+### Task 3: `hclient-proto` — the SSE event decoder
 
 **Files:**
-- Create: `crates/http-ng-proto/src/sse/decode.rs`
-- Modify: `crates/http-ng-proto/src/sse/mod.rs`
+- Create: `crates/hclient-proto/src/sse/decode.rs`
+- Modify: `crates/hclient-proto/src/sse/mod.rs`
 - Test: inside `decode.rs`
 
 **Interfaces:**
@@ -556,7 +556,7 @@ git commit -m "feat(proto): SSE line splitter surviving chunk boundaries and BOM
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-proto/src/sse/decode.rs
+// crates/hclient-proto/src/sse/decode.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,13 +654,13 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: FAIL — `cannot find type SseDecoder`.
 
 - [ ] **Step 3: Implement the decoder**
 
 ```rust
-// crates/http-ng-proto/src/sse/decode.rs
+// crates/hclient-proto/src/sse/decode.rs
 use super::LineSplitter;
 use core::time::Duration;
 use std::collections::VecDeque;
@@ -816,7 +816,7 @@ impl SseDecoder {
 - [ ] **Step 4: Wire up the module**
 
 ```rust
-// crates/http-ng-proto/src/sse/mod.rs
+// crates/hclient-proto/src/sse/mod.rs
 mod decode;
 mod lines;
 
@@ -830,23 +830,23 @@ pub const DEFAULT_MAX_EVENT_SIZE: usize = 16 * 1024 * 1024;
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: PASS, all twelve decoder tests plus Task 2's tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/http-ng-proto
+git add crates/hclient-proto
 git commit -m "feat(proto): WHATWG-conformant SSE decoder with first-class comments and retry"
 ```
 
 ---
 
-### Task 4: `http-ng-proto` — a fuzz target for SSE
+### Task 4: `hclient-proto` — a fuzz target for SSE
 
 **Files:**
-- Create: `crates/http-ng-proto/fuzz/Cargo.toml`
-- Create: `crates/http-ng-proto/fuzz/fuzz_targets/sse.rs`
+- Create: `crates/hclient-proto/fuzz/Cargo.toml`
+- Create: `crates/hclient-proto/fuzz/fuzz_targets/sse.rs`
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
@@ -861,9 +861,9 @@ Expected: successful install (needs nightly to run, but not to install).
 - [ ] **Step 2: Create the fuzz target**
 
 ```toml
-# crates/http-ng-proto/fuzz/Cargo.toml
+# crates/hclient-proto/fuzz/Cargo.toml
 [package]
-name = "http-ng-proto-fuzz"
+name = "hclient-proto-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -873,7 +873,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-http-ng-proto = { path = ".." }
+hclient-proto = { path = ".." }
 
 [[bin]]
 name = "sse"
@@ -886,10 +886,10 @@ bench = false
 ```
 
 ```rust
-// crates/http-ng-proto/fuzz/fuzz_targets/sse.rs
+// crates/hclient-proto/fuzz/fuzz_targets/sse.rs
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use http_ng_proto::sse::SseDecoder;
+use hclient_proto::sse::SseDecoder;
 
 // Invariant: the decoder never panics and never grows past the limit.
 fuzz_target!(|data: &[u8]| {
@@ -906,7 +906,7 @@ fuzz_target!(|data: &[u8]| {
 
 - [ ] **Step 3: Run the fuzzer briefly**
 
-Run: `cd crates/http-ng-proto/fuzz && cargo +nightly fuzz run sse -- -max_total_time=60`
+Run: `cd crates/hclient-proto/fuzz && cargo +nightly fuzz run sse -- -max_total_time=60`
 Expected: 60 seconds with no panics and no crashes.
 
 - [ ] **Step 4: Add a smoke job to CI**
@@ -920,27 +920,27 @@ Expected: 60 seconds with no panics and no crashes.
       - uses: dtolnay/rust-toolchain@nightly
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz run sse -- -max_total_time=60
-        working-directory: crates/http-ng-proto/fuzz
+        working-directory: crates/hclient-proto/fuzz
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-proto/fuzz .github/workflows/ci.yml
+git add crates/hclient-proto/fuzz .github/workflows/ci.yml
 git commit -m "test(proto): fuzz the SSE decoder in CI"
 ```
 
 ---
 
-### Task 5: `http-ng-proto` — the redirect decision
+### Task 5: `hclient-proto` — the redirect decision
 
 A pure function. Fixes three defects in `wasi-fetch`'s current loop: 304/305
 aren't followed, sensitive headers get stripped on a host **or** scheme
 change, 301/302 with POST get downgraded to GET the same as 303.
 
 **Files:**
-- Create: `crates/http-ng-proto/src/redirect.rs`
-- Modify: `crates/http-ng-proto/src/lib.rs`
+- Create: `crates/hclient-proto/src/redirect.rs`
+- Modify: `crates/hclient-proto/src/lib.rs`
 - Test: inside `redirect.rs`
 
 **Interfaces:**
@@ -956,7 +956,7 @@ change, 301/302 with POST get downgraded to GET the same as 303.
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-proto/src/redirect.rs
+// crates/hclient-proto/src/redirect.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,13 +1064,13 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-proto redirect`
+Run: `cargo test -p hclient-proto redirect`
 Expected: FAIL — `cannot find function decide`.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-proto/src/redirect.rs
+// crates/hclient-proto/src/redirect.rs
 //! The decision on whether to follow a redirect. A pure function: no I/O, no time.
 
 use http::{HeaderName, Method, StatusCode, Uri};
@@ -1166,26 +1166,26 @@ pub fn decide(
 
 - [ ] **Step 4: Wire it up and run the tests**
 
-`crates/http-ng-proto/src/lib.rs` already contains `pub mod redirect;` (Task 2, Step 3).
+`crates/hclient-proto/src/lib.rs` already contains `pub mod redirect;` (Task 2, Step 3).
 
-Run: `cargo test -p http-ng-proto`
+Run: `cargo test -p hclient-proto`
 Expected: PASS, twelve redirect tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-proto
+git add crates/hclient-proto
 git commit -m "feat(proto): redirect decision honouring 304/305 and stripping on scheme change"
 ```
 
 ---
 
-### Task 6: `http-ng-core` — Error and ErrorKind
+### Task 6: `hclient-core` — Error and ErrorKind
 
 **Files:**
-- Create: `crates/http-ng-core/Cargo.toml`
-- Create: `crates/http-ng-core/src/lib.rs`
-- Create: `crates/http-ng-core/src/error.rs`
+- Create: `crates/hclient-core/Cargo.toml`
+- Create: `crates/hclient-core/src/lib.rs`
+- Create: `crates/hclient-core/src/error.rs`
 - Test: inside `error.rs`
 
 **Interfaces:**
@@ -1200,7 +1200,7 @@ git commit -m "feat(proto): redirect decision honouring 304/305 and stripping on
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-core/src/error.rs
+// crates/hclient-core/src/error.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,17 +1252,17 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-core`
+Run: `cargo test -p hclient-core`
 Expected: FAIL — the crate doesn't exist yet.
 
 - [ ] **Step 3: Create the crate and implement**
 
 ```toml
-# crates/http-ng-core/Cargo.toml
+# crates/hclient-core/Cargo.toml
 [package]
-name = "http-ng-core"
+name = "hclient-core"
 version = "0.1.0"
-description = "http-ng's plugin contract: Transport, Capabilities, RequestBody, Error, Timer"
+description = "hclient's plugin contract: Transport, Capabilities, RequestBody, Error, Timer"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -1278,8 +1278,8 @@ workspace = true
 ```
 
 ```rust
-// crates/http-ng-core/src/lib.rs
-//! http-ng's plugin contract.
+// crates/hclient-core/src/lib.rs
+//! hclient's plugin contract.
 //!
 //! Crate invariant: not a single declared `Send`/`Sync` bound. Send-ness is
 //! inferred as an auto-trait through `impl Future`.
@@ -1298,7 +1298,7 @@ pub use error::{Error, ErrorKind, Phase};
 ```
 
 ```rust
-// crates/http-ng-core/src/error.rs
+// crates/hclient-core/src/error.rs
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1356,7 +1356,7 @@ impl std::error::Error for Error {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng-core error`
+Run: `cargo test -p hclient-core error`
 Expected: PASS, four tests.
 
 **Declare modules as they appear, don't comment them out.** At this task,
@@ -1367,17 +1367,17 @@ in a commit is a defect.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-core
+git add crates/hclient-core
 git commit -m "feat(core): typed Error with kind enum, Clone and preserved source"
 ```
 
 ---
 
-### Task 7: `http-ng-core` — RequestBody with a replay contract
+### Task 7: `hclient-core` — RequestBody with a replay contract
 
 **Files:**
-- Create: `crates/http-ng-core/src/body.rs`
-- Modify: `crates/http-ng-core/src/lib.rs`
+- Create: `crates/hclient-core/src/body.rs`
+- Modify: `crates/hclient-core/src/lib.rs`
 - Test: inside `body.rs`
 
 **Interfaces:**
@@ -1393,7 +1393,7 @@ git commit -m "feat(core): typed Error with kind enum, Clone and preserved sourc
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-core/src/body.rs
+// crates/hclient-core/src/body.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1429,13 +1429,13 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-core body`
+Run: `cargo test -p hclient-core body`
 Expected: FAIL — `cannot find type RequestBody`.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-core/src/body.rs
+// crates/hclient-core/src/body.rs
 use bytes::Bytes;
 use std::sync::Arc;
 
@@ -1516,23 +1516,23 @@ impl Default for RequestBody {
 
 - [ ] **Step 4: Uncomment `mod body;` and `pub use` in `lib.rs`, run the tests**
 
-Run: `cargo test -p http-ng-core`
+Run: `cargo test -p hclient-core`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-core
+git add crates/hclient-core
 git commit -m "feat(core): RequestBody with replay contract knowable before sending"
 ```
 
 ---
 
-### Task 8: `http-ng-core` — Capabilities and UnsupportedCapability
+### Task 8: `hclient-core` — Capabilities and UnsupportedCapability
 
 **Files:**
-- Create: `crates/http-ng-core/src/caps.rs`
-- Modify: `crates/http-ng-core/src/lib.rs`
+- Create: `crates/hclient-core/src/caps.rs`
+- Modify: `crates/hclient-core/src/lib.rs`
 - Test: inside `caps.rs`
 
 **Interfaces:**
@@ -1548,15 +1548,15 @@ git commit -m "feat(core): RequestBody with replay contract knowable before send
   - `pub struct UnsupportedCapability { pub what: &'static str, pub backend: &'static str }`
   - `Capabilities::none() -> Self` — everything off, the base for backends
 
-> **Why `Timeouts` lives here, and not in `http-ng`.** Transports read them
-> from the request's `http::Extensions`, and `http-ng-wasi` depends only on
-> `http-ng-core`. Had we defined `Timeouts` in `http-ng`, the transport
+> **Why `Timeouts` lives here, and not in `hclient`.** Transports read them
+> from the request's `http::Extensions`, and `hclient-wasi` depends only on
+> `hclient-core`. Had we defined `Timeouts` in `hclient`, the transport
 > couldn't have seen them, and per-request timeouts would be unreachable.
 
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng-core/src/caps.rs
+// crates/hclient-core/src/caps.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1590,13 +1590,13 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-core caps`
+Run: `cargo test -p hclient-core caps`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng-core/src/caps.rs
+// crates/hclient-core/src/caps.rs
 use http::HeaderName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1631,8 +1631,8 @@ pub struct TimeoutSupport {
 /// spreads across connector / awaiting response / body idle. A single
 /// `Duration` would throw away information the WASI backend knows how to use.
 ///
-/// Lives in `http-ng-core` because transports read it from the request's
-/// `http::Extensions`, and they don't depend on `http-ng`.
+/// Lives in `hclient-core` because transports read it from the request's
+/// `http::Extensions`, and they don't depend on `hclient`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Option<core::time::Duration>,
@@ -1709,26 +1709,26 @@ impl std::error::Error for UnsupportedCapability {}
 
 - [ ] **Step 4: Uncomment in `lib.rs`, run the tests**
 
-Run: `cargo test -p http-ng-core`
+Run: `cargo test -p hclient-core`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng-core
+git add crates/hclient-core
 git commit -m "feat(core): runtime Capabilities registry and typed UnsupportedCapability"
 ```
 
 ---
 
-### Task 9: `http-ng-core` — Transport and Timer in the `unversioned` module
+### Task 9: `hclient-core` — Transport and Timer in the `unversioned` module
 
 **Files:**
-- Create: `crates/http-ng-core/src/unversioned/mod.rs`
-- Create: `crates/http-ng-core/src/unversioned/transport.rs`
-- Create: `crates/http-ng-core/src/unversioned/timer.rs`
-- Modify: `crates/http-ng-core/src/lib.rs`
-- Test: `crates/http-ng-core/tests/shape.rs`
+- Create: `crates/hclient-core/src/unversioned/mod.rs`
+- Create: `crates/hclient-core/src/unversioned/transport.rs`
+- Create: `crates/hclient-core/src/unversioned/timer.rs`
+- Modify: `crates/hclient-core/src/lib.rs`
+- Test: `crates/hclient-core/tests/shape.rs`
 
 **Interfaces:**
 - Consumes: `RequestBody` (Task 7), `Capabilities` (Task 8).
@@ -1739,14 +1739,14 @@ git commit -m "feat(core): runtime Capabilities registry and typed UnsupportedCa
 - [ ] **Step 1: Write a failing shape test**
 
 ```rust
-// crates/http-ng-core/tests/shape.rs
+// crates/hclient-core/tests/shape.rs
 //! This test asserts the core's central architectural property: `Send` is
 //! declared nowhere, but it's inferred as an auto-trait when the transport
 //! is genuinely Send.
 
 use bytes::Bytes;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};
+use hclient_core::unversioned::Transport;
+use hclient_core::{Capabilities, Error, ErrorKind, RequestBody};
 
 struct Echo { caps: Capabilities }
 
@@ -1794,12 +1794,12 @@ fn non_send_transport_still_satisfies_the_trait() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-core --test shape`
-Expected: FAIL — `unresolved import http_ng_core::unversioned::Transport`.
+Run: `cargo test -p hclient-core --test shape`
+Expected: FAIL — `unresolved import hclient_core::unversioned::Transport`.
 
 - [ ] **Step 3: Add the dev-dependency and implement the traits**
 
-In `crates/http-ng-core/Cargo.toml`:
+In `crates/hclient-core/Cargo.toml`:
 
 ```toml
 [dev-dependencies]
@@ -1807,7 +1807,7 @@ http-body-util = { workspace = true }
 ```
 
 ```rust
-// crates/http-ng-core/src/unversioned/mod.rs
+// crates/hclient-core/src/unversioned/mod.rs
 //! # Semver quarantine
 //!
 //! This module's traits are the contract for backend and runtime authors.
@@ -1826,12 +1826,12 @@ pub use transport::Transport;
 ```
 
 ```rust
-// crates/http-ng-core/src/unversioned/transport.rs
+// crates/hclient-core/src/unversioned/transport.rs
 use crate::{Capabilities, RequestBody};
 use bytes::Bytes;
 use std::future::Future;
 
-/// The single seam between http-ng and real HTTP.
+/// The single seam between hclient and real HTTP.
 ///
 /// The shape is taken from `wasi:http/client.send` — the poorest of the
 /// ambient APIs. Anything richer degrades to it cleanly; the reverse doesn't
@@ -1854,7 +1854,7 @@ pub trait Transport {
 ```
 
 ```rust
-// crates/http-ng-core/src/unversioned/timer.rs
+// crates/hclient-core/src/unversioned/timer.rs
 use core::time::Duration;
 use std::future::Future;
 
@@ -1878,49 +1878,49 @@ Add `pub mod unversioned;` to `lib.rs` (already there from Task 6, Step 3).
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng-core`
+Run: `cargo test -p hclient-core`
 Expected: PASS. The `send_propagates_without_being_declared` test is what
 verifies that the core doesn't need a declared `Send`.
 
 - [ ] **Step 5: Manually verify the "no declared Send" invariant**
 
-Run: `! grep -rnE ':\s*Send\b|\+\s*Send\b|MaybeSend' crates/http-ng-core/src && echo OK`
+Run: `! grep -rnE ':\s*Send\b|\+\s*Send\b|MaybeSend' crates/hclient-core/src && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/http-ng-core
+git add crates/hclient-core
 git commit -m "feat(core): Transport and Timer traits under the unversioned semver quarantine"
 ```
 
 ---
 
-### Task 10: `http-ng` — Config, Timeouts and per-request lookup
+### Task 10: `hclient` — Config, Timeouts and per-request lookup
 
 **Files:**
-- Create: `crates/http-ng/Cargo.toml`
-- Create: `crates/http-ng/src/lib.rs`
-- Create: `crates/http-ng/src/config.rs`
+- Create: `crates/hclient/Cargo.toml`
+- Create: `crates/hclient/src/lib.rs`
+- Create: `crates/hclient/src/config.rs`
 - Test: inside `config.rs`
 
 **Interfaces:**
-- Consumes: `http_ng_core::{Capabilities, TimeoutSupport, UnsupportedCapability}`.
+- Consumes: `hclient_core::{Capabilities, TimeoutSupport, UnsupportedCapability}`.
 - Produces:
-  - `pub struct Config { pub timeouts: Timeouts, pub redirect: http_ng_proto::redirect::RedirectPolicy, pub base_url: Option<http::Uri> }`
-    (`Timeouts` is defined in Task 8, in `http-ng-core`, and only re-exported
-    here — transports need it, and they don't depend on `http-ng`)
+  - `pub struct Config { pub timeouts: Timeouts, pub redirect: hclient_proto::redirect::RedirectPolicy, pub base_url: Option<http::Uri> }`
+    (`Timeouts` is defined in Task 8, in `hclient-core`, and only re-exported
+    here — transports need it, and they don't depend on `hclient`)
   - `pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts` — "request-first, client-fallback"
   - `pub fn check_supported(cfg: &Config, caps: &Capabilities, backend: &'static str) -> Result<(), UnsupportedCapability>`
 
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/src/config.rs
+// crates/hclient/src/config.rs
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_ng_core::{Capabilities, TimeoutSupport};
+    use hclient_core::{Capabilities, TimeoutSupport};
     use std::time::Duration;
 
     fn secs(n: u64) -> Option<Duration> { Some(Duration::from_secs(n)) }
@@ -1967,15 +1967,15 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng`
+Run: `cargo test -p hclient`
 Expected: FAIL — the crate doesn't exist.
 
 - [ ] **Step 3: Create the crate and implement**
 
 ```toml
-# crates/http-ng/Cargo.toml
+# crates/hclient/Cargo.toml
 [package]
-name = "http-ng"
+name = "hclient"
 version = "0.1.0"
 description = "Cross-platform async HTTP client: one codebase for native, browser and WASI"
 edition.workspace = true
@@ -1993,8 +1993,8 @@ bytes         = { workspace = true }
 futures-core  = { workspace = true }
 http          = { workspace = true }
 http-body     = { workspace = true }
-http-ng-core  = { workspace = true }
-http-ng-proto = { workspace = true }
+hclient-core  = { workspace = true }
+hclient-proto = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
@@ -2004,7 +2004,7 @@ workspace = true
 ```
 
 ```rust
-// crates/http-ng/src/lib.rs
+// crates/hclient/src/lib.rs
 //! Cross-platform async HTTP client.
 //!
 //! Crate invariant: not a single declared `Send`/`Sync` bound, not a single
@@ -2023,22 +2023,22 @@ pub mod mock;
 
 pub use client::{Client, ClientBuilder};
 pub use config::{Config, Timeouts, check_supported, effective_timeouts};
-pub use http_ng_core::{Capabilities, Error, ErrorKind, Phase, RequestBody, RetryKind,
+pub use hclient_core::{Capabilities, Error, ErrorKind, Phase, RequestBody, RetryKind,
                        UnsupportedCapability};
-pub use http_ng_proto::redirect::RedirectPolicy;
-pub use http_ng_proto::sse::{SseEvent, DEFAULT_MAX_EVENT_SIZE};
+pub use hclient_proto::redirect::RedirectPolicy;
+pub use hclient_proto::sse::{SseEvent, DEFAULT_MAX_EVENT_SIZE};
 pub use request::RequestBuilder;
 pub use response::{Collected, Response};
 pub use sse::SseStream;
 ```
 
 ```rust
-// crates/http-ng/src/config.rs
-// `Timeouts` is defined in `http-ng-core` (Task 8): transports read it from
-// `http::Extensions`, and they don't depend on `http-ng`.
-pub use http_ng_core::Timeouts;
-use http_ng_core::{Capabilities, UnsupportedCapability};
-use http_ng_proto::redirect::RedirectPolicy;
+// crates/hclient/src/config.rs
+// `Timeouts` is defined in `hclient-core` (Task 8): transports read it from
+// `http::Extensions`, and they don't depend on `hclient`.
+pub use hclient_core::Timeouts;
+use hclient_core::{Capabilities, UnsupportedCapability};
+use hclient_proto::redirect::RedirectPolicy;
 
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -2091,26 +2091,26 @@ is a defect.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng config`
+Run: `cargo test -p hclient config`
 Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): timeout triple with request-first client-fallback lookup"
+git add crates/hclient
+git commit -m "feat(hclient): timeout triple with request-first client-fallback lookup"
 ```
 
 ---
 
-### Task 11: `http-ng` — MockTransport
+### Task 11: `hclient` — MockTransport
 
 The mock is needed before the client: without it, stages can only be tested
 over the network.
 
 **Files:**
-- Create: `crates/http-ng/src/mock.rs`
-- Modify: `crates/http-ng/src/lib.rs`
+- Create: `crates/hclient/src/mock.rs`
+- Modify: `crates/hclient/src/lib.rs`
 - Test: inside `mock.rs`
 
 **Interfaces:**
@@ -2127,11 +2127,11 @@ over the network.
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/src/mock.rs
+// crates/hclient/src/mock.rs
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http_ng_core::unversioned::Transport;
+    use hclient_core::unversioned::Transport;
 
     #[test]
     fn records_requests_and_replays_queued_responses() {
@@ -2160,12 +2160,12 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng --features test-util mock`
+Run: `cargo test -p hclient --features test-util mock`
 Expected: FAIL — `cannot find type MockTransport`.
 
 - [ ] **Step 3: Add a dev-dependency on an executor and implement**
 
-In `crates/http-ng/Cargo.toml`:
+In `crates/hclient/Cargo.toml`:
 
 ```toml
 [dev-dependencies]
@@ -2174,14 +2174,14 @@ futures-executor = { version = "0.3", default-features = false, features = ["std
 ```
 
 ```rust
-// crates/http-ng/src/mock.rs
+// crates/hclient/src/mock.rs
 //! A mock transport: lets the client and stages be tested on the host, with
 //! no network and no wasm runtime. Available behind the `test-util` feature.
 
 use bytes::Bytes;
 use http_body_util::Full;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Capabilities, Error, ErrorKind, RequestBody};
+use hclient_core::unversioned::Transport;
+use hclient_core::{Capabilities, Error, ErrorKind, RequestBody};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -2261,26 +2261,26 @@ impl Transport for MockTransport {
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng --features test-util mock`
+Run: `cargo test -p hclient --features test-util mock`
 Expected: PASS, two tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): MockTransport for host-side testing of client and stages"
+git add crates/hclient
+git commit -m "feat(hclient): MockTransport for host-side testing of client and stages"
 ```
 
 ---
 
-### Task 12: `http-ng` — Client, ClientBuilder and the redirect stage
+### Task 12: `hclient` — Client, ClientBuilder and the redirect stage
 
 **Files:**
-- Create: `crates/http-ng/src/client.rs`
-- Create: `crates/http-ng/src/stages/mod.rs`
-- Create: `crates/http-ng/src/stages/redirect.rs`
-- Modify: `crates/http-ng/src/lib.rs`
-- Test: `crates/http-ng/tests/redirect.rs`
+- Create: `crates/hclient/src/client.rs`
+- Create: `crates/hclient/src/stages/mod.rs`
+- Create: `crates/hclient/src/stages/redirect.rs`
+- Modify: `crates/hclient/src/lib.rs`
+- Test: `crates/hclient/tests/redirect.rs`
 
 **Interfaces:**
 - Consumes: `MockTransport` (Task 11), `redirect::decide` (Task 5), `Config`,
@@ -2296,9 +2296,9 @@ git commit -m "feat(http-ng): MockTransport for host-side testing of client and 
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/tests/redirect.rs
-use http_ng::{Client, RedirectPolicy, RequestBody};
-use http_ng::mock::MockTransport;
+// crates/hclient/tests/redirect.rs
+use hclient::{Client, RedirectPolicy, RequestBody};
+use hclient::mock::MockTransport;
 
 fn redirect_to(loc: &'static str) -> http::Response<&'static str> {
     http::Response::builder().status(302).header("location", loc).body("").unwrap()
@@ -2386,7 +2386,7 @@ fn post_becomes_get_and_drops_body_on_302() {
 
 #[test]
 fn build_rejects_a_timeout_the_backend_cannot_honour() {
-    use http_ng::Timeouts;
+    use hclient::Timeouts;
     let m = MockTransport::new(); // Capabilities::none() — timeouts unsupported
     let err = Client::builder(m)
         .timeouts(Timeouts { connect: Some(std::time::Duration::from_secs(1)),
@@ -2399,23 +2399,23 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng --features test-util --test redirect`
+Run: `cargo test -p hclient --features test-util --test redirect`
 Expected: FAIL — `cannot find type Client`.
 
 - [ ] **Step 3: Implement the redirect stage**
 
 ```rust
-// crates/http-ng/src/stages/mod.rs
+// crates/hclient/src/stages/mod.rs
 pub(crate) mod redirect;
 ```
 
 ```rust
-// crates/http-ng/src/stages/redirect.rs
-//! Applies the decision made in `http-ng-proto`. Just data shuffling here:
+// crates/hclient/src/stages/redirect.rs
+//! Applies the decision made in `hclient-proto`. Just data shuffling here:
 //! all the logic is the pure function `proto::redirect::decide`.
 
-use http_ng_core::RequestBody;
-use http_ng_proto::redirect::{Follow, SENSITIVE_HEADERS};
+use hclient_core::RequestBody;
+use hclient_proto::redirect::{Follow, SENSITIVE_HEADERS};
 
 /// Everything carried between hops, except the body.
 ///
@@ -2484,13 +2484,13 @@ pub(crate) fn next_hop(
 - [ ] **Step 4: Implement the client**
 
 ```rust
-// crates/http-ng/src/client.rs
+// crates/hclient/src/client.rs
 use crate::config::{Config, check_supported};
 use crate::stages::redirect::{HopParts, next_hop};
-use http_ng_core::Timeouts;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Error, ErrorKind, RequestBody, UnsupportedCapability};
-use http_ng_proto::redirect::{RedirectAction, RedirectPolicy, decide};
+use hclient_core::Timeouts;
+use hclient_core::unversioned::Transport;
+use hclient_core::{Error, ErrorKind, RequestBody, UnsupportedCapability};
+use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 
 #[derive(Debug)]
 pub struct ClientBuilder<T> {
@@ -2608,12 +2608,12 @@ impl std::error::Error for BadLocation {}
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p http-ng --features test-util --test redirect`
+Run: `cargo test -p hclient --features test-util --test redirect`
 Expected: PASS, six tests.
 
 - [ ] **Step 6: Verify Send is still inferred, not declared**
 
-Add to `crates/http-ng/tests/redirect.rs`:
+Add to `crates/hclient/tests/redirect.rs`:
 
 ```rust
 #[test]
@@ -2629,25 +2629,25 @@ fn client_future_is_send_when_transport_is() {
 }
 ```
 
-Run: `cargo test -p http-ng --features test-util`
+Run: `cargo test -p hclient --features test-util`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): Client with redirect stage and capability check at build time"
+git add crates/hclient
+git commit -m "feat(hclient): Client with redirect stage and capability check at build time"
 ```
 
 ---
 
-### Task 13: `http-ng` — Response, Collected and RequestBuilder
+### Task 13: `hclient` — Response, Collected and RequestBuilder
 
 **Files:**
-- Create: `crates/http-ng/src/response.rs`
-- Create: `crates/http-ng/src/request.rs`
-- Modify: `crates/http-ng/src/lib.rs`, `crates/http-ng/src/client.rs`
-- Test: `crates/http-ng/tests/response.rs`
+- Create: `crates/hclient/src/response.rs`
+- Create: `crates/hclient/src/request.rs`
+- Modify: `crates/hclient/src/lib.rs`, `crates/hclient/src/client.rs`
+- Test: `crates/hclient/tests/response.rs`
 
 **Interfaces:**
 - Consumes: `Client::execute` (Task 12).
@@ -2661,15 +2661,15 @@ git commit -m "feat(http-ng): Client with redirect stage and capability check at
     `Collected::json<T>()`, and it **keeps** `status()`, `headers()`, `url()`
   - `Client::get/post/put/delete/patch/head/request -> RequestBuilder<'_, T>`
   - `RequestBuilder::{header, headers, body, timeouts, send}` — `timeouts`
-    puts `http_ng_core::Timeouts` into the request's `Extensions`, which the
+    puts `hclient_core::Timeouts` into the request's `Extensions`, which the
     transport reads from (the "request-first, client-fallback" lookup, spec §4.5)
 
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/tests/response.rs
-use http_ng::{Client, RequestBody};
-use http_ng::mock::MockTransport;
+// crates/hclient/tests/response.rs
+use hclient::{Client, RequestBody};
+use hclient::mock::MockTransport;
 
 #[test]
 fn collected_keeps_status_and_headers_after_reading_the_body() {
@@ -2724,16 +2724,16 @@ fn request_builder_sets_method_and_headers() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng --features test-util --test response`
+Run: `cargo test -p hclient --features test-util --test response`
 Expected: FAIL — `no method named get`.
 
 - [ ] **Step 3: Implement Response and Collected**
 
 ```rust
-// crates/http-ng/src/response.rs
+// crates/hclient/src/response.rs
 use bytes::{Bytes, BytesMut};
 use http_body::Body as HttpBody;
-use http_ng_core::{Error, ErrorKind};
+use hclient_core::{Error, ErrorKind};
 use std::pin::Pin;
 
 /// A response with the URL kept around. `into_parts` gives full fidelity;
@@ -2811,11 +2811,11 @@ impl Collected {
 - [ ] **Step 4: Implement RequestBuilder and the client's methods**
 
 ```rust
-// crates/http-ng/src/request.rs
+// crates/hclient/src/request.rs
 use crate::client::Client;
 use crate::response::Response;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Error, ErrorKind, RequestBody};
+use hclient_core::unversioned::Transport;
+use hclient_core::{Error, ErrorKind, RequestBody};
 
 #[derive(Debug)]
 pub struct RequestBuilder<'a, T> {
@@ -2858,7 +2858,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
     /// reqwest can't do this at all (issue #2641), which is why `act-cli` is
     /// forced to build a separate `reqwest::Client` for every component
     /// call — with its own connection pool.
-    pub fn timeouts(mut self, t: http_ng_core::Timeouts) -> Self {
+    pub fn timeouts(mut self, t: hclient_core::Timeouts) -> Self {
         self.extensions.insert(t);
         self
     }
@@ -2876,7 +2876,7 @@ impl<'a, T: Transport> RequestBuilder<'a, T> {
 }
 ```
 
-Add to `crates/http-ng/src/client.rs`:
+Add to `crates/hclient/src/client.rs`:
 
 ```rust
 use crate::request::RequestBuilder;
@@ -2908,24 +2908,24 @@ impl<T: Transport> Client<T> {
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p http-ng --features test-util`
+Run: `cargo test -p hclient --features test-util`
 Expected: PASS, all `redirect.rs` and `response.rs` tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): non-destructive Response, Collected and RequestBuilder"
+git add crates/hclient
+git commit -m "feat(hclient): non-destructive Response, Collected and RequestBuilder"
 ```
 
 ---
 
-### Task 14: `http-ng` — SseStream on top of the decoder
+### Task 14: `hclient` — SseStream on top of the decoder
 
 **Files:**
-- Create: `crates/http-ng/src/sse.rs`
-- Modify: `crates/http-ng/src/lib.rs`
-- Test: `crates/http-ng/tests/sse.rs`
+- Create: `crates/hclient/src/sse.rs`
+- Modify: `crates/hclient/src/lib.rs`
+- Test: `crates/hclient/tests/sse.rs`
 
 **Interfaces:**
 - Consumes: `SseDecoder` (Task 3), `Response::chunk` (Task 13).
@@ -2944,9 +2944,9 @@ git commit -m "feat(http-ng): non-destructive Response, Collected and RequestBui
 - [ ] **Step 1: Write failing tests**
 
 ```rust
-// crates/http-ng/tests/sse.rs
-use http_ng::{Client, SseEvent, SseStream, DEFAULT_MAX_EVENT_SIZE};
-use http_ng::mock::MockTransport;
+// crates/hclient/tests/sse.rs
+use hclient::{Client, SseEvent, SseStream, DEFAULT_MAX_EVENT_SIZE};
+use hclient::mock::MockTransport;
 
 fn sse_response(body: &'static str) -> http::Response<&'static str> {
     http::Response::builder().status(200)
@@ -3009,18 +3009,18 @@ fn tracks_last_event_id_for_future_reconnects() {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng --features test-util --test sse`
+Run: `cargo test -p hclient --features test-util --test sse`
 Expected: FAIL — `cannot find type SseStream`.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/http-ng/src/sse.rs
+// crates/hclient/src/sse.rs
 use crate::response::Response;
 use bytes::Bytes;
 use http_body::Body as HttpBody;
-use http_ng_core::{Error, ErrorKind};
-use http_ng_proto::sse::{SseDecoder, SseEvent};
+use hclient_core::{Error, ErrorKind};
+use hclient_proto::sse::{SseDecoder, SseEvent};
 
 const MIME: &str = "text/event-stream";
 
@@ -3094,29 +3094,29 @@ where B: HttpBody<Data = Bytes> + Unpin, B::Error: std::error::Error + 'static
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p http-ng --features test-util`
+Run: `cargo test -p hclient --features test-util`
 Expected: PASS, four SSE tests plus everything from before.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/http-ng
-git commit -m "feat(http-ng): SseStream with WHATWG terminal rules over the proto decoder"
+git add crates/hclient
+git commit -m "feat(hclient): SseStream with WHATWG terminal rules over the proto decoder"
 ```
 
 ---
 
-### Task 15: `http-ng-wasi` — the response body
+### Task 15: `hclient-wasi` — the response body
 
 **Files:**
-- Create: `crates/http-ng-wasi/Cargo.toml`
-- Create: `crates/http-ng-wasi/src/lib.rs`
-- Create: `crates/http-ng-wasi/src/body.rs`
+- Create: `crates/hclient-wasi/Cargo.toml`
+- Create: `crates/hclient-wasi/src/lib.rs`
+- Create: `crates/hclient-wasi/src/body.rs`
 
 **Interfaces:**
-- Consumes: `wasip3::http_compat::IncomingResponseBody`, `http_ng_core::Error`.
+- Consumes: `wasip3::http_compat::IncomingResponseBody`, `hclient_core::Error`.
 - Produces:
-  - `pub struct Body`; `impl http_body::Body for Body { type Data = Bytes; type Error = http_ng_core::Error; }`
+  - `pub struct Body`; `impl http_body::Body for Body { type Data = Bytes; type Error = hclient_core::Error; }`
   - `Body::empty() -> Self`
   - `is_end_stream()` is implemented **correctly** — on `act`'s host side,
     this exact defect (`StreamBody` always returning `false`) was causing
@@ -3125,11 +3125,11 @@ git commit -m "feat(http-ng): SseStream with WHATWG terminal rules over the prot
 - [ ] **Step 1: Create the crate**
 
 ```toml
-# crates/http-ng-wasi/Cargo.toml
+# crates/hclient-wasi/Cargo.toml
 [package]
-name = "http-ng-wasi"
+name = "hclient-wasi"
 version = "0.1.0"
-description = "http-ng transport over wasi:http 0.3"
+description = "hclient transport over wasi:http 0.3"
 edition.workspace = true
 rust-version = "1.90"
 license.workspace = true
@@ -3139,7 +3139,7 @@ repository.workspace = true
 bytes        = { workspace = true }
 http         = { workspace = true }
 http-body    = { workspace = true }
-http-ng-core = { workspace = true }
+hclient-core = { workspace = true }
 futures      = { version = "0.3", default-features = false, features = ["async-await"] }
 wasip3       = { version = "0.7.0", features = ["http-compat"] }
 
@@ -3148,8 +3148,8 @@ workspace = true
 ```
 
 ```rust
-// crates/http-ng-wasi/src/lib.rs
-//! http-ng transport over `wasi:http` 0.3 (the `wasip3` package).
+// crates/hclient-wasi/src/lib.rs
+//! hclient transport over `wasi:http` 0.3 (the `wasip3` package).
 //!
 //! Builds for `wasm32-wasip2`. Not a single `wasip3` type appears in this
 //! crate's public API.
@@ -3164,10 +3164,10 @@ pub use body::Body;
 - [ ] **Step 2: Write the body**
 
 ```rust
-// crates/http-ng-wasi/src/body.rs
+// crates/hclient-wasi/src/body.rs
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame};
-use http_ng_core::{Error, ErrorKind};
+use hclient_core::{Error, ErrorKind};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasip3::http_compat::IncomingResponseBody;
@@ -3244,27 +3244,27 @@ impl std::error::Error for WasiError {}
 
 - [ ] **Step 3: Verify the crate builds for wasip2**
 
-Run: `cargo check -p http-ng-wasi --target wasm32-wasip2`
+Run: `cargo check -p hclient-wasi --target wasm32-wasip2`
 Expected: success (the `convert` module is still empty — create
-`crates/http-ng-wasi/src/convert.rs` with a single line, `// see Task 16`).
+`crates/hclient-wasi/src/convert.rs` with a single line, `// see Task 16`).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/http-ng-wasi
+git add crates/hclient-wasi
 git commit -m "feat(wasi): response Body with a correct is_end_stream"
 ```
 
 ---
 
-### Task 16: `http-ng-wasi` — Transport, conversion, and honoring setters
+### Task 16: `hclient-wasi` — Transport, conversion, and honoring setters
 
 This is where the seven `let _ =` from `wasi-fetch` disappear.
 
 **Files:**
-- Create/Modify: `crates/http-ng-wasi/src/convert.rs`
-- Modify: `crates/http-ng-wasi/src/lib.rs`
-- Test: `crates/http-ng-wasi/src/convert.rs` (`#[cfg(test)]` — pure parts only)
+- Create/Modify: `crates/hclient-wasi/src/convert.rs`
+- Modify: `crates/hclient-wasi/src/lib.rs`
+- Test: `crates/hclient-wasi/src/convert.rs` (`#[cfg(test)]` — pure parts only)
 
 **Interfaces:**
 - Consumes: `Transport`, `Capabilities`, `RequestBody`, `Error`, `Body` (Task 15).
@@ -3281,7 +3281,7 @@ This is where the seven `let _ =` from `wasi-fetch` disappear.
 - [ ] **Step 1: Write failing tests for the pure parts**
 
 ```rust
-// crates/http-ng-wasi/src/convert.rs
+// crates/hclient-wasi/src/convert.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3306,14 +3306,14 @@ mod tests {
     #[test]
     fn capabilities_declare_what_wasi_http_actually_does() {
         let c = super::super::WasiHttp::new();
-        let caps = http_ng_core::unversioned::Transport::capabilities(&c);
+        let caps = hclient_core::unversioned::Transport::capabilities(&c);
         // wasi:http 0.3 is richer than native on streaming…
         assert!(caps.full_duplex);
         assert!(caps.request_trailers && caps.response_trailers);
         // …and poorer on everything else.
-        assert_eq!(caps.redirects, http_ng_core::RedirectSupport::None);
-        assert_eq!(caps.upgrade, http_ng_core::UpgradeSupport::None);
-        assert_eq!(caps.tls_config, http_ng_core::TlsSupport::None);
+        assert_eq!(caps.redirects, hclient_core::RedirectSupport::None);
+        assert_eq!(caps.upgrade, hclient_core::UpgradeSupport::None);
+        assert_eq!(caps.tls_config, hclient_core::TlsSupport::None);
         assert!(!caps.proxy);
     }
 }
@@ -3321,17 +3321,17 @@ mod tests {
 
 - [ ] **Step 2: Run it and confirm it fails**
 
-Run: `cargo test -p http-ng-wasi --target wasm32-wasip2`
+Run: `cargo test -p hclient-wasi --target wasm32-wasip2`
 Expected: FAIL at the compile stage — the functions don't exist yet. (Running
 tests under wasip2 needs a runner; see Step 6. Until it's set up, use
-`cargo check -p http-ng-wasi --target wasm32-wasip2 --tests`.)
+`cargo check -p hclient-wasi --target wasm32-wasip2 --tests`.)
 
 - [ ] **Step 3: Implement the conversion and honoring setters**
 
 ```rust
-// crates/http-ng-wasi/src/convert.rs
+// crates/hclient-wasi/src/convert.rs
 use crate::body::{Body, WasiError};
-use http_ng_core::{Error, ErrorKind, UnsupportedCapability};
+use hclient_core::{Error, ErrorKind, UnsupportedCapability};
 use wasip3::http::types::{Method as WM, RequestOptions, Scheme};
 
 pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
@@ -3393,7 +3393,7 @@ pub(crate) fn apply_timeouts(
 }
 
 pub(crate) fn wasi_err(e: wasip3::http::types::ErrorCode) -> Error {
-    use http_ng_core::Phase;
+    use hclient_core::Phase;
     use wasip3::http::types::ErrorCode as EC;
     // The category is preserved. `wasi-fetch` flattened everything into
     // `Error::Transport(format!("{e:?}"))`, and `act`'s host side then
@@ -3433,11 +3433,11 @@ pub(crate) fn wasi_err(e: wasip3::http::types::ErrorCode) -> Error {
 - [ ] **Step 4: Implement `WasiHttp`**
 
 ```rust
-// add to crates/http-ng-wasi/src/lib.rs
+// add to crates/hclient-wasi/src/lib.rs
 use bytes::Bytes;
 use futures::join;
-use http_ng_core::unversioned::Transport;
-use http_ng_core::{Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport,
+use hclient_core::unversioned::Transport;
+use hclient_core::{Capabilities, Error, RedirectSupport, RequestBody, TimeoutSupport,
                    Timeouts, TlsSupport, UpgradeSupport};
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
@@ -3484,7 +3484,7 @@ impl Transport for WasiHttp {
             .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
             .collect();
         let fields = Fields::from_list(&header_list)
-            .map_err(|e| Error::new(http_ng_core::ErrorKind::Other, convert::FieldsError(e)))?;
+            .map_err(|e| Error::new(hclient_core::ErrorKind::Other, convert::FieldsError(e)))?;
 
         let timeouts = parts.extensions.get::<Timeouts>().copied().unwrap_or_default();
         let opts = RequestOptions::new();
@@ -3588,10 +3588,10 @@ Add a constructor to `body.rs`, `Body::from_bytes(Bytes) -> Self`, with an
 
 - [ ] **Step 5: Verify the build and the "no `let _ =` on setter Results" invariant**
 
-Run: `cargo check -p http-ng-wasi --target wasm32-wasip2`
+Run: `cargo check -p hclient-wasi --target wasm32-wasip2`
 Expected: success.
 
-Run: `! grep -rn "let _ = .*set_" crates/http-ng-wasi/src && echo OK`
+Run: `! grep -rn "let _ = .*set_" crates/hclient-wasi/src && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 6: Set up a test runner for wasip2**
@@ -3605,7 +3605,7 @@ Create `.cargo/config.toml`:
 runner = "wasmtime run -S http --"
 ```
 
-Run: `cargo test -p http-ng-wasi --target wasm32-wasip2`
+Run: `cargo test -p hclient-wasi --target wasm32-wasip2`
 Expected: PASS, three conversion tests.
 
 If `wasmtime` can't be installed, leave `cargo check --tests` as a temporary
@@ -3614,7 +3614,7 @@ gate and file an issue — the integration run moves to vertical 3.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/http-ng-wasi .cargo/config.toml
+git add crates/hclient-wasi .cargo/config.toml
 git commit -m "feat(wasi): Transport over wasi:http 0.3 honouring every option setter"
 ```
 
@@ -3623,7 +3623,7 @@ git commit -m "feat(wasi): Transport over wasi:http 0.3 honouring every option s
 ### Task 17: An end-to-end example and README
 
 **Files:**
-- Create: `crates/http-ng-wasi/examples/fetch.rs`
+- Create: `crates/hclient-wasi/examples/fetch.rs`
 - Create: `README.md`
 - Modify: `.github/workflows/ci.yml`
 
@@ -3634,12 +3634,12 @@ git commit -m "feat(wasi): Transport over wasi:http 0.3 honouring every option s
 - [ ] **Step 1: Write the example**
 
 ```rust
-// crates/http-ng-wasi/examples/fetch.rs
+// crates/hclient-wasi/examples/fetch.rs
 //! The same code that will work on native in vertical 2, and in the
 //! browser in vertical 3. Only the transport type changes.
 
-use http_ng::Client;
-use http_ng_wasi::WasiHttp;
+use hclient::Client;
+use hclient_wasi::WasiHttp;
 
 fn main() {
     let client = Client::builder(WasiHttp::new()).build().expect("caps ok");
@@ -3647,7 +3647,7 @@ fn main() {
         let resp = client.get("https://example.com/").send().await?;
         let collected = resp.collect().await?;
         println!("{} {}", collected.status(), collected.text()?);
-        Ok::<_, http_ng::Error>(())
+        Ok::<_, hclient::Error>(())
     };
     futures::executor::block_on(fut).expect("request failed");
 }
@@ -3655,20 +3655,20 @@ fn main() {
 
 - [ ] **Step 2: Verify the example builds**
 
-Run: `cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2`
+Run: `cargo build -p hclient-wasi --example fetch --target wasm32-wasip2`
 Expected: success.
 
 - [ ] **Step 3: Write the README with a dependency-graph table**
 
 ````markdown
-# http-ng
+# hclient
 
 Cross-platform async HTTP client. The same application code builds for
 native, browser and WASI — the transport is swapped out, not buried under
 `#[cfg]`.
 
 ```rust
-let client = http_ng::Client::builder(transport).build()?;
+let client = hclient::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
@@ -3676,7 +3676,7 @@ let text = client.get("https://example.com").send().await?.collect().await?.text
 
 | build | tokio |
 |---|---|
-| ambient (`http-ng` + `-wasi` / `-fetch`) | **none at all** |
+| ambient (`hclient` + `-wasi` / `-fetch`) | **none at all** |
 | native, HTTP/1 only | present, but with the `sync` + `default` features; its whole dep tree is `pin-project-lite` |
 | native + HTTP/2 | real: `h2` pulls `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
 
@@ -3687,25 +3687,25 @@ Tokio can't be removed from hyper builds: [hyper#3428](https://github.com/hyperi
 ## Status
 
 v0.1: the core, `wasi:http` 0.3. Native and browser are verticals 2 and 3.
-Design: [`docs/superpowers/specs/2026-08-05-http-ng-design.md`](docs/superpowers/specs/2026-08-05-http-ng-design.md).
+Design: [`docs/superpowers/specs/2026-08-05-hclient-design.md`](docs/superpowers/specs/2026-08-05-hclient-design.md).
 ````
 
 - [ ] **Step 4: Add building the example to CI**
 
 ```yaml
   # in the `wasip2` job, after the existing step
-      - run: cargo build -p http-ng-wasi --example fetch --target wasm32-wasip2
+      - run: cargo build -p hclient-wasi --example fetch --target wasm32-wasip2
 ```
 
 - [ ] **Step 5: Run everything**
 
-Run: `cargo test --workspace --all-features && cargo check -p http-ng-wasi --target wasm32-wasip2`
+Run: `cargo test --workspace --all-features && cargo check -p hclient-wasi --target wasm32-wasip2`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add README.md crates/http-ng-wasi/examples .github/workflows/ci.yml
+git add README.md crates/hclient-wasi/examples .github/workflows/ci.yml
 git commit -m "docs: README with dependency-graph table and end-to-end wasi example"
 ```
 
@@ -3722,7 +3722,7 @@ a runtime and gets fuzzed.
 tokio and smol on the same code); `Client<T = DefaultTransport>`; streaming
 request bodies (need `RequestBody::Streaming` in the transport).
 
-**Carried over into vertical 3:** `http-ng-fetch`, and with it, verifying the
+**Carried over into vertical 3:** `hclient-fetch`, and with it, verifying the
 `Capabilities` runtime model; `SseStream` reconnect; `act` acceptance.
 
 ---
@@ -3860,7 +3860,7 @@ let auto-traits through, so `Error` was `!Send` always, and `tokio::spawn`
 wouldn't compile for any transport. The source is bounded by `Send + Sync`.
 
 Consequence for CI: `no-declared-send` now has to exclude
-`crates/http-ng-core/src/error.rs` — with a comment noting that this is the
+`crates/hclient-core/src/error.rs` — with a comment noting that this is the
 single documented exception, not a weakening of the check.
 
 ### R9. `RequestBody`: `Send` bounds on the trait objects

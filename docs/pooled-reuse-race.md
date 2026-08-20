@@ -216,7 +216,7 @@ The cheaper cousin — force a real `read(2)` rather than trusting the
 reactor's cached readiness — is refused one seam down: `TcpConnect`
 hands back an associated `Stream` with `hyper::rt::Read` and nothing
 else, so "peek at the socket regardless of readiness" would be a new
-capability on the seam, and one that `http-ng-rt-embassy` has no way to
+capability on the seam, and one that `hclient-rt-embassy` has no way to
 implement. And it still only moves the window.
 
 ### 4.2 Replay a request hyper will not hand back
@@ -259,7 +259,7 @@ the bytes.
 
 ## 5. Mutations
 
-Anchor: **278 tests**, `cargo nextest run -p http-ng-native
+Anchor: **278 tests**, `cargo nextest run -p hclient-native
 --all-features --no-fail-fast`, green before each. The two tests named
 most often below are `h1.rs`'s
 `a_connection_that_ends_with_the_request_still_queued_hands_it_back` and
@@ -319,7 +319,7 @@ unresolved.
 
 *Executed, because reading is not the standard here.* The arm replaced by
 `panic!`: **278 pass** in this crate, and **1615 pass across the whole
-workspace** — which is the run that matters, because `http-ng-select`'s
+workspace** — which is the run that matters, because `hclient-select`'s
 Alt-Svc failures in `docs/nagle-and-nodelay.md` §6 were a
 `hyper::Error(Shutdown, ..)` over TLS and this is the arm they would have
 to arrive on. It is never reached.

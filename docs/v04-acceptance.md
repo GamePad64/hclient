@@ -12,15 +12,15 @@ the per-topic documents, because each of those knows only its own half.
 
 | what | where the argument lives |
 |---|---|
-| `http-ng-select` — one transport choosing between the TCP and QUIC stacks, from the HTTPS record | `v04-w1-acceptance.md` |
+| `hclient-select` — one transport choosing between the TCP and QUIC stacks, from the HTTPS record | `v04-w1-acceptance.md` |
 | Alt-Svc, the slow tier, with `ma` as the cache lifetime SVCB could not supply | `v04-w1-acceptance.md` §9 |
 | `StagedConnect` — a connect asked for on its own, one trait per crate | `v04-staged-connect.md` |
 | `H3Failures` — the negative half of discovery, unblocked by the staged connect | `v04-staged-connect.md` |
 | The race, off by default, whose head start stopped being a safety mechanism | `v04-race.md` |
 | Hooks on all four backends, and `Head::version` becoming an `Option` | `v04-w2-hooks-ambient.md` |
-| `http-ng-webtransport` — sessions, streams, datagrams, close capsules | `v04-w2-webtransport.md`, `-datagrams.md`, `-capsules.md` |
-| `http-ng-quinn` — `SeamRuntime` extracted, 42 crates against h3's 58 | `quinn-adapter-extraction.md` |
-| `http-ng-tungstenite` — the WebSocket framing as its own crate | `w4-upgrade-seam.md` §8 |
+| `hclient-webtransport` — sessions, streams, datagrams, close capsules | `v04-w2-webtransport.md`, `-datagrams.md`, `-capsules.md` |
+| `hclient-quinn` — `SeamRuntime` extracted, 42 crates against h3's 58 | `quinn-adapter-extraction.md` |
+| `hclient-tungstenite` — the WebSocket framing as its own crate | `w4-upgrade-seam.md` §8 |
 | h2 multiplexing, opt-in behind `Native::multiplexed()` | `h2-multiplexing.md` |
 | `TCP_NODELAY` asked for where the runtime says it applies | AGENTS.md, and the 41 ms it saves |
 | The gRPC yardstick — 21 requirements, 15 tests, **no library code changed** | `grpc-yardstick.md` |
@@ -36,8 +36,8 @@ found by capturing a failure rather than by reasoning about one.
 
 ~~**The `urlsession` backend.** Deferred by the owner mid-version, not
 blocked. Nothing in this tree depends on it.~~ — **built.**
-`http-ng-urlsession` is the fifth backend and the fourth *ambient* one,
-and it reports `RedirectSupport::Transparent`, which `http-ng-fetch`
+`hclient-urlsession` is the fifth backend and the fourth *ambient* one,
+and it reports `RedirectSupport::Transparent`, which `hclient-fetch`
 cannot. See `AGENTS.md`. The entry that motivated it was also found
 wrong on its way in: MDM roots were listed first and
 `rustls-platform-verifier` already reaches them.
@@ -49,7 +49,7 @@ unobservable**: `h3` 0.0.8 gives a client nothing to see, and two
 invented for it and a post-`GOAWAY` session is refused by the *peer*;
 ~~more than one session per connection (`PoolKey` has no field to tell
 two apart)~~ — **built, and the blocker recorded here was the wrong
-one**: `PoolKey` is `http-ng-h3`'s, where this crate takes its
+one**: `PoolKey` is `hclient-h3`'s, where this crate takes its
 `quinn::Connection` from outside, so what binds is the peer's
 `SETTINGS_WEBTRANSPORT_MAX_SESSIONS`, read off the frame; the capsule
 protocol beyond `CLOSE_WEBTRANSPORT_SESSION`; and server-initiated
@@ -78,12 +78,12 @@ refuse, and a **report**, which states a transport fact nothing at the
 client level could refuse. `proxy` is a report, so it will never have a
 branch, and that is structural rather than an omission; six fields
 including this one gained the doc comment they lacked. The rule is
-enforced by an exhaustive destructure in `http-ng-core` rather than
+enforced by an exhaustive destructure in `hclient-core` rather than
 described. Original text follows.
 
  Measured: the field is set in exactly one
 place — `Capabilities::none()`'s `false` — no backend sets it, nothing
-in `http-ng` branches on it, and there is no proxy setting on `Client`,
+in `hclient` branches on it, and there is no proxy setting on `Client`,
 no seam on `Transport` and no implementation anywhere, so a caller
 cannot ask for a proxy and learning that the transport has none is not
 actionable. It has no doc comment, alone among its neighbours. That is
@@ -129,7 +129,7 @@ The original entry follows.
 
 **A third flake, found while verifying the second one's fix and
 deliberately not fixed here.**
-`http-ng-webtransport::goaway::a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us`
+`hclient-webtransport::goaway::a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us`
 fails 3 runs in 40 under `-j96` across the workspace, and it is captured
 rather than described: `goaway.rs:272` panics on
 `send.write_all(..).expect("loopback")` with `Stopped(267)` — 0x10B,
@@ -161,8 +161,8 @@ The paragraph's refusal to attribute them was right, and the way out was
 capturing rather than sampling harder. Original text follows.
 
 
-`http-ng-select::race::with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
-and `http-ng-h3::zero_rtt::early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake`
+`hclient-select::race::with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
+and `hclient-h3::zero_rtt::early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handshake`
 each fail at a rate near 1 in 40 full
 workspace runs under load, and neither has been captured. Both crates'
 own suites are clean run alone. Whether the rate moved with v0.4's added
@@ -191,7 +191,7 @@ record argues for capturing rather than reasoning: the three flakes
 chased this way each turned out to be a real defect, one of them an RFC
 9114 violation that took three sightings.
 
-**The residual pooled-reuse race** recorded in `http-ng-native`'s
+**The residual pooled-reuse race** recorded in `hclient-native`'s
 `h1.rs` is unchanged. `TCP_NODELAY` made it *visible* rather than worse —
 Nagle's 41 ms had been padding the window — and the two fixes it would
 take are named where the race is.
@@ -206,9 +206,9 @@ take are named where the race is.
 > decision and not a gap.
 
 **`StagedConnect::connect` uses a shared h2 connection when the pool has
-one and never makes one.** `http-ng-select` is unaffected, and that is
+one and never makes one.** `hclient-select` is unaffected, and that is
 checked rather than assumed: its TCP arm goes through
 `Prefetch::execute_prepared`, the ordinary pooled path, in both the
 hedged and unhedged call sites — `stage`/`exchange` is the QUIC arm
 only. The gap is reachable by a direct caller of
-`http_ng_native::Staged`.
+`hclient_native::Staged`.

@@ -11,7 +11,7 @@ established, the three decisions §7 left open, one number that had to be
 re-measured, one defect the first draft had that no test would have caught
 in review, the mutation run, and what is still not verified.
 
-`crates/http-ng-select/src/race.rs`, about 200 lines of code under 200 lines
+`crates/hclient-select/src/race.rs`, about 200 lines of code under 200 lines
 of module doc, plus a `hedging` setter and one field on `Selecting`.
 
 ---
@@ -28,8 +28,8 @@ of module doc, plus a `hedging` setter and one field on `Selecting`.
 
 Three things were checked before writing a line, in increasing strength.
 
-**By grep.** `crates/http-ng-native/src/staged.rs` and
-`crates/http-ng-h3/src/staged.rs` contain no call to `send_request`, and no
+**By grep.** `crates/hclient-native/src/staged.rs` and
+`crates/hclient-h3/src/staged.rs` contain no call to `send_request`, and no
 call to anything that writes a request.
 
 **By reading the code, which is stronger, because the absence of one
@@ -48,7 +48,7 @@ data is to send *with* the handshake. It is not subtle: `H3::stage` obtains
 into early data until `one_attempt` opens a stream — in `finish`.
 
 **By measurement, which is the one that counts.**
-`crates/http-ng-select/tests/race.rs`'s
+`crates/hclient-select/tests/race.rs`'s
 `with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`
 runs the built race at `Duration::ZERO` against two live servers behind one
 authority, and asserts that the QUIC endpoint counted an attempt, the TCP
@@ -82,7 +82,7 @@ network blocks UDP/443.
 **The cost of being generous is now bounded by something that did not exist
 when 250 ms was chosen.** §7.7's item 4 said the race needed *"a failure
 memory, or the head start is paid again on every request to a blocked origin
-— 250 ms × every request"*. `http_ng_select::H3Failures` was built for the
+— 250 ms × every request"*. `hclient_select::H3Failures` was built for the
 sequential fallback since, and §4 below feeds it from the race, so the head
 start is paid **once per origin per `H3_FAILURE_TTL`** and not once per
 request. That is the difference between 250 ms per request and 250 ms per
@@ -102,14 +102,14 @@ stack has had a fair chance is a hedge that decides.
 
 So the number is chosen against the **success** side, exactly as §7.4 said
 it must be, and 250 ms is still the right constant for the same reason:
-`http_ng_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`, RFC
+`hclient_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`, RFC
 8305 §5's Connection Attempt Delay, this codebase's existing answer to *"how
 long do I give the preferred option before trying the other"* one layer
 down.
 
 **The honest derived form is unchanged and still unbuilt.** §7.4's
 origin-keyed RTT observation is what this should be, and there is still
-nowhere in `http-ng-select` to keep one; the Alt-Svc cache is keyed by origin
+nowhere in `hclient-select` to keep one; the Alt-Svc cache is keyed by origin
 but holds a server-supplied lifetime, and an RTT is neither server-supplied
 nor covered by `ma`.
 
@@ -136,7 +136,7 @@ one difference.
 §7.3's TCP rows predate `docs/nagle-and-nodelay.md`, which taught
 `Native::new` to ask for `TCP_NODELAY` where the runtime says it applies it.
 Re-run on the same harness and the same host (`cargo nextest run -p
-http-ng-select --test race_cost --run-ignored all --no-capture -j1
+hclient-select --test race_cost --run-ignored all --no-capture -j1
 --release`, M2a and M2d):
 
 | exchange, cold, loopback | §7.3 | now | note |
@@ -178,8 +178,8 @@ Two questions, and they had different answers than expected.
 ### The disposal is not a choice this crate gets to make
 
 Both arms are dropped the instant the other produces a connection, and
-neither drop needs a line from here: `http_ng_native::Staged`'s own `Drop`
-checks its connection into the pool, and `http_ng_h3::Staged` is a claim on
+neither drop needs a line from here: `hclient_native::Staged`'s own `Drop`
+checks its connection into the pool, and `hclient_h3::Staged` is a claim on
 a connection the pool already holds.
 
 **"Warm" is the only disposal the seam offers.** `Staged`'s `Drop` checks in
@@ -193,7 +193,7 @@ spoken on that connection, it is indistinguishable from the one an ordinary
 TCP request would have left behind, and the pool's own idle policy governs
 it from there.
 
-The QUIC side inherits the cost `http_ng_h3::staged` wrote down and
+The QUIC side inherits the cost `hclient_h3::staged` wrote down and
 explicitly handed to the race — *"a declined QUIC connection goes on sending
 its `DEFAULT_KEEP_ALIVE` PING every five seconds for as long as the
 transport lives"*. It is inherited unchanged, and it is milder than that
@@ -263,9 +263,9 @@ Both were predicted before the run and both behaved as predicted, which is
 the only reason they are recorded as findings rather than as dead code.
 **They are kept**, and the argument for keeping them is the one the
 observation itself makes: *the budget rule is currently enforced by
-`http-ng-h3`'s honouring of `Timeouts::connect`, not by this crate.* A
+`hclient-h3`'s honouring of `Timeouts::connect`, not by this crate.* A
 coupling that strong and that unstated is exactly what a locally written
-rule is for, and `http-ng-h3` is a crate this workstream may not edit.
+rule is for, and `hclient-h3` is a crate this workstream may not edit.
 
 **The third statement is witnessed**, and getting a witness for it needed a
 new fixture. `R11` — the race is not charged against `Timeouts::connect` —
@@ -291,7 +291,7 @@ request cannot be abandoned, because the request goes with it.
 So the arms are handed a **probe**: the same method, URI, version, headers
 and extensions, and a body that is empty and agrees about `retry_kind`. The
 last clause is the only non-obvious part and it is not decoration —
-`http-ng-h3`'s early-data admission reads `RequestBody::retry_kind()`, and
+`hclient-h3`'s early-data admission reads `RequestBody::retry_kind()`, and
 that answer is a field of its `PoolKey`, so a probe that disagreed would
 connect under one key and the request would look under another.
 
@@ -315,14 +315,14 @@ that makes it honest.
 
 ### Three things this costs, all stated rather than fixed
 
-1. **`http_ng_native::StagedConnect::exchange` still has no consumer in this
+1. **`hclient_native::StagedConnect::exchange` still has no consumer in this
    workspace.** `docs/v04-staged-connect.md` §6 recorded that honestly and
    said the thing that would use it was the race. The race uses
    `connect`— which is the half that carries the trait's whole argument —
    and routes the winner through `Prefetch::execute_prepared`, which also
    buys `Native::run`'s one retry against a pooled connection the peer has
    closed, a window this crate's own fixture has already been bitten by.
-   `http_ng_h3::StagedConnect::exchange` *is* consumed, through
+   `hclient_h3::StagedConnect::exchange` *is* consumed, through
    `Selecting::over_quic`, as it was before this work.
 2. **The winning stack's connect is re-entered.** For QUIC that is a real
    address resolution plus a pool lookup (`H3::execute` resolves before it
@@ -336,7 +336,7 @@ that makes it honest.
 3. **DNS.** A raced request that falls back to TCP makes the hedge's own
    connector lookup as well as the routed request's. At an origin's default
    port that is up to two type-65 queries where the sequential fallback made
-   one; away from it, none, because `http-ng-native` does no discovery
+   one; away from it, none, because `hclient-native` does no discovery
    there. Same shape and same reason as `docs/v04-staged-connect.md` §3.4,
    and the default-port row is inferred there for the same reason it is
    inferred here: an unprivileged test process cannot bind 443.
@@ -349,11 +349,11 @@ The first version had the race do its own routing: `raced` called
 `over_quic` on a QUIC win and `execute_prepared` on a hedge win, and
 `execute` called *both* `raced` and `over_quic`.
 
-It was green on `-p http-ng-select`. On `--workspace --all-features` two
-tests **aborted with a stack overflow** — `http-ng-select::alt_svc::
+It was green on `-p hclient-select`. On `--workspace --all-features` two
+tests **aborted with a stack overflow** — `hclient-select::alt_svc::
 one_client_moves_itself_to_http_3_on_the_second_request` and
-`http-ng-select::choice::one_client_reaches_both_servers_depending_only_on_
-the_record`, which are the two that go through `http_ng::Client` rather than
+`hclient-select::choice::one_client_reaches_both_servers_depending_only_on_
+the_record`, which are the two that go through `hclient::Client` rather than
 calling `Transport::execute` directly.
 
 `execute` is an `async fn`, so every future it may await is a field of one
@@ -382,7 +382,7 @@ own wrappers sit on top of whatever `execute` costs.
 
 ## 8. How it is checked
 
-Eleven tests in `crates/http-ng-select/tests/race.rs`, plus five unit tests
+Eleven tests in `crates/hclient-select/tests/race.rs`, plus five unit tests
 in `race.rs` itself. Every count is a **server's**, and every one that can be
 is a delta across one hop.
 
@@ -416,7 +416,7 @@ And **`Tcp::Rejecting`**, §5.
 
 ## 9. Mutation testing
 
-Anchor **136 tests**, `cargo nextest run -p http-ng-select --all-features
+Anchor **136 tests**, `cargo nextest run -p hclient-select --all-features
 --no-fail-fast`, verified before the first mutation and again after every
 restore. Each patch had to match exactly once or the mutation was not run;
 the harness scores from the names of failing tests and refuses to score a
@@ -482,7 +482,7 @@ through"* from *"HTTP/3 was raced"*.
   and not 50.
 - **The two survived budget mutations, §5.** They are recorded as findings
   because they were predicted, but "predicted and confirmed" is a statement
-  about this workspace's fixtures. If `http-ng-h3` ever stopped applying
+  about this workspace's fixtures. If `hclient-h3` ever stopped applying
   `Timeouts::connect` to its whole connect, C2 and C3 would become live and
   no test here would notice.
 - **The 30 s a real UDP block costs.** Unchanged from
@@ -496,7 +496,7 @@ through"* from *"HTTP/3 was raced"*.
   requests to the same origin at once would each stage two connects, and
   nothing says what the two pools do with four connections. The sequential
   fallback has the same gap and it is not new.
-- **`http_ng_native::StagedConnect::exchange` still has no consumer**, §6
+- **`hclient_native::StagedConnect::exchange` still has no consumer**, §6
   item 1. The race was the thing that was supposed to give it one and it did
   not, for a reason that is about the trait rather than about the race: a
   handle whose request cannot be replaced can only be spent by a caller that

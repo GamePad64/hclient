@@ -1,4 +1,4 @@
-# Sharing an h2 connection on `http-ng-native` — investigated, then built
+# Sharing an h2 connection on `hclient-native` — investigated, then built
 
 > **Built in v0.4.** §0–§10 are the investigation, kept as they were
 > written and not retro-fitted. **§11 is what it became**, including the
@@ -17,8 +17,8 @@ that the second and third hang off the first:
 > by the next call rather than promptly.
 
 This document answers the question that was left open: **could
-`http-ng-native` share an h2 connection when the runtime has `Spawn`, the
-way `http-ng-h3` does, and what would it cost?**
+`hclient-native` share an h2 connection when the runtime has `Spawn`, the
+way `hclient-h3` does, and what would it cost?**
 
 **Nothing here is code, and no library code was written for it.** Every
 claim below is marked with how it is known — *compiled* (a probe crate
@@ -52,7 +52,7 @@ second-connection policy is the one open question that is not an
 implementation decision, because sharing everything is measurably worse
 than today at a low peer stream limit. The work is a week with this
 project's mutation discipline, and it changes a policy stated in
-`pool.rs`, in `http2.rs`, in `http-ng-h3`'s module doc that mirrors them,
+`pool.rs`, in `http2.rs`, in `hclient-h3`'s module doc that mirrors them,
 in `AGENTS.md` and in the yardstick — five places that agree on purpose —
 so it should not be done as a side effect of something else.
 
@@ -74,7 +74,7 @@ so it should not be done as a side effect of something else.
 | P12 | Beyond the peer's `MAX_CONCURRENT_STREAMS`, h2 queues silently | **Measured.** Limit 2, six concurrent calls: all six succeed, one connection, per-call 203/203/405/405/607/607 ms (B6) |
 | P13 | Today, N concurrent calls cost N connections and N h2 handshakes | **Measured** through the real `Native` with `http2` on: 1/2/4/8 concurrent → 1/2/4/8 accepts and the same number of h2 handshakes; the same 8 calls **sequentially** → 1 accept, 1 handshake (C1, C2) |
 | P14 | `hyper/http2` is still unusable here | **Read, unchanged.** `Http2ClientConnExec` is sealed and the executor is handed the h2 connection itself — `http2.rs`'s module doc, re-checked against hyper 1.11.0. This document does not reopen it: what changes is that *we* would have a spawner, not that hyper's would become nameable |
-| P15 | `ReuseSupport` and `CancelSupport` need no new variant | **Read.** `ReuseSupport::Supported` is *"a second request to an origin need not pay for a TCP and TLS handshake again"*, which stays exactly true; `CancelSupport::Supported` is a duty owed on a dropped future, and it goes on being owed — what changes is the frame the peer sees. **No `http-ng-core` change is needed** |
+| P15 | `ReuseSupport` and `CancelSupport` need no new variant | **Read.** `ReuseSupport::Supported` is *"a second request to an origin need not pay for a TCP and TLS handshake again"*, which stays exactly true; `CancelSupport::Supported` is a duty owed on a dropped future, and it goes on being owed — what changes is the frame the peer sees. **No `hclient-core` change is needed** |
 
 ## 2. The type-level question — expressible, and the `Spawn`-less path is untouched
 
@@ -105,7 +105,7 @@ Two shapes were considered and neither is needed:
 
 ### 2.2 What works: capture the spawner as a function pointer
 
-`http_ng_rt::Spawn` declares **zero bounds** — `pub trait Spawn<F: Future<Output = ()>> { fn spawn(&self, f: F); }` — so
+`hclient_rt::Spawn` declares **zero bounds** — `pub trait Spawn<F: Future<Output = ()>> { fn spawn(&self, f: F); }` — so
 `<R as Spawn<F>>::spawn` is an ordinary function item, and it coerces to
 `fn(&R, F)`. A field of that type imposes nothing on `R`: a function
 pointer type is well-formed whatever its parameters are.
@@ -138,9 +138,9 @@ the reason `Reaper` is: `Spawn<F>` makes the future a parameter of the
 
 **Compiled against this tree**, not only in the probe: the field, the
 constructor and a call site inside an impl block with no `Spawn` bound were
-added to `crates/http-ng-native/src/lib.rs` and `src/http2.rs`,
-`cargo build -p http-ng-native --all-features --tests` was green, so were
-`http-ng-select` and `http-ng-tungstenite`, and the change was reverted.
+added to `crates/hclient-native/src/lib.rs` and `src/http2.rs`,
+`cargo build -p hclient-native --all-features --tests` was green, so were
+`hclient-select` and `hclient-tungstenite`, and the change was reverted.
 The only diagnostic was a `Debug` warning on the new struct.
 
 ### 2.3 What the negative side costs, and where the refusal lands
@@ -155,8 +155,8 @@ The only diagnostic was a `Debug` warning on the new struct.
 
 The last two are the price of P5 and are worth reading twice. The hook
 seam's `!Send` allowance (P13 in `docs/v04-design.md`) has a real subject —
-`http-ng-fetch`'s `Rc<RefCell<..>>` — and a spawned driver is where it
-collides with `Spawn`'s `Send + 'static`. **`http-ng-h3` met the same
+`hclient-fetch`'s `Rc<RefCell<..>>` — and a spawned driver is where it
+collides with `Spawn`'s `Send + 'static`. **`hclient-h3` met the same
 collision and could not close it**: `quinn::Runtime::spawn` wants `Send`,
 so `CloseReason::Ended` has no emitter there. Here it *is* closable,
 because the bound sits on the opt-in rather than on the transport: an
@@ -170,7 +170,7 @@ multiplexing on would silently stop reporting the ends of its connections.
 
 ## 3. What the pool would become
 
-`crates/http-ng-native/src/pool.rs` is built around **take**: `Pool::take`
+`crates/hclient-native/src/pool.rs` is built around **take**: `Pool::take`
 removes an entry, an exchange owns it, and a `CheckIn` puts it back. That
 is right for HTTP/1 and for an exclusive h2 connection, and it is the wrong
 verb for a shared one.
@@ -422,7 +422,7 @@ cannot do rather than about what might go wrong:
   driver, for a strictly smaller result.
 
 It is worth recording because it is the only shape that could ever serve
-`http-ng-rt-embassy`, which is expected to have no `Spawn` at all
+`hclient-rt-embassy`, which is expected to have no `Spawn` at all
 (`docs/w7-embassy-research.md`). If multiplexing on a spawn-less runtime is
 ever wanted, this is the door, and it should be opened for that reason
 rather than as a way of avoiding an opt-in.
@@ -443,7 +443,7 @@ rather than as a way of avoiding an opt-in.
    used on that path. §3.1.
 5. **`is_reusable` on a shared entry is one `poll_ready`**, and the
    liveness it reports is real because a driver is polling. §3.2.
-6. **`http-ng-core` does not change.** P15.
+6. **`hclient-core` does not change.** P15.
 7. **`Capabilities` do not change.** They already report the HTTP/1.1
    floor, which is what makes this invisible to a caller who did not opt
    in; `cancel_on_drop` stays `Supported` and the frame the peer sees gets
@@ -504,13 +504,13 @@ Today `Closed { reason: CloseReason::Stale }` is emitted at checkout, by
 the code that walked past a dead entry. A shared connection dies inside its
 driver, so the driver emits — and the reasons available there are not the
 same set. Whether `CloseReason` needs a variant is a question for whoever
-writes the driver, and it is the one place §8's "`http-ng-core` does not
+writes the driver, and it is the one place §8's "`hclient-core` does not
 change" might not hold.
 
 ### 9.3 Whether `without_pool()` and `multiplexed()` can both be asked for
 
 There is nowhere to share a connection without a pool, so the pair is
-either a refusal at construction — the shape `http-ng-select` uses when two
+either a refusal at construction — the shape `hclient-select` uses when two
 members' capabilities disagree, naming the field — or a documented
 last-call-wins. Not decided here.
 
@@ -548,15 +548,15 @@ hyper = { version = "1.11", default-features = false, features = ["client", "htt
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-http-ng-rt          = { path = "…/crates/http-ng-rt" }
-http-ng-rt-tokio    = { path = "…/crates/http-ng-rt-tokio" }
-http-ng             = { path = "…/crates/http-ng" }
-http-ng-core        = { path = "…/crates/http-ng-core" }
-http-ng-native      = { path = "…/crates/http-ng-native", features = ["http2"] }
-http-ng-dns         = { path = "…/crates/http-ng-dns" }
-http-ng-dns-system  = { path = "…/crates/http-ng-dns-system" }
-http-ng-tls         = { path = "…/crates/http-ng-tls" }
-http-ng-tls-rustls  = { path = "…/crates/http-ng-tls-rustls" }
+hclient-rt          = { path = "…/crates/hclient-rt" }
+hclient-rt-tokio    = { path = "…/crates/hclient-rt-tokio" }
+hclient             = { path = "…/crates/hclient" }
+hclient-core        = { path = "…/crates/hclient-core" }
+hclient-native      = { path = "…/crates/hclient-native", features = ["http2"] }
+hclient-dns         = { path = "…/crates/hclient-dns" }
+hclient-dns-system  = { path = "…/crates/hclient-dns-system" }
+hclient-tls         = { path = "…/crates/hclient-tls" }
+hclient-tls-rustls  = { path = "…/crates/hclient-tls-rustls" }
 ```
 
 ### 10.1 Probe A — the type-level claims
@@ -604,7 +604,7 @@ $ cargo run
 A1 ok (compiled), A2 ok (ran, no driver spawned), A4a ok (Rc hook builds)
 
 $ RUSTFLAGS="--cfg probe_a_neg" cargo build      # NativeLike::new(FakeRt).multiplexed()
-error[E0277]: the trait bound `FakeRt: http_ng_rt::Spawn<H2Driver<FakeStream>>` is not satisfied
+error[E0277]: the trait bound `FakeRt: hclient_rt::Spawn<H2Driver<FakeStream>>` is not satisfied
 
 $ RUSTFLAGS="--cfg probe_a4_neg" cargo build     # Rc hook + multiplexed()
 error[E0277]: `Rc<Cell<usize>>` cannot be sent between threads safely
@@ -615,7 +615,7 @@ $ RUSTFLAGS="--cfg probe_a4_pos" cargo build     # Arc hook + multiplexed()
 
 The same field and constructor were then added to this tree's real
 `Native` over `NativeIo<R, T>`, built with
-`cargo build -p http-ng-native --all-features --tests`, and reverted.
+`cargo build -p hclient-native --all-features --tests`, and reverted.
 
 ### 10.2 Probe B — the h2 facts
 
@@ -661,8 +661,8 @@ not one of the eight.
 Everything above is the investigation, kept as it was written. This
 section is what it became, and where it differs from what §0–§9 predicted.
 
-`crates/http-ng-native/src/{lib,pool,http2,established,staged}.rs`;
-`crates/http-ng-native/tests/http2_multiplex.rs` plus siblings in
+`crates/hclient-native/src/{lib,pool,http2,established,staged}.rs`;
+`crates/hclient-native/tests/http2_multiplex.rs` plus siblings in
 `tests/http2.rs` and `tests/grpc_shape.rs`.
 
 ### 11.1 The opt-in, and what it does not touch
@@ -675,7 +675,7 @@ let transport = Native::new(Tokio, tls, dns).multiplexed();
 `R: Spawn<H2Driver<NativeIo<R, T>, H>>` and on nothing else. The spawner
 is stored as `Option<fn(&R, H2Driver<NativeIo<R, T>, H>)>` — §2.2's shape,
 unchanged from the probe — so **no signature a `Spawn`-less runtime meets
-gains a bound**. `crates/http-ng/tests/two_runtimes.rs` and
+gains a bound**. `crates/hclient/tests/two_runtimes.rs` and
 `tests/h1.rs::works_on_a_bare_futures_executor_with_no_spawn` are green
 and untouched, which is the property this whole shape exists for.
 
@@ -729,7 +729,7 @@ Two things about it are decisions:
   the eight-call burst against a barrier server.
 - **`Timeouts::connect` is spent once.** The wait is bounded by the
   caller's connect bound and what is left of it is what the waiter's own
-  connect gets — the arithmetic `http-ng-select`'s h3 fallback does one
+  connect gets — the arithmetic `hclient-select`'s h3 fallback does one
   layer up and `Client`'s `425` replay does one layer down. Pinned by an
   A/B in which neither arm asserts on a duration
   (`waiting_for_a_shared_connect_spends_the_callers_connect_bound`), and
@@ -780,7 +780,7 @@ never pay for it.
 - **`Staged::drop` does not check a borrowed clone back in.** A staged
   connect that is never spent hands its connection back to the pool; a
   shared one was never taken out of it, so putting it back would leave two
-  entries naming one connection. `crates/http-ng-select` reaches this path
+  entries naming one connection. `crates/hclient-select` reaches this path
   and nothing there opts in, so the guard is correctness-by-construction
   rather than something a test can see — recorded as a survivor in §11.5.
 
@@ -928,7 +928,7 @@ price is stated on `Native::multiplexed` with §6.2's 203/405/607 ms
 beside it.
 
 **§9.2 — what a `Closed` event says for a shared connection.**
-`http-ng-core` did not have to change, which is the half §9.2 doubted.
+`hclient-core` did not have to change, which is the half §9.2 doubted.
 The driver emits `CloseReason::Ended` when h2 resolves the connection
 `Ok` — a clean close or a `GOAWAY` carrying no error, which is exactly
 the variant's *"nothing went wrong — there is simply no second request to
@@ -956,7 +956,7 @@ caller can.
 - **No `RequireVersion` interaction beyond the pool bucket.** The demand
   narrowing the ALPN offer, and the refusal, are `tests/require_version.rs`'s
   and are untouched by sharing.
-- **Nothing about `http-ng-select`.** `Selecting` never calls
+- **Nothing about `hclient-select`.** `Selecting` never calls
   `multiplexed()`, and `StagedConnect::connect` does not turn the
   connection it makes into a shared one — it uses one if the pool has one,
   which is a defensible half and is not measured here.
@@ -970,12 +970,12 @@ caller can.
   loopback, where the handshake saving is the whole of the win and the
   RTT saving is zero.
 - **Two workspace-level flakes were seen and could not be attributed.**
-  `http-ng-native`'s own suite is 12 clean runs at `-j16`, but the full
+  `hclient-native`'s own suite is 12 clean runs at `-j16`, but the full
   `--workspace --all-features` run failed 3 times in 39 on this branch —
-  once in `http-ng-h3::zero_rtt::early_data_is_accepted_…` and twice in
-  `http-ng-select::race::with_no_head_start_both_stacks_connect_…`, both
+  once in `hclient-h3::zero_rtt::early_data_is_accepted_…` and twice in
+  `hclient-select::race::with_no_head_start_both_stacks_connect_…`, both
   timing-sensitive races in crates this work does not touch. **The base
-  commit flakes too**, 1 in 42, in the same `http-ng-select` test; and the
+  commit flakes too**, 1 in 42, in the same `hclient-select` test; and the
   select test alone is 30 clean runs on each tree. So the flake is
   pre-existing; whether the higher rate here is the extra load of 19 new
   tests (each spawning a server with its own runtime) or noise is **not
@@ -990,8 +990,8 @@ claim about this code, it depends on `h2`, `rcgen`, `rustls` and
 `tokio-rustls` directly, and an `#[ignore]`d test nothing runs is the
 defect `just test-doc` was fixed for. Recorded here so the table in §11.4
 can be re-taken rather than believed. Drop it in as
-`crates/http-ng-native/tests/zz_cost.rs`, run
-`cargo nextest run -p http-ng-native --all-features --test zz_cost
+`crates/hclient-native/tests/zz_cost.rs`, run
+`cargo nextest run -p hclient-native --all-features --test zz_cost
 --no-capture`, and delete it again; every dependency it names is already a
 dev-dependency of that crate.
 
@@ -1007,11 +1007,11 @@ measuring Nagle".
 #![cfg(all(feature = "http2", not(target_family = "wasm")))]
 
 use bytes::Bytes;
-use http_ng::Client;
-use http_ng_dns::IpLiteralOnly;
-use http_ng_native::Native;
-use http_ng_rt_tokio::Tokio;
-use http_ng_tls_rustls::Rustls;
+use hclient::Client;
+use hclient_dns::IpLiteralOnly;
+use hclient_native::Native;
+use hclient_rt_tokio::Tokio;
+use hclient_tls_rustls::Rustls;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::sync::Arc;

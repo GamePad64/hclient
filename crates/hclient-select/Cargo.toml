@@ -1,0 +1,60 @@
+[package]
+name = "hclient-select"
+version.workspace = true
+description = "One hclient transport over both protocol stacks, choosing HTTP/3 where an origin's HTTPS record offers it"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Its own crate rather than a feature of either member, for the reason
+# `hclient-h3` is not a feature of `hclient-native`: Cargo's features are
+# additive, so a `select` feature on either would put the whole QUIC stack —
+# and the `UdpBind + Spawn` bounds it needs from the runtime — into every
+# build in any graph that switched it on, including the ones that will only
+# ever speak HTTP/1.1. A crate is opt-in by being named.
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+bytes          = { workspace = true }
+futures-util   = { version = "0.3", default-features = false, features = ["std"] }
+http           = { workspace = true }
+http-body      = { workspace = true }
+hclient-core   = { workspace = true }
+hclient-dns    = { path = "../hclient-dns",    version = "0.1.0" }
+hclient-h3     = { path = "../hclient-h3",     version = "0.1.0" }
+hclient-native = { path = "../hclient-native", version = "0.1.0" }
+# Not for anything this crate calls: `Native<R, T, D>` carries `R:
+# TcpConnect + Timer` and `T: TlsConnect` on the STRUCT, so a field of
+# that type cannot be declared without naming the two traits.
+hclient-rt     = { path = "../hclient-rt",     version = "0.1.0" }
+hclient-tls    = { path = "../hclient-tls",    version = "0.1.0" }
+thiserror      = { workspace = true }
+
+# The two servers `tests/choice.rs` puts on one port number — a real QUIC
+# endpoint speaking HTTP/3 on UDP and a real rustls listener speaking
+# HTTP/1.1 on TCP — plus the runtime and TLS backend that satisfy both
+# members' bounds at once. `hclient-rt-tokio`'s `udp` feature is
+# `docs/v04-design.md` P2: without it `TokioHandle` does not implement
+# `UdpAdoptStd` and `Selecting<TokioHandle, ..>` cannot be named.
+[dev-dependencies]
+futures-util       = { version = "0.3", default-features = false, features = ["std"] }
+h3                 = "0.0.8"
+h3-quinn           = "0.0.10"
+http-body-util     = { workspace = true }
+hclient            = { workspace = true }
+# The doc example's resolver, and nothing else: this crate names no
+# resolver of its own — `D: Resolve` is the caller's to supply.
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0", features = ["udp"] }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["quic"] }
+quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
+rcgen              = "0.14"
+rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio              = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio-rustls       = { version = "0.26", default-features = false, features = ["ring"] }
+
+[lints]
+workspace = true

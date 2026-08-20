@@ -3,7 +3,7 @@
 `docs/v04-w1-acceptance.md` §8 finding 4 recorded that every `Native`
 connection carried Nagle's algorithm and that it cost 41 ms on the head of
 a cold TLS exchange, and left the policy question open: *"whether the
-default is right is a policy question for `http-ng-rt` and not for this
+default is right is a policy question for `hclient-rt` and not for this
 crate"*. This is the answer, the re-measurement it is based on, and the
 one thing the change broke.
 
@@ -17,12 +17,12 @@ never declared `APPLIES` connects exactly as it did before.
 
 ## 1. The number, re-measured
 
-`crates/http-ng-native/tests/nagle_cost.rs`, `#[ignore]`d and printing
+`crates/hclient-native/tests/nagle_cost.rs`, `#[ignore]`d and printing
 rather than asserting — the rule this workspace follows for timing, and
-the same shape as `http-ng-select`'s `race_cost.rs`:
+the same shape as `hclient-select`'s `race_cost.rs`:
 
 ```
-cargo nextest run -p http-ng-native --test nagle_cost --run-ignored all \
+cargo nextest run -p hclient-native --test nagle_cost --run-ignored all \
     --no-capture -j1
 ```
 
@@ -114,7 +114,7 @@ an option its caller never mentioned, with a message about a socket
 setting it has never heard of. The `NONE` default's stated worst case,
 "one refused connect too many", becomes *all* of them.
 
-There is a second reason, independent of the first: `http-ng-rt` is a
+There is a second reason, independent of the first: `hclient-rt` is a
 socket seam and does not know who is writing. The 41 ms is the
 write-write-read shape of a request over TLS. A protocol that streams one
 way is exactly the one Nagle helps, and a default there would impose one
@@ -144,13 +144,13 @@ The opinion is in the HTTP client, and it is conditioned on what the
 runtime declared. **This is `TlsConnect::applies_ech`'s shape, one seam
 over, and for the same reason.** An HTTPS record's `ech_config_list` is
 passed on only to a TLS backend that says it applies one, because
-`http-ng-tls-rustls` *refuses* a non-`None` `ech` and a connector that
+`hclient-tls-rustls` *refuses* a non-`None` `ech` and a connector that
 filled the field from every record would make every ECH-publishing origin
 unreachable. Same structure here: a connector that asks for something the
 backend declared it cannot do turns a working build into a refusing one.
 
 `TcpConnect::reports_alpn`'s sibling, `TlsConnect::reports_alpn`, is the
-other precedent in this crate: `http-ng-native` offers `h2` only over a
+other precedent in this crate: `hclient-native` offers `h2` only over a
 TLS backend that says it can read the negotiated ALPN back. A capability
 constant, defaulted to the understating value, read by the layer above to
 decide whether to ask. That is three occurrences of one idea, and this is
@@ -186,7 +186,7 @@ Two answers, because there are two questions.
 same value it stored before this change. `connect` proceeds. Nagle stays
 on, which is the cost of not declaring, and is a slower connection rather
 than no connection.
-`crates/http-ng-native/tests/tcp_opts.rs`'s
+`crates/hclient-native/tests/tcp_opts.rs`'s
 `a_runtime_that_declares_nothing_is_asked_for_nothing` reads the `TcpOpts`
 handed to `TcpConnect::connect` — the transport passes its set there and
 nowhere else, so the argument is the answer — and then states the
@@ -236,7 +236,7 @@ a mutation run gets scored against a binary that was never rebuilt.
 | M3 | requested but not applied, at the builder: `tcp_opts` validates and does not store | **killed** | `native::tcp_opts::tcp_opts_replaces_the_whole_set_including_the_nodelay_new_asked_for` (1) |
 | M3b | requested but not applied, at the wire: `self.opts` never reaches `TcpConnect::connect` | **killed** | the two above (2) |
 | M4a | the refusal removed at the builder — `Native::tcp_opts` no longer calls `reject_unsupported` | **killed** | 8, all of `native::tcp_opts` |
-| M4b | the refusal removed at its source — `reject_unsupported` returns `Ok(())` always | **killed** | 16: 6 in `http-ng-rt`'s `caps::tests`, 8 in `native::tcp_opts`, 2 in `http-ng-rt-embassy` |
+| M4b | the refusal removed at its source — `reject_unsupported` returns `Ok(())` always | **killed** | 16: 6 in `hclient-rt`'s `caps::tests`, 8 in `native::tcp_opts`, 2 in `hclient-rt-embassy` |
 | M5 | the `TcpConnect::APPLIES` pointer removed from the message | **killed** | `rt::caps::tests::the_message_names_the_constant_an_implementor_would_have_to_change`, `native::tcp_opts::a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name` (2) |
 | M6 | **the control** — the message's *leading sentence* reworded, naming no option and not the pointer | **survived, as intended** | — (1353 passed, 19 skipped: the anchor exactly) |
 
@@ -249,12 +249,12 @@ eight mutations being caught.
 M4a and M4b are two different removals of the same duty and are both
 kept: M4a is the builder's early answer, M4b is the seam's. A single
 mutation of either alone would leave the other place unmeasured, and the
-`http-ng-rt-embassy` rows under M4b are the evidence that the seam's check
+`hclient-rt-embassy` rows under M4b are the evidence that the seam's check
 is load-bearing for a runtime that really does refuse things.
 
 ## 6. What this broke, and it is not fixed
 
-**`http-ng-select`'s `alt_svc` suite became flaky, and the cause is the
+**`hclient-select`'s `alt_svc` suite became flaky, and the cause is the
 41 ms going away.** Measured, same binary, same machine:
 
 | | `-j16` | `-j1` |
@@ -281,7 +281,7 @@ Two things were established before writing this down, and one of them is
 a negative result:
 
 - **It is not "a pooled connection against a server that closes".**
-  `crates/http-ng-native/tests/stale_reuse.rs` does exactly that, forty
+  `crates/hclient-native/tests/stale_reuse.rs` does exactly that, forty
   consecutive requests through one pooled transport, and fails **0 of 40**
   — with `nodelay` and without. The two polls catch it every time.
 - **It needs contention as well as speed.** The `-j1` column above is the
@@ -358,7 +358,7 @@ precedent for what a second attempt costs and who is allowed to make it.
   41/42; on a 20 ms path the same exchange would be roughly 40 ms of
   handshake plus 40 ms of stall, and the stall would still be the larger
   half of what a `nodelay` saves.
-- **`http-ng-rt-embassy`.** It declares `nodelay: true` and applies it
+- **`hclient-rt-embassy`.** It declares `nodelay: true` and applies it
   through `TcpSocket::set_nagle_enabled`, so `Native::new` now asks for it
   there too. Nothing in this work ran on that runtime; its own
   `tuntap.rs` suite is green, which is a check that nothing broke and not

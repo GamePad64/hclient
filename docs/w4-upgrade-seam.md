@@ -23,13 +23,13 @@ hold, checked against `hyper 1.11.0` and the tree as of this document.
 
 The third is the one to keep in mind while implementing: **"the exchange
 finished" and "the upgrade was thrown away" are the same observation**, and
-`crates/http-ng-native/src/h1.rs` polls `Connection` exactly that way. A
+`crates/hclient-native/src/h1.rs` polls `Connection` exactly that way. A
 101 must be recognised by *status*, before the connection is polled to
 completion. This was probed separately and is not a live defect today — a
 101 does not poison the pool, because five independent places ask whether
 the connection has finished — but that is an accident of the current code
 rather than a guarantee, and it is written down in
-`crates/http-ng-native/tests/switching_protocols.rs`.
+`crates/hclient-native/tests/switching_protocols.rs`.
 
 ## 2. Decision 1 — the seam is WebSocket, not "give me the socket"
 
@@ -37,7 +37,7 @@ rather than a guarantee, and it is written down in
 A byte-stream seam ("hand back the socket after the 101") is implementable
 by exactly one of this project's four backends, and the three it excludes
 include the browser — the target whose inclusion is the whole claim.
-`http-ng-fetch` says so where it sets the capability: *"`WebSocket` in the
+`hclient-fetch` says so where it sets the capability: *"`WebSocket` in the
 browser is a wholly separate global, unreachable from a `fetch`-shaped
 `Transport`"*. On Apple platforms `NSURLSessionWebSocketTask` is
 message-framed too and hands back no bytes; `wasi:http` has an
@@ -74,11 +74,11 @@ keep the field is the reasoning this project rejects everywhere else.
 it.** Deleting first would leave a window where a backend can neither
 declare nor implement upgrade, and the acceptance documents would have to
 describe a state that never shipped. That places it at step 4 below, beside
-the `http-ng-fetch` implementation, because the field lives on every
+the `hclient-fetch` implementation, because the field lives on every
 backend's `Capabilities` and removing it touches all of them at once —
 which is exactly the change that also gives the browser its own answer.
 
-One consequence to handle rather than discover: `crates/http-ng/tests/
+One consequence to handle rather than discover: `crates/hclient/tests/
 facade.rs` sets `UpgradeSupport::H1` on a test fixture and asserts it back.
 That test is pinning the *plumbing* — that a backend's capability reaches
 the facade — not upgrade itself. It needs a different field to carry the
@@ -86,7 +86,7 @@ same proof, not deletion.
 
 ## 4. WebTransport — a separate seam, and the spec's reasons are out of date
 
-`docs/superpowers/specs/2026-08-05-http-ng-design.md` §5.7 concluded "we
+`docs/superpowers/specs/2026-08-05-hclient-design.md` §5.7 concluded "we
 don't write WebTransport", on two grounds. Both have moved.
 
 **Ground 1 — "the client crates are server-only."** Still true of
@@ -127,7 +127,7 @@ That is a real cost, and it is the honest reason to defer, unlike the two
 above.
 
 **Since built, in part, and the reading above was right** — v0.4 W2,
-`crates/http-ng-webtransport`. The extended CONNECT leaves this stack and
+`crates/hclient-webtransport`. The extended CONNECT leaves this stack and
 is accepted both by `h3`'s own server and by `wtransport` 0.7.2, which
 shares no code with it. What the reading did not say is in
 [`docs/v04-w2-webtransport.md`](v04-w2-webtransport.md): `h3`'s **client**
@@ -136,16 +136,16 @@ can announce neither `SETTINGS_ENABLE_WEBTRANSPORT` nor
 clients does not go out; the peer's SETTINGS — which the draft makes a
 precondition of sending the CONNECT — are reachable only behind `h3`'s
 `i-implement-a-third-party-backend…` feature; and a session cannot share an
-`http-ng-h3` pooled connection, because extended CONNECT is announced at
-handshake time and `http-ng-h3` announces it nowhere.
+`hclient-h3` pooled connection, because extended CONNECT is announced at
+handshake time and `hclient-h3` announces it nowhere.
 
 ## 5. Order of work
 
-1. The `WebSocket` trait in `http-ng-core` — shape only, no backend.
-2. `http-ng-native`: h1 upgrade underneath it, using
+1. The `WebSocket` trait in `hclient-core` — shape only, no backend.
+2. `hclient-native`: h1 upgrade underneath it, using
    `poll_without_shutdown` + `into_parts`, never `hyper::upgrade`; the 101
    detected by status before the connection is polled out.
-3. `http-ng-fetch`: the browser's `WebSocket` global behind the same trait
+3. `hclient-fetch`: the browser's `WebSocket` global behind the same trait
    — the proof that the seam is the right shape, since this is the backend
    a byte-stream seam would have excluded.
 4. `UpgradeSupport` deleted, `facade.rs`'s plumbing test re-pointed.
@@ -176,7 +176,7 @@ feature with a trait in front of it.
 Neither pulls a runtime, so the five extra crates are the only cost — and
 they buy glue this workspace cannot use. **`TcpConnect::Stream` is bounded
 by `hyper::rt::Read + hyper::rt::Write + Unpin`**
-(`crates/http-ng-rt/src/caps.rs:149`), not `futures_io`, so an adapter is
+(`crates/hclient-rt/src/caps.rs:149`), not `futures_io`, so an adapter is
 needed whichever crate is chosen. Given that, the choice is only about
 which side the adapter faces.
 
@@ -227,7 +227,7 @@ transfer", it is **liveness** — is the peer still there — and RFC 6455 has
 an answer for exactly that in ping/pong.
 
 **It does not go on the seam.** `WebSocketConnect` is implemented by
-`http-ng-fetch` too, and a browser has no `send(ping)` and no `onping` —
+`hclient-fetch` too, and a browser has no `send(ping)` and no `onping` —
 the same fact that kept `Ping`/`Pong` out of `Message`. A knob on the trait
 that one backend silently could not honour would be a capability that lies,
 and this project has caught that four times. Nor does it go in the
@@ -237,8 +237,8 @@ some transports honour, but there the fallback is a **degradation** (a
 liveness detection and got none has no way to learn that.
 
 **So it goes where the seam already puts everything else: on the backend
-that can do it.** A configuration on `http-ng-native`'s WebSocket path, and
-no counterpart on `http-ng-fetch`, so asking the browser for it does not
+that can do it.** A configuration on `hclient-native`'s WebSocket path, and
+no counterpart on `hclient-fetch`, so asking the browser for it does not
 compile. Same rule as the trait itself, one level down.
 
 **The mechanism, and the constraint that shapes it.** Nothing is spawned
@@ -270,9 +270,9 @@ it rather than invent a second vocabulary.
 **~~What this section does not decide~~ — both decided, in the writing.**
 This paragraph left two questions to whoever implemented it, with tests.
 Both are answered, the reasoning is next to the code
-(`crates/http-ng-tungstenite/src/lib.rs`'s module doc — it was
-`http-ng-native`'s until §8 below was built) and the answers are pinned by
-`crates/http-ng-tungstenite/tests/websocket.rs`.
+(`crates/hclient-tungstenite/src/lib.rs`'s module doc — it was
+`hclient-native`'s until §8 below was built) and the answers are pinned by
+`crates/hclient-tungstenite/tests/websocket.rs`.
 
 **No, an unanswered ping is not surfaced before its deadline.** The
 `Stream` can yield two things and neither can carry it. `Message` has no
@@ -322,16 +322,16 @@ therefore still unbounded, the same gap `poll_close` records for itself.
 
 ## 8. The framing belongs in its own crate — and the rejected seam is right one level down
 
-`tungstenite` lives inside `http-ng-native` behind a `websocket` feature.
+`tungstenite` lives inside `hclient-native` behind a `websocket` feature.
 **That is the one pluggable thing in this workspace that is not its own
 crate**, and it is inconsistent with the rule every other seam follows:
-`http-ng-tls-rustls` and `http-ng-tls-native-tls` behind `TlsConnect`,
-`http-ng-dns-system`/`-hickory`/`-doh` behind `Resolve`, `http-ng-rt-tokio`/
+`hclient-tls-rustls` and `hclient-tls-native-tls` behind `TlsConnect`,
+`hclient-dns-system`/`-hickory`/`-doh` behind `Resolve`, `hclient-rt-tokio`/
 `-smol`/`-embassy` behind the runtime seams. Cargo's features are additive,
-so a `websocket` feature on `http-ng-native` puts `tungstenite` into every
+so a `websocket` feature on `hclient-native` puts `tungstenite` into every
 build in any graph that switches it on — which is the argument that kept
-`http-ng-h3` out of `http-ng-native` and `http-ng-tls-quic` out of
-`http-ng-tls`, applied to the one place it was not.
+`hclient-h3` out of `hclient-native` and `hclient-tls-quic` out of
+`hclient-tls`, applied to the one place it was not.
 
 **The split is already most of the way there.** `NativeWebSocket<I, Tm>` is
 generic over the IO and the clock; it names `Native` nowhere. What genuinely
@@ -344,25 +344,25 @@ needs hyper.
 `read_buf` hyper had already read past" — and that is exactly the shape §2
 rejected.** The rejection stands and is not weakened: as the *public* seam
 it excludes three of four backends, the browser among them. But as an
-**internal** seam between `http-ng-native` and a framing crate it is
+**internal** seam between `hclient-native` and a framing crate it is
 correct, because it is only ever asked of the backend that can answer it.
 A shape can be wrong at one level and right at the next; §2's argument was
 about which level, not about the shape.
 
-**The asymmetry with `http-ng-fetch` is what proves the arrangement.** The
-browser hands back *messages*, so `http-ng-fetch` implements
+**The asymmetry with `hclient-fetch` is what proves the arrangement.** The
+browser hands back *messages*, so `hclient-fetch` implements
 `WebSocketConnect` directly and needs no adapter at all. The adapter exists
 exactly where the platform hands back *bytes*. If both needed one, the seam
 would be in the wrong place.
 
 **What this does not change**: `WebSocket`, `WebSocketConnect` and `Message`
-stay in `http-ng-core::unversioned` — the seam was never the problem. And
+stay in `hclient-core::unversioned` — the seam was never the problem. And
 `WebSocketKeepAlive` moves with the framing, because pings and pongs are
 frames; it was never `Native`'s business, and the fact that its knob was
 spelled `Native::websocket_keep_alive` was a symptom of the same
 misplacement. It is `Tungstenite::keep_alive` now.
 
-## 8.1 Built: `http-ng-tungstenite`, and the connector borrows
+## 8.1 Built: `hclient-tungstenite`, and the connector borrows
 
 ~~Open, for whoever builds it: who implements `WebSocketConnect`
 afterwards.~~ **Decided, on the measurement §8 asked for.** The two shapes
@@ -372,8 +372,8 @@ second one loses for a reason that turned out not to be about machinery at
 all.
 
 **`Native` keeping the impl does not do what §8 is for.** The impl would
-need `tungstenite`, so `http-ng-native` would need it, so it would be back
-behind a `websocket` feature of `http-ng-native` — and Cargo's features
+need `tungstenite`, so `hclient-native` would need it, so it would be back
+behind a `websocket` feature of `hclient-native` — and Cargo's features
 are additive, which is the whole of the paragraph this section opens with.
 One crate anywhere in the graph switching it on would still put the
 framing into every other crate's build of the transport, with the code
@@ -387,8 +387,8 @@ WebSocket from one transport:
 
 ```toml
 # before                              # after
-http-ng-native = { version = "0.1",   http-ng-native = "0.1"
-  features = ["websocket"] }          http-ng-tungstenite = "0.1"
+hclient-native = { version = "0.1",   hclient-native = "0.1"
+  features = ["websocket"] }          hclient-tungstenite = "0.1"
 ```
 
 ```rust
@@ -410,7 +410,7 @@ expression above and nothing else, and
 `a_websocket_never_takes_a_pooled_connection` is the test that needs it:
 two ordinary requests and an upgrade, against one transport.
 
-**The internal seam is `http_ng_native::Upgrading`**, and building it
+**The internal seam is `hclient_native::Upgrading`**, and building it
 tightened one thing this document had recorded as slack. §8 says the three
 WebSocket checks are right to run before the connection is taken apart
 while admitting the mutation that moves them after it survives. They still
@@ -423,7 +423,7 @@ here — which is what makes it a control rather than a gap.
 
 What each side owns, finally:
 
-| | `http-ng-native` | `http-ng-tungstenite` |
+| | `hclient-native` | `hclient-tungstenite` |
 |---|---|---|
 | connection | its connector, its TLS, `http/1.1` alone on ALPN, never the pool | — |
 | h1 upgrade | `poll_without_shutdown` + `into_parts`, `101` **by status** | — |
@@ -433,7 +433,7 @@ What each side owns, finally:
 | `WebSocketConnect` | — | `Tungstenite<'_, R, T, D, H>` |
 
 `graph-no-framing-in-the-transport` checks the split rather than asserting
-it: `cargo tree -p http-ng-native --all-features` must contain no
+it: `cargo tree -p hclient-native --all-features` must contain no
 `tungstenite`, `sha1` or `data-encoding` — every feature the crate has, at
 once, being the strongest thing a neighbour could do to it — with a
 `present` half against the framing crate so the ban cannot pass a

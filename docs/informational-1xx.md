@@ -37,7 +37,7 @@ sealed `Http2ClientConnExec` whose executor is handed the connection. The
 second ruled out `hyper::upgrade::Upgraded` for the WebSocket work — a
 `Rewind<Box<dyn Io + Send>>`. Here it collides with a property this
 workspace documents as supported: **a hook may hold an `Rc`**
-(`http-ng-core/tests/shape.rs`, P13), which is why the seam declares no
+(`hclient-core/tests/shape.rs`, P13), which is why the seam declares no
 auto traits at all.
 
 The difference is that this time there is a pattern for absorbing it.
@@ -82,7 +82,7 @@ connection could not keep.
 
 ## 4. Mutations
 
-Anchor 270 (`http-ng-native --all-features`), `--no-fail-fast`.
+Anchor 270 (`hclient-native --all-features`), `--no-fail-fast`.
 
 | # | mutation | verdict | killed |
 |---|---|---|---|
@@ -102,7 +102,7 @@ the finding, not the verdict. A fixture now reaches that path.
   opened the same connection.** The field is populated from `est.id()` on
   both protocols, and no test reads it — a caller correlating several
   in-flight exchanges is relying on something unmeasured.
-- **`http-ng-h3` reports none**, and that is not argued here either way:
+- **`hclient-h3` reports none**, and that is not argued here either way:
   RFC 9114 permits `1xx`, `h3`'s client surface was not examined, and
   the transport's capability says `false`, which is the honest value for
   a path nobody wrote.
