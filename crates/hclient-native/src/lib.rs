@@ -258,6 +258,65 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 ///
 /// `H` is deliberately last, after the three seams: it is the only one of
 /// the four that is not a seam a backend author has to fill in.
+///
+/// # `execute`'s future is **not** `Send`, and pinning that is the point
+///
+/// The transport is `Send + Sync` and so is its body — both asserted in
+/// `tests/shape.rs`. The future is neither, so **a caller cannot
+/// `tokio::spawn` a request**; they can hold the client across a spawn and
+/// drive the request where they are.
+///
+/// The single cause is one box: `connect.rs` holds the resolver's stream as
+/// `Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>`, with no
+/// `Send`, across an await. The three shipped resolvers all *produce* `Send`
+/// streams — measured — so the property exists and the box throws it away.
+///
+/// **Recovering it is not one line, and the price is the embedded target.**
+/// Declaring `+ Send` on `Resolve`'s three methods does not compile:
+/// `hclient-dns-system`'s streams await `Blocking::run`, itself an RPITIT,
+/// unprovable `Send` for a generic `R` without return type notation — still
+/// `E0658` on rustc 1.98.0. Following that down means the bound on seven
+/// seam methods: `TcpConnect::connect`, `connect_unix`, `Blocking::run`,
+/// `TlsConnect::connect` and the three `Resolve` lookups. And
+/// `hclient-rt-embassy`'s `connect` future holds `RefCell<embassy_net::
+/// Inner>` — structurally, because it is a single-threaded executor — so
+/// that bound would exclude the embedded target, whose live TAP scenarios
+/// run in CI on every push.
+///
+/// Which is `scripts/no-send-or-sync-in-the-core-surface.sh`'s own sentence
+/// with a real subject: *declaring the bound in the seam forces it on
+/// backends that cannot satisfy it*.
+///
+/// `hclient-fetch` and `hclient-wasi` both assert the **opposite** of their
+/// own `execute` futures, and the asymmetry is not an oversight: neither
+/// has a resolver at all.
+///
+/// ```compile_fail
+/// # use hclient_core::unversioned::Transport;
+/// # use hclient_core::RequestBody;
+/// # use hclient_native::Native;
+/// # use hclient_dns::IpLiteralOnly;
+/// # use hclient_tls::NoTls;
+/// # use hclient_rt_tokio::Tokio;
+/// fn assert_send<T: Send>(_: T) {}
+/// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
+/// assert_send(t.execute(http::Request::new(RequestBody::Empty)));
+/// ```
+///
+/// The pair that differs in one line and **does** compile, so the block
+/// above is failing for its own reason rather than for a typo:
+///
+/// ```no_run
+/// # use hclient_core::unversioned::Transport;
+/// # use hclient_core::RequestBody;
+/// # use hclient_native::Native;
+/// # use hclient_dns::IpLiteralOnly;
+/// # use hclient_tls::NoTls;
+/// # use hclient_rt_tokio::Tokio;
+/// fn assert_send<T: Send>(_: T) {}
+/// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
+/// assert_send(t); // the transport, not the future it returns
+/// ```
 #[derive(Debug)]
 pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
 where
