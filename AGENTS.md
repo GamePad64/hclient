@@ -2486,6 +2486,46 @@ leans on two, which is a hooks change wanting its own measurement.
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
 
+### Two versions of `quinn-udp` coexist, and that is the seam paying out
+
+A dependency bump asked for `quinn-udp` 0.6.1. The first look said it was
+unreachable — it arrives through `quinn`, and `quinn` 0.11.11 is the newest
+release and still requires `^0.5`. That was wrong about *where* it arrives:
+it is a **direct** dependency of `hclient-rt-tokio` and `hclient-rt-smol`,
+optional, behind each crate's `udp` feature. Ours can move; quinn's cannot.
+
+**What makes the split safe is a decision made long before, for a different
+reason.** `hclient-rt` declares its own `EcnCodepoint` rather than
+re-exporting `quinn_udp`'s, and the doc comment beside it says so. The
+consequence only became visible here: the two sides never exchange a
+`quinn-udp` type at all. A runtime converts *our* codepoint into its
+`quinn_udp::EcnCodepoint`; `hclient-quinn` converts *our* codepoint into
+`quinn::udp::EcnCodepoint`, which is quinn's own copy. Our type is the
+interchange format, so the versions on either side of it are free to differ
+— and no code changed to get 0.6.1, at any site.
+
+The cost is one duplicate crate, in a build that both enables `udp` on a
+runtime and uses quinn — which is the realistic HTTP/3 configuration.
+`cargo deny` has `multiple-versions = "warn"`, so it says so without
+failing. **Every crate count in this file is unchanged**, because the
+duplicate exists only in a workspace-wide all-features graph and never in
+any single crate's.
+
+What a Linux run cannot settle is whether the two agree about ECN on a
+platform where the answer differs; `ecn-mutation-dies-on-macos` is that
+half, and it runs on CI.
+
+**Two more bumps came with it, and the refusal is the interesting one.**
+`embassy-executor` 0.10 renamed `arch-std` to `platform-std` and moved the
+fallible half of spawning: the `#[task]` macro's function now returns
+`Result<SpawnToken<_>, _>` where `Spawner::spawn` returns `()`, so an
+`expect` moves one call to the left. Verified by *running* the gated TAP
+suite rather than compiling it. `smoltcp` 0.14 was **refused**:
+`embassy-net` 0.9.1 pins 0.13, so taking it would put two copies of a
+wire-format parser in one test binary, one of them handing types to a stack
+built against the other. A duplicate is cheap for a crate whose types never
+cross a seam and wrong for one whose whole job is the types.
+
 ### One crate was named after a family the dependency rule forbids
 
 Asked before publishing whether any crate is redundant or misnamed, both
