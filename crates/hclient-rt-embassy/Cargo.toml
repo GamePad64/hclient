@@ -53,7 +53,7 @@ hyper        = { version = "1.11", default-features = false }
 # here has to link it or `__embassy_time_queue_item_from_waker` is left
 # unresolved. `src/lib.rs` says the rest, next to the `use` that keeps the
 # rlib on the linker's command line.
-embassy-executor = { version = "0.9", features = ["arch-std", "executor-thread"] }
+embassy-executor = { version = "0.10", features = ["platform-std", "executor-thread"] }
 # `std` here is embassy-time's std TIME DRIVER. A device build supplies its
 # own driver (esp-idf-svc's `embassy-time-driver` feature, an MCU HAL's
 # timer); the library above deliberately enables no driver at all, since

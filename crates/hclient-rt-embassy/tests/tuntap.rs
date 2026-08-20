@@ -325,12 +325,13 @@ fn inner(name: &str) -> ! {
     let (stack, runner) = embassy_net::new(device, config, resources, 0x0123_4567_89ab_cdef);
     let executor: &'static mut Executor = Box::leak(Box::new(Executor::new()));
     executor.run(|spawner| {
-        spawner
-            .spawn(net_task(runner))
-            .expect("spawn the stack task");
-        spawner
-            .spawn(scenario_task(stack, name.to_owned()))
-            .expect("spawn the scenario task");
+        // `embassy-executor` 0.10 moved the fallible half: the `#[task]`
+        // macro's function now returns `Result<SpawnToken<_>, _>` — the
+        // pool being exhausted is known when the token is made — and
+        // `Spawner::spawn` returns `()`. So the `expect` moves one call to
+        // the left rather than disappearing.
+        spawner.spawn(net_task(runner).expect("a stack task token"));
+        spawner.spawn(scenario_task(stack, name.to_owned()).expect("a scenario task token"));
     })
 }
 
