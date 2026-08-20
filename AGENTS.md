@@ -2729,6 +2729,65 @@ with default features never saw it — `charset` is off by default, but
 caught it**, which is the recipe this file records as having once printed
 `error:` and exited zero. It earns its place here.
 
+### `Native::execute`'s future is not `Send`, and recovering it costs the embedded target
+
+Asked for a non-generic `hclient::Client` — no transport or timer in the
+type, `Clone` with `Arc` semantics — the two blockers this workspace had
+recorded both turned out to be clearable, and a third one nobody had named
+ends it.
+
+**`docs/competitive-gaps.md` §G13 was wrong twice while right once.** It
+said `Transport`'s RPITIT needs return type notation (still `E0658` on
+1.98.0 — true, and irrelevant: a trait with no default body, implemented per
+backend where `Self` is concrete, erases without it), and that
+`Timer::Instant: Copy` is permanent (also true as stated, and also
+irrelevant: stop moving the instant across the boundary, and have the erased
+stamp answer *how long ago was this* — `Copy` is then asked of nothing).
+Both were prototyped and compiled on stable.
+
+**What ends it is one box.** `connect.rs` holds the resolver's stream as
+`Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>` with no
+`Send`, across an await, so `Native::execute`'s future is `!Send` on the
+concrete `Tokio`/`Rustls`/`SystemDns` stack. **A caller cannot
+`tokio::spawn` a request** — they can hold the client across a spawn, which
+is what `shape.rs` asserts and what `Inner`'s doc means by *"a `Client` is
+meant to cross a `tokio::spawn`"*. `hclient-fetch` and `hclient-wasi` both
+assert the opposite of their own futures, and the asymmetry has a cause:
+neither has a resolver.
+
+**Three estimates of the repair, each wrong, and the errors are the
+lesson.** First: one line, add `+ Send` at the box. Wrong — for a generic
+`D` that is the RTN wall again. Second: declare `+ Send` on `Resolve`'s
+three methods; measured that all three `SystemDns` streams *are* `Send`, so
+it looked free. Wrong — that was measured on a **concrete**
+`SystemDns<Tokio>`, and the declaration asks it of every `R`, where the
+streams await `Blocking::run`, another RPITIT. Third: seven seam methods
+then — `TcpConnect::connect`, `connect_unix`, `Blocking::run`,
+`TlsConnect::connect`, three `Resolve` lookups — bounded and affordable.
+Wrong in the direction that ends it: `hclient-rt-embassy`'s `connect`
+future holds `RefCell<embassy_net::Inner>`, structurally, because embassy
+is a single-threaded executor.
+
+So the bound would exclude the embedded target, whose live TAP scenarios
+run in CI on every push. That is
+`scripts/no-send-or-sync-in-the-core-surface.sh`'s own sentence with a real
+subject: *declaring the bound in the seam forces it on backends that cannot
+satisfy it*. **The rule that blocks the erased client is right, and this is
+the measurement rather than the slogan.**
+
+The erased seams built for it were removed rather than left unused — a
+public seam with no consumer is what this project deletes. What is kept is a
+paired doctest on `Native` pinning the `!Send` future with the whole chain
+beside it, so the next person to want an erased client finds the price
+before paying it.
+
+**A process note that cost two commits.** The `send-bound-exception` marker
+is a trailing comment on the same line as the bound, and `cargo fmt` moves
+one off a line it must reflow and **deletes** one from a trait's `where`
+clause. Two marked sites were silently unexcused that way, and
+`just invariants` — which is where that guard lives — was not in the set of
+recipes being run. A gate that is not in the set you run is not running.
+
 ### A default is not a default when Cargo unifies features — it is a floor
 
 `cargo add hclient` gives a client that does not compile: `Client::new()`

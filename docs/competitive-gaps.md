@@ -730,6 +730,41 @@ moved.
 makes the `Send` version impossible today; the `!Send` version already
 exists.
 
+#### Tried, and the answer is still no — for none of the reasons below
+
+**Everything in this subsection was measured and the conclusion survives on
+a different cause entirely.** Both halves it names were *cleared*; what
+stops an erased `Client` is something neither paragraph mentions.
+
+`Timer::Instant` is **not** a permanent blocker. `Copy` on a trait object is
+indeed not a thing, and fixing `Instant` to a concrete type is indeed
+impossible for the reason given below. The way out is neither: stop moving
+the instant across the boundary. A trait answering *how long ago was this*
+and nothing else keeps the instant inside the clock that made it, and `Copy`
+is never asked of anything erased. Prototyped and compiled on stable.
+
+`Transport`'s RPITIT is not a wall either, and this document already said
+so two sections down: a trait with no default body, implemented per backend
+where `Self` is concrete, gives `Send` erasure without RTN. Also prototyped.
+
+**What actually stops it is that `Native::execute`'s future is `!Send`.**
+`connect.rs` boxes the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`
+with no `Send`, across an await — so there is nothing to erase into a
+`Send` client. Recovering that needs the bound on seven seam methods
+(`TcpConnect::connect`, `connect_unix`, `Blocking::run`,
+`TlsConnect::connect`, three `Resolve` lookups), and
+`hclient-rt-embassy`'s `connect` future holds `RefCell<embassy_net::Inner>`
+because it is a single-threaded executor. **The bound would exclude the
+embedded target**, which is the harm
+`scripts/no-send-or-sync-in-the-core-surface.sh` exists to prevent, with a
+real subject rather than a hypothetical one.
+
+So the gap stands, the workaround stands, and the *reason* recorded below
+was wrong twice. It is kept because the two things it rules out are still
+ruled out, and because being wrong about a cause while right about a
+conclusion is the shape worth recognising. The `!Send` future is pinned by
+a paired doctest on `Native`.
+
 #### The half that is not upstream, and will still be there when RTN lands
 
 The paragraph above is about `Transport`, and `Client<T, Tm>` has **two**
