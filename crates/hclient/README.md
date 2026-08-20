@@ -6,6 +6,9 @@ The same application code runs on a native socket, on `wasi:http`, on the
 browser's own `fetch` and on Apple's `URLSession`. The transport is swapped
 out, not buried under `#[cfg]`.
 
+`cargo add hclient` is enough — the default carries a transport, and this
+compiles as written:
+
 ```rust
 let client = hclient::Client::new()?;          // needs an ambient tokio runtime
 let text = client.get("https://example.com")

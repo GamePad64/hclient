@@ -490,13 +490,30 @@ fn backend_name<T>() -> &'static str {
 // the generic parameter's default only affects call sites where `Client`
 // is written with no explicit `<...>` (e.g. `Client::new()`'s return type
 // below), not the signatures of existing impl blocks.
-#[cfg(feature = "default-transport")]
+//
+// **The condition is "does `DefaultTransport` exist", not "is the feature
+// on".** Those came apart on `wasm32-wasip2`, where the feature can be on —
+// Cargo unifies features across a graph, so any other crate can turn it on
+// — and the type still does not exist, because that target has no default
+// transport to point at. Keying the fork on the feature alone selected the
+// branch naming a type that was configured out, and the crate did not
+// compile at all. The second arm below is the same condition as
+// `DefaultClock`'s `NoClock` branch in `lib.rs`, deliberately: `Client`
+// requires an explicit `T` exactly where there is no target-chosen clock
+// either.
+#[cfg(all(
+    feature = "default-transport",
+    not(all(target_family = "wasm", not(target_os = "unknown")))
+))]
 #[derive(Debug)]
 pub struct Client<T = crate::DefaultTransport, Tm = crate::DefaultClock> {
     inner: std::sync::Arc<Inner<T, Tm>>,
     config: Config,
 }
-#[cfg(not(feature = "default-transport"))]
+#[cfg(any(
+    not(feature = "default-transport"),
+    all(target_family = "wasm", not(target_os = "unknown"))
+))]
 #[derive(Debug)]
 pub struct Client<T, Tm = crate::DefaultClock> {
     inner: std::sync::Arc<Inner<T, Tm>>,

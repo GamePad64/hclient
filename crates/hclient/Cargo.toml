@@ -12,7 +12,26 @@ repository.workspace = true
 all-features = true
 
 [features]
-default = ["idn"]
+# **`cargo add hclient` has to give a working client.** Until this line the
+# default was `["idn"]` alone, so `Client::new()` — the first line of this
+# crate's own README — did not compile until a reader found
+# `features = ["default-transport"]`. A crate whose headline example fails
+# on the first try spends its worst cost in the five minutes where someone
+# decides whether to keep reading.
+#
+# The rule this bends is real and is kept everywhere else: a build carries
+# nothing it did not ask for, and `json`, `gzip`, `cookies`, `cache` and the
+# rest are all still opt-in. What changed is the judgement about **which**
+# default is the surprising one. It costs 44 -> 81 crates on a native
+# target; `default-features = false` is the constrained build and is what
+# `hclient-native/examples/minimal.rs` uses.
+#
+# It is safe on all three targets because the dependencies it names are
+# already target-gated below: the native four are `cfg(not(wasm))`,
+# `hclient-fetch` is `cfg(wasm32-unknown)`, and **`wasm32-wasip2` gets
+# neither** — there `DefaultTransport` does not exist and this feature adds
+# nothing, exactly as before.
+default = ["idn", "default-transport"]
 # Internationalised domain names, forwarded to `hclient-proto`, where the
 # conversion lives (`uri::parse`) so that every backend gets the same
 # behaviour without going through this facade. ON by default: it is what

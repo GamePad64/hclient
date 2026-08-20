@@ -327,8 +327,18 @@ pub type DefaultTransport = hclient_fetch::Fetch;
 ///   setter that could put a bound on a client with this clock is
 ///   `#[cfg]`-ed away with the feature, so nothing silently fails to be
 ///   measured — see [`NoClock`]'s own doc comment for the complete list.
-/// - `wasm32-wasip2` with the feature: no branch, the same deliberate
-///   compile error as [`DefaultTransport`] there.
+/// - `wasm32-wasip2` with the feature: [`NoClock`], the same as without it.
+///   **This used to have no branch at all**, on the reasoning that it was
+///   the same deliberate compile error as [`DefaultTransport`] there — and
+///   the two are not the same. `DefaultTransport` is named only by someone
+///   asking for it, so its absence is a refusal aimed at that line.
+///   `DefaultClock` is the default type parameter of `ClientBuilder`,
+///   `RequestBuilder` and both forks of [`Client`], so its absence does not
+///   refuse anything: it stops the crate compiling at all. And **Cargo
+///   unifies features across a graph**, so the trigger was never the wasip2
+///   user's own choice — any unrelated crate turning `default-transport` on
+///   broke their build. `DefaultTransport` is still absent here, which is
+///   where the refusal belongs and where it still reads as one.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 pub type DefaultClock = hclient_rt_tokio::Tokio;
 
@@ -341,10 +351,20 @@ pub type DefaultClock = hclient_rt_tokio::Tokio;
 ))]
 pub type DefaultClock = hclient_fetch::BrowserClock;
 
-/// The clockless branch of [`DefaultClock`]: without the
-/// `default-transport` feature there is no target-chosen clock to point
-/// at, so the default clock is the one that measures nothing. See the
-/// first branch's doc comment, and [`NoClock`] for why that is not a
-/// silent no-op.
-#[cfg(not(feature = "default-transport"))]
+/// The clockless branch of [`DefaultClock`], and the one that must catch
+/// everything the other two do not: without the `default-transport`
+/// feature there is no target-chosen clock to point at, and on
+/// `wasm32-wasip2` there is none *with* it either, because that target has
+/// no [`DefaultTransport`] to take one from. Either way the default clock
+/// is the one that measures nothing. See the first branch's doc comment,
+/// and [`NoClock`] for why that is not a silent no-op.
+///
+/// The condition is the negation of the two branches above rather than a
+/// third guess at the target list, so the three are exhaustive and
+/// non-overlapping by construction: exactly one arm matches every
+/// (target, feature) pair.
+#[cfg(any(
+    not(feature = "default-transport"),
+    all(target_family = "wasm", not(target_os = "unknown")),
+))]
 pub type DefaultClock = NoClock;

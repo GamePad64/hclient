@@ -337,7 +337,9 @@ are not in the index — which is what the order is for: **five waves over
 29 crates**, `hclient-core`/`-cache`/`-cookie`/`-idn` first and
 `hclient`/`hclient-select` last. Every publishable crate carries
 `[package.metadata.docs.rs] all-features = true`, because docs.rs builds
-`default` and `default` here is empty or near-empty by design.
+`default` and `default` here is empty or near-empty in 29 of the 30 —
+`hclient` itself is the exception since `default-transport` joined its
+default, and even there `json`, `gzip`, `cookies` and `cache` are opt-in.
 
 **Minimum supported Rust: the latest stable release** — currently **1.98**,
 declared once in the workspace manifest and shared by every crate. That is the
@@ -2690,6 +2692,46 @@ this file's rule about a check whose answers cannot differ, met one more
 time. With a `User-Agent` the controls separate: `reqwest` 200, a nonsense
 name 404.
 
+### `cargo add hclient` gave a client that would not compile
+
+The crate's own headline example — `Client::new()` — needed
+`features = ["default-transport"]`, and `default` was `["idn"]`. So the
+first thing a reader copied failed to build, which is the worst place a
+project can spend a cost: the five minutes in which someone decides whether
+to keep reading.
+
+`default-transport` is in `default` now. **The rule it bends is kept
+everywhere else** — `json`, `gzip`, `brotli`, `deflate`, `zstd`, `cookies`,
+`cache`, `charset` and `digest-auth` are all still opt-in, and 29 of the 30
+crates still have an empty or near-empty default. What changed is the
+judgement about *which* default is the surprising one. Measured: **81 crates
+against 18** with `--no-default-features`, which is the constrained build
+and is what `hclient-native/examples/minimal.rs` uses.
+
+**Flipping it exposed a real defect, and it was never the wasip2 user's to
+trigger.** `DefaultClock` had three `#[cfg]` arms — native-with-feature,
+browser-with-feature, and `not(feature)` — and `wasm32-wasip2` with the
+feature matched **none** of them. Its doc comment called that "the same
+deliberate compile error as `DefaultTransport` there", and the two are not
+the same: `DefaultTransport` is named only by someone asking for it, so its
+absence is a refusal aimed at that line, where `DefaultClock` is the default
+type parameter of `ClientBuilder`, `RequestBuilder` and both forks of
+`Client`, so its absence stops the crate compiling at all. And **Cargo
+unifies features across a graph**, so the trigger was never that user's own
+choice — any unrelated crate turning `default-transport` on broke their
+build, before this change and independently of it.
+
+`Client`'s forked declaration had the same gap for the same reason: it keyed
+on *the feature* where the question is *does `DefaultTransport` exist*.
+Both now use the same pair of conditions, negations of each other, so the
+arms are exhaustive and non-overlapping by construction rather than by a
+third guess at the target list — and `Client` requires an explicit `T`
+exactly where `DefaultClock` is `NoClock`.
+
+Verified the way the complaint was phrased rather than by `cargo check`
+alone: a scratch crate outside this workspace, depending on `hclient` with
+no features named, compiling the README's example.
+
 ### The workspace was `http-ng`, and the prefix is what decided its replacement
 
 Three objections killed the old name, and they are independent of each
@@ -2938,7 +2980,10 @@ test busy-spin.
 
 **`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** — the
 `default-transport` feature (not in `hclient`'s `default`, as for every
-crate in the vertical — opt in explicitly; `default` carries `idn` alone,
+crate in the vertical. **It is in `hclient`'s `default` now**, because
+`cargo add hclient` has to give a working client and the crate's own
+headline example did not compile without it; `default` carries `idn` and
+`default-transport`,
 see the `url` bullet above). On any non-wasm target it resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",

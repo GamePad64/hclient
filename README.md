@@ -2,6 +2,8 @@
 
 **An HTTP client complete enough to build a new curl on — or a browser.**
 
+`cargo add hclient`, and the four lines below compile as written.
+
 Those two want opposite things. A command-line tool wants a static binary
 with no runtime, honest exit codes and no surprises. A browser engine wants
 streaming bodies, connection reuse, protocol negotiation, cancellation that
