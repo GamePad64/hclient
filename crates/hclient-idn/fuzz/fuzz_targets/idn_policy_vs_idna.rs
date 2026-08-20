@@ -55,9 +55,36 @@ fuzz_target!(|data: &[u8]| {
     let ours = hclient_idn::testing::policy_over(idna_says, &domain);
     let theirs = idna_says(&domain);
 
-    assert_eq!(
-        ours, theirs,
-        "the policy layer and `idna` disagree about {domain:?}: over a backend that IS `idna`, \
-         the layer must be transparent"
+    if ours == theirs {
+        return;
+    }
+
+    // **The layer is not transparent, and saying it was cost a real bug and
+    // a false alarm.** It verifies: it decodes an ACE label itself, hands
+    // the decoded form to the backend, and emits the backend's answer only
+    // once that answer re-encodes to the label it was given. So it may
+    // refuse where the backend does not — but only for a reason the backend
+    // itself supplies, and never by inventing a *different* answer.
+    //
+    // That is the contract asserted here, and it is narrower than
+    // `assert_eq!` on purpose while still failing on what `assert_eq!`
+    // caught. The bug it caught, `xn--…'ｗ…-0dJd`, was the layer decoding
+    // punycode *before* UTS 46 mapping; `idna` round-trips that input
+    // perfectly, so the first arm below still fires on it. The false alarm,
+    // `xn--xn--aaaaaaax*-nlw`, is `idna` accepting an ACE label whose own
+    // `domain_to_unicode` it then refuses to re-encode — a backend that
+    // will not confirm its own output, which this layer is right to
+    // decline.
+    assert!(
+        ours.is_none(),
+        "the layer answered {ours:?} where `idna` answered {theirs:?} for {domain:?}: \
+         it may refuse, and it may never invent a different answer"
+    );
+
+    let (unicode, malformed) = idna::domain_to_unicode(&domain);
+    assert!(
+        malformed.is_err() || idna_says(&unicode).is_none(),
+        "the layer refused {domain:?} where `idna` answered {theirs:?}, and `idna` \
+         round-trips it — so the refusal is the layer's own and is a defect"
     );
 });

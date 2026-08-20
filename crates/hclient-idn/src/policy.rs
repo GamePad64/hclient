@@ -236,7 +236,22 @@ pub(crate) fn to_ascii_over(
         if nth > 0 {
             unicode.push('.');
         }
-        match label.strip_prefix(ACE_PREFIX) {
+        // **`is_ascii` first, and the order is UTS 46's rather than a
+        // guard.** §4 maps before it looks for an ACE label, so `xn--` is
+        // only meaningful on a label that mapping has already made ASCII.
+        // A label carrying a character that *maps* to ASCII — a fullwidth
+        // `ｗ`, say — is a valid ACE label after mapping and nonsense
+        // before it, and punycode is defined over ASCII, so decoding it
+        // here could only fail. This crate has no mapper of its own; the
+        // backend is the mapper, so such a label is pushed through
+        // untouched and the backend does the whole of §4 on it.
+        //
+        // Found by the fuzzer, on
+        // `xn--qqqqqqqqqqHJJJJJJ'ｗJJJJJJJJJJJi-0dJd`: this layer answered
+        // `None` where `idna` answered the ACE form. Substituting the
+        // mapped `w` by hand makes both answer the same string, which is
+        // what identified the ordering rather than the characters.
+        match label.strip_prefix(ACE_PREFIX).filter(|_| label.is_ascii()) {
             Some(payload) => {
                 let decoded = decode_punycode(payload)?;
                 // `is_ascii` is true of the empty string too, which is the
@@ -318,6 +333,51 @@ mod tests {
     /// difference from [`idna_says`] is the policy's own.
     fn over_idna(domain: &str) -> Option<String> {
         to_ascii_over(idna_says, domain)
+    }
+
+    /// **UTS 46 maps before it looks for an ACE label, and this layer used
+    /// to do it the other way round.**
+    ///
+    /// Found by `fuzz/fuzz_targets/idn_policy_vs_idna.rs`. The label
+    /// carries a fullwidth `ｗ`, which §4's mapping turns into an ASCII
+    /// `w`; only then is `xn--` meaningful and the payload decodable.
+    /// Decoding first meant handing punycode — which is defined over ASCII
+    /// — a non-ASCII payload, where it could only fail, so the layer
+    /// answered `None` for a name `idna` accepts.
+    ///
+    /// **It was invisible on Linux and would not have been on Windows.**
+    /// There `domain_to_ascii` *is* `idna`, so the shipped path agreed with
+    /// the oracle; the layer is what runs over ICU and Foundation. A host
+    /// contacted on one platform and refused on another is the one thing
+    /// this crate exists to prevent.
+    ///
+    /// The second row is the same name with the mapping done by hand, and
+    /// it is what identified the ordering rather than the characters: both
+    /// sides already agreed on it before the fix.
+    #[test]
+    fn an_ace_label_is_decoded_after_mapping_and_not_before() {
+        let mapped = "xn--qqqqqqqqqqHJJJJJJ'wJJJJJJJJJJJi-0dJd";
+        let raw = "xn--qqqqqqqqqqHJJJJJJ'\u{ff57}JJJJJJJJJJJi-0dJd";
+
+        assert_eq!(
+            over_idna(mapped),
+            idna_says(mapped),
+            "the hand-mapped form always agreed, which is why the characters were not the cause"
+        );
+        assert_eq!(
+            over_idna(raw),
+            idna_says(raw),
+            "and the unmapped form must now agree too — decoded after mapping, not before"
+        );
+        assert_eq!(
+            over_idna(raw),
+            over_idna(mapped),
+            "mapping is the backend's, so the two spellings must reach the same answer"
+        );
+        assert!(
+            over_idna(raw).is_some(),
+            "a check that both sides answer `None` would pass for the defect this pins"
+        );
     }
 
     /// Apple's Foundation, modelled from what `macos-latest` measured and

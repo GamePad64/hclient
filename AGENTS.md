@@ -2547,8 +2547,37 @@ the answer does not.
 
 Not caused by anything in the rename or the dependency bumps: the fuzzer
 simply had a different random walk than the 9,739-input corpus that found
-zero differences. Open, with the input recorded here so it cannot be lost
-with the CI log.
+zero differences.
+
+**Fixed, and the diagnosis is one line: UTS 46 maps before it looks for an
+ACE label, and this layer did it the other way round.** §4 maps first, so
+`xn--` is only meaningful on a label mapping has already made ASCII. The
+fullwidth `ｗ` maps to an ASCII `w`; decoding before that handed punycode —
+which is defined over ASCII — a non-ASCII payload, where it could only
+fail. The layer has no mapper of its own, so a label that is not yet ASCII
+is now pushed through untouched and the backend does the whole of §4 on it.
+What identified the *ordering* rather than the characters is that
+substituting the mapped `w` by hand made both sides answer the same string,
+before any change. `an_ace_label_is_decoded_after_mapping_and_not_before`
+pins it, checked in the failing direction.
+
+**The fuzzer then found a second disagreement that is not a defect, and
+narrowing the target is the more interesting half.** On
+`xn--xn--aaaaaaax*-nlw` the layer refuses and `idna` accepts — because
+`idna` accepts an ACE label whose own `domain_to_unicode` output it then
+**refuses to re-encode**. The layer verifies by round-tripping: it emits
+the backend's answer only once that answer re-encodes to the label it was
+given, so a backend that will not confirm its own output is one it is right
+to decline.
+
+So `assert_eq!` was the wrong contract — the layer was never transparent,
+it is *confirming* — and the target now asserts the real one: the layer may
+refuse where the backend does not, may **never** invent a different answer,
+and where it refuses, `idna` must fail its own round trip. That is narrower
+and still sharp: the ordering bug above is a case where `idna` round-trips
+perfectly, so the new assertion fires on it exactly as `assert_eq!` did.
+Checking that before narrowing is what makes this a contract rather than a
+silenced alarm.
 
 ### Two versions of `quinn-udp` coexist, and that is the seam paying out
 
