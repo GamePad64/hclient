@@ -9,6 +9,7 @@
 //! can't freeze a trait without having checked it against native, wasi:http,
 //! and fetch.
 
+pub mod erased;
 mod hooks;
 mod timer;
 mod transport;
