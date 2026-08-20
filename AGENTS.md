@@ -128,19 +128,42 @@ nothing. `fuzz-smoke` shares the missing `-e` and is unaffected: every
 cargo group there is chained with `&&` inside a subshell ending
 `|| exit 1`.
 
-**One mutation is applied by CI itself, on the only platform that can
-kill it.** `docs/v03-acceptance.md` recorded the single survivor of the
-UDP work — a hardcoded `ecn: true` is indistinguishable from the truth on
-a Linux kernel, where both answers are `true` — and named what would
-settle it: one run on macOS, where `quinn-udp`'s own backend documents
-`IP_RECVTOS` as unavailable on dual-stack sockets, so the honest answer
-is `false`. `just ecn-mutation-dies-on-macos` is that run, on every push:
-it applies the mutation and requires the test to **fail**. Every step
-fails closed, because a mutation harness that quietly stops mutating
-reports a kill for a test nobody changed — the same defect this file
-records for `test-doc` and `test-no-default`. On Linux the recipe reports
-the mutant surviving and exits non-zero, which is what makes the macOS
-pass mean anything.
+**One mutation was going to be applied by CI, and the job was withdrawn
+before it ever ran — this paragraph described it for weeks afterwards
+anyway.** `docs/v03-acceptance.md` recorded the single survivor of the UDP
+work: a hardcoded `ecn: true` is indistinguishable from the truth on a
+Linux kernel, where both answers are `true`, and what would settle it was
+said to be one run on macOS, where `quinn-udp` documents `IP_RECVTOS` as
+unavailable on dual-stack sockets. `just ecn-mutation-dies-on-macos` was
+written for that, with a CI step, and **both were deleted an hour later**
+(`8385039` added them, `eb4b973` removed them) because the premise was
+measured and was false.
+
+Probed on macOS 27 on a `[::]` socket: `only_v6()` is `Ok(false)`,
+`IPV6_RECVTCLASS` sets and reads back `true`, `IP_RECVTOS` fails `EINVAL`
+— the documented limitation is real — and the kernel reports the codepoint
+for v4-mapped traffic *regardless*, because `IPV6_RECVTCLASS` covers both
+families there. **So the mutant is not killable on any platform**, and a
+job requiring it to die would have failed on every push. The same run
+found that the test could never have run there at all: it sent to a
+wildcard `local_addr()`, which Linux reads as "this host" and macOS does
+not.
+
+What stands in its place is `a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_claims_to`
+in `hclient-rt-tokio/tests/udp.rs`, one-directional on purpose: only a
+`true` claim is a promise. And the finding that survives is about the code
+rather than the harness — `ecn_is_really_on` **under-reports on macOS**,
+asking for an option the kernel does not need, which is the safe direction
+and the floor rule this workspace applies everywhere.
+
+**The defect worth keeping is this paragraph's own.** The job was
+withdrawn in a commit that explains itself well; the prose describing it as
+a live check on every push was not updated, and was then cited again in the
+`quinn-udp` section below as *the other half, and it runs on CI*. A claim
+about a check is exactly as perishable as the check — which is the rule
+this file states three times over about `test-doc`, `test-no-default` and
+the rendered docs, met here from the fourth direction: **the check was
+right to disappear and the sentence about it was not.**
 
 Browser tests: those go through `wasm-pack test --headless
 --chrome|--firefox` regardless, see the `browser` job.
@@ -2553,8 +2576,12 @@ duplicate exists only in a workspace-wide all-features graph and never in
 any single crate's.
 
 What a Linux run cannot settle is whether the two agree about ECN on a
-platform where the answer differs; `ecn-mutation-dies-on-macos` is that
-half, and it runs on CI.
+platform where the answer differs. **There is no CI job for that**, and
+this sentence originally said there was — see the ECN paragraph above,
+where the job was withdrawn before it ever ran because the mutation is
+unkillable everywhere. What exists is `test (macos-latest)`, which runs
+the ordinary UDP suite on macOS, and that is what would catch a 0.6
+regression there.
 
 **Two more bumps came with it, and the refusal is the interesting one.**
 `embassy-executor` 0.10 renamed `arch-std` to `platform-std` and moved the
