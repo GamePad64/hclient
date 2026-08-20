@@ -433,7 +433,7 @@ fn a_caller_set_content_type_is_refused_in_either_order_and_nothing_is_sent() {
             let err = b.send().await.expect_err("a caller-set Content-Type");
             assert!(
                 std::error::Error::source(&err)
-                    .and_then(|s| s.downcast_ref::<hclient::ContentTypeIsNotOursToKeep>())
+                    .and_then(|s| s.downcast_ref::<hclient::error::ContentTypeIsNotOursToKeep>())
                     .is_some(),
                 "before = {before}: {err:?}"
             );

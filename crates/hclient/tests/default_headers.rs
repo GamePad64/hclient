@@ -111,7 +111,7 @@ fn a_default_travels_to_every_redirect_hop() {
 /// traffic its author may never look at again.
 #[test]
 fn a_forbidden_default_is_refused_at_build() {
-    let mut caps = hclient::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::none();
     caps.forbidden_request_headers = &[http::header::USER_AGENT];
     let err = Client::builder(MockTransport::new().with_capabilities(caps))
         .user_agent(http::HeaderValue::from_static("probe/1.0"))

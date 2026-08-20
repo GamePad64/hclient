@@ -25,7 +25,8 @@
 //! the native dev-dependencies below do not build.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient::{Client, ErrorKind, Phase, RequestBody};
+use hclient::error::Phase;
+use hclient::{Client, ErrorKind, RequestBody};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -358,8 +359,9 @@ fn a_425_teaches_the_jar_without_rewriting_the_replay() {
 
 #[cfg(feature = "test-util")]
 mod replayability {
+    use hclient::body::RetryKind;
     use hclient::mock::MockTransport;
-    use hclient::{Client, RequestBody, RetryKind};
+    use hclient::{Client, RequestBody};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

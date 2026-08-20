@@ -977,7 +977,7 @@ mod tests {
         let Capabilities {
             // ── gates: a `Client` setting the transport can refuse ──
             //
-            // Each of these has a branch in `hclient::check_supported` and
+            // Each of these has a branch in `hclient::caps::check_supported` and
             // a test naming the setting it refuses.
             redirects,
             response_decompression,

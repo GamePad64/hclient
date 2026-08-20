@@ -26,7 +26,8 @@
 
 #[cfg(not(target_family = "wasm"))]
 fn main() {
-    use hclient::{Client, RedirectPolicy};
+    use hclient::Client;
+    use hclient::redirect::RedirectPolicy;
     use hclient_core::{ErrorKind, TlsSupport, unversioned::Transport};
     use hclient_dns::IpLiteralOnly;
     use hclient_native::Native;

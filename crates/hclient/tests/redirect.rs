@@ -10,7 +10,8 @@
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
-use hclient::{Client, RedirectPolicy, RequestBody};
+use hclient::redirect::RedirectPolicy;
+use hclient::{Client, RequestBody};
 
 fn redirect_to(loc: &'static str) -> http::Response<&'static str> {
     http::Response::builder()
@@ -240,8 +241,8 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     // with `Capabilities::none()` now honestly rejects the `connect`
     // timeout, and this test is about carrying `extensions` across hops,
     // not about the gate.
-    let mut caps = hclient::Capabilities::none();
-    caps.timeouts = hclient::TimeoutSupport {
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         connect: true,
         first_byte: true,
@@ -352,8 +353,8 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
 /// non-browser backend reports (`wasi:http`), and it is the variant under
 /// which the new check must NOT fire.
 fn transparent_mock() -> MockTransport {
-    let mut caps = hclient::Capabilities::none();
-    caps.redirects = hclient::RedirectSupport::Transparent;
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.redirects = hclient::caps::RedirectSupport::Transparent;
     MockTransport::new().with_capabilities(caps)
 }
 
@@ -363,11 +364,11 @@ fn transparent_mock() -> MockTransport {
 /// reversed. Both wrappers are inert here: no client in this file sets a
 /// `total_timeout`, and the mock sends no `Content-Encoding`.
 ///
-/// Written through the `hclient::ClientBody` alias rather than spelled
+/// Written through the `hclient::body::ClientBody` alias rather than spelled
 /// out, so that the ORDER of the two wrappers lives in one place (see that
 /// alias's doc comment) instead of being restated by every test that names
 /// the type.
-type ClientBody = hclient::ClientBody<hclient::mock::MockBody, hclient::DefaultClock>;
+type ClientBody = hclient::body::ClientBody<hclient::mock::MockBody, hclient::DefaultClock>;
 
 fn get_from(c: &Client<MockTransport>) -> Result<http::Response<ClientBody>, hclient::Error> {
     let req = http::Request::builder()
@@ -512,8 +513,8 @@ fn without_a_per_request_policy_the_clients_limit_still_applies() {
 // and not only under `wasm-pack`.
 
 fn internal_mock() -> MockTransport {
-    let mut caps = hclient::Capabilities::none();
-    caps.redirects = hclient::RedirectSupport::Internal;
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.redirects = hclient::caps::RedirectSupport::Internal;
     MockTransport::new().with_capabilities(caps)
 }
 

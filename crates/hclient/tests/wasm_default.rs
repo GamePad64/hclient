@@ -31,7 +31,10 @@
     target_os = "unknown"
 ))]
 
-use hclient::{Capabilities, Client, RedirectPolicy, RedirectSupport};
+use hclient::Client;
+use hclient::caps::Capabilities;
+use hclient::caps::RedirectSupport;
+use hclient::redirect::RedirectPolicy;
 use std::time::Duration;
 use wasm_bindgen_test::*;
 
@@ -121,7 +124,7 @@ async fn client_news_own_config_passes_the_real_fetch_capabilities() {
         RedirectSupport::Internal,
         "the premise: this backend follows redirects itself"
     );
-    hclient::check_supported(client.config(), caps, "fetch")
+    hclient::caps::check_supported(client.config(), caps, "fetch")
         .expect("`Client::new()`'s own configuration must be supported by its own transport");
 }
 

@@ -21,7 +21,10 @@
 //! `Cargo.toml`.
 #![cfg(not(target_family = "wasm"))]
 
-use hclient::{Client, ErrorKind, Phase, RedirectPolicy, TotalTimeoutElapsed};
+use hclient::error::Phase;
+use hclient::error::TotalTimeoutElapsed;
+use hclient::redirect::RedirectPolicy;
+use hclient::{Client, ErrorKind};
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;

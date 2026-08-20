@@ -619,7 +619,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // than reading a clock on each frame, which is the only shape
             // that can cut a body that has gone completely silent (see
             // `idle.rs`'s module doc for the measurement, and
-            // `hclient::Deadline`'s for the same fact from the other end).
+            // `hclient::body::Deadline`'s for the same fact from the other end).
             //
             // Both are checked from outside the client, by servers that
             // send a head and then nothing and that stop mid-body:
@@ -2701,7 +2701,7 @@ where
 {
     /// The pooled body, with the `between_bytes` bound wrapped round it.
     ///
-    /// The order matters and is the mirror of `hclient::ClientBody`'s: the
+    /// The order matters and is the mirror of `hclient::body::ClientBody`'s: the
     /// idle bound is the **innermost** wrapper, next to the socket, so it
     /// measures the gap between reads on the wire. Outside it the client
     /// may add its own `Deadline` and decompression, neither of which can

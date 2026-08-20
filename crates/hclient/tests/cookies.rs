@@ -24,8 +24,9 @@
     not(target_family = "wasm")
 ))]
 
+use hclient::Client;
 use hclient::cookie::CookieJar;
-use hclient::{Client, UnsupportedCapability};
+use hclient::error::UnsupportedCapability;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
@@ -369,7 +370,7 @@ fn a_client_without_a_jar_reports_none() {
 fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
     use hclient::mock::MockTransport;
 
-    let mut caps = hclient::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::none();
     caps.owns_cookie_jar = true;
     let m = MockTransport::new().with_capabilities(caps);
 
@@ -414,7 +415,7 @@ fn the_same_jar_against_a_transport_that_keeps_none_builds() {
 fn no_jar_against_a_jar_owning_transport_is_fine() {
     use hclient::mock::MockTransport;
 
-    let mut caps = hclient::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::none();
     caps.owns_cookie_jar = true;
     let m = MockTransport::new().with_capabilities(caps);
 

@@ -19,7 +19,7 @@ use std::task::{Context, Poll};
 /// The source of an [`ErrorKind::Timeout`]`(`[`Phase::Total`]`)`.
 ///
 /// A named type rather than a string, for the same reason
-/// [`crate::InvalidBaseUrl`] is one: a caller has to be able to tell this
+/// [`crate::error::InvalidBaseUrl`] is one: a caller has to be able to tell this
 /// apart from any other timeout by
 /// `Error::source().downcast_ref::<TotalTimeoutElapsed>()`, and to read
 /// the bound that was actually in force.

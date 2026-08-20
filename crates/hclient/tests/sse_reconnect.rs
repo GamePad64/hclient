@@ -16,7 +16,9 @@
 #![cfg(feature = "test-util")]
 
 use hclient::mock::{MockTransport, TestTimer};
-use hclient::{Client, ErrorKind, SseEvent, SseOptions};
+use hclient::sse::SseEvent;
+use hclient::sse::SseOptions;
+use hclient::{Client, ErrorKind};
 use hclient_proto::backoff::Backoff;
 use std::time::Duration;
 

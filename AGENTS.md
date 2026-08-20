@@ -2692,6 +2692,43 @@ this file's rule about a check whose answers cannot differ, met one more
 time. With a `User-Agent` the controls separate: `reqwest` 200, a nonsense
 name 404.
 
+### The front page listed 73 items and twelve of them were for the caller
+
+`hclient`'s rendered index was one flat alphabetical list, so **`AnyList` —
+a type nobody writes — sat above `Client`**. Counted rather than eyeballed:
+73 entries, of which about twelve are what a caller reaches for. The rest
+divided into four groups that each wanted a door.
+
+- **14 error payloads**, reached only through `Error::source` — now
+  `error::`, with `Error` and `ErrorKind` kept at the root because they are
+  on every signature in the crate and a door in front of them is one every
+  caller walks through immediately.
+- **11 hooks types** re-exported from the core for a seam most callers never
+  touch — now `hooks::`.
+- **6 capability reports** — now `caps::`.
+- **5 response-body wrappers** that are public for one reason only: the
+  alias `ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>`
+  names them, and an alias cannot name a private type. Now `body::`, with
+  the alias, so the four wrappers sit beside the thing that needs them.
+
+Plus `sse::`, `redirect::` and `erased::` — the last for `AnyList` and
+`AnyStore`, which a caller meets only as `CookieJar<AnyList>`.
+
+**Nothing about a type changed. What changed is the path a reader types**,
+and rustdoc renders modules before items, so the page is now 16 names and
+12 doors. Free before the first publish and a major version after it, which
+is the same window the crate renames used.
+
+**Two orphaned `#[cfg]` attributes came out of the edit, and the second one
+is the instructive one.** Deleting a re-export left its attribute behind,
+where it silently attached to the *next* item: `#[cfg(feature = "charset")]`
+landed on `pub use response::{Collected, Response};`, so without that
+feature the two most-used types in the crate did not exist. `cargo check`
+with default features never saw it — `charset` is off by default, but
+`--all-features` is what the suite runs. **`test-no-default` is what
+caught it**, which is the recipe this file records as having once printed
+`error:` and exited zero. It earns its place here.
+
 ### `cargo add hclient` gave a client that would not compile
 
 The crate's own headline example — `Client::new()` — needed

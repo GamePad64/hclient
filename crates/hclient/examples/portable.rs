@@ -56,7 +56,8 @@
 //! `fetch` against `MockTransport`.
 
 use bytes::Bytes;
-use hclient::{Client, RedirectPolicy, RequestBody, Timeouts};
+use hclient::redirect::RedirectPolicy;
+use hclient::{Client, RequestBody, Timeouts};
 use hclient_core::unversioned::Transport;
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -157,7 +158,7 @@ impl StdError for ComponentError {}
 /// component split on it: a URL the caller mistyped is `invalid_args`,
 /// anything else is `internal`. `hclient` has no `ErrorKind` for that —
 /// a URL that does not parse comes back as `ErrorKind::Other` carrying
-/// `hclient::UriError` as its source (`config::effective_uri`) — so the
+/// `hclient::error::UriError` as its source (`config::effective_uri`) — so the
 /// same split is available, but through `source().is::<..>()` rather than
 /// through `kind()`. That is a downgrade in ergonomics, not in
 /// expressiveness, and it is recorded as such in the porting guide.
@@ -170,7 +171,9 @@ impl StdError for ComponentError {}
 /// exactly the split this function exists to make; matching the inner
 /// `InvalidUri` alone would have classified the other two as `internal`.
 fn classify(e: hclient::Error) -> ComponentError {
-    if e.source().is_some_and(|s| s.is::<hclient::UriError>()) {
+    if e.source()
+        .is_some_and(|s| s.is::<hclient::error::UriError>())
+    {
         ComponentError::InvalidArgs(e.to_string())
     } else {
         ComponentError::Internal(format!("HTTP error: {e}"))

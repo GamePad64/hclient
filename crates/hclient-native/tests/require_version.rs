@@ -38,7 +38,8 @@
 //! and `a_demand_for_http1_takes_h2_off_the_alpn_offer`), rather than
 //! copied here with a second copy of the stub.
 
-use hclient::{Client, RequireVersion, VersionNotAvailable};
+use hclient::error::VersionNotAvailable;
+use hclient::{Client, RequireVersion};
 use hclient_core::ErrorKind;
 use hclient_dns_system::SystemDns;
 use hclient_native::Native;

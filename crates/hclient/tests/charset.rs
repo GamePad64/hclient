@@ -10,8 +10,9 @@
     not(target_family = "wasm")
 ))]
 
+use hclient::Client;
+use hclient::error::CharsetError;
 use hclient::mock::MockTransport;
-use hclient::{CharsetError, Client};
 
 /// "Привет" in windows-1251. Not valid UTF-8 — `0xCF` opens a two-byte
 /// sequence and `0xF0` is not a continuation byte — which is what makes

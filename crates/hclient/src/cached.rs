@@ -6,7 +6,7 @@
 //! A cache hit has no transport body — there was no exchange — so
 //! `Client::run` cannot go on returning `http::Response<T::Body>`.
 //! [`Cached`] is the type that can be either, and it is the third of the
-//! three wrappers in [`crate::ClientBody`] for the same reason the other
+//! three wrappers in [`crate::body::ClientBody`] for the same reason the other
 //! two are always present: **a type cannot appear and disappear with a
 //! runtime value.** Without the `cache` feature its two extra fields are
 //! `#[cfg]`-ed away entirely, exactly as `decompress::Decoder`'s variants
@@ -60,7 +60,7 @@ use std::task::{Context, Poll};
 
 /// A response body that came off the wire, or out of the store.
 ///
-/// The third wrapper of [`crate::ClientBody`] — see this module's doc
+/// The third wrapper of [`crate::body::ClientBody`] — see this module's doc
 /// comment for why it is always present and what it costs when nothing is
 /// cached.
 #[derive(Debug)]
@@ -267,14 +267,15 @@ impl Recorder {
 /// which is what the sans-io shape of `hclient-cache` buys here.
 ///
 /// **The store is a caller's choice and is not a type parameter**, which
-/// is [`crate::AnyStore`]'s whole subject: `HttpCache<S>` here would put
+/// is [`crate::erased::AnyStore`]'s whole subject: `HttpCache<S>` here would put
 /// `S` on this type, on `Client`, and — because a recording body holds one
 /// — on the public `ClientBody` alias, whose arity is not something a
 /// feature nobody in a graph asked for should change. Erasing at the store
 /// leaves every arity fixed and every method of `HttpCache` reachable. The
 /// cookie jar's list is the same shape one field up, for the same reason.
 #[cfg(feature = "cache")]
-pub(crate) type Cache = std::sync::Arc<std::sync::Mutex<hclient_cache::HttpCache<crate::AnyStore>>>;
+pub(crate) type Cache =
+    std::sync::Arc<std::sync::Mutex<hclient_cache::HttpCache<crate::erased::AnyStore>>>;
 
 /// Locks the cache, recovering from poisoning rather than propagating it —
 /// see [`crate::Client::cache`] for why a poisoned cache is still a usable
@@ -282,7 +283,7 @@ pub(crate) type Cache = std::sync::Arc<std::sync::Mutex<hclient_cache::HttpCache
 #[cfg(feature = "cache")]
 pub(crate) fn lock(
     c: &Cache,
-) -> std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::AnyStore>> {
+) -> std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::erased::AnyStore>> {
     c.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

@@ -17,7 +17,7 @@
 //!
 //! `cached.rs` had already written down the first: a recording body holds
 //! a handle to the cache, so `S` on the cache is `S` on the public
-//! [`ClientBody`](crate::ClientBody) alias — **the arity of a public type
+//! [`ClientBody`](crate::body::ClientBody) alias — **the arity of a public type
 //! alias would change with a feature nobody in the graph asked for**, and
 //! Cargo unifies features, so no crate could rely on either arity.
 //!
@@ -47,7 +47,7 @@
 //!
 //! Both wrappers implement the seam they erase, so a `CookieJar<AnyList>`
 //! and an `HttpCache<AnyStore>` are ordinary jars and caches with their
-//! whole API — which is what lets [`Client::cookies`](crate::Client::
+//! whole API — which is what lets [`crate::ClientBuilder::cookie_jar`](crate::Client::
 //! cookies) and [`Client::cache`](crate::Client::cache) keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
 

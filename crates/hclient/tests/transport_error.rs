@@ -13,8 +13,9 @@
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`).
 #![cfg(feature = "test-util")]
 
+use hclient::error::Phase;
 use hclient::mock::MockTransport;
-use hclient::{Client, Error, ErrorKind, Phase};
+use hclient::{Client, Error, ErrorKind};
 
 #[derive(Debug)]
 struct Backend(&'static str);

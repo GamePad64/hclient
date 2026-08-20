@@ -52,8 +52,12 @@
     not(target_family = "wasm")
 ))]
 
+use hclient::Client;
+use hclient::body::Cached;
+use hclient::body::Deadline;
+use hclient::body::Decompressed;
+use hclient::body::Limited;
 use hclient::mock::{MockTransport, TestTimer};
-use hclient::{Cached, Client, Deadline, Decompressed, Limited};
 use std::time::Duration;
 
 /// The declaration the first half of this file exists for: a bare

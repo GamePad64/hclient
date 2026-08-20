@@ -11,12 +11,12 @@
 #[test]
 fn public_api_types_are_reachable_from_the_facade() {
     // `Config.redirect` has this type.
-    let _p: hclient::RedirectPolicy = hclient::RedirectPolicy::default();
+    let _p: hclient::redirect::RedirectPolicy = hclient::redirect::RedirectPolicy::default();
     // `check_supported` takes this and returns that.
-    let caps: hclient::Capabilities = hclient::Capabilities::none();
+    let caps: hclient::caps::Capabilities = hclient::caps::Capabilities::none();
     let cfg = hclient::Config::default();
-    let _: Result<(), hclient::UnsupportedCapability> =
-        hclient::check_supported(&cfg, &caps, "probe");
+    let _: Result<(), hclient::error::UnsupportedCapability> =
+        hclient::caps::check_supported(&cfg, &caps, "probe");
 }
 
 /// `Response`, `Collected`, and `RequestBuilder` (Task 13) had no
@@ -43,9 +43,9 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
 /// no constructor without a transport exists, so reachability and shape
 /// (generic arity) are checked by compiling a function that's never called.
 #[allow(dead_code)]
-fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::SseStream<B>) {
-    let _event: hclient::SseEvent = hclient::SseEvent::Comment(String::new());
-    let _limit: usize = hclient::DEFAULT_MAX_EVENT_SIZE;
+fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::sse::SseStream<B>) {
+    let _event: hclient::sse::SseEvent = hclient::sse::SseEvent::Comment(String::new());
+    let _limit: usize = hclient::sse::DEFAULT_MAX_EVENT_SIZE;
 }
 
 // ── Task 17 fix round 1 ─────────────────────────────────────────────────
@@ -73,7 +73,7 @@ fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
 
     fn probe() -> FacadeResult<()> {
         Err(hclient::Error::new(
-            hclient::ErrorKind::Timeout(hclient::Phase::Connect),
+            hclient::ErrorKind::Timeout(hclient::error::Phase::Connect),
             std::io::Error::other("probe"),
         ))
     }
@@ -84,7 +84,7 @@ fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
     // that's itself part of checking reachability from the facade, not
     // just compilation.
     match err.kind() {
-        hclient::ErrorKind::Timeout(phase) => assert_eq!(*phase, hclient::Phase::Connect),
+        hclient::ErrorKind::Timeout(phase) => assert_eq!(*phase, hclient::error::Phase::Connect),
         other => panic!("unexpected kind: {other:?}"),
     }
     assert!(err.is_timeout());
@@ -98,12 +98,15 @@ fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
 #[test]
 fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
     let full = hclient::RequestBody::Full(bytes::Bytes::from_static(b"x"));
-    assert_eq!(full.retry_kind(), hclient::RetryKind::Free);
+    assert_eq!(full.retry_kind(), hclient::body::RetryKind::Free);
 
-    let factory: hclient::RewindFactory =
+    let factory: hclient::body::RewindFactory =
         std::sync::Arc::new(|| hclient::RequestBody::Full(bytes::Bytes::from_static(b"y")));
     let rewindable = hclient::RequestBody::Rewindable(factory);
-    assert_eq!(rewindable.retry_kind(), hclient::RetryKind::ViaFactory);
+    assert_eq!(
+        rewindable.retry_kind(),
+        hclient::body::RetryKind::ViaFactory
+    );
     let replay = rewindable.rewind().expect("Rewindable always replays");
     assert!(matches!(replay, hclient::RequestBody::Full(ref b) if &b[..] == b"y"));
 }
@@ -132,7 +135,7 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 ///   distinguishable and the assertion can fail.
 /// - Nothing else reaches it through the facade. `DecompressionSupport`,
 ///   the other enum-typed capability re-exported here, is already named as
-///   `hclient::DecompressionSupport` by `tests/compression_capability.rs`,
+///   `hclient::caps::DecompressionSupport` by `tests/compression_capability.rs`,
 ///   so pointing this test at it would have duplicated a live guard and
 ///   left `EarlyDataSupport`'s re-export unexercised — `tests/too_early.rs`
 ///   reaches for `hclient_core::AllowEarlyData` directly rather than
@@ -155,19 +158,19 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 /// the assertion can still fail.
 #[test]
 fn capability_support_types_are_reachable_from_the_facade() {
-    let mut caps = hclient::Capabilities::none();
-    caps.redirects = hclient::RedirectSupport::Transparent;
-    caps.tls_config = hclient::TlsSupport::Full;
-    caps.early_data = hclient::EarlyDataSupport::Supported;
-    caps.timeouts = hclient::TimeoutSupport {
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.redirects = hclient::caps::RedirectSupport::Transparent;
+    caps.tls_config = hclient::caps::TlsSupport::Full;
+    caps.early_data = hclient::caps::EarlyDataSupport::Supported;
+    caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         connect: true,
         first_byte: true,
         between_bytes: false,
     };
-    assert_eq!(caps.redirects, hclient::RedirectSupport::Transparent);
-    assert_eq!(caps.tls_config, hclient::TlsSupport::Full);
-    assert_eq!(caps.early_data, hclient::EarlyDataSupport::Supported);
+    assert_eq!(caps.redirects, hclient::caps::RedirectSupport::Transparent);
+    assert_eq!(caps.tls_config, hclient::caps::TlsSupport::Full);
+    assert_eq!(caps.early_data, hclient::caps::EarlyDataSupport::Supported);
     assert!(caps.timeouts.connect && caps.timeouts.first_byte && !caps.timeouts.between_bytes);
 }
 
@@ -206,7 +209,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     // Different paths to the same type, both must be nameable.
     let recorded = client.transport().requests();
     assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].retry_kind, hclient::RetryKind::Free);
+    assert_eq!(recorded[0].retry_kind, hclient::body::RetryKind::Free);
 
     // `push_response_frames_then_error` is the only spot in `hclient`'s
     // public API where `Error` arrives as a PARAMETER, not a result. The
@@ -255,7 +258,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 #[cfg(feature = "test-util")]
 #[test]
 fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
-    let mut caps = hclient::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::none();
     caps.streaming_request_body = true;
     let m = hclient::mock::MockTransport::new().with_capabilities(caps);
     let client = hclient::Client::builder(m)
@@ -343,44 +346,45 @@ fn a_hook_can_be_written_against_the_facade_alone() {
         closed: std::cell::Cell<usize>,
     }
 
-    impl hclient::Hooks for Counts {
-        fn on(&self, event: hclient::Event<'_>) {
+    impl hclient::hooks::Hooks for Counts {
+        fn on(&self, event: hclient::hooks::Event<'_>) {
             let bump = |c: &std::cell::Cell<usize>| c.set(c.get() + 1);
             match event {
                 // Named through the facade like the rest: a caller writing
                 // a hook must not have to reach past `hclient` for one
                 // event out of five.
-                hclient::Event::Informational(e) => {
-                    let _: hclient::ConnectionId = e.id;
+                hclient::hooks::Event::Informational(e) => {
+                    let _: hclient::hooks::ConnectionId = e.id;
                     let _: http::StatusCode = e.status;
                     let _: &http::HeaderMap = e.headers;
                     bump(&self.informational);
                 }
-                hclient::Event::Connected(e) => {
+                hclient::hooks::Event::Connected(e) => {
                     // Every field a caller would log, named through the
                     // facade: an id, an address, a version, four durations.
-                    let _: hclient::ConnectionId = e.id;
+                    let _: hclient::hooks::ConnectionId = e.id;
                     let _: Option<std::net::SocketAddr> = e.remote;
                     let _: http::Version = e.version;
-                    let t: hclient::ConnectTiming = e.timing;
+                    let t: hclient::hooks::ConnectTiming = e.timing;
                     let _ = t.dns + t.tcp + t.tls.unwrap_or_default() + t.total;
                     bump(&self.connected);
                 }
-                hclient::Event::Reused(e) => {
+                hclient::hooks::Event::Reused(e) => {
                     let _: u64 = e.id.get();
                     bump(&self.reused);
                 }
-                hclient::Event::Head(e) => {
+                hclient::hooks::Event::Head(e) => {
                     let _: http::StatusCode = e.status;
                     let _: core::time::Duration = e.elapsed;
                     bump(&self.head);
                 }
-                hclient::Event::Closed(e) => {
+                hclient::hooks::Event::Closed(e) => {
                     match e.reason {
-                        hclient::CloseReason::Ended | hclient::CloseReason::Stale => {}
+                        hclient::hooks::CloseReason::Ended | hclient::hooks::CloseReason::Stale => {
+                        }
                         // The error is the caller's to inspect, so the
                         // facade has to reach `ErrorKind` from here too.
-                        hclient::CloseReason::Failed(err) => {
+                        hclient::hooks::CloseReason::Failed(err) => {
                             let _: &hclient::ErrorKind = err.kind();
                         }
                     }
@@ -394,15 +398,15 @@ fn a_hook_can_be_written_against_the_facade_alone() {
     // an `Event` a consumer cannot build is one they cannot test against
     // either, and `Closed` is the variant with a lifetime in it.
     let counts = Counts::default();
-    hclient::Hooks::on(
+    hclient::hooks::Hooks::on(
         &counts,
-        hclient::Event::Closed(hclient::Closed {
-            id: hclient::ConnectionId::UNWATCHED,
-            reason: hclient::CloseReason::Ended,
+        hclient::hooks::Event::Closed(hclient::hooks::Closed {
+            id: hclient::hooks::ConnectionId::UNWATCHED,
+            reason: hclient::hooks::CloseReason::Ended,
         }),
     );
     assert_eq!(counts.closed.get(), 1);
 
     // And the hook a caller who wants nothing gets.
-    let _: hclient::NoHooks = hclient::NoHooks;
+    let _: hclient::hooks::NoHooks = hclient::hooks::NoHooks;
 }

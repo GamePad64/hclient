@@ -174,8 +174,8 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     use hclient_core::Timeouts;
     use std::time::Duration;
 
-    let mut caps = hclient::Capabilities::none();
-    caps.timeouts = hclient::TimeoutSupport {
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         connect: true,
         first_byte: true,

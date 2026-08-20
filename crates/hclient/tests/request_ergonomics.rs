@@ -205,7 +205,7 @@ fn a_colon_in_the_username_is_a_build_error_and_nothing_is_sent() {
             .expect_err("a username with a colon is not representable");
         assert!(
             std::error::Error::source(&err)
-                .and_then(|s| s.downcast_ref::<hclient::ColonInUsername>())
+                .and_then(|s| s.downcast_ref::<hclient::error::ColonInUsername>())
                 .is_some(),
             "and it must be the typed refusal: {err:?}"
         );

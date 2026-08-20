@@ -33,10 +33,10 @@
 //! builds and runs everywhere the crate does, including the browser job.
 #![cfg(feature = "test-util")]
 
+use hclient::caps::Capabilities;
+use hclient::error::UnsupportedCapability;
 use hclient::mock::MockTransport;
-use hclient::{
-    Capabilities, Client, ErrorKind, RequestBody, RequireVersion, UnsupportedCapability,
-};
+use hclient::{Client, ErrorKind, RequestBody, RequireVersion};
 
 /// A backend differing from `Capabilities::none()` in exactly one field.
 fn caps(version_select: bool) -> Capabilities {

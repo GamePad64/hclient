@@ -7,8 +7,9 @@
 //! gzip stream expanding to a megabyte is stopped by a 1 KiB limit.
 #![cfg(all(feature = "test-util", not(target_family = "wasm")))]
 
+use hclient::Client;
+use hclient::error::ResponseTooLarge;
 use hclient::mock::MockTransport;
-use hclient::{Client, ResponseTooLarge};
 
 fn drain(c: &Client<MockTransport>) -> Result<usize, hclient_core::Error> {
     futures_executor::block_on(async {

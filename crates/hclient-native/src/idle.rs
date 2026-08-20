@@ -4,7 +4,7 @@
 //!
 //! # Why this cannot be done by checking elapsed time
 //!
-//! It is the same measurement `hclient::Deadline`'s doc comment records,
+//! It is the same measurement `hclient::body::Deadline`'s doc comment records,
 //! from the other end. A wrapper that checks the clock on each
 //! `poll_frame` can only fire when something polls it, and nothing polls a
 //! body whose server has gone completely silent: the inner body returns
@@ -59,7 +59,7 @@ use std::time::Duration;
 /// The source of an [`ErrorKind::Timeout`]`(`[`Phase::BetweenBytes`]`)`.
 ///
 /// A named type rather than a string, for the same reason
-/// `hclient::TotalTimeoutElapsed` is one: a caller must be able to tell
+/// `hclient::error::TotalTimeoutElapsed` is one: a caller must be able to tell
 /// this apart from any other timeout with
 /// `Error::source().downcast_ref()`, and to read the bound that was
 /// actually in force rather than parse it out of a message.
@@ -128,7 +128,7 @@ impl<B, Tm: Timer> IdleTimeout<B, Tm> {
 }
 
 /// `Unpin` whenever the wrapped body is, stated rather than inferred — the
-/// same reasoning, in the same words, as `hclient::Deadline`'s: the
+/// same reasoning, in the same words, as `hclient::body::Deadline`'s: the
 /// derivation would also demand it of the clock, which [`Timer`] does not
 /// require, and a clock with a `!Unpin` field would make every response
 /// body `!Unpin` and lock `Response::chunk` and `SseStream` out of it.
@@ -137,7 +137,7 @@ impl<B, Tm: Timer> IdleTimeout<B, Tm> {
 /// its own, and the sleep, which is behind its own `Pin<Box<_>>`.
 impl<B: Unpin, Tm: Timer> Unpin for IdleTimeout<B, Tm> {}
 
-/// Hand-written for the reason `hclient::Deadline`'s is: `#[derive(Debug)]`
+/// Hand-written for the reason `hclient::body::Deadline`'s is: `#[derive(Debug)]`
 /// would demand `Debug` of the clock, which [`Timer`] does not ask for.
 impl<B: std::fmt::Debug, Tm: Timer> std::fmt::Debug for IdleTimeout<B, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,7 +167,7 @@ where
         let Some(inner) = this.inner.as_mut() else {
             // Already fired. The gap has not become un-elapsed, so saying
             // so again is the honest answer — the same choice, for the
-            // same reason, as `hclient::Deadline`'s.
+            // same reason, as `hclient::body::Deadline`'s.
             return Poll::Ready(Some(Err(this.elapsed())));
         };
 

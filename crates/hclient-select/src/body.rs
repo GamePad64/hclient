@@ -11,7 +11,7 @@
 //! finding (a backend's whole classification discarded one seam up) with
 //! the body in place of the head.
 //!
-//! The bound also would not hold: `hclient::Deadline` requires `B::Error:
+//! The bound also would not hold: `hclient::body::Deadline` requires `B::Error:
 //! std::error::Error`, and `Box<dyn Error + Send + Sync>` does not
 //! implement `Error`, so a client built over this transport would not
 //! compile.
@@ -21,7 +21,7 @@
 //! Projecting a `Pin<&mut Self>` into one of two variants needs either
 //! `unsafe` (which this workspace forbids by declaration) or a
 //! pin-projection macro. Neither is needed: both member bodies are `Unpin`
-//! already — `hclient::Deadline` requires it of any body a `Client` wraps,
+//! already — `hclient::body::Deadline` requires it of any body a `Client` wraps,
 //! so a body that were not `Unpin` could not reach a caller through this
 //! library at all — and with `Self: Unpin` the projection is
 //! `Pin::new(&mut …)`.

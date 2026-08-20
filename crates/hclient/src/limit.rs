@@ -53,7 +53,7 @@ pub struct ResponseTooLarge {
 
 /// Stops a response body at a byte ceiling.
 ///
-/// Inert with no limit set, in the shape [`crate::Deadline`] already uses:
+/// Inert with no limit set, in the shape [`crate::body::Deadline`] already uses:
 /// the type is always present, because a type cannot appear and disappear
 /// with a runtime value, and the cost of that is one `Option` test per
 /// frame.

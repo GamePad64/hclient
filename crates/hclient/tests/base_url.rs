@@ -17,12 +17,13 @@
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`).
 #![cfg(feature = "test-util")]
 
+use hclient::error::InvalidBaseUrl;
 use hclient::mock::MockTransport;
-use hclient::{Client, ErrorKind, InvalidBaseUrl, RequestBody};
+use hclient::{Client, ErrorKind, RequestBody};
 // Only the feature-off test names this type; importing it
 // unconditionally would be an unused import in a default build.
 #[cfg(not(feature = "idn"))]
-use hclient::UriError;
+use hclient::error::UriError;
 
 fn client_with_base(base: &str) -> Client<MockTransport> {
     let m = MockTransport::new();

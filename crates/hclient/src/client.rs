@@ -28,7 +28,7 @@ pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
     /// bit that says one was asked for — see `Config::cookies` for why the
     /// two halves live apart.
     #[cfg(feature = "cookies")]
-    jar: Option<hclient_cookie::CookieJar<crate::AnyList>>,
+    jar: Option<hclient_cookie::CookieJar<crate::erased::AnyList>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -87,12 +87,13 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// closure is handed the hop **as it would go out** — the resolved
     /// target, the possibly-downgraded method, and whether credentials are
     /// about to be stripped — and answers with a
-    /// [`RedirectVerdict`](crate::RedirectVerdict).
+    /// [`RedirectVerdict`](crate::predicate::RedirectVerdict).
     ///
     /// ```no_run
-    /// # use hclient::{Client, RedirectVerdict};
+    /// # use hclient::{Client};
+    /// # use hclient::redirect::RedirectVerdict;
     /// # use hclient_core::unversioned::Transport;
-    /// # fn f(t: impl Transport<Error = hclient::Error>) -> Result<(), hclient::UnsupportedCapability> {
+    /// # fn f(t: impl Transport<Error = hclient::Error>) -> Result<(), hclient::error::UnsupportedCapability> {
     /// let client = Client::builder(t)
     ///     .redirect_predicate(|hop| match hop.to().scheme_str() {
     ///         Some("https") => RedirectVerdict::Follow,
@@ -108,8 +109,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// It is consulted **after** the policy, only about hops the policy
     /// already approved, and never for a `3xx` that was not going to be
     /// followed anyway — so switching it on cannot make a chain longer.
-    /// [`crate::ProposedRedirect`] has what it sees and
-    /// [`crate::RedirectPredicate`] the `Send + Sync` this asks of it.
+    /// [`crate::predicate::ProposedRedirect`] has what it sees and
+    /// [`crate::predicate::RedirectPredicate`] the `Send + Sync` this asks of it.
     ///
     /// **Against a transport that follows redirects itself this is an
     /// error at [`build`](Self::build)** — `hclient-fetch`, where the
@@ -126,9 +127,12 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// sent, which is a property of the client.
     pub fn redirect_predicate<F>(mut self, f: F) -> Self
     where
-        F: Fn(&crate::ProposedRedirect<'_>) -> crate::RedirectVerdict + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        F: Fn(&crate::predicate::ProposedRedirect<'_>) -> crate::predicate::RedirectVerdict
+            + Send
+            + Sync
+            + 'static, // send-bound-exception: amendment-C12
     {
-        self.config.redirect_predicate = Some(crate::RedirectPredicate::new(f));
+        self.config.redirect_predicate = Some(crate::predicate::RedirectPredicate::new(f));
         self
     }
     /// Default timeouts for every request from this client.
@@ -144,12 +148,12 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     }
 
     /// Stop a response body after `bytes`, with a typed
-    /// [`ResponseTooLarge`](crate::ResponseTooLarge).
+    /// [`ResponseTooLarge`](crate::error::ResponseTooLarge).
     ///
     /// **It counts what the caller receives**, after any
     /// `Content-Encoding` is reversed, which is the axis a decompression
     /// bomb lives on — a limit applied to the wire would pass one by
-    /// definition. `crate::Limited`'s module doc has the full argument,
+    /// definition. `crate::limit::Limited`'s module doc has the full argument,
     /// including the cost: a bound of N does not promise that fewer than
     /// N bytes crossed the wire.
     ///
@@ -263,8 +267,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// operation, and would restart its clock on each one.
     ///
     /// What expiry produces is `ErrorKind::Timeout(Phase::Total)` with a
-    /// [`crate::TotalTimeoutElapsed`] source, and it stops the exchange
-    /// rather than only reporting on it — see [`crate::Deadline`], which
+    /// [`crate::error::TotalTimeoutElapsed`] source, and it stops the exchange
+    /// rather than only reporting on it — see [`crate::body::Deadline`], which
     /// also states exactly what this does NOT cover (a body that goes
     /// completely silent after the head; that is `between_bytes`).
     ///
@@ -283,7 +287,7 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// [`Client::total_timeout`].
     ///
     /// `Tm2: Clone` because the clock travels into every response body
-    /// this client produces ([`crate::Deadline`] owns one); every clock in
+    /// this client produces ([`crate::body::Deadline`] owns one); every clock in
     /// this workspace is a handle or a ZST, and `tests/two_runtimes.rs`
     /// already bounds runtimes by `Clone` for the same reason.
     pub fn total_timeout<Tm2: Timer + Clone>(
@@ -354,7 +358,7 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// browser's own.
     ///
     /// **The list is the caller's**, and is erased on the way in — see
-    /// [`AnyList`](crate::AnyList) for why that rather than a type
+    /// [`AnyList`](crate::erased::AnyList) for why that rather than a type
     /// parameter on `Client`, and for the one `Send` bound it costs.
     /// `CookieJar::new()` is still the plain form; `CookieJar::
     /// with_public_suffix_list(NoList)` is what drops the compiled-in
@@ -365,7 +369,7 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
         P: hclient_cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
     {
         self.config.cookies = true;
-        self.jar = Some(jar.map_suffixes(crate::AnyList::new));
+        self.jar = Some(jar.map_suffixes(crate::erased::AnyList::new));
         self
     }
 
@@ -433,7 +437,7 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     ///   which now may consist of no I/O at all.
     ///
     /// **The store is the caller's**, and is erased on the way in — see
-    /// [`AnyStore`](crate::AnyStore). `HttpCache::new()` is still the plain
+    /// [`AnyStore`](crate::erased::AnyStore). `HttpCache::new()` is still the plain
     /// form; `HttpCache::with_store(..)` is how a disk-backed or shared
     /// store gets here.
     #[cfg(feature = "cache")]
@@ -443,7 +447,7 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     {
         self.config.cache = true;
         self.cache = Some(std::sync::Arc::new(std::sync::Mutex::new(
-            cache.map_store(crate::AnyStore::new),
+            cache.map_store(crate::erased::AnyStore::new),
         )));
         self
     }
@@ -549,7 +553,7 @@ struct Inner<T, Tm> {
     /// functions of the jar, the URI and a `now`, which is what the
     /// sans-io shape of `hclient-cookie` buys here.
     #[cfg(feature = "cookies")]
-    cookies: Option<std::sync::Mutex<hclient_cookie::CookieJar<crate::AnyList>>>,
+    cookies: Option<std::sync::Mutex<hclient_cookie::CookieJar<crate::erased::AnyList>>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -634,7 +638,7 @@ impl<T: Transport> Client<T, crate::DefaultClock> {
 
 /// `Tm: Timer + Clone` — `Timer` because [`Self::execute`] measures with
 /// it, `Clone` because the clock travels into every response body
-/// ([`crate::Deadline`] owns one). Both hold for every clock in this
+/// ([`crate::body::Deadline`] owns one). Both hold for every clock in this
 /// workspace, and for [`crate::NoClock`].
 impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     pub fn transport(&self) -> &T {
@@ -682,7 +686,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     #[cfg(feature = "cookies")]
     pub fn cookies(
         &self,
-    ) -> Option<std::sync::MutexGuard<'_, hclient_cookie::CookieJar<crate::AnyList>>> {
+    ) -> Option<std::sync::MutexGuard<'_, hclient_cookie::CookieJar<crate::erased::AnyList>>> {
         Some(lock(self.inner.cookies.as_ref()?))
     }
 
@@ -710,7 +714,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     #[cfg(feature = "cache")]
     pub fn cache(
         &self,
-    ) -> Option<std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::AnyStore>>> {
+    ) -> Option<std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::erased::AnyStore>>> {
         Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 
@@ -762,10 +766,10 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
 
     /// Starts an SSE request. **On its own, `.connect()` is one-shot** —
     /// a single attempt, no reconnect, the same contract as
-    /// [`crate::SseStream::new`] (which is still the right call for a
+    /// [`crate::sse::SseStream::new`] (which is still the right call for a
     /// response you already have in hand, with no `Client` involved at
-    /// all). Add [`crate::SseBuilder::with_timer`] before `.connect()` to
-    /// get a [`crate::ReconnectingSseStream`] instead — that call is the
+    /// all). Add [`crate::sse::SseBuilder::with_timer`] before `.connect()` to
+    /// get a [`crate::sse::ReconnectingSseStream`] instead — that call is the
     /// actual gate between the two behaviors, not this method or any
     /// option on it.
     pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T, Tm> {
@@ -791,7 +795,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<crate::ClientBody<T::Body, Tm>>, Error>
+    ) -> Result<http::Response<crate::body::ClientBody<T::Body, Tm>>, Error>
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -815,7 +819,13 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         mut req: http::Request<RequestBody>,
         #[cfg(feature = "digest-auth")] digest: Option<(String, String)>,
-    ) -> Result<(http::Response<crate::ClientBody<T::Body, Tm>>, http::Uri), Error>
+    ) -> Result<
+        (
+            http::Response<crate::body::ClientBody<T::Body, Tm>>,
+            http::Uri,
+        ),
+        Error,
+    >
     where
         T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
@@ -901,7 +911,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         Ok((
             http::Response::from_parts(
                 parts,
-                crate::Limited::new(
+                crate::limit::Limited::new(
                     Decompressed::new(body, decoder),
                     self.config().response_limit,
                 ),
@@ -1318,7 +1328,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                     // removing credentials cannot disagree about what an
                     // origin is.
                     if let Some(pred) = &self.config().redirect_predicate {
-                        let hop = crate::ProposedRedirect::new(
+                        let hop = crate::predicate::ProposedRedirect::new(
                             &hp.uri,
                             &f.uri,
                             resp.status(),
@@ -1327,12 +1337,12 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                             hops,
                         );
                         match pred.ask(&hop) {
-                            crate::RedirectVerdict::Follow => {}
-                            crate::RedirectVerdict::Stop => return Ok((resp, hp.uri)),
-                            crate::RedirectVerdict::Refuse => {
+                            crate::predicate::RedirectVerdict::Follow => {}
+                            crate::predicate::RedirectVerdict::Stop => return Ok((resp, hp.uri)),
+                            crate::predicate::RedirectVerdict::Refuse => {
                                 return Err(Error::new(
                                     ErrorKind::Redirect,
-                                    crate::RedirectRefused {
+                                    crate::predicate::RedirectRefused {
                                         to: f.uri.clone(),
                                         status: resp.status(),
                                     },

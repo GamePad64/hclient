@@ -2,8 +2,9 @@
 //! one.
 #![cfg(all(feature = "test-util", not(target_family = "wasm")))]
 
+use hclient::Client;
+use hclient::error::UnexpectedStatus;
 use hclient::mock::MockTransport;
-use hclient::{Client, UnexpectedStatus};
 
 fn answering(status: u16) -> Client<MockTransport> {
     let t = MockTransport::new();
@@ -17,7 +18,7 @@ fn answering(status: u16) -> Client<MockTransport> {
     Client::builder(t)
         // So a `3xx` reaches the caller rather than being followed, which
         // is the state the `3xx` assertion below is about.
-        .redirect(hclient::RedirectPolicy::None)
+        .redirect(hclient::redirect::RedirectPolicy::None)
         .build()
         .expect("build")
 }

@@ -7,8 +7,10 @@
 //! something outside the client is counting.
 #![cfg(all(feature = "test-util", not(target_family = "wasm")))]
 
+use hclient::Client;
+use hclient::error::RedirectRefused;
 use hclient::mock::MockTransport;
-use hclient::{Client, RedirectRefused, RedirectVerdict};
+use hclient::redirect::RedirectVerdict;
 use std::sync::{Arc, Mutex};
 
 /// A transport that answers `302` to `next` and then `200`.
@@ -251,7 +253,7 @@ fn the_policy_decides_before_the_predicate_and_cannot_be_overruled() {
     let asked = Arc::new(Mutex::new(0usize));
     let rec = Arc::clone(&asked);
     let c = Client::builder(hop_to("https://a.test/two"))
-        .redirect(hclient::RedirectPolicy::None)
+        .redirect(hclient::redirect::RedirectPolicy::None)
         .redirect_predicate(move |_| {
             *rec.lock().unwrap() += 1;
             RedirectVerdict::Follow
@@ -268,7 +270,7 @@ fn the_policy_decides_before_the_predicate_and_cannot_be_overruled() {
 /// `redirect_policy`.
 #[test]
 fn a_predicate_against_an_internally_redirecting_backend_is_refused() {
-    let mut caps = hclient::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::none();
     caps.redirects = hclient_core::RedirectSupport::Internal;
     let err = Client::builder(MockTransport::new().with_capabilities(caps))
         .redirect_predicate(|_| RedirectVerdict::Follow)

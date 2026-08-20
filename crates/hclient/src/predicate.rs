@@ -178,7 +178,7 @@ impl RedirectPredicate {
     }
 }
 
-/// Hand-written, for [`crate::AnyList`]'s reason one module over: a trait
+/// Hand-written, for [`crate::erased::AnyList`]'s reason one module over: a trait
 /// object has no `Debug`, and there is nothing honest to print about a
 /// closure anyway.
 impl std::fmt::Debug for RedirectPredicate {

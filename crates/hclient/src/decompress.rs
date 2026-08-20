@@ -15,12 +15,12 @@
 //! # The order of the two wrappers, and why it is this way round
 //!
 //! `Client::execute` hands back
-//! [`Decompressed`]`<`[`Deadline`](crate::Deadline)`<T::Body, Tm>>` — the
+//! [`Decompressed`]`<`[`Deadline`](crate::body::Deadline)`<T::Body, Tm>>` — the
 //! deadline INSIDE, wrapped directly around the transport's own body, and
 //! the decoder outside it. Reversed, the bound would be walked around by
 //! the very traffic it exists to bound.
 //!
-//! [`Deadline`](crate::Deadline) is checked on every poll of itself (it
+//! [`Deadline`](crate::body::Deadline) is checked on every poll of itself (it
 //! holds no sleep of its own — see its doc comment for why it cannot).
 //! With the decoder INSIDE the deadline, one `Deadline::poll_frame` can
 //! turn into an unbounded number of polls of the socket: the decoder's
@@ -108,7 +108,7 @@
 //! only then `DecoderScratch::new(window_size)`), so a rejected frame
 //! costs nothing.
 //!
-//! **[`crate::Limited`] cannot stand in for this**, which is why the
+//! **[`crate::limit::Limited`] cannot stand in for this**, which is why the
 //! number is here at all: it counts bytes yielded to the caller, and a
 //! window is one allocation made before the first byte is yielded. Two
 //! further facts, both measured by reading `ruzstd` 0.9:
@@ -122,7 +122,7 @@
 //! - While a frame is unfinished the decoder must RETAIN `Window_Size`
 //!   decoded bytes to resolve back-references, so up to 8 MB of
 //!   plaintext can be held before any of it is handed over, whatever
-//!   [`crate::Limited`] was set to. That is the cost of the coding, not
+//!   [`crate::limit::Limited`] was set to. That is the cost of the coding, not
 //!   of this wrapper.
 //!
 //! # What is NOT here
@@ -433,8 +433,8 @@ pub(crate) fn decoder_for(parts: &mut http::response::Parts, allowed: Decoders) 
 
 /// The response body did not decode as its `Content-Encoding` promised.
 ///
-/// `pub` and re-exported for the same reason [`crate::TotalTimeoutElapsed`]
-/// and [`crate::InvalidBaseUrl`] are: a caller has to be able to tell this
+/// `pub` and re-exported for the same reason [`crate::error::TotalTimeoutElapsed`]
+/// and [`crate::error::InvalidBaseUrl`] are: a caller has to be able to tell this
 /// apart from every other `ErrorKind::Decode` — a body that is not valid
 /// gzip is a different problem from a body that is not valid UTF-8 — and
 /// `Error::source().downcast_ref::<DecodeFailed>()` is the way.
@@ -806,7 +806,7 @@ impl DeflateStream {
 ///
 /// It is the only bound that can be placed on this coding's memory, since
 /// the window is allocated before a byte is yielded and
-/// [`crate::Limited`] counts bytes yielded. See the module doc.
+/// [`crate::limit::Limited`] counts bytes yielded. See the module doc.
 #[cfg(feature = "zstd")]
 const ZSTD_MAX_WINDOW: u64 = 8 * 1024 * 1024;
 
@@ -1021,7 +1021,7 @@ const ZSTD_MAX_FRAME_HEADER: usize = 18;
 /// The response body with its `Content-Encoding` reversed.
 ///
 /// Always in the type, whether or not anything is being decoded — the same
-/// decision [`crate::Deadline`] documents, and for the same reason: a type
+/// decision [`crate::body::Deadline`] documents, and for the same reason: a type
 /// cannot appear and disappear with a runtime value. When there is nothing
 /// to decode the cost is one enum test per frame and every call is
 /// forwarded unchanged.
@@ -1056,7 +1056,7 @@ impl<B> Decompressed<B> {
     }
 
     /// The body underneath. For a response out of [`crate::Client`] that
-    /// is the [`crate::Deadline`] wrapper, whose own accessors report on
+    /// is the [`crate::body::Deadline`] wrapper, whose own accessors report on
     /// the whole-operation bound — which is how a caller reaches
     /// `total_timeout()`/`is_expired()` through this one.
     pub fn get_ref(&self) -> &B {
@@ -1085,7 +1085,7 @@ impl<B> Decompressed<B> {
     }
 }
 
-/// Hand-written for the same reason [`crate::Deadline`]'s is: the derive
+/// Hand-written for the same reason [`crate::body::Deadline`]'s is: the derive
 /// would demand `Debug` of things that do not need it, and the decoder's
 /// window is not worth printing.
 impl<B: std::fmt::Debug> std::fmt::Debug for Decompressed<B> {

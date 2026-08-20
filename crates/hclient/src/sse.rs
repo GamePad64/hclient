@@ -4,8 +4,11 @@ use crate::response::Response;
 use bytes::Bytes;
 use hclient_core::unversioned::{Timer, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody};
-use hclient_proto::backoff::Backoff;
-use hclient_proto::sse::{SseDecoder, SseEvent};
+// Re-exported rather than merely imported, so the whole of SSE is behind
+// one door: `hclient::sse::{SseStream, SseEvent, Backoff, ..}`.
+pub use hclient_proto::backoff::Backoff;
+use hclient_proto::sse::SseDecoder;
+pub use hclient_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
 use http_body::Body as HttpBody;
 use std::time::Duration;
 
@@ -381,7 +384,7 @@ impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
     /// A single connection attempt, exactly [`SseStream::new`]'s contract —
     /// no reconnect, because there is no timer to wait out a backoff delay
     /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
-    pub async fn connect(self) -> Result<SseStream<crate::ClientBody<T::Body, C>>, Error>
+    pub async fn connect(self) -> Result<SseStream<crate::body::ClientBody<T::Body, C>>, Error>
     where
         T::Body: HttpBody<Data = Bytes> + Unpin,
         <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
@@ -475,7 +478,7 @@ async fn open<T, C>(
     url: &str,
     last_event_id: Option<&str>,
     max_event_size: usize,
-) -> Result<SseStream<crate::ClientBody<T::Body, C>>, Error>
+) -> Result<SseStream<crate::body::ClientBody<T::Body, C>>, Error>
 where
     T: Transport,
     C: Timer + Clone,
@@ -703,7 +706,7 @@ pub struct ReconnectingSseStream<'a, T: Transport, C: Timer, Tm> {
     /// The most recently seen server `retry:` value, if any — see `next`'s
     /// doc comment for how it interacts with `options.backoff`.
     server_retry: Option<Duration>,
-    state: ReconnectState<crate::ClientBody<T::Body, C>>,
+    state: ReconnectState<crate::body::ClientBody<T::Body, C>>,
 }
 
 impl<'a, T, C, Tm> ReconnectingSseStream<'a, T, C, Tm>

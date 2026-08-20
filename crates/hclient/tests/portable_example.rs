@@ -26,8 +26,11 @@
 #[allow(dead_code)]
 mod portable;
 
+use hclient::caps::Capabilities;
+use hclient::caps::RedirectSupport;
+use hclient::caps::TimeoutSupport;
 use hclient::mock::MockTransport;
-use hclient::{Capabilities, Client, Error, ErrorKind, RedirectSupport, TimeoutSupport, Timeouts};
+use hclient::{Client, Error, ErrorKind, Timeouts};
 use portable::{Body, ComponentError, ContentSink, FetchArgs, fetch};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -406,7 +409,7 @@ fn limited_zero_still_errors_and_is_not_the_same_as_none() {
     );
 
     let c = Client::builder(m)
-        .redirect(hclient::RedirectPolicy::Limited(0))
+        .redirect(hclient::redirect::RedirectPolicy::Limited(0))
         .build()
         .unwrap();
     let err = futures_executor::block_on(c.get("https://a/first").send())
@@ -524,7 +527,7 @@ fn a_non_json_body_gets_no_content_type_and_the_callers_headers_go_out() {
 
 /// `wasi-fetch` had `Error::Url(String)`, and the component mapped exactly
 /// that variant to `ActError::invalid_args`. `hclient` reports an
-/// unparseable URL as `ErrorKind::Other` carrying `hclient::UriError`, so
+/// unparseable URL as `ErrorKind::Other` carrying `hclient::error::UriError`, so
 /// the split survives — through `source().is::<..>()` rather than through
 /// `kind()`.
 ///

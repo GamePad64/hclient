@@ -11,7 +11,7 @@ use hclient_proto::redirect::RedirectPolicy;
 pub struct Config {
     pub timeouts: Timeouts,
     /// A ceiling on the bytes a response body may yield, or `None` for
-    /// none — see [`crate::Limited`], which is where the *which bytes*
+    /// none — see [`crate::limit::Limited`], which is where the *which bytes*
     /// question is answered.
     ///
     /// `None` by default, and that is the decision rather than an
@@ -42,7 +42,7 @@ pub struct Config {
     /// already approved, which is why it is here and not a variant of
     /// [`RedirectPolicy`] — see `crate::predicate` for that argument and
     /// for the `Send + Sync` bound it costs.
-    pub redirect_predicate: Option<crate::RedirectPredicate>,
+    pub redirect_predicate: Option<crate::predicate::RedirectPredicate>,
     /// `Option::None` here is "the caller never asked for a redirect
     /// policy" — distinct from `Some(RedirectPolicy::None)`, which is the
     /// caller explicitly asking not to follow and to be handed the 3xx.
@@ -617,7 +617,7 @@ fn check_default_headers_supported(
 /// apply. That is the worst direction for this particular setting to fail
 /// in — the settings people write here are the ones that refuse a hop.
 pub(crate) fn check_redirect_predicate_supported(
-    predicate: &Option<crate::RedirectPredicate>,
+    predicate: &Option<crate::predicate::RedirectPredicate>,
     caps: &Capabilities,
     backend: &'static str,
 ) -> Result<(), UnsupportedCapability> {

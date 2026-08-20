@@ -6,8 +6,11 @@
 //! in `shape.rs` and `response.rs`).
 #![cfg(feature = "test-util")]
 
+use hclient::Client;
 use hclient::mock::MockTransport;
-use hclient::{Client, DEFAULT_MAX_EVENT_SIZE, SseEvent, SseStream};
+use hclient::sse::DEFAULT_MAX_EVENT_SIZE;
+use hclient::sse::SseEvent;
+use hclient::sse::SseStream;
 
 fn sse_response(body: &'static str) -> http::Response<&'static str> {
     http::Response::builder()

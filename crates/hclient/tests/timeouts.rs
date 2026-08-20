@@ -14,8 +14,11 @@
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`).
 #![cfg(feature = "test-util")]
 
+use hclient::caps::Capabilities;
+use hclient::caps::TimeoutSupport;
+use hclient::error::UnsupportedCapability;
 use hclient::mock::MockTransport;
-use hclient::{Capabilities, Client, ErrorKind, TimeoutSupport, Timeouts, UnsupportedCapability};
+use hclient::{Client, ErrorKind, Timeouts};
 use std::time::Duration;
 
 fn secs(n: u64) -> Option<Duration> {
@@ -196,8 +199,8 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
 /// `connect` was the problem.
 #[test]
 fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
-    let mut caps = hclient::Capabilities::none();
-    caps.timeouts = hclient::TimeoutSupport {
+    let mut caps = hclient::caps::Capabilities::none();
+    caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         // The three a backend may well support while resolution is the
         // host's — which is `hclient-wasi`'s exact answer.

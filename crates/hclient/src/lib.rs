@@ -36,7 +36,7 @@ mod deadline;
 mod decompress;
 #[cfg(feature = "digest-auth")]
 pub mod digest;
-mod erased;
+pub mod erased;
 mod limit;
 mod predicate;
 /// Mock transport and controllable timer, re-exported from `hclient-mock`.
@@ -50,50 +50,114 @@ pub use hclient_mock as mock;
 pub mod multipart;
 mod request;
 mod response;
-mod sse;
+pub mod sse;
 mod stages;
 
-pub use cached::Cached;
 pub use client::{Client, ClientBuilder};
-pub use config::{Config, InvalidBaseUrl, Timeouts, check_supported, effective_timeouts};
-pub use deadline::{Deadline, NoClock, TotalTimeoutElapsed};
-pub use decompress::{DecodeFailed, Decompressed};
-#[cfg(feature = "cookies")]
-pub use erased::AnyList;
-#[cfg(feature = "cache")]
-pub use erased::AnyStore;
-pub use limit::{Limited, ResponseTooLarge};
-pub use predicate::{ProposedRedirect, RedirectPredicate, RedirectRefused, RedirectVerdict};
 
-/// The response body a [`Client`] hands back: the transport's own body,
-/// with this client's three wrappers around it **in the order the client
-/// applies them**.
+// ---- the doors ----
+//
+// **The front page listed 73 items and about twelve of them are what a
+// caller uses.** The rest is seam vocabulary, error payloads a caller
+// reaches only through `Error::source`, and the response-body wrappers
+// that are public solely because [`body::ClientBody`] spells them out.
+// rustdoc renders one flat alphabetical list, so `AnyList` — a type nobody
+// writes — sat above `Client`.
+//
+// Nothing here changes a type. What changes is the path a reader types,
+// and modules render before items, so the front page is now a handful of
+// names and these doors. Done before the first publish, because after it
+// every one of these paths is a promise.
+
+/// The failures, and the payloads [`crate::Error::source`] hands back.
 ///
-/// The order is not a formatting choice. [`Cached`] is innermost, because
-/// it is the one wrapper that can *replace* the transport's body — a cache
-/// hit had no exchange and so has no `B` at all — and because what it
-/// records must be what the wire carried. [`Deadline`] goes around that,
-/// so it is polled once for every frame that arrives off the wire;
-/// [`Decompressed`] goes outside both, because reversing a content coding
-/// can consume many compressed frames before it produces a single byte for
-/// the caller. Written the other way round, one poll of the decoder could
-/// pull an unbounded amount of traffic without the clock ever being
-/// consulted — a slow server sending well-compressing padding would be
-/// bounded by nothing. See `Client::execute`, the `decompress` module's
-/// doc comment, and `cached`'s.
+/// [`crate::Error`] and [`crate::ErrorKind`] stay at the root: they are on
+/// every signature in the crate, and a door in front of them would be one
+/// every caller walks through immediately.
+pub mod error {
+    pub use crate::config::InvalidBaseUrl;
+    pub use crate::deadline::TotalTimeoutElapsed;
+    pub use crate::decompress::DecodeFailed;
+    pub use crate::limit::ResponseTooLarge;
+    pub use crate::predicate::RedirectRefused;
+    pub use crate::request::{ColonInUsername, ContentTypeIsNotOursToKeep};
+    #[cfg(feature = "charset")]
+    pub use crate::response::CharsetError;
+    pub use crate::response::UnexpectedStatus;
+    pub use hclient_core::{Phase, UnsupportedCapability, VersionNotAvailable};
+    pub use hclient_proto::uri::UriError;
+}
+
+/// What a transport says it can do, and the `build()` gate that reads it.
+pub mod caps {
+    pub use crate::config::check_supported;
+    pub use hclient_core::{
+        Capabilities, DecompressionSupport, EarlyDataSupport, RedirectSupport, TimeoutSupport,
+        TlsSupport,
+    };
+}
+
+/// The observability seam: implement [`hooks::Hooks`] and match on
+/// [`hooks::Event`].
+pub mod hooks {
+    pub use hclient_core::unversioned::{
+        CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks,
+        Informational, NoHooks, Reused,
+    };
+}
+
+/// The response body and the wrappers a client puts around a transport's.
 ///
-/// The cache being **below** the decompressor is the load-bearing half of
-/// that order: a stored response is decoded on the way out by the same
-/// call that decodes a fresh one, and a `Vary: Accept-Encoding` entry is
-/// keyed on the coding actually asked for.
-///
-/// All three wrappers are always present, whether or not any is doing
-/// anything: a type cannot appear and disappear with a runtime value. An
-/// unbounded, undecoded, uncached response pays two `Option` tests and one
-/// enum test per frame for that — and without the `cache` feature
-/// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
-/// exist, so the third wrapper costs nothing a build did not ask for.
-pub type ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>;
+/// A caller names none of these: they are here because
+/// [`body::ClientBody`] is an alias over all four, and an alias cannot
+/// name a private type.
+pub mod body {
+    pub use crate::cached::Cached;
+    pub use crate::deadline::Deadline;
+    pub use crate::decompress::Decompressed;
+    pub use crate::limit::Limited;
+    pub use hclient_core::{RetryKind, RewindFactory};
+
+    /// The response body a [`crate::Client`] hands back: the transport's own body,
+    /// with this client's three wrappers around it **in the order the client
+    /// applies them**.
+    ///
+    /// The order is not a formatting choice. [`Cached`] is innermost, because
+    /// it is the one wrapper that can *replace* the transport's body — a cache
+    /// hit had no exchange and so has no `B` at all — and because what it
+    /// records must be what the wire carried. [`Deadline`] goes around that,
+    /// so it is polled once for every frame that arrives off the wire;
+    /// [`Decompressed`] goes outside both, because reversing a content coding
+    /// can consume many compressed frames before it produces a single byte for
+    /// the caller. Written the other way round, one poll of the decoder could
+    /// pull an unbounded amount of traffic without the clock ever being
+    /// consulted — a slow server sending well-compressing padding would be
+    /// bounded by nothing. See `Client::execute`, the `decompress` module's
+    /// doc comment, and `cached`'s.
+    ///
+    /// The cache being **below** the decompressor is the load-bearing half of
+    /// that order: a stored response is decoded on the way out by the same
+    /// call that decodes a fresh one, and a `Vary: Accept-Encoding` entry is
+    /// keyed on the coding actually asked for.
+    ///
+    /// All three wrappers are always present, whether or not any is doing
+    /// anything: a type cannot appear and disappear with a runtime value. An
+    /// unbounded, undecoded, uncached response pays two `Option` tests and one
+    /// enum test per frame for that — and without the `cache` feature
+    /// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
+    /// exist, so the third wrapper costs nothing a build did not ask for.
+    pub type ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>;
+}
+
+/// Following redirects: how many, and whether this one.
+pub mod redirect {
+    pub use crate::predicate::{ProposedRedirect, RedirectPredicate, RedirectVerdict};
+    pub use hclient_proto::redirect::RedirectPolicy;
+}
+
+pub use config::{Config, Timeouts, effective_timeouts};
+pub use deadline::NoClock;
+
 // Task 17 fix round 1: this list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `hclient-core` type
 // reachable from the signature, a field, or a variant of something already
@@ -151,11 +215,7 @@ pub type ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>;
 // direct dependency on `hclient-core`. `check_version` is NOT re-exported:
 // it is the seam's own comparison, for transports, and a consumer has
 // nothing to call it on.
-pub use hclient_core::{
-    AllowEarlyData, Capabilities, DecompressionSupport, EarlyDataSupport, Error, ErrorKind, Phase,
-    RedirectSupport, RequestBody, RequireVersion, RetryKind, RewindFactory, TimeoutSupport,
-    TlsSupport, UnsupportedCapability, VersionNotAvailable,
-};
+pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVersion};
 // The observability seam (v0.4 W2), re-exported for the same reason
 // `AllowEarlyData` is: what a caller writes is an `impl Hooks for MyType`
 // and a `match` over `Event`, and both live in the core. A facade that
@@ -168,12 +228,6 @@ pub use hclient_core::{
 // been tried against a second (see that module's own doc). Re-exporting
 // them here does not promise otherwise: the quarantine is a statement
 // about the trait, not about where its name is written.
-pub use hclient_core::unversioned::{
-    CloseReason, Closed, ConnectTiming, Connected, ConnectionId, Event, Head, Hooks, Informational,
-    NoHooks, Reused,
-};
-pub use hclient_proto::backoff::Backoff;
-pub use hclient_proto::redirect::RedirectPolicy;
 // Every URL this client is handed becomes an `http::Uri` through
 // `hclient_proto::uri`, and every way that can fail — a base that is
 // not a base, a host `http::Uri` will not hold, a non-ASCII host in a
@@ -181,13 +235,8 @@ pub use hclient_proto::redirect::RedirectPolicy;
 // as the `source()` of an `ErrorKind::Other`. It is re-exported for the
 // same reason `InvalidBaseUrl` is: a caller has to be able to name it to
 // tell "the URL you gave me is wrong" apart from every other `Other`.
-pub use hclient_proto::sse::{DEFAULT_MAX_EVENT_SIZE, SseEvent};
-pub use hclient_proto::uri::UriError;
-pub use request::{ColonInUsername, ContentTypeIsNotOursToKeep, RequestBuilder};
-#[cfg(feature = "charset")]
-pub use response::CharsetError;
-pub use response::{Collected, Response, UnexpectedStatus};
-pub use sse::{ReconnectingSseBuilder, ReconnectingSseStream, SseBuilder, SseOptions, SseStream};
+pub use request::RequestBuilder;
+pub use response::{Collected, Response};
 
 /// The default transport, chosen by **the target, not the user**.
 ///
