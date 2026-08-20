@@ -2690,6 +2690,46 @@ this file's rule about a check whose answers cannot differ, met one more
 time. With a `User-Agent` the controls separate: `reqwest` 200, a nonsense
 name 404.
 
+### The workspace was `http-ng`, and the prefix is what decided its replacement
+
+Three objections killed the old name, and they are independent of each
+other. `-ng` means *next generation of X*, so `http-ng` in a dependency list
+said it superseded the `http` crate — which has **932 million downloads**
+and which this workspace *depends on*. Wrong in both directions. The
+`http-*` namespace is plumbing besides: `http` 932M, `http-body` 800M,
+`http-types` 53M, `http-client` 7.5M are all types-and-traits crates, while
+every client that found an audience is a distinctive word — `reqwest` 654M,
+`ureq` 182M, `attohttpc` 32M, `isahc` 17M. And `-ng` has no Rust precedent:
+`zlib-ng`, `mio-ng` and `tokio-ng` do not exist, and the single hit,
+`libz-ng-sys`, is only that because the upstream C library is literally
+named `zlib-ng`. It is a C convention, and it dates.
+
+**What decided the replacement is that this publishes a family of 29, and a
+family prefix should be legible rather than clever.** Fifty-four candidate
+names were checked for availability; most good single words are gone, and
+the survivors — `wend`, `voyage`, `portage`, `transom`, `wayfare` — all win
+*distinctiveness* and lose the thing that matters here.
+`hclient-dns-doh`, `hclient-rt-embassy`, `hclient-tls-rustls` tell a reader
+who lands on any one of them which world they are in. `wend-dns-doh` does
+not until they look `wend` up. `h` is not arbitrary either: `h2` and `h3`
+are the ALPN identifiers and the names of the canonical Rust crates, so `h`
+means HTTP in this domain already.
+
+**The cost is real and is not hidden**: `hclient` is descriptive where the
+successful clients are oblique. A descriptive name has nothing to say in a
+sentence and it invites near-neighbours — `hclient2`, `hclient-rs` — where a
+coined word does not. For a kit of 29 the legibility was judged to win.
+
+**`www-*` was raised afterwards and declined, on the same rule that chose
+`hclient`.** It fails the prefix test hardest: `www-tls-rustls` says "web
+TLS", and `www-idn`, `www-rt-tokio`, `www-rt-pair-check` carry no
+information at all. It also names the whole domain rather than this thing —
+the mirror of `http-ng`'s failure, *the Web itself* instead of *the
+successor to `http`* — and `www` is a hostname convention, so `www-` reads
+as a subdomain. The names are free; the objection is merit, not
+availability. Recorded here because the question will otherwise be asked a
+third time.
+
 ### The licence was a claim with no text behind it, and the root is the wrong place for one
 
 Every crate here has declared `license = "MIT OR Apache-2.0"` since the
