@@ -316,7 +316,7 @@ are not in the index — which is what the order is for: **five waves over
 `[package.metadata.docs.rs] all-features = true`, because docs.rs builds
 `default` and `default` here is empty or near-empty by design.
 
-**Minimum supported Rust: the latest stable release** — currently **1.97**,
+**Minimum supported Rust: the latest stable release** — currently **1.98**,
 declared once in the workspace manifest and shared by every crate. That is the
 support policy, not a snapshot: the floor moves with stable, and a release that
 needs a newer compiler than the one you have is expected rather than a bug.
@@ -2485,6 +2485,47 @@ leans on two, which is a hooks change wanting its own measurement.
 `docs/pooled-reuse-race.md`, including the mutation table and its
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
+
+### The floor moved under a green tree, and the fuzzer found something else
+
+Rust 1.98 landed on 2026-08-18 and CI takes `channel = "stable"`, so the
+first push after it met a compiler this workspace had never seen. Two things
+came out of that, and only one of them is a lint.
+
+**`clippy::result_large_err` is new here and fires twice**, on
+`hclient-native`'s and `hclient-h3`'s private `stage`, whose `Err` is
+`(Error, http::Request<RequestBody>)`. Measured rather than boxed: the pair
+is **288 bytes, of which 264 are `http::Request<RequestBody>`** — a foreign
+type — and 24 are `Error`. Boxing there would silence the lint and shrink
+nothing a caller sees, because the public form is `connect`'s
+`Result<Self::Staged, Refused>`, the same 288 bytes, which clippy does not
+flag only because it is a trait implementation. So both sites carry an
+`#[allow]` with that reasoning beside them, and shrinking `Refused` is left
+as a seam decision for whoever needs it rather than a lint fix.
+
+**The fuzzer found a real disagreement, and it is not about 1.98.**
+`idn_policy_vs_idna` failed on
+`"xn--qqqqqqqqqqHJJJJJJ'ｗJJJJJJJJJJJi-0dJd"`: the policy layer answers
+`None` where `idna` answers
+`Some("xn--qqqqqqqqqqhjjjjjj'wjjjjjjjjjjji-0djd")`. Reproduced locally, and
+narrowed far enough to say what it is *not* — the apostrophe alone, the
+fullwidth `ｗ` alone, `xn--` with either alone, and three short combinations
+all agree. What is left is a long `xn--` label whose UTS 46 mapping leaves
+it still undecodable as punycode, where `idna` passes it through and this
+crate's own hand-written decoder rejects it.
+
+**Why it matters more than a fuzz crash usually does**: on Linux
+`domain_to_ascii` *is* `idna`, so the shipped path there agrees with the
+oracle and the difference is invisible. The layer is what runs on Windows
+and macOS over ICU and Foundation. So this is a **host that would be
+contacted on one platform and refused on another**, which is the one thing
+`hclient-idn` exists to prevent — its own claim is that the tables move and
+the answer does not.
+
+Not caused by anything in the rename or the dependency bumps: the fuzzer
+simply had a different random walk than the 9,739-input corpus that found
+zero differences. Open, with the input recorded here so it cannot be lost
+with the CI log.
 
 ### Two versions of `quinn-udp` coexist, and that is the seam paying out
 

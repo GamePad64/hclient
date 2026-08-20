@@ -411,6 +411,19 @@ where
     /// The body of [`StagedConnect::connect`], written where the `Refused`
     /// packing is not, so that each failure arm is a pair rather than a
     /// four-line struct literal.
+    // Measured rather than boxed: the pair is 288 bytes, of which **264 are
+    // `http::Request<RequestBody>`** — a foreign type — and 24 are `Error`.
+    // Handing the request back is the contract rather than an accident:
+    // `Refused` exists so a caller can retry a request that never left.
+    //
+    // Boxing here would silence the lint and shrink nothing a caller sees.
+    // The public form is `connect`'s `Result<Self::Staged, Refused>`, which
+    // carries the same 288 bytes and which clippy does not flag because it
+    // is a trait implementation. Shrinking that is a change to a seam, for
+    // an allocation on every refusal against a `Result` returned once per
+    // connection rather than once per request — so it is a decision for
+    // whoever needs it, not a lint fix.
+    #[allow(clippy::result_large_err)]
     async fn stage(
         &self,
         req: http::Request<RequestBody>,
