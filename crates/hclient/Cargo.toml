@@ -12,26 +12,32 @@ repository.workspace = true
 all-features = true
 
 [features]
-# **`cargo add hclient` has to give a working client.** Until this line the
-# default was `["idn"]` alone, so `Client::new()` — the first line of this
-# crate's own README — did not compile until a reader found
-# `features = ["default-transport"]`. A crate whose headline example fails
-# on the first try spends its worst cost in the five minutes where someone
-# decides whether to keep reading.
+# **`default-transport` was in this list for one commit, and the reason it
+# is not is the rule this workspace applies everywhere else.** Cargo
+# unifies features across a graph, so a default here is not a default — it
+# is a *floor*. Measured on a scratch workspace rather than argued: with
+# `lean` depending on `hclient` with `default-features = false` and `fat`
+# depending on it with defaults, cargo builds **one** `hclient`, with
+# `default,default-transport,idn`, and `lean` links that one. The party who
+# wanted the small graph is not the party who decides.
 #
-# The rule this bends is real and is kept everywhere else: a build carries
-# nothing it did not ask for, and `json`, `gzip`, `cookies`, `cache` and the
-# rest are all still opt-in. What changed is the judgement about **which**
-# default is the surprising one. It costs 44 -> 81 crates on a native
-# target; `default-features = false` is the constrained build and is what
-# `hclient-native/examples/minimal.rs` uses.
+# That is the same argument that keeps `hclient-h3` out of
+# `hclient-native`, `hclient-tls-quic` out of `hclient-tls`, and the
+# WebSocket framing in a crate of its own. Applying it to those three and
+# not to this list would have been the inconsistency, not the caution.
 #
-# It is safe on all three targets because the dependencies it names are
-# already target-gated below: the native four are `cfg(not(wasm))`,
-# `hclient-fetch` is `cfg(wasm32-unknown)`, and **`wasm32-wasip2` gets
-# neither** — there `DefaultTransport` does not exist and this feature adds
-# nothing, exactly as before.
-default = ["idn", "default-transport"]
+# What it costs is real and is paid in text instead: `Client::new()` needs
+# `features = ["default-transport"]`, and the first line of both READMEs and
+# of this crate's docs says so. A flag someone reads before compiling is
+# cheaper than a graph they cannot get out of afterwards.
+#
+# The audience this protects is narrower than "every constrained build" —
+# `hclient-native/examples/minimal.rs` shows that a 512 KB target uses
+# `Transport` directly and never names this crate. It is the caller who
+# wants `Client` over a transport of their own choosing: `Native<Smol,
+# NativeTls, Hickory>` should not carry tokio, rustls and the system
+# resolver because something else in the graph was careless.
+default = ["idn"]
 # Internationalised domain names, forwarded to `hclient-proto`, where the
 # conversion lives (`uri::parse`) so that every backend gets the same
 # behaviour without going through this facade. ON by default: it is what

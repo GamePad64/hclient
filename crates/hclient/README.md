@@ -6,8 +6,15 @@ The same application code runs on a native socket, on `wasi:http`, on the
 browser's own `fetch` and on Apple's `URLSession`. The transport is swapped
 out, not buried under `#[cfg]`.
 
-`cargo add hclient` is enough — the default carries a transport, and this
-compiles as written:
+```
+cargo add hclient --features default-transport
+```
+
+That feature is what `Client::new()` needs, and it is **not** on by default
+on purpose: Cargo unifies features across a graph, so a default here would
+be a floor — a caller who asked for a small graph would get tokio and
+rustls anyway, because something else in the graph asked for them. The flag
+is the cost of not doing that to them. With it, this compiles as written:
 
 ```rust
 let client = hclient::Client::new()?;          // needs an ambient tokio runtime

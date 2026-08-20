@@ -2,7 +2,9 @@
 
 **An HTTP client complete enough to build a new curl on — or a browser.**
 
-`cargo add hclient`, and the four lines below compile as written.
+`cargo add hclient --features default-transport`, and the four lines below
+compile as written. The flag is deliberate — see the crate's README for why
+a default would be a floor rather than a default.
 
 Those two want opposite things. A command-line tool wants a static binary
 with no runtime, honest exit codes and no surprises. A browser engine wants

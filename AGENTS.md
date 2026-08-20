@@ -2729,45 +2729,52 @@ with default features never saw it — `charset` is off by default, but
 caught it**, which is the recipe this file records as having once printed
 `error:` and exited zero. It earns its place here.
 
-### `cargo add hclient` gave a client that would not compile
+### A default is not a default when Cargo unifies features — it is a floor
 
-The crate's own headline example — `Client::new()` — needed
-`features = ["default-transport"]`, and `default` was `["idn"]`. So the
-first thing a reader copied failed to build, which is the worst place a
-project can spend a cost: the five minutes in which someone decides whether
-to keep reading.
+`cargo add hclient` gives a client that does not compile: `Client::new()`
+needs `default-transport`, and `default` is `["idn"]`. That cost is real and
+lands in the five minutes where someone decides whether to keep reading, so
+the feature **was** moved into `default` — and moved back out one commit
+later, which is the part worth keeping.
 
-`default-transport` is in `default` now. **The rule it bends is kept
-everywhere else** — `json`, `gzip`, `brotli`, `deflate`, `zstd`, `cookies`,
-`cache`, `charset` and `digest-auth` are all still opt-in, and 29 of the 30
-crates still have an empty or near-empty default. What changed is the
-judgement about *which* default is the surprising one. Measured: **81 crates
-against 18** with `--no-default-features`, which is the constrained build
-and is what `hclient-native/examples/minimal.rs` uses.
+**Cargo unifies features across a graph, so a default here is a floor.**
+Measured on a scratch workspace rather than argued: `lean` depending on
+`hclient` with `default-features = false`, `fat` depending on it with
+defaults, and cargo builds **one** `hclient` — `default,default-transport,idn`
+— which `lean` links. `lean` alone resolves zero tokio, rustls or hyper; in
+the shared graph it gets all three. **The party who wanted the small graph
+is not the party who decides.**
 
-**Flipping it exposed a real defect, and it was never the wasip2 user's to
-trigger.** `DefaultClock` had three `#[cfg]` arms — native-with-feature,
-browser-with-feature, and `not(feature)` — and `wasm32-wasip2` with the
-feature matched **none** of them. Its doc comment called that "the same
-deliberate compile error as `DefaultTransport` there", and the two are not
-the same: `DefaultTransport` is named only by someone asking for it, so its
-absence is a refusal aimed at that line, where `DefaultClock` is the default
-type parameter of `ClientBuilder`, `RequestBuilder` and both forks of
-`Client`, so its absence stops the crate compiling at all. And **Cargo
-unifies features across a graph**, so the trigger was never that user's own
-choice — any unrelated crate turning `default-transport` on broke their
-build, before this change and independently of it.
+That is the same argument that keeps `hclient-h3` out of `hclient-native`,
+`hclient-tls-quic` out of `hclient-tls` and the WebSocket framing in a crate
+of its own. Applying it to those three and not to a feature list would have
+been the inconsistency.
 
-`Client`'s forked declaration had the same gap for the same reason: it keyed
-on *the feature* where the question is *does `DefaultTransport` exist*.
-Both now use the same pair of conditions, negations of each other, so the
-arms are exhaustive and non-overlapping by construction rather than by a
-third guess at the target list — and `Client` requires an explicit `T`
-exactly where `DefaultClock` is `NoClock`.
+**The audience it protects is narrower than "every constrained build",
+which is worth knowing before the next time this is raised.**
+`hclient-native/examples/minimal.rs` reaches `Transport` directly and never
+names `hclient`, so a 512 KB target is unaffected either way. The one who
+pays is the caller who wants `Client` over a transport of their own —
+`Native<Smol, NativeTls, Hickory>` — and would carry tokio, rustls and the
+system resolver because something else in the graph was careless.
 
-Verified the way the complaint was phrased rather than by `cargo check`
-alone: a scratch crate outside this workspace, depending on `hclient` with
-no features named, compiling the README's example.
+So the cost is paid in text: both READMEs and the crate docs now lead with
+`cargo add hclient --features default-transport`. A flag someone reads
+before compiling is cheaper than a graph they cannot get out of afterwards.
+
+**One real defect came out of the round trip and is kept.** `DefaultClock`
+had three `#[cfg]` arms — native-with-feature, browser-with-feature, and
+`not(feature)` — and `wasm32-wasip2` **with** the feature matched none of
+them, so the crate did not compile there at all. Its doc comment called that
+"the same deliberate compile error as `DefaultTransport`", and the two are
+not the same: `DefaultTransport` is named only by someone asking for it,
+where `DefaultClock` is the default type parameter of `ClientBuilder`,
+`RequestBuilder` and both forks of `Client`. And by the same unification
+above, the trigger was never that user's own choice. `Client`'s forked
+declaration had the identical gap for the identical reason — it keyed on
+*the feature* where the question is *does `DefaultTransport` exist*. Both
+now use one pair of conditions, negations of each other, so the arms are
+exhaustive and non-overlapping by construction.
 
 ### The workspace was `http-ng`, and the prefix is what decided its replacement
 

@@ -208,6 +208,11 @@ pub(crate) fn effective_uri(base: Option<&http::Uri>, url: &str) -> Result<http:
 /// reqwest can't do this (issue #2641 is unimplemented), which forces
 /// `act-cli` to build a separate `reqwest::Client` for every component
 /// call.
+/// `#[doc(hidden)]`: the client's own request-over-client merge, called
+/// once per hop inside `execute`. A transport is handed the result, never
+/// this function; the one caller outside `src` is this crate's own
+/// `tests/timeouts.rs`.
+#[doc(hidden)]
 pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts {
     match req.get::<Timeouts>() {
         None => *client,
@@ -294,6 +299,11 @@ pub(crate) fn effective_redirect(
 /// noticing: `owns_cache` did not need a variant or a field added for it —
 /// it had been sitting in `Capabilities` since v0.1, set by one backend and
 /// read by nothing. See `check_cache_supported`.
+/// `#[doc(hidden)]`: this is `ClientBuilder::build`'s own gate, not a
+/// caller's tool. It stays `pub` because `hclient-native`'s integration
+/// tests call it — an integration test sees the public API only — and it
+/// is off the page because a caller reaches it by calling `build()`.
+#[doc(hidden)]
 pub fn check_supported(
     cfg: &Config,
     caps: &Capabilities,
