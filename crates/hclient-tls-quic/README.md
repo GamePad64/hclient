@@ -11,7 +11,7 @@ empty body. Its own crate rather than a feature, because Cargo unifies
 features and one would put `quinn-proto` into every build in any graph that
 wanted h3.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

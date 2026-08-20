@@ -53,7 +53,7 @@ alone.
 `hclient-rt-tokio`, `-smol`, `-embassy`; TLS `hclient-tls-rustls`,
 `-native-tls`; resolvers `hclient-dns-system`, `-doh`, `-hickory`.
 
-See the [repository](https://github.com/actcore/http-ng), and `AGENTS.md`
+See the [repository](https://github.com/GamePad64/hclient), and `AGENTS.md`
 in it for why each piece is there — every seam records the argument that
 produced it and the measurement that settled it.
 

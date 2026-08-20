@@ -11,7 +11,7 @@ it is dying, so the driver is spawned — and that turned out to be necessary
 and not sufficient, since driving a connection is what lets it *send* a
 keep-alive, not what makes it decide to.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

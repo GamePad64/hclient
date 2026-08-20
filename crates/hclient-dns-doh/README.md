@@ -11,7 +11,7 @@ request is a `Transport` and **never** an `hclient::Client`, so "a
 resolver's client is not the user's client" is a thing that does not
 typecheck rather than a thing that is discouraged.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

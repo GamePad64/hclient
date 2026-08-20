@@ -19,7 +19,7 @@ socket after the 101" is implementable by exactly one of the four backends
 here, and the three it shuts out include the browser. RFC 6455 ping/pong
 liveness is available and off by default.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

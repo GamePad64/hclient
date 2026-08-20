@@ -7,7 +7,7 @@ Happy Eyeballs can dial the first answer while the rest are still arriving.
 The DNS record decoder sits behind a `codec` feature, so an `IpLiteralOnly`
 build carries no parser at all: 13 crates without it, 16 with.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

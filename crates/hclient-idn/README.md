@@ -9,7 +9,7 @@ exists: `idna` pulls
 in the ICU data crates, about 4 MB of vendored Unicode tables, which on a
 part with 512 KB of flash is the entire budget.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.

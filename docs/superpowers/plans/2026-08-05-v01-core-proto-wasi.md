@@ -125,7 +125,7 @@ members = ["crates/*"]
 edition      = "2024"
 rust-version = "1.85"
 license      = "MIT OR Apache-2.0"
-repository   = "https://github.com/actcore/http-ng"
+repository   = "https://github.com/GamePad64/hclient"
 
 [workspace.dependencies]
 http           = "1.5"

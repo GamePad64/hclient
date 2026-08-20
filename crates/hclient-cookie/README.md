@@ -8,7 +8,7 @@ same rules serve every backend. The public suffix list is compiled in
 is pluggable — `NoList` is a real choice for a build that has no room for
 it.
 
-Part of [hclient](https://github.com/actcore/http-ng) — an HTTP client
+Part of [hclient](https://github.com/GamePad64/hclient) — an HTTP client
 complete enough to build a new curl on, or a browser. See the repository
 for the whole shape, and `AGENTS.md` in it for why this piece is its own
 crate.
