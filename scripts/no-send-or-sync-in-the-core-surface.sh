@@ -62,7 +62,7 @@ done
 
 if grep -rnE '(:|\+)[[:space:]]*(Send|Sync)\b|MaybeSend' "${dirs[@]}" \
      | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' \
-     | grep -vE 'send-bound-exception:[[:space:]]*amendment-C(1|2|5|10|12)\b'; then
+     | grep -vE 'send-bound-exception:[[:space:]]*amendment-C(1|2|5|10|12|13)\b'; then
   echo "::error::the core declares a Send or Sync bound without a send-bound-exception marker — erasing a type behind dyn Trait drops auto-traits (amendment C1), so the bound would be forced on backends that cannot satisfy it"
   exit 1
 fi

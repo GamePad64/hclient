@@ -128,8 +128,8 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     pub fn redirect_predicate<F>(mut self, f: F) -> Self
     where
         F: Fn(&crate::predicate::ProposedRedirect<'_>) -> crate::predicate::RedirectVerdict
-            + Send
-            + Sync
+            + Send // send-bound-exception: amendment-C12
+            + Sync // send-bound-exception: amendment-C12
             + 'static, // send-bound-exception: amendment-C12
     {
         self.config.redirect_predicate = Some(crate::predicate::RedirectPredicate::new(f));
