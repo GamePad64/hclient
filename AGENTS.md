@@ -2572,6 +2572,15 @@ and packs the content, verified by extracting the `.crate` rather than by
 reading the file list: 18 files where there were 16, and the first line of
 `LICENSE-MIT` inside the tarball is the copyright.
 
+**One trap comes with the symlinks, and it was walked into twice.** `sed -i`
+does not follow a symlink — it writes a new file and renames over it, so a
+workspace-wide `git ls-files | xargs sed -i` silently turns all 58 licence
+links, and `CLAUDE.md`'s link to this file, into copies. Both renames this
+week did it. The tell is `git status`'s `T` (type change), not `M`, and the
+check that settles it is the **index**: `git ls-files -s | awk '$1=="120000"'`
+should count 59. Restoring is one loop; noticing is the hard part, because a
+copy behaves identically until it drifts.
+
 A README is the same shape one step down, and it was the same absence: no
 crate had one, `readme` was set nowhere, so 29 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
