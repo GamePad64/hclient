@@ -333,9 +333,26 @@ carry `version` beside `path`, without which nothing here could be
 published at all; `hclient-rt-pair-check` is the only `publish = false`.
 `cargo publish -p hclient-core --dry-run` packages **and verifies** clean,
 and `cargo package -p hclient` correctly refuses, because its dependencies
-are not in the index — which is what the order is for: **five waves over
-29 crates**, `hclient-core`/`-cache`/`-cookie`/`-idn` first and
-`hclient`/`hclient-select` last. Every publishable crate carries
+are not in the index — which is what the order is for.
+
+**That order was recorded here as "five waves over 29 crates" and it is
+eight**, which is the difference between two questions rather than a
+miscount. Five is the *normal* dependency graph; `cargo publish` also has
+to satisfy **dev-dependencies that carry a version**, of which there are 32
+here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
+are still first and `hclient-select` is still last, and the chokepoints in
+between are one crate wide: `hclient-tls-rustls`, then `hclient-native`.
+`docs/publishing.md` has the table, the script that derives it, and the
+reason the waves are **not** collapsed back to five — a version-carrying
+dev-dependency is what lets a downloaded `.crate` run its own tests, which
+distribution packagers do.
+
+**No local check can catch a wrong order**, which is why it is a document
+rather than a recipe: `cargo package --workspace` makes every member
+available to every other through a local overlay, so `just package-build`
+is green for an order that a real sequential publish would refuse. The
+refusal is benign — the verify step names the missing crate and nothing is
+uploaded. Every publishable crate carries
 `[package.metadata.docs.rs] all-features = true`, because docs.rs builds
 `default` and `default` here is empty or near-empty in 29 of the 30 —
 `hclient` itself is the exception since `default-transport` joined its
