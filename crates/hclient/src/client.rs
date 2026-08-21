@@ -9,20 +9,22 @@ use crate::request::RequestBuilder;
 use crate::stages::redirect::{HopParts, next_hop};
 use core::time::Duration;
 use hclient_core::Timeouts;
-use hclient_core::unversioned::{Timer, Transport};
+use hclient_core::unversioned::Timer;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
 
-#[derive(Debug)]
-pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
-    transport: T,
+pub struct ClientBuilder {
+    transport: Box<hclient_core::unversioned::erased::SharedTransport>,
+    /// The transport's type name, captured at construction: erasure loses
+    /// the type, and four capability refusals name the backend.
+    backend: &'static str,
     /// The clock a total timeout is measured with.
     ///
     /// Not an `Option`: the absence of a clock is a TYPE
     /// ([`crate::NoClock`]), not a `None`, so that no total timeout can be
     /// configured against a client that cannot measure one. See
     /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
-    timer: Tm,
+    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
     config: Config,
     /// The jar itself, on its way to `Inner`. `Config` carries only the
     /// bit that says one was asked for — see `Config::cookies` for why the
@@ -43,11 +45,15 @@ pub struct ClientBuilder<T, Tm = crate::DefaultClock> {
 /// and so uninferrable at the call site. Pinning it here is what keeps
 /// `Client::builder(t).build()` resolving to `Client<T>` — the bare form
 /// existing code writes — rather than to some other clock.
-impl<T: Transport> ClientBuilder<T, crate::DefaultClock> {
-    pub fn new(transport: T) -> Self {
+impl ClientBuilder {
+    pub fn new<T>(transport: T) -> Self
+    where
+        T: hclient_core::unversioned::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
         Self {
-            transport,
-            timer: crate::DefaultClock::default(),
+            backend: std::any::type_name::<T>(),
+            transport: Box::new(transport),
+            timer: std::sync::Arc::new(crate::DefaultClock::default()),
             config: Config::default(),
             #[cfg(feature = "cookies")]
             jar: None,
@@ -57,7 +63,7 @@ impl<T: Transport> ClientBuilder<T, crate::DefaultClock> {
     }
 }
 
-impl<T: Transport, Tm> ClientBuilder<T, Tm> {
+impl ClientBuilder {
     /// The redirect policy for every request from this client.
     ///
     /// Stores `Some(policy)`, and that wrapping carries meaning: it is what
@@ -92,8 +98,9 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// ```no_run
     /// # use hclient::{Client};
     /// # use hclient::redirect::RedirectVerdict;
-    /// # use hclient_core::unversioned::Transport;
-    /// # fn f(t: impl Transport<Error = hclient::Error>) -> Result<(), hclient::error::UnsupportedCapability> {
+    /// # use hclient_core::unversioned::erased::BoxedTransport;
+    /// # fn f(t: impl BoxedTransport + Send + Sync + 'static)
+    /// # -> Result<(), hclient::error::UnsupportedCapability> {
     /// let client = Client::builder(t)
     ///     .redirect_predicate(|hop| match hop.to().scheme_str() {
     ///         Some("https") => RedirectVerdict::Follow,
@@ -290,14 +297,16 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// this client produces ([`crate::body::Deadline`] owns one); every clock in
     /// this workspace is a handle or a ZST, and `tests/two_runtimes.rs`
     /// already bounds runtimes by `Clone` for the same reason.
-    pub fn total_timeout<Tm2: Timer + Clone>(
-        self,
-        timer: Tm2,
-        total: Duration,
-    ) -> ClientBuilder<T, Tm2> {
+    pub fn total_timeout<Tm2>(self, timer: Tm2, total: Duration) -> ClientBuilder
+    where
+        Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        Tm2::Instant: Send,                         // send-bound-exception: amendment-C12
+        Tm2::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
+    {
         ClientBuilder {
             transport: self.transport,
-            timer,
+            backend: self.backend,
+            timer: std::sync::Arc::new(timer),
             config: Config {
                 total: Some(total),
                 ..self.config
@@ -455,14 +464,11 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     /// Checks the configuration against the transport's capabilities. Not
     /// a single silent no-op: an unsupported setting is an error, here and
     /// now.
-    pub fn build(self) -> Result<Client<T, Tm>, UnsupportedCapability> {
-        check_supported(
-            &self.config,
-            self.transport.capabilities(),
-            backend_name::<T>(),
-        )?;
+    pub fn build(self) -> Result<Client, UnsupportedCapability> {
+        check_supported(&self.config, self.transport.capabilities(), self.backend)?;
         Ok(Client {
             inner: std::sync::Arc::new(Inner {
+                backend: self.backend,
                 transport: self.transport,
                 timer: self.timer,
                 #[cfg(feature = "cookies")]
@@ -475,73 +481,44 @@ impl<T: Transport, Tm> ClientBuilder<T, Tm> {
     }
 }
 
-fn backend_name<T>() -> &'static str {
-    // The type name is informative enough for an error message and costs nothing.
-    std::any::type_name::<T>()
+// `Debug` is written out for these three rather than derived, because the
+// two erased seams are trait objects and a trait object is not `Debug`.
+// Requiring it of them would tax every backend and every clock for a
+// derive; what a reader of a `{:?}` actually wants here is which backend
+// this client holds, and erasure has kept that as a string.
+impl std::fmt::Debug for ClientBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientBuilder")
+            .field("backend", &self.backend)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
-// A forked declaration, rather than one `pub struct Client<T = crate::
-// DefaultTransport>` with a conditional default: Rust has no way to make a
-// generic default itself conditional on a feature — a `#[cfg]` on a lone
-// default parameter inside a single struct declaration isn't read by the
-// compiler. Without the `default-transport` feature, `Client` must require
-// `T` explicitly (an ordinary "missing generics" compile error on `Client`
-// with no parameter — the same honest error as the missing
-// `DefaultTransport`, see its doc comment in `lib.rs`), rather than
-// resolving to a default from a branch that doesn't exist at all with the
-// feature off. Both variants below carry the same set of fields;
-// `impl<T: Transport> Client<T>` further down applies to both identically:
-// the generic parameter's default only affects call sites where `Client`
-// is written with no explicit `<...>` (e.g. `Client::new()`'s return type
-// below), not the signatures of existing impl blocks.
-//
-// **The condition is "does `DefaultTransport` exist", not "is the feature
-// on".** Those came apart on `wasm32-wasip2`, where the feature can be on —
-// Cargo unifies features across a graph, so any other crate can turn it on
-// — and the type still does not exist, because that target has no default
-// transport to point at. Keying the fork on the feature alone selected the
-// branch naming a type that was configured out, and the crate did not
-// compile at all. The second arm below is the same condition as
-// `DefaultClock`'s `NoClock` branch in `lib.rs`, deliberately: `Client`
-// requires an explicit `T` exactly where there is no target-chosen clock
-// either.
-#[cfg(all(
-    feature = "default-transport",
-    not(all(target_family = "wasm", not(target_os = "unknown")))
-))]
-#[derive(Debug)]
-pub struct Client<T = crate::DefaultTransport, Tm = crate::DefaultClock> {
-    inner: std::sync::Arc<Inner<T, Tm>>,
-    config: Config,
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("backend", &self.inner.backend)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
-#[cfg(any(
-    not(feature = "default-transport"),
-    all(target_family = "wasm", not(target_os = "unknown"))
-))]
-#[derive(Debug)]
-pub struct Client<T, Tm = crate::DefaultClock> {
-    inner: std::sync::Arc<Inner<T, Tm>>,
+
+/// The client, and it names no type parameters at all.
+///
+/// The transport and the clock live behind
+/// `hclient_core::unversioned::erased`, so a library takes `&Client` with
+/// no `where` clause. `Clone` is an `Arc` bump.
+#[derive(Clone)]
+pub struct Client {
+    inner: std::sync::Arc<Inner>,
     config: Config,
 }
 
-/// The transport and the clock a `Client` shares with its clones.
-///
-/// Behind an `Arc` so that cloning a `Client` is an atomic increment rather
-/// than a copy of the transport — which for a real backend owns a
-/// connection pool, a TLS configuration and a resolver, none of which
-/// should be duplicated by handing the client to a second task.
-///
-/// **The configuration is deliberately NOT in here**, unlike before v0.2
-/// W4. It sits in `Client` itself, per handle, and is cloned with it
-/// (`Timeouts` and `RedirectPolicy` are `Copy`; cloning an `http::Uri` is
-/// a `Bytes` refcount). That is what lets [`Client::total_timeout`] hand
-/// back a differently-bounded client over the SAME transport for the cost
-/// of one atomic increment — a per-call-site budget without a second
-/// connection pool.
-#[derive(Debug)]
-struct Inner<T, Tm> {
-    transport: T,
-    timer: Tm,
+struct Inner {
+    backend: &'static str,
+    transport: Box<hclient_core::unversioned::erased::SharedTransport>,
+    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
     /// The cookie jar, if one was asked for — **here and not in `Config`**
     /// for the reason the `Config::cookies` bit records: a jar is shared
     /// state, and `Config` is cloned per handle.
@@ -566,28 +543,19 @@ struct Inner<T, Tm> {
     cache: Option<crate::cached::Cache>,
 }
 
-/// Cloning shares the transport and the clock; it does not duplicate them.
+/// `Client::builder(t)` takes only a transport, and the clock it starts
+/// with is [`crate::DefaultClock`] — see `ClientBuilder::new`.
 ///
-/// Hand-written rather than derived: `#[derive(Clone)]` would require
-/// `T: Clone` and `Tm: Clone`, the first of which is both unnecessary —
-/// the `Arc` is what is cloned — and wrong in meaning, since a `T: Clone`
-/// transport would then be copied per clone instead of shared.
-impl<T, Tm> Clone for Client<T, Tm> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: std::sync::Arc::clone(&self.inner),
-            config: self.config.clone(),
-        }
-    }
-}
-
-/// `Tm` fixed to [`crate::DefaultClock`] for the same reason
-/// `ClientBuilder::new` is — see its doc comment. `Client::builder(t)`
-/// takes only a transport, so nothing in the call could infer a clock;
-/// this is what keeps the result `Client<T>`, the bare form that already
-/// appears in this workspace's own signatures.
-impl<T: Transport> Client<T, crate::DefaultClock> {
-    pub fn builder(transport: T) -> ClientBuilder<T, crate::DefaultClock> {
+/// **Cloning shares the transport and the clock rather than duplicating
+/// them**, and `#[derive(Clone)]` is now enough to say so: erasure put
+/// both behind the `Arc` in `Inner`, so there is no `T: Clone` for a
+/// derive to demand and no way for a clone to copy a transport. This used
+/// to be a hand-written impl carrying that argument in a comment.
+impl Client {
+    pub fn builder<T>(transport: T) -> ClientBuilder
+    where
+        T: hclient_core::unversioned::erased::BoxedTransport + Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
         ClientBuilder::new(transport)
     }
 }
@@ -613,7 +581,7 @@ impl<T: Transport> Client<T, crate::DefaultClock> {
 /// `#[cfg(feature = "default-transport")]`: without the feature
 /// `DefaultClock` *is* `NoClock`, so this method must not exist at all.
 #[cfg(feature = "default-transport")]
-impl<T: Transport> Client<T, crate::DefaultClock> {
+impl Client {
     /// A client sharing this one's transport, bounded by `total`.
     ///
     /// Consumes `self` and returns a new handle rather than mutating in
@@ -640,9 +608,22 @@ impl<T: Transport> Client<T, crate::DefaultClock> {
 /// it, `Clone` because the clock travels into every response body
 /// ([`crate::body::Deadline`] owns one). Both hold for every clock in this
 /// workspace, and for [`crate::NoClock`].
-impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
-    pub fn transport(&self) -> &T {
-        &self.inner.transport
+impl Client {
+    pub fn transport(&self) -> &hclient_core::unversioned::erased::SharedTransport {
+        // send-bound-exception: amendment-C12
+        &*self.inner.transport
+    }
+
+    /// This client's transport as a concrete type, if that is the type it
+    /// was built with.
+    ///
+    /// `Client` names no type parameter, which is the whole point of it,
+    /// and the price is that the backend's type is gone. This is how a
+    /// caller asks for it back — a mock's recorded requests, or a `Native`
+    /// to lend to a WebSocket connector. `None` means the client holds a
+    /// different backend: nothing checked the guess when it was built.
+    pub fn transport_as<T: 'static>(&self) -> Option<&T> {
+        self.inner.transport.as_any().downcast_ref::<T>()
     }
     pub fn config(&self) -> &Config {
         &self.config
@@ -718,25 +699,25 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 
-    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder<'_> {
         RequestBuilder::new(self, method, url)
     }
-    pub fn get(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn get(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::GET, url)
     }
-    pub fn post(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn post(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::POST, url)
     }
-    pub fn put(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn put(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::PUT, url)
     }
-    pub fn delete(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn delete(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::DELETE, url)
     }
-    pub fn patch(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn patch(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::PATCH, url)
     }
-    pub fn head(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn head(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::HEAD, url)
     }
     /// HTTP QUERY: a **safe, idempotent** request that carries a body.
@@ -760,7 +741,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// tests in `hclient-proto`, since the correct behaviour here follows
     /// only from QUERY not being POST, and would be easy to "fix" into
     /// corruption by anyone who groups it with POST for having a body.
-    pub fn query(&self, url: &str) -> RequestBuilder<'_, T, Tm> {
+    pub fn query(&self, url: &str) -> RequestBuilder<'_> {
         self.request(http::Method::QUERY, url)
     }
 
@@ -772,33 +753,30 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
     /// get a [`crate::sse::ReconnectingSseStream`] instead — that call is the
     /// actual gate between the two behaviors, not this method or any
     /// option on it.
-    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_, T, Tm> {
+    pub fn sse(&self, url: &str) -> crate::sse::SseBuilder<'_> {
         crate::sse::SseBuilder::new(self, url)
     }
 
     /// The stage order is fixed and correct by construction.
     /// In v0.1 there's one stage — redirect.
     ///
-    /// `where T::Error: Send + Sync + 'static` — the second documented
-    /// exception to the "core declares no Send/Sync" invariant (spec
-    /// amendment-C1, sibling of the exception on `Error::source`). Without
-    /// it, `Transport::to_error` below wouldn't be callable for an
-    /// abstract `T`: its own where-clause requires the same bound, because
-    /// its default body calls `Error::new`, and `Error` stores its source
-    /// as `Arc<dyn Error + Send + Sync>`, and type erasure doesn't let an
-    /// unbounded trait object's auto-traits through (verified by
-    /// compilation — E0277 without this bound). The bound lives here, on
-    /// the method itself, rather than on the `Transport` trait as a whole,
-    /// exactly as documented in `hclient-core`'s lib.rs: a transport with
-    /// an honestly `!Send` error remains representable, it just can't be
-    /// used with `Client`.
+    /// **This method used to carry `where T::Error: Send + Sync + 'static`,
+    /// and erasure removed it along with three siblings** — the second
+    /// documented exception to the "core declares no `Send`/`Sync`"
+    /// invariant (spec amendment-C1). It was needed because
+    /// `Transport::to_error` is called for an abstract `T` and its own
+    /// where-clause requires the bound, `Error` storing its source as
+    /// `Arc<dyn Error + Send + Sync>`. There is no abstract `T` here any
+    /// more: `BoxedTransport::execute_boxed` calls `to_error` where `Self`
+    /// is concrete, so the bound is discharged at the blanket impl and
+    /// four exception markers left this file with it. That is worth more
+    /// than the ergonomics the erasure was for — the invariant's own point
+    /// is that a bound declared where the type is abstract propagates to
+    /// backends that cannot satisfy it.
     pub async fn execute(
         &self,
         req: http::Request<RequestBody>,
-    ) -> Result<http::Response<crate::body::ClientBody<T::Body, Tm>>, Error>
-    where
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    ) -> Result<http::Response<crate::body::ClientBody>, Error> {
         self.execute_with(
             req,
             #[cfg(feature = "digest-auth")]
@@ -819,16 +797,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         mut req: http::Request<RequestBody>,
         #[cfg(feature = "digest-auth")] digest: Option<(String, String)>,
-    ) -> Result<
-        (
-            http::Response<crate::body::ClientBody<T::Body, Tm>>,
-            http::Uri,
-        ),
-        Error,
-    >
-    where
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    ) -> Result<(http::Response<crate::body::ClientBody>, http::Uri), Error> {
         // Content negotiation happens ONCE, here, before the first hop —
         // and the `Accept-Encoding` it may set travels to every subsequent
         // one, because `stages::redirect::next_hop` clones the previous
@@ -851,7 +820,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         // a `tower` layer (a layer is called per hop and cannot see the
         // chain). `now()` is taken before anything is sent, so DNS, the
         // connect and the TLS handshake are all inside it.
-        let started = self.inner.timer.now();
+        let started = self.inner.timer.now_boxed();
         let total = self.config.total;
         let resp = match total {
             // No bound asked for: not a `sleep` that never fires, but no
@@ -877,7 +846,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
                         #[cfg(feature = "digest-auth")]
                         digest,
                     ),
-                    &self.inner.timer,
+                    &*self.inner.timer,
                     t,
                 )
                 .await?
@@ -904,7 +873,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         // `hclient-wasi`'s `Body` carries an unfinished write future the
         // same way, and for the same reason — `Transport::execute`'s
         // signature is untouched by any of it.
-        let body = Deadline::new(body, self.inner.timer.clone(), started, total);
+        let body = Deadline::new(body, &*self.inner.timer, started, total);
         // **Outermost**, so it counts what the caller receives rather than
         // what crossed the wire — see `limit.rs` for why that is the side
         // the threat is on, and why `Deadline` sits the other way round.
@@ -932,10 +901,13 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         req: http::Request<RequestBody>,
         #[cfg(feature = "digest-auth")] mut digest: Option<(String, String)>,
-    ) -> Result<(http::Response<Cached<T::Body>>, http::Uri), Error>
-    where
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    ) -> Result<
+        (
+            http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+            http::Uri,
+        ),
+        Error,
+    > {
         let (parts, mut body) = req.into_parts();
 
         // The base URL is applied here, not only in `RequestBuilder`:
@@ -974,7 +946,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         check_timeouts_supported(
             &effective,
             self.inner.transport.capabilities(),
-            backend_name::<T>(),
+            self.inner.backend,
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         hp.extensions.insert(effective);
@@ -1004,7 +976,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         check_redirect_supported(
             &redirect,
             self.inner.transport.capabilities(),
-            backend_name::<T>(),
+            self.inner.backend,
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
         let redirect = redirect.unwrap_or_default();
@@ -1031,7 +1003,7 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         check_version_demand_supported(
             &hp.extensions,
             self.inner.transport.capabilities(),
-            backend_name::<T>(),
+            self.inner.backend,
         )
         .map_err(|e| Error::new(ErrorKind::Unsupported, e))?;
 
@@ -1374,23 +1346,19 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         hp: &HopParts,
         body: RequestBody,
-    ) -> Result<http::Response<T::Body>, Error>
-    where
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    ) -> Result<http::Response<hclient_core::unversioned::erased::BoxBody>, Error> {
         let resp = self
             .inner
             .transport
-            .execute(hp.to_request(body))
+            .execute_boxed(hp.to_request(body))
             .await
-            // Not `Error::new(ErrorKind::Other, e)`: B2 of the branch's
-            // final review — unconditional wrapping flattened the category
-            // of ANY transport error into `Other`, devaluing the whole
-            // `ErrorKind` taxonomy. The backend decides, not this line: the
-            // default `Transport::to_error` wraps exactly the same way, and
-            // a backend whose error is already an `Error` hands it back
-            // as-is.
-            .map_err(|e| self.inner.transport.to_error(e))?;
+            // No `map_err` here, unlike every version of this line before
+            // erasure: `execute_boxed` has already called the backend's own
+            // `Transport::to_error`, which is what B2 of the branch's final
+            // review asked for — the backend decides its error's category,
+            // not this line, and one that is already an `Error` is handed
+            // back as-is.
+            ?;
 
         // Stored per hop too, and against THIS hop's URI: a login handing
         // back `Set-Cookie` on its 302 is the ordinary case, and a jar that
@@ -1528,7 +1496,10 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         hp: &mut HopParts,
         caller_owns_the_conditionals: bool,
-    ) -> std::ops::ControlFlow<http::Response<Cached<T::Body>>, Plan> {
+    ) -> std::ops::ControlFlow<
+        http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+        Plan,
+    > {
         use std::ops::ControlFlow::{Break, Continue};
         let Some(cache) = self.inner.cache.as_ref() else {
             return Continue(Plan::default());
@@ -1570,7 +1541,10 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         _: &mut HopParts,
         _: bool,
-    ) -> std::ops::ControlFlow<http::Response<Cached<T::Body>>, Plan> {
+    ) -> std::ops::ControlFlow<
+        http::Response<Cached<hclient_core::unversioned::erased::BoxBody>>,
+        Plan,
+    > {
         std::ops::ControlFlow::Continue(Plan)
     }
 
@@ -1600,9 +1574,9 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         hp: &HopParts,
         plan: Plan,
-        resp: http::Response<T::Body>,
+        resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
         requested_at: std::time::SystemTime,
-    ) -> http::Response<Cached<T::Body>> {
+    ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
         let Some(cache) = self.inner.cache.as_ref() else {
             return resp.map(Cached::live);
         };
@@ -1659,9 +1633,9 @@ impl<T: Transport, Tm: Timer + Clone> Client<T, Tm> {
         &self,
         _: &HopParts,
         _: Plan,
-        resp: http::Response<T::Body>,
+        resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
         _: std::time::SystemTime,
-    ) -> http::Response<Cached<T::Body>> {
+    ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
         resp.map(Cached::live)
     }
 }
@@ -1713,7 +1687,7 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 // `impl` for a nonexistent type also fails to compile), but repeating the
 // condition makes the reason visible on the spot, not only in `lib.rs`.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
-impl Client<crate::DefaultTransport> {
+impl Client {
     /// A client with the default transport.
     ///
     /// On native this requires a surrounding tokio runtime: `tokio::spawn`
@@ -1808,7 +1782,7 @@ impl Client<crate::DefaultTransport> {
     target_family = "wasm",
     target_os = "unknown"
 ))]
-impl Client<crate::DefaultTransport> {
+impl Client {
     /// A client with the browser transport.
     ///
     /// No `Result`, unlike the native [`Client::new`] — and no panic
@@ -1861,7 +1835,7 @@ impl Client<crate::DefaultTransport> {
     target_family = "wasm",
     target_os = "unknown"
 ))]
-impl Default for Client<crate::DefaultTransport> {
+impl Default for Client {
     fn default() -> Self {
         Self::new()
     }

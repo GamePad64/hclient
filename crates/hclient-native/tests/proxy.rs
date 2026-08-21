@@ -117,10 +117,7 @@ fn socks5_proxy(want_auth: bool) -> (SocketAddr, mpsc::Receiver<(u8, String, u16
     (addr, rx)
 }
 
-async fn get<T>(client: &Client<T>, url: &str) -> Result<u16, hclient_core::Error>
-where
-    T: hclient_core::unversioned::Transport<Error = hclient_core::Error>,
-{
+async fn get(client: &Client, url: &str) -> Result<u16, hclient_core::Error> {
     // The head is the whole assertion here — every fixture answers with
     // `Connection: close` and a two-byte body, so draining it would prove
     // nothing these tests are about.
@@ -744,11 +741,7 @@ fn socks5_refusing(refuse_with: Option<u8>) -> SocketAddr {
 /// The proxy protocol is part of the transport's type, which is the
 /// visible cost of `P` being a parameter rather than a `Box<dyn ..>` —
 /// and the reason it is one is in `proxy`'s module doc.
-fn socks5_client(
-    proxy: SocketAddr,
-) -> Client<
-    Native<Tokio, hclient_tls::NoTls, IpLiteralOnly, hclient_core::unversioned::NoHooks, Socks5>,
-> {
+fn socks5_client(proxy: SocketAddr) -> Client {
     Client::builder(
         Native::new(Tokio, hclient_tls::NoTls, IpLiteralOnly).proxy(Proxy::new(
             Socks5::new(),

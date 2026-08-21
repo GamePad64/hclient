@@ -35,7 +35,10 @@ fn follows_a_redirect_and_records_both_hops() {
     let resp = futures_executor::block_on(c.execute(req)).unwrap();
 
     assert_eq!(resp.status(), 200);
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2);
     assert_eq!(
         seen[1].uri,
@@ -58,7 +61,10 @@ fn strips_authorization_when_the_host_changes() {
         .unwrap();
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert!(
         seen[0].headers.contains_key("authorization"),
         "the first hop keeps it"
@@ -92,7 +98,13 @@ fn does_not_follow_304() {
     let resp = futures_executor::block_on(c.execute(req)).unwrap();
 
     assert_eq!(resp.status(), 304);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -114,7 +126,10 @@ fn enforces_the_hop_limit() {
 
     assert!(err.is_redirect(), "{err}");
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         3,
         "the original request plus two hops"
     );
@@ -140,7 +155,10 @@ fn redirect_limit_of_zero_sends_only_the_original_request() {
 
     assert!(err.is_redirect(), "{err}");
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "only the original request, not a single hop"
     );
@@ -160,7 +178,10 @@ fn post_becomes_get_and_drops_body_on_302() {
         .unwrap();
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen[1].method, http::Method::GET);
     // Found by review: the test's name promises the body is dropped, but
     // the original version only checked the method. Check the body's
@@ -217,7 +238,10 @@ fn response_headers_do_not_leak_into_the_next_hop() {
         .unwrap();
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert!(
         !seen[1].headers.contains_key("set-cookie"),
         "response header set-cookie must not leak into the next request"
@@ -264,7 +288,10 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     });
     let _ = futures_executor::block_on(c.execute(req)).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t0 = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -326,7 +353,10 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
 
     // No second request was ever sent: the mock only saw the original hop.
     assert_eq!(resp.status(), 307, "the 3xx is returned as-is");
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(
         seen.len(),
         1,
@@ -368,9 +398,9 @@ fn transparent_mock() -> MockTransport {
 /// out, so that the ORDER of the two wrappers lives in one place (see that
 /// alias's doc comment) instead of being restated by every test that names
 /// the type.
-type ClientBody = hclient::body::ClientBody<hclient::mock::MockBody, hclient::DefaultClock>;
+type ClientBody = hclient::body::ClientBody;
 
-fn get_from(c: &Client<MockTransport>) -> Result<http::Response<ClientBody>, hclient::Error> {
+fn get_from(c: &Client) -> Result<http::Response<ClientBody>, hclient::Error> {
     let req = http::Request::builder()
         .uri("https://a/x")
         .body(RequestBody::Empty)
@@ -391,7 +421,10 @@ fn an_unconfigured_client_follows_exactly_ten_hops() {
 
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         11,
         "the original request plus ten hops"
     );
@@ -413,7 +446,10 @@ fn an_unconfigured_client_rejects_the_eleventh_hop() {
         "the message must name the limit that was hit: {err}"
     );
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         11,
         "the original request plus ten hops, and not a twelfth"
     );
@@ -447,7 +483,10 @@ fn a_per_request_redirect_policy_overrides_the_clients() {
         "the request's limit is the one enforced and the one reported: {err}"
     );
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "the original request plus the one hop the REQUEST's limit allows, not the client's four"
     );
@@ -473,7 +512,10 @@ fn a_per_request_limit_of_zero_stops_a_client_configured_to_follow() {
 
     assert!(err.is_redirect(), "{err}");
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "only the original request, not a single hop"
     );
@@ -497,7 +539,10 @@ fn without_a_per_request_policy_the_clients_limit_still_applies() {
 
     assert!(err.is_redirect(), "{err}");
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         3,
         "the original request plus the client's two hops"
     );
@@ -547,7 +592,10 @@ fn a_per_request_policy_against_an_internal_backend_fails_at_send() {
     assert_eq!(*err.kind(), hclient::ErrorKind::Unsupported, "{err}");
     assert!(err.to_string().contains("redirect_policy"), "{err}");
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "the request must be rejected before it is sent, not after"
     );
 }
@@ -590,7 +638,10 @@ fn query_reaches_the_transport_and_survives_a_redirect_with_its_body() {
     .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2, "the redirect must have been followed");
     for (i, r) in seen.iter().enumerate() {
         assert_eq!(

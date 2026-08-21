@@ -151,7 +151,7 @@ fn spawn_server() -> Fixture {
     }
 }
 
-fn client() -> Client<Native<Tokio, Rustls, SystemDns<Tokio>>> {
+fn client() -> Client {
     Client::builder(Native::new(
         Tokio,
         Rustls::with_webpki_roots(),

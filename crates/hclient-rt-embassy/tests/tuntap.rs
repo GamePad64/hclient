@@ -57,7 +57,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config, Ipv4Address, Ipv4Cidr, Stack, StackResources, StaticConfigV4};
 use embassy_net_tuntap::TunTapDevice;
 use embassy_time::Timer;
-use hclient::Client;
+use hclient_core::Timeouts;
 use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt::{TcpConnect, TcpOpts};
@@ -401,18 +401,11 @@ async fn request(stack: Stack<'static>) {
     // The verdict is not read here: this client keeps its connection in
     // `Native`'s pool, so the far end correctly sees it stay open.
     let (addr, _ends) = spawn_http_server(1);
-    let client = client::<2>(stack, true);
+    let t = transport::<2>(stack, true);
     let started = embassy_time::Instant::now();
-    let text = client
-        .get(&format!("http://{addr}/"))
-        .send()
+    let text = get(&t, &format!("http://{addr}/"), None)
         .await
-        .expect("send")
-        .collect()
-        .await
-        .expect("collect")
-        .text()
-        .expect("text");
+        .expect("send");
     println!(
         "embassy-net + hyper + hclient: body={text:?} in {}",
         started.elapsed()
@@ -427,18 +420,11 @@ async fn slots(stack: Stack<'static>) {
     // to 6 would travel over the connection request 1 opened and the
     // socket pool would never be asked for a second slot — i.e. the test
     // would pass without checking anything about slots.
-    let client = client::<2>(stack, false);
+    let t = transport::<2>(stack, false);
     for i in 1..=REQUESTS {
-        let text = client
-            .get(&format!("http://{addr}/"))
-            .send()
+        let text = get(&t, &format!("http://{addr}/"), None)
             .await
-            .expect("send")
-            .collect()
-            .await
-            .expect("collect")
-            .text()
-            .expect("text");
+            .expect("send");
         assert_eq!(text, BODY, "request {i}");
         // Every connection ends the way a connection should — the FIN this
         // pool queues in `Drop` and waits for before handing the slot on.
@@ -460,19 +446,15 @@ async fn connect_timeout(stack: Stack<'static>) {
 
     let pool = SocketPool::<2, 1536, 1536>::leak(stack);
     let rt = Embassy::new(stack, pool);
-    let client = Client::builder(Native::new(rt, NoTls, IpLiteralOnly))
-        .timeouts(hclient::Timeouts {
-            resolve: None,
-            connect: Some(DEADLINE),
-            ..Default::default()
-        })
-        .build()
-        .expect("build");
+    let t = Native::new(rt, NoTls, IpLiteralOnly);
+    let bound = Timeouts {
+        resolve: None,
+        connect: Some(DEADLINE),
+        ..Default::default()
+    };
 
     let started = embassy_time::Instant::now();
-    let err = client
-        .get(BLACK_HOLE)
-        .send()
+    let err = get(&t, BLACK_HOLE, Some(bound))
         .await
         .expect_err("nothing answers at .9");
     let waited = started.elapsed();
@@ -509,24 +491,14 @@ async fn connect_timeout(stack: Stack<'static>) {
     // one request per second **for the whole interface**, and the
     // black-hole attempt above just spent that budget. 300ms would be
     // measuring the neighbour cache, not the pool.
-    let client = Client::builder(Native::new(rt, NoTls, IpLiteralOnly))
-        .timeouts(hclient::Timeouts {
-            resolve: None,
-            connect: Some(Duration::from_secs(10)),
-            ..Default::default()
-        })
-        .build()
-        .expect("build");
-    let text = client
-        .get(&format!("http://{addr}/"))
-        .send()
+    let generous = Timeouts {
+        resolve: None,
+        connect: Some(Duration::from_secs(10)),
+        ..Default::default()
+    };
+    let text = get(&t, &format!("http://{addr}/"), Some(generous))
         .await
-        .expect("send after the timeout")
-        .collect()
-        .await
-        .expect("collect")
-        .text()
-        .expect("text");
+        .expect("send after the timeout");
     assert_eq!(text, BODY);
     println!(
         "a request after the timeout still gets a socket, in {}",
@@ -616,11 +588,12 @@ async fn refuse_opts(stack: Stack<'static>) {
 
 async fn cancel(stack: Stack<'static>, drop_it: bool) {
     let (addr, seen, verdict) = spawn_silent_server();
-    let client = client::<2>(stack, true);
+    let t = transport::<2>(stack, true);
     // Owned, not `pin!`: dropping a `Pin<&mut F>` would drop the borrow
     // and leave the future itself alive on the stack, which is the one
     // thing this test must not do.
-    let mut fut = Some(Box::pin(client.get(&format!("http://{addr}/")).send()));
+    let url = format!("http://{addr}/");
+    let mut fut = Some(Box::pin(get(&t, &url, None)));
     // Drop at a determined moment — once the server has the whole request
     // head — rather than after a guessed sleep, which could land before
     // there is anything on the wire to cancel.
@@ -693,9 +666,10 @@ async fn reclaim(stack: Stack<'static>) {
     let (answering, _ends) = spawn_http_server(1);
     // `N = 1` is not a tuning choice: with two slots the second request
     // takes the free one and never looks at the closing list.
-    let client = client::<1>(stack, false);
+    let t = transport::<1>(stack, false);
 
-    let mut fut = Some(Box::pin(client.get(&format!("http://{silent}/")).send()));
+    let url = format!("http://{silent}/");
+    let mut fut = Some(Box::pin(get(&t, &url, None)));
     // Same shape as `cancel`: drop once the server has the whole head, so
     // there is something on the wire to cancel.
     loop {
@@ -716,16 +690,9 @@ async fn reclaim(stack: Stack<'static>) {
 
     // --- the two statements that must share one executor turn ---
     drop(fut.take());
-    let text = client
-        .get(&format!("http://{answering}/"))
-        .send()
+    let text = get(&t, &format!("http://{answering}/"), None)
         .await
-        .expect("the second request must get the one slot back")
-        .collect()
-        .await
-        .expect("collect")
-        .text()
-        .expect("text");
+        .expect("the second request must get the one slot back");
     // ------------------------------------------------------------
     assert_eq!(text, BODY, "the reclaimed socket carries a real exchange");
 
@@ -821,19 +788,51 @@ async fn naive(stack: Stack<'static>) {
 /// pressure: `2` is enough to prove slots are recycled at all, and only
 /// `1` forces a request to reclaim a socket that is *still closing*, which
 /// is the state `finish_closing` exists for.
-fn client<const N: usize>(
+fn transport<const N: usize>(
     stack: Stack<'static>,
     reuse: bool,
-) -> Client<Native<Embassy<N, 1536, 1536>, NoTls, IpLiteralOnly>> {
+) -> Native<Embassy<N, 1536, 1536>, NoTls, IpLiteralOnly> {
     let pool = SocketPool::<N, 1536, 1536>::leak(stack);
     let rt = Embassy::<N, 1536, 1536>::new(stack, pool);
-    let transport = Native::new(rt, NoTls, IpLiteralOnly);
-    let transport = if reuse {
-        transport
-    } else {
-        transport.without_pool()
-    };
-    Client::builder(transport).build().expect("build")
+    let t = Native::new(rt, NoTls, IpLiteralOnly);
+    if reuse { t } else { t.without_pool() }
+}
+
+/// A GET through the transport, with the body collected.
+///
+/// **This file used to build an `hclient::Client` here, and cannot any
+/// more.** `Client` names no type parameters, so it boxes its transport as
+/// `Send + Sync`; this runtime is `RefCell` throughout — structurally,
+/// because embassy's executor is single-threaded — so `RefCell<embassy_net
+/// ::Inner>: !Sync` refuses at `Client::builder`. The embedded path is
+/// `Transport` directly, which is what `hclient-native/examples/minimal.rs`
+/// already documents as the constrained-target path.
+///
+/// What the acceptance still covers is unchanged in the part that is about
+/// *this crate*: `Native` -> hyper -> `embassy-net` over a real TAP device.
+/// What it no longer covers is the `Client` layer above — redirects, the
+/// cookie jar, the cache, timeout merging — and that is target-independent
+/// logic exercised by the rest of the suite on every other backend.
+async fn get<T>(t: &T, url: &str, timeouts: Option<Timeouts>) -> Result<String, hclient_core::Error>
+where
+    T: hclient_core::unversioned::Transport<Error = hclient_core::Error>,
+    T::Body: http_body::Body<Data = bytes::Bytes> + Unpin,
+    <T::Body as http_body::Body>::Error: Into<hclient_core::Error>,
+{
+    let mut req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(url)
+        .body(hclient_core::RequestBody::Empty)
+        .expect("request");
+    if let Some(tm) = timeouts {
+        req.extensions_mut().insert(tm);
+    }
+    let resp = t.execute(req).await?;
+    let bytes = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .map_err(Into::into)?
+        .to_bytes();
+    Ok(String::from_utf8(bytes.to_vec()).expect("utf-8"))
 }
 
 /// Answers `count` requests, one connection each, and then reports how the

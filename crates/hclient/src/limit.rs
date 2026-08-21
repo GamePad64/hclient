@@ -51,13 +51,24 @@ pub struct ResponseTooLarge {
     pub seen: u64,
 }
 
+// Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
+// would add one, and after erasure the body in a real client is
+// `dyn http_body::Body`, which is not `Debug` — so the derive would take
+// `.unwrap()` on a response away from every caller. What a `{:?}` wants
+// here is the head anyway: a body is a stream, and its contents were never
+// printable without consuming them.
+impl<B> std::fmt::Debug for Limited<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Limited").finish_non_exhaustive()
+    }
+}
+
 /// Stops a response body at a byte ceiling.
 ///
 /// Inert with no limit set, in the shape [`crate::body::Deadline`] already uses:
 /// the type is always present, because a type cannot appear and disappear
 /// with a runtime value, and the cost of that is one `Option` test per
 /// frame.
-#[derive(Debug)]
 pub struct Limited<B> {
     /// `None` once the limit has fired, which drops the inner body — and
     /// dropping it is what stops the exchange, exactly as `Deadline`'s

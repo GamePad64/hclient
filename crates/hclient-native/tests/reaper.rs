@@ -173,10 +173,7 @@ fn transport<R: TcpConnect<Stream: 'static> + Timer + Blocking + Clone>(
 /// Collecting matters: a connection is handed back when its response body
 /// ends cleanly and at no other moment, so a test that stopped at the head
 /// would be watching an abandoned connection rather than an idle one.
-async fn park_one_connection<R: TcpConnect<Stream: 'static> + Timer + Blocking + Clone>(
-    client: &Client<Native<R, Rustls, SystemDns<R>>>,
-    addr: SocketAddr,
-) {
+async fn park_one_connection(client: &Client, addr: SocketAddr) {
     let resp = client
         .get(&format!("http://{addr}/"))
         .send()
@@ -196,7 +193,12 @@ where
     H::Rt: Spawn<Reaper<H::Rt, NativeIo<H::Rt, Rustls>>>,
     // Restated rather than inherited from `Harness::Rt`'s own bound: an
     // associated-type bound does not elaborate through `H::Rt` (E0310).
-    <H::Rt as TcpConnect>::Stream: 'static,
+    <H::Rt as TcpConnect>::Stream: Send + 'static,
+    // What the erased `Client` asks of a transport, and therefore of the
+    // runtime it is built from.
+    H::Rt: Send + Sync + 'static,
+    <H::Rt as Timer>::Instant: Send + Sync,
+    <H::Rt as Timer>::Sleep: Send + 'static,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {
@@ -225,7 +227,12 @@ where
 /// difference is `pool` where the claim above has `with_reaper`.
 fn without_a_reaper_the_connection_stays_open<H: Harness>(h: H)
 where
-    <H::Rt as TcpConnect>::Stream: 'static,
+    <H::Rt as TcpConnect>::Stream: Send + 'static,
+    // What the erased `Client` asks of a transport, and therefore of the
+    // runtime it is built from.
+    H::Rt: Send + Sync + 'static,
+    <H::Rt as Timer>::Instant: Send + Sync,
+    <H::Rt as Timer>::Sleep: Send + 'static,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {

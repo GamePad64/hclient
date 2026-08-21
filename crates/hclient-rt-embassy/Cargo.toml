@@ -109,6 +109,13 @@ hclient-core     = { workspace = true }
 hclient-native   = { path = "../hclient-native", version = "0.1.0" }
 hclient-dns      = { path = "../hclient-dns", version = "0.1.0" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
+# The scenarios collect response bodies themselves, because the embedded
+# path is `Transport` rather than `hclient::Client` — see `tuntap.rs`'s
+# `get`. `hclient::Collected` is not reachable from outside that facade.
+http-body-util   = { workspace = true }
+http             = { workspace = true }
+http-body        = { workspace = true }
+bytes            = { workspace = true }
 
 [lints]
 workspace = true

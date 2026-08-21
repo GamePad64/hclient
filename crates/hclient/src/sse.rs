@@ -2,7 +2,7 @@ use crate::client::Client;
 
 use crate::response::Response;
 use bytes::Bytes;
-use hclient_core::unversioned::{Timer, Transport};
+use hclient_core::unversioned::Timer;
 use hclient_core::{Error, ErrorKind, RequestBody};
 // Re-exported rather than merely imported, so the whole of SSE is behind
 // one door: `hclient::sse::{SseStream, SseEvent, Backoff, ..}`.
@@ -37,6 +37,18 @@ fn is_event_stream_content_type(v: &str) -> bool {
     }
 }
 
+// Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
+// would add one, and after erasure the body in a real client is
+// `dyn http_body::Body`, which is not `Debug` — so the derive would take
+// `.unwrap()` on a response away from every caller. What a `{:?}` wants
+// here is the head anyway: a body is a stream, and its contents were never
+// printable without consuming them.
+impl<B> std::fmt::Debug for SseStream<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SseStream").finish_non_exhaustive()
+    }
+}
+
 /// A stream of SSE events over any response body.
 ///
 /// Reconnection is **not** implemented here — this type has no `Client`, no
@@ -48,7 +60,6 @@ fn is_event_stream_content_type(v: &str) -> bool {
 /// whether or not reconnect is involved, instead of being re-derived a
 /// second time. `last_event_id()` was already available before reconnect
 /// existed, so adding it didn't change this type's public API.
-#[derive(Debug)]
 pub struct SseStream<B> {
     resp: Response<B>,
     decoder: SseDecoder,
@@ -275,8 +286,8 @@ impl Default for SseOptions {
 /// independent on purpose: a caller can want reconnect without a total
 /// bound, or a bound without reconnect.
 #[derive(Debug)]
-pub struct SseBuilder<'a, T, C = crate::DefaultClock> {
-    client: &'a Client<T, C>,
+pub struct SseBuilder<'a> {
+    client: &'a Client,
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
@@ -289,8 +300,8 @@ pub struct SseBuilder<'a, T, C = crate::DefaultClock> {
     error: Option<Error>,
 }
 
-impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
-    pub(crate) fn new(client: &'a Client<T, C>, url: &str) -> Self {
+impl<'a> SseBuilder<'a> {
+    pub(crate) fn new(client: &'a Client, url: &str) -> Self {
         Self {
             client,
             url: url.to_owned(),
@@ -374,22 +385,22 @@ impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
     /// `Duration` and resolves immediately, so a test can assert the
     /// backoff actually computed the interval it should have, which a
     /// thread-backed clock could only do by really waiting.
-    pub fn with_timer<Tm: Timer>(self, timer: Tm) -> ReconnectingSseBuilder<'a, T, C, Tm> {
+    pub fn with_timer<Tm>(self, timer: Tm) -> ReconnectingSseBuilder<'a>
+    where
+        Tm: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
+        Tm::Instant: Send,                         // send-bound-exception: amendment-C12
+        Tm::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
+    {
         ReconnectingSseBuilder {
             builder: self,
-            timer,
+            timer: std::sync::Arc::new(timer),
         }
     }
 
     /// A single connection attempt, exactly [`SseStream::new`]'s contract —
     /// no reconnect, because there is no timer to wait out a backoff delay
     /// with. For reconnect, add [`with_timer`](Self::with_timer) first.
-    pub async fn connect(self) -> Result<SseStream<crate::body::ClientBody<T::Body, C>>, Error>
-    where
-        T::Body: HttpBody<Data = Bytes> + Unpin,
-        <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    pub async fn connect(self) -> Result<SseStream<crate::body::ClientBody>, Error> {
         if let Some(e) = self.error {
             return Err(e);
         }
@@ -405,13 +416,21 @@ impl<'a, T: Transport, C: Timer + Clone> SseBuilder<'a, T, C> {
 }
 
 /// Builds a [`ReconnectingSseStream`]. Returned by [`SseBuilder::with_timer`].
-#[derive(Debug)]
-pub struct ReconnectingSseBuilder<'a, T, C, Tm> {
-    builder: SseBuilder<'a, T, C>,
-    timer: Tm,
+// Hand-written for the reason `Client`'s is: the erased clock is a trait
+// object, and asking `Debug` of it would tax every clock for a derive.
+impl std::fmt::Debug for ReconnectingSseBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReconnectingSseBuilder<'_>")
+            .finish_non_exhaustive()
+    }
 }
 
-impl<'a, T: Transport, C: Timer + Clone, Tm: Timer> ReconnectingSseBuilder<'a, T, C, Tm> {
+pub struct ReconnectingSseBuilder<'a> {
+    builder: SseBuilder<'a>,
+    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
+}
+
+impl<'a> ReconnectingSseBuilder<'a> {
     /// Forwards to [`SseBuilder::header`] — see its doc comment.
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.builder = self.builder.header(name, value);
@@ -433,12 +452,7 @@ impl<'a, T: Transport, C: Timer + Clone, Tm: Timer> ReconnectingSseBuilder<'a, T
     /// started yet. Reconnect (with backoff) only applies to a stream that
     /// was successfully opened at least once and later dropped — see
     /// `ReconnectingSseStream::next`.
-    pub async fn connect(self) -> Result<ReconnectingSseStream<'a, T, C, Tm>, Error>
-    where
-        T::Body: HttpBody<Data = Bytes> + Unpin,
-        <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    pub async fn connect(self) -> Result<ReconnectingSseStream<'a>, Error> {
         if let Some(e) = self.builder.error {
             return Err(e);
         }
@@ -472,20 +486,13 @@ impl<'a, T: Transport, C: Timer + Clone, Tm: Timer> ReconnectingSseBuilder<'a, T
 /// timeouts, and the rest of `Client`'s stages apply exactly as they do to
 /// an ordinary request), and validates the response with the SAME
 /// `validate_sse_response` the plain `SseStream::new` uses.
-async fn open<T, C>(
-    client: &Client<T, C>,
+async fn open(
+    client: &Client,
     caller_headers: &http::HeaderMap,
     url: &str,
     last_event_id: Option<&str>,
     max_event_size: usize,
-) -> Result<SseStream<crate::body::ClientBody<T::Body, C>>, Error>
-where
-    T: Transport,
-    C: Timer + Clone,
-    T::Body: HttpBody<Data = Bytes> + Unpin,
-    <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
-    T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-{
+) -> Result<SseStream<crate::body::ClientBody>, Error> {
     let uri = crate::config::effective_uri(client.config().base_url.as_ref(), url)?;
 
     let mut headers = caller_headers.clone();
@@ -676,13 +683,12 @@ enum ReconnectState<B> {
 /// non-empty one to send) after a jittered backoff delay, waited out on
 /// `Tm`. Built by [`ReconnectingSseBuilder::connect`], reachable from
 /// [`Client::sse`]`.with_timer(..)`.
-#[derive(Debug)]
-pub struct ReconnectingSseStream<'a, T: Transport, C: Timer, Tm> {
-    client: &'a Client<T, C>,
+pub struct ReconnectingSseStream<'a> {
+    client: &'a Client,
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
-    timer: Tm,
+    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
     /// The last event ID observed so far, kept OUTSIDE the live
     /// `SseStream`'s own decoder so it survives the decoder being replaced
     /// on every reconnect. Snapshotted from the live stream's
@@ -706,18 +712,21 @@ pub struct ReconnectingSseStream<'a, T: Transport, C: Timer, Tm> {
     /// The most recently seen server `retry:` value, if any — see `next`'s
     /// doc comment for how it interacts with `options.backoff`.
     server_retry: Option<Duration>,
-    state: ReconnectState<crate::body::ClientBody<T::Body, C>>,
+    state: ReconnectState<crate::body::ClientBody>,
 }
 
-impl<'a, T, C, Tm> ReconnectingSseStream<'a, T, C, Tm>
-where
-    T: Transport,
-    T::Body: HttpBody<Data = Bytes> + Unpin,
-    <T::Body as HttpBody>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
-    T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    C: Timer + Clone,
-    Tm: Timer,
-{
+// Hand-written for the reason `ReconnectingSseBuilder`'s is, plus one more:
+// the live stream's body is erased too, and `dyn Body` is not `Debug`
+// either.
+impl std::fmt::Debug for ReconnectingSseStream<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReconnectingSseStream")
+            .field("attempt", &self.attempt)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ReconnectingSseStream<'a> {
     /// The last event ID seen, across any number of reconnects — the value
     /// that would go out as `Last-Event-ID` on the NEXT reconnect (subject
     /// to the same "only if non-empty" rule `open` applies).
@@ -809,7 +818,7 @@ where
                         )));
                     };
                     self.attempt = self.attempt.saturating_add(1);
-                    self.timer.sleep(delay).await;
+                    self.timer.sleep_boxed(delay).await;
 
                     match open(
                         self.client,

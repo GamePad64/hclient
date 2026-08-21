@@ -474,22 +474,32 @@ fn a_body_that_never_yields_is_cut_by_the_elapsed_check_alone() {
     assert_eq!(*err.kind(), ErrorKind::Timeout(Phase::Total), "{err}");
 }
 
-/// The response body still crosses a `tokio::spawn`, which is the only
-/// check that matters for the field added above.
+/// **The response body no longer crosses a `tokio::spawn`, and this test
+/// is the record of what that cost and why it was paid.**
 ///
-/// `Deadline` now holds a `Pin<Box<Tm::Sleep>>`, and the whole argument
-/// for it over `Pin<Box<dyn Future>>` is that auto traits pass through a
-/// box around a *concrete* type. If that were wrong — or if some later
-/// field were `!Send` — **every** response body this client produces would
-/// stop being spawnable, and `tokio::spawn` would refuse to compile here.
-/// A `Send` bound is never declared anywhere in `hclient` (the crate's own
-/// invariant), so a test that instantiates it is the only place the
-/// property can be stated at all.
+/// It used to assert the opposite, and the assertion was right for a
+/// `Client` that named its transport: `Deadline` held a
+/// `Pin<Box<Tm::Sleep>>`, a box around a *concrete* type, so auto traits
+/// passed through and `hclient-native`'s bodies were `Send`.
 ///
-/// It also runs: the `total_timeout` is set, so the body being moved
-/// really is one carrying a live sleep, not the inert `total: None` shape.
+/// Erasure ends it. One `ClientBody` has to serve every backend, and
+/// `hclient-fetch`'s body holds a `dyn Stream` with no auto trait — so a
+/// `Send` on the erased body does not weaken the browser backend, it
+/// **excludes** it. Measured rather than argued: with `BoxBody` declared
+/// `Send`, `cargo test -p hclient-fetch --target wasm32-unknown-unknown
+/// --no-run` refuses `Client::builder(Fetch::new())` outright.
+///
+/// So: every backend can be a `Client`, and no response body can be
+/// spawned. A caller who needs the second gets it by reaching past the
+/// facade — `Client::transport_as::<Native<..>>()` hands back the concrete
+/// transport, whose own bodies are unchanged.
+///
+/// The bound still works on a body held across an await; what it cannot do
+/// is cross a thread. That is what this test now pins, with the
+/// `compile_fail` for the negative living in `shape.rs` beside the rest of
+/// the erasure's `Send` story.
 #[test]
-fn a_bounded_response_body_still_crosses_a_tokio_spawn() {
+fn a_bounded_response_body_survives_being_held_across_an_await() {
     let addr = prompt_server();
     let c = Client::builder(transport())
         .total_timeout(Tokio, TOTAL)
@@ -502,15 +512,15 @@ fn a_bounded_response_body_still_crosses_a_tokio_spawn() {
             .send()
             .await
             .expect("responds");
-        tokio::spawn(async move {
-            resp.collect()
-                .await
-                .expect("body collects inside the bound")
-                .text()
-                .expect("utf-8")
-        })
-        .await
-        .expect("the spawned task neither panicked nor was cancelled")
+        // Held across a yield rather than moved to another task: the
+        // `total_timeout` is set, so this really is a body carrying a live
+        // sleep, not the inert `total: None` shape.
+        tokio::task::yield_now().await;
+        resp.collect()
+            .await
+            .expect("body collects inside the bound")
+            .text()
+            .expect("utf-8")
     });
     assert_eq!(body, "done");
 }

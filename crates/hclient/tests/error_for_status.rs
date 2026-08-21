@@ -6,7 +6,7 @@ use hclient::Client;
 use hclient::error::UnexpectedStatus;
 use hclient::mock::MockTransport;
 
-fn answering(status: u16) -> Client<MockTransport> {
+fn answering(status: u16) -> Client {
     let t = MockTransport::new();
     t.push_response(
         http::Response::builder()

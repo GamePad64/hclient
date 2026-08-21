@@ -71,10 +71,13 @@ fn a_bounded_handle_shares_the_transport_with_the_unbounded_one() {
 
     assert_eq!(also_plain.config().total, None, "the original is untouched");
     assert_eq!(bounded.config().total, Some(Duration::from_millis(250)));
+    // Compared as thin pointers: `transport()` hands back a `&dyn`, and a
+    // wide-pointer comparison would also be comparing vtable addresses,
+    // which the language does not promise are unique per type.
     assert!(
         std::ptr::eq(
-            also_plain.transport() as *const _,
-            bounded.transport() as *const _
+            also_plain.transport() as *const _ as *const (),
+            bounded.transport() as *const _ as *const ()
         ),
         "the two handles must share one transport, not hold two"
     );

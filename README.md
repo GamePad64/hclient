@@ -34,6 +34,14 @@ redirects, decompression, proxies (HTTP `CONNECT` and SOCKS5) and
 `multipart/form-data` are each one implementation shared by every backend,
 which is what makes "the same answers everywhere" more than a slogan.
 
+**`hclient::Client` names no type parameters**, so a library that takes a
+client writes `fn f(c: &Client)` and nothing else — no transport, no clock,
+no `where` clause pushed to its own callers. It is `Clone` with `Arc`
+semantics and `Send + Sync`. The price is written down where it lands: a
+response body cannot cross a `tokio::spawn`, because one body type has to
+serve the browser backend too, and a caller who needs the concrete backend
+asks for it with `Client::transport_as::<T>()`.
+
 Published as `0.1.0`, and `AGENTS.md` says what that promise costs: six
 public types took a breaking change in the month before the first release,
 so read the seams as young rather than settled.

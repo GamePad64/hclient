@@ -319,7 +319,7 @@ fn watched(rec: &Recorder) -> Watched {
     Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio)).hooks(rec.clone())
 }
 
-async fn get_ok(client: &Client<Watched>, addr: SocketAddr) {
+async fn get_ok(client: &Client, addr: SocketAddr) {
     let resp = tokio::time::timeout(BOUND, client.get(&format!("http://{addr}/")).send())
         .await
         .expect("must not hang")

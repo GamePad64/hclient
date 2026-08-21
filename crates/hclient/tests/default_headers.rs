@@ -47,17 +47,40 @@ fn a_default_reaches_the_wire_and_the_requests_own_header_wins() {
     .expect("two");
 
     assert_eq!(
-        sent(c.transport(), 0, "user-agent").as_deref(),
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            0,
+            "user-agent"
+        )
+        .as_deref(),
         Some("probe/1.0")
     );
-    assert_eq!(sent(c.transport(), 0, "x-tenant").as_deref(), Some("acme"));
     assert_eq!(
-        sent(c.transport(), 1, "user-agent").as_deref(),
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            0,
+            "x-tenant"
+        )
+        .as_deref(),
+        Some("acme")
+    );
+    assert_eq!(
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            1,
+            "user-agent"
+        )
+        .as_deref(),
         Some("mine/2.0"),
         "a header the caller wrote on the request is a decision about that request"
     );
     assert_eq!(
-        sent(c.transport(), 1, "x-tenant").as_deref(),
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            1,
+            "x-tenant"
+        )
+        .as_deref(),
         Some("acme"),
         "and the other default is untouched by that"
     );
@@ -83,14 +106,27 @@ fn a_default_travels_to_every_redirect_hop() {
         .expect("build");
 
     futures_executor::block_on(c.get("https://a/first").send()).expect("the chain completes");
-    let reqs = c.transport().requests();
+    let reqs = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(reqs.len(), 2, "one redirect, two requests");
     assert_eq!(
-        sent(c.transport(), 0, "user-agent").as_deref(),
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            0,
+            "user-agent"
+        )
+        .as_deref(),
         Some("probe/1.0")
     );
     assert_eq!(
-        sent(c.transport(), 1, "user-agent").as_deref(),
+        sent(
+            c.transport_as::<MockTransport>().expect("the mock"),
+            1,
+            "user-agent"
+        )
+        .as_deref(),
         Some("probe/1.0"),
         "the second hop is a request this client made too"
     );

@@ -32,7 +32,7 @@ fn hop_to(next: &'static str) -> MockTransport {
     t
 }
 
-fn go(c: &Client<MockTransport>) -> Result<hclient::Collected, hclient_core::Error> {
+fn go(c: &Client) -> Result<hclient::Collected, hclient_core::Error> {
     futures_executor::block_on(async { c.get("https://a.test/one").send().await?.collect().await })
 }
 
@@ -49,7 +49,13 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("follows").text().unwrap(), "arrived");
-    assert_eq!(c.transport().requests().len(), 2);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        2
+    );
 
     // Stop: one request, and the 3xx is the caller's answer.
     let c = Client::builder(hop_to("https://a.test/two"))
@@ -63,7 +69,14 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         "https://a.test/two",
         "and its Location reaches the caller, who is the one deciding"
     );
-    assert_eq!(c.transport().requests().len(), 1, "the hop was not taken");
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1,
+        "the hop was not taken"
+    );
 
     // Refuse: one request, and a typed error naming the hop.
     let c = Client::builder(hop_to("https://a.test/two"))
@@ -77,7 +90,13 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         .unwrap_or_else(|| panic!("the typed refusal: {err:?}"));
     assert_eq!(refused.to, "https://a.test/two");
     assert_eq!(refused.status, 302);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 /// **The hop is described as it would go out**, not as the server wrote
@@ -201,7 +220,10 @@ fn every_hop_is_asked_and_the_answers_are_independent() {
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect, "{err:?}");
     assert_eq!(*asked.lock().unwrap(), vec!["/two", "/three"]);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "the third request was never sent"
     );
@@ -261,7 +283,13 @@ fn the_policy_decides_before_the_predicate_and_cannot_be_overruled() {
         .build()
         .expect("build");
     assert_eq!(go(&c).expect("stops").status(), 302);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
     assert_eq!(*asked.lock().unwrap(), 0, "the policy had already said no");
 }
 

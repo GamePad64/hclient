@@ -75,8 +75,16 @@ fn spawn_server() -> std::net::SocketAddr {
 /// runtime".
 async fn fetch_once<R>(rt: R, addr: std::net::SocketAddr) -> String
 where
+    // `Send + Sync + 'static` is what the erased `Client` asks of a
+    // transport, and therefore of everything the transport is built from.
+    // It is not what the *seam* asks — `Native` on a bare
+    // `futures_executor` is still the property this file exists to pin, and
+    // it holds with or without these three.
     R: hclient_rt::TcpConnect + hclient_rt::Timer + hclient_rt::Blocking + Clone,
-    R::Stream: 'static,
+    R: Send + Sync + 'static,
+    R::Stream: Send + 'static,
+    R::Instant: Send + Sync,
+    R::Sleep: Send + 'static,
 {
     let t = Native::new(rt.clone(), Rustls::with_webpki_roots(), SystemDns::new(rt));
     let c = Client::builder(t)

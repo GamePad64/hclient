@@ -34,7 +34,7 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime")
 }
 
-fn client() -> Client<Native<Tokio, Rustls, SystemDns<Tokio>>> {
+fn client() -> Client {
     Client::builder(Native::new(
         Tokio,
         Rustls::with_webpki_roots(),

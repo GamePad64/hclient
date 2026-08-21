@@ -1,7 +1,6 @@
 use crate::client::Client;
 
 use crate::response::Response;
-use hclient_core::unversioned::{Timer, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_proto::redirect::RedirectPolicy;
 
@@ -10,8 +9,8 @@ use hclient_proto::redirect::RedirectPolicy;
 /// same default as `Client`'s own parameter, so `RequestBuilder<'_, T>`
 /// keeps naming what it always named.
 #[derive(Debug)]
-pub struct RequestBuilder<'a, T, Tm = crate::DefaultClock> {
-    client: &'a Client<T, Tm>,
+pub struct RequestBuilder<'a> {
+    client: &'a Client,
     method: http::Method,
     /// Already resolved against the client's `base_url` (or just parsed,
     /// if there's no base). Resolution lives in `new`, not in `send`,
@@ -50,8 +49,8 @@ pub struct RequestBuilder<'a, T, Tm = crate::DefaultClock> {
     error: Option<Error>,
 }
 
-impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
-    pub(crate) fn new(client: &'a Client<T, Tm>, method: http::Method, url: &str) -> Self {
+impl<'a> RequestBuilder<'a> {
+    pub(crate) fn new(client: &'a Client, method: http::Method, url: &str) -> Self {
         Self {
             client,
             method,
@@ -132,9 +131,7 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
     ///
     /// ```no_run
     /// # use hclient::multipart::{Form, Part};
-    /// # use hclient_core::unversioned::Transport;
-    /// # async fn f(c: &hclient::Client<impl Transport<Error = hclient::Error>>)
-    /// # -> Result<(), hclient::Error> {
+    /// # async fn f(c: &hclient::Client) -> Result<(), hclient::Error> {
     /// c.post("https://example.com/upload")
     ///     .multipart(
     ///         Form::new()
@@ -433,14 +430,11 @@ impl<'a, T: Transport, Tm: Timer + Clone> RequestBuilder<'a, T, Tm> {
     /// client's whole-operation bound past the response head — inert, and
     /// costing one `Option` test per frame, for a client that never set
     /// one.
-    pub async fn send(self) -> Result<Response<crate::body::ClientBody<T::Body, Tm>>, Error>
-    where
-        // Sibling of the bound on `Client::execute` in `client.rs` (spec
-        // amendment-C1): `send` calls `Client::execute`, which requires
-        // `T::Error: Send + Sync + 'static` — a generic function must repeat
-        // its callee's bound, the trait itself doesn't carry it.
-        T::Error: Send + Sync + 'static, // send-bound-exception: amendment-C1
-    {
+    /// The `where` clause this used to carry is gone with the type
+    /// parameters: the transport's error is converted into
+    /// [`hclient_core::Error`] at the erased seam, so nothing here has to
+    /// repeat a bound about it.
+    pub async fn send(self) -> Result<Response<crate::body::ClientBody>, Error> {
         if let Some(e) = self.error {
             return Err(e);
         }

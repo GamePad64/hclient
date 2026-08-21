@@ -59,7 +59,10 @@ fn client_level_timeouts_reach_the_transport() {
         .unwrap();
     futures_executor::block_on(c.get("https://a/x").send()).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -97,7 +100,10 @@ fn request_timeouts_override_the_client_field_by_field() {
     )
     .unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -150,7 +156,10 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
     // And the request must not have gone out: a rejected setting doesn't
     // turn into "sent as-is, just without the timeout".
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "a request with an unsupported setting must not reach the transport"
     );
 }
@@ -177,7 +186,10 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
     futures_executor::block_on(c.get("https://a/x").send())
         .expect("no timeout was set — nothing to reject");
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()

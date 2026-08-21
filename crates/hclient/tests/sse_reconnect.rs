@@ -93,7 +93,10 @@ fn reconnects_and_sends_last_event_id() {
         "id persists across a reconnect until a new one is seen"
     );
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2, "the second request is the reconnect");
     assert_eq!(
         seen[1].headers.get("last-event-id").unwrap(),
@@ -129,7 +132,10 @@ fn stops_forever_on_204() {
     while futures_executor::block_on(s.next()).is_some() {}
 
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "204 means \"stop,\" not \"try again\" — exactly one reconnect attempt, never a third"
     );
@@ -310,7 +316,10 @@ fn oversized_event_is_fatal_and_not_retried() {
     );
     assert!(futures_executor::block_on(s.next()).is_none());
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "reconnecting after a fatal decode error is forbidden"
     );
@@ -354,7 +363,14 @@ fn a_transient_body_error_is_retried_transparently_without_surfacing_as_an_event
         }
     }
     assert_eq!(got.len(), 2);
-    assert_eq!(c.transport().requests().len(), 2, "one reconnect happened");
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        2,
+        "one reconnect happened"
+    );
 }
 
 #[test]
@@ -379,7 +395,10 @@ fn connect_without_with_timer_makes_exactly_one_attempt_regardless_of_error_kind
         .expect_err("connect() must fail outright on the very first attempt, no retry");
     assert_eq!(err.kind(), &ErrorKind::Body);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "no retry was attempted — there is no timer to retry with"
     );
@@ -417,7 +436,10 @@ fn with_timer_connect_also_makes_exactly_one_attempt_regardless_of_error_kind() 
     .expect_err("with_timer(..).connect() must also fail outright on the first attempt");
     assert_eq!(err.kind(), &ErrorKind::Body);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "no reconnect attempt for a failure on the INITIAL connection — \
          the reconnect loop only exists once a stream has been live at least once"
@@ -477,7 +499,10 @@ fn an_unsupported_capability_error_is_terminal_not_retried() {
 
     assert!(futures_executor::block_on(s.next()).is_none());
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "no reconnect attempt for a terminal kind — the second queued response is never touched"
     );
@@ -585,7 +610,10 @@ fn connect_without_with_timer_returns_a_plain_non_reconnecting_stream() {
         "a clean EOF with no timer supplied just ends the stream, no error"
     );
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "without with_timer there is no reconnect attempt at all"
     );
@@ -611,7 +639,10 @@ fn header_carries_a_custom_header_across_every_reconnect() {
         futures_executor::block_on(s.next());
     }
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2);
     for r in &seen {
         assert_eq!(
@@ -644,7 +675,10 @@ fn an_invalid_header_is_an_error_not_a_silently_dropped_pair() {
             .expect_err("an invalid header name must fail connect(), not be silently dropped");
     assert_eq!(err.kind(), &ErrorKind::Other);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         0,
         "the invalid header must short-circuit before any request is sent"
     );
@@ -698,7 +732,10 @@ fn an_invalid_header_is_an_error_through_with_timer_too() {
     .expect_err("an invalid header name must fail with_timer(..).connect() too");
     assert_eq!(err.kind(), &ErrorKind::Other);
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         0,
         "the invalid header must short-circuit before any request is sent"
     );
@@ -787,7 +824,10 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
         },
     );
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2, "one reconnect happened");
     assert!(
         seen[1].headers.get("last-event-id").is_none(),
@@ -822,7 +862,10 @@ fn accept_header_is_sent_and_survives_a_reconnect() {
         futures_executor::block_on(s.next());
     }
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 2, "one reconnect happened");
     for (i, r) in seen.iter().enumerate() {
         assert_eq!(
@@ -884,7 +927,10 @@ fn client_sse_resolves_a_relative_url_against_the_configured_base() {
         }
     );
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(
         seen[0].uri,
@@ -942,7 +988,10 @@ fn a_wrong_content_type_on_a_reconnect_is_terminal_not_retried() {
 
     assert!(futures_executor::block_on(s.next()).is_none());
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "no further reconnect attempt after the terminal content-type rejection"
     );

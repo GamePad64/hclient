@@ -263,7 +263,7 @@ impl TlsConnect for FakeTls {
     }
 }
 
-fn client(tls: FakeTls) -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
+fn client(tls: FakeTls) -> Client {
     Client::builder(Native::new(Tokio, tls, SystemDns::new(Tokio)))
         .build()
         .unwrap()

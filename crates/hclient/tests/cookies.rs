@@ -132,14 +132,14 @@ fn redirect_to(location: &str, set_cookie: Option<&str>) -> String {
     format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n{sc}Content-Length: 0\r\n\r\n")
 }
 
-fn jarred() -> Client<NativeTransport> {
+fn jarred() -> Client {
     Client::builder(transport())
         .cookie_jar(CookieJar::new())
         .build()
         .expect("the native transport keeps no jar of its own")
 }
 
-async fn get(c: &Client<NativeTransport>, addr: std::net::SocketAddr, path: &str) {
+async fn get(c: &Client, addr: std::net::SocketAddr, path: &str) {
     c.get(&format!("http://{addr}{path}"))
         .send()
         .await

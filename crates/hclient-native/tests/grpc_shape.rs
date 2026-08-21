@@ -759,7 +759,7 @@ fn transport() -> Native<Tokio, FakeTls, SystemDns<Tokio>> {
     Native::new(Tokio, FakeTls::new(), SystemDns::new(Tokio))
 }
 
-fn client() -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
+fn client() -> Client {
     Client::builder(transport()).build().unwrap()
 }
 
@@ -771,7 +771,7 @@ fn client() -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
 /// invert, and both readings are true — of a client that did not ask and
 /// of one that did. `tests/http2_multiplex.rs` has the opt-in's own shape
 /// and its prices.
-fn multiplexed_client() -> Client<Native<Tokio, FakeTls, SystemDns<Tokio>>> {
+fn multiplexed_client() -> Client {
     Client::builder(transport().multiplexed()).build().unwrap()
 }
 

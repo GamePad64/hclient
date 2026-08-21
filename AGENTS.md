@@ -2729,64 +2729,88 @@ with default features never saw it — `charset` is off by default, but
 caught it**, which is the recipe this file records as having once printed
 `error:` and exited zero. It earns its place here.
 
-### `Native::execute`'s future is not `Send`, and recovering it costs the embedded target
+### `hclient::Client` names no type parameters, and the browser decided what that costs
 
-Asked for a non-generic `hclient::Client` — no transport or timer in the
-type, `Clone` with `Arc` semantics — the two blockers this workspace had
-recorded both turned out to be clearable, and a third one nobody had named
-ends it.
+`Client` is one concrete type. `Clone` is an `Arc` bump, and a library takes
+`&Client` where it used to write five `where` lines — measured on this
+workspace's own consumer, `examples/portable.rs`, whose `fetch` went from
+`fetch<T, S>` with four transport bounds to `fetch<S>` with none. A generic
+function has to restate its callee's where-clause, and that is the tax
+erasure removes.
 
-**`docs/competitive-gaps.md` §G13 was wrong twice while right once.** It
-said `Transport`'s RPITIT needs return type notation (still `E0658` on
-1.98.0 — true, and irrelevant: a trait with no default body, implemented per
-backend where `Self` is concrete, erases without it), and that
-`Timer::Instant: Copy` is permanent (also true as stated, and also
-irrelevant: stop moving the instant across the boundary, and have the erased
-stamp answer *how long ago was this* — `Copy` is then asked of nothing).
-Both were prototyped and compiled on stable.
+**Two recorded blockers were cleared by not asking the question.**
+`docs/competitive-gaps.md` §G13 said `Transport`'s RPITIT needs return type
+notation (`E0658` on 1.98, true) and that `Timer::Instant: Copy` is
+permanent (also true). Both are irrelevant: the boxed future declares no
+`Send`, so there is nothing to prove and `BoxedTransport` gets a **blanket
+impl** over every `Transport` — a backend author writes nothing — and
+`ErasedInstant` answers *how long ago was this*, so the instant never
+crosses the boundary and `Copy` is asked of nothing.
 
-**What ends it is one box.** `connect.rs` holds the resolver's stream as
-`Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>` with no
-`Send`, across an await, so `Native::execute`'s future is `!Send` on the
-concrete `Tokio`/`Rustls`/`SystemDns` stack. **A caller cannot
-`tokio::spawn` a request** — they can hold the client across a spawn, which
-is what `shape.rs` asserts and what `Inner`'s doc means by *"a `Client` is
-meant to cross a `tokio::spawn`"*. `hclient-fetch` and `hclient-wasi` both
-assert the opposite of their own futures, and the asymmetry has a cause:
-neither has a resolver.
+**The first attempt at this was abandoned, and the reason it was abandoned
+is the reason this one works.** That version put `Send` on the boxed future
+so a request could be spawned, and following the bound down needs it on
+seven seam methods — at which point `hclient-rt-embassy`'s `connect` future,
+which holds `RefCell<embassy_net::Inner>` because embassy's executor is
+single-threaded, is excluded. Dropping the bound removes the whole chain.
 
-**Three estimates of the repair, each wrong, and the errors are the
-lesson.** First: one line, add `+ Send` at the box. Wrong — for a generic
-`D` that is the RTN wall again. Second: declare `+ Send` on `Resolve`'s
-three methods; measured that all three `SystemDns` streams *are* `Send`, so
-it looked free. Wrong — that was measured on a **concrete**
-`SystemDns<Tokio>`, and the declaration asks it of every `R`, where the
-streams await `Blocking::run`, another RPITIT. Third: seven seam methods
-then — `TcpConnect::connect`, `connect_unix`, `Blocking::run`,
-`TlsConnect::connect`, three `Resolve` lookups — bounded and affordable.
-Wrong in the direction that ends it: `hclient-rt-embassy`'s `connect`
-future holds `RefCell<embassy_net::Inner>`, structurally, because embassy
-is a single-threaded executor.
+**What it costs is three things, and only one of them was in the plan.**
 
-So the bound would exclude the embedded target, whose live TAP scenarios
-run in CI on every push. That is
-`scripts/no-send-or-sync-in-the-core-surface.sh`'s own sentence with a real
-subject: *declaring the bound in the seam forces it on backends that cannot
-satisfy it*. **The rule that blocks the erased client is right, and this is
-the measurement rather than the slogan.**
+**The embedded target has no `Client`.** The plan asserted *"`Embassy` is
+refused there, and already was"* — wrong, and the distinction is the lesson:
+being `!Send` and being *refused* are different, and the generic `Client`
+built over Embassy perfectly well, it merely could not cross a thread. An
+erased `Client` boxes its transport `Send + Sync`, and `RefCell<embassy_net::
+Inner>` is not `Sync`. The nine live TAP scenarios are written against
+`Native`/`Transport` directly now, ~20 lines of helper, and the CI job is
+unchanged and green; what it no longer covers is the target-independent
+`Client` layer, exercised by the rest of the suite on every other backend.
 
-The erased seams built for it were removed rather than left unused — a
-public seam with no consumer is what this project deletes. What is kept is a
-paired doctest on `Native` pinning the `!Send` future with the whole chain
-beside it, so the next person to want an erased client finds the price
-before paying it.
+**Nothing a request produces is `Send`, and the browser is why.** One
+`ClientBody` serves every backend, and `hclient-fetch`'s body holds a `dyn
+Stream` with no auto trait — so `Send` on the erased body does not weaken
+the browser backend, it **excludes** it: `Client::builder(Fetch::new())`
+stops compiling. Measured, and only after the `Send` version had been
+written and the entire native suite made green under it, because **`cargo
+nextest run --workspace` does not build for `wasm32-unknown-unknown`** —
+this file records the same blind spot hiding a broken browser suite for six
+merges once before. The cheap check is `cargo test -p hclient-fetch --target
+wasm32-unknown-unknown --no-run`. So `tokio::spawn` of a response body is
+gone, which worked on `hclient-native`; a caller who needs it reaches past
+the facade with `Client::transport_as::<Native<..>>()`. The request future
+is cheaper to lose: `Native`'s is *already* `!Send`, pinned by a paired
+doctest, so the mock is the only backend that had it. **`Client` itself
+stays `Send + Sync`**, which is the half that has to.
 
-**A process note that cost two commits.** The `send-bound-exception` marker
-is a trailing comment on the same line as the bound, and `cargo fmt` moves
-one off a line it must reflow and **deletes** one from a trait's `where`
-clause. Two marked sites were silently unexcused that way, and
-`just invariants` — which is where that guard lives — was not in the set of
-recipes being run. A gate that is not in the set you run is not running.
+**A `!Send` hook cannot be watched through `Client`.** `hclient-fetch`'s P13
+test — *a single-threaded runtime can watch* — ran through `Client` with a
+hook holding an `Rc`. It asserts the same property at the `Transport` layer
+now, which is where the property actually lives; what is lost is watching a
+`!Send`-hooked browser transport *through the facade*, so cookies, redirects
+and the cache are unavailable to a caller who wants that.
+
+**A `#[cfg]` making `BoxBody` `Send` off-wasm is refused**, though it would
+give native callers their spawnable bodies back and would not be a
+capability that lies — `Send` is a claim about threads and the wasm targets
+have none. It is refused because a cfg-alias hides the symptom rather than
+removing the cause, and because a `ClientBody` whose auto traits depend on
+the target is a thing a portable library cannot reason about.
+
+**The `send-bound-exception` markers live on two short aliases now**, and
+that is the same rule this file has recorded three times from the other
+side. `cargo fmt` moves a trailing comment off a line it reflows and deletes
+one from a `where` clause, so a marker cannot survive on a long signature —
+lost that way twice more during this change. `erased::SharedTransport` and
+`erased::SharedTimer` are `dyn .. + Send + Sync` on one line each, every use
+site writes `Box<SharedTransport>`, and `cargo fmt` and `just invariants`
+now pass *together*. Four `amendment-C1` markers **left** `client.rs` with
+the type parameter, because `Transport::to_error` is now called where `Self`
+is concrete.
+
+`docs/erased-client.md` has the measurements, including the
+`package-build` trap met on the way: it verifies against the shared
+`target/debug/deps`, so a stale `rmeta` for an unchanged version makes it
+fail — or, worse, pass — misleadingly.
 
 ### A default is not a default when Cargo unifies features — it is a floor
 
@@ -3081,7 +3105,8 @@ reactor at all (Task 12); `two_runtimes.rs` above checks the same property of
 the transport (`Native`), now under real runtime backends, not just under the
 test busy-spin.
 
-**`DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()`** — the
+**`DefaultTransport`/`Client::new()`** (the `Client<T = DefaultTransport>`
+this line named for two verticals is gone — `Client` names no parameters) — the
 `default-transport` feature (not in `hclient`'s `default`, as for every
 crate in the vertical. **It is in `hclient`'s `default` now**, because
 `cargo add hclient` has to give a working client and the crate's own

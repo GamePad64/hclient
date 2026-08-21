@@ -58,12 +58,23 @@ use bytes::Bytes;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+// Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
+// would add one, and after erasure the body in a real client is
+// `dyn http_body::Body`, which is not `Debug` — so the derive would take
+// `.unwrap()` on a response away from every caller. What a `{:?}` wants
+// here is the head anyway: a body is a stream, and its contents were never
+// printable without consuming them.
+impl<B> std::fmt::Debug for Cached<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cached").finish_non_exhaustive()
+    }
+}
+
 /// A response body that came off the wire, or out of the store.
 ///
 /// The third wrapper of [`crate::body::ClientBody`] — see this module's doc
 /// comment for why it is always present and what it costs when nothing is
 /// cached.
-#[derive(Debug)]
 pub struct Cached<B> {
     /// The transport's body. `None` for a cache hit, which had no
     /// exchange to have one.

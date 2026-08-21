@@ -90,16 +90,19 @@ impl Timer for NoClock {
 /// returns — which is what actually stops the exchange, under the contract
 /// on `Transport::execute` (v0.2 W1). Without that contract this would
 /// bound the caller's wait and leave the request running.
-pub(crate) async fn within<F, T, Tm>(op: F, timer: &Tm, total: Duration) -> Result<T, Error>
+pub(crate) async fn within<F, T>(
+    op: F,
+    timer: &hclient_core::unversioned::erased::SharedTimer,
+    total: Duration,
+) -> Result<T, Error>
 where
     F: Future<Output = Result<T, Error>>,
-    Tm: Timer,
 {
     let mut op = std::pin::pin!(op);
     // Constructed only on this branch, never when no bound was asked for:
     // `Tokio::sleep` is `tokio::time::sleep`, which panics outside a
     // runtime, and a client that never set a total must not need one.
-    let mut sleep = std::pin::pin!(timer.sleep(total));
+    let mut sleep = timer.sleep_boxed(total);
     std::future::poll_fn(move |cx| {
         if let Poll::Ready(v) = op.as_mut().poll(cx) {
             return Poll::Ready(v);
@@ -207,12 +210,19 @@ where
 /// ambient exchange behind it is torn down rather than left draining. A
 /// bound that returned an error and left the transfer running would be a
 /// bound on the caller's patience, not on the operation.
-pub struct Deadline<B, Tm: Timer> {
+pub struct Deadline<B> {
     /// `None` once the deadline has fired: the body is dropped there, and
     /// dropping it is what stops the exchange.
     inner: Option<B>,
-    timer: Tm,
-    started: Tm::Instant,
+    /// The stamp answers `elapsed` itself, so the clock is kept only to
+    /// build a sleep — see `hclient_core::unversioned::erased`.
+    ///
+    /// **The clock itself is not kept**, and that falls out of erasure
+    /// rather than being tidied away: the sleep is built in `new`, and
+    /// `started` is a `BoxInstant`, which is the stamp *and* the clock that
+    /// took it. So one `send-bound-exception` marker left this struct with
+    /// the field.
+    started: hclient_core::unversioned::erased::BoxInstant,
     /// `None` — no bound was set, and this wrapper is inert. It is still
     /// in the type, because a type cannot appear and disappear with a
     /// runtime value; the cost is one `Option` test per frame.
@@ -225,10 +235,10 @@ pub struct Deadline<B, Tm: Timer> {
     /// client that never asked for a clock — see `within`); or the
     /// deadline has already fired, where it is dropped alongside `inner`
     /// so that a completed future is never polled again.
-    sleep: Option<Pin<Box<Tm::Sleep>>>,
+    sleep: Option<hclient_core::unversioned::erased::BoxSleep>,
 }
 
-impl<B, Tm: Timer> Deadline<B, Tm> {
+impl<B> Deadline<B> {
     /// Builds the wrapper, and with it the sleep that will cut a silent
     /// body.
     ///
@@ -254,14 +264,18 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
     /// `timeouts` and `two_runtimes` red at once, because they drive a
     /// `Client` on a bare `futures_executor` with `DefaultClock = Tokio`.
     /// Measured as one of the mutations over this change.
-    pub(crate) fn new(inner: B, timer: Tm, started: Tm::Instant, total: Option<Duration>) -> Self {
+    pub(crate) fn new(
+        inner: B,
+        timer: &hclient_core::unversioned::erased::SharedTimer,
+        started: hclient_core::unversioned::erased::BoxInstant,
+        total: Option<Duration>,
+    ) -> Self {
         let sleep = total.map(|t| {
-            let left = t.saturating_sub(timer.elapsed_since(started));
-            Box::pin(timer.sleep(left))
+            let left = t.saturating_sub(started.elapsed());
+            timer.sleep_boxed(left)
         });
         Self {
             inner: Some(inner),
-            timer,
             started,
             total,
             sleep,
@@ -281,7 +295,7 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
 
     fn overrun(&self) -> Option<Duration> {
         let total = self.total?;
-        (self.timer.elapsed_since(self.started) >= total).then_some(total)
+        (self.started.elapsed() >= total).then_some(total)
     }
 
     /// The deadline has expired: drop what is holding the exchange open
@@ -319,12 +333,12 @@ impl<B, Tm: Timer> Deadline<B, Tm> {
 /// here because nothing in this type is ever pinned in place: the only
 /// projection is `Pin::new(&mut inner)`, which needs `B: Unpin` on its
 /// own, and no `unsafe` appears in this crate at all (`#![forbid]`).
-impl<B: Unpin, Tm: Timer> Unpin for Deadline<B, Tm> {}
+impl<B: Unpin> Unpin for Deadline<B> {}
 
 /// Hand-written: `#[derive(Debug)]` would require `Tm::Instant: Debug`,
 /// which [`Timer`] does not ask for, so the derive would not compile for a
 /// clock whose instant is not `Debug`. The instant is not printed.
-impl<B: std::fmt::Debug, Tm: Timer> std::fmt::Debug for Deadline<B, Tm> {
+impl<B: std::fmt::Debug> std::fmt::Debug for Deadline<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Deadline")
             .field("inner", &self.inner)
@@ -333,7 +347,7 @@ impl<B: std::fmt::Debug, Tm: Timer> std::fmt::Debug for Deadline<B, Tm> {
     }
 }
 
-impl<B, Tm> http_body::Body for Deadline<B, Tm>
+impl<B> http_body::Body for Deadline<B>
 where
     B: http_body::Body<Data = Bytes> + Unpin,
     // The same `send-bound-exception: amendment-C1` point `Response::chunk`
@@ -341,7 +355,6 @@ where
     // `hclient_core::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
     B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
-    Tm: Timer,
 {
     type Data = Bytes;
     /// Not `B::Error`: a timeout has no `B::Error` to be, and one cannot be

@@ -26,7 +26,7 @@ impl std::fmt::Display for Backend {
 }
 impl std::error::Error for Backend {}
 
-fn client_failing_with(kind: ErrorKind, msg: &'static str) -> Client<MockTransport> {
+fn client_failing_with(kind: ErrorKind, msg: &'static str) -> Client {
     let m = MockTransport::new();
     m.push_transport_error(Error::new(kind, Backend(msg)));
     Client::builder(m).build().unwrap()

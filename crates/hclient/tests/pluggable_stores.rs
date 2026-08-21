@@ -92,7 +92,10 @@ fn the_callers_own_store_is_the_one_the_client_uses() {
         "the response was written into the store the test is holding"
     );
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "and read back out of it: a second request would mean the store was write-only"
     );
@@ -114,7 +117,9 @@ fn set_cookie_then_ask(
     let c = Client::builder(t).cookie_jar(jar).build().expect("build");
     futures_executor::block_on(c.get("https://www.example.com/one").send()).expect("one");
     futures_executor::block_on(c.get("https://api.example.com/two").send()).expect("two");
-    c.transport().requests()[1]
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests()[1]
         .headers
         .get("cookie")
         .map(|v| v.to_str().unwrap().to_owned())

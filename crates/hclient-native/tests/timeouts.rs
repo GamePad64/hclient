@@ -141,7 +141,7 @@ fn server(behaviour: Behaviour) -> SocketAddr {
     server_watching(behaviour).0
 }
 
-fn client(timeouts: Timeouts) -> Client<Native<Tokio, Rustls, SystemDns<Tokio>>> {
+fn client(timeouts: Timeouts) -> Client {
     Client::builder(Native::new(
         Tokio,
         Rustls::with_webpki_roots(),

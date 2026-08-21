@@ -25,7 +25,7 @@ use hclient::{Client, ErrorKind, RequestBody};
 #[cfg(not(feature = "idn"))]
 use hclient::error::UriError;
 
-fn client_with_base(base: &str) -> Client<MockTransport> {
+fn client_with_base(base: &str) -> Client {
     let m = MockTransport::new();
     m.push_response(http::Response::builder().status(200).body("").unwrap());
     Client::builder(m)
@@ -34,8 +34,12 @@ fn client_with_base(base: &str) -> Client<MockTransport> {
         .unwrap()
 }
 
-fn sent_uri(c: &Client<MockTransport>) -> String {
-    c.transport().requests()[0].uri.to_string()
+fn sent_uri(c: &Client) -> String {
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests()[0]
+        .uri
+        .to_string()
 }
 
 /// The case this setting exists for, and exactly the one that used to be
@@ -138,7 +142,10 @@ fn a_relative_base_is_a_typed_error_not_a_silently_ignored_setting() {
     assert_eq!(bad.base, "/api/".parse::<http::Uri>().unwrap());
     assert_eq!(bad.requested, "v1/things");
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "a request with an unfit base must not reach the transport"
     );
 }
@@ -279,7 +286,11 @@ fn without_the_idn_feature_a_u_label_is_a_typed_error_that_names_the_way_out() {
             "{label}: the error must name the A-label form as the way through: {named}"
         );
         assert!(
-            client.transport().requests().is_empty(),
+            client
+                .transport_as::<MockTransport>()
+                .expect("the mock")
+                .requests()
+                .is_empty(),
             "{label}: nothing may be sent"
         );
     }

@@ -17,7 +17,17 @@ use tower::ServiceBuilder;
 /// green test cannot be explained by the layer having been skipped.
 type Seen = Arc<Mutex<Vec<http::Uri>>>;
 
-fn stack(m: MockTransport, seen: Seen) -> impl Transport<Error = hclient_core::Error> + Clone {
+/// The two associated-type bounds are what an erased `Client` asks of any
+/// transport, and they have to be said here because an `impl Trait` return
+/// hides the body type: `Send`, and an error that converts. A concrete
+/// return type would carry both for free.
+fn stack(
+    m: MockTransport,
+    seen: Seen,
+) -> impl Transport<
+    Error = hclient_core::Error,
+    Body: http_body::Body<Error: Into<hclient_core::Error>> + Send + 'static,
+> + Clone {
     let caps = m.capabilities().clone();
     let svc = TransportService::new(m);
     let layered = ServiceBuilder::new()

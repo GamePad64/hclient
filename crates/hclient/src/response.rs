@@ -3,9 +3,24 @@ use hclient_core::{Error, ErrorKind};
 use http_body::Body as HttpBody;
 use std::pin::Pin;
 
+// Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
+// would add one, and after erasure the body in a real client is
+// `dyn http_body::Body`, which is not `Debug` — so the derive would take
+// `.unwrap()` on a response away from every caller. What a `{:?}` wants
+// here is the head anyway: a body is a stream, and its contents were never
+// printable without consuming them.
+impl<B> std::fmt::Debug for Response<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.parts.status)
+            .field("headers", &self.parts.headers)
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A response with its URL preserved. `into_parts` gives full fidelity;
 /// `chunk`/`collect` are convenience on top of it.
-#[derive(Debug)]
 pub struct Response<B> {
     parts: http::response::Parts,
     body: B,

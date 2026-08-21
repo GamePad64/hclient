@@ -1388,6 +1388,7 @@ dependencies = [
 name = "hclient-rt-embassy"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "critical-section",
  "embassy-executor",
  "embassy-net",
@@ -1400,6 +1401,9 @@ dependencies = [
  "hclient-rt",
  "hclient-tls",
  "heapless",
+ "http",
+ "http-body",
+ "http-body-util",
  "hyper",
  "log",
  "smoltcp",

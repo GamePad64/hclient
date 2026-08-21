@@ -309,11 +309,11 @@ fn transport() -> Plain {
     Native::new(Tokio, FakeTls::default(), SystemDns::new(Tokio))
 }
 
-fn shared_client() -> Client<Plain> {
+fn shared_client() -> Client {
     Client::builder(transport().multiplexed()).build().unwrap()
 }
 
-fn exclusive_client() -> Client<Plain> {
+fn exclusive_client() -> Client {
     Client::builder(transport()).build().unwrap()
 }
 
@@ -321,13 +321,7 @@ fn exclusive_client() -> Client<Plain> {
 /// been read to its end. Written out because "the call is over" is the
 /// premise of half the assertions here, and a response whose body was
 /// never drained is not over.
-async fn call<H>(
-    client: &Client<Native<Tokio, FakeTls, SystemDns<Tokio>, H>>,
-    url: String,
-) -> Result<http::StatusCode, hclient::Error>
-where
-    H: Hooks + Clone + Unpin,
-{
+async fn call(client: &Client, url: String) -> Result<http::StatusCode, hclient::Error> {
     let resp = client.get(&url).send().await?;
     let status = resp.status();
     assert_eq!(resp.version(), http::Version::HTTP_2);
@@ -969,7 +963,7 @@ impl TlsConnect for SlowTls {
     }
 }
 
-fn slow_client(tls: SlowTls) -> Client<Native<Tokio, SlowTls, SystemDns<Tokio>>> {
+fn slow_client(tls: SlowTls) -> Client {
     Client::builder(Native::new(Tokio, tls, SystemDns::new(Tokio)).multiplexed())
         .build()
         .unwrap()

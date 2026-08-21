@@ -415,22 +415,38 @@ fn now_ms() -> f64 {
 // P13 for this backend, in both directions.
 // ---------------------------------------------------------------------
 
-/// The `!Send` half, through the layer that would notice: `hclient::Client`.
+/// The `!Send` half — **at the transport, because `Client` can no longer
+/// hold it.**
 ///
-/// `Recorder` holds an `Rc`, so `Fetch<Recorder>` is `!Send` and so is the
-/// future `execute` returns — the very future `crate::promise::
-/// SendJsFuture`'s `unsafe impl Send` exists to keep `Send` when the hook
-/// is not in the way. `Client` bounds only `T::Error: Send + Sync`
-/// (amendment C1), so this compiles and runs, and that is the answer P13
-/// wanted: **a single-threaded runtime can watch.**
+/// `Recorder` holds an `Rc`, so `Fetch<Recorder>` is `!Send`, and that is
+/// the whole point: the future `execute` returns is the one
+/// `crate::promise::SendJsFuture`'s `unsafe impl Send` exists to keep
+/// `Send` when a hook is not in the way. P13's answer is unchanged —
+/// **a single-threaded runtime can watch** — but the layer it is answered
+/// at has moved down one.
+///
+/// This used to go through `hclient::Client`, which bounded only
+/// `T::Error: Send + Sync`. An erased `Client` names no transport type, so
+/// it boxes one as `Send + Sync` and an `Rc`-holding hook is refused at
+/// `Client::builder`. That refusal is a compile error at the line that
+/// asked, not a silent downgrade, and the property itself is a fact about
+/// the **hooks seam** rather than about `Client` — which is why the test
+/// belongs here. What is genuinely lost is watching a `!Send`-hooked
+/// browser transport *through the facade*: cookies, redirects and the
+/// response cache are not available to a caller who wants that.
 #[wasm_bindgen_test]
-async fn a_non_send_hook_works_all_the_way_through_the_client() {
-    let rec = Recorder::default();
-    let c = hclient::Client::builder(Fetch::new().hooks(rec.clone()))
-        .build()
-        .expect("fetch supports everything the default client asks for");
+async fn a_non_send_hook_works_all_the_way_through_the_transport() {
+    use hclient_core::unversioned::Transport as _;
 
-    let resp = c.get(&page_url()).send().await.expect("the harness page");
+    let rec = Recorder::default();
+    let t = Fetch::new().hooks(rec.clone());
+
+    let req = http::Request::builder()
+        .method(http::Method::GET)
+        .uri(page_url())
+        .body(hclient_core::RequestBody::Empty)
+        .expect("request");
+    let resp = t.execute(req).await.expect("the harness page");
     assert_eq!(resp.status(), 200);
 
     assert_eq!(

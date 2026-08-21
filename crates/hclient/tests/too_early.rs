@@ -159,10 +159,7 @@ fn content_length(head: &str) -> usize {
 /// an `--all-features` build and `NoClock` in a `--no-default-features`
 /// one, so a signature naming either concretely compiles in exactly one of
 /// the two builds `just test`/`just test-no-default` run.
-fn post_payload<'c, Tm: hclient_core::unversioned::Timer + Clone>(
-    c: &'c Client<NativeTransport, Tm>,
-    url: &str,
-) -> hclient::RequestBuilder<'c, NativeTransport, Tm> {
+fn post_payload<'c>(c: &'c Client, url: &str) -> hclient::RequestBuilder<'c> {
     c.post(url)
         .body(RequestBody::Full(bytes::Bytes::from_static(b"payload")))
 }
@@ -414,7 +411,10 @@ mod replayability {
 
         assert_eq!(resp.status(), 425, "the server's answer, handed over as-is");
         assert_eq!(
-            c.transport().requests().len(),
+            c.transport_as::<MockTransport>()
+                .expect("the mock")
+                .requests()
+                .len(),
             1,
             "no second request was invented for a body that cannot be replayed"
         );
@@ -449,7 +449,10 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
 
         assert_eq!(resp.status(), 200);
-        let seen = c.transport().requests();
+        let seen = c
+            .transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests();
         assert_eq!(seen.len(), 2, "the replay went out");
         assert_eq!(
             seen[0].retry_kind,
@@ -498,7 +501,10 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
 
         assert_eq!(resp.status(), 200);
-        let seen = c.transport().requests();
+        let seen = c
+            .transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests();
         assert_eq!(seen.len(), 4, "two hops, each replayed once");
         let uris: Vec<String> = seen.iter().map(|r| r.uri.to_string()).collect();
         assert_eq!(
@@ -542,7 +548,10 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
 
-        let seen = c.transport().requests();
+        let seen = c
+            .transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests();
         assert_eq!(seen.len(), 2, "the replay went out");
         assert!(
             seen[0]
@@ -683,8 +692,9 @@ mod replayability {
     /// The mark as the transport saw it, per request, in order — the
     /// observer being what was handed over rather than what the client
     /// believes it sent.
-    fn marks(c: &Client<MockTransport>) -> Vec<bool> {
-        c.transport()
+    fn marks(c: &Client) -> Vec<bool> {
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
             .requests()
             .iter()
             .map(|r| r.extensions.get::<hclient_core::AllowEarlyData>().is_some())
@@ -724,7 +734,10 @@ mod replayability {
         let resp = futures_executor::block_on(c.execute(req)).expect("execute");
         assert_eq!(resp.status(), 200);
 
-        let seen = c.transport().requests();
+        let seen = c
+            .transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests();
         assert_eq!(seen.len(), 2, "the redirect was followed");
         assert!(
             seen[0]

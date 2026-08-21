@@ -96,7 +96,8 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
         .total_timeout(TestTimer::new(), Duration::from_secs(30))
         .build()
         .expect("mock supports the default config");
-    c.transport()
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
         .push_response(http::Response::builder().status(200).body("plain").unwrap());
 
     let resp = futures_executor::block_on(c.get("https://a/x").send()).expect("responds");
@@ -111,18 +112,20 @@ fn the_deadline_sits_inside_the_decoder_not_outside_it() {
     // same call that decodes a fresh one — above the decoder, an entry
     // would be stored decoded while still labelled `Content-Encoding`,
     // and `Vary: Accept-Encoding` would key every variant on a coding the
-    // stored bytes no longer carried. `MockBody`, the transport's own, is
-    // innermost.
-    let limited: Limited<Decompressed<Deadline<Cached<hclient::mock::MockBody>, TestTimer>>> =
+    // stored bytes no longer carried. The transport's own body is
+    // innermost — and it is `BoxBody` rather than `MockBody` now, because
+    // an erased `Client` erases the transport's body with the transport:
+    // what this test pins is the ORDER of the four wrappers, which is the
+    // thing that was ever load-bearing.
+    let limited: Limited<Decompressed<Deadline<Cached<hclient::body::BoxBody>>>> =
         resp.into_parts().1;
-    let body: Decompressed<Deadline<Cached<hclient::mock::MockBody>, TestTimer>> =
-        limited.into_inner();
+    let body: Decompressed<Deadline<Cached<hclient::body::BoxBody>>> = limited.into_inner();
     assert_eq!(
         body.coding(),
         None,
         "this response carries no `Content-Encoding`, so nothing is being decoded"
     );
-    let deadline: Deadline<Cached<hclient::mock::MockBody>, TestTimer> = body.into_inner();
+    let deadline: Deadline<Cached<hclient::body::BoxBody>> = body.into_inner();
     assert_eq!(
         deadline.total_timeout(),
         Some(Duration::from_secs(30)),

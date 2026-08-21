@@ -156,7 +156,16 @@ pub mod body {
     /// enum test per frame for that — and without the `cache` feature
     /// [`Cached`] is a newtype over `Option<B>` whose other two fields do not
     /// exist, so the third wrapper costs nothing a build did not ask for.
-    pub type ClientBody<B, Tm> = Limited<Decompressed<Deadline<Cached<B>, Tm>>>;
+    /// The transport's body is erased into
+    /// [`hclient_core::unversioned::erased::BoxBody`] at the seam, so this
+    /// alias names no type parameters at all — which is what lets
+    /// [`crate::Response`] and [`crate::Client`] name none either.
+    pub type ClientBody = Limited<Decompressed<Deadline<Cached<BoxBody>>>>;
+
+    /// The transport's own body, erased — the innermost layer of
+    /// [`ClientBody`], re-exported so a caller naming the chain does not
+    /// have to reach into `hclient-core` for one type.
+    pub use hclient_core::unversioned::erased::BoxBody;
 }
 
 /// Following redirects: how many, and whether this one.
@@ -250,20 +259,23 @@ pub use response::{Collected, Response};
 
 /// The default transport, chosen by **the target, not the user**.
 ///
-/// The default is an opinion, not a restriction: `Client` with no parameter
-/// means `Client<DefaultTransport>`, and `Client<Whatever>` works just the
-/// same. No mutually exclusive cargo features arise, because it's the
-/// target that chooses, not a set of enabled features — `default-transport`
-/// only turns the ability to write `Client` with no parameter on or off as
-/// a whole; it doesn't choose BETWEEN variants: on each concrete target
-/// exactly one branch below compiles (or none, see further down).
+/// The default is an opinion, not a restriction: [`crate::Client::new`]
+/// builds one of these, and `Client::builder(whatever)` builds a `Client`
+/// over any other backend — the type is the same either way, because
+/// `Client` names no transport. No mutually exclusive cargo features
+/// arise, because it's the target that chooses, not a set of enabled
+/// features — `default-transport` only turns `Client::new()` and this type
+/// on or off as a whole; it doesn't choose BETWEEN variants: on each
+/// concrete target exactly one branch below compiles (or none, see further
+/// down).
 ///
 /// # What resolves under which feature — measured, not assumed
 ///
 /// - Without the `default-transport` feature (the crate's default,
-///   `default = []`): the type doesn't exist at all. `Client` with no
-///   parameter, or `hclient::DefaultTransport`, is an ordinary compile
-///   error ("cannot find type", "missing generics"), not a silent fallback
+///   `default = []`): the type doesn't exist at all. `Client::new()`, or
+///   naming `hclient::DefaultTransport`, is an ordinary compile
+///   error ("cannot find type", "no function or associated item"), not a
+///   silent fallback
 ///   to something weaker. The same decision Task 9 of vertical 2 already
 ///   verified empirically for trusted TLS anchors: a build without a
 ///   verifier fails to compile rather than silently trusting everything.

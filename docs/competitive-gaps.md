@@ -711,127 +711,74 @@ platform's GSSAPI or SSPI, which is `hclient-tls-native-tls`'s argument one
 seam over and its own crate. Neither is a challenge/response this code
 could grow into.
 
-### G13. There is no way to name "any hclient client"
+### G13. ~~There is no way to name "any hclient client"~~ — closed
 
-`Transport::execute` is an `async fn` in a trait, so `dyn Transport` is not
-a thing, and `Native<R, T, D, H, P>` carries five type parameters where
-`reqwest::Client` carries none. A library that wants to accept a client
-generically writes `fn f<T: Transport>(c: &Client<T>)` and pushes the
-parameter to its own callers.
+**`hclient::Client` names no type parameters.** `Client` is one concrete
+type, `Clone` is an `Arc` bump, and a library writes `fn f(c: &Client)`
+where this section said it must write `fn f<T: Transport>(c: &Client<T>)`
+and push the parameter to its own callers.
 
-`hclient-tower::TransportService` is the erasure route — it boxes the future
-— and its own module doc records that the box is `!Send` and cannot be fixed
-here until return type notation stabilises (rust-lang/rust#109417).
-**Re-checked on 2026-08-19 against rustc 1.97.1: still `E0658`, "return
-type notation is experimental".** So the upstream half of the cause has not
-moved.
+The row is kept, and at length, because **the reason recorded here was
+wrong three times while the conclusion was right twice** — which is the
+shape this document exists to make visible.
 
-*Forbidden?* The `Box<dyn>`-erases-auto-traits rule (amendment C1) is what
-makes the `Send` version impossible today; the `!Send` version already
-exists.
+**Wrong once: `Timer::Instant: Copy` is not a permanent blocker.** `Copy` on
+a trait object is indeed not a thing, and fixing `Instant` to a concrete
+type is indeed impossible for the reason given: the three shipped clocks
+disagree (`tokio::time::Instant`, `std::time::Instant`, and `NoClock`'s
+`()`). The way out is neither. `ErasedInstant` answers *how long ago was
+this* and nothing else, so the instant never leaves the clock that made it
+and `Copy` is asked of nothing erased.
 
-#### Tried, and the answer is still no — for none of the reasons below
+**Wrong twice: `Transport`'s RPITIT is not a wall.** Return type notation is
+still `E0658` on 1.98, and it is not on the path: the boxed future declares
+no `Send`, so there is nothing to prove and `BoxedTransport` takes a
+**blanket impl** over every `Transport`. No backend author writes anything —
+which is better than the per-backend trait this section proposed as the
+buildable `Send` version.
 
-**Everything in this subsection was measured and the conclusion survives on
-a different cause entirely.** Both halves it names were *cleared*; what
-stops an erased `Client` is something neither paragraph mentions.
+**Wrong three times, and this is the interesting one: the `!Send`
+`Native::execute` future does not stop it either.** That was recorded here
+as the real cause after the first two were cleared, and it is a fact about
+spawning a *request*, which the erased client simply does not offer. It
+never needed to: `Native`'s future was already `!Send`, so no caller had it
+to lose.
 
-`Timer::Instant` is **not** a permanent blocker. `Copy` on a trait object is
-indeed not a thing, and fixing `Instant` to a concrete type is indeed
-impossible for the reason given below. The way out is neither: stop moving
-the instant across the boundary. A trait answering *how long ago was this*
-and nothing else keeps the instant inside the clock that made it, and `Copy`
-is never asked of anything erased. Prototyped and compiled on stable.
+**Right twice, about what an erased client cannot be.** The two halves this
+section ruled out stay ruled out. A `Send` erasure of the *future* would
+need the bound on seven seam methods and would exclude
+`hclient-rt-embassy`, whose `connect` future holds
+`RefCell<embassy_net::Inner>` because embassy's executor is
+single-threaded — so the erased `Client` does not have one. And the
+`!Send` erasure's price — *no `tokio::spawn`, no `axum`* — is exactly half
+paid: **`Client` is `Send + Sync`** and lives in application state, while
+nothing a request *produces* is `Send`.
 
-`Transport`'s RPITIT is not a wall either, and this document already said
-so two sections down: a trait with no default body, implemented per backend
-where `Self` is concrete, gives `Send` erasure without RTN. Also prototyped.
+**What decided that last point is the browser, and it was measured rather
+than argued.** One `ClientBody` serves every backend, and `hclient-fetch`'s
+body holds a `dyn Stream` with no auto trait — so `Send` on the erased body
+does not weaken the browser backend, it **excludes** it:
+`Client::builder(Fetch::new())` stops compiling. The cost of the other
+direction is that a response body no longer crosses a `tokio::spawn`, which
+worked on `hclient-native`; a caller who needs it reaches past the facade
+with `Client::transport_as::<Native<..>>()`.
 
-**What actually stops it is that `Native::execute`'s future is `!Send`.**
-`connect.rs` boxes the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`
-with no `Send`, across an await — so there is nothing to erase into a
-`Send` client. Recovering that needs the bound on seven seam methods
-(`TcpConnect::connect`, `connect_unix`, `Blocking::run`,
-`TlsConnect::connect`, three `Resolve` lookups), and
-`hclient-rt-embassy`'s `connect` future holds `RefCell<embassy_net::Inner>`
-because it is a single-threaded executor. **The bound would exclude the
-embedded target**, which is the harm
-`scripts/no-send-or-sync-in-the-core-surface.sh` exists to prevent, with a
-real subject rather than a hypothetical one.
+Two smaller costs, both recorded where they land: the embedded target has no
+`Client` at all (`RefCell<embassy_net::Inner>` is not `Sync`, and
+`hclient-rt-embassy`'s live TAP scenarios use `Transport` directly now), and
+a `!Send` hook can be watched at the transport but not through the facade.
 
-So the gap stands, the workaround stands, and the *reason* recorded below
-was wrong twice. It is kept because the two things it rules out are still
-ruled out, and because being wrong about a cause while right about a
-conclusion is the shape worth recognising. The `!Send` future is pinned by
-a paired doctest on `Native`.
+**Decision D6 is obeyed and is why this works at all**: *"all the machinery
+was a consequence of type erasure in middleware; remove the erasure from the
+built-in stages and the machinery disappears entirely"*. `dynosaur`,
+`trait_variant` and a `BoxFuture` alias remain refused by name, and so —
+newly — is a `#[cfg]` that would make `BoxBody` `Send` off wasm: it hides
+the symptom rather than removing the cause. What was built is two traits
+beside the seam with blanket impls, no proc macro and no cfg alias.
 
-#### The half that is not upstream, and will still be there when RTN lands
-
-The paragraph above is about `Transport`, and `Client<T, Tm>` has **two**
-parameters. Erasing it means erasing both, and the second is the harder
-one — which nothing here had written down.
-
-`Transport` needs three things erased and only one of them is a wall:
-`type Body: http_body::Body<Data = Bytes>` boxes; `type Error` is already
-normalised, since `Client::execute` bounds it `Send + Sync + 'static`
-under amendment C1 and every backend here produces `hclient_core::Error`
-anyway; and `execute`'s RPITIT future is the RTN wall.
-
-**`Timer` needs `type Instant: Copy + PartialOrd` erased, and `Copy` on a
-trait object is not a thing.** That is not an upstream blocker and no
-stabilisation removes it. The only way out is to fix `Instant` to a
-concrete type — and there is none to fix it to. The three clocks that ship
-here disagree:
-
-| clock | `type Instant` |
-|---|---|
-| `hclient_rt_tokio::Tokio` | `tokio::time::Instant` |
-| `hclient_rt_smol::Smol` | `std::time::Instant` |
-| `hclient::NoClock` | `()` |
-
-A `NoClock` whose instant is `()` is not an accident to be tidied away, and
-its own doc says why in one line: *"`Copy + PartialOrd`, which is all
-`Timer` asks of an instant, and it cannot be mistaken for a real one."*
-That is the whole point of it — so fixing `Instant` to a concrete type
-would either throw `NoClock` out of the seam or hand it an instant that
-*can* be mistaken for a real one. Its `elapsed_since` is `Duration::ZERO`
-for ever, which is the property `ClientBuilder::cookie_jar`'s doc leans on
-when it explains why the jar's `now` is `SystemTime::now()` and not the
-client's `Timer`.
-
-And the difference between the other two is **load-bearing on purpose**.
-`crates/hclient/tests/two_runtimes.rs`'s module doc records it as the
-mutation that proves the runtime seam is real rather than decorative:
-adding `R::Instant: PartialEq<std::time::Instant>` to `fetch_once`'s bounds
-breaks instantiation on `Tokio` (a wrapper type) and does not break it on
-`Smol` (`std::time::Instant` directly). Fixing the instant to satisfy a
-trait object would delete the property that test exists to demonstrate.
-
-#### What is buildable today, and it is two different things
-
-- **A `!Send` erasure, now.** A `BoxTransport` whose `execute` returns
-  `Pin<Box<dyn Future + '_>>` satisfies `Transport::execute`, which returns
-  `impl Future` and is happy with any concrete future type — the same trick
-  `hclient-tower` already plays one seam over. It gives one concrete client
-  type at `TransportService`'s recorded price: no `tokio::spawn`, no
-  `axum`. Natural for a browser build, and it takes the main use away from
-  a native one.
-- **A `Send` erasure, also now, and without RTN.** The compiler cannot
-  prove *generically* that `T::execute`'s future is `Send`; it can prove it
-  wherever the concrete type is known. So a second trait with **no default
-  body** — each backend that can, boxes its own future and says so — gives
-  `Send` erasure on stable. That is `TcpConnect::connect_unix`'s shape
-  minus the default: `hclient-native` could implement it, `hclient-fetch`
-  structurally cannot, and its inability would be a compile error rather
-  than a runtime surprise. It buys nothing for `Tm`, which is the paragraph
-  above.
-
-Whatever is built must keep the machinery out of the core, which is
-decision D6: *"all the machinery was a consequence of type erasure in
-middleware; remove the erasure from the built-in stages and the machinery
-disappears entirely"*. `dynosaur`, `trait_variant` and a `BoxFuture` alias
-are refused by name. The shape above obeys it — an additional trait beside
-the seam, hand-written per backend, no proc macro and no `cfg` alias.
+`docs/erased-client.md` has the measurements. `hclient-tower::
+TransportService` is unchanged and is still the route for a caller who
+wants a `tower::Service`.
 
 ---
 
@@ -1115,8 +1062,8 @@ cookies, proxies — and what was missing was the ordinary furniture: a
 `User-Agent`, a default header set, a size limit, a charset, a pluggable
 store.
 
-**Seven are closed** — G2, G5, G6, G8, G9, G10 and G12's digest half, plus
-`deflate`/`zstd` from §4 — which does not retire the argument this
+**Eight are closed** — G2, G5, G6, G8, G9, G10, G13 and G12's digest half,
+plus `deflate`/`zstd` from §4 — which does not retire the argument this
 paragraph was making. It sharpens it. Every one was found by *writing this
 document*, not by the test suite, which was green throughout and is green
 now; each took under a day once named. That is the signature of the class:
@@ -1126,8 +1073,11 @@ argument, because whatever is next is equally invisible from here and this
 document cannot be written twice by the same reader.
 
 **What is left is a different shape, which is itself a finding.** G1 is
-the owner's call, G3 is refused by the problem statement, and G13's cause
-is identified upstream (rust-lang/rust#109417). Of the rest, G4 needs
+the owner's call and G3 is refused by the problem statement. G13 was the
+one whose cause this document said was upstream
+(rust-lang/rust#109417) — it is closed, and the stabilisation never
+arrived: what closed it was noticing that the erased client does not need
+the bound the upstream feature would have proven. Of the rest, G4 needs
 browser judgement about the browser's own model, G7 and G11 are more
 fields on seams that already exist, and G11a is the one that needs care —
 Happy Eyeballs interleaves resolution with connecting on purpose, so

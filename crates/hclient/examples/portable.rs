@@ -58,7 +58,6 @@
 use bytes::Bytes;
 use hclient::redirect::RedirectPolicy;
 use hclient::{Client, RequestBody, Timeouts};
-use hclient_core::unversioned::Transport;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::time::Duration;
@@ -209,28 +208,30 @@ fn status_headers_metadata(status: u16, headers: &http::HeaderMap) -> Vec<(Strin
 
 /// The component's one tool, `fetch`.
 ///
-/// Generic over the transport and over nothing else. The bounds are the
-/// ones `hclient`'s own signatures require, spelled out because a generic
-/// function has to repeat its callee's where-clause:
+/// **It takes `&Client` and is generic over its own sink and nothing
+/// else** — which is the whole argument for erasing the facade, visible
+/// in one signature. It used to be `fetch<T, S>` with four `where` lines,
+/// every one of them a bound this function does not care about and cannot
+/// avoid restating, because a generic function has to repeat its callee's
+/// where-clause:
 ///
-/// * `T::Error: Send + Sync + 'static` — `RequestBuilder::send` needs it
-///   (spec amendment-C1).
-/// * `T::Body: Unpin` and `<T::Body as http_body::Body>::Error:
-///   std::error::Error + Send + Sync + 'static` — `Response::chunk` needs
-///   them.
+/// ```text
+/// T: Transport,
+/// T::Error: Send + Sync + 'static,
+/// T::Body: http_body::Body<Data = Bytes> + Unpin,
+/// <T::Body as http_body::Body>::Error: StdError + Send + Sync + 'static,
+/// ```
 ///
-/// Not one of those bounds mentions a target, a runtime, or `Send` on the
-/// returned future.
-pub async fn fetch<T, S>(
-    client: &Client<T>,
-    args: FetchArgs,
-    ctx: &mut S,
-) -> Result<(), ComponentError>
+/// A library written against this client paid those four lines in every
+/// signature that touched a request. `Client` names no type parameter, so
+/// there is nothing to restate.
+///
+/// What has not changed is the property this example exists for: not one
+/// line here mentions a target or a runtime, and it still builds for
+/// native, `wasm32-wasip2` and `wasm32-unknown-unknown` from this one
+/// source with no `#[cfg]`.
+pub async fn fetch<S>(client: &Client, args: FetchArgs, ctx: &mut S) -> Result<(), ComponentError>
 where
-    T: Transport,
-    T::Error: Send + Sync + 'static,
-    T::Body: http_body::Body<Data = Bytes> + Unpin,
-    <T::Body as http_body::Body>::Error: StdError + Send + Sync + 'static,
     S: ContentSink,
 {
     // The original, verbatim: `let redirect_limit = if args.follow_redirects

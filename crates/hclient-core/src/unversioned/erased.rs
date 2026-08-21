@@ -47,6 +47,13 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
+///
+/// **`Send` is here and on nothing else in this module**, and it is free
+/// rather than a concession: a facade that boxes a transport already asks
+/// `Send + Sync` of the transport at its own use site, so a backend whose
+/// body is `!Send` was excluded one line earlier anyway. What it buys is
+/// the thing a caller notices — a response body that crosses a
+/// `tokio::spawn`, which is ordinary and which the future above cannot do.
 pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error>>>;
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
@@ -54,6 +61,11 @@ pub type BoxExchange<'a> =
     Pin<Box<dyn Future<Output = Result<http::Response<BoxBody>, Error>> + 'a>>;
 
 /// An erased sleep, as [`BoxedTimer`] hands one back.
+///
+/// `Send` for [`BoxBody`]'s reason, and it is the same fact one layer in:
+/// a response body holds a sleep — that is how a total timeout cuts a
+/// silent body — so a `!Send` sleep would make the body `!Send` however
+/// the body itself were declared.
 pub type BoxSleep = Pin<Box<dyn Future<Output = ()>>>;
 
 /// Erase a body, mapping its error into [`Error`] on the way.
@@ -114,11 +126,23 @@ pub trait BoxedTransport {
     /// [`crate::unversioned::Transport::capabilities`], unchanged — it was
     /// never generic.
     fn capabilities(&self) -> &crate::Capabilities;
+
+    /// The transport as [`std::any::Any`], so a caller can ask for its
+    /// concrete type back.
+    ///
+    /// Erasure is what makes a facade one type rather than two parameters,
+    /// and the price is exactly this: the type is gone. A caller who needs
+    /// it back — to inspect a mock's recorded requests, or to lend a
+    /// `Native` to a WebSocket connector — downcasts through here, and the
+    /// `Option` is the honest answer, because the client holds whatever
+    /// backend it was built with and nothing checked it against this
+    /// caller's guess.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 impl<T> BoxedTransport for T
 where
-    T: crate::unversioned::Transport,
+    T: crate::unversioned::Transport + 'static,
     T::Body: 'static,
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
@@ -135,7 +159,28 @@ where
     fn capabilities(&self) -> &crate::Capabilities {
         crate::unversioned::Transport::capabilities(self)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
+
+/// A transport a facade can share between threads, erased.
+///
+/// **The `Send + Sync` lives on this line and on `SharedTimer` below, and
+/// that is a rule rather than a style.** `cargo fmt` moves a trailing
+/// comment off a line it has to reflow, and deletes one from a `where`
+/// clause outright, so a `send-bound-exception` marker cannot survive on a
+/// long signature — this workspace has lost one that way four times. A
+/// short named type is a line fmt has no reason to touch, so every use
+/// site writes `Box<SharedTransport>` and carries no marker at all.
+///
+/// The bound itself is amendment C12's own criterion: a bound this crate
+/// chooses so that a caller's value reaches a facade by erasure rather
+/// than by a type parameter, said at the use site and never on the trait.
+/// A backend that cannot satisfy it is refused at a constructor rather
+/// than taxed at the seam.
+pub type SharedTransport = dyn BoxedTransport + Send + Sync; // send-bound-exception: amendment-C12
 
 /// A moment a [`BoxedTimer`] recorded, which can be asked how long ago it
 /// was and nothing else.
@@ -148,6 +193,9 @@ pub trait ErasedInstant {
 }
 
 /// A stamp a [`BoxedTimer`] took, erased.
+///
+/// `Send` for [`BoxSleep`]'s reason: the same body holds the stamp the
+/// sleep was computed from.
 pub type BoxInstant = Box<dyn ErasedInstant>;
 
 /// [`Timer`], with the sleep boxed and the instant behind [`ErasedInstant`].
@@ -158,6 +206,11 @@ pub trait BoxedTimer {
     /// [`Timer::sleep`], boxed.
     fn sleep_boxed(&self, d: Duration) -> BoxSleep;
 }
+
+/// A clock a facade can share between threads, erased.
+///
+/// [`SharedTransport`]'s reasoning, for the other seam.
+pub type SharedTimer = dyn BoxedTimer + Send + Sync; // send-bound-exception: amendment-C12
 
 /// The stamp the blanket [`BoxedTimer`] hands out: the clock and the moment
 /// together, so `elapsed` is answered by the clock that took it.

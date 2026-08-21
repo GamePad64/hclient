@@ -70,16 +70,19 @@ fn the_challenge_is_answered_on_the_second_request_and_not_the_first() {
     assert_eq!(body.bytes(), &b"in"[..]);
 
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "one challenge, one answer"
     );
     assert_eq!(
-        sent(c.transport(), 0),
+        sent(c.transport_as::<MockTransport>().expect("the mock"), 0),
         None,
         "the nonce had not arrived yet, so there was nothing to compute"
     );
-    let auth = sent(c.transport(), 1).expect("the answer");
+    let auth = sent(c.transport_as::<MockTransport>().expect("the mock"), 1).expect("the answer");
     assert!(auth.starts_with("Digest "), "{auth}");
     for want in [
         "username=\"Mufasa\"",
@@ -130,7 +133,13 @@ fn a_server_that_keeps_challenging_gets_two_requests_and_the_401_stands() {
     })
     .expect("a 401 is an answer, not a failure");
     assert_eq!(got.status(), 401, "the server's answer reaches the caller");
-    assert_eq!(c.transport().requests().len(), 2);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        2
+    );
 }
 
 /// **No credentials, no answer** — the control that says the branch is
@@ -145,7 +154,14 @@ fn without_credentials_the_401_is_simply_the_answer() {
     })
     .expect("a 401 is an answer");
     assert_eq!(got.status(), 401);
-    assert_eq!(c.transport().requests().len(), 1, "nothing was retried");
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1,
+        "nothing was retried"
+    );
 }
 
 /// **A `401` carrying no digest challenge is not answered**, so a `Basic`
@@ -173,7 +189,13 @@ fn a_401_without_a_digest_challenge_is_left_alone() {
     })
     .expect("a 401 is an answer");
     assert_eq!(got.status(), 401);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 /// **The credentials do not cross an origin, and the pair is the
@@ -214,7 +236,10 @@ fn a_401_from_another_origin_is_not_answered_and_one_from_this_origin_is() {
         .unwrap_or_else(|e| panic!("{location}: {e:?}"));
         assert_eq!(got.status(), want_status, "{location}");
         assert_eq!(
-            c.transport().requests().len(),
+            c.transport_as::<MockTransport>()
+                .expect("the mock")
+                .requests()
+                .len(),
             want_requests,
             "{location}: a password derived secret must not reach a server \
              the caller never named"
@@ -247,7 +272,13 @@ fn a_body_that_cannot_be_replayed_leaves_the_challenge_unanswered() {
     })
     .expect("a 401 is an answer");
     assert_eq!(got.status(), 401);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 /// A challenge offering only `auth-int` is refused rather than answered
@@ -278,7 +309,13 @@ fn a_server_requiring_auth_int_gets_no_answer() {
     })
     .expect("a 401 is an answer");
     assert_eq!(got.status(), 401);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 /// **The `Authorization` value is marked sensitive**, so a `Debug` of the
@@ -300,7 +337,10 @@ fn the_answer_is_marked_sensitive() {
             .await
     })
     .expect("succeeds");
-    let reqs = c.transport().requests();
+    let reqs = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let v = reqs[1]
         .headers
         .get(http::header::AUTHORIZATION)

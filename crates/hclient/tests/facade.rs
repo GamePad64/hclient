@@ -8,6 +8,8 @@
 //! doesn't matter here, no `Send`/`Sync` is declared in this file, but this
 //! is still the right place for any future test in that spirit.
 
+use hclient::mock::MockTransport;
+
 #[test]
 fn public_api_types_are_reachable_from_the_facade() {
     // `Config.redirect` has this type.
@@ -28,10 +30,10 @@ fn public_api_types_are_reachable_from_the_facade() {
 /// stop being re-exported from `hclient::`, or their parameter count
 /// changes, this file — as an external consumer — stops compiling.
 #[allow(dead_code)]
-fn response_collected_and_request_builder_are_reachable_from_the_facade<T, B>(
+fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
     _r: hclient::Response<B>,
     _c: hclient::Collected,
-    _b: hclient::RequestBuilder<'_, T>,
+    _b: hclient::RequestBuilder<'_>,
 ) {
 }
 
@@ -207,7 +209,10 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     // there `RetryKind` came straight from `RequestBody::retry_kind()`,
     // here it comes from a field on a struct the transport assembled.
     // Different paths to the same type, both must be nameable.
-    let recorded = client.transport().requests();
+    let recorded = client
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].retry_kind, hclient::body::RetryKind::Free);
 
@@ -247,9 +252,9 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 /// `Client::capabilities()` — the forwarder that answers "what can this
 /// client do" without the caller ever writing `use
 /// hclient_core::unversioned::Transport`. Before this round, the only path
-/// to a `&Capabilities` from a `Client<T>` was `client.transport().capabilities()`,
+/// to a `&Capabilities` from a `Client<T>` was `client.transport_as::<MockTransport>().expect("the mock").capabilities()`,
 /// and `capabilities()` there is a *trait* method — calling it through the
-/// bare `&T` that `.transport()` returns needs `Transport` in scope, which
+/// bare `&T` that `.transport_as::<MockTransport>().expect("the mock")` returns needs `Transport` in scope, which
 /// defeats the point of a facade that only names types reachable from
 /// `hclient::`. `MockTransport::with_capabilities` sets `streaming_request_body`
 /// deliberately (the default from `MockTransport::new()` is `Capabilities::none()`,
@@ -287,7 +292,7 @@ fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 #[test]
 fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
-    let client: hclient::Client<hclient::DefaultTransport> =
+    let client: hclient::Client =
         hclient::Client::new().expect("default transport supports the default config");
     // Assigning into a variable annotated with a BARE `Client` (no
     // `<...>`) only compiles if the generic parameter's default actually
@@ -317,7 +322,7 @@ fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 #[test]
 fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {
-    let client: hclient::Client<hclient::DefaultTransport> =
+    let client: hclient::Client =
         hclient::Client::try_new().expect("default transport supports the default config");
     let _client_no_param: hclient::Client = client;
 }

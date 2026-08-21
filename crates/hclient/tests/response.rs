@@ -88,7 +88,10 @@ fn request_builder_sets_method_and_headers() {
     )
     .unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen[0].method, http::Method::POST);
     assert_eq!(seen[0].headers.get("x-k").unwrap(), "v");
 }
@@ -105,7 +108,13 @@ fn get_sends_the_get_method() {
     let c = Client::builder(m).build().unwrap();
     let _ = futures_executor::block_on(c.get("https://a/x").send()).unwrap();
 
-    assert_eq!(c.transport().requests()[0].method, http::Method::GET);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()[0]
+            .method,
+        http::Method::GET
+    );
 }
 
 #[test]
@@ -116,7 +125,13 @@ fn delete_sends_the_delete_method() {
     let c = Client::builder(m).build().unwrap();
     let _ = futures_executor::block_on(c.delete("https://a/x").send()).unwrap();
 
-    assert_eq!(c.transport().requests()[0].method, http::Method::DELETE);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()[0]
+            .method,
+        http::Method::DELETE
+    );
 }
 
 /// `Collected::json` wasn't part of step 3's code in the brief, but is
@@ -196,7 +211,10 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     )
     .unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -221,7 +239,10 @@ fn invalid_header_name_fails_send_instead_of_silently_dropping_it() {
         "an invalid header name must fail send(), not silently proceed: {result:?}"
     );
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "the request must never reach the transport once header() recorded an error"
     );
 }
@@ -393,7 +414,10 @@ fn headers_extends_what_header_already_set_instead_of_discarding_it() {
     )
     .unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(
         seen[0].headers.get("x-a").map(|v| v.to_str().unwrap()),
         Some("1"),
@@ -427,7 +451,10 @@ fn headers_overrides_a_same_named_header_rather_than_duplicating_it() {
     )
     .unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen[0].headers.get_all("x-a").iter().count(), 1);
     assert_eq!(
         seen[0].headers.get("x-a").map(|v| v.to_str().unwrap()),

@@ -59,7 +59,7 @@ fn demanding(v: http::Version) -> http::Request<RequestBody> {
     req
 }
 
-fn send(c: &Client<MockTransport>, req: http::Request<RequestBody>) -> Result<u16, hclient::Error> {
+fn send(c: &Client, req: http::Request<RequestBody>) -> Result<u16, hclient::Error> {
     futures_executor::block_on(c.execute(req)).map(|r| r.status().as_u16())
 }
 
@@ -78,7 +78,9 @@ fn a_demand_against_a_backend_that_cannot_honour_one_is_unsupported() {
     let c = Client::builder(m)
         .build()
         .expect("the client itself builds");
-    c.transport().push_response_bytes(ok());
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(ok());
 
     let err = send(&c, demanding(http::Version::HTTP_2)).expect_err("the demand must be refused");
     assert_eq!(*err.kind(), ErrorKind::Unsupported);
@@ -88,7 +90,10 @@ fn a_demand_against_a_backend_that_cannot_honour_one_is_unsupported() {
     assert_eq!(named.what, "require_version");
 
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "the refusal must come before the transport is asked to do anything — \
          a backend that cannot answer the demand must not be given a request \
          that carries one"
@@ -106,14 +111,19 @@ fn a_demand_against_a_backend_that_cannot_honour_one_is_unsupported() {
 fn a_demand_against_a_backend_that_honours_one_reaches_it_unchanged() {
     let m = MockTransport::new().with_capabilities(caps(true));
     let c = Client::builder(m).build().expect("client");
-    c.transport().push_response_bytes(ok());
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(ok());
 
     assert_eq!(
         send(&c, demanding(http::Version::HTTP_2)).expect("no gate to trip"),
         200
     );
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(seen.len(), 1);
     assert_eq!(
         seen[0].extensions.get::<RequireVersion>().copied(),
@@ -136,7 +146,9 @@ fn a_demand_against_a_backend_that_honours_one_reaches_it_unchanged() {
 fn an_unmarked_request_is_unaffected_by_a_backend_that_cannot_select() {
     let m = MockTransport::new().with_capabilities(caps(false));
     let c = Client::builder(m).build().expect("client");
-    c.transport().push_response_bytes(ok());
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(ok());
 
     let req = http::Request::builder()
         .method("GET")
@@ -144,7 +156,13 @@ fn an_unmarked_request_is_unaffected_by_a_backend_that_cannot_select() {
         .body(RequestBody::Empty)
         .unwrap();
     assert_eq!(send(&c, req).expect("no demand, no gate"), 200);
-    assert_eq!(c.transport().requests().len(), 1);
+    assert_eq!(
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
+        1
+    );
 }
 
 /// **The demand crosses an origin, where `AllowEarlyData` does not** — and
@@ -182,7 +200,8 @@ fn the_demand_survives_a_cross_origin_redirect() {
     assert_eq!(resp.status(), 200);
 
     let carried: Vec<bool> = c
-        .transport()
+        .transport_as::<MockTransport>()
+        .expect("the mock")
         .requests()
         .iter()
         .map(|r| r.extensions.get::<RequireVersion>().is_some())

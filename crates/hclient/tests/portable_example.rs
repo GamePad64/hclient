@@ -108,10 +108,7 @@ fn internal_mock() -> MockTransport {
     MockTransport::new().with_capabilities(caps)
 }
 
-fn run<T>(c: &Client<T>, a: FetchArgs, r: &mut Recorder) -> Result<(), ComponentError>
-where
-    T: hclient_core::unversioned::Transport<Body = hclient::mock::MockBody, Error = Error>,
-{
+fn run(c: &Client, a: FetchArgs, r: &mut Recorder) -> Result<(), ComponentError> {
     futures_executor::block_on(fetch(c, a, r))
 }
 
@@ -271,7 +268,10 @@ fn one_timeout_ms_becomes_both_connect_and_first_byte() {
     a.timeout_ms = Some(1500);
     run(&c, a, &mut rec).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -295,7 +295,10 @@ fn no_timeout_ms_sets_no_phase_at_all() {
     let mut rec = Recorder::default();
     run(&c, args("https://a/x"), &mut rec).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     let t = seen[0]
         .extensions
         .get::<Timeouts>()
@@ -326,7 +329,10 @@ fn follow_redirects_true_takes_the_hop() {
     run(&c, args("https://a/first"), &mut rec).unwrap();
 
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         2,
         "the original plus one hop"
     );
@@ -374,7 +380,10 @@ fn follow_redirects_false_hands_the_3xx_to_the_caller_like_the_original() {
     run(&c, a, &mut rec).expect("the 302 is the answer, not a failure");
 
     assert_eq!(
-        c.transport().requests().len(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .len(),
         1,
         "not a single hop was taken"
     );
@@ -441,7 +450,10 @@ fn a_browser_shaped_backend_refuses_the_per_request_policy_either_way() {
             "follow_redirects={follow}: {err:?}"
         );
         assert!(
-            c.transport().requests().is_empty(),
+            c.transport_as::<MockTransport>()
+                .expect("the mock")
+                .requests()
+                .is_empty(),
             "follow_redirects={follow}: refused before anything went out"
         );
     }
@@ -481,7 +493,10 @@ fn a_json_body_defaults_the_content_type_unless_the_caller_set_one() {
     );
     run(&c, b, &mut rec).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert_eq!(
         seen[0].headers.get("content-type").unwrap(),
         "application/json",
@@ -514,7 +529,10 @@ fn a_non_json_body_gets_no_content_type_and_the_callers_headers_go_out() {
         .insert("x-trace".to_string(), "abc123".to_string());
     run(&c, a, &mut rec).unwrap();
 
-    let seen = c.transport().requests();
+    let seen = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests();
     assert!(
         seen[0].headers.get("content-type").is_none(),
         "only a JSON body defaults the content type"
@@ -550,7 +568,10 @@ fn an_unparseable_url_is_invalid_args() {
         "the caller's typo is the caller's fault: {err:?}"
     );
     assert!(
-        c.transport().requests().is_empty(),
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()
+            .is_empty(),
         "rejected before anything was sent"
     );
 

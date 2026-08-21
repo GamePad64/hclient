@@ -27,6 +27,26 @@ let text = client.get("https://example.com")
 The same two lines in a browser, on `wasm32-unknown-unknown`. `Client::new()`
 is infallible there, so there is no `?` on it — that is the only difference.
 
+## `Client` names no type parameters
+
+```rust
+fn refresh(client: &hclient::Client) { /* .. */ }
+```
+
+That is the whole signature. The transport and the clock live behind an
+`Arc` inside, so a library taking a client does not restate its callee's
+bounds — this crate's own portable example lost four `where` lines and a
+type parameter to it. `Client` is `Clone` with `Arc` semantics and is
+`Send + Sync`.
+
+The price is one thing and it is stated here rather than discovered: **a
+response body is not `Send`**, so it cannot be moved into a
+`tokio::spawn`. One body type has to serve every backend, and the browser's
+holds a `dyn Stream` with no auto trait — declaring `Send` would not weaken
+the browser backend, it would exclude it. A caller who needs the concrete
+transport back, to spawn a body or to lend a `Native` to a WebSocket
+connector, asks with `Client::transport_as::<T>()`.
+
 ## No backend may claim a capability it does not have
 
 This is enforced rather than asked for. A cookie jar configured against a

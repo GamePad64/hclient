@@ -973,19 +973,32 @@ where
 /// transport, one pool, one resolver:
 ///
 /// ```no_run
-/// # async fn doc<R, T, D>(client: &hclient::Client<hclient_native::Native<R, T, D>>)
+/// # async fn doc<R, T, D>(client: &hclient::Client)
 /// # -> Result<(), Box<dyn std::error::Error>>
-/// # where R: hclient_rt::TcpConnect + hclient_rt::Timer + Clone + 'static,
-/// #       R::Stream: 'static,
-/// #       T: hclient_tls::TlsConnect, T::Stream<R::Stream>: 'static,
-/// #       D: hclient_dns::Resolve {
+/// # where R: hclient_rt::TcpConnect + hclient_rt::Timer + Clone + Send + Sync + 'static,
+/// #       R::Stream: Send + 'static, R::Instant: Send + Sync, R::Sleep: Send + 'static,
+/// #       T: hclient_tls::TlsConnect + Send + Sync + 'static, T::Stream<R::Stream>: Send + 'static,
+/// #       D: hclient_dns::Resolve + Send + Sync + 'static {
 /// use hclient_core::unversioned::WebSocketConnect;
 /// use hclient_tungstenite::Tungstenite;
 ///
+/// let native = client
+///     .transport_as::<hclient_native::Native<R, T, D>>()
+///     .ok_or("this client holds a different backend")?;
 /// let req = http::Request::builder().uri("wss://example.com/chat").body(())?;
-/// let ws = Tungstenite::new(client.transport()).websocket(req).await?;
+/// let ws = Tungstenite::new(native).websocket(req).await?;
 /// # let _ = ws; Ok(()) }
 /// ```
+///
+/// **The `transport_as` is what erasure costs here, and it is the whole
+/// cost.** `hclient::Client` names no transport type, so borrowing the
+/// `Native` back is a downcast rather than a field access, and the
+/// `Option` is honest: nothing checked, when the client was built, that
+/// the backend is the one this caller is about to name. A caller who
+/// wants the check at compile time keeps their own `Native` and hands a
+/// clone of nothing to `Client::builder` — which they cannot, since
+/// `Native` is not `Clone`, and that is the same fact this section opens
+/// with.
 ///
 /// # What it is not
 ///

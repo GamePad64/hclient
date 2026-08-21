@@ -80,7 +80,7 @@ fn recording_server(
     (addr, seen)
 }
 
-fn client(addr: std::net::SocketAddr) -> (Client<Native<Tokio, Rustls, SystemDns<Tokio>>>, String) {
+fn client(addr: std::net::SocketAddr) -> (Client, String) {
     let c = Client::builder(transport())
         .cache(HttpCache::new())
         .build()

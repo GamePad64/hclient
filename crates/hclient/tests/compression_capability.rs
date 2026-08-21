@@ -74,7 +74,7 @@ fn gzip_frames() -> Vec<Bytes> {
     vec![Bytes::from_static(a), Bytes::from_static(b)]
 }
 
-fn get(c: &Client<MockTransport>) -> Result<hclient::Collected, hclient::Error> {
+fn get(c: &Client) -> Result<hclient::Collected, hclient::Error> {
     futures_executor::block_on(async { c.get("https://a/x").send().await?.collect().await })
 }
 
@@ -85,12 +85,14 @@ fn get(c: &Client<MockTransport>) -> Result<hclient::Collected, hclient::Error> 
 fn the_baseline_transport_does_get_its_body_decoded() {
     let m = MockTransport::new().with_capabilities(caps(DecompressionSupport::None));
     let c = Client::builder(m).build().expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(gzip_frames())
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(gzip_frames())
+                .unwrap(),
+        );
 
     let got = get(&c).expect("decodes");
     assert_eq!(got.text().unwrap(), PLAINTEXT);
@@ -101,7 +103,10 @@ fn the_baseline_transport_does_get_its_body_decoded() {
     // this test is named after: the coding that was decoded was asked
     // for. The full list and its order are `decompress.rs`'s decision and
     // are pinned by its own tests, which can see `Decoders`.
-    let asked = c.transport().requests()[0]
+    let asked = c
+        .transport_as::<MockTransport>()
+        .expect("the mock")
+        .requests()[0]
         .headers
         .get(http::header::ACCEPT_ENCODING)
         .map(|v| v.to_str().unwrap().to_owned())
@@ -126,14 +131,16 @@ fn the_baseline_transport_does_get_its_body_decoded() {
 fn against_a_transport_that_decodes_for_itself_the_client_does_neither() {
     let m = MockTransport::new().with_capabilities(caps(DecompressionSupport::Internal));
     let c = Client::builder(m).build().expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            // Still there, still describing the wire — the transport
-            // decoded, it did not tidy up after itself.
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(vec![Bytes::from_static(PLAINTEXT.as_bytes())])
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                // Still there, still describing the wire — the transport
+                // decoded, it did not tidy up after itself.
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(vec![Bytes::from_static(PLAINTEXT.as_bytes())])
+                .unwrap(),
+        );
 
     let got = get(&c).expect("a body the transport already decoded must arrive intact");
     assert_eq!(
@@ -142,7 +149,9 @@ fn against_a_transport_that_decodes_for_itself_the_client_does_neither() {
         "decoding a second time corrupts every compressed response"
     );
     assert!(
-        !c.transport().requests()[0]
+        !c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()[0]
             .headers
             .contains_key(http::header::ACCEPT_ENCODING),
         "the transport chose what to ask for; a header of ours could only contradict it"
@@ -170,12 +179,14 @@ fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_its_body_d
     let c = Client::builder(MockTransport::new().with_capabilities(caps))
         .build()
         .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(gzip_frames())
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(gzip_frames())
+                .unwrap(),
+        );
 
     let got = get(&c).expect("decodes");
     assert_eq!(
@@ -184,7 +195,9 @@ fn a_transport_that_forbids_the_header_but_decodes_nothing_still_gets_its_body_d
         "a `Content-Encoding` the server applied unbidden is still ours to reverse"
     );
     assert!(
-        !c.transport().requests()[0]
+        !c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()[0]
             .headers
             .contains_key(http::header::ACCEPT_ENCODING),
         "the transport forbids this header; we must not add it"
@@ -200,12 +213,14 @@ fn a_caller_who_sets_accept_encoding_gets_their_header_and_the_undecoded_body() 
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(gzip_frames())
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(gzip_frames())
+                .unwrap(),
+        );
 
     let got = futures_executor::block_on(async {
         c.get("https://a/x")
@@ -217,7 +232,10 @@ fn a_caller_who_sets_accept_encoding_gets_their_header_and_the_undecoded_body() 
     })
     .expect("no decoding attempted, so no decode error");
     assert_eq!(
-        c.transport().requests()[0].headers[http::header::ACCEPT_ENCODING],
+        c.transport_as::<MockTransport>()
+            .expect("the mock")
+            .requests()[0]
+            .headers[http::header::ACCEPT_ENCODING],
         "identity",
         "the caller's own negotiation stands, unedited"
     );
@@ -242,13 +260,15 @@ fn an_unknown_coding_is_left_untouched_rather_than_half_handled() {
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "compress")
-            .header(http::header::CONTENT_LENGTH, "3")
-            .body(vec![Bytes::from_static(b"abc")])
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "compress")
+                .header(http::header::CONTENT_LENGTH, "3")
+                .body(vec![Bytes::from_static(b"abc")])
+                .unwrap(),
+        );
 
     let got = get(&c).expect("nothing to decode, nothing to fail");
     assert_eq!(got.bytes().as_ref(), b"abc");
@@ -272,12 +292,14 @@ fn a_body_that_is_not_the_coding_it_claims_is_a_decode_error() {
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(vec![Bytes::from_static(b"this is not gzip at all")])
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(vec![Bytes::from_static(b"this is not gzip at all")])
+                .unwrap(),
+        );
 
     let err = get(&c).expect_err("garbage under a gzip header must not pass for a body");
     assert_eq!(*err.kind(), ErrorKind::Decode);
@@ -298,15 +320,17 @@ fn a_truncated_stream_is_an_error_not_a_shorter_document() {
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            // Everything but the last eight bytes: gzip's CRC32 and length.
-            .body(vec![Bytes::from_static(
-                GZIP_BLOB.split_at(GZIP_BLOB.len() - 8).0,
-            )])
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                // Everything but the last eight bytes: gzip's CRC32 and length.
+                .body(vec![Bytes::from_static(
+                    GZIP_BLOB.split_at(GZIP_BLOB.len() - 8).0,
+                )])
+                .unwrap(),
+        );
 
     let err = get(&c).expect_err("a cut-off body must not read as a complete, shorter one");
     assert_eq!(*err.kind(), ErrorKind::Decode);
@@ -327,13 +351,15 @@ fn an_error_from_underneath_keeps_its_category_through_the_decoder() {
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_frames_then_error(
-        http::Response::builder()
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(Vec::new())
-            .unwrap(),
-        hclient::Error::new(ErrorKind::Cancelled, NotADecodeProblem),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_frames_then_error(
+            http::Response::builder()
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(Vec::new())
+                .unwrap(),
+            hclient::Error::new(ErrorKind::Cancelled, NotADecodeProblem),
+        );
 
     let err = get(&c).expect_err("the body broke");
     assert_eq!(
@@ -357,13 +383,15 @@ fn an_empty_body_under_a_content_encoding_is_not_a_truncated_stream() {
         Client::builder(MockTransport::new().with_capabilities(caps(DecompressionSupport::None)))
             .build()
             .expect("supported");
-    c.transport().push_response_bytes(
-        http::Response::builder()
-            .status(204)
-            .header(http::header::CONTENT_ENCODING, "gzip")
-            .body(Vec::new())
-            .unwrap(),
-    );
+    c.transport_as::<MockTransport>()
+        .expect("the mock")
+        .push_response_bytes(
+            http::Response::builder()
+                .status(204)
+                .header(http::header::CONTENT_ENCODING, "gzip")
+                .body(Vec::new())
+                .unwrap(),
+        );
 
     let got =
         futures_executor::block_on(async { c.head("https://a/x").send().await?.collect().await })
