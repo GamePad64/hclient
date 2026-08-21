@@ -172,20 +172,51 @@ impl Pair {
 /// A port free on **both** TCP and UDP, with the two sockets already held
 /// so nothing can take them in between.
 ///
-/// The retry is the whole mechanism: `bind(0)` picks a free TCP port and
-/// says nothing about UDP, so the pair is found by asking and trying again.
-/// Sixty-four attempts against an ephemeral range of ~28000 ports is not a
-/// bound anyone reaches; it is there so a broken host fails with a sentence
-/// rather than spinning.
+/// The retry is the whole mechanism: `bind(0)` picks a port free on *one*
+/// protocol and says nothing about the other, so the pair is found by
+/// asking and trying again.
+///
+/// **Both directions are tried, alternately, and that is not belt and
+/// braces.** The original asked TCP first, always, with a comment reading
+/// *"sixty-four attempts against an ephemeral range of ~28000 ports is not
+/// a bound anyone reaches"* — which is Linux's range and Linux's
+/// allocator. It was reached on `windows-latest`, by three of these tests
+/// at once, because nextest runs them in parallel and they compete for the
+/// same pairs. Windows also reserves whole port blocks (Hyper-V does this
+/// on the hosted runners) and the reservations need not be the same for
+/// the two protocols — so a TCP port whose UDP twin is reserved is not bad
+/// luck that another draw fixes, it is a region the TCP allocator keeps
+/// handing out. Asking UDP first on alternate attempts escapes a
+/// reservation that is one-sided in either direction.
+///
+/// The count is raised with it, and the failure now carries the OS error:
+/// a bound that is reached should say *why* rather than only that it was.
 fn bind_pair() -> (std::net::TcpListener, std::net::UdpSocket) {
-    for _ in 0..64 {
-        let tcp = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback TCP bind");
-        let port = tcp.local_addr().expect("local_addr").port();
-        if let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", port)) {
-            return (tcp, udp);
+    let mut last = None;
+    for attempt in 0..256 {
+        if attempt % 2 == 0 {
+            let tcp = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback TCP bind");
+            let port = tcp.local_addr().expect("local_addr").port();
+            match std::net::UdpSocket::bind(("127.0.0.1", port)) {
+                Ok(udp) => return (tcp, udp),
+                Err(e) => last = Some(("udp", port, e)),
+            }
+        } else {
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("a loopback UDP bind");
+            let port = udp.local_addr().expect("local_addr").port();
+            match std::net::TcpListener::bind(("127.0.0.1", port)) {
+                Ok(tcp) => return (tcp, udp),
+                Err(e) => last = Some(("tcp", port, e)),
+            }
         }
     }
-    panic!("no port was free on both TCP and UDP in 64 attempts");
+    match last {
+        Some((which, port, e)) => panic!(
+            "no port was free on both TCP and UDP in 256 attempts, alternating which \
+             protocol chose it; the last failure was the {which} bind on port {port}: {e}"
+        ),
+        None => panic!("no port was free on both TCP and UDP in 256 attempts"),
+    }
 }
 
 /// One self-signed certificate naming [`ORIGIN`] and the loopback literal,
