@@ -1701,63 +1701,44 @@ impl Client {
     /// choice (see `crates/hclient/tests/two_runtimes.rs`, the same
     /// constructor for tokio and for smol).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics in exactly one case: `Rustls::with_platform_verifier()`
-    /// couldn't read the OS's system trust store (`rustls-platform-
-    /// verifier`'s own view is that this is a runtime environment
-    /// condition, not a client configuration error). A client setting the
-    /// transport doesn't support (`UnsupportedCapability`, this function's
-    /// error type) doesn't cause a panic — it comes back as an ordinary
-    /// `Err`.
+    /// Two, and they are told apart by [`ErrorKind`](hclient_core::ErrorKind)
+    /// rather than by which function you called:
+    /// `Rustls::with_platform_verifier()` failing to read the OS trust
+    /// store is `ErrorKind::Tls`, and a client setting the transport
+    /// cannot honour is `ErrorKind::Unsupported`, carrying the
+    /// `UnsupportedCapability` that names it as its source.
     ///
-    /// The non-panicking alternative is [`Client::try_new`]: the same
-    /// construction, but with both failure modes (trust store AND
-    /// unsupported setting) as `Err`, for a caller that must handle any
-    /// failure, not just the second one. `.expect(...)` here, rather than
-    /// propagating through this function's `Result`, is the same decision
-    /// as before: `UnsupportedCapability` (`what`, `backend`, both
-    /// `&'static str`) is a typed answer to "the transport doesn't support
-    /// this particular client setting", not to "the system trust store
-    /// couldn't be read", and conflating them would mean lying about the
-    /// category of failure. `try_new` below resolves this not by
-    /// conflating them but with a wider error type — `hclient_core::Error`,
-    /// where both causes are already distinguishable via `ErrorKind`
-    /// (`Tls` and `Unsupported` respectively), so the panic here stays an
-    /// ergonomics choice for "the common case", not the only path.
-    pub fn new() -> Result<Self, hclient_core::UnsupportedCapability> {
-        let transport = Self::default_native_transport().expect("platform verifier");
-        Self::builder(transport).build()
-    }
-
-    /// The non-panicking version of [`Client::new`] — the exact same
-    /// construction (`Native<Tokio, Rustls, SystemDns<Tokio>>` with the
-    /// system trust store), but both failure points become `Err` instead
-    /// of just one of the two: `Rustls::with_platform_verifier()` gives
-    /// `ErrorKind::Tls` (`with_platform_verifier` itself already returns
-    /// that; the `?` below simply doesn't silence it into a panic), an
-    /// incompatible setting at `build()` gives `ErrorKind::Unsupported`,
-    /// the same trick `Client::execute` already applies to
-    /// `UnsupportedCapability` from `check_timeouts_supported`
-    /// (`Error::new(ErrorKind::Unsupported, e)`, `config.rs`) — not a new
-    /// trick invented for this function, but reuse of an existing one.
+    /// **This function used to panic on the first of those, and there was
+    /// a `try_new` beside it that did not.** The split was argued from the
+    /// error type: `UnsupportedCapability` is a typed answer to *the
+    /// transport does not support this setting* and not to *the trust
+    /// store could not be read*, so `new` returned the narrow type and
+    /// `.expect`ed the other cause. The argument was sound and the naming
+    /// it produced was not — **both functions returned `Result`**, so
+    /// `try_` marked the one that was fallible about *more things* rather
+    /// than the one that was fallible at all, which is not what the prefix
+    /// means in Rust.
     ///
-    /// For a process where a panic isn't an acceptable way to learn about
-    /// an environment without a working system certificate store
-    /// (embedded systems, long-lived processes where `catch_unwind` around
-    /// the client constructor isn't an option) — this path, not
-    /// [`Client::new`].
-    pub fn try_new() -> Result<Self, hclient_core::Error> {
+    /// Keeping the wider type and dropping the panic resolves it without
+    /// giving anything up, because `ErrorKind` already draws the line the
+    /// two types were drawing. What it removes is a library panicking on a
+    /// machine whose certificate store cannot be read — which `try_new`'s
+    /// own doc listed real cases for, and which nothing in this workspace
+    /// called: `try_new` had no caller outside this file.
+    pub fn new() -> Result<Self, hclient_core::Error> {
         let transport = Self::default_native_transport()?;
         Self::builder(transport)
             .build()
             .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
     }
 
-    /// The shared construction of the default transport for
-    /// [`Client::new`] and [`Client::try_new`] — the one operation that
-    /// can genuinely fail for both (`Rustls::with_platform_verifier()`),
-    /// so it's factored out once rather than duplicated. `Result<_,
+    /// The construction of the default transport for [`Client::new`] —
+    /// the one operation in it that can genuinely fail
+    /// (`Rustls::with_platform_verifier()`). Its own function since there
+    /// were two constructors sharing it; kept as one because the reason
+    /// for the `Result` is worth a place to write down. `Result<_,
     /// hclient_core::Error>`, not `UnsupportedCapability`:
     /// `with_platform_verifier()` already returns an `Error`
     /// (`ErrorKind::Tls`) itself, and `Native::new`/`SystemDns::new` can't

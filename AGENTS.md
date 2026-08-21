@@ -10,7 +10,13 @@ let text = client.get("https://example.com").send().await?.collect().await?.text
 ```
 
 On native, with the `default-transport` feature (Task 14, vertical 2) — the same
-code without manually choosing a transport: `Client::new()` resolves
+code without manually choosing a transport. **`Client::new()` is one
+constructor and panics on nothing**: it used to `.expect` a failure to read
+the OS trust store and carry a `try_new` beside it that did not, and both
+returned `Result` — so `try_` marked the one fallible about *more things*
+rather than the one fallible at all, which is not what the prefix means.
+`ErrorKind` already tells `Tls` from `Unsupported`, so the wide error type
+stays and the panic and the prefix both go. It resolves
 `DefaultTransport` (`Native` on `tokio` + `rustls` with the system trust store +
 system `getaddrinfo`) itself, by target, not by a feature the user picks.
 

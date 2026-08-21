@@ -303,28 +303,34 @@ fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
 
 // ── Fix round 1 ──────────────────────────────────────────────────────────
 
-/// `Client::try_new()` is the non-panicking alternative to `Client::new()`
-/// (fix round 1, finding 2: `new()` panics on `with_platform_verifier()`
-/// failing, and the crate had no path to get that same error as an `Err`).
-/// The return type is `hclient::Error` (already re-exported for
-/// `Client::execute`), not `UnsupportedCapability`: unlike `new()`, this
-/// function must be able to name BOTH failure causes (trust store —
-/// `ErrorKind::Tls`, unsupported setting — `ErrorKind::Unsupported`) with
-/// one type, and `UnsupportedCapability` can't name the second category.
+/// **`Client::new()` names both failure causes and panics on neither** —
+/// and there is only one constructor to name them with.
 ///
-/// Tests only the success path — the same environment with a working
-/// system trust store as `default_transport_is_
-/// reachable_and_is_the_bare_clients_default_param` above, so
-/// `with_platform_verifier()`'s failure path is checked here
-/// structurally (by type), not behaviorally: there's no portable way to
-/// make the system certificate store fail on demand in a test that has to
-/// run identically on linux/macos/windows.
+/// There were two: `new()` returned `UnsupportedCapability` and `.expect`ed
+/// a failure to read the OS trust store, and `try_new()` returned
+/// `hclient::Error` with both causes. The split was argued from the error
+/// type and the argument was sound; the naming it produced was not, because
+/// **both returned `Result`**, so `try_` marked the one fallible about more
+/// things rather than the one fallible at all. `ErrorKind` already draws
+/// that line — `Tls` against `Unsupported` — so the wide type stays, the
+/// panic goes, and the prefix has nothing left to contrast with.
+///
+/// Tests only the success path. `with_platform_verifier()`'s failure is
+/// checked here structurally, by the return type, not behaviourally:
+/// there is no portable way to make the system certificate store fail on
+/// demand in a test that has to run identically on linux, macOS and
+/// Windows.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
 #[test]
-fn try_new_is_a_fallible_alternative_to_the_panicking_default_constructor() {
+fn the_one_default_constructor_is_fallible_about_both_of_its_failures() {
     let client: hclient::Client =
-        hclient::Client::try_new().expect("default transport supports the default config");
+        hclient::Client::new().expect("default transport supports the default config");
     let _client_no_param: hclient::Client = client;
+
+    // The type is the assertion: an `UnsupportedCapability` could not name
+    // the trust-store cause, which is why the narrow one is gone.
+    fn takes_the_wide_error(_: fn() -> Result<hclient::Client, hclient::Error>) {}
+    takes_the_wide_error(hclient::Client::new);
 }
 
 // ── v0.4 W2: the observability seam ──────────────────────────────────────
