@@ -310,6 +310,29 @@ fn native() -> Native<Tokio, Rustls, IpLiteralOnly> {
     Native::new(Tokio, Rustls::with_webpki_roots(), IpLiteralOnly)
 }
 
+/// `native()`, with the client's send buffer held down to `bytes`.
+///
+/// **Both ends have to be bounded, and one was not enough.** The fixture
+/// already holds the server's receive buffer down; on Windows that still
+/// left 8 MiB fitting, because what a non-blocking send copies into is the
+/// *client's* `SO_SNDBUF`, and Windows autotunes it generously. So the
+/// message has to exceed the sum of the two, and the cheapest way to be
+/// sure of that is to name both.
+///
+/// `tcp_opts` replaces the whole set, so `nodelay` is restated here — a
+/// caller who sets one field and expects the rest to stay is the defect
+/// `tcp_opts_replaces_the_whole_set_including_the_nodelay_new_asked_for`
+/// pins one crate over.
+fn native_with_send_buffer(bytes: usize) -> Native<Tokio, Rustls, IpLiteralOnly> {
+    native()
+        .tcp_opts(hclient_rt::TcpOpts {
+            nodelay: true,
+            send_buffer_size: Some(bytes),
+            ..hclient_rt::TcpOpts::default()
+        })
+        .expect("tokio applies nodelay and send_buffer_size on every platform in this matrix")
+}
+
 /// The connector under test, with no liveness bound — the default.
 ///
 /// It borrows, which is why every call site below writes `ws(&native())`
@@ -778,13 +801,11 @@ async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
         64 * 1024,
     );
 
-    let mut ws = tokio::time::timeout(
-        BOUND,
-        ws(&native()).websocket(open(&format!("ws://{addr}/"))),
-    )
-    .await
-    .expect("the handshake must not hang")
-    .expect("the handshake must succeed");
+    let t = native_with_send_buffer(64 * 1024);
+    let mut ws = tokio::time::timeout(BOUND, ws(&t).websocket(open(&format!("ws://{addr}/"))))
+        .await
+        .expect("the handshake must not hang")
+        .expect("the handshake must succeed");
 
     let sent = payload.clone();
     let blocked = tokio::time::timeout(BOUND, async move {

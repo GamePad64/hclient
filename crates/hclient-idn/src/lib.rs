@@ -747,6 +747,22 @@ fn foundation_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 #[doc(hidden)]
 pub mod testing {
     use super::Backend;
+
+    /// UTS 46's four label separators, for a test or a fuzz target that
+    /// has to split a domain the way this crate does.
+    ///
+    /// **Data, deliberately, and not the rule.** The policy refuses a
+    /// domain with an empty label that is not the single trailing root,
+    /// and a caller checking that rule writes it out itself — sharing the
+    /// rule would make every such check a tautology over the
+    /// implementation. Sharing the character set is safe because it is
+    /// four codepoints with no logic in them, and `policy.rs`'s
+    /// `the_label_separators_are_exactly_these_four` is what pins it.
+    ///
+    /// The alternative was hard-coding them at each site, and the fuzzer
+    /// showed what that costs: a helper splitting on `'.'` alone missed
+    /// `"．"` — a fullwidth full stop, which is one of the four.
+    pub const LABEL_SEPARATORS: [char; 4] = super::policy::LABEL_SEPARATORS;
     #[cfg(any(icu_backend, foundation_backend))]
     use super::IdnError;
     #[cfg(any(icu_backend, foundation_backend))]

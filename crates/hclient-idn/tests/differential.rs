@@ -519,8 +519,12 @@ fn the_public_entry_point_answers_the_corpus() {
 /// **backends** answer, which is what they are for — it is our layer that
 /// now differs from them, on exactly these inputs.
 fn refused_by_policy(name: &str) -> bool {
-    let n = name.split('.').count();
-    name.split('.')
+    // All four separators — see `testing::LABEL_SEPARATORS`. The corpus
+    // rows that trip this rule are ASCII today, so `'.'` alone would pass
+    // here and be wrong the day one is not.
+    let sep = hclient_idn::testing::LABEL_SEPARATORS;
+    let n = name.split(sep).count();
+    name.split(sep)
         .enumerate()
         .any(|(i, l)| l.is_empty() && i + 1 < n)
 }

@@ -81,6 +81,29 @@ fuzz_target!(|data: &[u8]| {
          it may refuse, and it may never invent a different answer"
     );
 
+    // The layer's one **policy** refusal, named rather than folded into
+    // the condition below. An empty label that is not the single trailing
+    // root is refused whatever a backend says, because `idna` and Windows's
+    // ICU convert `ä..de` and Apple's Foundation refuses it — a name
+    // reachable on two of this project's three platforms and not the third.
+    // That refusal is deliberately *not* "for a reason the backend
+    // supplies", which is what the assertion below is about, so it is
+    // excluded here and asserted directly by `policy.rs`'s
+    // `refuses_an_empty_label_but_not_the_trailing_root`.
+    // All four separators, not just `'.'`: the first draft of this split
+    // used the ASCII dot alone and the fuzzer answered with `"．"` in
+    // seconds — a fullwidth full stop, which the policy treats as a
+    // separator and this did not.
+    let sep = hclient_idn::testing::LABEL_SEPARATORS;
+    let labels = domain.split(sep).count();
+    let empty_label = domain
+        .split(sep)
+        .enumerate()
+        .any(|(i, l)| l.is_empty() && i + 1 < labels);
+    if empty_label {
+        return;
+    }
+
     let (unicode, malformed) = idna::domain_to_unicode(&domain);
     assert!(
         malformed.is_err() || idna_says(&unicode).is_none(),

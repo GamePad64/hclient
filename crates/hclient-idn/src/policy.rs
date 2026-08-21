@@ -54,7 +54,7 @@ const ACE_PREFIX: &str = "xn--";
 /// alone would come back from the platform with more labels than it went
 /// in with, and [`ascii_labels_survived`] would refuse a name `idna`
 /// accepts.
-const LABEL_SEPARATORS: [char; 4] = ['.', '\u{3002}', '\u{ff0e}', '\u{ff61}'];
+pub(crate) const LABEL_SEPARATORS: [char; 4] = ['.', '\u{3002}', '\u{ff0e}', '\u{ff61}'];
 
 fn is_label_separator(c: char) -> bool {
     LABEL_SEPARATORS.contains(&c)
