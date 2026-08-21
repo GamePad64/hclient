@@ -1,21 +1,76 @@
-# Publishing the 29 crates
+# Releasing the 30 crates
 
-Derived from the manifests rather than recalled — `cargo metadata
---no-deps`, every workspace member, every edge. Re-derive it after any
-dependency change with the script in §6 rather than trusting this list.
+```
+cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
+cargo release <patch|minor|major|VERSION> --execute  # does it
+```
 
-## 1. Eight waves, not five
+That is the whole procedure. This document exists for the three things it
+does not tell you: what the tool is doing on your behalf, the one thing
+that will stop the **first** release, and why the order below is written
+down when nothing has to follow it by hand any more.
 
-`AGENTS.md` said **five waves**, and that number is the *normal* dependency
-graph. `cargo publish` also has to satisfy **dev-dependencies that carry a
-version**, of which there are 32 here, and they add three more waves. Both
-numbers are right about different questions; the one that governs a publish
-is eight.
+## 1. What each half does, measured on this workspace
 
-Within a wave the crates are independent — any order, and they can go out
-back to back. A wave may not start until the previous wave is **in the
-index**; `cargo publish` waits for that itself, so back-to-back invocations
-are fine.
+**`cargo publish --workspace` is native since cargo 1.90 and works here.**
+Dry-run on this tree: 29 packaged, 29 **verified**, exit 0, and the upload
+order computed by cargo itself. So publishing is not the part that needed a
+tool.
+
+**The bump is.** `[workspace.package].version` is one number, and beside it
+are **68 literal `version = "0.1.0"` requirements** — 7 in the root
+`[workspace.dependencies]` and 61 in crate manifests — which must move with
+it. Cargo offers no way to write `version.workspace = true` inside a
+dependency requirement, so the repetition is forced and nothing checked
+that the copies agreed. `cargo release version minor` does it:
+
+```
+Upgrading workspace to version 0.2.0
+Upgrading hclient-dns from 0.1.0 to 0.2.0 (inherited from workspace)
+ Updating hclient's dependency from 0.1.0 to 0.2.0
+ Updating hclient-dns-doh's dependency from 0.1.0 to 0.2.0
+ …
+```
+
+`cargo release <level> --execute` then runs bump → commit → publish in
+dependency order → tag → push, so the two halves are one command.
+
+## 2. The first release will be refused, and that is correct
+
+```
+error: attempting to publish 29 new crates which is above the rate limit: 5
+```
+
+crates.io rate-limits **new** crates far harder than new versions of
+existing ones — a burst of 5, then roughly one per ten minutes — and
+`cargo-release` knows both numbers and refuses rather than getting halfway.
+Two ways past it:
+
+- **Ask crates.io to raise it** (`help@crates.io`) for this one burst, and
+  then set the tool's copy to match:
+
+  ```toml
+  [workspace.metadata.release.rate-limit]
+  new-packages = 29
+  ```
+
+- **Or publish in batches** of five and wait, which is what the limit
+  enforces anyway.
+
+**Do not raise `new-packages` before crates.io raises the real limit.** The
+number is not a preference: setting it high without the grant turns a check
+that works into one that cannot fire, and the failure it was preventing —
+stopping halfway through a first publication — is the expensive one.
+
+Later releases do not meet this: `existing-packages` is 30, above the 29
+here.
+
+## 3. The order, and why it is still written down
+
+Nothing has to follow this by hand — cargo computes it. It is here because
+it was derived **independently**, from `cargo metadata`, before either tool
+was consulted, and the two agree exactly. That agreement is the evidence
+the wave count is a fact about the graph rather than a guess:
 
 | wave | crates |
 |---|---|
@@ -28,90 +83,36 @@ are fine.
 | 7 | `hclient-h3`, `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
 | 8 | `hclient-select` |
 
-`hclient-rt-pair-check` is `publish = false` and is not in the count. It
+**It is eight and not five, and that is two questions rather than a
+miscount.** Five is the *normal* dependency graph; `cargo publish` must
+also satisfy **dev-dependencies that carry a version**, of which there are
+32 here. Cargo's own ordering includes those edges, which is how the two
+derivations were checked against each other.
+
+The chokepoints are one crate wide and each is a real edge:
+`hclient-tls-rustls` needs `hclient-tls-quic`, the second TLS seam;
+`hclient-native` needs that plus both runtimes and the system resolver;
+`hclient-select` needs `hclient-h3`.
+
+`hclient-rt-pair-check` is `publish = false` and is not in the count — it
 must depend on `hclient-rt-tokio` **and** `hclient-rt-smol` at once, with
 `udp` on both, which no shipped crate may do.
 
-## 2. Why waves 4, 5 and 8 hold one crate each
-
-They are the chokepoints, and each is a real dependency rather than an
-accident:
-
-- **`hclient-tls-rustls`** is alone in wave 4 because it depends on
-  `hclient-tls-quic` — the `quic` feature, the second TLS seam. Nothing
-  else in wave 3 is below it.
-- **`hclient-native`** is alone in wave 5 because it needs
-  `hclient-tls-rustls` plus both runtimes and the system resolver. It is
-  the widest normal dependency set in the workspace.
-- **`hclient-select`** is last because it needs `hclient-h3`, which is in
-  wave 7.
-
-## 3. The rate limit is the real schedule, not the graph
-
-crates.io rate-limits **new** crate publication far more tightly than new
-versions of an existing crate — a small burst and then roughly one per ten
-minutes. Twenty-nine new crates therefore takes hours of wall clock, not
-minutes, and the graph above is not what makes it slow.
-
-**Check the current limit before starting, and ask crates.io to raise it
-for this burst if needed** (help@crates.io). Being rate-limited midway is
-not harmful — a wave can be resumed — but it turns a one-sitting job into
-several.
-
-## 4. What is checked, and the one thing no local check can catch
-
-`just packaging` and `just package-build` both pass, and between them they
-cover the file list, the licence symlinks, the READMEs, and that each crate
-**compiles out of its own tarball**.
-
-**Neither can catch a wrong publish order.** `cargo package --workspace`
-makes every member available to every other at once through a local
-overlay, so a crate whose dependency is not yet on crates.io still builds.
-The order in §1 only bites on a real, sequential publish, where each crate
-resolves its dependencies from the index. That is why this file exists
-rather than a check.
-
-The failure mode is benign and visible: `cargo publish` refuses at the
-verify step with the missing crate named, nothing is uploaded, and the fix
-is to publish the wave below first.
-
-## 5. Running it
-
-Per crate, in wave order:
-
-```
-cargo publish -p <crate>
-```
-
-`--dry-run` is deliberately **not** the rehearsal to rely on: it asks the
-registry about ownership and version collisions, which needs credentials,
-and it does not answer the ordering question either — see §4. The rehearsal
-that does work is `just package-build`, already green.
-
-If a wave is interrupted, re-running a crate that already went out fails
-with a version collision and changes nothing. Publishing is otherwise
-irreversible: a version can be **yanked** but never replaced or deleted, so
-`0.1.0` is spent whatever happens.
-
-## 6. Re-deriving this
+Re-derive after any dependency change:
 
 ```python
 import json, subprocess
 md = json.loads(subprocess.run(["cargo","metadata","--format-version","1","--no-deps"],
     capture_output=True, text=True).stdout)
 pkgs = {p["name"]: p for p in md["packages"]}
-names = set(pkgs)
-pub = {n for n, p in pkgs.items() if p.get("publish") != []}
+names, pub = set(pkgs), {n for n, p in pkgs.items() if p.get("publish") != []}
 need = {}
 for n in pub:
     r = set()
     for d in pkgs[n]["dependencies"]:
-        if d["name"] not in names:
-            continue
-        # a normal or build dep always; a dev dep only when it carries a
-        # version, since cargo strips a path-only one from the manifest
-        if d["kind"] in (None, "build") or (
-            d["kind"] == "dev" and d.get("req") not in (None, "*")
+        if d["name"] in names and (
+            d["kind"] in (None, "build")
+            or (d["kind"] == "dev" and d.get("req") not in (None, "*"))
         ):
             r.add(d["name"])
     need[n] = r & pub
@@ -124,26 +125,40 @@ while len(done) < len(pub):
     done |= set(w)
 ```
 
-## 7. Collapsing the waves is possible and is refused
+## 4. The configuration, and why each line is not a default
 
-Dropping the `version` from those 32 dev-dependencies would make cargo
-strip them from the published manifests, and the eight waves become
-**five** — the number `AGENTS.md` had. It is refused, and the reason is not
-the effort:
+`[workspace.metadata.release]` in the root `Cargo.toml`. **An unknown key
+there is a hard parse error, not a silent no-op** — checked on purpose
+before writing it, because a release configuration that ignores a typo is
+the shape this project refuses everywhere else.
 
-a published `.crate` with a version-carrying dev-dependency can have its
-own test suite built and run by whoever downloads it. Distribution
-packagers do exactly that. Strip the version and the dev-dependency
-disappears from the tarball entirely, so `cargo test` on the unpacked crate
-cannot compile — the crate becomes untestable by anyone who did not clone
-this repository.
+- `shared-version = true` — all 30 crates carry `version.workspace = true`,
+  and this tells the tool the same thing.
+- `consolidate-commits = true` — one commit for the bump, not thirty.
+- `allow-branch = ["main"]` — the default is every branch except `HEAD`,
+  which would let a release happen from a feature branch.
+- `pre-release-commit-message` and `tag-message` — the defaults are
+  `chore: Release …`, and this repository does not write conventional
+  commits: **nought of the last twenty-five subjects** are in that form,
+  because its commit messages are the record of *why*. A release commit has
+  no argument to make, so it says what it did and stops.
 
-Three waves of waiting against that is not a trade worth making, especially
-when §3 says the rate limit dominates the clock anyway.
+## 5. What is checked before any of this runs
 
-**Two dev-dependencies are path-only on purpose and are not part of this**:
-`hclient-fetch` and `hclient-native` each dev-depend on `hclient`, which
-depends on both. Cargo allows that cycle inside a workspace and refuses it
-at package time. Those two are the exception the paragraph above does not
-cover, and the reason is written at both sites so that a tidy-up does not
-put the defect back.
+- `just package-build` — `cargo package --workspace`, which builds each
+  `.crate` from the files that would ship and then **verifies** it by
+  compiling out of that tarball. The only check here that builds a crate
+  the way a reader would get it.
+- `just packaging` — the licence texts and READMEs are in the **packaged
+  file list**, not merely in the working tree.
+
+Neither can catch a wrong publish *order*, because `cargo package
+--workspace` makes every member available to every other through a local
+overlay. That used to matter; it no longer does, because the order is the
+tool's to compute rather than a human's to remember.
+
+## 6. Irreversible
+
+A published version can be **yanked** but never replaced or deleted, so
+`0.1.0` is spent whatever happens. Re-running a crate that already went out
+fails with a version collision and changes nothing.

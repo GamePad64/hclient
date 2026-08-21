@@ -348,8 +348,16 @@ to satisfy **dev-dependencies that carry a version**, of which there are 32
 here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
 are still first and `hclient-select` is still last, and the chokepoints in
 between are one crate wide: `hclient-tls-rustls`, then `hclient-native`.
-`docs/publishing.md` has the table, the script that derives it, and the
-reason the waves are **not** collapsed back to five — a version-carrying
+**Nothing follows that order by hand any more**: `cargo publish
+--workspace` is native since cargo 1.90 and computes it — measured on this
+tree, 29 packaged, 29 verified, and its ordering identical to the one
+derived here from `cargo metadata` before either tool was consulted. The
+table is kept because that agreement is what makes the count a fact about
+the graph rather than a guess. `cargo-release` does the half cargo does not:
+the bump, including the **68 literal `version = "0.1.0"` requirements** that
+must move with `[workspace.package].version` and that cargo gives no way to
+centralise. `docs/publishing.md` has the table, the script that derives it,
+and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
 distribution packagers do.
 

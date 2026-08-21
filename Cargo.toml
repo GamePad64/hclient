@@ -71,3 +71,39 @@ hclient       = { path = "crates/hclient",       version = "0.1.0" }
 unsafe_code       = "forbid"
 missing_debug_implementations = "warn"
 unexpected_cfgs   = { level = "warn", check-cfg = [] }
+
+# ── Releasing: `cargo release <level>` ──────────────────────────────────
+#
+# What this tool is here for is the **bump**, and only that. Publishing is
+# `cargo publish --workspace`, which cargo 1.98 does natively — measured on
+# this workspace, which it packages, verifies and orders itself, arriving at
+# the same order `docs/publishing.md` derives independently.
+#
+# What has no other owner is the version: `[workspace.package].version` is
+# one number, and beside it are **68 literal `version = "0.1.0"`
+# requirements** — 7 here and 61 in the crate manifests — that must move
+# with it. Cargo offers no way to write `version.workspace = true` inside a
+# dependency requirement, so the repetition is forced, and nothing checked
+# that the copies agreed. That is the drift this file already removed once
+# for the version itself.
+#
+# An unknown key here is a hard parse error rather than a silent no-op —
+# checked on purpose before writing this block, because a release
+# configuration that quietly ignores a typo is the shape this project
+# refuses everywhere else.
+[workspace.metadata.release]
+# One version for all 30 crates, which is what `version.workspace = true`
+# already says; this is the release tool being told the same thing.
+shared-version = true
+# One commit for the bump, not thirty.
+consolidate-commits = true
+# Releases come off `main` and nowhere else. The default is every branch
+# except `HEAD`, which would let a release happen from a feature branch.
+allow-branch = ["main"]
+# The default messages are `chore: Release …`, and this repository does not
+# write conventional commits — nought of the last twenty-five subjects are
+# in that form, and its commit messages are the record of *why*. A release
+# commit has no argument to make, so it says what it did and stops.
+pre-release-commit-message = "Release {{version}}"
+tag-name = "v{{version}}"
+tag-message = "hclient {{version}}"
