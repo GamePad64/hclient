@@ -95,12 +95,17 @@ fuzz_target!(|data: &[u8]| {
     // seconds — a fullwidth full stop, which the policy treats as a
     // separator and this did not.
     let sep = hclient_idn::testing::LABEL_SEPARATORS;
-    let labels = domain.split(sep).count();
-    let empty_label = domain
-        .split(sep)
-        .enumerate()
-        .any(|(i, l)| l.is_empty() && i + 1 < labels);
-    if empty_label {
+    let empty_label = |name: &str| {
+        let n = name.split(sep).count();
+        name.split(sep)
+            .enumerate()
+            .any(|(i, l)| l.is_empty() && i + 1 < n)
+    };
+    // The input **and** what `idna` made of it: UTS 46 maps some code
+    // points to nothing, so two non-empty labels can become none — and the
+    // rule is applied to the answer as well, or this crate would not be
+    // idempotent over its own output.
+    if empty_label(&domain) || theirs.as_deref().is_some_and(empty_label) {
         return;
     }
 

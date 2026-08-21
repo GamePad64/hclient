@@ -244,13 +244,12 @@ pub(crate) fn to_ascii_over(
     // A **single trailing** empty label is the root and stays legal:
     // `example.com.` is an ordinary fully-qualified name. `a..` is not,
     // and is refused with the rest.
-    let labels = lower.split(is_label_separator).count();
+    if has_empty_label(&lower) {
+        return None;
+    }
 
     let mut unicode = String::with_capacity(lower.len());
     for (nth, label) in lower.split(is_label_separator).enumerate() {
-        if label.is_empty() && nth + 1 < labels {
-            return None;
-        }
         if nth > 0 {
             unicode.push('.');
         }
@@ -305,7 +304,37 @@ pub(crate) fn to_ascii_over(
     if !ascii_labels_survived(&lower, &ascii) {
         return None;
     }
+    // **The rule again, on the answer, and the input check does not imply
+    // it.** UTS 46 maps some code points to nothing — a soft hyphen, a
+    // zero-width space — so `"\u{ad}.\u{ad}"` arrives with two non-empty
+    // labels and leaves as `"."`. Emitting that would break the property
+    // `fuzz_targets/idn_policy.rs` calls idempotence, which is not a
+    // formality: it is the second pass a **redirect hop** makes, so a name
+    // this crate accepted once would be refused the next time it was seen.
+    // Found by the fuzzer, in under a minute, on exactly that input.
+    if has_empty_label(&ascii) {
+        return None;
+    }
     Some(ascii)
+}
+
+/// A label that is empty and is not the single trailing root.
+///
+/// **Refused, because the platforms disagreed about it.** `idna` and
+/// Windows's ICU convert `ä..de`; Apple's Foundation refuses it — a host
+/// reachable on two of this project's three platforms and not the third,
+/// which is the one thing this crate exists to prevent. Refusing is the
+/// direction available, since nothing here can make Foundation accept, and
+/// the safe one: an empty label is not a legal DNS label, so no reachable
+/// host is lost.
+///
+/// A **single trailing** empty label is the root and stays legal:
+/// `example.com.` is an ordinary fully-qualified name.
+fn has_empty_label(name: &str) -> bool {
+    let n = name.split(is_label_separator).count();
+    name.split(is_label_separator)
+        .enumerate()
+        .any(|(i, l)| l.is_empty() && i + 1 < n)
 }
 
 /// Whether every ASCII label of the input came back unchanged, and the
@@ -549,6 +578,19 @@ mod tests {
         assert!(!pass("."), "the bare root is not a host");
         assert!(pass("example.com."), "the trailing root must survive");
         assert!(pass("example.com"), "and so must the ordinary form");
+
+        // **The label can also become empty during mapping**, which the
+        // input check cannot see: UTS 46 maps a soft hyphen to nothing, so
+        // this arrives with two non-empty labels and would leave as `"."`.
+        // Emitting it would make the crate non-idempotent — and the second
+        // pass is the one a redirect hop makes, so a host accepted once
+        // would be refused the next time it was seen. The fuzzer found it.
+        assert!(!pass("\u{ad}.\u{ad}"), "both labels map away to nothing");
+        assert!(!pass("\u{ad}.a"), "the leading label maps away");
+        assert!(
+            pass("a.\u{ad}"),
+            "a trailing label that maps away is the root"
+        );
     }
 
     /// **The policy adds nothing and takes nothing away.** Over a backend
