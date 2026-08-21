@@ -226,9 +226,6 @@ pub(crate) fn to_ascii_over(
     convert: impl Fn(&str) -> Option<String>,
     domain: &str,
 ) -> Option<String> {
-    if domain.bytes().any(is_forbidden_domain_byte) {
-        return None;
-    }
     let lower = domain.to_ascii_lowercase();
 
     // **An empty label is refused, and the platforms disagreed about it.**
@@ -279,6 +276,19 @@ pub(crate) fn to_ascii_over(
                 if decoded.is_ascii() || decoded.contains(is_label_separator) {
                     return None;
                 }
+                // **A denied byte can be smuggled through punycode**, and
+                // the check that used to catch this sat on the whole
+                // assembled name with a comment saying it "cannot fire".
+                // It could: `xn--%-0fa.de` decodes to `%ä`, because a
+                // literal `%` rides in the basic-code-point half that
+                // punycode preserves verbatim. So the check belongs here,
+                // on the decoded label, and not on the name — on the name
+                // it also refused a forbidden character that **mapping
+                // removes**, which is the `">\u{338}"` case the fuzzer
+                // found. Narrowing it is what lets both be right.
+                if decoded.bytes().any(is_forbidden_domain_byte) {
+                    return None;
+                }
                 unicode.push_str(&decoded);
             }
             None => unicode.push_str(label),
@@ -287,14 +297,27 @@ pub(crate) fn to_ascii_over(
 
     // Reachable only when no label was an ACE label, because a decoded one
     // is non-ASCII by the check above.
+    //
+    // **The deny list is applied here rather than to the input, and moving
+    // it is UTS 46's order.** §4 maps before it validates, so a forbidden
+    // ASCII character can stop existing during mapping: `">\u{338}"` is
+    // `>` followed by a combining long solidus overlay, which composes to
+    // `≯` — and `idna` answers `xn--hdh` for it where a check on the raw
+    // input refuses a `>` that is not in the result. That is the ordering
+    // defect already recorded one field over, about ACE labels, met again
+    // on the deny list; the fuzzer found this one too.
+    //
+    // Applying it here costs nothing, because UTS 46 does nothing to an
+    // ASCII name under this crate's settings — `every_ascii_name_is_its_
+    // own_answer_unless_it_has_an_ace_label` is that measurement — so for
+    // an ASCII name "before mapping" and "after mapping" are the same
+    // string. For anything else the check that decides which host is
+    // contacted is the one on `ascii` below, after `convert`.
     if unicode.is_ascii() {
+        if unicode.bytes().any(is_forbidden_domain_byte) {
+            return None;
+        }
         return Some(unicode);
-    }
-    // `decode_punycode` guarantees it introduced no ASCII, so this cannot
-    // fire — checked rather than trusted, because what it guards is a URL
-    // parser being handed a delimiter.
-    if unicode.bytes().any(is_forbidden_domain_byte) {
-        return None;
     }
 
     let ascii = convert(&unicode)?;
@@ -1037,6 +1060,41 @@ mod tests {
     }
 
     // ── The deny list, at both ends ─────────────────────────────────────
+
+    /// **The deny list is applied after mapping, and the pair is the
+    /// decision.** Either half alone reads as the wrong fix.
+    ///
+    /// `">\u{338}"` is `>` followed by a combining long solidus overlay,
+    /// which composes to `≯` — so the forbidden character is *not in the
+    /// name* by the time UTS 46 validates, and `idna` answers `xn--hdh`.
+    /// Refusing it was this layer applying §4's steps out of order, the
+    /// same defect already recorded about ACE labels. The fuzzer found it.
+    ///
+    /// `xn--%-0fa.de` is the other direction and is why the check could
+    /// not simply move to the end: punycode preserves the basic code
+    /// points verbatim, so a literal `%` rides through and the label
+    /// decodes to `%ä`. The check that caught this carried a comment
+    /// saying it "cannot fire" — it could, and removing it on the strength
+    /// of that comment is what this test would have caught.
+    #[test]
+    fn a_denied_byte_is_judged_after_mapping_and_after_decoding() {
+        let pass = |n: &str| over_idna(n);
+        assert_eq!(
+            pass(">\u{338}").as_deref(),
+            Some("xn--hdh"),
+            "the `>` composes away, so there is no forbidden character to refuse"
+        );
+        assert_eq!(
+            pass("xn--%-0fa.de"),
+            None,
+            "punycode carried a literal `%` into the decoded label"
+        );
+        // The control, and the property that must never move: a forbidden
+        // character that survives mapping is still refused.
+        for still_denied in ["a>b.de", "a<b.de", "a b.de", "a%b.de", "ex@ample.com"] {
+            assert_eq!(pass(still_denied), None, "{still_denied:?}");
+        }
+    }
 
     /// A denied byte on the way IN is refused before the platform sees it,
     /// which for a URL parser is the difference between a host and a
