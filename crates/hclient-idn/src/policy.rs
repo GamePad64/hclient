@@ -231,8 +231,26 @@ pub(crate) fn to_ascii_over(
     }
     let lower = domain.to_ascii_lowercase();
 
+    // **An empty label is refused, and the platforms disagreed about it.**
+    // `ä..de` converts to `xn--4ca..de` under `idna` and under Windows's
+    // ICU, and Apple's Foundation refuses it — so before this line the
+    // same host was contactable on two of this project's three platforms
+    // and not the third, which is the one thing this crate exists to
+    // prevent. Refusing is the direction available (nothing here can make
+    // Foundation accept) and the direction that is safe: an empty label is
+    // not a legal DNS label, so no reachable host is lost, where the other
+    // resolution would be a name that resolves differently per platform.
+    //
+    // A **single trailing** empty label is the root and stays legal:
+    // `example.com.` is an ordinary fully-qualified name. `a..` is not,
+    // and is refused with the rest.
+    let labels = lower.split(is_label_separator).count();
+
     let mut unicode = String::with_capacity(lower.len());
     for (nth, label) in lower.split(is_label_separator).enumerate() {
+        if label.is_empty() && nth + 1 < labels {
+            return None;
+        }
         if nth > 0 {
             unicode.push('.');
         }
@@ -495,6 +513,44 @@ mod tests {
         "اa.de",
     ];
 
+    /// Names this crate refuses **by its own rule**, whatever a backend
+    /// says: a label that is empty and is not the single trailing root.
+    ///
+    /// The two transparency tests below exclude these rather than assert
+    /// them, and the exclusion is the point: transparency is the property
+    /// everywhere the policy has no opinion, and there is now exactly one
+    /// place it has one. `refuses_an_empty_label` is what pins the opinion
+    /// itself, so nothing here is merely being stepped around.
+    fn refused_by_policy(name: &str) -> bool {
+        let n = name.split(is_label_separator).count();
+        name.split(is_label_separator)
+            .enumerate()
+            .any(|(i, l)| l.is_empty() && i + 1 < n)
+    }
+
+    /// The opinion the two tests below step around, asserted directly.
+    ///
+    /// **`ä..de` was contactable on Linux and Windows and refused on
+    /// macOS** — `idna` and ICU convert it, Foundation does not — which is
+    /// a name resolving differently per platform, the one thing this crate
+    /// exists to prevent. Refusing is the direction available, since
+    /// nothing here can make Foundation accept, and the safe one: an empty
+    /// label is not a legal DNS label, so no reachable host is lost.
+    ///
+    /// The trailing root is the control: `example.com.` is an ordinary
+    /// fully-qualified name and must survive, or this rule would be a
+    /// refusal of correct input rather than of nonsense.
+    #[test]
+    fn refuses_an_empty_label_but_not_the_trailing_root() {
+        let pass = |n: &str| over_idna(n).is_some();
+        assert!(!pass("a..b"), "an empty label in the middle");
+        assert!(!pass("ä..de"), "the name the platforms disagreed about");
+        assert!(!pass("a.."), "two trailing dots are not the root label");
+        assert!(!pass("."), "the bare root is not a host");
+        assert!(pass("example.com."), "the trailing root must survive");
+        assert!(pass("example.com"), "and so must the ordinary form");
+    }
+
     /// **The policy adds nothing and takes nothing away.** Over a backend
     /// that is already a full UTS 46 implementation — which is what
     /// `icuuc.dll` is — every answer must be the one `idna` gives.
@@ -505,7 +561,7 @@ mod tests {
     #[test]
     fn the_policy_is_transparent_over_a_real_uts46() {
         let mut wrong = Vec::new();
-        for name in NAMES {
+        for name in NAMES.iter().filter(|n| !refused_by_policy(n)) {
             let (got, want) = (over_idna(name), idna_says(name));
             if got != want {
                 wrong.push(format!("  {name:?}: policy {got:?}, `idna` {want:?}"));
@@ -527,7 +583,7 @@ mod tests {
     #[test]
     fn the_policy_repairs_what_a_url_parser_does_not_do() {
         let mut wrong = Vec::new();
-        for name in NAMES {
+        for name in NAMES.iter().filter(|n| !refused_by_policy(n)) {
             let (got, want) = (over_foundation(name), idna_says(name));
             if got != want {
                 wrong.push(format!("  {name:?}: policy {got:?}, `idna` {want:?}"));
@@ -591,7 +647,15 @@ mod tests {
                 },
                 name,
             );
-            assert_eq!(got, idna_says(name), "{name:?}");
+            // A name the policy refuses by rule never reaches a backend
+            // either — which is this test's claim in its strongest form,
+            // so it is checked here rather than filtered out.
+            let want = if refused_by_policy(name) {
+                None
+            } else {
+                idna_says(name)
+            };
+            assert_eq!(got, want, "{name:?}");
             checked += 1;
         }
         assert!(checked >= 15, "the filter left almost nothing: {checked}");
@@ -1010,6 +1074,14 @@ mod tests {
     fn the_policy_agrees_with_idna_on_generated_names() {
         let mut disagreed = Vec::new();
         generated(0x2545_f491_4f6c_dd1d, |name| {
+            // The policy's one opinion is excluded here and asserted by
+            // `refuses_an_empty_label_but_not_the_trailing_root`. A
+            // generator that emits `.` and `。` freely produces a great
+            // many of these, and none of them is about agreement with
+            // `idna` on names both are willing to convert.
+            if refused_by_policy(name) {
+                return;
+            }
             let (got, want) = (over_idna(name), idna_says(name));
             if got != want && disagreed.len() < 20 {
                 disagreed.push(format!("  {name:?}: policy {got:?}, `idna` {want:?}"));
@@ -1028,6 +1100,14 @@ mod tests {
     fn the_policy_agrees_with_idna_on_generated_names_over_foundation() {
         let mut disagreed = Vec::new();
         generated(0x9e37_79b9_7f4a_7c15, |name| {
+            // The policy's one opinion is excluded here and asserted by
+            // `refuses_an_empty_label_but_not_the_trailing_root`. A
+            // generator that emits `.` and `。` freely produces a great
+            // many of these, and none of them is about agreement with
+            // `idna` on names both are willing to convert.
+            if refused_by_policy(name) {
+                return;
+            }
             let (got, want) = (over_foundation(name), idna_says(name));
             if got != want && disagreed.len() < 20 {
                 disagreed.push(format!("  {name:?}: policy {got:?}, `idna` {want:?}"));

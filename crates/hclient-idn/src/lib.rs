@@ -635,10 +635,31 @@ pub fn backend() -> Backend {
 /// way rather than argued (`docs/v02-design.md`, "Wired").
 #[cfg(idna_backend)]
 fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
-    idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL).map_err(|_| {
-        IdnError::NotAnIdn {
-            domain: domain.to_owned(),
-        }
+    // **Through the policy, like the other two**, and it was the one that
+    // was not. It called `idna::domain_to_ascii_cow` directly, so on Linux
+    // and wasm the shared policy never ran — which is the ICU path's own
+    // argument left unapplied: *"the alternative is two statements of one
+    // contract and the newer one is always the one that rots."*
+    //
+    // What it cost was the divergence this crate exists to prevent.
+    // `ä..de` converted here and was refused by Foundation, so the same
+    // host was reachable on Linux and Windows and not on macOS — and the
+    // empty-label rule added to `policy::to_ascii_over` fixed nothing
+    // until this line, because the rule was in a layer this path skipped.
+    // Measured, not assumed: the `uri_resolution` corpus stayed green on
+    // Linux across that change, which is what said the layer was being
+    // bypassed.
+    policy::to_ascii_over(
+        |unicode| {
+            idna::domain_to_ascii_cow(unicode.as_bytes(), idna::AsciiDenyList::URL)
+                .ok()
+                .map(std::borrow::Cow::into_owned)
+        },
+        domain,
+    )
+    .map(Cow::Owned)
+    .ok_or_else(|| IdnError::NotAnIdn {
+        domain: domain.to_owned(),
     })
 }
 

@@ -449,7 +449,13 @@ fn the_public_entry_point_answers_the_corpus() {
     }
     let mut wrong = Vec::new();
     for case in CORPUS {
-        let want = if cfg!(any(icu_backend, foundation_backend)) {
+        // The layer's own rule comes first and is the same on every
+        // backend — which is the point of it, and now true of the bundled
+        // path too. Before that path went through the policy this arm was
+        // unnecessary on Linux and the divergence was live.
+        let want = if refused_by_policy(case.input) {
+            None
+        } else if cfg!(any(icu_backend, foundation_backend)) {
             case.icu_says
         } else {
             case.idna_says
@@ -489,17 +495,42 @@ fn the_public_entry_point_answers_the_corpus() {
 /// names — over `idna` as the backend the layer must be transparent —
 /// made once more through the public seam rather than the private
 /// function.
+/// The one place the layer is **not** transparent, by rule.
+///
+/// A label that is empty and is not the single trailing root is refused
+/// whatever a backend says, because `idna` and Windows's ICU convert
+/// `ä..de` and Apple's Foundation refuses it — a name reachable on two of
+/// this project's three platforms and not the third, which is the thing
+/// `hclient-idn` exists to prevent. `policy.rs`'s
+/// `refuses_an_empty_label_but_not_the_trailing_root` pins the rule; this
+/// is the same rule, stated where the corpus needs it.
+///
+/// The corpus rows themselves are unchanged and still record what the
+/// **backends** answer, which is what they are for — it is our layer that
+/// now differs from them, on exactly these inputs.
+fn refused_by_policy(name: &str) -> bool {
+    let n = name.split('.').count();
+    name.split('.')
+        .enumerate()
+        .any(|(i, l)| l.is_empty() && i + 1 < n)
+}
+
 #[test]
 fn the_seam_the_fuzzer_uses_is_the_same_layer_the_backends_use() {
     let mut wrong = Vec::new();
     for case in CORPUS {
         let got = hclient_idn::testing::policy_over(idna_says, case.input);
-        if got.as_deref() != case.idna_says {
+        let want = if refused_by_policy(case.input) {
+            None
+        } else {
+            case.idna_says
+        };
+        if got.as_deref() != want {
             wrong.push(format!(
-                "  {}: over `idna` the layer said {:?}, `idna` alone says {:?}",
+                "  {}: over `idna` the layer said {:?}, expected {:?}",
                 label(case),
                 got,
-                case.idna_says
+                want
             ));
         }
     }

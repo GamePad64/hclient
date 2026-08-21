@@ -193,7 +193,10 @@ const CORPUS: &[Case] = &[
     Case { base: "https://example.test/", reference: "https://u:p@münchen.de/x", ours: WithIdn("https://u:p@xn--mnchen-3ya.de/x"), url_says: Some("https://u:p@xn--mnchen-3ya.de/x") },
     Case { base: "https://example.test/", reference: "//münchen.de/x", ours: WithIdn("https://xn--mnchen-3ya.de/x"), url_says: Some("https://xn--mnchen-3ya.de/x") },
     Case { base: "https://example.test/", reference: "https://xn--zzzz.test/x", ours: Always(Some("https://xn--zzzz.test/x")), url_says: None },
-    Case { base: "https://example.test/", reference: "https://ä..de/x", ours: WithIdn("https://xn--4ca..de/x"), url_says: Some("https://xn--4ca..de/x") },
+    // `Always(None)`, and not `WithIdn`: `hclient-idn` refuses an empty
+    // label on every backend, so the answer no longer depends on whether
+    // the Unicode tables are compiled in. See the divergence list.
+    Case { base: "https://example.test/", reference: "https://ä..de/x", ours: Always(None), url_says: Some("https://xn--4ca..de/x") },
     Case { base: "https://example.test/", reference: "https://münchen.de/ä", ours: WithIdn("https://xn--mnchen-3ya.de/%C3%A4"), url_says: Some("https://xn--mnchen-3ya.de/%C3%A4") },
     // Non-ASCII outside the host: percent-encoded UTF-8, never punycode.
     // These need no `idn` feature — nothing here is a domain name.
@@ -214,9 +217,14 @@ const CORPUS: &[Case] = &[
 /// divergence nobody decided on cannot slip in, and one that gets fixed
 /// cannot stay listed.
 ///
-/// With `idn` on this is the RFC-versus-WHATWG list and nothing else —
-/// every U-label in the corpus resolves to exactly the A-label `url`
-/// produced.
+/// With `idn` on this is the RFC-versus-WHATWG list plus **one entry that
+/// is ours by decision**: a host with an empty label. `url` and `idna`
+/// convert `ä..de`, Apple's Foundation refuses it, and a name that
+/// resolves on two of this project's three platforms and not the third is
+/// the thing `hclient-idn` exists to prevent — so it is refused on all
+/// three. An empty label is not a legal DNS label, so nothing reachable is
+/// given up. Every other U-label in the corpus still resolves to exactly
+/// the A-label `url` produced.
 #[cfg(feature = "idn")]
 #[rustfmt::skip]
 const DIVERGENCES: &[(&str, &str)] = &[
@@ -232,6 +240,7 @@ const DIVERGENCES: &[(&str, &str)] = &[
     ("https://example.test/api/", "https:v1"),
     ("https://example.test/api/", "HTTPS://Other.TEST/x"),
     ("https://example.test/", "https://xn--zzzz.test/x"),
+    ("https://example.test/", "https://ä..de/x"),
     ("https://example.test/api/", "https://EXAMPLE.test/café"),
 ];
 
@@ -661,8 +670,14 @@ fn without_the_feature_the_a_label_it_asks_for_resolves_instead() {
             "the A-label this build asks for must itself resolve, unchanged"
         );
     }
+    // **Six, and it was seven.** `ä..de` left this count when it stopped
+    // being a `WithIdn` row — `hclient-idn` refuses an empty label on
+    // every backend now, so its answer is `None` with the feature and
+    // without it, and there is no A-label for a caller to be told to send
+    // instead. The number is a floor against the corpus quietly losing its
+    // U-labels, so it moves with a reason rather than being relaxed.
     assert_eq!(
-        checked, 7,
+        checked, 6,
         "the corpus must still carry every U-label shape, or this proves nothing"
     );
 }
