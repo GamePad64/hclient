@@ -1,0 +1,22 @@
+# Why this file exists: for twelve days the `test (macos-latest)` and
+# `test (windows-latest)` jobs never finished a run. Every one of them sat
+# until GitHub's default six-hour job limit and was killed, while the same
+# suite finished on Linux in two to four minutes. Nothing in the logs said
+# which test was stuck, and three separate causes had to line up for that
+# silence — no per-test bound here, no `timeout-minutes` on the job, and
+# `just test-workspace` capturing nextest's output in a shell variable it
+# never got to print. All three are fixed together, because removing any
+# two of them still leaves a run that cannot give evidence.
+#
+# The numbers have room rather than being tight, because a check that cries
+# wolf gets silenced. Measured on this workspace: the slowest test is
+# `hclient-wasi::live_roundtrip`'s at **7.8 s**, so `period` at 30 s marks
+# nothing that is merely doing work, and `terminate-after` at 10 periods —
+# five minutes — is 38x the slowest test. A macOS or Windows runner is
+# slower than this host, and not by that.
+#
+# What `terminate-after` buys is the whole point: a hung test is killed and
+# **named**, so the next red run says which one instead of saying nothing
+# for six hours.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 10 }

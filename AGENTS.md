@@ -368,6 +368,32 @@ older toolchain, so if you pin an older Rust, pin an older `hclient` with it.
 In exchange nothing here carries version-shim code, and there is no MSRV
 matrix to maintain.
 
+**And the three-platform promise was not being kept, which is worth
+knowing before the next argument leans on it.** For twelve days — every
+`ci.yml` run the API still holds, back to 2026-08-09 — `test
+(macos-latest)` and `test (windows-latest)` **never finished a single
+run**. Each sat until GitHub's default six-hour job limit and was killed
+or cancelled, while the Linux leg finished the same suite in two to four
+minutes. Nothing said which test was stuck, because **three separate
+causes had to line up for that silence**: no per-test bound (there was no
+`.config/nextest.toml` at all), no `timeout-minutes` on the job (so the
+six-hour default applied), and `just test-workspace` capturing nextest's
+output in a shell variable it never lived to print. Remove any two and
+the third still gives a six-hour blank.
+
+All three are fixed together — `slow-timeout = { period = "30s",
+terminate-after = 10 }`, `timeout-minutes: 60`, and `tee` — with the
+numbers measured rather than picked: the slowest test in this workspace
+is 7.8 s, so the per-test kill is 38x it and the job bound is 10x the
+Linux wall time. **What the fix does is make the next red run say which
+test hangs**; it does not fix the hang, which is still unknown and is
+nobody's guess worth recording. Both halves were checked in the failing
+direction — a red nextest exits non-zero through the new pipe, and a run
+printing no `Summary` exits 1 naming itself.
+
+The claim below is stated as it stands, and it is the one to re-read once
+that is diagnosed.
+
 There is also **no MSRV job in CI, deliberately**, and `rust-toolchain.toml`
 pins no version — it says `channel = "stable"`. A job checking a fixed
 version would be a second statement of the same promise, staler than the

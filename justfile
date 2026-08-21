@@ -71,12 +71,26 @@ check: && test
 test-workspace:
     #!/usr/bin/env bash
     set -euo pipefail
-    rc=0
-    out="$(cargo nextest run --workspace --all-features --color never --no-fail-fast \
-      -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1)" || rc=$?
-    printf '%s\n' "$out"
+    # **Streamed through `tee`, not captured into a variable**, and that is
+    # a fix rather than a style. This recipe used to do
+    # `out="$(cargo nextest run ...)"` and print `$out` afterwards, so a run
+    # that never finished printed *nothing at all* — which is how the macOS
+    # and Windows jobs sat at this step for six hours a day for twelve days
+    # with no evidence of which test was stuck. The fail-closed Summary
+    # check below still needs the whole output, so it reads the file `tee`
+    # wrote instead of a variable.
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    # `set +e` around the pipeline: `pipefail` plus `-e` would exit on a red
+    # run before the status could be read, and `${PIPESTATUS[0]}` is the
+    # only place nextest's own exit code survives a pipe.
+    set +e
+    cargo nextest run --workspace --all-features --color never --no-fail-fast \
+      -E 'not test(parsing_scales_linearly_not_quadratically)' 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    set -e
     [ "$rc" -eq 0 ] || exit "$rc"
-    if ! printf '%s\n' "$out" | grep -qE '[0-9]+ tests? run:'; then
+    if ! grep -qE '[0-9]+ tests? run:' "$log"; then
       echo "::error::nextest printed no Summary — the workspace test run did not happen"
       exit 1
     fi

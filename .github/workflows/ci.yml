@@ -20,6 +20,19 @@ on: [push, pull_request]
 
 jobs:
   test:
+    # **Six hours is GitHub's default and it is what hid this.** The macOS
+    # and Windows legs of this matrix never completed a run for twelve
+    # days: each sat at `just test-workspace` until the default job limit
+    # killed it, while the Linux leg finished the same suite in two to four
+    # minutes. An hour is 10x the Linux wall time and 6x under the default,
+    # so it fails in an hour instead of six and cannot cry wolf.
+    #
+    # Only this job carries one, deliberately: every other job in this file
+    # has been completing, so a blanket timeout would be a guard with no
+    # subject. The per-test half of the same fix is `slow-timeout` in
+    # `.config/nextest.toml`, which is what actually *names* a stuck test —
+    # this bound only stops the waiting.
+    timeout-minutes: 60
     strategy:
       # A platform-specific failure must not hide the other two: Windows
       # twice reported red having run nothing, cancelled mid-download.
