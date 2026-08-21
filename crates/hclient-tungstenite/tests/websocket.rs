@@ -254,7 +254,40 @@ fn serve<F>(f: F) -> (SocketAddr, Arc<AtomicUsize>)
 where
     F: Fn(Wire) + Send + Sync + 'static,
 {
+    serve_inner(f, None)
+}
+
+/// `serve`, with the accepted sockets' receive buffer held down to
+/// `bytes`.
+///
+/// **For the one test whose premise is that a write cannot complete**, and
+/// the premise turned out to be a guess: `a_message_larger_than_the_socket_
+/// buffer_arrives_whole` sent 8 MiB and relied on that being "far larger
+/// than any socket buffer". On Windows it is not — the socket accepted the
+/// whole message with nobody reading it, so the test proved nothing about
+/// a partial write and said so, which is the one thing it got right.
+///
+/// Set on the **listener**, not on each accepted socket, because that is
+/// the only point at which it is reliable: the receive window scale is
+/// negotiated during the handshake, so a buffer shrunk after `accept`
+/// may already have advertised a larger window.
+fn serve_with_bounded_recv_buffer<F>(f: F, bytes: usize) -> (SocketAddr, Arc<AtomicUsize>)
+where
+    F: Fn(Wire) + Send + Sync + 'static,
+{
+    serve_inner(f, Some(bytes))
+}
+
+fn serve_inner<F>(f: F, recv_buffer: Option<usize>) -> (SocketAddr, Arc<AtomicUsize>)
+where
+    F: Fn(Wire) + Send + Sync + 'static,
+{
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    if let Some(n) = recv_buffer {
+        socket2::SockRef::from(&listener)
+            .set_recv_buffer_size(n)
+            .expect("a listener's receive buffer is settable on every platform here");
+    }
     let addr = listener.local_addr().expect("local_addr");
     let accepted = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&accepted);
@@ -718,26 +751,32 @@ async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (tx, rx) = mpsc::channel::<(u8, bool, Vec<u8>)>();
     let release_rx = std::sync::Mutex::new(release_rx);
-    let (addr, _) = serve(move |mut w| {
-        let Some(head) = w.head() else { return };
-        let Some(key) = header(&head, "sec-websocket-key") else {
-            return;
-        };
-        if !w.send_raw(accept_101(key).as_bytes()) {
-            return;
-        }
-        // Not one byte is read until the client says its write blocked.
-        if release_rx
-            .lock()
-            .expect("release channel")
-            .recv_timeout(BOUND)
-            .is_err()
-        {
-            return;
-        }
-        let Some(frame) = w.frame() else { return };
-        let _ = tx.send(frame);
-    });
+    // 64 KiB against an 8 MiB message: the write cannot complete in one
+    // go on any platform, which is what `assert!(blocked)` below needs and
+    // what "larger than any socket buffer" only happened to give on Linux.
+    let (addr, _) = serve_with_bounded_recv_buffer(
+        move |mut w| {
+            let Some(head) = w.head() else { return };
+            let Some(key) = header(&head, "sec-websocket-key") else {
+                return;
+            };
+            if !w.send_raw(accept_101(key).as_bytes()) {
+                return;
+            }
+            // Not one byte is read until the client says its write blocked.
+            if release_rx
+                .lock()
+                .expect("release channel")
+                .recv_timeout(BOUND)
+                .is_err()
+            {
+                return;
+            }
+            let Some(frame) = w.frame() else { return };
+            let _ = tx.send(frame);
+        },
+        64 * 1024,
+    );
 
     let mut ws = tokio::time::timeout(
         BOUND,

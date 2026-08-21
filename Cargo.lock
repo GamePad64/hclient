@@ -1572,6 +1572,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "socket2",
  "thiserror",
  "tokio",
  "tungstenite",

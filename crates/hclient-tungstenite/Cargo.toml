@@ -69,6 +69,10 @@ hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0" }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0" }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["webpki-roots"] }
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# One test needs a socket whose receive buffer is small enough that a
+# message cannot fit in it — see `serve_with_bounded_recv_buffer`. `std`
+# exposes no `SO_RCVBUF` setter, and this is a dev-dependency only.
+socket2            = { version = "0.6", features = ["all"] }
 
 [lints]
 workspace = true

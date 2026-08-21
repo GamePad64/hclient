@@ -158,6 +158,32 @@ impl hyper::rt::Read for TokioIo {
     }
 }
 
+/// `shutdown` on a socket whose peer has already gone is **not an error**,
+/// and only the unixes say otherwise.
+///
+/// `shutdown(2)` returns `ENOTCONN` on macOS and the BSDs for an
+/// `AF_UNIX` socket the peer has closed, where Linux returns success.
+/// What the caller asked for is "my write half is closed"; a socket that
+/// is not connected has certainly reached that state, so reporting a
+/// failure turns a **completed** exchange into an error.
+///
+/// It is not hypothetical and it was not cheap: `Native::unix_socket` was
+/// unusable on macOS against any server that closes first — which is every
+/// server answering `Connection: close` — and it surfaced as
+/// `ErrorKind::Connect`, naming the phase that had already succeeded.
+/// Found only when `test (macos-latest)` started finishing runs again.
+///
+/// Applied to every socket kind rather than to the unix arm alone: the
+/// argument is about what `shutdown` means, not about which address
+/// family is asking, and a narrower fix would invite the same report for
+/// TCP on the next BSD.
+fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
+    match r {
+        Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+        other => other,
+    }
+}
+
 impl hyper::rt::Write for TokioIo {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -172,7 +198,8 @@ impl hyper::rt::Write for TokioIo {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        either!(self, s => Pin::new(s).poll_shutdown(cx))
+        let p = either!(self, s => Pin::new(s).poll_shutdown(cx));
+        Poll::Ready(shutdown_is_done(std::task::ready!(p)))
     }
 
     fn poll_write_vectored(
@@ -199,6 +226,28 @@ impl hyper::rt::Write for TokioIo {
 
 #[cfg(test)]
 mod tests {
+    /// The `ENOTCONN`-on-shutdown decision, checked where it can be:
+    /// Linux never produces the error, so the platform cannot be the test.
+    /// What is testable is our own rule, in all three directions.
+    #[test]
+    fn a_shutdown_of_a_socket_that_is_already_gone_is_success() {
+        use std::io::ErrorKind;
+        assert!(super::shutdown_is_done(Ok(())).is_ok());
+        assert!(
+            super::shutdown_is_done(Err(std::io::Error::from(ErrorKind::NotConnected))).is_ok(),
+            "macOS reports ENOTCONN for a peer that closed first, and the write \
+             half it asks about is closed either way"
+        );
+        // The control, and the half that makes this more than
+        // `|_| Ok(())`: every other error still travels.
+        assert_eq!(
+            super::shutdown_is_done(Err(std::io::Error::from(ErrorKind::BrokenPipe)))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::BrokenPipe
+        );
+    }
+
     use super::*;
     use hyper::rt::Read as _;
     use std::io::Write as _;
