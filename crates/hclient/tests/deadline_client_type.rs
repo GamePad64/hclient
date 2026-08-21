@@ -71,14 +71,46 @@ fn a_bounded_handle_shares_the_transport_with_the_unbounded_one() {
 
     assert_eq!(also_plain.config().total, None, "the original is untouched");
     assert_eq!(bounded.config().total, Some(Duration::from_millis(250)));
-    // Compared as thin pointers: `transport()` hands back a `&dyn`, and a
-    // wide-pointer comparison would also be comparing vtable addresses,
-    // which the language does not promise are unique per type.
+    // Asked through the downcast, which is the only transport accessor:
+    // both handles must hand back the same address, and `Some` on both is
+    // itself part of the claim — a handle that had built a second transport
+    // would still answer `Some`, at a different address.
+    let (a, b) = (
+        also_plain
+            .transport_as::<hclient::DefaultTransport>()
+            .expect("the default backend"),
+        bounded
+            .transport_as::<hclient::DefaultTransport>()
+            .expect("the default backend"),
+    );
     assert!(
-        std::ptr::eq(
-            also_plain.transport() as *const _ as *const (),
-            bounded.transport() as *const _ as *const ()
-        ),
+        std::ptr::eq(a, b),
         "the two handles must share one transport, not hold two"
+    );
+}
+
+/// The same claim one type along: a response from this client fits a bare
+/// `hclient::Response` field.
+///
+/// `Response<B>` keeps its parameter — `SseStream::new` takes a response
+/// over any body — but it **defaults** to `ClientBody`, so the common case
+/// names one type instead of two paths. Without the default this reads
+/// `Response<hclient::body::ClientBody>`, which is the tax `Client` was
+/// erased to remove, reappearing on the value it hands back.
+#[test]
+fn a_response_from_this_client_fits_a_bare_response_field() {
+    #[allow(dead_code)]
+    struct Page {
+        resp: hclient::Response,
+    }
+    fn takes_one(_: &hclient::Response) {}
+
+    // The control: the parameter is still there and still means something,
+    // so the default is a default rather than a removal.
+    fn takes_any<B>(_: &hclient::Response<B>) {}
+
+    let _ = (
+        takes_one as fn(&hclient::Response),
+        takes_any::<()> as fn(&_),
     );
 }

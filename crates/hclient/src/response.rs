@@ -21,7 +21,14 @@ impl<B> std::fmt::Debug for Response<B> {
 
 /// A response with its URL preserved. `into_parts` gives full fidelity;
 /// `chunk`/`collect` are convenience on top of it.
-pub struct Response<B> {
+///
+/// **`B` defaults to [`crate::body::ClientBody`]**, so a caller who got
+/// this from a [`Client`](crate::Client) writes `hclient::Response` and
+/// nothing else — which is the point of `Client` naming no parameters, one
+/// type along. The parameter itself stays, and is not decoration:
+/// [`crate::sse::SseStream::new`] takes a `Response<B>` over any body, so a
+/// caller can build one on a response their own transport produced.
+pub struct Response<B = crate::body::ClientBody> {
     parts: http::response::Parts,
     body: B,
     url: http::Uri,

@@ -298,30 +298,23 @@ impl ClientBuilder {
     /// this client produces ([`crate::body::Deadline`] owns one); every clock in
     /// this workspace is a handle or a ZST, and `tests/two_runtimes.rs`
     /// already bounds runtimes by `Clone` for the same reason.
-    pub fn total_timeout<Tm2>(self, timer: Tm2, total: Duration) -> ClientBuilder
+    /// **This used to rebuild the whole builder field by field**, because
+    /// it changed `ClientBuilder<T, Tm>`'s second parameter and a
+    /// type-changing step has no `self` to mutate. It carried a comment
+    /// warning that a cookie jar dropped here would be "the exact class of
+    /// defect `base_url` and `timeouts` were each caught being once" — a
+    /// hazard that existed only because of the rebuild. Erasure put the
+    /// clock in a field, so this changes no type, assigns two fields, and
+    /// the hazard is not merely avoided but unrepresentable.
+    pub fn total_timeout<Tm2>(mut self, timer: Tm2, total: Duration) -> Self
     where
         Tm2: Timer + Clone + Send + Sync + 'static, // send-bound-exception: amendment-C12
         Tm2::Instant: Send,                         // send-bound-exception: amendment-C12
         Tm2::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
     {
-        ClientBuilder {
-            transport: self.transport,
-            backend: self.backend,
-            timer: std::sync::Arc::new(timer),
-            config: Config {
-                total: Some(total),
-                ..self.config
-            },
-            // Carried over, not dropped: this method changes the clock and
-            // nothing else, and a jar silently lost by adding a timeout
-            // would be the exact class of defect `base_url` and
-            // `timeouts` were each caught being once.
-            #[cfg(feature = "cookies")]
-            jar: self.jar,
-            // Carried over for the reason the jar is, one line up.
-            #[cfg(feature = "cache")]
-            cache: self.cache,
-        }
+        self.timer = std::sync::Arc::new(timer);
+        self.config.total = Some(total);
+        self
     }
 
     /// Keep cookies: attach `Cookie` to every request this client sends,
@@ -605,16 +598,7 @@ impl Client {
     }
 }
 
-/// `Tm: Timer + Clone` — `Timer` because [`Self::execute`] measures with
-/// it, `Clone` because the clock travels into every response body
-/// ([`crate::body::Deadline`] owns one). Both hold for every clock in this
-/// workspace, and for [`crate::NoClock`].
 impl Client {
-    pub fn transport(&self) -> &hclient_core::unversioned::erased::SharedTransport {
-        // send-bound-exception: amendment-C12
-        &*self.inner.transport
-    }
-
     /// This client's transport as a concrete type, if that is the type it
     /// was built with.
     ///
@@ -623,6 +607,24 @@ impl Client {
     /// caller asks for it back — a mock's recorded requests, or a `Native`
     /// to lend to a WebSocket connector. `None` means the client holds a
     /// different backend: nothing checked the guess when it was built.
+    ///
+    /// **There is deliberately no untyped `transport()` beside this**, and
+    /// it existed for one commit. Three things were wrong with it and the
+    /// third is the one that decides. It returned
+    /// `&hclient_core::unversioned::erased::SharedTransport`, a path this
+    /// facade does not re-export — so naming the return type meant adding a
+    /// dependency on `hclient-core` to a crate that wanted only `hclient`,
+    /// which is the tax erasure exists to remove. The name would also have
+    /// collided in a reader's head with [`crate::erased`], which is this
+    /// crate's *other* erasure and a different subject. And what the value
+    /// offered was `capabilities()` — already forwarded by
+    /// [`Self::capabilities`] — plus `execute_boxed`, which sends a request
+    /// with the redirect policy, the cookie jar, the cache and every
+    /// timeout skipped, while reading like "send a request".
+    ///
+    /// Adding it back later is a minor version and removing it later is a
+    /// major one, which is what settles the direction before the first
+    /// publish.
     pub fn transport_as<T: 'static>(&self) -> Option<&T> {
         self.inner.transport.as_any().downcast_ref::<T>()
     }
@@ -636,10 +638,11 @@ impl Client {
     /// Transport` into scope (Task 17 fix round 2) — the trait is
     /// deliberately in semver quarantine (see the doc comment on
     /// `hclient-core/src/unversioned/mod.rs`) and isn't part of the
-    /// `hclient` facade. Without this forwarder, `client.transport().
-    /// capabilities()` — a trait method — was the only path, and
-    /// `client.transport()` returns `&T`, so calling `.capabilities()` on
-    /// it would require `Transport` in a `use`.
+    /// `hclient` facade. Reaching the transport and calling the trait
+    /// method was once the only path; since erasure it is **the only
+    /// path at all**, because [`Self::transport_as`] hands back a
+    /// concrete backend and a caller who does not know which one they hold
+    /// has nothing else to ask.
     pub fn capabilities(&self) -> &Capabilities {
         self.inner.transport.capabilities()
     }
