@@ -94,6 +94,30 @@ async fn recv_one<S: UdpDatagrams>(sock: &S, buf: &mut [u8]) -> std::io::Result<
     Ok(meta[0])
 }
 
+/// A destination that actually reaches a socket bound to `addr`.
+///
+/// **A wildcard is not an address you can send to, and only Linux pretends
+/// otherwise.** `local_addr()` on a socket bound to `[::]:0` hands back the
+/// unspecified address with a real port; Linux routes a datagram addressed
+/// that way to this host, macOS answers `EHOSTUNREACH`, and Windows accepts
+/// the send and delivers nothing — so the receive blocks for ever.
+///
+/// This is the same defect `hclient-rt-tokio/tests/udp.rs` fixed with its
+/// own `loopback_of`, and the reason it is worth a second copy rather than
+/// a shared crate: this file's whole point is that it depends on both
+/// runtimes and nothing else. It was not copied at the time, and the cost
+/// was `udp_pair_property_holds_for_tokio` hanging until the six-hour CI
+/// job limit on every macOS run for twelve days, saying nothing about why.
+fn loopback_of(addr: SocketAddr) -> SocketAddr {
+    if !addr.ip().is_unspecified() {
+        return addr;
+    }
+    match addr {
+        SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, addr.port())),
+        SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, addr.port())),
+    }
+}
+
 /// Send an `Ect0` from `a` to `b` and check that what `b` reports agrees
 /// with what `b` claims.
 ///
@@ -106,7 +130,7 @@ async fn ecn_claim_matches_reality<S: UdpDatagrams>(a: &S, b: &S) {
     send(
         a,
         &Datagrams {
-            destination: b.local_addr().unwrap(),
+            destination: loopback_of(b.local_addr().unwrap()),
             src_ip: None,
             ecn: Some(EcnCodepoint::Ect0),
             segment_size: None,
@@ -120,16 +144,25 @@ async fn ecn_claim_matches_reality<S: UdpDatagrams>(a: &S, b: &S) {
     let meta = recv_one(b, &mut buf).await.expect("it arrives on loopback");
     assert_eq!(&buf[..meta.len], b"ecn");
 
+    // **One direction only, and that is the workspace rule rather than a
+    // concession.** A biconditional stood here and failed on Windows,
+    // where a socket reports `ecn: false` and the codepoint arrives
+    // anyway. `hclient-rt-tokio/tests/udp.rs` had already met the same
+    // thing on macOS and written the rule down: `ecn_is_really_on`
+    // requires an option the kernel does not need, so it **under**-reports
+    // — which is the safe direction, and the floor rule this workspace
+    // applies everywhere. **Only a `true` claim is a promise**, and an
+    // `else` arm here was asserting a promise nobody made.
+    //
+    // What the arm was protecting against — an invented `Ect0` fed to a
+    // congestion controller as evidence of a mark that never happened — is
+    // still covered, by the `if`: a socket that claims ECN must deliver
+    // the codepoint that was actually sent.
     if b.caps().ecn {
         assert_eq!(
             meta.ecn,
             Some(EcnCodepoint::Ect0),
             "this socket claims ECN, so the codepoint it received must be the one that was sent"
-        );
-    } else {
-        assert_eq!(
-            meta.ecn, None,
-            "a socket that does not claim ECN must report the absence, never a plausible value"
         );
     }
 }
@@ -153,7 +186,7 @@ async fn a_declared_gso_batch_really_goes_out<S: UdpDatagrams>(a: &S, b: &S) {
     send(
         a,
         &Datagrams {
-            destination: b.local_addr().unwrap(),
+            destination: loopback_of(b.local_addr().unwrap()),
             src_ip: None,
             ecn: None,
             segment_size: Some(SEG),
@@ -204,7 +237,7 @@ fn the_declared_limit_is_a_limit_and_not_a_ban<S: UdpDatagrams>(s: &S) {
     let payload = vec![0u8; seg * too_many];
     let err = s
         .try_send(&Datagrams {
-            destination: s.local_addr().unwrap(),
+            destination: loopback_of(s.local_addr().unwrap()),
             src_ip: None,
             ecn: None,
             segment_size: Some(seg),
@@ -244,7 +277,7 @@ async fn exercise_udp<R: UdpBind>(rt: R, label: &str) {
     send(
         &a,
         &Datagrams {
-            destination: b.local_addr().unwrap(),
+            destination: loopback_of(b.local_addr().unwrap()),
             src_ip: None,
             ecn: None,
             segment_size: None,

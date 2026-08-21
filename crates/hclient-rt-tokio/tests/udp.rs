@@ -216,6 +216,35 @@ async fn ecn_is_reported_from_the_kernel_on_a_dual_stack_socket_too() {
     ecn_claim_matches_reality(&a, &b).await;
 }
 
+/// Does a socket bound to `[::]` on this platform actually receive
+/// v4-mapped traffic?
+///
+/// **Windows says no, and it is a default rather than a quirk**:
+/// `IPV6_V6ONLY` defaults to *on* there, where every unix in this
+/// project's matrix defaults to off. A test that sends v4 traffic to a
+/// `[::]` socket on Windows is asserting something about a socket that
+/// will never receive it — the sender accepts the datagram and the kernel
+/// delivers it nowhere, so the receive blocks for ever.
+///
+/// That is what it cost: `test (windows-latest)` sat at this file until
+/// GitHub's six-hour job limit on every run for twelve days, and said
+/// nothing about which test, because nothing bounded a test and nothing
+/// streamed the output. Both are fixed now (`.config/nextest.toml`,
+/// `just test-workspace`), and this is the defect they exposed.
+///
+/// **Probed rather than `cfg!`-ed**, for the same reason the test below is
+/// a biconditional rather than a platform check: this encodes the
+/// question, not today's answers. A platform that changes its default
+/// changes this line's answer and nothing else.
+fn dual_stack_is_available() -> bool {
+    let Ok(sock) = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None) else {
+        return false;
+    };
+    // `only_v6()` failing is "we do not know", and the reading that keeps
+    // this test from hanging is that we cannot rely on v4-mapped delivery.
+    !sock.only_v6().unwrap_or(true)
+}
+
 /// **The case that can falsify a wrongly-`true` ECN claim**, and the one
 /// nobody had written.
 ///
@@ -237,6 +266,16 @@ async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_c
         eprintln!("skipped: this host has no IPv6 loopback");
         return;
     };
+    // The premise, established rather than assumed — see
+    // `dual_stack_is_available`. Without this the datagram below is sent
+    // into nowhere on Windows and the receive never returns.
+    if !dual_stack_is_available() {
+        eprintln!(
+            "skipped: a `[::]` socket is v6-only on this platform, so v4-mapped \
+             traffic cannot arrive and there is nothing here to observe"
+        );
+        return;
+    }
     let port = b.local_addr().expect("bound").port();
     let a = bind();
     send(

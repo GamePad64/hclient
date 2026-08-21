@@ -220,19 +220,61 @@ fn reuse_address_is_refused_by_name() {
     assert_eq!(refused_options::<5>(opts), ["reuse_address"]);
 }
 
-/// The control the six above need: a runtime that applies everything
-/// takes everything. Without it, `tcp_opts` returning `Err` for every
-/// input whatsoever would pass all six.
+/// Every option the runtime **claims**, and only those.
+///
+/// Built from `APPLIES` rather than written out, because `APPLIES` is
+/// `cfg!`-computed: `SO_BINDTODEVICE` is Linux/Android/Fuchsia and
+/// `TCP_USER_TIMEOUT` those plus Cygwin, so the set differs per target.
+fn every_field_it_applies(a: TcpOptsSupport) -> TcpOpts {
+    let all = every_field_set();
+    TcpOpts {
+        nodelay: a.nodelay && all.nodelay,
+        keepalive: a.keepalive.then_some(all.keepalive).flatten(),
+        keepalive_interval: a
+            .keepalive_interval
+            .then_some(all.keepalive_interval)
+            .flatten(),
+        keepalive_retries: a
+            .keepalive_retries
+            .then_some(all.keepalive_retries)
+            .flatten(),
+        bind_device: a.bind_device.then_some(all.bind_device).flatten(),
+        user_timeout: a.user_timeout.then_some(all.user_timeout).flatten(),
+        local_address: a.local_address.then_some(all.local_address).flatten(),
+        send_buffer_size: a.send_buffer_size.then_some(all.send_buffer_size).flatten(),
+        recv_buffer_size: a.recv_buffer_size.then_some(all.recv_buffer_size).flatten(),
+        reuse_address: a.reuse_address && all.reuse_address,
+    }
+}
+
+/// The control the refusals above need: a runtime refuses nothing among
+/// the options it claims. Without it, `tcp_opts` returning `Err` for every
+/// input whatsoever would pass every one of them.
+///
+/// **It asserted `Tokio::APPLIES == TcpOptsSupport::ALL` and that was
+/// wrong on two of this project's three platforms**, which is how it
+/// stood: red on macOS and Windows, where `bind_device` and
+/// `user_timeout` are honestly `false`. `caps.rs` says so in as many
+/// words — *"`ALL` is still literally every field, and is therefore no
+/// longer a value any real runtime can claim on every platform it builds
+/// for"* — so the test was contradicting a doc comment in the library it
+/// tests. `APPLIES` became `cfg!`-computed and this did not follow.
+///
+/// What it asserts now is the property the control actually needs, on
+/// every target: whatever the runtime claims, it takes. The floor guard
+/// below is what keeps that from being vacuous — "refuses nothing" is
+/// trivially true of a runtime that claims nothing.
 #[test]
-fn a_runtime_that_applies_everything_refuses_nothing() {
+fn a_runtime_refuses_nothing_among_the_options_it_claims() {
     let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
-    assert_eq!(
-        <Tokio as TcpConnect>::APPLIES,
-        TcpOptsSupport::ALL,
-        "the shipped tokio runtime is the control precisely because it applies all six"
+    let applies = <Tokio as TcpConnect>::APPLIES;
+    assert!(
+        applies.nodelay && applies.keepalive && applies.local_address,
+        "a shipped runtime claiming none of the portable options would make \
+         this control vacuous; got {applies:?}"
     );
-    t.tcp_opts(every_field_set())
-        .expect("a runtime with APPLIES = ALL has nothing to refuse");
+    t.tcp_opts(every_field_it_applies(applies))
+        .expect("a runtime has nothing to refuse among the options it claims");
 }
 
 /// And the other half of that control: the six refusals are about the
