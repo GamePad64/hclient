@@ -665,7 +665,7 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
 
 /// The ICU path: the shared policy, with ICU as its conversion.
 ///
-/// ICU would answer every one of [`policy::to_ascii_over`]'s five steps correctly
+/// ICU would answer every one of [`policy::to_ascii_over`]'s six steps correctly
 /// on its own — it is a UTS 46 implementation, and the corpus measured
 /// that on a real `windows-latest` runner before this policy existed. It
 /// goes through the policy anyway, because the alternative is two

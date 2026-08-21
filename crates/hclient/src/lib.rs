@@ -1,7 +1,35 @@
 //! Cross-platform async HTTP client.
 //!
-//! Crate invariant: not a single declared `Send`/`Sync` bound, not a single
-//! `#[cfg]`-switched trait alias. Send-ness is inferred by auto-traits.
+//! # The `Send` rule, as it actually stands
+//!
+//! This line read *"not a single declared `Send`/`Sync` bound"* until
+//! [`Client`] stopped naming its transport, and it is worth correcting
+//! precisely rather than deleting: the invariant that matters was never
+//! "no bound anywhere", it was **no bound on a seam**, because a bound
+//! declared where the type is abstract propagates to backends that cannot
+//! satisfy it. That is what the `no-send-or-sync` guard in `scripts/`
+//! exists for, and what `hclient-rt-embassy` would have paid.
+//!
+//! So: the seams declare none, and auto-traits still decide. The bounds
+//! that exist are on **opt-in calls that take a value from the caller and
+//! put it behind the facade's `Arc`** — [`Client::builder`],
+//! [`ClientBuilder::total_timeout`], [`ClientBuilder::cookie_jar`],
+//! [`ClientBuilder::cache`], [`ClientBuilder::redirect_predicate`] and
+//! [`sse::SseBuilder::with_timer`] — and nowhere else. Each carries a
+//! `send-bound-exception` marker naming the amendment that admits it, so
+//! the count is greppable rather than asserted here and going stale a
+//! second time.
+//!
+//! Still absolutely true, and the half that was doing the work: **not a
+//! single `#[cfg]`-switched trait alias.** A `Send`-ness that depends on
+//! the target is a thing a portable library cannot reason about, which is
+//! why one was refused during the erasure even though it would have given
+//! native callers spawnable response bodies back.
+//!
+//! What a request *produces* is not `Send` — not the future, not the
+//! response body — because one body type serves every backend and the
+//! browser's holds a `dyn Stream` with no auto trait. [`Client`] itself is
+//! `Send + Sync`, which is the half that has to be.
 #![forbid(unsafe_code)]
 
 /// The response cache, re-exported from `hclient-cache` — the `cache`

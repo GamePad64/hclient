@@ -193,12 +193,26 @@ fn decode_punycode(payload: &str) -> Option<String> {
 /// `convert` is asked exactly one kind of question: **a name containing
 /// non-ASCII, in its Unicode form**. Everything else is settled here.
 ///
-/// 1. **The WHATWG deny list, on the input, before anything else.** For
-///    Foundation this is what stops a URL parser reading `ex@ample.com` as
-///    the host `ample.com`; for ICU it is redundant and cheap. It runs on
-///    the input rather than only on the output because the input is the
-///    only place a denied byte that a parser would *consume as a
-///    delimiter* is still visible.
+/// 1. **The WHATWG deny list — after mapping, and at every point a denied
+///    byte can still appear.** For Foundation this is what stops a URL
+///    parser reading `ex@ample.com` as the host `ample.com`; for ICU it is
+///    redundant and cheap.
+///
+///    **It ran on the input, before anything else, and that was the wrong
+///    order.** UTS 46 §4 maps and then validates, so a forbidden character
+///    can stop existing during mapping: `">\u{338}"` composes to `≯`, and
+///    a check on the raw input refused a `>` that is not in the result.
+///    That is the ordering defect step 3 already carries, met a second
+///    time; the fuzzer found both.
+///
+///    Moving it wholesale to the end was also wrong, and a test said so:
+///    punycode preserves the basic code points verbatim, so `xn--%-0fa.de`
+///    decodes to `%ä` and a denied byte rides past a check that only looks
+///    at the name. So it is **narrowed** rather than moved — on the ASCII
+///    fast path in step 4, where mapping is a no-op and the two orders
+///    coincide; on each decoded label in step 3, where punycode could have
+///    carried one; and on the converted output, which is the string that
+///    decides which host is contacted.
 /// 2. **ASCII case folding.** The only ASCII mapping in UTS 46 is
 ///    upper-case to lower-case, and no code point outside ASCII maps to an
 ///    ASCII upper-case letter, so doing it here is doing it exactly once.
@@ -222,6 +236,13 @@ fn decode_punycode(payload: &str) -> Option<String> {
 ///    refused rather than believed. This is what makes an ACE label safe
 ///    to accept: it is emitted only after the platform has re-encoded its
 ///    decoded form to the very same bytes.
+/// 6. **What this crate emits, this crate accepts.** Steps 1 to 5 confirm
+///    an ACE label the caller *gave*; they say nothing about one this
+///    crate *produced*, and a label carrying a character that only maps to
+///    ASCII is pushed through untouched by design, so the platform can
+///    answer with an `xn--` label nothing examined. The result was an
+///    accept followed by a refuse — and the second parse is the one a
+///    **redirect hop** makes. See [`to_ascii_inner`].
 pub(crate) fn to_ascii_over(
     convert: impl Fn(&str) -> Option<String>,
     domain: &str,

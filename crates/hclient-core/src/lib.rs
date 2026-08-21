@@ -3,10 +3,24 @@
 //! Crate invariant: the seam traits (`Transport`, `Timer`, middleware) do not
 //! declare `Send`/`Sync` bounds — Send-ness is inferred by auto-traits
 //! through `impl Future`. The one documented exception is [`Error`]: its
-//! `source` must be `Send + Sync`, or `Client::execute` could not return a
-//! Send-compatible future for any backend. The bound
-//! `T::Error: Send + Sync + 'static` lives in `Client::execute`'s own
-//! where-clause, not on the `Transport` trait itself.
+//! `source` must be `Send + Sync`, or a client could not build one from a
+//! backend's error at all.
+//!
+//! **This paragraph used to end by naming where that bound lived** — *"in
+//! `Client::execute`'s own where-clause, not on the `Transport` trait
+//! itself"* — and it lives nowhere now. `hclient::Client` stopped naming
+//! its transport, so `Transport::to_error` is called from
+//! [`unversioned::erased::BoxedTransport`]'s blanket impl, where `Self` is
+//! concrete and the bound is discharged rather than declared; four
+//! where-clauses left `client.rs` with it. The invariant is unchanged and
+//! is one obligation lighter, which is the direction it is supposed to
+//! move in.
+//!
+//! [`unversioned::erased`] is the one place in this crate that names
+//! `Send + Sync`, on two type aliases a facade writes at its own use site.
+//! It is not a seam: no backend implements it and no backend is taxed by
+//! it — a blanket impl covers every `Transport`, and a backend that cannot
+//! meet the bound is refused at a constructor rather than at a trait.
 #![forbid(unsafe_code)]
 
 mod body;
