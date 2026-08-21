@@ -159,8 +159,32 @@ fn client(timeouts: Timeouts) -> Client {
 /// Collecting the body matters: `between_bytes` is enforced *in* the body,
 /// so a helper that stopped at the head would never reach it.
 async fn get_all(timeouts: Timeouts, addr: SocketAddr) -> Result<String, hclient_core::Error> {
+    get_all_within(PATIENCE, timeouts, addr).await
+}
+
+/// [`get_all`] with the outer guard named, for the one test whose body is
+/// *supposed* to take a long time.
+///
+/// **`PATIENCE`'s reasoning does not cover a body that dribbles.** It is
+/// six times `BOUND` because a bound that must not fire has then had five
+/// extra chances — an argument about tests where nothing should happen.
+/// `a_slow_but_never_silent_body_is_not_cut_by_between_bytes` is the one
+/// where something legitimately does: ten frames `BOUND / 5` apart take
+/// **twice** the bound on their own, so the real margin there was 3x and
+/// not 6x, and ten sequential sleeps plus TCP on a loaded `macos-latest`
+/// runner fit inside it. It went red once that runner started finishing
+/// runs at all.
+///
+/// This is a **hang guard and not a claim** — the assertion is the body's
+/// value — so the number is generous on purpose, and it stays a named
+/// failure rather than a hung run.
+async fn get_all_within(
+    patience: Duration,
+    timeouts: Timeouts,
+    addr: SocketAddr,
+) -> Result<String, hclient_core::Error> {
     let c = client(timeouts);
-    let out = tokio::time::timeout(PATIENCE, async {
+    let out = tokio::time::timeout(patience, async {
         c.get(&format!("http://{addr}/"))
             .send()
             .await?
@@ -172,7 +196,7 @@ async fn get_all(timeouts: Timeouts, addr: SocketAddr) -> Result<String, hclient
     match out {
         Ok(r) => r,
         Err(_) => panic!(
-            "nothing ended this request within {PATIENCE:?} — the bound under test never fired"
+            "nothing ended this request within {patience:?} — the bound under test never fired"
         ),
     }
 }
@@ -327,7 +351,11 @@ async fn without_the_between_bytes_bound_a_stalled_body_hangs() {
 #[tokio::test]
 async fn a_slow_but_never_silent_body_is_not_cut_by_between_bytes() {
     let addr = server(Behaviour::Dribbles(BOUND / 5));
-    let body = get_all(
+    // Ten frames `BOUND / 5` apart: the body takes 2x `BOUND` when
+    // everything is healthy, so the guard is sized against *that* rather
+    // than against `BOUND` — see `get_all_within`.
+    let body = get_all_within(
+        PATIENCE * 4,
         Timeouts {
             resolve: None,
             between_bytes: Some(BOUND),
