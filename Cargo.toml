@@ -95,6 +95,20 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # One version for all 30 crates, which is what `version.workspace = true`
 # already says; this is the release tool being told the same thing.
 shared-version = true
+# **`fix`, not the default `upgrade`, and this is what stops one typo from
+# republishing thirty crates.** `upgrade` rewrites every dependent's
+# requirement to the new number, so `hclient` 0.1.1 would require
+# `hclient-core` 0.1.1 — and a requirement is a demand: that version then
+# has to exist in the index whether or not anything in it changed. `fix`
+# touches a requirement only when it has to, so the requirements stay at
+# `^0.1.0`, an already-published 0.1.0 keeps satisfying them, and only the
+# crates that actually changed need publishing.
+#
+# The cost, said here because it reads as a mistake otherwise: an
+# unpublished crate's version number runs ahead of the index.
+# `hclient-core` can be 0.1.5 in this tree and 0.1.0 on crates.io, because
+# nothing in it changed. That is correct and is not a drift to "fix".
+dependent-version = "fix"
 # One commit for the bump, not thirty.
 consolidate-commits = true
 # Releases come off `main` and nowhere else. The default is every branch

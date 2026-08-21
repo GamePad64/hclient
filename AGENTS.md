@@ -356,7 +356,20 @@ table is kept because that agreement is what makes the count a fact about
 the graph rather than a guess. `cargo-release` does the half cargo does not:
 the bump, including the **68 literal `version = "0.1.0"` requirements** that
 must move with `[workspace.package].version` and that cargo gives no way to
-centralise. `docs/publishing.md` has the table, the script that derives it,
+centralise.
+
+**One shared version does not mean one release of thirty crates**, and the
+setting that decides it is `dependent-version`. Its default, `upgrade`,
+rewrites every dependent's requirement to the new number — and a
+requirement is a demand, so `hclient-select` 0.1.1 requiring `hclient-core`
+0.1.1 obliges a release of a crate nothing changed in. `fix` touches a
+requirement only when it must, the requirements stay at `^0.1.0`, and
+`cargo release -p <crate> patch` publishes that crate alone. Two things
+then read as mistakes and are not: an unpublished crate's version runs
+ahead of the index, and published versions are sparse per crate. And
+cargo-release does **not** work out which crates changed — measured, with a
+tag one commit back: a plain `cargo release patch` still planned all 29
+uploads. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
 distribution packagers do.

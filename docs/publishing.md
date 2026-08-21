@@ -143,7 +143,48 @@ the shape this project refuses everywhere else.
   because its commit messages are the record of *why*. A release commit has
   no argument to make, so it says what it did and stops.
 
-## 5. What is checked before any of this runs
+## 5. Releases after the first: publish what changed, not all thirty
+
+`cargo release <level>` publishes **every** crate. For an ordinary fix that
+is thirty releases for one change, so name the crate instead:
+
+```
+cargo release -p hclient-select patch
+```
+
+Measured on this tree with a tag planted one commit back: the workspace
+version moves to `0.1.1` in all thirty manifests, `hclient-select` is
+published, and every other crate is skipped — *"disabled by user, skipping
+hclient-core, despite being unpublished"*.
+
+**What makes that legal is `dependent-version = "fix"`.** The default,
+`upgrade`, rewrites every dependent's requirement to the new number, so
+`hclient-select` 0.1.1 would require `hclient-core` 0.1.1 — and a
+requirement is a demand: that version must then exist in the index whether
+or not anything in it changed. `fix` touches a requirement only when it
+must, so they stay at `^0.1.0` and the already-published 0.1.0 keeps
+satisfying them.
+
+**cargo-release does not work out which crates changed** — it was measured
+and it does not: with a tag one commit back and one crate touched, a plain
+`cargo release patch` still planned all 29 uploads. Selecting is yours,
+with `-p`. `cargo-smart-release` is the tool that does compute the set, and
+it is not used here for reasons in §7.
+
+Two consequences that read as mistakes and are not:
+
+- **An unpublished crate's version runs ahead of the index.**
+  `hclient-core` can be 0.1.5 in this tree and 0.1.0 on crates.io, because
+  nothing in it changed. Do not "fix" it.
+- **Published versions are sparse per crate.** A crate released at 0.1.1
+  and again at 0.1.4 has no 0.1.2 or 0.1.3, because those releases were
+  other crates'. Cargo does not care; a reader might.
+
+Both fall out of one shared version number, which is the trade
+`[workspace.package].version` was chosen for: thirty hand-maintained
+numbers could drift, and one cannot.
+
+## 6. What is checked before any of this runs
 
 - `just package-build` — `cargo package --workspace`, which builds each
   `.crate` from the files that would ship and then **verifies** it by
@@ -157,7 +198,31 @@ Neither can catch a wrong publish *order*, because `cargo package
 overlay. That used to matter; it no longer does, because the order is the
 tool's to compute rather than a human's to remember.
 
-## 6. Irreversible
+## 7. Why `cargo-release` and not the other two
+
+Both alternatives **infer** — what to release and how far to bump — from
+git history, and this repository's history is the wrong shape for it.
+`release-plz`'s own description says "conventional commits", and **nought
+of the last twenty-five subjects here** are in that form: the commit
+messages are the record of *why*, and feeding them to a `feat:`/`fix:`
+parser would mean flattening them.
+
+`cargo-smart-release` aims precisely at §5's problem — it uses git tags to
+know whether a crate changed at all and skips the ones that did not — and
+is the tool to revisit if selecting by hand becomes tiresome. Three things
+kept it out for now, all from its own README: it derives the version from
+conventional commits too; detecting whether a change is breaking is an
+open item, so "downstream breakage impossible" rests on the commit being
+labelled correctly; and pre-release versions like `1.0.0-beta.1` are
+listed as not handled, which rules it out for a cautious first release.
+Its author recommends `cargo-release` in the same file.
+
+Its other half is separable and worth remembering: `cargo changelog`
+writes changelogs non-destructively "leaving the release workflow to
+cargo-release", so changelogs can be adopted later without moving the
+release path.
+
+## 8. Irreversible
 
 A published version can be **yanked** but never replaced or deleted, so
 `0.1.0` is spent whatever happens. Re-running a crate that already went out
