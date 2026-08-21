@@ -226,6 +226,42 @@ pub(crate) fn to_ascii_over(
     convert: impl Fn(&str) -> Option<String>,
     domain: &str,
 ) -> Option<String> {
+    to_ascii_inner(&convert, domain, true)
+}
+
+/// [`to_ascii_over`], with step 6 switchable.
+///
+/// **Step 6 is "what this crate emits, this crate would accept".** Steps 1
+/// to 5 confirm an ACE label the caller *gave* — decoded, handed to the
+/// platform, and emitted only once the platform re-encodes it to the same
+/// bytes. They said nothing about an ACE label this crate *produced*, and
+/// the two are not the same input: a label carrying a character that only
+/// **maps** to ASCII is pushed through untouched by design (§4 maps before
+/// it looks for an ACE label — the ordering this module already fixed
+/// once), so the platform can hand back an `xn--` label that steps 1 to 5
+/// never examined.
+///
+/// The result was an accept followed by a refuse: the name resolved, and
+/// re-parsing the answer did not. That is not a formality — **the second
+/// parse is the one a redirect hop makes**, so a host reached once became
+/// unreachable the next time it was seen. Found by
+/// `fuzz_targets/idn_policy.rs`, whose whole subject is that property, on
+/// `xn--xn--kd--kd-xn--kd--kdijaakkkx`.
+///
+/// The confirmation is the second parse itself, run once, which is why
+/// `confirm` exists rather than a recursive call: the inner pass must not
+/// confirm its own answer, and one level is all it takes — the answer is
+/// ASCII, so the pass below either takes the fast path or decodes and
+/// re-encodes, and there is nothing left to differ about.
+///
+/// Refusing rather than reconciling is the safe direction, and the same
+/// one the empty-label rule takes: a name this crate cannot vouch for
+/// twice is one it should not hand out once.
+fn to_ascii_inner<F: Fn(&str) -> Option<String>>(
+    convert: &F,
+    domain: &str,
+    confirm: bool,
+) -> Option<String> {
     let lower = domain.to_ascii_lowercase();
 
     // **An empty label is refused, and the platforms disagreed about it.**
@@ -336,6 +372,10 @@ pub(crate) fn to_ascii_over(
     // this crate accepted once would be refused the next time it was seen.
     // Found by the fuzzer, in under a minute, on exactly that input.
     if has_empty_label(&ascii) {
+        return None;
+    }
+    // Step 6 — see this function's doc comment.
+    if confirm && ascii != lower && to_ascii_inner(convert, &ascii, false)? != ascii {
         return None;
     }
     Some(ascii)
@@ -1060,6 +1100,44 @@ mod tests {
     }
 
     // ── The deny list, at both ends ─────────────────────────────────────
+
+    /// **What this crate emits, this crate accepts** — step 6, and the
+    /// property `fuzz_targets/idn_policy.rs` exists for.
+    ///
+    /// It is not a formality: the second parse is the one a **redirect
+    /// hop** makes, so a name that resolved once and is refused the next
+    /// time is a host that becomes unreachable in the middle of a chain.
+    ///
+    /// The hole steps 1-5 left is that they confirm an ACE label the
+    /// caller **gave**, and say nothing about one this crate **produced**.
+    /// A label carrying a character that only maps to ASCII is pushed
+    /// through untouched by design, so the platform can answer with an
+    /// `xn--` label nothing examined — and re-parsing that label decodes
+    /// it, asks for confirmation, and rightly does not get it.
+    #[test]
+    fn what_the_layer_emits_the_layer_accepts() {
+        for name in [
+            "münchen.de",
+            "例え.テスト",
+            "example.com",
+            "example.com.",
+            "EXAMPLE.COM",
+            "xn--mnchen-3ya.de",
+            ">\u{338}",
+        ] {
+            let once = over_idna(name).unwrap_or_else(|| panic!("{name:?} must resolve"));
+            assert_eq!(
+                over_idna(&once).as_deref(),
+                Some(once.as_str()),
+                "{name:?} resolved to {once:?}, which does not resolve to itself"
+            );
+        }
+        // The case the fuzzer found, refused rather than reconciled: the
+        // platform's own answer for it is an ACE label the platform will
+        // not confirm on the way back, so there is nothing to emit that
+        // would survive a second parse.
+        assert_eq!(over_idna("xn--xn--kd--kd-xn--kd--kdijaakkkx"), None);
+    }
 
     /// **The deny list is applied after mapping, and the pair is the
     /// decision.** Either half alone reads as the wrong fix.
