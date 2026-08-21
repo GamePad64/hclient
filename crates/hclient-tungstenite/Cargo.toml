@@ -26,10 +26,10 @@ futures-core = { workspace = true }
 futures-sink = { workspace = true }
 http         = { workspace = true }
 hclient-core = { workspace = true }
-hclient-dns  = { path = "../hclient-dns",    version = "0.1.0" }
-hclient-native = { path = "../hclient-native", version = "0.1.0" }
-hclient-rt   = { path = "../hclient-rt",     version = "0.1.0" }
-hclient-tls  = { path = "../hclient-tls",    version = "0.1.0" }
+hclient-dns  = { path = "../hclient-dns",    version = "0.1.0-alpha.1" }
+hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.1" }
+hclient-rt   = { path = "../hclient-rt",     version = "0.1.0-alpha.1" }
+hclient-tls  = { path = "../hclient-tls",    version = "0.1.0-alpha.1" }
 # For `hyper::rt::{Read, Write, ReadBuf}` and nothing else — no client, no
 # http1, no server: `default-features = false` with no features added, the
 # same dependency and the same reason `hclient-rt` has one. This
@@ -65,9 +65,9 @@ futures-executor   = { version = "0.3", default-features = false, features = ["s
 # would. Dev-only, so the shipped graph is unchanged.
 futures-util       = { version = "0.3", default-features = false, features = ["std", "sink"] }
 http-body-util     = { workspace = true }
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0" }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0" }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["webpki-roots"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1" }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", features = ["webpki-roots"] }
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # One test needs a socket whose receive buffer is small enough that a
 # message cannot fit in it — see `serve_with_bounded_recv_buffer`. `std`

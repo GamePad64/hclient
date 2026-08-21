@@ -7,8 +7,13 @@ browser's own `fetch` and on Apple's `URLSession`. The transport is swapped
 out, not buried under `#[cfg]`.
 
 ```
-cargo add hclient --features default-transport
+cargo add hclient@0.1.0-alpha.1 --features default-transport
 ```
+
+The version is explicit because this is a **pre-release**, which `cargo
+add` will not select on its own — deliberately: six public types took a
+breaking change in the month before it, so the seams are young and saying
+so is the point. `0.1.0` follows when they stop moving.
 
 That feature is what `Client::new()` needs, and it is **not** on by default
 on purpose: Cargo unifies features across a graph, so a default here would

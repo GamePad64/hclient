@@ -28,8 +28,8 @@ all-features = true
 async-native-tls = { version = "0.6", default-features = false, features = ["runtime-smol"] }
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core     = { workspace = true }
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
-hclient-tls      = { path = "../hclient-tls", version = "0.1.0" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
+hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
 hyper            = { version = "1.11", default-features = false }
 native-tls       = "0.2"
 

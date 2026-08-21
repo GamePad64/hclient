@@ -23,7 +23,7 @@ default = []
 udp = ["dep:quinn-udp"]
 
 [dependencies]
-hclient-rt = { path = "../hclient-rt", version = "0.1.0" }
+hclient-rt = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
 quinn-udp  = { version = "0.6", default-features = false, optional = true }
 hyper      = { version = "1.11", default-features = false }
 socket2    = { version = "0.6", features = ["all"] }

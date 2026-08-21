@@ -58,15 +58,15 @@ http           = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }
-hclient-dns    = { path = "../hclient-dns",   version = "0.1.0" }
+hclient-dns    = { path = "../hclient-dns",   version = "0.1.0-alpha.1" }
 # No default features, from `[workspace.dependencies]`: this crate uses
 # `happy_eyeballs` only, and a default-on `idn` here would union back into
 # every build that also contains `hclient`, turning the facade's `idn`
 # switch into a no-op for exactly the native builds that have
 # `default-transport`.
 hclient-proto  = { workspace = true }
-hclient-rt     = { path = "../hclient-rt",    version = "0.1.0" }
-hclient-tls    = { path = "../hclient-tls",   version = "0.1.0" }
+hclient-rt     = { path = "../hclient-rt",    version = "0.1.0-alpha.1" }
+hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.1" }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 futures-core   = { workspace = true }
 futures-sink   = { workspace = true }
@@ -85,10 +85,10 @@ futures-executor    = { version = "0.3", default-features = false, features = ["
 # the documented way through and changes nothing about how the tests build
 # here. Caught by `just package-build` rather than by reading.
 hclient = { path = "../hclient" }
-hclient-dns-system  = { path = "../hclient-dns-system",  version = "0.1.0" }
-hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0" }
-hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0" }
-hclient-tls-rustls  = { path = "../hclient-tls-rustls",  version = "0.1.0", features = ["webpki-roots"] }
+hclient-dns-system  = { path = "../hclient-dns-system",  version = "0.1.0-alpha.1" }
+hclient-rt-tokio    = { path = "../hclient-rt-tokio",    version = "0.1.0-alpha.1" }
+hclient-rt-smol     = { path = "../hclient-rt-smol",     version = "0.1.0-alpha.1" }
+hclient-tls-rustls  = { path = "../hclient-tls-rustls",  version = "0.1.0-alpha.1", features = ["webpki-roots"] }
 # `tests/tls_server_name.rs` alone: a REAL TLS server on loopback, whose
 # certificate carries an IP SAN. The claim there is "the handshake
 # completes", and a handshake needs a second implementation to complete

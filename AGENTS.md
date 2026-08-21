@@ -292,11 +292,24 @@ fails closed if the invocation itself breaks or returns nothing. Measured
 while writing: zero matches for `tokio`, `hyper` or `h2` in either wasm
 graph, four in the native one.
 
-**The owner has pulled the trigger: 0.1.0 is the first published
-version.** Nothing bumps — every crate already said `0.1.0` — but it now
-says so **once**, in `[workspace.package]`, where the previous thirty
-copies were thirty chances to drift with no way to see the drift until a
-crate published at the wrong number.
+**The owner has pulled the trigger, and the first published version is
+`0.1.0-alpha.1` rather than `0.1.0`.** The reason is not doubt about the
+code — 19 CI jobs across three platforms are green — it is that the last
+week moved six public surfaces: `Client` from generic to erased,
+`Client::transport()` removed, `Client::new`'s error type widened and
+`try_new` folded into it, `Response<B>`'s parameter defaulted,
+`hclient-idn`'s answer changed three times, and `poll_shutdown`'s treatment
+of `ENOTCONN`. Publishing that as `0.1.0` would freeze twenty-nine public
+surfaces at the moment they were last seen moving.
+
+A pre-release claims the names and promises nothing: `cargo add hclient`
+will not select it without being asked, so the next week of changes costs
+`-alpha.2` rather than a major version across the family. `0.1.0` follows
+when the seams have stopped moving on their own.
+
+The version now says itself **once**, in `[workspace.package]`, where the
+previous thirty copies were thirty chances to drift with no way to see the
+drift until a crate published at the wrong number.
 
 Everything that used to be *do not do this as tidying-up work* is now
 either done or the owner's to time. What has **not** changed is the reason

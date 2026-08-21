@@ -42,9 +42,17 @@ response body cannot cross a `tokio::spawn`, because one body type has to
 serve the browser backend too, and a caller who needs the concrete backend
 asks for it with `Client::transport_as::<T>()`.
 
-Published as `0.1.0`, and `AGENTS.md` says what that promise costs: six
-public types took a breaking change in the month before the first release,
-so read the seams as young rather than settled.
+**Published as a pre-release, `0.1.0-alpha.1`, on purpose.** Six public
+types took a breaking change in the month before it, so the seams are young
+rather than settled — and a pre-release says that in the one place everyone
+looks. `cargo add` will not select it unless asked:
+
+```
+cargo add hclient@0.1.0-alpha.1 --features default-transport
+```
+
+`0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
+promise will cost.
 
 - [`AGENTS.md`](AGENTS.md) — how it is built, and why each piece is there.
   Long, and the length is the point: every seam records the argument that

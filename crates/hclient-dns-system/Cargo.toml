@@ -28,8 +28,8 @@ hclient-core = { workspace = true }
 # moved when `hclient-dns-doh` became a third backend applying the same
 # rules. The feature is what keeps the decoder out of a build that only
 # wants `Resolve` — see that crate's `[features]` table.
-hclient-dns  = { path = "../hclient-dns", version = "0.1.0", features = ["codec"] }
-hclient-rt   = { path = "../hclient-rt",  version = "0.1.0" }
+hclient-dns  = { path = "../hclient-dns", version = "0.1.0-alpha.1", features = ["codec"] }
+hclient-rt   = { path = "../hclient-rt",  version = "0.1.0-alpha.1" }
 thiserror      = { workspace = true }
 
 [dev-dependencies]

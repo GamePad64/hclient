@@ -5,10 +5,51 @@ cargo release <patch|minor|major|VERSION>            # shows the plan, changes n
 cargo release <patch|minor|major|VERSION> --execute  # does it
 ```
 
-That is the whole procedure. This document exists for the three things it
-does not tell you: what the tool is doing on your behalf, the one thing
-that will stop the **first** release, and why the order below is written
-down when nothing has to follow it by hand any more.
+That is the whole procedure. This document exists for the things it does
+not tell you: what the tool is doing on your behalf, the one thing that
+will stop the **first** release, how to release one crate rather than
+thirty afterwards, and why the order below is written down when nothing
+has to follow it by hand any more.
+
+**The first release is `0.1.0-alpha.1`, and the version is already set in
+the tree**, so the first release is a publish and not a bump:
+
+```
+cargo publish --workspace --dry-run   # the plan
+cargo publish --workspace             # the release
+```
+
+**Neither `cargo release 0.1.0-alpha.1` nor `cargo set-version
+0.1.0-alpha.1` can do it**, and the reason is worth knowing before trying:
+a pre-release *precedes* its release in semver, so `0.1.0-alpha.1` is
+**lower** than the `0.1.0` the tree carried, and both tools refuse a
+downgrade — `Cannot downgrade from 0.1.0 to 0.1.0-alpha.1`. The guard is
+right; it just does not know that `0.1.0` here was a placeholder that was
+never published. So the 70 literals — one `[workspace.package].version`, 8
+requirements in `[workspace.dependencies]` and 61 in crate manifests — were
+edited directly, once, and `cargo check --workspace --all-features` and a
+`--dry-run` publish of all 29 confirm it.
+
+The requirements had to move with it and not merely alongside: `^0.1.0`
+does **not** accept `0.1.0-alpha.1`, because a caret requirement excludes
+pre-releases unless it names one itself.
+
+Every release after this is the tool's again — `cargo release alpha` from
+`0.1.0-alpha.1` gives `0.1.0-alpha.2`, measured, and it is a bump so the
+downgrade guard never applies.
+
+The reason for a pre-release is not doubt about the code — 19 CI jobs on
+three platforms are green — it is that the week before it moved six public
+surfaces, and `0.1.0` would freeze twenty-nine of them at the moment they
+were last seen moving. A pre-release claims the names and promises nothing:
+`cargo add hclient` will not select it unless asked, so another week of
+changes costs `-alpha.2` rather than a major version across the family.
+Subsequent pre-releases are `cargo release alpha`, which increments the
+`.1`.
+
+`0.1.0` follows when the seams stop moving on their own, and it is an
+ordinary `cargo release 0.1.0` when it does — an upgrade from any
+`-alpha.N`, so the tool handles that one.
 
 ## 1. What each half does, measured on this workspace
 
@@ -63,7 +104,8 @@ that works into one that cannot fire, and the failure it was preventing —
 stopping halfway through a first publication — is the expensive one.
 
 Later releases do not meet this: `existing-packages` is 30, above the 29
-here.
+here. **A pre-release does not dodge it** — `0.1.0-alpha.1` is still 29
+new crates as far as the registry is concerned.
 
 ## 3. The order, and why it is still written down
 

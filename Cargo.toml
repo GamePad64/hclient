@@ -13,7 +13,7 @@ members = ["crates/*"]
 # the target docs.rs uses, and `just docs` keeps it that way on every push.
 
 [workspace.package]
-version      = "0.1.0"
+version      = "0.1.0-alpha.1"
 edition      = "2024"
 rust-version = "1.98"
 license      = "MIT OR Apache-2.0"
@@ -35,9 +35,9 @@ proptest       = "1"
 # `hclient` forwards it as its own `idn` feature, which is where a consumer
 # of the facade can switch it off. Building `hclient-proto` on its own
 # still gets `idn`, since that is its own default.
-hclient-proto = { path = "crates/hclient-proto", version = "0.1.0", default-features = false }
-hclient-core  = { path = "crates/hclient-core",  version = "0.1.0" }
-hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0" }
+hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.1", default-features = false }
+hclient-core  = { path = "crates/hclient-core",  version = "0.1.0-alpha.1" }
+hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.1" }
 # Default features left ON, unlike `hclient-proto` above: that crate's
 # default (`idn`) is what `hclient` forwards as a feature of its own, while
 # this one's (`public-suffix`) is what makes `Domain=co.uk` a refusal
@@ -46,13 +46,13 @@ hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0" }
 # asked for — it makes it host-only, which is a different jar, not a
 # cheaper one. A consumer who wants that build takes `hclient-cookie`
 # directly.
-hclient-cookie = { path = "crates/hclient-cookie", version = "0.1.0" }
+hclient-cookie = { path = "crates/hclient-cookie", version = "0.1.0-alpha.1" }
 # No features at all, default or otherwise: unlike the jar, whose default
 # is the public suffix list that makes `Domain=co.uk` a refusal, there is
 # nothing in this crate a build could sensibly do without. The store is a
 # seam rather than a feature (`CacheStore`), so "a smaller cache" is a
 # different `S`, not a thinner build.
-hclient-cache = { path = "crates/hclient-cache", version = "0.1.0" }
+hclient-cache = { path = "crates/hclient-cache", version = "0.1.0-alpha.1" }
 # Default features left ON, for the same reason as `hclient-cookie` and the
 # opposite of `hclient-proto`: this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
@@ -61,11 +61,11 @@ hclient-cache = { path = "crates/hclient-cache", version = "0.1.0" }
 # no backend at all, which its own `compile_error!` refuses. The switch a
 # consumer actually wants is one level up: `hclient-proto`'s `idn`, which
 # decides whether this crate is in the graph at all.
-hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0" }
+hclient-idn   = { path = "crates/hclient-idn",   version = "0.1.0-alpha.1" }
 thiserror     = "2"
 rstest        = { version = "0.26", default-features = false }
 assert_matches = "1.5"
-hclient       = { path = "crates/hclient",       version = "0.1.0" }
+hclient       = { path = "crates/hclient",       version = "0.1.0-alpha.1" }
 
 [workspace.lints.rust]
 unsafe_code       = "forbid"
@@ -80,7 +80,7 @@ unexpected_cfgs   = { level = "warn", check-cfg = [] }
 # the same order `docs/publishing.md` derives independently.
 #
 # What has no other owner is the version: `[workspace.package].version` is
-# one number, and beside it are **68 literal `version = "0.1.0"`
+# one number, and beside it are **68 literal `version = "0.1.0-alpha.1"`
 # requirements** — 7 here and 61 in the crate manifests — that must move
 # with it. Cargo offers no way to write `version.workspace = true` inside a
 # dependency requirement, so the repetition is forced, and nothing checked

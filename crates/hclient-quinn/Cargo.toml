@@ -27,7 +27,7 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
-hclient-rt       = { path = "../hclient-rt", version = "0.1.0" }
+hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
 pin-project-lite = "0.2"
 # `ring` came here with the endpoint that needs it, and is not optional: a
 # QUIC ENDPOINT needs an HMAC key for stateless resets and an AEAD for retry

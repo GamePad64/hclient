@@ -23,14 +23,14 @@ futures-util   = { version = "0.3", default-features = false, features = ["std"]
 http           = { workspace = true }
 http-body      = { workspace = true }
 hclient-core   = { workspace = true }
-hclient-dns    = { path = "../hclient-dns",    version = "0.1.0" }
-hclient-h3     = { path = "../hclient-h3",     version = "0.1.0" }
-hclient-native = { path = "../hclient-native", version = "0.1.0" }
+hclient-dns    = { path = "../hclient-dns",    version = "0.1.0-alpha.1" }
+hclient-h3     = { path = "../hclient-h3",     version = "0.1.0-alpha.1" }
+hclient-native = { path = "../hclient-native", version = "0.1.0-alpha.1" }
 # Not for anything this crate calls: `Native<R, T, D>` carries `R:
 # TcpConnect + Timer` and `T: TlsConnect` on the STRUCT, so a field of
 # that type cannot be declared without naming the two traits.
-hclient-rt     = { path = "../hclient-rt",     version = "0.1.0" }
-hclient-tls    = { path = "../hclient-tls",    version = "0.1.0" }
+hclient-rt     = { path = "../hclient-rt",     version = "0.1.0-alpha.1" }
+hclient-tls    = { path = "../hclient-tls",    version = "0.1.0-alpha.1" }
 thiserror      = { workspace = true }
 
 # The two servers `tests/choice.rs` puts on one port number — a real QUIC
@@ -47,9 +47,9 @@ http-body-util     = { workspace = true }
 hclient            = { workspace = true }
 # The doc example's resolver, and nothing else: this crate names no
 # resolver of its own — `D: Resolve` is the caller's to supply.
-hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0" }
-hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0", features = ["udp"] }
-hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0", features = ["quic"] }
+hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1" }
+hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1", features = ["udp"] }
+hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", features = ["quic"] }
 quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
 rcgen              = "0.14"
 rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }
