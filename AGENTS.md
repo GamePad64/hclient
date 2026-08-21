@@ -2624,6 +2624,64 @@ perfectly, so the new assertion fires on it exactly as `assert_eq!` did.
 Checking that before narrowing is what makes this a contract rather than a
 silenced alarm.
 
+### One line put the Linux build behind the policy, and three defects fell out
+
+`bundled_to_ascii` called `idna::domain_to_ascii_cow` **directly**, so on
+Linux and wasm the shared policy layer never ran. The ICU path's own doc
+had the argument against that and it had simply not been applied here —
+*"the alternative is two statements of one contract and the newer one is
+always the one that rots."* Routing it through cost one expression and
+surfaced three defects at once, none of them new.
+
+**The tell was a test that stayed green.** `ä..de` resolves under `idna`
+and under Windows's ICU and is refused by Apple's Foundation — a host
+reachable on two of this project's three platforms and not the third,
+which is the one thing `hclient-idn` exists to prevent. The rule refusing
+an empty label went into the shared policy, and `hclient-proto`'s corpus
+**stayed green on Linux**: a rule that refuses `ä..de` cannot leave a row
+pinning `xn--4ca..de` passing, so the layer was being bypassed. A fix that
+changes nothing is a fix in the wrong place.
+
+Refusing is the direction available — nothing here can make Foundation
+accept — and the safe one, since an empty label is not a legal DNS label.
+A single trailing empty label is the root and stays legal.
+
+**A label can also become empty during mapping, so the rule holds of the
+answer.** UTS 46 maps a soft hyphen to nothing, so `"\u{ad}.\u{ad}"`
+arrives with two non-empty labels and leaves as `"."`. The fuzzer found it
+in under a minute.
+
+**The deny list ran before mapping, where UTS 46 validates after.**
+`">\u{338}"` is `>` followed by a combining long solidus overlay, which
+composes to `≯` — so the forbidden character is not in the name by the time
+§4 validates, and `idna` answers `xn--hdh`. This is the ordering defect
+above met a second time, one field over.
+
+**Moving that check to the end was wrong and a test said so in a minute.**
+`xn--%-0fa.de` decodes to `%ä`, because punycode preserves the basic code
+points verbatim and a literal `%` rides through. The check that caught it
+carried a comment reading *"this cannot fire — checked rather than
+trusted"*. It could fire, and that comment is what nearly justified
+deleting it: **checked rather than trusted is what saved it.** So the check
+is narrowed rather than moved — judged on the decoded label, where punycode
+could have carried one, and on the converted output, which is the string
+that decides which host is contacted.
+
+**Step 6: what this crate emits, this crate accepts.** Steps 1-5 confirm an
+ACE label the caller *gave*; they said nothing about one the crate
+*produced*, and a label carrying a character that only maps to ASCII is
+pushed through untouched by design, so the platform can answer with an
+`xn--` label nothing examined. `xn--xn--kd--kd-xn--kd--kdijaakkkx` resolved
+on the way out and was refused on the way back — and **the second parse is
+the one a redirect hop makes**, so a host reached once became unreachable
+mid-chain. The confirmation is that second parse, run once, with `confirm`
+a parameter rather than a recursive call because the inner pass must not
+confirm its own answer.
+
+All three were reachable before this week and none was reached, because
+the fuzz target was asserting `idna`'s behaviour rather than this layer's
+wherever the developer was sitting.
+
 ### Two versions of `quinn-udp` coexist, and that is the seam paying out
 
 A dependency bump asked for `quinn-udp` 0.6.1. The first look said it was
