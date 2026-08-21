@@ -221,11 +221,21 @@ fn the_platform_answers_what_the_corpus_pins_on_every_row() {
         let got = testing::platform(case.input)
             .expect("the library was found a line ago; it cannot be gone now")
             .ok();
-        if got.as_deref() != case.icu_says {
+        // `testing::platform` is the platform backend **through this
+        // crate's policy**, so the policy's own rule applies before the
+        // column does — the third test in this file to need that line, and
+        // the one Linux cannot check: with no system ICU this test returns
+        // at the top, so the row was green here and red on `macos-latest`.
+        let want = if refused_by_policy(case.input) {
+            None
+        } else {
+            case.icu_says
+        };
+        if got.as_deref() != want {
             wrong.push(format!(
                 "  {}: expected {:?}, {lib} said {:?}",
                 label(case),
-                case.icu_says,
+                want,
                 got
             ));
         }
