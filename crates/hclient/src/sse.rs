@@ -656,9 +656,11 @@ struct ReconnectExhausted {
     /// the configured policy.
     attempts: u32,
 }
-/// Where a [`ReconnectingSseStream`] currently stands. `B` is `T::Body` —
-/// the SAME concrete body type every (re)connection produces, since every
-/// (re)connection goes through the same `Client<T>`.
+/// Where a [`ReconnectingSseStream`] currently stands. `B` is
+/// [`crate::body::ClientBody`] — the SAME body type every (re)connection
+/// produces, since every (re)connection goes through the same `Client`,
+/// and since erasure gave that type no parameters there is now only one of
+/// it whatever backend answers.
 #[derive(Debug)]
 enum ReconnectState<B> {
     /// A live, currently-open `SseStream`, forwarded to almost unchanged.

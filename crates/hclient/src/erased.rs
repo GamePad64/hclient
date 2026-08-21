@@ -23,12 +23,17 @@
 //!
 //! The second is that a defaulted parameter needs a default *type*, and
 //! `hclient-cookie` and `hclient-cache` are **optional dependencies**.
-//! `Client<T, Tm, P = hclient_cookie::BuiltinList, S = ..>` names two
+//! A `Client<.., P = hclient_cookie::BuiltinList, S = ..>` would name two
 //! types that do not exist in a build without those features, so the
-//! declaration would have to be forked four ways — and `Client` is already
-//! forked once, for `DefaultTransport`. Erasure has no such problem: the
-//! field is inside the same `#[cfg]` as the feature, and there is no
-//! parameter to default when it is off.
+//! declaration would have to be forked four ways. Erasure has no such
+//! problem: the field is inside the same `#[cfg]` as the feature, and there
+//! is no parameter to default when it is off.
+//!
+//! **The same argument has since been applied to the transport and the
+//! clock**, which is why this module's reasoning outlived the shape it was
+//! written about: `Client` was forked once more, for `DefaultTransport`,
+//! and that fork is gone with the parameters. See
+//! `hclient_core::unversioned::erased`.
 //!
 //! # What it costs, said plainly
 //!

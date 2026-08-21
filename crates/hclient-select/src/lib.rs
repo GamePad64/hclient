@@ -29,6 +29,11 @@
 //! > nowhere in this codebase for "choose between two protocol stacks" to
 //! > live.
 //!
+//! Quoted as it stood then. `discovery.rs` has since been reworded twice —
+//! once because this crate is that place, and once because `Client` no
+//! longer names a transport type at all — so do not expect to find these
+//! words there.
+//!
 //! This is that place. It is a **new crate** and not a feature of either
 //! member for the reason `hclient-h3` is not a feature of
 //! `hclient-native`: Cargo's features are additive, so a

@@ -21,11 +21,18 @@
 //!
 //! Where the erased client wants `Send + Sync` — it holds these behind an
 //! `Arc` and is meant to cross a `tokio::spawn` — it says so at its own use
-//! site, `Arc<dyn BoxedTransport + Send + Sync>`. A backend that cannot
-//! satisfy that is refused at the constructor rather than taxed at the seam,
-//! and `Embassy` is refused there today for the same reason it always was:
-//! it is `RefCell` throughout, so `Client<Native<Embassy, ..>>` is already
-//! `!Send`.
+//! site, [`SharedTransport`] and [`SharedTimer`]. A backend that cannot
+//! satisfy that is refused at the constructor rather than taxed at the seam.
+//!
+//! **That refusal is a real loss for one backend, and this doc comment
+//! claimed otherwise for one commit.** `hclient-rt-embassy` is `RefCell`
+//! throughout, because embassy's executor is single-threaded, and the
+//! sentence here read *"`Embassy` is refused there today for the same
+//! reason it always was"*. It was not: the generic `Client` built over
+//! Embassy perfectly well and merely could not cross a thread. Being
+//! `!Send` and being **refused** are different things, and only the second
+//! costs a backend its `Client`. The embedded scenarios use `Transport`
+//! directly now; `docs/erased-client.md` has the measurement.
 //!
 //! # The instant is erased as a question, not as a type
 //!

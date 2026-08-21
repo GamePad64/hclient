@@ -13,10 +13,14 @@
 //! **It cannot choose HTTP/3.** An `alpn` containing `h3` is a fact this
 //! crate can read and cannot act on: `hclient-h3` is a different crate
 //! with different bounds (`R: UdpBind + Spawn<..>`, `T: QuicTlsConnect`),
-//! `Native<R, T, D>` has neither, and `Client<T>` names exactly one
-//! transport type — there is nowhere in this codebase for "choose between
-//! two protocol stacks" to live. That is a racing transport owning both,
-//! which is a vertical rather than a task (`docs/v03-design.md` §W2).
+//! `Native<R, T, D>` has neither, and a `Client` holds exactly one
+//! transport — there is nowhere in **this crate** for "choose between two
+//! protocol stacks" to live. That is a transport owning both, and it
+//! exists: `hclient-select`'s `Selecting`, which reads the same record and
+//! routes to `Native` or `H3`. This paragraph said "there is nowhere in
+//! this codebase" until that crate was written; what stays true is the
+//! part about this crate, which is why the gap is stated here and closed
+//! one level up.
 //!
 //! So [`alpn_offer`] below never returns `h3`, and it is not an oversight
 //! to be fixed by adding it to the list: offering a protocol this

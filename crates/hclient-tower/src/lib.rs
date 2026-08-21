@@ -196,9 +196,12 @@ where
 /// Native -> TransportService -> [tower layers] -> ServiceTransport -> Client
 /// ```
 ///
-/// **The client's type does not change shape** — `Client<T>` was always
-/// generic over its transport, so this is a different `T`, not a different
-/// `Client`. Nothing in the facade moves.
+/// **The client's type does not change shape**, and it is now the strongest
+/// version of that claim: `Client` names no transport type at all, so a
+/// tower stack behind it is not even a different type parameter. Nothing in
+/// the facade moves. When this line was written `Client<T>` was generic and
+/// the claim was *this is a different `T`* — erasure made it *there is no
+/// `T`*.
 ///
 /// # Readiness, and what cloning costs
 ///

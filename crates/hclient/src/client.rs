@@ -39,12 +39,13 @@ pub struct ClientBuilder {
     cache: Option<crate::cached::Cache>,
 }
 
-/// `Tm` fixed to [`crate::DefaultClock`], not generic: a `new` over any
-/// `Tm` would have nowhere to get a clock value from, and `Client::builder`
-/// (which forwards here) would leave `Tm` unconstrained by its arguments
-/// and so uninferrable at the call site. Pinning it here is what keeps
-/// `Client::builder(t).build()` resolving to `Client<T>` — the bare form
-/// existing code writes — rather than to some other clock.
+/// The clock starts as [`crate::DefaultClock`] rather than being chosen by
+/// the caller: `new` takes only a transport, so nothing in the call could
+/// infer a clock, and a builder generic over one would be uninferrable at
+/// the call site. [`Self::total_timeout`] is where a caller supplies their
+/// own, and it hands back a `ClientBuilder` like any other step — erasure
+/// is what makes that possible, since the clock is a field rather than a
+/// type parameter and swapping it changes no type.
 impl ClientBuilder {
     pub fn new<T>(transport: T) -> Self
     where
@@ -1682,7 +1683,7 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 // `not(target_family = "wasm")`, not just `feature = "default-transport"`
 // — the same double gate as `DefaultTransport` itself (`lib.rs`): on wasm
 // targets, where the `DefaultTransport` branch doesn't exist (see its doc
-// comment), this `impl` for `Client<crate::DefaultTransport>` would refer
+// comment), this `impl Client` block's `new` would refer
 // to a nonexistent type. Separate gates would give the same behavior (an
 // `impl` for a nonexistent type also fails to compile), but repeating the
 // condition makes the reason visible on the spot, not only in `lib.rs`.
@@ -1770,7 +1771,7 @@ impl Client {
     }
 }
 
-// The browser sibling of the `impl Client<crate::DefaultTransport>` above.
+// The browser sibling of the `Client::new` above.
 // The gate is the mirror image of that one and of `DefaultTransport`'s own
 // (`lib.rs`): `all(target_family = "wasm", target_os = "unknown")`, NOT a
 // bare `target_family = "wasm"` — `wasm32-wasip2` is also `wasm`, and there
