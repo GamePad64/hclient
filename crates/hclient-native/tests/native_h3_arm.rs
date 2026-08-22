@@ -18,7 +18,7 @@ mod servers;
 use fakedns::FakeDns;
 use hclient_core::unversioned::Transport as _;
 use hclient_core::{RequestBody, RequireVersion};
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use servers::{ORIGIN, Pair};

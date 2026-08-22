@@ -599,8 +599,13 @@ package-build:
     # counts must both be there and must agree.
     pkg="$(printf '%s\n' "$out" | grep -c 'Packaged' || true)"
     ver="$(printf '%s\n' "$out" | grep -c 'Verifying' || true)"
-    if [ "$pkg" -lt 29 ] || [ "$ver" -ne "$pkg" ]; then
-      echo "::error::packaged $pkg and verified $ver — expected at least 29 of each, and equal"
+    # Derived rather than written down: a literal here goes stale the next
+    # time a crate is added or folded in, and a stale floor is a check that
+    # passes for a run that did less than it should.
+    want="$(cargo metadata --format-version 1 --no-deps \
+        | python3 -c 'import json,sys; print(sum(1 for p in json.load(sys.stdin)["packages"] if p.get("publish") != []))')"
+    if [ "$pkg" -lt "$want" ] || [ "$ver" -ne "$pkg" ]; then
+      echo "::error::packaged $pkg and verified $ver — expected at least $want of each, and equal"
       exit 1
     fi
     echo "$ver crates build from their own published tarball"
@@ -830,28 +835,40 @@ graph-no-framing-in-the-transport:
         "hclient-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
         -- -p hclient-tungstenite
 
-# The same argument one seam down, and in the direction that catches a
-# COPY rather than a feature. `SeamRuntime` was `mod runtime` inside
-# `hclient-h3` — private, so unreachable rather than additive, which is the
-# other way a shared thing stops being shared. It is `hclient-quinn` now,
-# and the two things that would undo that are: the adapter growing an
-# HTTP/3 dependency (so it is no longer usable by anything else that wants
-# QUIC over the seam), or `hclient-h3` growing a private copy again and
-# dropping the dependency. One `absent` and one `present` catch one each.
-
-# the quinn/seam adapter carries no HTTP/3, and h3 has not taken a copy back
-graph-quinn-adapter-is-shared:
+# **quinn stays inside one module**, which is what `hclient-quinn` used to
+# be a crate for. The adapter — `quinn::Runtime` over `hclient_rt::{Timer,
+# Spawn, UdpBind}` — folded into `hclient-native` when its only consumer
+# turned out to be `hclient-h3`, which folded in too. What a crate boundary
+# was enforcing, a module boundary and this check enforce instead: nothing
+# outside `src/quinn.rs` names `quinn`, so the third-party API has exactly
+# one place it can leak from.
+#
+# Checked in the failing direction by naming `quinn::Endpoint` in
+# `src/lib.rs` and watching it fire.
+quinn-stays-in-its-module:
     #!/usr/bin/env bash
     set -euo pipefail
-    ./scripts/tree-guard.sh absent '^(h3|h3-quinn|hclient-h3) ' \
-        "hclient-quinn has HTTP/3 in its graph. It is the quinn::Runtime over hclient_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3" \
-        -- -p hclient-quinn --all-features
-    ./scripts/tree-guard.sh present '^quinn ' \
-        "hclient-quinn does not depend on quinn, so the ban above is vacuous — it would pass a workspace where the adapter had been emptied out" \
-        -- -p hclient-quinn
-    ./scripts/tree-guard.sh present '^hclient-quinn ' \
-        "hclient-h3 no longer depends on hclient-quinn — either the adapter moved back in as a private copy, or the extraction was reverted. Copying is what this workspace does not do" \
-        -- -p hclient-h3
+    cd crates/hclient-native/src
+    # `mod h3` legitimately names `quinn` — it drives the connection — so
+    # the boundary is the two modules together against the rest of the
+    # crate, not `quinn.rs` alone. What must stay out is everything a build
+    # without the `http3` feature compiles.
+    # `(?<!crate::)` so this crate's own `crate::quinn::` module path — a
+    # re-export in `lib.rs`, say — is not mistaken for the third-party
+    # crate the boundary is about.
+    stray="$(grep -rlnP '(?<!crate::)\bquinn(_proto|_udp)?::' . --include='*.rs' \
+        | grep -vE '^\./(quinn\.rs|h3/)' || true)"
+    if [ -n "$stray" ]; then
+      echo "::error::quinn is named outside \`mod quinn\` and \`mod h3\`, which is the boundary the crate merge kept when the crate went away:"
+      echo "$stray"
+      exit 1
+    fi
+    n="$(grep -rcP '(?<!crate::)\bquinn(_proto|_udp)?::' quinn.rs | head -1)"
+    if [ "${n:-0}" -eq 0 ]; then
+      echo "::error::src/quinn.rs names quinn nowhere, so the check above is vacuous — it would pass a crate whose adapter had been emptied out"
+      exit 1
+    fi
+    echo "quinn named in mod quinn and mod h3 only; $n sites in quinn.rs"
 
 # Still `tree-guard`, and deliberately: `cargo deny` bans crates by name, and
 # this one bans a FAMILY by prefix. Enumerating today's names would pass for
@@ -993,7 +1010,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport graph-quinn-adapter-is-shared graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 

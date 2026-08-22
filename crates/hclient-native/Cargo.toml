@@ -34,7 +34,8 @@ repository.workspace = true
 # `hclient-tungstenite`, a crate that depends on this one; what stays
 # here is the h1 upgrade (`src/upgrade.rs`), which is hyper and nothing
 # else. It was a feature here once, and the
-# reason it stopped being one is the reason `hclient-h3` is not a feature
+# reason it stopped being one is the reason the WebSocket framing is not a
+# feature
 # of this crate either: Cargo's features are additive, so one crate
 # anywhere in a graph switching it on put `tungstenite` — measured at +17
 # crates for this crate alone, +14 for a full client build — into every
@@ -47,7 +48,8 @@ all-features = true
 [features]
 default = []
 http2 = ["dep:h2", "dep:tokio"]
-# The QUIC arm. It brings `hclient-h3` — and through it quinn — and nothing
+# The QUIC arm. It brings `mod h3` and `mod quinn` — and through them
+# quinn itself — and nothing
 # else: what `H3<R, T, D>` needs OF the runtime and the TLS backend
 # (`UdpBind`, `QuicTlsConnect`) are the caller's own features on their own
 # crates, and `Native::http3` is where those bounds are checked.
@@ -56,7 +58,7 @@ http2 = ["dep:h2", "dep:tokio"]
 # rather than bounds: `Native<Embassy, NoTls, IpLiteralOnly>` compiles with
 # it on, it simply never calls `http3()`. What a neighbour switching this
 # on costs such a build is dead code in the graph, not a broken one.
-http3 = ["dep:hclient-h3"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:hclient-tls-quic", "dep:quinn"]
 # No `dep:` entries, and that is the point: both protocols behind this
 # flag are written here, so the feature buys code size back for a
 # constrained target and costs nobody a dependency. See `src/proxy.rs`.
@@ -79,7 +81,22 @@ hclient-dns    = { path = "../hclient-dns",   version = "0.1.0-alpha.1" }
 hclient-proto  = { workspace = true }
 hclient-rt     = { path = "../hclient-rt",    version = "0.1.0-alpha.1" }
 hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.1" }
-hclient-h3   = { path = "../hclient-h3",   version = "0.1.0-alpha.1", optional = true }
+# The HTTP/3 stack, folded in as `mod h3` and `mod quinn` — these are the
+# dependencies those two modules bring, all of them optional and all
+# reached only through the `http3` feature.
+#
+# `quinn` with `ring` **and** `futures-io`: the first because binding an
+# endpoint needs an HMAC key for stateless resets and an AEAD for retry
+# tokens independently of any TLS session (`EndpointConfig` has no
+# `Default` without one), the second because `h3-quinn` requires it. No
+# `runtime-*` — the runtime is `mod quinn`. No `rustls-*` — the crypto
+# arrives already built, as an `Arc<dyn quinn_proto::crypto::ClientConfig>`
+# from `hclient-tls-quic`, so nothing here picks a TLS provider.
+h3               = { version = "0.0.8",  optional = true }
+pin-project-lite = "0.2"
+h3-quinn         = { version = "0.0.10", optional = true }
+hclient-tls-quic = { path = "../hclient-tls-quic", version = "0.1.0-alpha.1", optional = true }
+quinn            = { version = "0.11", default-features = false, features = ["ring", "futures-io"], optional = true }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 futures-core   = { workspace = true }
 futures-sink   = { workspace = true }
@@ -87,14 +104,15 @@ thiserror      = { workspace = true }
 tokio          = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
+# `mod h3`'s own unit tests build a stub `QuicTlsConnect`, whose one method
+# returns quinn's client-config trait object — the type that seam names.
+quinn-proto        = { version = "0.11", default-features = false }
 # The QUIC/TCP pair the routing tests stand up: two real servers behind one
 # authority, so a request reaching one is a choice and not the only
-# possibility. `hclient-h3` is a dev-dependency as well as an optional
-# normal one, because the tests build an `H3` to hand to `Native::http3`.
+# possibility.
 futures-util       = { version = "0.3", default-features = false, features = ["std"] }
 h3                 = "0.0.8"
 h3-quinn           = "0.0.10"
-hclient-h3         = { path = "../hclient-h3", version = "0.1.0-alpha.1" }
 http-body-util     = { workspace = true }
 quinn              = { version = "0.11", default-features = false, features = ["futures-io", "runtime-tokio", "rustls-ring"] }
 

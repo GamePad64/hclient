@@ -23,10 +23,10 @@ all-features = true
 # `default,default-transport,idn`, and `lean` links that one. The party who
 # wanted the small graph is not the party who decides.
 #
-# That is the same argument that keeps `hclient-h3` out of
-# `hclient-native`, `hclient-tls-quic` out of `hclient-tls`, and the
-# WebSocket framing in a crate of its own. Applying it to those three and
-# not to this list would have been the inconsistency, not the caution.
+# That is the same argument that keeps `hclient-tls-quic` out of
+# `hclient-tls` and the WebSocket framing in a crate of its own. Applying
+# it to those two and not to this list would have been the inconsistency,
+# not the caution.
 #
 # What it costs is real and is paid in text instead: `Client::new()` needs
 # `features = ["default-transport"]`, and the first line of both READMEs and
@@ -95,7 +95,6 @@ default-transport = [
 http2 = ["default-transport", "hclient-native/http2"]
 http3 = [
     "default-transport",
-    "dep:hclient-h3",
     "hclient-native/http3",
     "hclient-rt-tokio/udp",
     "hclient-tls-rustls/quic",
@@ -379,9 +378,6 @@ hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.1"
 hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1", optional = true }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", optional = true, features = ["platform-verifier"] }
 hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1", optional = true }
-# Named here rather than reached through `hclient-select`, because
-# `Selecting::new` takes an `H3` and this crate has to build one.
-hclient-h3         = { path = "../hclient-h3",         version = "0.1.0-alpha.1", optional = true }
 
 # The browser-only extra feature `jitter`'s `getrandom` call needs: on
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be

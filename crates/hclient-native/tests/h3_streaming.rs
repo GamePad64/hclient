@@ -23,15 +23,16 @@
 //! number any test reads is how many frames were pulled out of the caller's
 //! own body — that is the caller's object, not the transport's insides, and
 //! it is the only place "the pump stopped" can be seen.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use bytes::Bytes;
 use hclient_core::unversioned::Transport;
 use hclient_core::{AllowEarlyData, RequestBody};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
@@ -648,7 +649,7 @@ async fn a_marked_streaming_request_is_not_admitted_to_early_data() {
 #[test]
 fn an_h3_body_is_still_send() {
     fn assert_send(_: impl Send) {}
-    fn take(b: hclient_h3::H3Body) {
+    fn take(b: hclient_native::H3Body) {
         assert_send(b);
     }
     let _ = take;

@@ -397,9 +397,9 @@ jobs:
       - name: the WebSocket framing stays out of the transport
         shell: bash
         run: just graph-no-framing-in-the-transport
-      - name: the quinn/seam adapter carries no HTTP/3, and h3 has not copied it back
+      - name: quinn is named in one module, which is what its crate used to be
         shell: bash
-        run: just graph-quinn-adapter-is-shared
+        run: just quinn-stays-in-its-module
       - name: the smol path carries no reactor, only hyper's inert tokio leaf
         shell: bash
         run: just graph-smol-path

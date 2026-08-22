@@ -11,7 +11,7 @@
 //! test, and a server sharing the client's runtime adapter would make a
 //! green run ambiguous between "both work" and "both are wrong the same
 //! way".
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 #![allow(dead_code)]
 
 use bytes::Bytes;

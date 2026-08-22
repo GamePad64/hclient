@@ -42,7 +42,7 @@ use bytes::Bytes;
 use fakedns::FakeDns;
 use hclient_core::unversioned::Transport;
 use hclient_core::{RequestBody, Timeouts};
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
@@ -450,7 +450,7 @@ fn timeline(label: &str, xs: &[(Duration, usize)]) {
 // =========================================================================
 
 /// v0.3 measured 30 s for one path — quinn's own idle timeout. This
-/// confirms it for *this* shape: `hclient_h3::H3::execute` with no
+/// confirms it for *this* shape: `hclient_native::H3::execute` with no
 /// `Timeouts::connect` set, against a held UDP socket that answers
 /// nothing, with a live TCP server on the same port number so the origin
 /// is reachable by the other stack throughout.

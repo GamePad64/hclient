@@ -46,7 +46,58 @@ mod established;
 mod failures;
 mod h1;
 #[cfg(feature = "http3")]
+mod h3;
+/// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
+/// driven by whichever `hclient_rt` implementation the caller already has.
+///
+/// A build that wants bare QUIC and no HTTP opinion takes this and nothing
+/// else from the crate; it was `hclient-quinn`'s whole public surface.
+#[cfg(feature = "http3")]
+pub use crate::quinn::endpoint;
+/// The QUIC connect deadline's error, renamed on the way out: this crate's
+/// own TCP one is private and carries the same name, and two types with
+/// one name in one crate is how a reader ends up reading the wrong doc.
+#[cfg(feature = "http3")]
+pub use h3::ConnectTimedOut as H3ConnectTimedOut;
+/// The HTTP/3 stack this transport's QUIC arm is built from.
+///
+/// It was `hclient-h3`, a crate of its own, on a reason that measurement
+/// disproved: `H3`'s declaration carries no where-clause, so a feature
+/// here makes the module and the constructor unconditional rather than the
+/// bounds, and the arm is stored erased so nothing reaches
+/// `impl Transport for Native`. What a neighbour switching `http3` on
+/// costs a build that never asked is dead code in the graph, not a broken
+/// one — and the crate's only consumer was this one.
+///
+/// A build that wants HTTP/3 **alone**, with no TCP stack beside it, still
+/// has `Client::builder(H3::new(..))`: the type is a full `Transport` and
+/// nothing about it changed in the move.
+#[cfg(feature = "http3")]
+pub use h3::{
+    DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime, QuinnTask, RequestTrailersNotSent,
+    UnknownRequestBodyFrame,
+};
+/// The QUIC stack's staged pair, renamed on the way out because this crate
+/// has two.
+///
+/// They are separate traits rather than one, and the merge did not change
+/// that: a trait is declared by the crate — now the module — that
+/// implements it, and **the two do not agree on what `connect` takes**.
+/// [`StagedConnect::connect`] takes a [`Prepared`], the request *with* the
+/// HTTPS record fetched for it; [`H3StagedConnect::connect`] takes the
+/// request alone, because the QUIC arm has no record lookup of its own.
+///
+/// Nothing needs polymorphism between them: the routing owns both
+/// concretely.
+#[cfg(feature = "http3")]
+pub use h3::{Refused as H3Refused, Staged as H3Staged, StagedConnect as H3StagedConnect};
+#[cfg(feature = "http3")]
 mod h3_arm;
+/// quinn's `Runtime` over this workspace's own seams — and **the one
+/// module in this crate that names `quinn`**, which
+/// `just quinn-stays-in-its-module` asserts.
+#[cfg(feature = "http3")]
+mod quinn;
 #[cfg(feature = "http3")]
 mod race;
 #[cfg(feature = "http3")]
@@ -1627,12 +1678,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// stacks over one configuration passes the same values twice, which
     /// is what `Rustls: Clone` is for.
     #[cfg(feature = "http3")]
-    pub fn http3(mut self, quic: hclient_h3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
+    pub fn http3(mut self, quic: crate::h3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
-        hclient_h3::H3<R, T, D>: hclient_h3::StagedConnect<Error = Error> + std::fmt::Debug,
-        <hclient_h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
+        crate::h3::H3<R, T, D>: crate::h3::StagedConnect<Error = Error> + std::fmt::Debug,
+        <crate::h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <hclient_h3::H3<R, T, D> as hclient_h3::StagedConnect>::Staged: 'static,
+        <crate::h3::H3<R, T, D> as crate::h3::StagedConnect>::Staged: 'static,
         R: Send + Sync + 'static, // send-bound-exception: amendment-C12
         T: Send + Sync + 'static, // send-bound-exception: amendment-C12
         D: Send + Sync + 'static, // send-bound-exception: amendment-C12

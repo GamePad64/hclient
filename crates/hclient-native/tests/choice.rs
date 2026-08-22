@@ -22,7 +22,7 @@ mod servers;
 use fakedns::{FakeDns, alias_record, service_record};
 use hclient_core::unversioned::Transport;
 use hclient_core::{RequestBody, RequireVersion};
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;

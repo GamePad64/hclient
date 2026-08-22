@@ -25,7 +25,7 @@
 //! toss that sent the request twice.
 //!
 //! The staged connect landed since, and `hclient_native::StagedConnect` and
-//! `hclient_h3::StagedConnect` are what this is built out of. Neither
+//! `crate::h3::StagedConnect` are what this is built out of. Neither
 //! `connect` writes a request — the property is structural rather than
 //! promised, since the request is not handed to a stream at all until
 //! `exchange`/`finish` — so **a losing arm now sends nothing at any head
@@ -116,7 +116,7 @@
 //!
 //! Both arms are dropped the instant the other answers, and neither drop
 //! needs anything from this crate: `hclient_native::Staged`'s own `Drop`
-//! checks its connection back into the pool, and `hclient_h3::Staged` is a
+//! checks its connection back into the pool, and `crate::h3::Staged` is a
 //! claim on a connection the pool already holds. §7.6 measured the QUIC
 //! side of a mid-handshake drop — one padded goodbye datagram 1.3–2.4 ms
 //! later and then silence — and that is unchanged here.
@@ -132,7 +132,7 @@
 //! and it does not want to. Nothing was spoken on that connection; it is
 //! indistinguishable from the one an ordinary TCP request would have left
 //! behind, and the pool's own idle policy governs it from there. The QUIC
-//! side has the cost `hclient_h3::staged` already wrote down and said was
+//! side has the cost `crate::h3::staged` already wrote down and said was
 //! the race's to inherit: *"a declined QUIC connection goes on sending its
 //! `DEFAULT_KEEP_ALIVE` PING every five seconds for as long as the
 //! transport lives"*. It is inherited, and it is only ever paid on a

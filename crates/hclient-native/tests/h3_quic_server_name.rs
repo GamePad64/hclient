@@ -28,15 +28,16 @@
 //! Each assertion is that a real QUIC handshake against a real HTTP/3
 //! server completed and the response arrived, not that some argument had
 //! some value.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use futures_util::stream;
 use hclient_core::unversioned::Transport;
 use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

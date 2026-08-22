@@ -41,14 +41,15 @@
 //! If a legitimate clock read is ever added to this path, this file fails
 //! and the number has to be changed **on purpose**. That is the point of the
 //! equality: a tripwire that has to be looked at.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use hclient_core::RequestBody;
 use hclient_core::unversioned::{Event, Hooks, NoHooks, Transport};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::{H3, QuinnTask};
+use hclient_native::{H3, QuinnTask};
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;

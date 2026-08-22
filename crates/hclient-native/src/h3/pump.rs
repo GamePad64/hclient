@@ -10,7 +10,7 @@
 //! `one_attempt` returns.
 //!
 //! So the pump is an owned future. It is polled beside `recv_response`
-//! until the head arrives, and then **moves into [`crate::H3Body`]** and is
+//! until the head arrives, and then **moves into [`crate::h3::H3Body`]** and is
 //! polled from `poll_frame`. Nothing spawns it, and that is deliberate:
 //! this crate does have a `Spawn`, and a spawned pump would keep writing
 //! after the caller dropped the response — the request would go on being
@@ -51,7 +51,7 @@ pub(crate) type SendHalf = h3::client::RequestStream<
 /// The request-body write, in flight.
 ///
 /// `Send` is not decoration here: this `dyn` sits on the `Client ->
-/// Transport` path inside [`crate::H3Body`], and amendment C2's rule is
+/// Transport` path inside [`crate::h3::H3Body`], and amendment C2's rule is
 /// that erasing a type there cuts the auto-traits off everything above it.
 /// `H3Body` was `Send` before this type existed and has to stay `Send`, or
 /// a caller who spawns a request stops compiling for a reason nothing
@@ -129,7 +129,7 @@ fn flatten(body: RequestBody) -> Outgoing {
 /// A reset reaches the peer as a stream error (`StreamErrorIncoming::
 /// StreamTerminated` -> `StreamError::RemoteTerminate`,
 /// `h3-0.0.8/src/error/connection_error_creators.rs:125`) and the
-/// connection is untouched — which is the property [`crate::H3Body`]'s doc
+/// connection is untouched — which is the property [`crate::h3::H3Body`]'s doc
 /// claims for cancellation, now true rather than assumed.
 struct Writer {
     send: SendHalf,
@@ -173,7 +173,7 @@ pub(crate) fn pump(send: SendHalf, body: RequestBody) -> Pump {
 async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
     let stopped = match flatten(body) {
         Outgoing::Buffered(None) => false,
-        Outgoing::Buffered(Some(b)) => crate::write_after_head(w.send.send_data(b).await)?,
+        Outgoing::Buffered(Some(b)) => crate::h3::write_after_head(w.send.send_data(b).await)?,
         Outgoing::Streaming(mut s) => write_stream(&mut w, &mut *s).await?,
     };
     if !stopped {
@@ -181,7 +181,7 @@ async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
         // propagates, and the `?` is what says so. On that `?` the guard
         // above fires, which is right — a request whose write failed is not
         // a request that ended.
-        crate::write_after_head(w.send.finish().await)?;
+        crate::h3::write_after_head(w.send.finish().await)?;
     }
     w.settled = true;
     Ok(())
@@ -202,7 +202,7 @@ async fn write_body(mut w: Writer, body: RequestBody) -> Result<(), Error> {
 /// buffer without bound instead.)
 ///
 /// Returns `true` when the peer stopped reading — see
-/// [`crate::write_after_head`]. **The loop ends there rather than draining
+/// [`crate::h3::write_after_head`]. **The loop ends there rather than draining
 /// the caller's body into a stream nobody is reading**, which with a
 /// streaming body is the difference between a request that ends and one
 /// that pulls for as long as the producer keeps producing.
@@ -233,7 +233,7 @@ async fn write_stream(
             // costs a header and says nothing.
             Ok(data) if data.is_empty() => continue,
             Ok(data) => {
-                if crate::write_after_head(w.send.send_data(data).await)? {
+                if crate::h3::write_after_head(w.send.send_data(data).await)? {
                     return Ok(true);
                 }
             }

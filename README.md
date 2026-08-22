@@ -58,7 +58,7 @@ client then routes by the origin's HTTPS record the way a browser does.
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 
-## The twenty-nine crates, as six families
+## The twenty-seven crates, as six families
 
 You name **one**: `hclient`. Eleven reach your lockfile transitively, and
 twelve are ever chosen deliberately — the rest is plumbing. What follows is
@@ -79,8 +79,7 @@ or `dns` on the family members.
 
 | crate | what it is |
 |---|---|
-| `hclient-native` | TCP + TLS + HTTP/1.1, HTTP/2 and HTTP/3 behind features, choosing by the origin's HTTPS record |
-| `hclient-h3` | HTTP/3 over QUIC, for a build that wants it alone |
+| `hclient-native` | TCP + TLS + HTTP/1.1, HTTP/2 and HTTP/3 behind features, choosing by the origin's HTTPS record. `hclient_native::H3` is the QUIC stack alone, for a build that wants no TCP beside it |
 | `hclient-fetch` | the browser's own `fetch` |
 | `hclient-wasi` | `wasi:http` 0.3 |
 | `hclient-urlsession` | Apple's `URLSession` |
@@ -93,7 +92,6 @@ or `dns` on the family members.
 | `hclient-rt` | the seam: `TcpConnect`, `Timer`, `Blocking`, `Spawn`, `UdpBind` |
 | `hclient-rt-tokio` · `hclient-rt-smol` | the two general-purpose ones |
 | `hclient-rt-embassy` | `embassy-net` and `embassy-time`, which is what makes embedded reachable |
-| `hclient-quinn` | quinn's own `Runtime` over that seam, for bare QUIC without h3 |
 
 **TLS**
 

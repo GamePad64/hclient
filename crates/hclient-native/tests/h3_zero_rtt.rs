@@ -51,15 +51,17 @@
 //! Handshake packet from the client; the server resolving the request
 //! 2.6 ms into the connection and completing its handshake at 7.2 ms, with
 //! the relay holding its flight for the 4.1 ms in between.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
+#[path = "h3_wire/mod.rs"]
 mod wire;
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{AllowEarlyData, RequestBody};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

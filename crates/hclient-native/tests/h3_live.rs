@@ -5,15 +5,17 @@
 //! certificate and two unprivileged `UdpSocket::bind("127.0.0.1:0")` calls,
 //! so a compile-only claim would have been a choice rather than a
 //! constraint.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
+#[path = "h3_wire/mod.rs"]
 mod wire;
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{AllowEarlyData, EarlyDataSupport, ErrorKind, RequestBody};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
@@ -592,8 +594,8 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
     );
     assert_eq!(
         std::error::Error::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_h3::ConnectTimedOut>()),
-        Some(&hclient_h3::ConnectTimedOut(CONNECT_BOUND)),
+            .and_then(|s| s.downcast_ref::<hclient_native::H3ConnectTimedOut>()),
+        Some(&hclient_native::H3ConnectTimedOut(CONNECT_BOUND)),
         "and the bound that was in force has to be readable off the source rather than \
          reconstructed from the caller's own copy: {err}"
     );

@@ -9,9 +9,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Its own crate, for the reason `hclient-h3` is not a feature of
+# Its own crate, for the reason the WebSocket framing is not a feature of
 # `hclient-native`: Cargo's features are additive, so a `webtransport`
-# feature on `hclient-h3` would put the extended-CONNECT SETTINGS — a
+# feature on the HTTP/3 stack would put the extended-CONNECT SETTINGS — a
 # *wire* change, announced on every connection that build makes — into
 # every graph that switched it on.
 # See the root Cargo.toml: `default` is near-empty here by design.
@@ -42,7 +42,7 @@ thiserror    = { workspace = true }
 # The last group is the only one that touches an existing item, and it
 # **relaxes**: removing `non_exhaustive` lets more patterns compile and
 # stops none. That is what makes Cargo's feature unification harmless here
-# — `hclient-h3`'s own `h3` gets strictly more surface and the same
+# — the HTTP/3 stack's own `h3` gets strictly more surface and the same
 # behaviour.
 #
 # What it buys is the two facts a WebTransport client cannot do without and
@@ -57,7 +57,7 @@ h3-quinn = "0.0.10"
 # `quinn` in the public API on purpose: this crate's input *is* a QUIC
 # connection and its output *is* a pair of QUIC streams. Wrapping either
 # would be a second vocabulary for types the caller already holds, and the
-# crate that would hand the connection over — `hclient-h3` — is built on
+# crate that would hand the connection over — `hclient-native` — is built on
 # this same `quinn` 0.11.
 quinn = { version = "0.11", default-features = false }
 

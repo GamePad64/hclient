@@ -56,7 +56,7 @@ tungstenite  = { version = "0.30", default-features = false, features = ["handsh
 # For the module doc's example alone, and it is the reason the borrow
 # exists: `Tungstenite` borrows a `Native` a `Client` already owns, so the
 # example that shows why cannot be written without naming `Client`. The
-# same dev-dependency `hclient-h3` carries for the same reason. No cycle —
+# same dev-dependency `hclient-native` carries for the same reason. No cycle —
 # `hclient` does not depend on this crate, and cannot: the framing is a
 # choice a caller makes.
 hclient            = { workspace = true }

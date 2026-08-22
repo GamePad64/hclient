@@ -32,7 +32,7 @@ use fakedns::{FakeDns, service_record};
 use hclient_core::unversioned::Transport;
 use hclient_core::{RequestBody, Timeouts};
 use hclient_dns::SvcbEndpoint;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;

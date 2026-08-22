@@ -550,7 +550,7 @@ where
     /// it. This is not that, because
     /// the request is never handed to the QUIC stack: `connect` takes it,
     /// fails, and gives it back untouched. Nothing was sent, so there is
-    /// nothing to decide about idempotency — [`hclient_h3::Refused`] is the
+    /// nothing to decide about idempotency — [`crate::h3::Refused`] is the
     /// type that makes that a fact about the code rather than a promise.
     ///
     /// # The budget is spent once, which took work

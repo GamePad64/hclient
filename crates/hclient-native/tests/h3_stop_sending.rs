@@ -34,14 +34,15 @@
 //! than the flow-control window cannot be written before the server has
 //! answered and dropped its half, so the `STOP_SENDING` always arrives
 //! mid-write and the tests measure the decision rather than the scheduler.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use hclient_core::RequestBody;
 use hclient_core::unversioned::Transport;
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

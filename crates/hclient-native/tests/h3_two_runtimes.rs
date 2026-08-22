@@ -32,14 +32,15 @@
 //! and it is the same probe `hclient-rt-pair-check`'s `pair_property.rs`
 //! and `hclient`'s `two_runtimes.rs` already use — so a green run here is
 //! evidence about the seam, not merely about whether the file compiles.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use hclient_core::RequestBody;
 use hclient_core::unversioned::Transport;
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::{H3, H3Runtime};
+use hclient_native::{H3, H3Runtime};
 use http_body_util::BodyExt;
 use server::Behaviour;
 use std::fmt;

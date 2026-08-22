@@ -7,7 +7,7 @@
 //! ```no_run
 //! # use std::fmt;
 //! # use hclient_rt::{Spawn, Timer, UdpAdoptStd};
-//! # use hclient_quinn::QuinnTask;
+//! # use hclient_native::QuinnTask;
 //! # async fn example<R>(
 //! #     rt: &R,
 //! #     client_cfg: quinn::ClientConfig,
@@ -18,7 +18,7 @@
 //! #     R::Sleep: Send + 'static,
 //! #     R::Socket: fmt::Debug + Send + Sync + 'static,
 //! # {
-//! let endpoint = hclient_quinn::endpoint(rt, "0.0.0.0:0".parse()?)?;
+//! let endpoint = hclient_native::endpoint(rt, "0.0.0.0:0".parse()?)?;
 //! let conn = endpoint.connect_with(client_cfg, addr, "example.com")?.await?;
 //! # let _ = conn;
 //! # Ok(())
@@ -52,7 +52,7 @@
 //! none of that, deliberately — `Send`ness in this workspace is inferred by
 //! auto-traits, not declared.
 //!
-//! Those bounds are therefore paid **here and in `hclient_h3::H3Runtime`**,
+//! Those bounds are therefore paid **here and in [`crate::H3Runtime`]**,
 //! by the crates that want QUIC, and not by the seam. A runtime that cannot
 //! satisfy them can still implement [`UdpBind`] honestly and be used for
 //! everything else; it just cannot be handed to this crate. That is a

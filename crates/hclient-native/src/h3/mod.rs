@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
-//! use hclient_h3::H3;
+//! use hclient_native::H3;
 //! let h3 = H3::new(
 //!     hclient_rt_tokio::TokioHandle::current()?,
 //!     hclient_tls_rustls::Rustls::with_webpki_roots(),
@@ -73,8 +73,8 @@ mod hooks;
 mod pump;
 mod staged;
 
+pub use crate::quinn::QuinnTask;
 pub use body::H3Body;
-pub use hclient_quinn::QuinnTask;
 pub use pump::{RequestTrailersNotSent, UnknownRequestBodyFrame};
 pub use staged::{Refused, Staged, StagedConnect};
 
@@ -246,7 +246,7 @@ pub const DEFAULT_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_se
 /// caller asks; what comes back is a *different type*, which is the whole
 /// of the zero-cost claim rather than an inconvenience.
 ///
-/// What this transport can and cannot say is in `crate::hooks`: `tcp`
+/// What this transport can and cannot say is in `crate::h3::hooks`: `tcp`
 /// holds the QUIC attempt and `tls` is always `None`, because QUIC's
 /// handshake is TLS and `into_0rtt` hands back a usable connection before
 /// it finishes; `CloseReason::Ended` has no emitter, because nothing in
@@ -352,7 +352,7 @@ where
 {
     /// Send this transport's events to `hooks` — see
     /// [`hclient_core::unversioned::Hooks`] for what it hears and what it
-    /// costs, [`Event`] for the vocabulary, and `crate::hooks` for the
+    /// costs, [`Event`] for the vocabulary, and `crate::h3::hooks` for the
     /// two things QUIC cannot say in it.
     ///
     /// **It returns a different type**, and that is the zero-cost
@@ -364,7 +364,7 @@ where
     /// The hook may be `!Send`: nothing on this path declares it, so an
     /// `Rc` inside a hook makes this transport `!Send` and leaves it
     /// working (P13; `crates/hclient-core/tests/shape.rs`). What that
-    /// costs here is written down in `crate::hooks` — the spawned
+    /// costs here is written down in `crate::h3::hooks` — the spawned
     /// connection driver is `Send` because quinn says so, so a hook cannot
     /// be called from it, and a close is discovered rather than observed.
     ///
@@ -496,7 +496,7 @@ fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilitie
 /// `Send`, `Sync` and `'static` are declared on `quinn::{Runtime,
 /// AsyncTimer, AsyncUdpSocket}` and are paid **here**, by the crate that
 /// wants QUIC, rather than on [`UdpBind`] where every implementer would pay
-/// them. See `hclient_quinn`'s crate doc.
+/// them. See this crate's `quinn` module doc.
 pub trait H3Runtime:
     Timer
     + UdpBind
@@ -555,7 +555,7 @@ where
         } else {
             SocketAddr::from(([0, 0, 0, 0], 0))
         };
-        let bound = hclient_quinn::endpoint(&self.rt, wildcard)
+        let bound = crate::quinn::endpoint(&self.rt, wildcard)
             .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         slots.insert(v6, bound.clone());
         Ok(bound)
@@ -656,12 +656,12 @@ where
     /// building the crypto configuration are before the mark and h3's
     /// SETTINGS exchange is after it, so both land in `total` and in no
     /// phase — which is exactly what `ConnectTiming` means by "three
-    /// measurements, not a decomposition". `crate::hooks` says why there is
+    /// measurements, not a decomposition". `crate::h3::hooks` says why there is
     /// no `tls` figure to go with it.
     ///
     /// # A 0-RTT rejection can land on h3's control stream, and it did
     ///
-    /// [`crate::early`]'s table says a server rejecting the 0-RTT keys is
+    /// [`crate::h3::early`]'s table says a server rejecting the 0-RTT keys is
     /// *"replayed on the same connection once the handshake completes; the
     /// caller sees a normal response"*, and [`Self::finish`] is where that
     /// happens. It covers a rejection that arrives on the **request**
@@ -779,7 +779,7 @@ where
         // handshake risks nothing and tells the caller nothing.
         //
         // It is reached only when `early` is set, which is only when the
-        // caller marked this request — see `crate::early` — and only on the
+        // caller marked this request — see `crate::h3::early` — and only on the
         // first of this connect's at most two attempts.
         let (conn, zero_rtt) = if early {
             match connecting.into_0rtt() {
@@ -851,7 +851,7 @@ where
     ///
     /// The stream is [`split`](h3::client::RequestStream::split) into its
     /// two independent halves and the write side becomes a future
-    /// ([`crate::pump`]) polled beside `recv_response`, rather than awaited
+    /// ([`crate::h3::pump`]) polled beside `recv_response`, rather than awaited
     /// before it. The head is returned the moment it arrives, with the
     /// unfinished write handed to [`H3Body`] to carry on. Writing the body
     /// first and reading the head afterwards — the arrangement this
@@ -1037,7 +1037,7 @@ where
 /// that: `Ok(true)` must **stop the pump**, not merely skip `finish`.
 /// Continuing to pull frames from the caller's body would be feeding a
 /// stream nobody is reading, for as long as the producer keeps producing.
-/// `crate::pump::write_stream` returns on the `true`, and
+/// `crate::h3::pump::write_stream` returns on the `true`, and
 /// `a_streaming_body_stops_when_the_server_stops_reading_and_the_response_
 /// still_arrives` in `tests/streaming.rs` is the RFC 9114 §4.1 guarantee
 /// across many frames rather than one.
@@ -1106,7 +1106,7 @@ where
     type Error = Error;
 
     /// `H3::stage` then `H3::finish` — the same two halves
-    /// [`crate::StagedConnect`] hands a caller separately, in one call.
+    /// [`crate::h3::StagedConnect`] hands a caller separately, in one call.
     ///
     /// One sequencing with two entry points, for `Native::run`'s reason:
     /// the alternative is two orders of the same steps, and the two would

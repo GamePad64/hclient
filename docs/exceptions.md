@@ -63,8 +63,10 @@ erasure. `Blocking::run` is a bridge to a blocking thread pool —
 from another thread is not one. It is a runtime *capability* trait, not
 a core seam: a runtime without threads does not implement it.
 
-**C10 — `hclient-h3` declares `Send` because `quinn::Runtime` does.**
-The bound is a third party's. quinn declares
+**C10 — the HTTP/3 stack declares `Send` because `quinn::Runtime` does.**
+The bound is a third party's, and it lives in `hclient-native`'s `h3`
+and `quinn` modules — it was `hclient-h3` and `hclient-quinn` until those
+folded in. quinn declares
 `Runtime: Send + Sync + Debug + 'static` and takes its driver as
 `Pin<Box<dyn Future<Output = ()> + Send>>`; a crate implementing that
 trait from outside quinn either satisfies those conditions or does not

@@ -1,6 +1,6 @@
 # hclient-webtransport
 
-**WebTransport sessions over `hclient-h3`'s QUIC.**
+**WebTransport sessions over a `quinn::Connection`.**
 
 `Session::connect`, `open_bi`, datagrams, many sessions on one connection,
 and a clean close that can be told apart from a session that vanished. 48

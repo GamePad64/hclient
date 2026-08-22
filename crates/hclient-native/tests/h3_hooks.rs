@@ -32,15 +32,17 @@
 //!   can tell apart are `Stale` and `Failed`, and
 //!   `the_two_reasons_are_not_one_reason_wearing_two_names` is the pair
 //!   that says so.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
+#[path = "h3_wire/mod.rs"]
 mod wire;
 
 use hclient_core::unversioned::{Event, Hooks, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody};
 use hclient_dns::{IpLiteralOnly, Resolve, ResolvedAddr};
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

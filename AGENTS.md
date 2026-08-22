@@ -204,8 +204,8 @@ was written under in vertical 1.
 | `hclient-rt-smol` in isolation (without `hclient`, `async-io` gives the same capability) — measured, Task 14 | `[default, sync]` — a leaf with no reactor, only `tokio::sync::oneshot`, see below |
 | `hclient-native` with the `http2` feature (v0.2 W3) — **measured**, and the prediction below was right | `[bytes, default, io-util, sync]`, plus `tokio-util` with `[codec, default, io, libc]`. Still **no reactor**: no `rt`, `net`, `time` or `mio` come from this feature — `h2` uses tokio's IO traits and codec, not its runtime |
 | native + HTTP/2 — the row above as it stood before W3: a hypothetical estimate from vertical 1, kept for the record | `h2` pulls in `tokio` with `io-util` and `tokio-util` with `codec`, and through it `libc` |
-| `hclient-h3` (v0.3) — **measured**, and the vertical-1 prediction of 55 crates was close | `[bytes, default, io-util, sync]` plus `tokio-util`, from `h3` and `h3-quinn`; **56 crates** in total; it was 58 when v0.4 moved `SeamRuntime` out into `hclient-quinn`, and two have left the graph since without anyone touching this crate — see the note under this table. Still no reactor from this crate's own dependencies — the reactor arrives with whichever `R` the caller supplies, and `R: Spawn` means it must have one |
-| `hclient-quinn` — **measured**, v0.4 | `[default, sync]`, hyper's inert leaf and nothing else: **41 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` on top of `hclient-rt`, and **no `h3`** — a crate that wants bare QUIC over this seam takes 41 rather than 56 and no opinion about HTTP |
+| `hclient-native` **without** `http3` — measured | **32 crates**, and no `quinn` or `h3` among them: the QUIC stack is an optional dependency, so a build that does not ask for it does not resolve it |
+| `hclient-native` **with** `http3` — measured | **63 crates**, `quinn` + `quinn-proto` + `quinn-udp` + `ring` + `h3` + `h3-quinn` on top of the 32. Still no reactor from this crate's own dependencies — it arrives with whichever `R` the caller supplies, and the arm's `Spawn` bound means that `R` must have one |
 
 **Every number in this table is a fact about a dependency *resolution*,
 not about this code, and they drift.** Re-measured on 2026-08-19 against
@@ -354,7 +354,7 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All 28
+The mechanics are in place and were measured, not assumed. All 26
 publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
 published at all; `hclient-rt-pair-check` is the only `publish = false`.
@@ -362,8 +362,8 @@ published at all; `hclient-rt-pair-check` is the only `publish = false`.
 and `cargo package -p hclient` correctly refuses, because its dependencies
 are not in the index — which is what the order is for.
 
-**That order was recorded here as "five waves over 29 crates" and it is
-eight over 28**, which is the difference between two questions rather than a
+**That order was recorded here as "five waves over 27 crates" and it is
+seven over 26**, which is the difference between two questions rather than a
 miscount. Five is the *normal* dependency graph; `cargo publish` also has
 to satisfy **dev-dependencies that carry a version**, of which there are 32
 here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
@@ -390,7 +390,7 @@ requirement only when it must, the requirements stay at `^0.1.0`, and
 then read as mistakes and are not: an unpublished crate's version runs
 ahead of the index, and published versions are sparse per crate. And
 cargo-release does **not** work out which crates changed — measured, with a
-tag one commit back: a plain `cargo release patch` still planned all 28
+tag one commit back: a plain `cargo release patch` still planned all 26
 uploads. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
@@ -3111,7 +3111,7 @@ should count 59. Restoring is one loop; noticing is the hard part, because a
 copy behaves identically until it drifts.
 
 A README is the same shape one step down, and it was the same absence: no
-crate had one, `readme` was set nowhere, so 28 crates.io pages would have
+crate had one, `readme` was set nowhere, so 26 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
 says the thing this workspace's own arguments turn on — **why it is its own
 crate** — because that is the question a reader landing on

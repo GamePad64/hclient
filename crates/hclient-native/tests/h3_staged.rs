@@ -8,21 +8,22 @@
 //! - a staged connect **shares** the pooled connection rather than dialling
 //!   a second one, which on this stack is what "found one" means — the
 //!   `SendRequest` is cloned and the connection multiplexes;
-//! - **a handle nobody spends needs no `Drop`.** `hclient_native::Staged`
+//! - **a handle nobody spends needs no `Drop`.** `hclient_native::H3Staged`
 //!   had to be given one, because it *owns* the connection it took out of
 //!   the pool. Here `checkout` inserted the connection into the pool before
 //!   its caller ever saw it, so a dropped handle leaves the pool
 //!   exactly as it found it. The test is the same test — connect, drop,
 //!   send — and the two crates reaching the same observable answer by
 //!   different means is the point.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{ErrorKind, RequestBody};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::{H3, StagedConnect};
+use hclient_native::{H3, H3StagedConnect as StagedConnect};
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;

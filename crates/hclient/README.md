@@ -95,7 +95,7 @@ alone.
 ## Related crates
 
 `hclient-native` (TCP, TLS, h1/h2, and h3 behind a feature),
-`hclient-h3` (QUIC alone), `hclient-fetch`, `hclient-wasi`, `hclient-urlsession`; runtimes
+`hclient-fetch`, `hclient-wasi`, `hclient-urlsession`; runtimes
 `hclient-rt-tokio`, `-smol`, `-embassy`; TLS `hclient-tls-rustls`,
 `-native-tls`; resolvers `hclient-dns-system`, `-doh`, `-hickory`.
 

@@ -17,7 +17,7 @@ use hclient_core::{
     ReuseSupport, TlsSupport,
 };
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_native::Native;
 use hclient_native::caps::combine;
 use hclient_rt_tokio::TokioHandle;

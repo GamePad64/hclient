@@ -1108,7 +1108,6 @@ dependencies = [
  "hclient-dns",
  "hclient-dns-system",
  "hclient-fetch",
- "hclient-h3",
  "hclient-mock",
  "hclient-native",
  "hclient-proto",
@@ -1265,38 +1264,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hclient-h3"
-version = "0.1.0-alpha.1"
-dependencies = [
- "bytes",
- "futures-executor",
- "futures-util",
- "h3",
- "h3-quinn",
- "hclient",
- "hclient-core",
- "hclient-dns",
- "hclient-dns-system",
- "hclient-quinn",
- "hclient-rt",
- "hclient-rt-smol",
- "hclient-rt-tokio",
- "hclient-tls",
- "hclient-tls-quic",
- "hclient-tls-rustls",
- "http",
- "http-body",
- "http-body-util",
- "pin-project-lite",
- "quinn",
- "quinn-proto",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "hclient-idn"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1336,18 +1303,20 @@ dependencies = [
  "hclient-core",
  "hclient-dns",
  "hclient-dns-system",
- "hclient-h3",
  "hclient-proto",
  "hclient-rt",
  "hclient-rt-smol",
  "hclient-rt-tokio",
  "hclient-tls",
+ "hclient-tls-quic",
  "hclient-tls-rustls",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
+ "pin-project-lite",
  "quinn",
+ "quinn-proto",
  "rcgen",
  "rustls",
  "thiserror",
@@ -1367,15 +1336,6 @@ dependencies = [
  "rstest",
  "thiserror",
  "url",
-]
-
-[[package]]
-name = "hclient-quinn"
-version = "0.1.0-alpha.1"
-dependencies = [
- "hclient-rt",
- "pin-project-lite",
- "quinn",
 ]
 
 [[package]]

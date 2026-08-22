@@ -27,14 +27,15 @@
 //! The live-server test then adds the other half against a real QUIC
 //! endpoint: `requests() == 0` and `accepted() == 0`, so the refusal cost
 //! the server neither a stream nor a connection.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
+#[path = "h3_server.rs"]
 mod server;
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{ErrorKind, RequestBody, RequireVersion, VersionNotAvailable};
 use hclient_dns::IpLiteralOnly;
-use hclient_h3::H3;
+use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use server::Behaviour;
 use std::time::Duration;

@@ -132,14 +132,19 @@ job's "must be PRESENT" assertion: `cargo deny` has no such thing, and
 `cargo tree -i` exits 0 whether the crate is there or not (measured), so
 the output has to be read either way.
 
-`graph-quinn-adapter-is-shared` is the other user of `present`, and it uses
-it for something an `absent` check structurally cannot express. The claim is
-that `hclient-quinn` holds the `quinn::Runtime` adapter *and nothing else
-holds a copy of it*, so one assertion bans HTTP/3 from the adapter's own
-graph and another **requires** `hclient-h3` to depend on the adapter. The
-second is what fails when someone re-adds a private `mod runtime` and drops
-the dependency — a change no ban would notice, because nothing forbidden
-appears anywhere.
+`quinn-stays-in-its-module` makes the same kind of claim without a crate
+to hang it on. `hclient-quinn` was a crate so that the `quinn::Runtime`
+adapter had one home; it folded into `hclient-native` when its only
+consumer, `hclient-h3`, folded in too. What the crate boundary enforced, a
+module boundary enforces now: **nothing outside `src/quinn.rs` and
+`src/h3/` names `quinn`**, so the third-party API has exactly one place it
+can leak from.
+
+It carries its own non-vacuity check, which is the half a ban cannot
+express: `src/quinn.rs` must *name* quinn somewhere, or the boundary above
+would pass for a crate whose adapter had been emptied out. Both halves
+were checked in the failing direction — a `quinn::Endpoint` planted in
+`pool.rs` fires the first.
 
 ## Build and test
 
