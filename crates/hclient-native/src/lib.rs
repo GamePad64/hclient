@@ -307,6 +307,65 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
 /// assert_send(t); // the transport, not the future it returns
 /// ```
+/// Which HTTP versions a [`Native`] may speak.
+///
+/// Private, and the setters are [`Native::http1`] and [`Native::http2`]:
+/// a public struct here would be a fourth way to reach a state the two
+/// setters already refuse between them.
+#[derive(Debug, Clone, Copy)]
+struct Versions {
+    h1: bool,
+    h2: bool,
+}
+
+impl Default for Versions {
+    /// `h1` always, `h2` wherever the code was compiled in.
+    ///
+    /// The h2 default follows the feature because that is what the
+    /// transport did before this setting existed: with `http2` on, h2 is
+    /// offered wherever ALPN can carry it. A default of `false` would make
+    /// the feature a no-op until a second call, which is a silent
+    /// downgrade for every build that has it on today.
+    fn default() -> Self {
+        Self {
+            h1: true,
+            h2: cfg!(feature = "http2"),
+        }
+    }
+}
+
+/// A plaintext request on a transport that has forbidden HTTP/1.1.
+///
+/// `http://` carries no ALPN, so HTTP/2 there needs prior knowledge (RFC
+/// 9113 §3.4) and this transport does not do it. Serving the request over
+/// HTTP/1.1 anyway would ignore the setting; serving it at all would make
+/// [`Capabilities::full_duplex`] wrong, since [`Native::http1`] raises
+/// that floor on the guarantee that no connection here speaks HTTP/1.1.
+#[derive(Debug, thiserror::Error)]
+#[error("`http://` needs HTTP/1.1, which this transport has been told not to speak")]
+pub struct PlaintextNeedsHttp1;
+
+/// Turning off the last version this transport could speak.
+///
+/// Raised by whichever of [`Native::http1`]/[`Native::http2`] would leave
+/// nothing, so the refusal is local to the call that caused it rather than
+/// deferred to `build()` — the caller learns it at the line they wrote.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "this would leave the transport unable to speak any HTTP version: \
+     `http1` and `http2` cannot both be off"
+)]
+pub struct NoVersionsLeft;
+
+/// Asking for HTTP/2 in a build that did not compile it.
+///
+/// A named refusal rather than a silent `false`: the fix is a cargo
+/// feature, which is not something a caller can guess from a request that
+/// quietly went out over HTTP/1.1.
+#[derive(Debug, thiserror::Error)]
+#[error("`http2(true)` needs `hclient-native`'s `http2` feature, which this build does not have")]
+pub struct Http2NotCompiledIn;
+
 #[derive(Debug)]
 pub struct Native<R, T, D, H = NoHooks, P = crate::proxy::NoProxy>
 where
@@ -336,6 +395,16 @@ where
     /// body — see [`Native::expect_continue`]. `None` sends it at once,
     /// which is what every build did before this existed and is legal.
     expect_continue: Option<Duration>,
+    /// Which HTTP versions this transport may speak, as a runtime setting
+    /// rather than a compile-time one.
+    ///
+    /// The `http2` feature decides whether the h2 code exists at all; this
+    /// decides whether it is used. The two are separate because a caller
+    /// who wants the code present and the protocol off has no other way to
+    /// say so, and one who writes `http2(true)` in a build that never
+    /// compiled it should get a refusal naming the feature rather than
+    /// silence.
+    versions: Versions,
     /// How the origin is reached, when it is not reached directly.
     ///
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
@@ -671,6 +740,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         Self {
             watch_1xx: None,
             expect_continue: None,
+            versions: Versions::default(),
             unix_socket: None,
             h1_opts: crate::h1::H1Opts::default(),
             #[cfg(feature = "http2")]
@@ -839,6 +909,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // does not change.
             watch_1xx: self.watch_1xx,
             expect_continue: self.expect_continue,
+            versions: self.versions,
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -989,6 +1060,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // must not say it does.
             watch_1xx: None,
             expect_continue: self.expect_continue,
+            versions: self.versions,
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -1348,6 +1420,96 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// on a dropped future, which goes on being owed — what changes is
     /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
     /// the socket close. `full_duplex` and `response_trailers` still
+    /// Whether this transport may speak HTTP/1.1. On by default.
+    ///
+    /// **Turning it off is a guarantee, not a preference**, and that is
+    /// what makes it worth having. Over TLS the ALPN offer becomes `h2`
+    /// alone, so a server that cannot speak HTTP/2 finds no overlap and
+    /// the handshake fails — there is no path by which a connection this
+    /// transport made carries HTTP/1.1.
+    ///
+    /// # What it moves that nothing else can
+    ///
+    /// [`Capabilities::full_duplex`] and [`Capabilities::response_trailers`]
+    /// report the **floor** — the value that holds on the worst protocol
+    /// this transport might negotiate — which is why they stay `false`
+    /// even with the `http2` feature on. With HTTP/1.1 forbidden the floor
+    /// is HTTP/2's, and both become honestly `true`.
+    ///
+    /// `RequireVersion` cannot do this: it is per request and arrives
+    /// after `capabilities()` has been answered, and `capabilities()`
+    /// returns a `&Capabilities` stored at construction.
+    ///
+    /// # `http://` is refused, and it has to be
+    ///
+    /// Plaintext carries no ALPN, so the only way to reach HTTP/2 there is
+    /// prior knowledge (RFC 9113 §3.4), which this transport does not do.
+    /// A plaintext request on a transport that has forbidden HTTP/1.1 is
+    /// therefore a typed [`ErrorKind::Unsupported`] at connect rather than
+    /// a quiet fall back to the protocol the caller just ruled out — which
+    /// would also make the raised floor above a lie.
+    ///
+    /// # Errors
+    ///
+    /// [`NoVersionsLeft`] if HTTP/2 is already off, or is not compiled in:
+    /// the two setters refuse the empty state between them, so it is
+    /// unreachable rather than checked later.
+    pub fn http1(mut self, on: bool) -> Result<Self, Error> {
+        if !on && !(self.versions.h2 && cfg!(feature = "http2")) {
+            return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
+        }
+        self.versions.h1 = on;
+        self.caps = Self::capabilities_for(&self.caps, self.versions);
+        Ok(self)
+    }
+
+    /// Whether this transport may speak HTTP/2. Defaults to whether the
+    /// `http2` feature compiled it in.
+    ///
+    /// Off, the ALPN offer loses `h2` and the pool stops holding h2
+    /// buckets — `may_speak_h2` is the one predicate both read, so they
+    /// cannot drift into a client that offers a protocol it will not pool
+    /// or pools one it will not offer.
+    ///
+    /// The default follows the feature rather than being `false`, because
+    /// that is what the transport did before this setting existed: a build
+    /// with `http2` on offered h2 wherever ALPN could carry it, and a
+    /// default of `false` would make the feature a silent no-op until a
+    /// second call.
+    ///
+    /// # Errors
+    ///
+    /// [`Http2NotCompiledIn`] for `http2(true)` in a build without the
+    /// feature — a named refusal, because the fix is a cargo feature and
+    /// not something a caller can infer from a request that quietly went
+    /// out over HTTP/1.1. [`NoVersionsLeft`] for `http2(false)` when
+    /// HTTP/1.1 is already off.
+    pub fn http2(mut self, on: bool) -> Result<Self, Error> {
+        if on && !cfg!(feature = "http2") {
+            return Err(Error::new(ErrorKind::Unsupported, Http2NotCompiledIn));
+        }
+        if !on && !self.versions.h1 {
+            return Err(Error::new(ErrorKind::Unsupported, NoVersionsLeft));
+        }
+        self.versions.h2 = on;
+        self.caps = Self::capabilities_for(&self.caps, self.versions);
+        Ok(self)
+    }
+
+    /// The two capability fields whose value depends on which versions are
+    /// allowed, recomputed wherever that changes.
+    ///
+    /// A function rather than two assignments at each setter, so the rule
+    /// — *the floor is HTTP/1.1's unless HTTP/1.1 is forbidden* — is
+    /// written once and cannot drift between the two call sites.
+    fn capabilities_for(base: &Capabilities, versions: Versions) -> Capabilities {
+        let mut caps = base.clone();
+        let h2_only = !versions.h1;
+        caps.full_duplex = h2_only;
+        caps.response_trailers = h2_only;
+        caps
+    }
+
     /// report the HTTP/1.1 floor for [`Native::new`]'s reason.
     #[cfg(feature = "http2")]
     pub fn multiplexed(mut self) -> Self
@@ -1688,7 +1850,7 @@ where
     /// unless the answer can be read.
     #[cfg(feature = "http2")]
     fn may_speak_h2(&self, parts: &KeyParts) -> bool {
-        matches!(parts.security, Security::Tls(_)) && self.tls.reports_alpn()
+        self.versions.h2 && matches!(parts.security, Security::Tls(_)) && self.tls.reports_alpn()
     }
 
     /// Without the feature there is no h2 code to reach at all — the
@@ -2376,6 +2538,16 @@ where
         // `connect::connect` runs, and fails with the same typed errors, so
         // everything downstream may still assume they passed.
         let parts_of_key = self.key_parts(&parts.uri)?;
+        // A transport that has forbidden HTTP/1.1 cannot serve `http://`:
+        // plaintext carries no ALPN, and the only route to HTTP/2 there is
+        // prior knowledge (RFC 9113 §3.4), which this transport does not
+        // do. Refused here rather than quietly served over the protocol
+        // the caller just ruled out — which would also make
+        // `Capabilities::full_duplex` a lie, since `Native::http1` raises
+        // that floor on exactly this guarantee.
+        if !self.versions.h1 && !matches!(parts_of_key.security, Security::Tls(_)) {
+            return Err(Error::new(ErrorKind::Unsupported, PlaintextNeedsHttp1));
+        }
         let uri = parts.uri.clone();
 
         let outgoing = body::OutgoingBody::from_request_body(body);
@@ -2554,13 +2726,24 @@ where
         // ever removes `h2` from the list, never adds it.
         let offered_h2 = self.may_speak_h2(&parts_of_key)
             && check_version(req.extensions(), http::Version::HTTP_2).is_ok();
-        let alpn: &[&[u8]] = if offered_h2 {
+        let alpn: &[&[u8]] = match (offered_h2, self.versions.h1) {
             // Order is the preference: RFC 7301 leaves the choice to the
             // server, but every implementation reads the client's list as
             // ranked, and h2 is what we want when it is on offer.
-            &[b"h2", b"http/1.1"]
-        } else {
-            &[b"http/1.1"]
+            (true, true) => &[b"h2", b"http/1.1"],
+            // **`http1(false)` is a guarantee rather than a preference.**
+            // A server that cannot speak h2 finds no overlap and fails the
+            // handshake, so no connection this transport makes can carry
+            // HTTP/1.1 — which is what lets `Capabilities` raise its floor
+            // (see `Native::http1`).
+            (true, false) => &[b"h2"],
+            (false, true) => &[b"http/1.1"],
+            // Unreachable: `http1`/`http2` refuse the state between them,
+            // and `may_speak_h2` only ever narrows what `versions.h2`
+            // already allowed. Written as the honest arm rather than an
+            // `unreachable!`, because the cost of being wrong is a failed
+            // handshake and not a panic in a caller's process.
+            (false, false) => &[b"http/1.1"],
         };
         // `now` is the same reading of the runtime's clock the pool's
         // bookkeeping above uses, passed on rather than taken again: the

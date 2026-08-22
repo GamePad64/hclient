@@ -590,6 +590,44 @@ async fn the_record_narrows_the_alpn_offer() {
     );
 }
 
+/// **`Native::http1(false)` withdraws `http/1.1` from the ClientHello**,
+/// which is the guarantee `Capabilities::full_duplex` rests on when that
+/// setter raises the floor.
+///
+/// It lives in this file rather than beside its siblings in
+/// `tests/version_policy.rs` because the `Peer`/`alpn_offer` pair that
+/// reads a first flight is here, and one test travelling to the fixture is
+/// cheaper than the fixture travelling to a shared module.
+///
+/// Without this, `version_policy.rs` would pass for a transport that
+/// raised the floor and went on offering `http/1.1` anyway — a capability
+/// that lies, and exactly the shape a test reading only `capabilities()`
+/// cannot see.
+#[cfg(feature = "http2")]
+#[tokio::test]
+async fn forbidding_http1_withdraws_it_from_the_alpn_offer() {
+    let peer = Peer::start();
+    let dns = FakeDns::with_loopback().serving(SvcbEndpoint {
+        port: Some(peer.port()),
+        alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        ..service_record()
+    });
+    let t = transport(dns)
+        .http1(false)
+        .expect("h2 is compiled in and on by default");
+
+    request(&t, &origin_uri()).await;
+
+    let flight = peer.flights().pop().expect("a first flight must arrive");
+    let offer = alpn_offer(&flight).expect("the ClientHello must carry an ALPN extension");
+    assert_eq!(
+        offer,
+        vec![b"h2".to_vec()],
+        "the record advertises both, so the narrowing here is the setter's and \
+         not the record's — a server that cannot speak h2 must find no overlap"
+    );
+}
+
 /// The control, and the reason the test above is about the record rather
 /// than about this transport having quietly stopped offering `h2`: the
 /// same fixture, with `h2` advertised, must put `h2` on the wire — first,
