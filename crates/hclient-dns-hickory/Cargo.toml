@@ -2,6 +2,8 @@
 name = "hclient-dns-hickory"
 version.workspace = true
 description = "hclient's Resolve over hickory-resolver — the backend that can actually answer SVCB"
+keywords     = ["hclient", "dns", "hickory", "resolver"]
+categories   = ["network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

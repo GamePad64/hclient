@@ -2,6 +2,8 @@
 name = "hclient-dns-doh"
 version.workspace = true
 description = "DNS-over-HTTPS (RFC 8484) resolver for hclient, over any Transport"
+keywords     = ["hclient", "dns", "doh", "resolver"]
+categories   = ["network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

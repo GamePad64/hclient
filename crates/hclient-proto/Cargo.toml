@@ -2,6 +2,8 @@
 name = "hclient-proto"
 version.workspace = true
 description = "Pure state machines for hclient's protocol layers: no I/O, no async, no runtime"
+keywords     = ["hclient", "http", "sans-io", "uri", "sse"]
+categories   = ["web-programming::http-client", "parser-implementations"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

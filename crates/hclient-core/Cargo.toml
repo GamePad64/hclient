@@ -2,6 +2,8 @@
 name = "hclient-core"
 version.workspace = true
 description = "Plugin contract for hclient: Transport, Capabilities, RequestBody, Error, Timer"
+keywords     = ["hclient", "http", "transport", "async"]
+categories   = ["web-programming::http-client", "asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

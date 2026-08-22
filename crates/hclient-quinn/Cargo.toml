@@ -2,6 +2,8 @@
 name = "hclient-quinn"
 version.workspace = true
 description = "quinn on hclient's runtime seam: a quinn::Runtime over UdpBind, Spawn and Timer"
+keywords     = ["hclient", "quic", "quinn", "runtime"]
+categories   = ["network-programming", "asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

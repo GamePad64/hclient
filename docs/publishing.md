@@ -227,7 +227,7 @@ satisfying them.
 and it does not: with a tag one commit back and one crate touched, a plain
 `cargo release patch` still planned all 29 uploads. Selecting is yours,
 with `-p`. `cargo-smart-release` is the tool that does compute the set, and
-it is not used here for reasons in §7.
+it is not used here for reasons in §8.
 
 Two consequences that read as mistakes and are not:
 
@@ -242,7 +242,47 @@ Both fall out of one shared version number, which is the trade
 `[workspace.package].version` was chosen for: thirty hand-maintained
 numbers could drift, and one cannot.
 
-## 6. What is checked before any of this runs
+## 6. Keywords and categories: how thirty crates stay one family
+
+Every publishable crate carries the keyword **`hclient`**, and that is the
+only mechanism that groups them on crates.io — it is a clickable, indexed
+tag, where a name prefix is only a string that happens to sort together.
+
+It also reaches the two crates a prefix could never honestly cover.
+`hclient-tower` and `hclient-tungstenite` are named after the foreign
+library each wraps, which is deliberate — `hclient-ws-tungstenite` was
+renamed *away* from a seam-shaped name because the seam crate it implied
+must not exist — and they are exactly the two that get lost in a list of
+thirty. A keyword picks them up; `hclient-transport-*` never would.
+
+The second keyword carries the role. **`transport` is on all eight**:
+`hclient-native`, `-h3`, `-fetch`, `-wasi`, `-urlsession`, `-select`,
+`-mock` and `-tower`. Likewise `runtime` on the four `-rt*`, `tls` on the
+four TLS crates, `dns` and `resolver` on the four resolvers.
+
+Categories are the curated axis and are chosen from crates.io's own list,
+verified against its API rather than guessed:
+`web-programming::http-client` for anything a caller sends requests with,
+`network-programming`, `asynchronous`, `wasm` for the two browser/WASI
+backends, `cryptography` for the TLS family, `os::macos-apis` for
+`hclient-urlsession`, `development-tools::testing` for `hclient-mock`,
+`internationalization` and `encoding` for `hclient-idn`,
+`web-programming::websocket` for `hclient-tungstenite`.
+
+`cargo package --workspace` accepts every one of them without a warning,
+which is the check: an unknown category is reported there rather than at
+upload.
+
+**Why this rather than an `hclient-transport-*` rename.** A
+`hclient-<seam>-<impl>` name is legitimate here only when a
+`hclient-<seam>` crate exists to hold something `hclient-core` must not —
+`hclient-rt` and `hclient-tls` hold `hyper`, `hclient-dns` holds a DNS
+codec. `Transport` lives *in* `hclient-core` and needs nothing extra, so
+`hclient-transport` would be an empty crate and the name would promise
+one the dependency rule forbids. That is the same defect that renamed
+`hclient-ws-tungstenite`.
+
+## 7. What is checked before any of this runs
 
 - `just package-build` — `cargo package --workspace`, which builds each
   `.crate` from the files that would ship and then **verifies** it by
@@ -256,7 +296,7 @@ Neither can catch a wrong publish *order*, because `cargo package
 overlay. That used to matter; it no longer does, because the order is the
 tool's to compute rather than a human's to remember.
 
-## 7. Why `cargo-release` and not the other two
+## 8. Why `cargo-release` and not the other two
 
 Both alternatives **infer** — what to release and how far to bump — from
 git history, and this repository's history is the wrong shape for it.
@@ -280,7 +320,7 @@ writes changelogs non-destructively "leaving the release workflow to
 cargo-release", so changelogs can be adopted later without moving the
 release path.
 
-## 8. Irreversible
+## 9. Irreversible
 
 A published version can be **yanked** but never replaced or deleted, so
 `0.1.0` is spent whatever happens. Re-running a crate that already went out

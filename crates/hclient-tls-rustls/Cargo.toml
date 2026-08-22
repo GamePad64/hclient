@@ -2,6 +2,8 @@
 name = "hclient-tls-rustls"
 version.workspace = true
 description = "hclient's rustls TLS backend, the adapter written against hyper::rt"
+keywords     = ["hclient", "tls", "rustls"]
+categories   = ["cryptography"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

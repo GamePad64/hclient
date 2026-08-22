@@ -2,6 +2,8 @@
 name = "hclient-native"
 version.workspace = true
 description = "Native transport for hclient: TCP + TLS + HTTP/1.1 on hyper"
+keywords     = ["hclient", "transport", "http", "tls", "hyper"]
+categories   = ["web-programming::http-client", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

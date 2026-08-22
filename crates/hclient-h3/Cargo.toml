@@ -2,6 +2,8 @@
 name = "hclient-h3"
 version.workspace = true
 description = "HTTP/3 transport for hclient: QUIC over the runtime seam's UDP capability"
+keywords     = ["hclient", "transport", "http3", "quic"]
+categories   = ["web-programming::http-client", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

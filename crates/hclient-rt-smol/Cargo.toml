@@ -2,6 +2,8 @@
 name = "hclient-rt-smol"
 version.workspace = true
 description = "hclient runtime capabilities implemented on top of smol"
+keywords     = ["hclient", "runtime", "smol", "async"]
+categories   = ["asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

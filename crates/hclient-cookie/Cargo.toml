@@ -2,6 +2,8 @@
 name = "hclient-cookie"
 version.workspace = true
 description = "A sans-io cookie jar for hclient: RFC 6265bis parsing, storage, domain/path matching and expiry"
+keywords     = ["hclient", "http", "cookie", "rfc6265"]
+categories   = ["web-programming::http-client"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -2,6 +2,8 @@
 name = "hclient-mock"
 version.workspace = true
 description = "Mock transport and controllable timer for testing hclient transports and clients"
+keywords     = ["hclient", "transport", "mock", "testing"]
+categories   = ["development-tools::testing"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

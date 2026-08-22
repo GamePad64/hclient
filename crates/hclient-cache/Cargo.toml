@@ -2,6 +2,8 @@
 name = "hclient-cache"
 version.workspace = true
 description = "A sans-io HTTP response cache for hclient: RFC 9111 freshness, validation and Vary, with no clock and no I/O"
+keywords     = ["hclient", "http", "cache", "rfc9111"]
+categories   = ["web-programming::http-client"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

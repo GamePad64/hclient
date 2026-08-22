@@ -2,6 +2,8 @@
 name = "hclient-idn"
 version.workspace = true
 description = "IDN (UTS 46) domain-to-ASCII for hclient, through the platform's own ICU where there is one"
+keywords     = ["hclient", "idn", "uts46", "punycode", "idna"]
+categories   = ["internationalization", "encoding"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

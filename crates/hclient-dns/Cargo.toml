@@ -2,6 +2,8 @@
 name = "hclient-dns"
 version.workspace = true
 description = "Pluggable resolver trait for hclient"
+keywords     = ["hclient", "dns", "resolver", "seam"]
+categories   = ["network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

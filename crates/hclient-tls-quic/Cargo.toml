@@ -2,6 +2,8 @@
 name = "hclient-tls-quic"
 version.workspace = true
 description = "The TLS seam for QUIC: key schedules rather than a wrapped byte stream"
+keywords     = ["hclient", "tls", "quic"]
+categories   = ["cryptography", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

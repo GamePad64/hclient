@@ -2,6 +2,8 @@
 name = "hclient-select"
 version.workspace = true
 description = "One hclient transport over both protocol stacks, choosing HTTP/3 where an origin's HTTPS record offers it"
+keywords     = ["hclient", "transport", "http3", "alt-svc"]
+categories   = ["web-programming::http-client", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

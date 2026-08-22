@@ -2,6 +2,8 @@
 name = "hclient-dns-system"
 version.workspace = true
 description = "System resolver (getaddrinfo + res_query) for hclient via the Blocking capability"
+keywords     = ["hclient", "dns", "resolver", "getaddrinfo"]
+categories   = ["network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

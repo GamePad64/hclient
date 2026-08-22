@@ -2,6 +2,8 @@
 name = "hclient-webtransport"
 version.workspace = true
 description = "WebTransport sessions over an HTTP/3 QUIC connection, for hclient"
+keywords     = ["hclient", "webtransport", "http3", "quic"]
+categories   = ["web-programming", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

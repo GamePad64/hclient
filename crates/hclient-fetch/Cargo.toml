@@ -2,6 +2,8 @@
 name = "hclient-fetch"
 version.workspace = true
 description = "hclient transport over the browser fetch API"
+keywords     = ["hclient", "transport", "fetch", "wasm", "browser"]
+categories   = ["web-programming::http-client", "wasm"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

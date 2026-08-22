@@ -2,6 +2,8 @@
 name = "hclient"
 version.workspace = true
 description = "Cross-platform async HTTP client: one codebase for native, browser, and WASI"
+keywords     = ["hclient", "http", "http-client", "async", "wasm"]
+categories   = ["web-programming::http-client", "asynchronous", "wasm"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

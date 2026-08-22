@@ -2,6 +2,8 @@
 name = "hclient-tls-native-tls"
 version.workspace = true
 description = "hclient's native-tls TLS backend — the platform's own TLS stack behind the same hyper::rt-typed seam"
+keywords     = ["hclient", "tls", "native-tls", "schannel"]
+categories   = ["cryptography"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

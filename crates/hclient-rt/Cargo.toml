@@ -2,6 +2,8 @@
 name = "hclient-rt"
 version.workspace = true
 description = "Runtime capabilities needed by hclient's native transport"
+keywords     = ["hclient", "runtime", "async", "seam"]
+categories   = ["asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

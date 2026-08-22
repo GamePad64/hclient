@@ -2,6 +2,8 @@
 name = "hclient-rt-tokio"
 version.workspace = true
 description = "hclient runtime capabilities implemented on top of tokio"
+keywords     = ["hclient", "runtime", "tokio", "async"]
+categories   = ["asynchronous"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

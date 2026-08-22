@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
 description  = "Apple `URLSession` transport for hclient"
+keywords     = ["hclient", "transport", "urlsession", "macos", "ios"]
+categories   = ["web-programming::http-client", "os::macos-apis"]
 
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]

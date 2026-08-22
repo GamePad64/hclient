@@ -2,6 +2,8 @@
 name = "hclient-tungstenite"
 version.workspace = true
 description = "WebSocket framing for hclient: RFC 6455 over an upgraded byte stream, on tungstenite"
+keywords     = ["hclient", "websocket", "tungstenite", "rfc6455"]
+categories   = ["web-programming::websocket"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

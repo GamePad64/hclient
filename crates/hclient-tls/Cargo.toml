@@ -2,6 +2,8 @@
 name = "hclient-tls"
 version.workspace = true
 description = "Pluggable TLS trait for hclient"
+keywords     = ["hclient", "tls", "seam"]
+categories   = ["cryptography", "network-programming"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
