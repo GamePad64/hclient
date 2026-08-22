@@ -270,7 +270,7 @@ impl DataThenTrailers {
             trailers: Some(trailers),
         }
     }
-    /// Review resolution, fix round 2 finding 3: an empty trailers frame
+    /// an empty trailers frame
     /// loses nothing on the wire (there's nothing to lose) — the guard
     /// must not reject it, even without `Trailer:`.
     fn with_empty_trailer_frame() -> Self {
@@ -303,13 +303,13 @@ enum TrailerCase {
     /// `Trailer: X-Checksum`, the body emits `x-checksum` — must
     /// succeed.
     Declared,
-    /// Review resolution, fix round 2 finding 2: `Trailer: X-Other`, the
+    /// `Trailer: X-Other`, the
     /// body emits `x-checksum` — the header is present but names the
     /// WRONG field. Must be the same error as when the header is absent
     /// entirely: measured on a live host that the wire loses
     /// `x-checksum` exactly the same way in both cases.
     WrongName,
-    /// Review resolution, fix round 2 finding 3: no `Trailer:`, the body
+    /// No `Trailer:`, the body
     /// emits an EMPTY trailers frame — nothing to lose, must succeed.
     EmptyFrame,
 }

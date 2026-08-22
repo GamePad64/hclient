@@ -39,7 +39,7 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
 #[error("URI scheme must be http or https")]
 pub(crate) struct BadScheme;
 
-/// Review resolution, finding B-12: `BadScheme` is the same class of
+/// `BadScheme` is the same class of
 /// failure as `Rejected` (below) — "the backend just doesn't take this
 /// particular value" — and it used to be the only one of them flattened
 /// into `ErrorKind::Other`, even though it's just as useful for the caller
@@ -129,7 +129,7 @@ pub(crate) fn rejected(what: &'static str) -> Error {
 #[derive(Debug, thiserror::Error)]
 #[error("invalid headers: {0}")]
 pub(crate) struct FieldsError(#[source] HeaderError);
-/// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
+/// `HeaderError::Forbidden`/`::Immutable`
 /// — the host refuses to accept a specific header — structurally the same
 /// class of failure as `Rejected`/`TimeoutRejected` (`ErrorKind::Unsupported`),
 /// not a generic error. `InvalidSyntax`/`SizeExceeded`/`Other` are not a
@@ -177,7 +177,7 @@ pub(crate) fn wasi_err(e: ErrorCode) -> Error {
         | EC::HttpResponseBodySize(_)
         | EC::HttpResponseTransferCoding(_)
         | EC::HttpResponseContentCoding(_)
-        // Review resolution, finding B-8: the same request/trailer
+        // the same request/trailer
         // families that already give `ErrorKind::Body` for the response
         // above — 14 of the 39 `ErrorCode` variants used to fall into
         // `_ => Other` without a second look; here only the ones that
@@ -289,7 +289,7 @@ pub(crate) fn resolve_send<T>(
 }
 
 /// Races `client::send` against the body write instead of waiting for
-/// both via `join!` — review resolution, finding B-5. `join!` used to
+/// both via `join!`. `join!` used to
 /// hold `execute` until BOTH arms finished; a host rejection known at
 /// t≈0 (e.g. `ConnectionRefused`) would be held back until the body write
 /// finished — for an unbounded streaming body, forever, since it would
@@ -351,7 +351,7 @@ pub(crate) fn declared_trailer_names(
 /// `wasi:http` honestly accepts trailers from `BodyWriter` (they go into
 /// `result_writer` regardless of headers — see
 /// `wasip3::http_compat::body_writer::send_http_body`), but it's measured
-/// on a live host (review resolution, finding B-1) that the host's
+/// on a live host that the host's
 /// HTTP/1.1 encoder silently drops them on the wire if the specific field
 /// name wasn't declared in advance via `Trailer:` (RFC 9110 §6.5.1: a
 /// receiver that chooses not to buffer the body is required to ignore
@@ -389,8 +389,8 @@ pub(crate) fn undeclared_trailers(names: Vec<http::HeaderName>) -> Error {
 /// untouched, and only collects field names from trailer frames that
 /// actually pass through the wrapped body — needed by `Transport::execute`
 /// so that, after a successful send, it can check them against what
-/// `Trailer:` declared (finding B-1, refined by fix round 2 finding 2 —
-/// names, not just whether the header is present), right at the point
+/// `Trailer:` declared — the field names, not just whether the header is
+/// present — right at the point
 /// where a frame actually arrives, without predicting it ahead of time.
 pub(crate) struct TrailerWatch<B> {
     inner: B,
@@ -431,7 +431,7 @@ where
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         let poll = Pin::new(&mut self.inner).poll_frame(cx);
         if let Poll::Ready(Some(Ok(f))) = &poll {
-            // Review resolution, fix round 2 finding 3: `trailers_ref`
+            // `trailers_ref`
             // returns `Some(&HeaderMap)` even for an EMPTY trailers frame
             // (`Frame::trailers(HeaderMap::new())`) — such a frame loses
             // nothing on the wire (there's nothing to lose), so we only
@@ -559,7 +559,7 @@ mod tests {
         assert!(scheme_of(&none).is_err());
     }
 
-    /// Review resolution, finding B-12: `BadScheme` is the same class of
+    /// `BadScheme` is the same class of
     /// failure as `Rejected`/`TimeoutRejected` — should be classified as
     /// `Unsupported`, not flattened into `Other`.
     #[test]
@@ -616,7 +616,7 @@ mod tests {
         );
         assert_eq!(caps.tls_config, hclient_core::TlsSupport::None);
         assert!(!caps.proxy);
-        // Review resolution, finding B-6: five headers the host actually
+        // five headers the host actually
         // refuses to accept from the guest.
         for name in [
             http::header::CONNECTION,
@@ -632,7 +632,7 @@ mod tests {
         }
     }
 
-    /// B2 of the branch's final review: all of `wasi_err`'s
+    /// all of `wasi_err`'s
     /// classification (39 `ErrorCode` variants into eight `ErrorKind`s)
     /// only matters because this backend's `Transport::to_error` is the
     /// identity. With the default `Client::execute` implementation it
@@ -890,7 +890,7 @@ mod tests {
         );
     }
 
-    /// Review resolution, finding B-6: `HeaderError::Forbidden`/`::Immutable`
+    /// `HeaderError::Forbidden`/`::Immutable`
     /// — the host refused — the same class as `Rejected` — must be
     /// `Unsupported`, not `Other`.
     #[test]
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(bad.kind(), &ErrorKind::Other);
     }
 
-    /// `fields_error` classifies by variant (finding B-6), so the variant
+    /// `fields_error` classifies by variant, so the variant
     /// itself is information the caller may want back — and the chain is
     /// the only way to get it: the two tests above read `kind()`, which
     /// collapses five `HeaderError` variants into two categories.
@@ -937,7 +937,7 @@ mod tests {
         );
     }
 
-    /// Review resolution, finding B-8: `ErrorCode` variants that clearly
+    /// `ErrorCode` variants that clearly
     /// belong to the same "body or trailer size/presence" family that
     /// already gives `Body` for the response — folded into the same
     /// category on the request side.
@@ -1154,7 +1154,7 @@ mod tests {
         ));
     }
 
-    /// Review resolution, finding B-11: the old recursive implementation
+    /// the old recursive implementation
     /// would have unwrapped a factory like this until the stack
     /// overflowed. `infinite` is a function item (not a closure), so it's
     /// trivially `Fn + Send + Sync + 'static` without manual bounds — and
@@ -1220,7 +1220,7 @@ mod tests {
         Pin::new(b).poll_frame(&mut cx)
     }
 
-    /// Review resolution, finding B-1: the body emits a trailers frame —
+    /// the body emits a trailers frame —
     /// `TrailerWatch` must notice it (by field name) without touching the
     /// frames themselves.
     #[test]
@@ -1262,7 +1262,7 @@ mod tests {
         );
     }
 
-    /// Review resolution, fix round 2 finding 3: an empty trailers frame
+    /// An empty trailers frame
     /// (`Frame::trailers(HeaderMap::new())`) loses nothing on the wire —
     /// `TrailerWatch` must not register it as "there were trailers".
     /// Before the fix, this is exactly what flagged a request that
@@ -1313,7 +1313,7 @@ mod tests {
         assert!(declared_trailer_names(&headers).is_empty());
     }
 
-    /// Review resolution, fix round 2 finding 2: the message must name
+    /// the message must name
     /// the specific field — "generic refusal" isn't enough — and
     /// explicitly warn about the error's after-the-fact nature (finding
     /// 4).

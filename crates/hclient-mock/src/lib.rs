@@ -253,10 +253,9 @@ impl MockTransport {
     /// dropping mid-stream (for example, for `SseStream::next`, whose
     /// `Some(Err(_))` path out of `Response::chunk()` would otherwise stay
     /// structurally similar to the tested decoder-limit-exceeded path but
-    /// unverified in its own right; Task 14, review round 2, Finding 2).
-    /// `err` reaches `Response::chunk()` unchanged: since vertical 2's
-    /// final review (finding F2), `chunk()` passes `err` through
-    /// unmodified when it's already an `hclient_core::Error`
+    /// unverified in its own right).
+    /// `err` reaches `Response::chunk()` unchanged: `chunk()` passes `err`
+    /// through unmodified when it's already an `hclient_core::Error`
     /// (`MockBody::Error` — exactly that), instead of relabeling its
     /// category as `Body` — the same trick `Transport::to_error`'s default
     /// uses. It only wraps in `ErrorKind::Body` a foreign error type,

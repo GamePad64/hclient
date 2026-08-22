@@ -218,9 +218,8 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 
     // `push_response_frames_then_error` is the only spot in `hclient`'s
     // public API where `Error` arrives as a PARAMETER, not a result. The
-    // error frame reaches `Response::chunk()` unchanged: since vertical
-    // 2's final review (finding F2), `chunk()` passes an already-
-    // classified `hclient_core::Error` straight through without
+    // error frame reaches `Response::chunk()` unchanged: `chunk()` passes
+    // an already-classified `hclient_core::Error` straight through without
     // relabeling it as `ErrorKind::Body` (see `Response::
     // classify_body_error`) — so `kind()` here must stay the same `Other`
     // it was set up with one line above, not become `Body`.

@@ -209,7 +209,7 @@ where
 /// `std::io::Error` or similar — falls back to `ErrorKind::Body`, which
 /// remains the right default for a genuinely opaque body failure.
 ///
-/// Found by vertical 2's final review (finding F2): `chunk()` used to wrap
+/// Found by vertical 2's final review: `chunk()` used to wrap
 /// unconditionally, and nothing in the test suite noticed, because
 /// `NativeBody::poll_frame`'s own fallback already defaults to
 /// `ErrorKind::Body` — the double-wrap was invisible by coincidence, not

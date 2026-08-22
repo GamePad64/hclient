@@ -111,7 +111,7 @@ impl WasiHttp {
         // buffering in memory — honest streaming, see
         // `convert::resolve_payload`.
         caps.streaming_request_body = true;
-        // `full_duplex = false` — review resolution, finding B-2;
+        // `full_duplex = false`;
         // attribution rewritten per M1 of the branch's final review. The
         // `wasi:http` 0.3 protocol itself does support body duplex (body
         // data can flow while the response hasn't arrived yet), and the
@@ -316,7 +316,7 @@ impl<H: Hooks> Transport for WasiHttp<H> {
             .copied()
             .unwrap_or_default();
         let opts = RequestOptions::new();
-        // Review resolution, finding B-10: `as u64` on the `u128` from
+        // `as u64` on the `u128` from
         // `Duration::as_nanos()` truncates silently for durations beyond
         // ~584 years. `u64::MAX` nanoseconds is already ~584 years, so the
         // truncation is physically unreachable for any sensible timeout
@@ -395,8 +395,8 @@ impl<H: Hooks> Transport for WasiHttp<H> {
 
         // `send` and the body write are not dropped (see the doc comments
         // on `convert::resolve_send`/`race_send_with_body`):
-        // short-circuiting on an early `send` rejection (finding B-5) is
-        // the one exception to "wait for both", and it doesn't change what
+        // short-circuiting on an early `send` rejection is the one
+        // exception to "wait for both", and it doesn't change what
         // the policy would ALREADY have discarded in that case.
         let wasi_response = match writer_and_payload {
             None => wasip3::http::client::send(wasi_request)

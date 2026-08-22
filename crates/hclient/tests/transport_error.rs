@@ -1,6 +1,6 @@
 //! Does the category of a transport error survive to reach the consumer.
 //!
-//! B2 of the branch's final review: `Client::execute` did
+//! `Client::execute` did
 //! `Error::new(ErrorKind::Other, e)` for ANY transport error. Forty lines
 //! of `hclient-wasi::convert::wasi_err`, sorting 39 `ErrorCode` variants
 //! into eight `ErrorKind`s, were thrown away one layer up: every `is_*`
