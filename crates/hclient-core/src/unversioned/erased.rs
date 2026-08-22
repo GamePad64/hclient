@@ -1,48 +1,41 @@
 //! Type-erased forms of [`crate::unversioned::Transport`] and [`Timer`], so
 //! a facade can be **one concrete type** instead of two type parameters.
 //!
-//! # Nothing here declares `Send`, and that is the whole design
+//! A backend implements nothing here: [`BoxedTransport`] and [`BoxedTimer`]
+//! have blanket impls over every `Transport` and every `Timer`.
 //!
-//! An earlier attempt at this put `Send` on the boxed future, so that an
-//! erased client could be spawned. It does not work and the measurement is
-//! worth keeping: proving `Transport::execute`'s RPITIT `Send` for a generic
-//! `T` needs return type notation (`E0658` on rustc 1.98.0), and following
-//! that down to where it *can* be proven means the bound on seven seam
-//! methods — at which point `hclient-rt-embassy` is excluded, because its
-//! `connect` future holds `RefCell<embassy_net::Inner>` and always will.
+//! # Nothing boxed here declares `Send`
 //!
-//! **The bound was never needed.** `Native::execute`'s future is already
-//! `!Send` — one unmarked box around the resolver's stream, pinned by a
-//! doctest on `Native` — so a caller cannot spawn a request today either.
-//! Erasing without `Send` costs nothing that exists, and buys two things
-//! the `Send` version could not: a **blanket impl** over every `Transport`,
-//! since there is nothing left to prove, and a core that declares no auto
-//! trait at all.
+//! The boxed future, body, sleep and instant carry no auto trait, and that
+//! is what makes the blanket impls possible: proving
+//! `Transport::execute`'s RPITIT `Send` for a generic `T` needs return type
+//! notation, unstable as of rustc 1.98. Following the bound down to where
+//! it *can* be proven would put it on seven seam methods, which excludes a
+//! single-threaded runtime such as `hclient-rt-embassy`, whose `connect`
+//! future holds a `RefCell` and always will.
 //!
-//! Where the erased client wants `Send + Sync` — it holds these behind an
-//! `Arc` and is meant to cross a `tokio::spawn` — it says so at its own use
-//! site, [`SharedTransport`] and [`SharedTimer`]. A backend that cannot
-//! satisfy that is refused at the constructor rather than taxed at the seam.
+//! The consequence a caller meets: **nothing a request produces is
+//! `Send`** — not the future, not the response body. One `BoxBody` serves
+//! every backend, and a browser's body holds a `dyn Stream` with no auto
+//! trait, so declaring `Send` would exclude that backend rather than weaken
+//! it.
 //!
-//! **That refusal is a real loss for one backend, and this doc comment
-//! claimed otherwise for one commit.** `hclient-rt-embassy` is `RefCell`
-//! throughout, because embassy's executor is single-threaded, and the
-//! sentence here read *"`Embassy` is refused there today for the same
-//! reason it always was"*. It was not: the generic `Client` built over
-//! Embassy perfectly well and merely could not cross a thread. Being
-//! `!Send` and being **refused** are different things, and only the second
-//! costs a backend its `Client`. The embedded scenarios use `Transport`
-//! directly now; `docs/erased-client.md` has the measurement.
+//! # Where `Send + Sync` does appear
+//!
+//! [`SharedTransport`] and [`SharedTimer`], which a facade writes at its
+//! own use site to hold these behind an `Arc` and cross a `tokio::spawn`.
+//! A backend that cannot satisfy the bound is **refused at the
+//! constructor** — a compile error at the line that asked — rather than
+//! taxed at the seam. `hclient-rt-embassy` is that backend: `RefCell`
+//! throughout, because embassy's executor is single-threaded, so an
+//! embedded caller uses `Transport` directly rather than a facade.
 //!
 //! # The instant is erased as a question, not as a type
 //!
 //! [`Timer::Instant`] is `Copy + PartialOrd`, and `Copy` on a trait object
-//! is not a thing. `docs/competitive-gaps.md` §G13 called that permanent;
-//! it is not. [`ErasedInstant`] answers the one question a client asks of a
-//! stamp — *how long ago was this* — so the instant stays inside the clock
-//! that made it and `Copy` is asked of nothing erased. Fixing `Instant` to a
-//! concrete type, which §G13 called the only way out, is still impossible
-//! for the reason it gave, and is no longer needed.
+//! is not a thing. [`ErasedInstant`] answers the one question a client asks
+//! of a stamp — *how long ago was this* — so the instant stays inside the
+//! clock that made it and `Copy` is asked of nothing erased.
 
 use crate::Error;
 use crate::RequestBody;
@@ -55,12 +48,11 @@ use std::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
 ///
-/// **`Send` is here and on nothing else in this module**, and it is free
-/// rather than a concession: a facade that boxes a transport already asks
-/// `Send + Sync` of the transport at its own use site, so a backend whose
-/// body is `!Send` was excluded one line earlier anyway. What it buys is
-/// the thing a caller notices — a response body that crosses a
-/// `tokio::spawn`, which is ordinary and which the future above cannot do.
+/// **Not `Send`**, so it cannot cross a `tokio::spawn`. One `BoxBody`
+/// serves every backend and a browser's body holds a `dyn Stream` with no
+/// auto trait, so the bound would exclude that backend rather than weaken
+/// it. A caller who needs a spawnable body reaches past the facade for the
+/// concrete transport's own body type.
 pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error>>>;
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
@@ -69,10 +61,9 @@ pub type BoxExchange<'a> =
 
 /// An erased sleep, as [`BoxedTimer`] hands one back.
 ///
-/// `Send` for [`BoxBody`]'s reason, and it is the same fact one layer in:
-/// a response body holds a sleep — that is how a total timeout cuts a
-/// silent body — so a `!Send` sleep would make the body `!Send` however
-/// the body itself were declared.
+/// Not `Send`, for [`BoxBody`]'s reason and inseparably from it: a response
+/// body holds a sleep — that is how a total timeout cuts a silent body — so
+/// the two answer the same question.
 pub type BoxSleep = Pin<Box<dyn Future<Output = ()>>>;
 
 /// Erase a body, mapping its error into [`Error`] on the way.
@@ -174,19 +165,18 @@ where
 
 /// A transport a facade can share between threads, erased.
 ///
-/// **The `Send + Sync` lives on this line and on `SharedTimer` below, and
-/// that is a rule rather than a style.** `cargo fmt` moves a trailing
-/// comment off a line it has to reflow, and deletes one from a `where`
-/// clause outright, so a `send-bound-exception` marker cannot survive on a
-/// long signature — this workspace has lost one that way four times. A
-/// short named type is a line fmt has no reason to touch, so every use
+/// **The bound lives on this alias rather than at the use sites, and that
+/// is a rule rather than a style.** `cargo fmt` moves a trailing comment
+/// off a line it reflows and deletes one from a `where` clause outright,
+/// so a `send-bound-exception` marker cannot survive on a long signature.
+/// A short named type is a line fmt has no reason to touch, so every use
 /// site writes `Box<SharedTransport>` and carries no marker at all.
 ///
-/// The bound itself is amendment C12's own criterion: a bound this crate
-/// chooses so that a caller's value reaches a facade by erasure rather
-/// than by a type parameter, said at the use site and never on the trait.
-/// A backend that cannot satisfy it is refused at a constructor rather
-/// than taxed at the seam.
+/// The bound is amendment C12's criterion: one this crate chooses so a
+/// caller's value reaches a facade by erasure rather than by a type
+/// parameter, said at the use site and never on the trait. A backend that
+/// cannot satisfy it is refused at a constructor rather than taxed at the
+/// seam.
 pub type SharedTransport = dyn BoxedTransport + Send + Sync; // send-bound-exception: amendment-C12
 
 /// A moment a [`BoxedTimer`] recorded, which can be asked how long ago it
@@ -201,7 +191,7 @@ pub trait ErasedInstant {
 
 /// A stamp a [`BoxedTimer`] took, erased.
 ///
-/// `Send` for [`BoxSleep`]'s reason: the same body holds the stamp the
+/// Not `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
 /// sleep was computed from.
 pub type BoxInstant = Box<dyn ErasedInstant>;
 

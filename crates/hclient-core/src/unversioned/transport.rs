@@ -18,8 +18,8 @@ pub trait Transport {
     ///
     /// **On `Timeouts` in `req.extensions()`: presence isn't intent.**
     /// `hclient::Client::execute` puts the result of merging its own
-    /// configuration with the request there (`effective_timeouts`, branch
-    /// final review finding B1) UNCONDITIONALLY — including when no timeout
+    /// configuration with the request there (`effective_timeouts`)
+    /// UNCONDITIONALLY — including when no timeout
     /// at all was set, in which case a `Timeouts` with every field `None`
     /// sits there. The correct read is `.get::<Timeouts>().copied().
     /// unwrap_or_default()` and then field by field: "no extension" and
@@ -73,7 +73,7 @@ pub trait Transport {
     /// caller who cannot cancel cannot un-send the request either. So the
     /// duty belongs on the implementer, who can actually discharge it, and
     /// the field exists for the case where they genuinely cannot. It is
-    /// also what makes connection reuse possible at all (v0.2 W2): a pool
+    /// also what makes connection reuse possible at all: a pool
     /// may only take back a connection whose exchange finished, and
     /// "finished" is not a property anyone can establish if a dropped
     /// future leaves an exchange running.
@@ -96,68 +96,45 @@ pub trait Transport {
     /// The default is wrapping with `ErrorKind::Other`: a backend that has
     /// nothing to say about the category owes nothing further.
     ///
-    /// # An error that's ALREADY `Error` passes through — the default knows this
+    /// # An error that's ALREADY `Error` passes through
     ///
-    /// The default first asks whether `Self::Error` is exactly our `Error`,
-    /// and if so, returns it as-is, unwrapped. That means for a backend
-    /// whose error is already classified (both existing ones, and the
-    /// planned third, `Native`, of vertical 2), the correct behavior is the
-    /// default behavior, and it can't be forgotten.
-    ///
-    /// It wasn't always this way: the hook's first version wrapped
-    /// unconditionally, and a backend that forgot to override it silently
-    /// lost its entire taxonomy — the compiler was happy, its own
-    /// classification tests were green, only the consumer got it wrong.
-    /// That is exactly the class of defect the hook was created to
-    /// eradicate (B2), reproduced one level down; prose was the only
-    /// guard. A mechanism beats prose.
+    /// The default first asks whether `Self::Error` is exactly [`Error`],
+    /// and if so returns it unwrapped. So a backend whose error is already
+    /// classified gets the correct behaviour from the default and cannot
+    /// forget it — the earlier design wrapped unconditionally, and a
+    /// backend that did not override the hook silently lost its whole
+    /// taxonomy with the compiler and its own tests all green.
     ///
     /// # What the default still can't do
     ///
     /// A backend whose error is ITS OWN type carrying the category inside
-    /// it (`MyError::Timeout` and the like) must override `to_error` itself:
-    /// no default can guess a foreign enum, and without an override such an
-    /// error honestly becomes `ErrorKind::Other`. There's no silent
-    /// degradation here — the category was never present in the
-    /// `hclient_core::Error` type and still isn't — but there's no
-    /// classification either.
+    /// it (`MyError::Timeout` and the like) must override `to_error`: no
+    /// default can guess a foreign enum, and without an override such an
+    /// error honestly becomes [`ErrorKind::Other`]. Nothing degrades
+    /// silently — the category was never in [`Error`] — but nothing is
+    /// classified either.
     ///
-    /// Both existing backends override the hook with an EXPLICIT identity,
-    /// even though that's now redundant given this default: an explicit
-    /// identity states intent at the point where it's read, and survives a
-    /// possible future change to the default. The tests for them remain
-    /// (`to_error_is_the_identity_so_the_
-    /// classification_survives_the_client` in `hclient-wasi/src/convert.rs`,
-    /// four tests in `hclient/tests/transport_error.rs`); structure now
-    /// holds the guarantee, and the tests hold the intent.
+    /// The backends here override the hook with an explicit identity even
+    /// though the default now covers them: it states intent where it is
+    /// read, and survives a change to the default.
     ///
-    /// Exists since branch final review B2. Before it, `Client::execute`
-    /// did `Error::new(ErrorKind::Other, e)` unconditionally, and all forty
-    /// lines of `hclient-wasi::convert::wasi_err`, sorting 39 `ErrorCode`
-    /// variants into eight `ErrorKind`s, were discarded one layer up: every
-    /// `is_*` predicate on the facade returned `false` for any transport
-    /// error, and `kind()` was `Other` identically for DNS, TLS,
-    /// connect-timeout, and host-unreachable. The §4.7 taxonomy is this
-    /// library's main answer to reqwest#1053; shipping it broken and fixing
-    /// it later with a breaking change to the seam was the worst of the
-    /// options, so the hook was added while there was exactly one backend.
+    /// Getting this wrong is expensive, which is why the hook exists. With
+    /// the classification discarded one layer up, every `is_*` predicate on
+    /// the facade answers `false` for any transport error and `kind()` is
+    /// `Other` alike for DNS, TLS, connect-timeout and host-unreachable —
+    /// forty lines of `hclient-wasi`'s `wasi_err`, sorting 39 `ErrorCode`
+    /// variants into eight `ErrorKind`s, thrown away.
     ///
     /// **Why a defaulted method, and not `Transport::Error: Into<Error>` or
     /// `Error` as the seam's error type.**
     ///
-    /// A previous version of this paragraph claimed both alternatives
-    /// "would require `Send + Sync` from EVERY backend's error." For
-    /// `Into<Error>` that's false, and review disproved it by compiling:
-    /// a `!Send` error implements `Into<Error>` just fine — by stringifying
-    /// itself and discarding its own type. The actual reason is different,
-    /// and it still holds: `Into<Error>` would cost a `!Send` backend its
-    /// TYPED source (the only way to satisfy it is to lose its type into a
-    /// string, and `Error::source` requires `Send + Sync`), and it would
-    /// force every backend that has nothing to say about the category to
-    /// write a conversion anyway. The default requires neither. The
-    /// "`Error` is the seam's error type" option genuinely does require
-    /// `Send + Sync` from everyone, and the original claim was true for
-    /// that one alone.
+    /// `Into<Error>` would cost a `!Send` backend its TYPED source: such an
+    /// error can satisfy the bound, but only by stringifying itself, since
+    /// `Error::source` requires `Send + Sync`. It would also force every
+    /// backend with nothing to say about the category to write a
+    /// conversion anyway. Making `Error` the seam's error type is worse
+    /// again — it requires `Send + Sync` from every backend. The defaulted
+    /// method requires neither.
     ///
     /// Amendment C1 deliberately kept a transport with a genuinely `!Send`
     /// error representable: it can't use `Client`, but it does implement
@@ -176,12 +153,8 @@ pub trait Transport {
     /// exist.
     ///
     /// The name is `to_error`, not `into_error`: by Rust convention `into_*`
-    /// consumes `self`, and here it's `&self` (the backend is making a
-    /// decision, it isn't a value being converted — `execute` also takes
-    /// `&self`). `clippy::wrong_self_convention` was calling this
-    /// correctly; the first version silenced the lint with `#[allow]`,
-    /// which for a branch that was cleaning up vacuous and suppressed
-    /// checks was exactly the wrong move.
+    /// consumes `self`, and here it is `&self` — the backend is making a
+    /// decision, not converting a value, and `execute` takes `&self` too.
     fn to_error(&self, e: Self::Error) -> Error
     where
         Self::Error: Send + Sync, // send-bound-exception: amendment-C1

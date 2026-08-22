@@ -32,7 +32,7 @@ pub enum ErrorKind {
     /// The capability behind the failed operation was pulled out from under
     /// it before it could finish — typically, the runtime is shutting down
     /// while the task was still queued (see `hclient_rt::Cancelled`,
-    /// returned by `Blocking::run`, vertical 2, Task 1, `amendment-C5`).
+    /// returned by `Blocking::run`, `amendment-C5`).
     ///
     /// A separate variant, not `Other`: `Other` is the honest answer for a
     /// GENUINELY opaque backend error (the default `Transport::to_error`,
@@ -164,15 +164,11 @@ mod tests {
         assert!(!Error::new(ErrorKind::Other, Src).is_cancelled());
     }
 
-    // `Error: Send + Sync` (spec amendment-C1) — moved to
-    // `crates/hclient-core/tests/shape.rs` per amendment-C3: a bare
-    // `fn _assert<T: Send + Sync>() {}` inside `src` matches the
-    // `no-declared-send` guard's own pattern. Fix round 1 for Task 12
-    // dropped this file's blanket exclusion from that guard in favour of
-    // per-line `send-bound-exception` markers, which turned this
-    // previously-shielded compile-time assertion into a false positive.
-    // Relocating it (rather than marking it) shrinks the guard's blind
-    // spot instead of growing it — the assertion needs zero exception
-    // once it's not sharing a file with the two lines that actually are
-    // the exception.
+    // `Error: Send + Sync` (amendment-C1) is asserted in
+    // `crates/hclient-core/tests/shape.rs`, not here: a bare
+    // `fn _assert<T: Send + Sync>() {}` inside `src` is exactly what the
+    // `no-declared-send` guard's pattern matches, so the assertion would
+    // need a `send-bound-exception` marker of its own. Outside `src` it
+    // needs none, which keeps the guard's blind spot as small as the two
+    // lines that genuinely are exceptions.
 }

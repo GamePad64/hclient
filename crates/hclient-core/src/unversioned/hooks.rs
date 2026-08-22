@@ -59,13 +59,12 @@
 //!
 //! # Why `unversioned`
 //!
-//! One backend implements this today. The event set is derived from what
-//! `hclient-native` can actually observe, and the second and third
-//! backends — `hclient-h3`, and whatever W3 brings — will have facts this
-//! vocabulary has no word for (a QUIC connection migrating; a transfer a
-//! background session finished after the process died). Freezing it now
-//! would freeze one backend's view. See this module's parent for what
-//! `unversioned` promises.
+//! The event set is derived from what a connection-owning backend can
+//! observe, and backends still to come will have facts this vocabulary has
+//! no word for — a QUIC connection migrating, a transfer a background
+//! session finished after the process died. Freezing it would freeze one
+//! backend's view. See this module's parent for what `unversioned`
+//! promises.
 use crate::Error;
 use core::time::Duration;
 use std::net::SocketAddr;
@@ -152,9 +151,8 @@ impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
 /// there is no per-origin connection limit to wait behind, and an h2
 /// connection is checked out of the pool exclusively — one stream at a
 /// time — so `SendRequest::poll_ready` never waits for a stream of ours.
-/// A variant no code can emit is a capability that lies, which is the
-/// defect this workspace has caught four times; it belongs here when a
-/// backend has a queue, and `hclient-urlsession` (W3) will.
+/// A variant no code can emit is a capability that lies; this one belongs
+/// here once a backend has a queue.
 #[derive(Debug)]
 pub enum Event<'a> {
     /// A connection was made. See [`Connected`] for what each duration
@@ -241,22 +239,15 @@ impl ConnectionId {
     /// only id [`ConnectionId::next`] never returns, so looking it up in
     /// a table of live connections cannot hit one.
     ///
-    /// # It is not a value being borrowed, and the name is not the meaning
+    /// # The name is a producer, not the meaning
     ///
-    /// `docs/v04-w2-hooks-ambient.md` §8 recorded the second use above as
-    /// a debt owed by this seam — a missing value meaning *there is no
-    /// connection*. It is not one, and §9 of that document is the
-    /// argument: such a value would differ from this one only in a build
-    /// whose events nobody reads, so no caller decision turns on the
-    /// difference — which is this workspace's test for whether a
-    /// distinction earns a name of its own.
-    ///
-    /// The spelling stays `UNWATCHED` because it names one of the two
-    /// producers, and any name would: renaming it after the other moves
-    /// the inaccuracy rather than removing it, at the cost of a public
-    /// rename in four backends. What was actually wrong is this comment,
-    /// which used to read *"the id of a connection nobody asked about"* —
-    /// a sentence with a connection in it.
+    /// There is deliberately no second constant meaning *this event names
+    /// no connection*, distinct from *nobody is watching*: the two would
+    /// differ only in a build whose events nobody reads, so no caller
+    /// decision turns on the difference — this workspace's test for
+    /// whether a distinction earns a name of its own. `UNWATCHED` names
+    /// one of the two producers, and any spelling would name one or the
+    /// other; read it as the ambient *this event names no connection*.
     pub const UNWATCHED: ConnectionId = ConnectionId(0);
 
     /// The next id. `Relaxed`: this counter orders nothing, it only has

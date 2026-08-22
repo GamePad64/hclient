@@ -46,7 +46,7 @@ pub enum RequestBody {
     /// that isn't a live lie, because `retry_kind()` and `rewind()` are
     /// always recomputed from whatever object currently sits inside
     /// `RequestBody`, not cached at the moment `Rewindable` was created.
-    /// **Invariant that matters for the retry layer (Task 8): always ask
+    /// **Invariant that matters for the retry layer: always ask
     /// `retry_kind()` of the body you're currently holding, and never cache
     /// it across a `rewind()`.**
     Rewindable(RewindFactory),
@@ -193,12 +193,9 @@ mod tests {
         assert_eq!(b.size_hint(), None);
     }
 
-    // `RequestBody: Send` and `http::Request<RequestBody>: Send` (spec
-    // amendment-C2) — moved to `crates/hclient-core/tests/shape.rs` per
-    // amendment-C3, for the same reason as the sibling removal in
-    // `error.rs`: a bare `fn assert_send<T: Send>() {}` inside `src` is
-    // exactly what the `no-declared-send` guard's regex matches, and Task
-    // 12's fix round 1 replaced this file's blanket exclusion with
-    // per-line `send-bound-exception` markers. Relocating (not marking)
-    // shrinks the guard's blind spot instead of growing it.
+    // `RequestBody: Send` and `http::Request<RequestBody>: Send`
+    // (amendment-C2) are asserted in `crates/hclient-core/tests/shape.rs`,
+    // for `error.rs`'s reason: a bare `fn assert_send<T: Send>() {}` inside
+    // `src` is what the `no-declared-send` guard's regex matches, and an
+    // assertion outside `src` needs no exception marker at all.
 }

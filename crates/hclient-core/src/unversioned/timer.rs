@@ -13,36 +13,26 @@ use std::task::{Context, Poll};
 ///
 /// # Why [`Timer::Sleep`] is an associated type and not `impl Future`
 ///
-/// It used to be `fn sleep(&self, d: Duration) -> impl Future<Output = ()>`
-/// — an RPITIT. That is more comfortable to write and it cost two real
-/// things, both of which had been recorded as unfixable before anyone
-/// measured them:
+/// An RPITIT — `fn sleep(&self, d: Duration) -> impl Future<Output = ()>` —
+/// is more comfortable to write and costs two things:
 ///
-/// - **A struct cannot hold a sleep.** `hclient::deadline::Deadline`
-///   therefore checked elapsed time on each `poll_frame` rather than
-///   racing a sleep, and so could not cut a response body that goes
-///   *completely* silent after the head: nothing wakes the wrapper, so
-///   nothing ever looks at the clock again. Measured with a counting waker
-///   and no executor running: that shape registers **zero** wakes and can
-///   never fire; a stored sleep registers one. **Since collected**:
-///   `Deadline` holds a `Pin<Box<Tm::Sleep>>` and polls it whenever the
-///   wrapped body answers `Pending`, and `hclient`'s `tests/deadline.rs`
-///   cuts a server that sends the head and then nothing for ever. This
-///   bullet is the reason the associated type exists, not a cost still
-///   being paid.
+/// - **A struct cannot hold a sleep.** It has no name to store, so a body
+///   wrapper can only check elapsed time on each `poll_frame`, which
+///   structurally cannot cut a response body that goes *completely* silent
+///   after the head: nothing wakes the wrapper, so nothing ever looks at
+///   the clock again. Measured with a counting waker and no executor
+///   running, that shape registers **zero** wakes; a stored sleep
+///   registers one. `hclient::body::Deadline` holds a
+///   `Pin<Box<Tm::Sleep>>` for exactly this reason.
 /// - **Generic code cannot spawn a background task.**
 ///   `hclient_rt::Spawn<F>` takes the future as a type parameter, so a
-///   bound has to name it — and an anonymous future has no name. That is
-///   what actually stood behind "a pool driven by a spawned task does not
-///   compile on this seam", a sentence three pieces of work built on and
-///   which was wrong about the reason. See `hclient-native`'s `pool`
-///   module doc.
+///   bound has to name it, and an anonymous future has no name. See
+///   `hclient-native`'s `pool` module doc.
 ///
-/// The RPITIT hid a third thing, smaller but the most likely to be
-/// mistaken for a bug: a backend whose native timer resolves to something
-/// other than `()`. `async { t.await; }` discarded that value silently.
-/// Naming the type makes it visible, and [`Discard`] is the adapter for
-/// it — see its doc comment.
+/// It also hides a third thing, the one most likely to be mistaken for a
+/// bug: a backend whose native timer resolves to something other than
+/// `()`, which `async { t.await; }` discards silently. Naming the type
+/// makes that visible, and [`Discard`] is the adapter for it.
 ///
 /// [`TcpConnect::Stream`](https://docs.rs/hclient-rt) is the same idea
 /// applied to a socket; this is not a new shape in the seam.

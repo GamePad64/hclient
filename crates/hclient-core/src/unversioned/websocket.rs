@@ -13,12 +13,8 @@
 //! **So the seam expresses itself by being implemented.** A backend that
 //! can do WebSocket implements [`WebSocketConnect`]; one that cannot does
 //! not, and asking it for a WebSocket does not compile. There is
-//! deliberately no capability field to read. There used to be one:
-//! `Capabilities::upgrade` was `UpgradeSupport::None` on every backend and
-//! nothing ever branched on it, which is v0.2's rule for deleting a
-//! capability rather than for keeping it. It went with the second backend
-//! (`hclient-fetch`), because that is the change that gave the browser its
-//! own answer — `docs/w4-upgrade-seam.md` §3.
+//! deliberately no capability field to read: a runtime `Unsupported`
+//! would move the same failure from compile time to run time.
 //!
 //! # Why message oriented, rather than "hand back the socket"
 //!
@@ -43,10 +39,9 @@
 //!   decision ever turns on one, adding the variant is a compile error at
 //!   every backend — which is the right way round, and why this enum is
 //!   not `#[non_exhaustive]`.
-//! - **Permessage-deflate and subprotocol negotiation.**
-//!   `docs/w4-upgrade-seam.md` leaves both open. A subprotocol *can* be
-//!   asked for today, because the request carries headers; nothing here
-//!   checks what came back.
+//! - **Permessage-deflate and subprotocol negotiation** are not
+//!   supported. A subprotocol *can* be asked for, because the request
+//!   carries headers; nothing here checks what came back.
 use crate::Error;
 use futures_core::Stream;
 use futures_sink::Sink;
@@ -77,9 +72,7 @@ pub enum Message {
 ///
 /// `u16` rather than an enum of the RFC 6455 §7.4 codes: this seam does
 /// not interpret them, and an enum would have to decide what a reserved
-/// or application-defined code means. `docs/w4-upgrade-seam.md` lists
-/// close-code semantics as undecided; this type is the honest shape of
-/// "undecided".
+/// or application-defined code means, and this seam has not decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseFrame {
     /// RFC 6455 §7.4 status code.
@@ -119,8 +112,8 @@ pub trait WebSocket: Stream<Item = Result<Message, Error>> + Sink<Message, Error
 ///
 /// Implemented either by a transport itself (`hclient_fetch::Fetch`, where
 /// the platform hands back messages) or by a connector over one
-/// (`hclient_tungstenite::Tungstenite`, where it hands back bytes and
-/// the framing is a crate of its own — `docs/w4-upgrade-seam.md` §8).
+/// (`hclient_tungstenite::Tungstenite`, where it hands back bytes and the
+/// framing is a crate of its own).
 /// Either way a WebSocket opened this way inherits everything the
 /// transport already knows: its runtime, its TLS configuration, its
 /// resolver.

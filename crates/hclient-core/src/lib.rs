@@ -1,35 +1,32 @@
-//! Plugin contract for hclient.
+//! Plugin contract for hclient: the traits a backend, a runtime or a
+//! resolver implements, and the vocabulary types they exchange.
 //!
-//! Crate invariant: the seam traits (`Transport`, `Timer`, middleware) do not
-//! declare `Send`/`Sync` bounds — Send-ness is inferred by auto-traits
-//! through `impl Future`. The one documented exception is [`Error`]: its
-//! `source` must be `Send + Sync`, or a client could not build one from a
-//! backend's error at all.
+//! # The `Send` rule
 //!
-//! **This paragraph used to end by naming where that bound lived** — *"in
-//! `Client::execute`'s own where-clause, not on the `Transport` trait
-//! itself"* — and it lives nowhere now. `hclient::Client` stopped naming
-//! its transport, so `Transport::to_error` is called from
-//! [`unversioned::erased::BoxedTransport`]'s blanket impl, where `Self` is
-//! concrete and the bound is discharged rather than declared; four
-//! where-clauses left `client.rs` with it. The invariant is unchanged and
-//! is one obligation lighter, which is the direction it is supposed to
-//! move in.
+//! **The seam traits declare no `Send`/`Sync` bounds.** `Transport`,
+//! `Timer` and the middleware traits leave Send-ness to auto-traits
+//! through `impl Future`, because a bound declared where the type is
+//! abstract is forced on every backend — including ones that cannot meet
+//! it, such as a single-threaded embedded runtime whose connect future
+//! holds a `RefCell`.
 //!
-//! [`unversioned::erased`] names `Send + Sync` on two type aliases a facade
-//! writes at its own use site, and it is **not a seam**: no backend
-//! implements it and none is taxed by it — a blanket impl covers every
-//! `Transport`, and a backend that cannot meet the bound is refused at a
-//! constructor rather than at a trait.
+//! Bounds do appear in three places, and each is a value a caller hands
+//! over rather than a demand on an implementor:
 //!
-//! It is not the only place in this crate that names those traits, and
-//! this line said it was until the third rendered-docs pass caught it:
-//! `RequestBody`'s rewind factory and streaming arm carry one (amendment
-//! C2), and `Error::source` carries the one named two paragraphs up. The
-//! rule is what distinguishes them from a seam bound, not the count —
-//! every site carries a `send-bound-exception` marker naming its
-//! amendment, so `grep` answers *which* and *how many* and a sentence
-//! cannot go stale in its place.
+//! - [`Error`]'s source is `Send + Sync`, or a client could not build an
+//!   error from a backend's at all.
+//! - [`RequestBody`]'s rewind factory and streaming arm.
+//! - [`unversioned::erased`]'s two aliases, which a facade writes at its
+//!   own use site to put a transport behind an `Arc`. It is **not a
+//!   seam**: a blanket impl covers every `Transport`, so no backend
+//!   implements or is taxed by it, and one that cannot meet the bound is
+//!   refused at a constructor rather than at a trait.
+//!
+//! Every such site carries a `send-bound-exception` marker naming the
+//! amendment that admits it, and
+//! `scripts/no-send-or-sync-in-the-core-surface.sh` fails closed on one
+//! that does not. `grep` is therefore the authority on which sites exist;
+//! this list says what kind they are.
 #![forbid(unsafe_code)]
 
 mod body;

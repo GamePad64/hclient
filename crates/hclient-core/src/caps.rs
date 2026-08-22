@@ -2,86 +2,44 @@ use http::HeaderName;
 
 /// Who follows a redirect chain: nobody, `Client`, or the backend.
 ///
-/// Three variants, and only the third is branched on anywhere
-/// (`check_redirect_supported`, `hclient/src/config.rs`). That is the whole
-/// content of the enum rather than an accident of implementation: the first
-/// two differ in what a caller *reading the field* may conclude, the third
-/// differs in what `Client` will *do*.
+/// Only [`Internal`](Self::Internal) is branched on: `Client::build()`
+/// refuses a `RedirectPolicy` against a backend that walks the chain
+/// itself, because a policy it cannot honour must not be silently ignored.
+/// Between [`None`](Self::None) and [`Transparent`](Self::Transparent) the
+/// field is a claim a caller reads and nothing in this workspace can
+/// contradict — so a variant here earns its place from a backend that
+/// carries it, not from being describable.
 ///
-/// # What a test can and cannot catch here
+/// # Implementing this
 ///
-/// Measured (v0.4 W1), not asserted. With `hclient-native` made to declare
-/// each variant in turn and `cargo nextest run -p hclient-native -p hclient
-/// --all-features` (362 tests) run against each: `Internal` fails **two** —
-/// the capability read-back in `hclient-native/tests/transport.rs`, and
-/// `hclient::deadline::the_deadline_spans_redirect_hops_rather_than_restarting_on_each`,
-/// which dies at `build()` with `UnsupportedCapability { what:
-/// "redirect_policy" }`. `None` and `Transparent` each fail exactly **one**,
-/// the read-back, and nothing else.
+/// **The redirect policy never crosses the seam.** `Client` merges the
+/// client-level and per-request `RedirectPolicy` and does not write the
+/// result into the request's extensions, so a transport cannot read one. A
+/// backend that wanted to apply the caller's policy itself would see only
+/// what a `RequestBuilder` happened to leave in the extension bag — never
+/// one set on the client — so there is deliberately no variant for it.
 ///
-/// So `Internal` versus not-`Internal` is the only distinction any behaviour
-/// in this workspace can witness; between `None` and `Transparent` the field
-/// is a claim a caller reads and no test can contradict. That asymmetry is
-/// why a variant here has to earn its place from a *carrier* rather than
-/// from a doc comment — nothing else will catch it lying.
+/// A backend that follows redirects internally reports `Internal` and
+/// gives up what `Client`'s stage does per hop: `SENSITIVE_HEADERS`
+/// stripped across an origin, cookies re-derived rather than carried, and
+/// the `AllowEarlyData` mark taken off. Answering the `3xx` to the caller
+/// instead — `Transparent` — keeps all of it.
 ///
-/// # The two variants that used to be here
+/// Apple's `URLSession` is the worked example: a background session has no
+/// redirect hook to install and is `Internal`; a foreground one answers
+/// `nil` from
+/// `urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`
+/// so the `3xx` becomes the response, and is `Transparent`.
 ///
-/// `Configurable` ("We set the policy.") and `Inspectable` ("We set the
-/// policy and see every hop.") came from the original design sketch and
-/// shipped with exactly those one-sentence docs, no branch, and — after
-/// `hclient-fetch` corrected itself to `Internal` — no carrier. They are
-/// gone (v0.4 W1 deliverable 1, a v0.3-era defect), for the reason
-/// `UpgradeSupport` went in v0.3 W4: *a capability variant exists only if a
-/// caller decision turns on it.*
+/// # Adding a variant
 ///
-/// What made `Configurable` unimplementable rather than merely unused:
-/// **the policy never crosses the seam.** `Client::run` merges the
-/// client-level and per-request `RedirectPolicy` and deliberately does not
-/// write the result back into the request's extensions — *"no transport
-/// reads a `RedirectPolicy`"* (`hclient/src/client.rs`). A backend claiming
-/// to set the policy could see only what a `RequestBuilder` happened to
-/// leave in the extension bag, never one set on the client, so
-/// `Client::builder(..).redirect(Limited(2))` would be silently ignored by
-/// the one variant whose name promises to honour it.
-///
-/// `hclient-native` was its only carrier, and it declared `Configurable`
-/// while containing no redirect handling at all — zero matches for
-/// `Location` or a 3xx status in its `src/`. It reports `Transparent` now,
-/// which is what it always did. `hclient-fetch` had made the same mistake
-/// and corrected it to `Internal` a vertical earlier, in an audit that
-/// never reached the native crate; its
-/// `redirects_are_internal_not_configurable` still names the variant, and
-/// is the record of that.
-///
-/// Re-adding a variant is a breaking change for an external `match` — this
-/// enum is deliberately not `#[non_exhaustive]`, see [`CancelSupport`] —
-/// and that cost is the point: the variant should arrive *with* the backend
-/// that carries it. The nearest candidates are a `libcurl` backend
-/// (`CURLOPT_FOLLOWLOCATION` plus `CURLOPT_MAXREDIRS` is a genuinely
-/// declarative policy) and WinHTTP; neither is planned, and both would also
-/// need the seam to start carrying the merged policy.
-///
-/// **URLSession is not that backend, and that is the evidence this was
-/// decided on**, because `hclient-urlsession` (v0.4 W3) is the next
-/// platform stack due and the obvious place a "configurable" backend would
-/// come from. It offers no declarative redirect policy at all: the hook is
-/// `urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)`,
-/// whose completion handler takes *"either the value of the `request`
-/// parameter, a modified URL request object, or `NULL` to refuse the
-/// redirect and return the body of the redirect response"*, and which
-/// *"is called only for tasks in default and ephemeral sessions. Tasks in
-/// background sessions automatically follow redirects."* (Apple, developer
-/// documentation for that method.) The platform therefore hands out exactly
-/// two of the variants below — `Internal` for a background session, where
-/// there is no hook to install, and `Transparent` for a foreground one, by
-/// answering `nil` so the 3xx becomes the task's response and `Client`'s
-/// stage does the chain. A third reading, following inside the delegate
-/// while counting hops there, is not a platform affordance but a second
-/// implementation of `hclient_proto::redirect` — and one that would silently
-/// drop what `Client`'s stage carries per hop: `SENSITIVE_HEADERS` stripped
-/// across an origin, cookies re-derived rather than carried, and the
-/// `AllowEarlyData` mark taken off.
+/// This enum is deliberately not `#[non_exhaustive]` — see
+/// [`CancelSupport`] — so a new variant breaks an external `match`. That
+/// cost is the point: it should arrive **with** the backend that carries
+/// it. A `libcurl` backend (`CURLOPT_FOLLOWLOCATION` plus
+/// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or WinHTTP would
+/// be candidates, and both would also need the seam to start carrying the
+/// merged policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectSupport {
     /// No redirects, and nothing to observe.
@@ -91,8 +49,7 @@ pub enum RedirectSupport {
     /// backend said `None`" are the same observation. This is exactly why
     /// "3xx arrives as-is" gets its own `Transparent`: conflating "the
     /// field wasn't filled in" with a substantive claim about backend
-    /// behavior means having a capability that lies (branch final review
-    /// M2).
+    /// behavior means having a capability that lies.
     None,
     /// The backend doesn't follow redirects itself: the 3xx arrives at us
     /// as an ordinary response, and following the chain is the job of the
@@ -103,20 +60,12 @@ pub enum RedirectSupport {
     /// just not by the backend. `RedirectPolicy` works and does exactly
     /// what it promises.
     ///
-    /// This is what `wasi:http` does (review Task 16 resolution, finding
-    /// B-9 — measured on a live wasmtime host: the 3xx response reaches the
-    /// guest as-is). Before branch final review M2, `WasiHttp` was forced to
-    /// claim `None` for lack of this variant, and a caller who concluded
-    /// from `redirects == None` that redirects were impossible here was
-    /// wrong about the one backend that actually existed.
+    /// This is what `wasi:http` does: the `3xx` reaches the guest as-is.
     ///
-    /// **Three backends report it**: `hclient-wasi`, `hclient-h3`, and —
-    /// since v0.4 W1 — `hclient-native`, which had said `Configurable`
-    /// since v0.1 while implementing nothing of the sort. It is also what
-    /// an `hclient-urlsession` on a default or ephemeral session would
-    /// report, by refusing each hop in its delegate; see the type's own
-    /// doc for why that is a choice the platform allows and not one it
-    /// makes.
+    /// **Reported by** `hclient-wasi`, `hclient-h3`, `hclient-native` and
+    /// `hclient-urlsession` — the last by refusing each hop in its
+    /// delegate, which is a choice the platform allows rather than one it
+    /// makes; see that crate's own doc.
     Transparent,
     /// The backend follows redirects itself; we neither control nor see it.
     ///
@@ -138,12 +87,8 @@ pub enum RedirectSupport {
     /// caller who configured nothing is unaffected: that is why
     /// `Config::redirect` is an `Option`.
     ///
-    /// An earlier version of this doc said the example was "not in this
-    /// workspace" and that the field was deliberately unchecked. Both
-    /// halves stopped being true when `hclient-fetch` landed.
-    ///
-    /// The variant an `hclient-urlsession` **background** session will have
-    /// to report, and there it is forced rather than chosen: the redirect
+    /// It is also the variant an `hclient-urlsession` **background** session
+    /// must report, and there it is forced rather than chosen: the redirect
     /// delegate is not called for background tasks at all.
     Internal,
 }
@@ -165,18 +110,16 @@ pub enum RedirectSupport {
 /// bytes already sent are already sent, and the server may have acted on
 /// them either way.
 ///
-/// The distinction is worth knowing even though it isn't worth a variant,
-/// and connection pooling (v0.2 W2) is where it will matter: `hclient-native`
-/// owns the socket and closes it itself, while `hclient-fetch` and
-/// `hclient-wasi` ask the browser and the `wasi:http` host respectively —
-/// `AbortController::abort()` and the Component Model's `subtask.cancel`.
-/// A pool can only exist for the first kind, which is the same reason W2
-/// puts the pool in `hclient-native` and nowhere else.
+/// The distinction is worth knowing even though it is not worth a variant:
+/// `hclient-native` owns the socket and closes it itself, while
+/// `hclient-fetch` and `hclient-wasi` ask the browser and the `wasi:http`
+/// host — `AbortController::abort()` and the Component Model's
+/// `subtask.cancel`. Only the first kind can pool connections, which is
+/// why the pool lives in `hclient-native` and nowhere else.
 ///
-/// Not `#[non_exhaustive]`, deliberately: no other enum in this file is
-/// (`RedirectSupport`, `TlsSupport`, `DecompressionSupport` are all plain), and
-/// consistency across the capability set is worth more than reserving the
-/// right to add a variant to this one alone.
+/// Not `#[non_exhaustive]`, deliberately: no other enum in this file is,
+/// and consistency across the capability set is worth more than reserving
+/// the right to add a variant to this one alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelSupport {
     /// Dropping the future does not stop the exchange: it may run to
@@ -184,11 +127,10 @@ pub enum CancelSupport {
     /// reports on.
     ///
     /// The conservative base — [`Capabilities::none()`] returns this — and
-    /// here, unlike [`RedirectSupport::None`], that costs nothing. The
-    /// lesson recorded on `RedirectSupport::Transparent` was not "every
-    /// capability needs a variant for the unfilled case", it was "a default
-    /// must never be stronger than the truth". A backend that never touches
-    /// this field is read as "do not rely on a drop stopping anything",
+    /// here, unlike [`RedirectSupport::None`], that costs nothing. **A
+    /// default must never be stronger than the truth**: a backend that
+    /// never touches this field is read as "do not rely on a drop stopping
+    /// anything",
     /// which is the safe reading of silence and is also exactly what a
     /// backend that genuinely cannot cancel means. The two coincide, so
     /// there is nothing to tell apart — whereas for redirects they did not:
@@ -428,7 +370,7 @@ pub struct Timeouts {
 /// data"*. It never means a particular request went into early data, and it
 /// never means one was accepted. In QUIC the acceptance verdict arrives
 /// **after the response** — measured at 8.63 ms against a response at
-/// 8.58 ms (`docs/h3-research.md` §3.2) — so it is a future, not a
+/// 8.58 ms — so it is a future, not a
 /// property of a transport, and nothing about it can live in a value that
 /// [`Transport::capabilities`](crate::unversioned::Transport::capabilities)
 /// determines once at construction.
@@ -485,7 +427,7 @@ pub enum EarlyDataSupport {
 /// as one.
 ///
 /// It is emphatically **not** a safety condition, and reading it as one is
-/// the mistake this paragraph exists to prevent. `POST /transfer` with a
+/// the mistake to avoid. `POST /transfer` with a
 /// fully buffered body is `RetryKind::Free` — trivially replayable, and
 /// precisely the request that must never enter early data, because *an
 /// attacker* can replay it too. quinn says the same in one line: *"this
@@ -563,8 +505,7 @@ pub struct AllowEarlyData;
 /// never know whether some other crate turned `http2` on — but it leaves a
 /// caller who genuinely needs HTTP/2 with no way to act.
 ///
-/// The two answers that do not work were measured against the code first
-/// (`docs/v03-acceptance.md`, and Appendix A of `docs/v04-design.md`):
+/// The two answers that do not work:
 ///
 /// - **Per response.** `Response::version()` already answers it, honestly,
 ///   and *after the fact*. A caller structured for bidirectional streaming
@@ -605,7 +546,7 @@ pub struct AllowEarlyData;
 ///   ([`Capabilities::version_select`] is `false` — `hclient-fetch` and
 ///   `hclient-wasi`, neither of which chooses or even learns the version):
 ///   a typed [`UnsupportedCapability`] from `Client`, the same arm a
-///   [`RedirectPolicy`](https://docs.rs/) against
+///   `RedirectPolicy` against
 ///   [`RedirectSupport::Internal`] takes. It fires whatever version was
 ///   demanded, because the backend cannot answer for any of them.
 /// - The **backend honours demands and this connection does not match**:
@@ -691,11 +632,11 @@ pub fn check_version(
 /// A runtime fact, not a `cfg!`: one wasm binary runs in both Chrome
 /// (streaming request body available since 131) and Safari (not available).
 ///
-/// # Two kinds of field, and the difference was never written down
+/// # Two kinds of field
 ///
 /// Every field here is one of two things, and reading them as one kind is
-/// how `docs/competitive-gaps.md` §7 came to ask whether
-/// [`proxy`](Self::proxy) "should have a reader at all".
+/// what makes a field like [`proxy`](Self::proxy) look dead when it is
+/// not.
 ///
 /// - **A gate.** The field guards a setting a caller made on the
 ///   *`Client`*, and `ClientBuilder::build` refuses when the transport
@@ -777,8 +718,7 @@ pub struct Capabilities {
     pub client_certs: bool,
     /// Whether this transport sends through a proxy.
     ///
-    /// **Reported, and it will never be a gate** — which is the answer to
-    /// a question `docs/competitive-gaps.md` §7 raised and left open. The
+    /// **Reported, and it will never be a gate.** The
     /// setting it would guard is `Native::proxy`, which is on the
     /// transport that would answer the question, so there is nothing at
     /// the client level to refuse. That makes it unlike
@@ -882,15 +822,12 @@ pub struct Capabilities {
     /// the same arm a `RedirectPolicy` against
     /// [`RedirectSupport::Internal`] takes.
     ///
-    /// # This field had no reader for three verticals
+    /// # Why this field exists
     ///
-    /// It shipped in v0.1 as `false` everywhere, branched on nowhere, and
-    /// was on its way to being deleted under v0.2's rule that *a variant
-    /// exists only if a caller decision turns on it* (`docs/v04-design.md`
-    /// P5 catches the same shape in `RedirectSupport`, and two of those
-    /// variants were deleted for it). [`RequireVersion`] is the caller
-    /// decision that arrived, so the field is kept rather than removed —
-    /// but the rule stands, and it is the reason the demand and this
+    /// The rule is that *a capability exists only if a caller decision
+    /// turns on it* — `RedirectSupport` lost two variants to it.
+    /// [`RequireVersion`] is the decision this one answers, and it is the
+    /// reason the demand and this
     /// field's first `true` land in one change.
     pub version_select: bool,
     /// Whether `Response::version()` is something the transport observed.
@@ -1047,20 +984,13 @@ mod tests {
         //
         // Destructured with no `..` rest pattern — `#[non_exhaustive]` only
         // blocks that from outside the crate, and this test lives inside it.
-        // The count used to be written here as a number and had drifted by
-        // two by the time `upgrade` was removed (it said 18 against a
-        // struct with 20 fields), which is the whole argument against
-        // stating it: the destructure below is the count, and it cannot go
-        // stale.
-        // A prior version of this comment claimed the individual assertions
-        // below "fail informatively when a seventeenth field is added and
-        // someone forgets to default it". That was false: a reviewer added a
-        // seventeenth field, set it to `true` in `none()`, and the old
-        // `let c = Capabilities::none(); assert!(!c.streaming_request_body);
-        // ...` form compiled and passed without any indication the new field
-        // existed. Only the exhaustive destructure below actually catches
-        // that: omitting a field from the pattern is a compile error naming
-        // it, because `..` is not present to absorb it silently.
+        // The field count is deliberately not written here: the destructure
+        // below *is* the count, and unlike a number it cannot go stale.
+        // Per-field assertions would NOT catch a new field: adding one and
+        // setting it `true` in `none()` leaves them compiling and passing.
+        // Only the exhaustive destructure does — omitting a field from the
+        // pattern is a compile error naming it, because `..` is not there
+        // to absorb it silently.
         let Capabilities {
             streaming_request_body,
             full_duplex,
