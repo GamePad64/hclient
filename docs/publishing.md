@@ -15,9 +15,21 @@ has to follow it by hand any more.
 the tree**, so the first release is a publish and not a bump:
 
 ```
-cargo publish --workspace --dry-run   # the plan
-cargo publish --workspace             # the release
+cargo release publish             # the plan; uploads nothing
+cargo release publish --execute   # the release
 ```
+
+**Not bare `cargo publish --workspace`, and the difference is not the
+ordering.** Both order the uploads and both wait for each crate to reach
+the index before the next — that waiting is cargo's, verified in the stable
+binary, which carries the message *"due to a timeout while waiting for
+published dependencies to be available"*; `-Z publish-timeout` is nightly
+only for *configuring* the wait, not for having it. What only
+`cargo release` does is check the **rate limit before uploading anything**:
+measured, it refuses with `attempting to publish 29 new crates which is
+above the rate limit: 5`, where bare `cargo publish --workspace` would
+upload five and fail on the sixth — halfway through a first publication,
+which is the state §2 exists to avoid.
 
 **Neither `cargo release 0.1.0-alpha.1` nor `cargo set-version
 0.1.0-alpha.1` can do it**, and the reason is worth knowing before trying:
