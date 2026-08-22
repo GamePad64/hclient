@@ -39,11 +39,10 @@ pub(crate) fn to_wasi_method(m: &http::Method) -> WM {
 #[error("URI scheme must be http or https")]
 pub(crate) struct BadScheme;
 
-/// `BadScheme` is the same class of
-/// failure as `Rejected` (below) — "the backend just doesn't take this
-/// particular value" — so it is classified the same way rather than
-/// flattened into `ErrorKind::Other`. A caller wants to tell "the backend doesn't support this" from other
-/// errors via `is_unsupported()`.
+/// `BadScheme` is the same class of failure as `Rejected` (below) — "the
+/// backend just doesn't take this particular value" — so it is classified the same way rather than
+/// flattened into `ErrorKind::Other`. A caller wants to tell "the backend
+/// doesn't support this" from other errors via `is_unsupported()`.
 pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     match uri.scheme_str() {
         Some("https") => Ok(Scheme::Https),
@@ -352,9 +351,10 @@ pub(crate) fn declared_trailer_names(
 /// name wasn't declared in advance via `Trailer:` (RFC 9110 §6.5.1: a
 /// receiver that chooses not to buffer the body is required to ignore
 /// undeclared trailers). What needs comparing is the field NAMES
-/// themselves, not just whether the `Trailer:` header is present. A `Trailer: X-Other` header, declaring a
-/// different field than the one actually emitted (`x-checksum`), loses
-/// data exactly as if the header were absent entirely — measured:
+/// themselves, not just whether the `Trailer:` header is present. A `Trailer:
+/// X-Other` header, declaring a different field than the one actually emitted
+/// (`x-checksum`), loses data exactly as if the header were absent entirely —
+/// measured:
 /// `execute` returned `Ok(200)`, while the wire showed `0\r\n\r\n` with no
 /// trailer.
 ///
