@@ -131,7 +131,8 @@ one somebody else switched on.
 - [`docs/competitive-gaps.md`](docs/competitive-gaps.md) — what `reqwest`
   and `ureq` do that this does not, what it does that they cannot, and
   which of the differences are deliberate.
-- The acceptance documents — [v0.1](docs/v01-acceptance.md),
-  [v0.2](docs/v02-acceptance.md), [v0.3](docs/v03-acceptance.md),
-  [v0.4](docs/v04-acceptance.md) — each with what that version claims, the
-  evidence, and what it deliberately does not do.
+- [`docs/porting-wasi-fetch.md`](docs/porting-wasi-fetch.md) — a real
+  consumer ported from another library, line for line: what the port keeps,
+  what it fixes, and the four things it changes.
+- [`docs/publishing.md`](docs/publishing.md) — how a release is cut, and
+  what bites on the first one.

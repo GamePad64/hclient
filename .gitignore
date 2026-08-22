@@ -11,3 +11,11 @@ Cargo.lock.bak
 # Their findings live in docs/; the code itself is not carried, because
 # nothing builds it and an unbuilt crate rots into a lie.
 spikes/
+
+# The project's own memory: design notes, acceptance records, research and
+# measurements kept from building it. Untracked on purpose — it is written
+# for whoever works on this, not for whoever uses it, and `docs/` is for
+# the second audience. Everything here was in git until it was moved, so
+# the history still holds it; what is not wanted is a published crate
+# shipping a reader an archive of how it came to be.
+.notes/

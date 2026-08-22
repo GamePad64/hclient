@@ -45,7 +45,7 @@ the four predate this arrangement and are the pattern the other two copy.
 `HCLIENT_REQUIRE_NETWORK` gates `just test-doh-live`, the only suite in this
 repository that talks to servers nobody here runs (Cloudflare's and Google's
 public DoH endpoints). It is in no workflow, and the reasoning is written out
-in `docs/v03-acceptance.md`'s "Should this be in CI?": what that suite
+under "Should this be in CI?": what that suite
 measures is a fact about a third party, so it goes red when *they* change,
 and a red build nobody here can fix is how people learn to ignore red builds.
 The marker exists anyway, and is worth having without a job — it is what
@@ -139,7 +139,7 @@ holds a copy of it*, so one assertion bans HTTP/3 from the adapter's own
 graph and another **requires** `hclient-h3` to depend on the adapter. The
 second is what fails when someone re-adds a private `mod runtime` and drops
 the dependency — a change no ban would notice, because nothing forbidden
-appears anywhere. `docs/quinn-adapter-extraction.md` §7.
+appears anywhere.
 
 ## Build and test
 
@@ -251,7 +251,7 @@ The WebSocket client against the Autobahn TestSuite —
 none of them written in this repository. Every other WebSocket fixture here
 was written beside the implementation it observes, which is the arrangement
 in which a fixture agrees with a bug; this is the job that does not have
-that property. The table and the verdict are in `docs/v03-acceptance.md`.
+that property.
 
 `HCLIENT_REQUIRE_DOCKER` is set here and only here: this is the job that
 promises a daemon, so a missing one is a broken runner rather than a laptop.

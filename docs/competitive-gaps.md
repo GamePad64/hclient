@@ -8,7 +8,7 @@ written down.
 The second half matters more than the first. This repository carries four
 acceptance documents whose *Deliberately not done* sections exist precisely
 because "a bare list invites someone to 'fix' an item whose absence is the
-decision" (`docs/v02-acceptance.md`). A gap analysis that reported those as
+decision". A gap analysis that reported those as
 gaps would be worse than no gap analysis. So every row below is classified
 as **gap**, **refused** (with the rule that refuses it), or **elsewhere**
 (reachable, but not by the call a `reqwest` user would write).
@@ -469,7 +469,7 @@ narrower one after it, which is visible at the call site and is asserted.
 **One `P` per transport, and that is the limit rather than an oversight.**
 A caller wanting SOCKS5 for `https` and an HTTP proxy for `http` cannot
 say so: lifting it means erasing `P`, and erasing `P` erases the IO with
-it — the objection `docs/proxy-design.md` already records against
+it — the objection already recorded against
 `Box<dyn ProxyProtocol>`. Which makes the closure form this section
 suggested a bigger change than it looks: `Fn(&Uri) -> Option<&Proxy<P>>`
 would still be one `P`, so it buys arbitrary *routing* and not arbitrary
@@ -776,7 +776,7 @@ newly — is a `#[cfg]` that would make `BoxBody` `Send` off wasm: it hides
 the symptom rather than removing the cause. What was built is two traits
 beside the seam with blanket impls, no proc macro and no cfg alias.
 
-`docs/erased-client.md` has the measurements. `hclient-tower::
+`hclient-tower::
 TransportService` is unchanged and is still the route for a caller who
 wants a `tower::Service`.
 
@@ -794,18 +794,18 @@ this document could fail.
 | `compress`/`x-compress` | RFC 9110 §8.4.1.1's LZW: no decoder here, so it is never advertised and never matched | `hclient/src/decompress.rs` |
 | request-body compression | server support is inconsistent; a clean manual path instead | design spec §9 |
 | reading `HTTP_PROXY`/`NO_PROXY` from the environment | reading the environment is *policy* and belongs to whoever builds the transport; a list the caller wrote is not policy | AGENTS.md, proxy section |
-| a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound | `docs/proxy-design.md` §1 |
+| a proxy for QUIC | `CONNECT-UDP` (RFC 9298) is a different protocol against a different server, not this feature with a wider bound |
 | a blocking API | out of scope by the problem statement | design spec §9 |
 | JA3/JA4/Akamai fingerprint control | rustls closed it *not planned*; `http::HeaderMap` lowercases names, so browser header casing is unreproducible anyway | design spec §9 |
 | `no_std` / bare metal | `http` 1.x carries `compile_error!` for it; not this project's to reverse | AGENTS.md |
 | `Ping`/`Pong` as WebSocket message variants | a browser has neither `send(ping)` nor `onping`; the variant would have no honest right-hand side | `hclient-core/src/unversioned/websocket.rs:35` |
-| permessage-deflate, subprotocol checking | left open in `docs/w4-upgrade-seam.md`; the browser negotiates extensions itself and exposes no control | same file, `:46` |
-| a `RequestBuilder::extension` setter | adding one for `AllowEarlyData` and not `RequireVersion` would be arbitrary; both is a facade question | `docs/v03-acceptance.md:3394` |
+| permessage-deflate, subprotocol checking | left open; the browser negotiates extensions itself and exposes no control | same file, `:46` |
+| a `RequestBuilder::extension` setter | adding one for `AllowEarlyData` and not `RequireVersion` would be arbitrary; both is a facade question |
 | ECH | no backend here applies one, and `hclient-tls-rustls` *refuses* a non-`None` ech — filling the field would make every ECH-publishing origin unreachable | AGENTS.md |
 | RFC 6724 destination address selection | the full rule needs source address selection, i.e. a routing table, which no seam here provides; a partial one would look like compliance without being it | design spec §9 |
 | `stale-while-revalidate` | it needs somewhere to run the revalidation after the response was handed over, and this client does not spawn on a caller's behalf | AGENTS.md, cache section |
 | a WebSocket keep-alive by default, an h2 driver by default, an idle-socket reaper by default | a default stronger than the truth: not every `R` can `Spawn`, and a default that pings sends traffic nobody asked for | AGENTS.md, several places |
-| h2 multiplexing by default | without `Spawn` nobody drives a shared connection but the in-flight futures | `docs/h2-multiplexing.md` |
+| h2 multiplexing by default | without `Spawn` nobody drives a shared connection but the in-flight futures |
 | more than one session per WebTransport connection — **no longer refused** | built; the recorded blocker (`PoolKey`) turned out not to be the true one | AGENTS.md |
 | WebTransport `GOAWAY` | a measured impossibility in `h3` 0.0.8: two `GOAWAY`s saying opposite things look identical to a client | AGENTS.md |
 
@@ -891,7 +891,7 @@ those is the one a caller notices, since a slow resolver currently spends
 `connect`'s budget without being separable from it. Blocking IO is what
 makes nine cheap there and four expensive here — each bound here has to be
 a race or a body wrapper carrying a `Timer::Sleep`, and the `Expect` work
-showed what a fifth costs (`docs/expect-continue.md` §7: a wrapper around
+showed what a fifth costs (a wrapper around
 the `first_byte` race overflowed the stack in 56 tests).
 
 **`RequireVersion`, enforced before the head.** Nobody else has a
@@ -950,7 +950,7 @@ blanket impl demands `S: Send + 'static`, `S::Future: Unpin + Send` and
 and `Sized` is required on the trait **specifically to prevent a
 `dyn Connect`** (`connect/mod.rs:322-324`). A single-threaded connector is
 structurally impossible there. It is also handed a `Uri` and nothing else,
-which is exactly the signature `docs/proxy-design.md` §2 rejects here for
+which is exactly the signature rejected here for
 the DNS-leak reason — and the reason `Prefetch::prepare` can hand a
 connector a fetched HTTPS record where `hyper-util` has no channel for one.
 
@@ -1026,7 +1026,7 @@ The stated goal is not "match reqwest". It is stated twice, in two places,
 and only one of them is met.
 
 **"Powerful enough that someone else could build gRPC on it" — met, and
-measured.** `docs/grpc-yardstick.md`: 21 requirements from
+measured.** 21 requirements from
 `grpc/doc/PROTOCOL-HTTP2.md`, 15 tests, **no library code changed**, and the
 three limitations it recorded were closed by `Native::multiplexed()` — two
 of them costing no code of their own. Two things the client cannot honour
@@ -1200,7 +1200,7 @@ opens.
 **2. AGENTS.md does not mention four crates that exist.**
 `hclient-tower`, `hclient-rt-embassy`, `hclient-dns-hickory` and
 `hclient-mock` appear nowhere in it (grepped). Two of them are listed in
-`docs/v01-acceptance.md`'s *Deliberately not done* as things v0.1 would not
+the v0.1 *deliberately not done* list as things it would not
 do — *"hickory and DoH; middleware and `hclient-tower`"* — and both now
 exist. The DoH half of that sentence *was* updated (AGENTS.md has a section
 on `hclient-dns-doh`); the hickory and tower halves were not.
