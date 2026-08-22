@@ -1,5 +1,5 @@
-//! Proof of the same thesis that `hclient-rt-pair-check` (Task 4) and
-//! `hclient-tls-rustls`'s `dual_runtime.rs` (Task 9) prove for their own
+//! Proof of the same thesis that `hclient-rt-pair-check` and
+//! `hclient-tls-rustls`'s `dual_runtime.rs` prove for their own
 //! layers: ONE body — here, `connect_for_test`, exactly the code
 //! `race_connect` runs through `drive`'s `Wait` branch (not just an
 //! immediate success on the first `Start`) — works on both tokio and

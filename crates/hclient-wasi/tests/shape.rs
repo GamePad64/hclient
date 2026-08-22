@@ -14,7 +14,7 @@
 
 fn assert_send<T: Send>(_: T) {}
 
-/// Review resolution (Task 16, finding B-13): `convert::Payload::Streaming`
+/// Review resolution: `convert::Payload::Streaming`
 /// carries `+ Send` (`send-bound-exception: amendment-C2`) precisely so
 /// that `WasiHttp::execute`'s future stays `Send` for streaming request
 /// bodies. The review found the marker was justified — but if the bound

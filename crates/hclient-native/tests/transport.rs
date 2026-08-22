@@ -314,7 +314,7 @@ async fn transport_error_kind_survives_the_client_instead_of_flattening_to_other
 }
 
 /// A resolver that always returns `ErrorKind::Cancelled` — a synthetic
-/// stand-in for a real background thread pool shutting down (Task 7),
+/// stand-in for a real background thread pool shutting down,
 /// good enough to check that `Native::execute` doesn't wrap or flatten it
 /// on the way to `Client`.
 struct CancelledDns;

@@ -33,7 +33,7 @@ use wasm_bindgen::{JsCast, JsValue};
 //    request.rs`) parses the URL string into `http::Uri` before this crate
 //    ever sees it, so this failure happens one whole crate away from
 //    `hclient-fetch`.
-// 2. Even granting a working parse, `convert::checked_url` (Task 3) rejects
+// 2. Even granting a working parse, `convert::checked_url` rejects
 //    every scheme except `http`/`https` as `ErrorKind::Unsupported` —
 //    deliberately, and documented as such. `Body::from_response`'s own
 //    Task 4 helper (`testing::fetch_body`, `lib.rs`) already flags this
@@ -319,7 +319,7 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
 
 // ---------------------------------------------------------------------
 // Cancelling an in-flight `fetch()` when the `execute()` future is dropped
-// early. `convert::to_web_request`'s own doc comment (Task 3) says the
+// early. `convert::to_web_request`'s own doc comment says the
 // `AbortController` it returns is for "a later task (the `Transport` impl,
 // driving deadlines and cancellation)" to hold onto — the brief's own
 // reference `execute` receives it as `_abort` and never touches it again,

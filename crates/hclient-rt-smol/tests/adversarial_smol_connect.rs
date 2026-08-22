@@ -1,5 +1,5 @@
 //! Reviewer-written adversarial test suite for `Smol::connect`'s
-//! non-blocking connect dance (Task 4 review, verdict item B), independent
+//! non-blocking connect dance, independent
 //! of the implementer's work.
 //!
 //! Exercises `begin_connect`'s classification of `connect()` outcomes

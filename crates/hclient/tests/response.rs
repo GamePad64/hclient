@@ -170,7 +170,7 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 }
 
 /// `RequestBuilder::timeouts` must put `Timeouts` into the request's
-/// `Extensions`, where the transport reads them from (Task 10). Without
+/// `Extensions`, where the transport reads them from. Without
 /// writing to `extensions`, this setter would be a silent no-op — exactly
 /// the class of defect the crate's design tries to avoid.
 ///

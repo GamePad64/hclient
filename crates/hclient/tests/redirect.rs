@@ -1,6 +1,6 @@
 //! Tests for the redirect stage at the `Client` level:
 //! `hclient-proto::redirect::decide` is already tested as a pure function
-//! (Task 5) — this checks that the `client.rs`/`stages/redirect.rs` plumbing
+//! — this checks that the `client.rs`/`stages/redirect.rs` plumbing
 //! doesn't distort its decision while shuffling data between hops.
 
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`);
@@ -252,7 +252,7 @@ fn response_headers_do_not_leak_into_the_next_hop() {
     );
 }
 
-/// `Timeouts` (Task 10) travels to the transport via the request's
+/// `Timeouts` travels to the transport via the request's
 /// `http::Extensions` — the entire mechanism it lives there for relies on
 /// `extensions` surviving to every hop, not just the first one.
 #[test]
@@ -261,7 +261,7 @@ fn per_request_extensions_survive_a_hop_unchanged() {
     use std::time::Duration;
 
     // Capabilities aren't decorative anymore now that `Client::execute`
-    // checks the merged timeouts (M3 of the branch's final review): a mock
+    // checks the merged timeouts: a mock
     // with `Capabilities::none()` now honestly rejects the `connect`
     // timeout, and this test is about carrying `extensions` across hops,
     // not about the gate.

@@ -216,7 +216,7 @@ impl SendJsFuture {
         }
     }
 
-    /// Exists solely for `tests/promise.rs` (fix round 1, finding 2), to
+    /// Exists solely for `tests/promise.rs`, to
     /// prove — deterministically, with no dependence on real `Promise` or
     /// browser-event timing — that dropping `SendJsFuture` while its
     /// promise is still pending does NOT drop the callbacks still

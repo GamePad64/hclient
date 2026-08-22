@@ -175,7 +175,7 @@ async fn handshake_against_a_silent_peer_has_no_internal_bound_by_design() {
     .await;
 
     // Documents current, intentional behaviour, not a defect: `TlsRequest`
-    // (Task 8) carries no deadline, so `Rustls::connect` has nothing of its
+    // carries no deadline, so `Rustls::connect` has nothing of its
     // own to bound against - the outer timeout here is standing in for
     // whatever higher layer is expected to supply one, same as Task 3's
     // four sites bound at their OWN call sites rather than inside the

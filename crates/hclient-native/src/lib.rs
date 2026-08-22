@@ -2869,7 +2869,7 @@ struct ConnectTimedOut(Duration);
 /// and each is needed exactly once, the macro gives this pair nothing that
 /// a direct `poll` doesn't.
 ///
-/// Scope (final review round 3): `fut` is expected to be the whole
+/// Scope: `fut` is expected to be the whole
 /// `connect::connect(..)` call, passed in as one opaque future — this
 /// function has no visibility into, and no way to time, any individual
 /// attempt inside it. That's what makes the deadline an overall one rather

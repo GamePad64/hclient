@@ -90,7 +90,7 @@ enum MockFrame {
 /// produce a SINGLE transport error other than `QueueEmpty` with its fixed
 /// `ErrorKind::Other` — which is exactly why 165 tests on the branch never
 /// noticed that `Client::execute` flattened the category of every
-/// transport error into `Other` (B2 of the final review).
+/// transport error into `Other`.
 type Queued = Result<http::Response<VecDeque<MockFrame>>, Error>;
 
 #[derive(Debug)]

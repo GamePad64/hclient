@@ -1,4 +1,4 @@
-//! Guest for `tests/live_roundtrip.rs` (Task 16) — the one place in the
+//! Guest for `tests/live_roundtrip.rs` — the one place in the
 //! project where `Transport::execute` is actually run against a real
 //! `wasi:http` host, not just compiled.
 //!

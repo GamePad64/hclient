@@ -303,9 +303,9 @@ pub(crate) fn resolve_send<T>(
 /// successfully first (or second), the write is still awaited —
 /// `resolve_send` can't trust the response without knowing its outcome.
 ///
-/// **This wait, and only this wait, is what makes `full_duplex = false`**
-/// (M1 of the branch's final review). The `Either::Left((Ok(r), write_fut))`
-/// arm holds a ready response in hand and blocks on the write; for an
+/// **This wait, and only this wait, is what makes `full_duplex = false`.**
+/// The `Either::Left((Ok(r), write_fut))` arm holds a ready response in
+/// hand and blocks on the write; for an
 /// infinite `Streaming` body, forever. The shape of `Transport::execute`
 /// has nothing to do with it: `write_fut` can be carried into the
 /// returned `Body` (this crate's type) and polled further from
@@ -603,7 +603,7 @@ mod tests {
         // branch's final review).
         assert!(!caps.full_duplex);
         // And poorer everywhere else.
-        // `Transparent`, not `None` (M2 of the branch's final review): a
+        // `Transparent`, not `None`: a
         // 3xx reaches the guest as an ordinary response and the
         // `Client`'s redirect stage handles it in full. `None` is what
         // `Capabilities::none()` returns, and would mean "there are no

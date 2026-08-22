@@ -21,7 +21,7 @@ fn public_api_types_are_reachable_from_the_facade() {
         hclient::caps::check_supported(&cfg, &caps, "probe");
 }
 
-/// `Response`, `Collected`, and `RequestBuilder` (Task 13) had no
+/// `Response`, `Collected`, and `RequestBuilder` had no
 /// reachability check from the facade (Task 13 fix round 1, Finding 6).
 /// Unlike the types above, they have no public constructor without a
 /// transport — there's nothing here to construct a value with, so
@@ -37,7 +37,7 @@ fn response_collected_and_request_builder_are_reachable_from_the_facade<B>(
 ) {
 }
 
-/// `SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` (Task 14) actually
+/// `SseStream`, `SseEvent`, and `DEFAULT_MAX_EVENT_SIZE` actually
 /// live in `hclient-proto` (`SseEvent`, `DEFAULT_MAX_EVENT_SIZE`) and
 /// `hclient` (`SseStream`), but must be nameable from `hclient::` with no
 /// direct dependency on `hclient-proto` — the same contract as above. The

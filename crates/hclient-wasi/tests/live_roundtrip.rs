@@ -1,5 +1,5 @@
 //! An integration run of `WasiHttp::execute` against a real `wasi:http`
-//! host (Task 16).
+//! host.
 //!
 //! Closes the specific gap described in the doc comment on
 //! `Body::is_end_stream` (`crates/hclient-wasi/src/body.rs`): the
@@ -736,7 +736,7 @@ fn run_guest_against_mock_server(
 /// announce that promise. See `require_wasmtime`.
 const REQUIRE_MARKER: &str = "HCLIENT_REQUIRE_WASMTIME";
 
-/// Review resolution (Task 16, finding B-7): missing `wasmtime` used to
+/// Review resolution: missing `wasmtime` used to
 /// lead to the same thing everywhere — a `NOTICE` on stderr and `return`
 /// from a test that then looks like `ok` itself. On a laptop without
 /// `wasmtime` that's a reasonable compromise, but where `wasmtime` is

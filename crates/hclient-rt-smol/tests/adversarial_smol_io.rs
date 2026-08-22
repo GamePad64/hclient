@@ -1,5 +1,5 @@
 //! Reviewer-written adversarial test suite for `FuturesIo<hclient_rt_smol::SmolSocket>`
-//! driven through the real `Smol` runtime (Task 4 review, verdict item E),
+//! driven through the real `Smol` runtime,
 //! independent of the implementer's work. Adapted from the sibling suite for
 //! `TokioIo` (Task 3 review,
 //! `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`), itself adapted
