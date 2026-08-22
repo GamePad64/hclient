@@ -27,7 +27,7 @@
 //!   Neither is weaker; both are wrong.
 //! - [`Capabilities::early_data`] is the one field where the *stronger*
 //!   value is the true one, and that is a property of what its variant
-//!   says rather than an exception to the rule. See [`early_data`] below.
+//!   says rather than an exception to the rule. See the `early_data` helper below.
 //!
 //! # Why not "report the meet"
 //!
@@ -52,7 +52,7 @@ use hclient_core::Capabilities;
 /// Two stacks that cannot be given one honest answer for one field.
 ///
 /// Returned from [`combine`], and therefore from
-/// [`Selecting::new`](crate::Selecting::new) — the same shape as
+/// [`Selecting::new`](crate::Native::new) — the same shape as
 /// `UnsupportedCapability` at `ClientBuilder::build()`, and for the same
 /// reason: the error arrives where the mistake was made, rather than as a
 /// surprise on the first request that happens to take the other stack.

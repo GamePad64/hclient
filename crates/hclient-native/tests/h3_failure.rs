@@ -32,7 +32,7 @@
 //! here measures the 30 s a real UDP block costs. That number is quinn's
 //! `max_idle_timeout` rather than anything of ours, and it is a
 //! `Timeouts::connect` question.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -43,7 +43,6 @@ use hclient_core::{Error, ErrorKind, Phase, RequestBody, Timeouts};
 use hclient_h3::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::Selecting;
 use http_body_util::BodyExt;
 use servers::{ORIGIN, Pair, Quic};
 use std::time::Duration;
@@ -52,17 +51,15 @@ use std::time::Duration;
 /// rather than an eternal one.
 const BOUND: Duration = Duration::from_secs(20);
 
-type Selector = Selecting<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
+type Selector = Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
 
 fn selector(pair: &Pair, dns: FakeDns) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone()),
-        H3::new(rt, servers::client_tls(&pair.cert_der), dns.clone()).expect("H3::new does no I/O"),
-        dns,
-    )
-    .expect("the two stacks agree")
+    let tls = servers::client_tls(&pair.cert_der);
+    let quic = H3::new(rt.clone(), tls.clone(), dns.clone()).expect("H3::new does no I/O");
+    Native::new(rt, tls, dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 fn uri(pair: &Pair) -> String {

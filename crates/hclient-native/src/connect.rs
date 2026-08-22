@@ -1276,7 +1276,7 @@ where
 /// The port `https` means when a URI does not say otherwise — and the only
 /// port at which the HTTPS record fetched for a bare origin name applies
 /// (RFC 9460 §9.5, see [`crate::discovery`]).
-const HTTPS_DEFAULT_PORT: u16 = 443;
+pub(crate) const HTTPS_DEFAULT_PORT: u16 = 443;
 
 /// Waits for the first address either family produces, or fails naming
 /// the resolver.

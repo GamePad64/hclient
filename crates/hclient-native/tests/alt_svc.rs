@@ -21,7 +21,7 @@
 //! other was reachable and was not chosen. The `ma` timescales that cannot
 //! be reached this way — twenty-four hours — are in
 //! `tests/altsvc_cache.rs`, where the clock is a parameter.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -32,7 +32,6 @@ use hclient_core::unversioned::Transport;
 use hclient_h3::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::Selecting;
 use http_body_util::BodyExt;
 use servers::{ORIGIN, Pair};
 use std::time::Duration;
@@ -41,17 +40,15 @@ use std::time::Duration;
 /// rather than an eternal one.
 const BOUND: Duration = Duration::from_secs(10);
 
-type Selector = Selecting<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
+type Selector = Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
 
 fn selector(pair: &Pair, dns: FakeDns) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone()),
-        H3::new(rt, servers::client_tls(&pair.cert_der), dns.clone()).expect("H3::new does no I/O"),
-        dns,
-    )
-    .expect("the two stacks agree")
+    let tls = servers::client_tls(&pair.cert_der);
+    let quic = H3::new(rt.clone(), tls.clone(), dns.clone()).expect("H3::new does no I/O");
+    Native::new(rt, tls, dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 /// One request to the pair, and which server answered it — read off the

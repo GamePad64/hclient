@@ -32,10 +32,33 @@
 mod body;
 mod connect;
 mod discovery;
+/// RFC 9114's ALPN identifier, and the one string that decides whether an
+/// origin's HTTPS record or `Alt-Svc` advertisement is about HTTP/3.
+#[cfg(feature = "http3")]
+pub(crate) const ALPN_H3: &[u8] = b"h3";
+
+#[cfg(feature = "http3")]
+pub mod altsvc;
+#[cfg(feature = "http3")]
+pub mod caps;
 mod established;
+#[cfg(feature = "http3")]
+mod failures;
 mod h1;
 #[cfg(feature = "http3")]
 mod h3_arm;
+#[cfg(feature = "http3")]
+mod race;
+#[cfg(feature = "http3")]
+mod route;
+
+/// How long a failed HTTP/3 connect suppresses the QUIC arm for one
+/// origin, and the memory that records it.
+#[cfg(feature = "http3")]
+pub use failures::{H3_FAILURE_TTL, H3Failures};
+/// The default head start the hedge gives the QUIC arm.
+#[cfg(feature = "http3")]
+pub use race::DEFAULT_HEAD_START;
 #[cfg(feature = "http2")]
 mod http2;
 mod idle;
@@ -424,6 +447,30 @@ where
     /// See [`crate::h3_arm::Arm`] for why the box is `Send + Sync`.
     #[cfg(feature = "http3")]
     h3: Option<std::sync::Arc<crate::h3_arm::Arm>>,
+    /// What origins have advertised about their own HTTP/3, and for how
+    /// long — RFC 7838's `Alt-Svc`, with the lifetime the origin gave.
+    ///
+    /// The slow tier of discovery. It is only consulted where the fast one
+    /// has no answer, so an origin that publishes an HTTPS record never
+    /// touches it and the fast path takes no lock.
+    #[cfg(feature = "http3")]
+    alt_svc: altsvc::AltSvcCache,
+    /// Origins whose HTTP/3 connect has already failed, and when.
+    ///
+    /// The negative half, and a different fact from
+    /// [`discovery::NegativeCache`] one field up: that one remembers a TCP
+    /// connect through a discovered endpoint, this one remembers that QUIC
+    /// did not come up at all.
+    #[cfg(feature = "http3")]
+    h3_failures: failures::H3Failures,
+    /// How long the QUIC arm runs alone before a TCP connect is started
+    /// beside it, or `None` for no hedge at all.
+    ///
+    /// `None` by default: a transport that opened a UDP socket and a TCP
+    /// one for the same request would be deciding, on every caller's
+    /// behalf, what to spend on a network that blocks UDP/443.
+    #[cfg(feature = "http3")]
+    hedge: Option<Duration>,
     /// How the origin is reached, when it is not reached directly.
     ///
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
@@ -762,6 +809,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             versions: Versions::default(),
             #[cfg(feature = "http3")]
             h3: None,
+            #[cfg(feature = "http3")]
+            alt_svc: altsvc::AltSvcCache::default(),
+            #[cfg(feature = "http3")]
+            h3_failures: failures::H3Failures::default(),
+            #[cfg(feature = "http3")]
+            hedge: None,
             unix_socket: None,
             h1_opts: crate::h1::H1Opts::default(),
             #[cfg(feature = "http2")]
@@ -933,6 +986,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             versions: self.versions,
             #[cfg(feature = "http3")]
             h3: self.h3.clone(),
+            #[cfg(feature = "http3")]
+            alt_svc: self.alt_svc.clone(),
+            #[cfg(feature = "http3")]
+            h3_failures: self.h3_failures.clone(),
+            #[cfg(feature = "http3")]
+            hedge: self.hedge,
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -1086,6 +1145,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             versions: self.versions,
             #[cfg(feature = "http3")]
             h3: self.h3.clone(),
+            #[cfg(feature = "http3")]
+            alt_svc: self.alt_svc.clone(),
+            #[cfg(feature = "http3")]
+            h3_failures: self.h3_failures.clone(),
+            #[cfg(feature = "http3")]
+            hedge: self.hedge,
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -1445,6 +1510,98 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// on a dropped future, which goes on being owed — what changes is
     /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
     /// the socket close. `full_duplex` and `response_trailers` still
+    /// Elapsed time on this transport's own clock, measured from its
+    /// construction.
+    ///
+    /// `hclient_rt::Timer` rather than `std::time::Instant::now()`, for
+    /// the reason every other clock reading here is: `Timer` is the one
+    /// seam through which time reaches a transport, so a caller testing
+    /// under `tokio::time::pause()` sees what this transport sees.
+    #[cfg(feature = "http3")]
+    fn now(&self) -> Duration {
+        self.rt.elapsed_since(self.epoch)
+    }
+
+    /// The caller has seen a network configuration change: forget every
+    /// `Alt-Svc` advertisement that did not carry `persist=1`.
+    ///
+    /// **This exists because the transport cannot see the event itself,
+    /// and saying so at the type is the honest alternative to pretending
+    /// the cache is safe.** RFC 7838 §2.2 asks a client to clear
+    /// non-persistent alternatives on a network change *"when information
+    /// about network state is available"* — and to a `Transport` it is
+    /// not: nothing in `hclient-rt` reports an interface coming up, a
+    /// default route changing or a VPN connecting. An application usually
+    /// can see it, so the duty is handed to the caller in the one shape
+    /// that lets them discharge it.
+    ///
+    /// Until it is called, every entry behaves as though it carried
+    /// `persist=1`. That is the unsafe direction — a laptop that moved
+    /// networks is advertising an alt-authority that was reachable
+    /// somewhere else — and it is bounded by two things rather than
+    /// argued away: nothing is written to disk, and the cache is a field
+    /// of this transport, so dropping the client does the whole job.
+    ///
+    /// **Both memories are cleared, and not by the same rule** — see
+    /// [`H3Failures`]. The advertisement cache keeps `persist=1` entries,
+    /// because that flag is the origin's own claim that what it advertised
+    /// is a property of the origin rather than of the path. The failure
+    /// memory keeps nothing: *"UDP/443 did not get through"* is a fact
+    /// about the network alone, no peer ever asked us to carry it, and it
+    /// is exactly the entry a network change makes certainly wrong.
+    #[cfg(feature = "http3")]
+    pub fn network_changed(&self) {
+        self.alt_svc.network_changed();
+        self.h3_failures.network_changed();
+    }
+
+    /// Hedge every request this transport sends to QUIC with a TCP connect
+    /// started `head_start` later — the race, and it is off until this is
+    /// called.
+    ///
+    /// **It is a hedge and not a chooser**.
+    /// The record and the advertisement decide which stack an origin
+    /// speaks; this decides nothing, and only stops a request waiting out
+    /// quinn's 30 s `max_idle_timeout` at an origin whose UDP does not get
+    /// through. A request the two tiers sent to TCP is not raced, and
+    /// neither is a `RequireVersion(HTTP_3)` demand — a TCP connection
+    /// opened for a request that can never be sent over TCP is a
+    /// connection opened for nothing.
+    ///
+    /// # What the head start is, and what to pass
+    ///
+    /// [`DEFAULT_HEAD_START`] where there is no reason to pass anything
+    /// else: 250 ms, RFC 8305 §5's Connection Attempt Delay, which is
+    /// already this workspace's answer to the same question one layer
+    /// down. the hedge has what the staged connect changed about that
+    /// number's justification — and about its floor, which is now
+    /// [`Duration::ZERO`]: with no head start both stacks connect at once,
+    /// **and the losing arm still sends nothing**, which is the property
+    /// that made this worth building.
+    ///
+    /// Bigger is not free and smaller is not unsafe. A head start below
+    /// one QUIC handshake costs a TCP connect and TLS handshake the
+    /// request will probably not use — checked into the pool warm rather
+    /// than thrown away. A head start above it is paid, in full, by the
+    /// first request to an origin whose HTTP/3 cannot be reached, and by
+    /// no other one for [`H3_FAILURE_TTL`] afterwards, because a QUIC arm
+    /// that loses the race teaches [`H3Failures`].
+    ///
+    /// # And it is spent inside `Timeouts::connect`, not beside it
+    ///
+    /// The QUIC arm carries the caller's whole `connect` bound and the
+    /// hedge carries what is left after the head start, so the pair costs
+    /// one bound rather than two. A caller whose bound has no room for two
+    /// connects in it — `head_start` at or above `Timeouts::connect` —
+    /// gets the sequential fallback instead, unchanged, rather than a
+    /// refusal or a doubled bound.
+    #[must_use]
+    #[cfg(feature = "http3")]
+    pub fn hedging(mut self, head_start: Duration) -> Self {
+        self.hedge = Some(head_start);
+        self
+    }
+
     /// Give this transport a QUIC arm, and let it serve HTTP/3.
     ///
     /// # Every bound in this crate's QUIC story is on this one signature
@@ -1470,7 +1627,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// stacks over one configuration passes the same values twice, which
     /// is what `Rustls: Clone` is for.
     #[cfg(feature = "http3")]
-    pub fn http3(mut self, quic: hclient_h3::H3<R, T, D>) -> Self
+    pub fn http3(mut self, quic: hclient_h3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
         hclient_h3::H3<R, T, D>: hclient_h3::StagedConnect<Error = Error> + std::fmt::Debug,
         <hclient_h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
@@ -1480,9 +1637,21 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         T: Send + Sync + 'static, // send-bound-exception: amendment-C12
         D: Send + Sync + 'static, // send-bound-exception: amendment-C12
     {
+        // **The stored value must be true whichever path serves the
+        // request**, and `capabilities()` hands back a reference computed
+        // once — so the two are reduced here, at the only moment both are
+        // in hand. Five fields take the weaker claim, `early_data` the
+        // stronger one (the variant means *can*), and where the two are
+        // different claims rather than a stronger and a weaker one there
+        // is no true value and this refuses, naming the field.
+        //
+        // `Native::without_pool()` against a QUIC arm is the one refusal
+        // reachable from what this workspace ships, and it is an ordinary
+        // mistake rather than a contrived one.
+        self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
         self.h3 = Some(std::sync::Arc::new(quic));
         self.versions.h3 = true;
-        self
+        Ok(self)
     }
 
     /// Whether this transport may speak HTTP/1.1. On by default.
@@ -2570,56 +2739,6 @@ where
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
     /// nothing looked up — and [`Prefetch::execute_prepared`] is this with
     /// whatever [`Prefetch::prepare`] found.
-    /// Serve a request the caller demanded HTTP/3 for.
-    ///
-    /// # No fallback, and that is the demand's own meaning
-    ///
-    /// A `Refused` from the arm carries the request back untouched, which
-    /// is exactly what a *routing* decision would need — and this is not
-    /// one. `RequireVersion(HTTP_3)` says the caller's code needs that
-    /// protocol, so answering over HTTP/1.1 would be the failure the
-    /// demand exists to prevent. The request goes no further and the
-    /// connect error is what the caller sees.
-    ///
-    /// Choosing between the stacks when nobody demanded anything is a
-    /// different question with a different answer, and it is not here yet.
-    ///
-    /// # An arm that is not installed is a refusal, not a fall-through
-    ///
-    /// Without [`Native::http3`] there is nothing to route to, and the
-    /// honest answer is the same `VersionNotAvailable` a connection that
-    /// negotiated the wrong protocol would raise — built through
-    /// [`check_version`] against the version this transport would have
-    /// spoken, so the caller sees one error type for one question rather
-    /// than two spellings of "you cannot have HTTP/3 here".
-    #[cfg(feature = "http3")]
-    async fn over_quic(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> Result<http::Response<NativeBody<R, T, H>>, Error> {
-        let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
-            return Err(
-                check_version(req.extensions(), spoken_version(Some(Protocol::Http11)))
-                    .expect_err("the caller demanded HTTP/3, which is not HTTP/1.1"),
-            );
-        };
-        // Read before the request moves into the arm, and applied to what
-        // comes back: `hclient-h3` declares `between_bytes: false` and
-        // this transport declares `true`, so a body from the QUIC arm that
-        // escaped `bound_body` would be exactly the silent hole in a
-        // declared capability that helper exists against. The arm is
-        // erased, but the promise is this transport's.
-        let every = req
-            .extensions()
-            .get::<Timeouts>()
-            .copied()
-            .unwrap_or_default()
-            .between_bytes;
-        let staged = arm.connect_boxed(req).await.map_err(|r| r.into_error())?;
-        let resp = staged.exchange_boxed().await?;
-        Ok(self.bound_body(resp.map(established::NativeBody::from_h3), every))
-    }
-
     async fn run(&self, prepared: Prepared) -> Result<http::Response<NativeBody<R, T, H>>, Error>
     where
         D: Resolve,
@@ -3049,9 +3168,8 @@ where
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Self::Body>, Error> {
         #[cfg(feature = "http3")]
-        if demands_h3(req.extensions()) {
-            return self.over_quic(req).await;
-        }
+        return self.routed(req).await;
+        #[cfg(not(feature = "http3"))]
         self.run(Prepared::new(req)).await
     }
 
@@ -3071,20 +3189,6 @@ where
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
-}
-
-/// Whether the caller demanded HTTP/3 for this request.
-///
-/// Read before anything else `execute` does, because a demand for a
-/// protocol the TCP path cannot speak has no business going down it —
-/// resolving, checking the pool and opening a socket would all be work
-/// done to arrive at a refusal.
-#[cfg(feature = "http3")]
-fn demands_h3(extensions: &http::Extensions) -> bool {
-    matches!(
-        extensions.get::<hclient_core::RequireVersion>(),
-        Some(&hclient_core::RequireVersion(http::Version::HTTP_3))
-    )
 }
 
 /// The one implementation, and the contract is on the trait.

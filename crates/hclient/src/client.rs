@@ -1783,7 +1783,7 @@ impl Client {
         let tcp =
             hclient_native::Native::new(rt, tls.clone(), hclient_dns_system::SystemDns::new(rt));
         let quic = hclient_h3::H3::new(rt, tls, hclient_dns_system::SystemDns::new(rt))?;
-        hclient_select::Selecting::new(rt, tcp, quic, hclient_dns_system::SystemDns::new(rt))
+        tcp.http3(quic)
             .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
     }
 }

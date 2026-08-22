@@ -155,7 +155,7 @@ impl Origin {
 /// when.
 ///
 /// Cheap to clone (an `Arc` bump) and every clone is the same cache — it
-/// lives on one [`Selecting`](crate::Selecting) and is shared by every
+/// lives on one [`Selecting`](crate::Native) and is shared by every
 /// request that transport makes, which is the whole point: a memory that
 /// lasted one request would be no memory at all.
 ///
@@ -179,7 +179,7 @@ impl Origin {
 ///   heard it. A caller that drops its client on a network change has
 ///   already done the whole job.
 /// - **[`AltSvcCache::network_changed`] is the event's only entry point**,
-///   and it is public on [`Selecting`](crate::Selecting::network_changed)
+///   and it is public on [`Selecting`](crate::Native::network_changed)
 ///   for the caller that *can* see the change — an application usually
 ///   can, where a transport cannot. Until it is called, every entry
 ///   behaves as though it carried `persist=1`, which is the unsafe
@@ -258,7 +258,7 @@ impl AltSvcCache {
     ///
     /// A response with **no** `Alt-Svc` field at all is a different thing
     /// and does not reach here: absence is not an instruction, and
-    /// [`Selecting`](crate::Selecting) does not call this when the header
+    /// [`Selecting`](crate::Native) does not call this when the header
     /// is missing.
     ///
     /// # `clear`

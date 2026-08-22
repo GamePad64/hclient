@@ -32,7 +32,7 @@
 //! The advertisement cache has the same problem — a laptop that moved
 //! networks is advertising an alt-authority that was reachable somewhere
 //! else — and the same answer: nothing is persisted, and
-//! [`Selecting::network_changed`](crate::Selecting::network_changed) is the
+//! [`Selecting::network_changed`](crate::Native::network_changed) is the
 //! only entry point, because RFC 7838 §2.2 conditions its own SHOULD on
 //! *"information about network state"* that a `Transport` does not have.
 //!
@@ -106,7 +106,7 @@ pub const H3_FAILURE_TTL: Duration = Duration::from_secs(300);
 /// connect.
 ///
 /// Cheap to clone (an `Arc` bump) and every clone is the same memory — it
-/// lives on one [`Selecting`](crate::Selecting) and is shared by every
+/// lives on one [`Selecting`](crate::Native) and is shared by every
 /// request that transport makes, which is the whole point: a memory that
 /// lasted one request would be no memory at all.
 ///

@@ -10,9 +10,9 @@
 //! time live: what a present field replaces (RFC 7838 §3) and what
 //! survives a network change (§2.2, and the part this crate cannot see for
 //! itself).
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_select::altsvc::{AltSvcCache, FieldValue, Origin, parse};
+use hclient_native::altsvc::{AltSvcCache, FieldValue, Origin, parse};
 use std::time::Duration;
 
 const ORIGIN: &str = "example.com";

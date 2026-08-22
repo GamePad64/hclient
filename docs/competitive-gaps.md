@@ -206,7 +206,7 @@ Columns: **ng** = `hclient` (all features, native), **rq** = reqwest 0.13.4,
 | HTTPS/SVCB records consulted | **Y** | N | N | Y\* | (browser's) | asked in the same round as A/AAAA — measured, 404.6 ms → 0.8 ms |
 | Alt-Svc | **Y** | **N** | N | Y | (browser's) | with RFC 7838 `ma` as the cache lifetime. Zero matches for `alt_svc`/`alt-svc`/`AltSvc` in all of `reqwest-0.13.4/src/`, and `isahc` 2.0.1 says so about itself — its version-negotiation doc reads *"In the future, headers such as `Alt-Svc` will be used"* (`src/config/mod.rs:788`), which is a comparator naming its own absence |
 | DNS-over-HTTPS | Y | N | N | Y | N | `hclient-dns-doh`, 22 crates, no tokio/hyper/h2 |
-| choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `hclient-select`, from the HTTPS record, with a negative cache |
+| choose h3 vs h1/h2 per origin | **Y** | N | N | N | (browser's) | `hclient-native`, from the HTTPS record, with a negative cache |
 | race the two stacks | **Y** | N | N | Y\* | (browser's) | off by default; `curl` has `--http3-only`/Happy-Eyeballs-for-h3 at the libcurl level |
 
 ### 2.5 TLS
@@ -869,9 +869,9 @@ compiling a smaller API on wasm, which catches a subset at compile time and
 silently ignores nothing — but also cannot express "this backend does
 decompress internally, so do not decode again", which
 `DecompressionSupport::Internal` does. The rule that keeps the model honest
-is that a capability reports the **floor**, and `hclient-select` is where
+is that a capability reports the **floor**, and `Native::http3` is where
 that rule bites hardest: five of six disagreeing fields take the weaker
-value and the rest make the constructor **refuse, naming the field**.
+value and the rest make the call **refuse, naming the field**.
 
 **Per-request timeouts, four of them, with distinct meanings.**
 `connect` / `first_byte` / `between_bytes` in `Timeouts` plus `total` on the

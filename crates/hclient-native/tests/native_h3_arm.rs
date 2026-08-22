@@ -10,7 +10,7 @@
 //! counted by a peer, not inferred from a type. A `Native` that stored the
 //! arm and went on using TCP would answer the caller identically, since
 //! both servers here serve the same authority.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -28,7 +28,9 @@ fn armed(pair: &Pair, dns: FakeDns) -> Native<TokioHandle, hclient_tls_rustls::R
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
     let quic = H3::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone())
         .expect("H3::new does no I/O");
-    Native::new(rt, servers::client_tls(&pair.cert_der), dns).http3(quic)
+    Native::new(rt, servers::client_tls(&pair.cert_der), dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 fn demanding(pair: &Pair, v: http::Version) -> http::Request<RequestBody> {

@@ -7,10 +7,10 @@
 //!
 //! `tests/h3_failure.rs` is the other half: two real servers, and what a
 //! request does about all of this. This file is the rules.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_select::altsvc::Origin;
-use hclient_select::{H3_FAILURE_TTL, H3Failures};
+use hclient_native::altsvc::Origin;
+use hclient_native::{H3_FAILURE_TTL, H3Failures};
 use std::time::Duration;
 
 fn origin() -> Origin {

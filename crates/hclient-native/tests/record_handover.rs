@@ -23,7 +23,7 @@
 //! `Native::prepare` is what fetches a record, so the only records that
 //! exist inside a `Prepared` are the ones the connector fetched under its
 //! own rules. This arm is what makes that claim observable from outside.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -35,7 +35,6 @@ use hclient_dns::SvcbEndpoint;
 use hclient_h3::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::Selecting;
 use http_body_util::BodyExt;
 use servers::ORIGIN;
 use std::time::Duration;
@@ -48,17 +47,14 @@ const CONNECT: Duration = Duration::from_millis(300);
 /// a red test rather than a stuck one.
 const BOUND: Duration = Duration::from_secs(10);
 
-type Selector = Selecting<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
+type Selector = Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
 
 fn selector(dns: FakeDns, tls: impl Fn() -> hclient_tls_rustls::Rustls) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), tls(), dns.clone()),
-        H3::new(rt, tls(), dns.clone()).expect("H3::new does no I/O"),
-        dns,
-    )
-    .expect("the two stacks agree")
+    let quic = H3::new(rt.clone(), tls(), dns.clone()).expect("H3::new does no I/O");
+    Native::new(rt, tls(), dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 fn get(uri: String) -> http::Request<RequestBody> {
@@ -159,60 +155,20 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
     );
 }
 
-/// A member that cannot ask has not answered, so the question is still
-/// open — and a transport whose own resolver can ask still asks it.
-///
-/// The third thing `Discovered` distinguishes, and it only shows up when
-/// the members do not share a resolver, which
-/// [`Selecting::new`](hclient_select::Selecting::new) explicitly allows
-/// since it takes one of its own. The members here are built on a resolver
-/// reporting `supports_svcb() == false`; this transport's can ask and
-/// publishes `h3`. "The connector could not ask" is a fact about the
-/// resolver, not about the origin, so it must arrive as
-/// `Discovered::NotConsulted`. Collapsed into `NoRecord`, this origin
-/// would go to TCP with a perfectly capable resolver sitting unused.
-///
-/// **At the origin's default port, deliberately, and this is the only arm
-/// where that is the point rather than a nuisance.** Discovery has three
-/// gates in order — the port, the negative cache, then the capability —
-/// and an arm at any other port never reaches the third. The first version
-/// of this test named a port, connected to a real server, asserted the
-/// right thing and *passed for the wrong reason*: the mutation that reads
-/// "cannot ask" as "no record" survived it untouched.
-///
-/// What is observed is therefore the **question**, on two resolver logs,
-/// and not the connection: nothing can listen on 443 here, so the request
-/// fails, and its failure is not the observation. That the `h3` this
-/// transport then reads chooses QUIC is `choice.rs`'s claim, and it is not
-/// re-made here.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_member_that_cannot_ask_has_not_answered_and_this_transport_still_asks() {
-    let members = FakeDns::cannot_ask_but_would_have_said(vec![record_at(443)]);
-    let ours = FakeDns::with_records(vec![service_record(1, &[b"h3"])]);
-    let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    let t = Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), untrusting_tls(), members.clone()),
-        H3::new(rt, untrusting_tls(), members.clone()).expect("H3::new does no I/O"),
-        ours.clone(),
-    )
-    .expect("the two stacks agree");
-
-    let _ = tokio::time::timeout(BOUND, t.execute(get(format!("https://{ORIGIN}/"))))
-        .await
-        .expect("the request finished inside the bound");
-
-    assert_eq!(
-        members.svcb_lookups(),
-        0,
-        "a resolver that says it cannot ask is not asked"
-    );
-    assert_eq!(
-        ours.svcb_names(),
-        [ORIGIN],
-        "and the question was still put, by the transport whose resolver can"
-    );
-}
+// **A member that cannot ask while this transport can is no longer
+// representable, and that is the merge's one lost distinction.**
+//
+// `Selecting` took a resolver of its own, separate from the two members',
+// so "the connector could not ask" and "this transport can" were two
+// facts. There is one resolver now, so `supports_svcb() == false` sends
+// the request to the advertisement tier before discovery is reached at
+// all — the arm this test covered has no way in.
+//
+// What survives is the other half, and it is covered below:
+// `Discovered::NotConsulted` is still reached at a non-default port,
+// where the connector's own lookup does not apply and this transport asks
+// under the prefixed name. See
+// `a_record_this_transport_fetched_under_a_prefixed_name_does_not_move_the_connection`.
 
 /// A record fetched under the prefixed name stays out of the connector.
 ///

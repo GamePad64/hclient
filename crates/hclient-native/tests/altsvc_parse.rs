@@ -9,9 +9,9 @@
 //! Nothing here reads a clock or opens a socket. The parser is sans-io and
 //! the cache it feeds is clockless (`tests/altsvc_cache.rs`); the two are
 //! joined to real servers in `tests/alt_svc.rs`.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
-use hclient_select::altsvc::{Alternative, DEFAULT_MAX_AGE, FieldValue, Origin, parse};
+use hclient_native::altsvc::{Alternative, DEFAULT_MAX_AGE, FieldValue, Origin, parse};
 
 /// The alternatives a field value yields, or an empty list — `Clear` is a
 /// different instruction and the tests that expect it say so.

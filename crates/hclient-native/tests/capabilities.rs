@@ -9,7 +9,7 @@
 //! one of its refusals is reachable from a `Native` and an `H3` built here
 //! today — a rule whose other arms could only be exercised by a member that
 //! does not exist yet would otherwise ship unpinned.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{
@@ -19,8 +19,8 @@ use hclient_core::{
 use hclient_dns::IpLiteralOnly;
 use hclient_h3::H3;
 use hclient_native::Native;
+use hclient_native::caps::combine;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::{Selecting, combine};
 use hclient_tls_rustls::Rustls;
 use std::sync::Arc;
 
@@ -179,8 +179,7 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     let (tcp, quic) = stacks();
     let t = tcp.capabilities().clone();
     let q = quic.capabilities().clone();
-    let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    let c = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect("the two stacks agree today");
+    let c = tcp.http3(quic).expect("the two stacks agree today");
     let c = c.capabilities();
 
     // The six weaker claims, each asserted together with the member that
@@ -259,7 +258,7 @@ async fn a_pooling_disagreement_is_refused_at_construction_naming_the_field() {
     let tcp = Native::new(rt.clone(), tls(), IpLiteralOnly).without_pool();
     let quic = H3::new(rt.clone(), tls(), IpLiteralOnly).expect("H3::new does no I/O");
 
-    let err = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect_err("these two cannot be one");
+    let err = tcp.http3(quic).expect_err("these two cannot be one");
     assert_eq!(err.field, "connection_reuse");
     assert_eq!(err.tcp, "None");
     assert_eq!(err.quic, "Supported");
@@ -275,8 +274,7 @@ async fn a_pooling_disagreement_is_refused_at_construction_naming_the_field() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_same_two_stacks_with_the_pool_on_are_one_transport() {
     let (tcp, quic) = stacks();
-    let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    assert!(Selecting::new(rt, tcp, quic, IpLiteralOnly).is_ok());
+    assert!(tcp.http3(quic).is_ok());
 }
 
 // --- the rule itself, on capability sets no member here produces --------
@@ -518,7 +516,7 @@ fn every_capability_field_is_accounted_for_and_a_new_one_fails_this_test() {
             "informational_1xx",
             "forbidden_request_headers",
         ],
-        "`Capabilities` has changed shape; `hclient_select::combine` must say \
+        "`Capabilities` has changed shape; `hclient_native::caps::combine` must say \
          what a pair of stacks reports for the new field before this list moves"
     );
 }
@@ -570,7 +568,7 @@ async fn a_client_certificate_is_reported_by_both_stacks_and_by_the_pair() {
     assert!(tcp.capabilities().client_certs, "the TCP member");
     assert!(quic.capabilities().client_certs, "the QUIC member");
 
-    let pair = Selecting::new(rt, tcp, quic, IpLiteralOnly).expect("the two agree");
+    let pair = tcp.http3(quic).expect("the two agree");
     assert!(
         pair.capabilities().client_certs,
         "and the conjunction, which is only true because neither member is a constant"

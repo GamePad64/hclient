@@ -1115,7 +1115,6 @@ dependencies = [
  "hclient-rt",
  "hclient-rt-smol",
  "hclient-rt-tokio",
- "hclient-select",
  "hclient-tls",
  "hclient-tls-rustls",
  "http",
@@ -1331,6 +1330,8 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "h2",
+ "h3",
+ "h3-quinn",
  "hclient",
  "hclient-core",
  "hclient-dns",
@@ -1346,6 +1347,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
+ "quinn",
  "rcgen",
  "rustls",
  "thiserror",
@@ -1451,35 +1453,6 @@ dependencies = [
  "quinn-udp 0.6.1",
  "socket2",
  "tokio",
-]
-
-[[package]]
-name = "hclient-select"
-version = "0.1.0-alpha.1"
-dependencies = [
- "bytes",
- "futures-util",
- "h3",
- "h3-quinn",
- "hclient",
- "hclient-core",
- "hclient-dns",
- "hclient-dns-system",
- "hclient-h3",
- "hclient-native",
- "hclient-rt",
- "hclient-rt-tokio",
- "hclient-tls",
- "hclient-tls-rustls",
- "http",
- "http-body",
- "http-body-util",
- "quinn",
- "rcgen",
- "rustls",
- "thiserror",
- "tokio",
- "tokio-rustls",
 ]
 
 [[package]]

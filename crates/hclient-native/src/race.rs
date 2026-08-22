@@ -3,7 +3,7 @@
 //! The race is a **third** thing, after the two discovery tiers — applied
 //! *after* the choice, as a hedge against a network that blocks UDP/443,
 //! and not as a way of choosing. So nothing here decides which stack an
-//! origin speaks; [`Selecting::route`](crate::Selecting) has already
+//! origin speaks; [`Native::route`](crate::Native) has already
 //! decided QUIC by the time any of this runs, and all this adds is *"and
 //! do not wait thirty seconds to find out that it cannot be reached"*.
 //!
@@ -71,8 +71,8 @@
 //! observation — and there is still nowhere in this crate to keep one. So
 //! the head start is a constant the caller names, [`DEFAULT_HEAD_START`] is
 //! the one to name when there is no reason to name another, and there is no
-//! default at all in the sense that matters: a `Selecting` does not race
-//! until [`Selecting::hedging`](crate::Selecting::hedging) is called.
+//! default at all in the sense that matters: a `Native` does not race
+//! until [`Native::hedging`](crate::Native::hedging) is called.
 //!
 //! # 2. The budget
 //!
@@ -125,8 +125,8 @@
 //!
 //! **"Warm" is the only disposal the seam offers, and it is the right one
 //! anyway.** A dropped `hclient_native::Staged` checks in whenever reuse is
-//! on, and reuse is always on under a `Selecting`: `connection_reuse` is one
-//! of [`combine`](crate::combine)'s *same-or-refuse* fields, so
+//! on, and reuse is always on under a `Native`: `connection_reuse` is one
+//! of [`combine`](crate::caps::combine)'s *same-or-refuse* fields, so
 //! `Native::without_pool()` against an `H3` does not construct. So this
 //! module could not close a TCP connection it made even if it wanted to —
 //! and it does not want to. Nothing was spoken on that connection; it is
@@ -169,15 +169,14 @@
 //! address lookups. `hclient-select` has no `Spawn` bound and gains none
 //! here.
 
+use crate::Native;
 use crate::altsvc::Origin;
-use crate::{NativeBodyOf, QuicBodyOf, SelectedBody, Selecting, spend_connect_budget};
+use crate::route::spend_connect_budget;
+use crate::{Prepared, StagedConnect as TcpConnectStaged};
 use bytes::Bytes;
 use futures_util::future::{Either, select};
-use hclient_core::unversioned::Transport;
 use hclient_core::{Error, RequestBody, RetryKind, Timeouts};
 use hclient_dns::Resolve;
-use hclient_h3::{H3, StagedConnect as QuicConnect};
-use hclient_native::{Native, Prefetch, Prepared, StagedConnect as TcpConnectStaged};
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use std::pin::pin;
@@ -195,8 +194,8 @@ use std::time::Duration;
 /// staged connect changed about why this number is right, and what it did
 /// not change.
 ///
-/// It is not applied by default anywhere. A [`Selecting`] does not race
-/// until [`Selecting::hedging`] is called, and that call names the number.
+/// It is not applied by default anywhere. A [`Native`] does not race
+/// until [`Native::hedging`] is called, and that call names the number.
 pub const DEFAULT_HEAD_START: Duration = Duration::from_millis(250);
 
 /// A body that is over before it starts, for the one thing a probe needs a
@@ -326,7 +325,7 @@ fn room(budget: Option<Duration>, head_start: Duration) -> Room {
 /// output, and deliberately not a response.
 ///
 /// A decision rather than an answer is what keeps the routing in one place:
-/// [`Selecting::serve_quic`] sends the request the same way whether a race
+/// [`Native::serve_quic`] sends the request the same way whether a race
 /// happened or not, and there is exactly one call site for each of the two
 /// members. That is not only tidiness. `execute` is an `async fn`, so every
 /// future it may await is a field of one state machine; an earlier draft in
@@ -346,15 +345,15 @@ enum Raced {
     Failed(Error),
 }
 
-impl<R, T, D> Selecting<R, T, D>
+impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer + Clone,
+    R::Stream: 'static,
     T: TlsConnect,
-    Native<R, T, D>: Prefetch + Transport<Error = Error> + TcpConnectStaged<Error = Error>,
-    H3<R, T, D>: QuicConnect<Error = Error>,
-    <Native<R, T, D> as Transport>::Body: http_body::Body<Data = Bytes, Error = Error> + Unpin,
-    <H3<R, T, D> as Transport>::Body: http_body::Body<Data = Bytes, Error = Error> + Unpin,
+    T::Stream<R::Stream>: 'static,
     D: Resolve,
+    H: hclient_core::unversioned::Hooks + Clone + Unpin,
+    P: crate::proxy::ProxyProtocol,
 {
     /// Everything the QUIC arm of `Transport::execute` does, hedged or not.
     ///
@@ -375,17 +374,12 @@ where
         mut req: http::Request<RequestBody>,
         fallback: bool,
         origin: Option<&Origin>,
-    ) -> Result<http::Response<SelectedBody<NativeBodyOf<R, T, D>, QuicBodyOf<R, T, D>>>, Error>
-    {
+    ) -> Result<http::Response<crate::NativeBody<R, T, H>>, Error> {
         if let Some(head_start) = self.hedge.filter(|_| fallback) {
             match self.race_connects(&mut req, origin, head_start).await {
                 Raced::Quic => {}
                 Raced::Tcp => {
-                    return self
-                        .tcp
-                        .execute_prepared(Prepared::new(req))
-                        .await
-                        .map(|r| r.map(SelectedBody::Tcp));
+                    return self.run(Prepared::new(req)).await;
                 }
                 Raced::Failed(e) => return Err(e),
             }
@@ -430,10 +424,13 @@ where
         let quic_probe = probe(req);
 
         let refused = {
-            let quic = pin!(self.quic.connect(quic_probe));
+            let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
+                return Raced::Quic;
+            };
+            let quic = pin!(arm.connect_boxed(quic_probe));
             let hedge = pin!(async {
                 self.rt.sleep(head_start).await;
-                self.tcp.connect(Prepared::new(hedge_probe)).await
+                TcpConnectStaged::connect(self, Prepared::new(hedge_probe)).await
             });
             // Every arm below drops the loser by letting it fall out of
             // scope, which is what cancels it. The handles go the same way,

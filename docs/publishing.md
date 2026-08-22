@@ -1,4 +1,4 @@
-# Releasing the 30 crates
+# Releasing the 28 crates
 
 ```
 cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
@@ -40,7 +40,7 @@ right; it just does not know that `0.1.0` here was a placeholder that was
 never published. So the 70 literals — one `[workspace.package].version`, 8
 requirements in `[workspace.dependencies]` and 61 in crate manifests — were
 edited directly, once, and `cargo check --workspace --all-features` and a
-`--dry-run` publish of all 29 confirm it.
+`--dry-run` publish of all 28 confirm it.
 
 The requirements had to move with it and not merely alongside: `^0.1.0`
 does **not** accept `0.1.0-alpha.1`, because a caret requirement excludes
@@ -136,9 +136,9 @@ the wave count is a fact about the graph rather than a guess:
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
 | 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-quinn`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-quic` |
 | 4 | `hclient-tls-rustls` |
-| 5 | `hclient-h3`, `hclient-native` |
-| 6 | `hclient-dns-doh`, `hclient-select` |
-| 7 | `hclient` |
+| 5 | `hclient-h3` |
+| 6 | `hclient-native` |
+| 7 | `hclient`, `hclient-dns-doh` |
 | 8 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
 
 **It is eight and not five, and that is two questions rather than a
@@ -149,15 +149,13 @@ derivations were checked against each other.
 
 The chokepoints are one crate wide and each is a real edge:
 `hclient-tls-rustls` needs `hclient-tls-quic`, the second TLS seam;
-`hclient-native` needs that plus both runtimes and the system resolver;
-`hclient-select` needs `hclient-h3`; and `hclient` needs `hclient-select`,
-because its `http3` feature builds the pair for `Client::new()`.
+`hclient-native` needs that plus both runtimes, the system resolver and
+— behind its `http3` feature — `hclient-h3`.
 
-**That last edge is why `hclient-select` and `hclient-h3` carry their
-dev-dependency on `hclient` path-only, with no version.** They are the
-third and fourth crates to need it — `hclient-native` and `hclient-fetch`
-already did, for `DefaultTransport` — and the failure is the same: cargo
-allows the cycle inside a workspace and refuses it at package time,
+**That last edge is why `hclient-h3` carries its dev-dependency on
+`hclient` path-only, with no version.** It is the third crate to need it,
+after `hclient-native` and `hclient-fetch`, and the failure is the same:
+cargo allows the cycle inside a workspace and refuses it at package time,
 because a versioned dev-dependency has to resolve from the registry.
 `just package-build` is what catches it.
 
@@ -199,7 +197,7 @@ there is a hard parse error, not a silent no-op** — checked on purpose
 before writing it, because a release configuration that ignores a typo is
 the shape this project refuses everywhere else.
 
-- `shared-version = true` — all 30 crates carry `version.workspace = true`,
+- `shared-version = true` — all 28 crates carry `version.workspace = true`,
   and this tells the tool the same thing.
 - `consolidate-commits = true` — one commit for the bump, not thirty.
 - `allow-branch = ["main"]` — the default is every branch except `HEAD`,
@@ -216,17 +214,17 @@ the shape this project refuses everywhere else.
 is thirty releases for one change, so name the crate instead:
 
 ```
-cargo release -p hclient-select patch
+cargo release -p hclient-native patch
 ```
 
 Measured on this tree with a tag planted one commit back: the workspace
-version moves to `0.1.1` in all thirty manifests, `hclient-select` is
+version moves to `0.1.1` in every manifest, `hclient-native` is
 published, and every other crate is skipped — *"disabled by user, skipping
 hclient-core, despite being unpublished"*.
 
 **What makes that legal is `dependent-version = "fix"`.** The default,
 `upgrade`, rewrites every dependent's requirement to the new number, so
-`hclient-select` 0.1.1 would require `hclient-core` 0.1.1 — and a
+`hclient` 0.1.1 would require `hclient-core` 0.1.1 — and a
 requirement is a demand: that version must then exist in the index whether
 or not anything in it changed. `fix` touches a requirement only when it
 must, so they stay at `^0.1.0` and the already-published 0.1.0 keeps
@@ -234,7 +232,7 @@ satisfying them.
 
 **cargo-release does not work out which crates changed** — it was measured
 and it does not: with a tag one commit back and one crate touched, a plain
-`cargo release patch` still planned all 29 uploads. Selecting is yours,
+`cargo release patch` still planned all 28 uploads. Selecting is yours,
 with `-p`. `cargo-smart-release` is the tool that does compute the set, and
 it is not used here for reasons in §8.
 
@@ -251,7 +249,7 @@ Both fall out of one shared version number, which is the trade
 `[workspace.package].version` was chosen for: thirty hand-maintained
 numbers could drift, and one cannot.
 
-## 6. Keywords and categories: how thirty crates stay one family
+## 6. Keywords and categories: how twenty-nine crates stay one family
 
 Every publishable crate carries the keyword **`hclient`**, and that is the
 only mechanism that groups them on crates.io — it is a clickable, indexed

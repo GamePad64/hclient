@@ -58,7 +58,7 @@ client then routes by the origin's HTTPS record the way a browser does.
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 
-## The thirty crates, as six families
+## The twenty-nine crates, as six families
 
 You name **one**: `hclient`. Eleven reach your lockfile transitively, and
 twelve are ever chosen deliberately — the rest is plumbing. What follows is
@@ -79,9 +79,8 @@ or `dns` on the family members.
 
 | crate | what it is |
 |---|---|
-| `hclient-native` | TCP + TLS + HTTP/1.1, HTTP/2 behind a feature, on hyper |
-| `hclient-h3` | HTTP/3 over QUIC |
-| `hclient-select` | both of the above, choosing by the origin's HTTPS record |
+| `hclient-native` | TCP + TLS + HTTP/1.1, HTTP/2 and HTTP/3 behind features, choosing by the origin's HTTPS record |
+| `hclient-h3` | HTTP/3 over QUIC, for a build that wants it alone |
 | `hclient-fetch` | the browser's own `fetch` |
 | `hclient-wasi` | `wasi:http` 0.3 |
 | `hclient-urlsession` | Apple's `URLSession` |

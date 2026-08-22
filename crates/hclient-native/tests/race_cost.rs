@@ -34,7 +34,7 @@
 //! figure here is a floor, the cost with the network taken out. That
 //! matters less than it looks, and the reason is the finding: the failure
 //! costs are not functions of the path at all.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 

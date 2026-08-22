@@ -14,7 +14,7 @@
 //! Each request also carries a wall-clock bound of its own — not as an
 //! assertion, but so a mutation that turns a choice into a hang is red
 //! rather than eternal.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -25,7 +25,6 @@ use hclient_core::{RequestBody, RequireVersion};
 use hclient_h3::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::Selecting;
 use http_body_util::BodyExt;
 use servers::{ORIGIN, Pair};
 use std::time::Duration;
@@ -34,17 +33,15 @@ use std::time::Duration;
 /// hang fails instead of running out the harness's own patience.
 const BOUND: Duration = Duration::from_secs(10);
 
-type Selector = Selecting<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
+type Selector = Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
 
 fn selector(pair: &Pair, dns: FakeDns) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone()),
-        H3::new(rt, servers::client_tls(&pair.cert_der), dns.clone()).expect("H3::new does no I/O"),
-        dns,
-    )
-    .expect("the two stacks agree")
+    let tls = servers::client_tls(&pair.cert_der);
+    let quic = H3::new(rt.clone(), tls.clone(), dns.clone()).expect("H3::new does no I/O");
+    Native::new(rt, tls, dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 fn get(pair: &Pair, scheme: &str) -> http::Request<RequestBody> {

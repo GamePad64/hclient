@@ -354,8 +354,8 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All 30 crates
-carry `description`, `license` and `repository`; inter-crate dependencies
+The mechanics are in place and were measured, not assumed. All 28
+publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
 published at all; `hclient-rt-pair-check` is the only `publish = false`.
 `cargo publish -p hclient-core --dry-run` packages **and verifies** clean,
@@ -363,12 +363,13 @@ and `cargo package -p hclient` correctly refuses, because its dependencies
 are not in the index — which is what the order is for.
 
 **That order was recorded here as "five waves over 29 crates" and it is
-eight**, which is the difference between two questions rather than a
+eight over 28**, which is the difference between two questions rather than a
 miscount. Five is the *normal* dependency graph; `cargo publish` also has
 to satisfy **dev-dependencies that carry a version**, of which there are 32
 here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
-are still first and `hclient-select` is still last, and the chokepoints in
-between are one crate wide: `hclient-tls-rustls`, then `hclient-native`.
+are still first and the terminal backends still last, and the chokepoints
+in between are one crate wide: `hclient-tls-rustls`, then `hclient-h3`,
+then `hclient-native`.
 **Nothing follows that order by hand any more**: `cargo publish
 --workspace` is native since cargo 1.90 and computes it — measured on this
 tree, 29 packaged, 29 verified, and its ordering identical to the one
@@ -379,17 +380,17 @@ the bump, including the **69 literal version requirements** that
 must move with `[workspace.package].version` and that cargo gives no way to
 centralise.
 
-**One shared version does not mean one release of thirty crates**, and the
+**One shared version does not mean one release of twenty-nine crates**, and the
 setting that decides it is `dependent-version`. Its default, `upgrade`,
 rewrites every dependent's requirement to the new number — and a
-requirement is a demand, so `hclient-select` 0.1.1 requiring `hclient-core`
+requirement is a demand, so `hclient-native` 0.1.1 requiring `hclient-core`
 0.1.1 obliges a release of a crate nothing changed in. `fix` touches a
 requirement only when it must, the requirements stay at `^0.1.0`, and
 `cargo release -p <crate> patch` publishes that crate alone. Two things
 then read as mistakes and are not: an unpublished crate's version runs
 ahead of the index, and published versions are sparse per crate. And
 cargo-release does **not** work out which crates changed — measured, with a
-tag one commit back: a plain `cargo release patch` still planned all 29
+tag one commit back: a plain `cargo release patch` still planned all 28
 uploads. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
@@ -1220,11 +1221,11 @@ failed and never reads why. The black hole is used once, where a test needs
 the bound *spent*. Twenty mutations, nineteen killed, one control.
 `.notes/v04-staged-connect.md`.
 
-### One transport can now choose between the two stacks (v0.4 W1)
+### One transport chooses between the two stacks
 
-`hclient-select`'s `Selecting<R, T, D>` owns a `Native<R, T, D>` and an
-`H3<R, T, D>` and sends each request over one of them, deciding from the
-origin's **HTTPS record**: `alpn` containing `h3` chooses QUIC, anything
+`Native::http3` gives the transport a QUIC arm, and it then sends each
+request over one stack or the other, deciding from the origin's
+**HTTPS record**: `alpn` containing `h3` chooses QUIC, anything
 else chooses TCP. That closes a gap `hclient-native`'s discovery module had
 written down about itself — *"an `alpn` containing `h3` is a fact this crate
 can read and cannot act on … there is nowhere in this codebase for 'choose
@@ -1367,8 +1368,8 @@ carrying one would let any code that can build a request move the
 connection somewhere else. `.notes/v04-w1-acceptance.md` §3.1 has the
 argument and §3.3 the eleven mutations behind it (ten killed, one control).
 
-The other half of the rule is what keeps `hclient-select` from owning a
-copy of the connector's: where the member did **not** look — a non-default
+The other half of the rule is what keeps the routing from owning a copy of
+the connector's: where the member did **not** look — a non-default
 port, whose record lives under a name only the selecting transport
 constructs — it answers `Discovered::NotConsulted`, which is not an answer,
 and the caller asks its own resolver exactly as it always did. `NoRecord`
@@ -2847,11 +2848,9 @@ before the first publish is free and after it is not, which is why the
 question was worth asking at this exact moment. The reason lives in the
 crate's own README, where a reader looking for `hclient-ws` will be.
 
-Two softer observations, recorded and not acted on. `hclient-select` agrees
-with its `Selecting` type but does not say what it selects between.
-`hclient-idn` is not about HTTP at all — it is a UTS 46 crate that picks its
+One softer observation, recorded and not acted on. `hclient-idn` is not about HTTP at all — it is a UTS 46 crate that picks its
 implementation by target, worth more to the ecosystem than the prefix lets
-anyone find. Both are the owner's call and neither is wrong.
+anyone find. It is the owner's call and it is not wrong.
 
 All 29 names were checked against crates.io and all are free. **The first
 run of that check answered `403` for every name including its control**,
@@ -3112,7 +3111,7 @@ should count 59. Restoring is one loop; noticing is the hard part, because a
 copy behaves identically until it drifts.
 
 A README is the same shape one step down, and it was the same absence: no
-crate had one, `readme` was set nowhere, so 29 crates.io pages would have
+crate had one, `readme` was set nowhere, so 28 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
 says the thing this workspace's own arguments turn on — **why it is its own
 crate** — because that is the question a reader landing on
@@ -3334,7 +3333,7 @@ that `tcp_opts` replaces the whole set, so a caller setting only `keepalive`
 turns `nodelay` back off — pinned by a test.
 
 It also made a latent defect visible, which is worth more than the
-milliseconds: `hclient-select`'s Alt-Svc fixture answered once and closed
+milliseconds: the Alt-Svc fixture answered once and closed
 **without `Connection: close`**, which RFC 9112 §9.6 makes a MUST. The
 client pooled a connection the peer had already closed and the next request
 raced the FIN — `hclient-native`'s pooled-reuse window, recorded in `h1.rs`

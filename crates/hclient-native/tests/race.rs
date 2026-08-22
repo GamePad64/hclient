@@ -29,7 +29,7 @@
 //! (§7.3, M1) and a hundred times above the ~50 ms it should cost with
 //! it. Everything else is a counter, and most of them are deltas across a
 //! hop.
-#![cfg(not(target_family = "wasm"))]
+#![cfg(all(feature = "http3", not(target_family = "wasm")))]
 
 mod fakedns;
 mod servers;
@@ -38,9 +38,9 @@ use fakedns::{FakeDns, service_record};
 use hclient_core::unversioned::Transport;
 use hclient_core::{Error, ErrorKind, Phase, RequestBody, RequireVersion, Timeouts};
 use hclient_h3::H3;
+use hclient_native::DEFAULT_HEAD_START;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
-use hclient_select::{DEFAULT_HEAD_START, Selecting};
 use http_body_util::BodyExt;
 use servers::{ORIGIN, Pair, Quic, Tcp};
 use std::time::Duration;
@@ -49,17 +49,15 @@ use std::time::Duration;
 /// rather than an eternal one.
 const BOUND: Duration = Duration::from_secs(20);
 
-type Selector = Selecting<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
+type Selector = Native<TokioHandle, hclient_tls_rustls::Rustls, FakeDns>;
 
 fn plain(pair: &Pair, dns: FakeDns) -> Selector {
     let rt = TokioHandle::current().expect("inside #[tokio::test]");
-    Selecting::new(
-        rt.clone(),
-        Native::new(rt.clone(), servers::client_tls(&pair.cert_der), dns.clone()),
-        H3::new(rt, servers::client_tls(&pair.cert_der), dns.clone()).expect("H3::new does no I/O"),
-        dns,
-    )
-    .expect("the two stacks agree")
+    let tls = servers::client_tls(&pair.cert_der);
+    let quic = H3::new(rt.clone(), tls.clone(), dns.clone()).expect("H3::new does no I/O");
+    Native::new(rt, tls, dns)
+        .http3(quic)
+        .expect("the two paths agree")
 }
 
 /// The same transport with the race switched on — which is the only way it
@@ -380,7 +378,7 @@ async fn the_connection_the_hedge_made_is_the_one_the_request_is_sent_on() {
 /// **Genuinely optional, and this is the A/B that says so.**
 ///
 /// One fixture, one bound, one difference: whether
-/// [`Selecting::hedging`](hclient_select::Selecting::hedging) was called.
+/// [`Selecting::hedging`](hclient_native::Native::http3) was called.
 /// Without it the request spends its whole `Timeouts::connect` on a QUIC
 /// arm that will never answer and fails — which is exactly the behaviour
 /// this crate had before the race existed, and which
