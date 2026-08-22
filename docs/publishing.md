@@ -136,10 +136,10 @@ the wave count is a fact about the graph rather than a guess:
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
 | 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-quinn`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-quic` |
 | 4 | `hclient-tls-rustls` |
-| 5 | `hclient-native` |
-| 6 | `hclient`, `hclient-dns-doh` |
-| 7 | `hclient-h3`, `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
-| 8 | `hclient-select` |
+| 5 | `hclient-h3`, `hclient-native` |
+| 6 | `hclient-dns-doh`, `hclient-select` |
+| 7 | `hclient` |
+| 8 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
 
 **It is eight and not five, and that is two questions rather than a
 miscount.** Five is the *normal* dependency graph; `cargo publish` must
@@ -150,7 +150,16 @@ derivations were checked against each other.
 The chokepoints are one crate wide and each is a real edge:
 `hclient-tls-rustls` needs `hclient-tls-quic`, the second TLS seam;
 `hclient-native` needs that plus both runtimes and the system resolver;
-`hclient-select` needs `hclient-h3`.
+`hclient-select` needs `hclient-h3`; and `hclient` needs `hclient-select`,
+because its `http3` feature builds the pair for `Client::new()`.
+
+**That last edge is why `hclient-select` and `hclient-h3` carry their
+dev-dependency on `hclient` path-only, with no version.** They are the
+third and fourth crates to need it — `hclient-native` and `hclient-fetch`
+already did, for `DefaultTransport` — and the failure is the same: cargo
+allows the cycle inside a workspace and refuses it at package time,
+because a versioned dev-dependency has to resolve from the registry.
+`just package-build` is what catches it.
 
 `hclient-rt-pair-check` is `publish = false` and is not in the count — it
 must depend on `hclient-rt-tokio` **and** `hclient-rt-smol` at once, with

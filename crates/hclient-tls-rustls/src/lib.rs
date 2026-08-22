@@ -24,14 +24,36 @@ use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug)]
+/// The per-ALPN config cache, named because the type outgrew the line it
+/// sat on when it moved behind an `Arc` — and `clippy::type_complexity`
+/// said so before a reader had to.
+///
+/// The key is the ALPN list exactly as it goes on the wire: a `Vec` of
+/// protocol names, each a `Vec<u8>`, ordered, because rustls stores the
+/// list inside the `ClientConfig` and order is preference.
+type AlpnCache = Arc<Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>>;
+
+/// **`Clone` shares everything, and that is a correctness property rather
+/// than an optimisation.** `config_id` below is copied by value, so two
+/// clones claim the same TLS identity — and a pool treats connections
+/// under one identity as interchangeable. A clone that forked `by_alpn`
+/// would merely waste the most expensive operation rustls has; one that
+/// forked the QUIC ticket store would let a resumption ticket earned by
+/// one value be invisible to the other while both still claim to be the
+/// same configuration. So both live behind an `Arc`.
+///
+/// What a caller gets from this is one read of the OS trust store where
+/// two stacks need the same connector — `Selecting` owns a `Native` and an
+/// `H3` and its `T` is one type, so without `Clone` the only way to build
+/// the pair is to construct the backend twice.
+#[derive(Debug, Clone)]
 pub struct Rustls {
     base: Arc<rustls::ClientConfig>,
     /// ALPN is set on connect, and `ClientConfig` stores it internally —
     /// so the config is cached per ALPN set. Without the cache, every
     /// request would rebuild the config from scratch, and that's the
     /// most expensive operation in rustls.
-    by_alpn: Mutex<HashMap<Vec<Vec<u8>>, Arc<rustls::ClientConfig>>>,
+    by_alpn: AlpnCache,
     /// See [`TlsConfigId`]. Drawn once here, in the constructor, and never
     /// recomputed: everything that decides whether a server is acceptable
     /// lives in `base`, and `base` is immutable for this value's lifetime.
@@ -46,17 +68,17 @@ pub struct Rustls {
     /// See `crate::quic`'s module doc for why they are separate from
     /// `by_alpn` and from `base`'s own resumption store.
     #[cfg(feature = "quic")]
-    quic: std::sync::OnceLock<quic::QuicState>,
+    quic: Arc<std::sync::OnceLock<quic::QuicState>>,
 }
 
 impl Rustls {
     pub fn from_config(cfg: Arc<rustls::ClientConfig>) -> Self {
         Self {
             base: cfg,
-            by_alpn: Mutex::new(HashMap::new()),
+            by_alpn: Arc::new(Mutex::new(HashMap::new())),
             config_id: TlsConfigId::new_unique(),
             #[cfg(feature = "quic")]
-            quic: std::sync::OnceLock::new(),
+            quic: Arc::new(std::sync::OnceLock::new()),
         }
     }
 

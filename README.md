@@ -51,6 +51,10 @@ looks. `cargo add` will not select it unless asked:
 cargo add hclient@0.1.0-alpha.1 --features default-transport
 ```
 
+Add `default-http2` and `default-http3` to that list for HTTP/2 and
+HTTP/3; `Client::new()` and everything after it is unchanged, and the
+client then routes by the origin's HTTPS record the way a browser does.
+
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 

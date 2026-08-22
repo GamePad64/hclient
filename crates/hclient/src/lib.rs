@@ -367,7 +367,42 @@ pub use response::{Collected, Response};
 ///   do not build there. The narrower flag checks this branch, which is what
 ///   the argument needs, and nothing wider.
 #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
-pub type DefaultTransport = hclient_native::Native<
+pub type DefaultTransport = NativeDefault;
+
+/// Which stack [`DefaultTransport`] resolves to on a non-wasm target, and
+/// **the one question this pair answers is `http3` and nothing else**.
+///
+/// The two levels are separate on purpose. `DefaultTransport` above answers
+/// *which target*; this pair answers *which stack*, and its two arms are
+/// syntactic negations of each other, so they are exhaustive and
+/// non-overlapping by construction. Writing both questions into one set of
+/// `#[cfg]`s is how [`DefaultClock`] once ended up with three arms that
+/// `wasm32-wasip2` matched none of, and the crate did not compile there at
+/// all.
+///
+/// Without `http3` this is `Native` and the client speaks HTTP/1.1, plus
+/// HTTP/2 where `http2` compiled it in. With `http3` it is `Selecting`,
+/// which owns a `Native` and an `H3` and routes by the origin's HTTPS
+/// record — so a caller who never touches a transport type gets HTTP/3 at
+/// origins that advertise it, and the same `Client::new()` either way.
+#[cfg(all(
+    feature = "default-transport",
+    not(target_family = "wasm"),
+    not(feature = "http3")
+))]
+type NativeDefault = hclient_native::Native<
+    hclient_rt_tokio::Tokio,
+    hclient_tls_rustls::Rustls,
+    hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,
+>;
+
+/// See the sibling above: same name, the negated condition.
+#[cfg(all(
+    feature = "default-transport",
+    not(target_family = "wasm"),
+    feature = "http3"
+))]
+type NativeDefault = hclient_select::Selecting<
     hclient_rt_tokio::Tokio,
     hclient_tls_rustls::Rustls,
     hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,

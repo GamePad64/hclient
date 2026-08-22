@@ -59,7 +59,16 @@ thiserror      = { workspace = true }
 futures-executor   = { version = "0.3", default-features = false, features = ["std"] }
 hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1" }
 http-body-util     = { workspace = true }
-hclient            = { workspace = true }
+# Path-only, no version, and deliberately the odd one out among the
+# `{ workspace = true }` entries around it. `hclient` depends on this crate
+# behind its `http3` feature, so a version here is a cycle: cargo allows it
+# inside a workspace and refuses it at `cargo package`, because a
+# dev-dependency carrying a version has to resolve from the registry and
+# `hclient` cannot be there until this crate is. Dropping the version makes
+# cargo strip the dev-dependency from the published manifest. The same
+# arrangement `hclient-native` and `hclient-fetch` already carry, and for
+# the same reason — caught by `just package-build`, not by reading.
+hclient            = { path = "../hclient" }
 hclient-rt-tokio   = { path = "../hclient-rt-tokio", version = "0.1.0-alpha.1", features = ["udp"] }
 # The second runtime, for `tests/two_runtimes.rs`. A dev-dependency only:
 # this crate is generic over `R` and names neither backend.

@@ -1742,6 +1742,7 @@ impl Client {
     /// (`ErrorKind::Tls`) itself, and `Native::new`/`SystemDns::new` can't
     /// fail at all (ordinary constructors, no IO) — wrapping their
     /// nonexistent failure in a `Result` would have nothing to justify it.
+    #[cfg(not(feature = "http3"))]
     fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error> {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
@@ -1750,6 +1751,40 @@ impl Client {
             tls,
             hclient_dns_system::SystemDns::new(rt),
         ))
+    }
+
+    /// The `http3` sibling of the function above, forked on the same single
+    /// question `NativeDefault` (`lib.rs`) is forked on, and with the same
+    /// discipline: the two `#[cfg]`s are syntactic negations of each other.
+    ///
+    /// **One `Rustls`, cloned into both stacks.** It carries the platform
+    /// verifier, which reads the OS trust store, and handing each member
+    /// its own would read it twice and give the pair two configuration
+    /// identities where they are one configuration. That `Rustls: Clone`
+    /// shares its ALPN cache and its QUIC ticket store rather than forking
+    /// them is what makes the clone the right thing rather than the cheap
+    /// one — see that type's own doc.
+    ///
+    /// The resolver is cloned three times rather than shared behind a
+    /// handle, because each stack owns its own and `Selecting`'s third
+    /// handle is the one it asks for HTTPS records — deliberately not
+    /// borrowed from a member, see that type's `dns` field.
+    ///
+    /// `Selecting::new` returns a `Disagreement` when the two members
+    /// cannot be given one honest `Capabilities`. It cannot happen here —
+    /// both are built with their own defaults, and the one reachable
+    /// disagreement in this workspace is `Native::without_pool()` against
+    /// `H3` — so this maps it into the `ErrorKind::Unsupported` the caller
+    /// already has to handle rather than unwrapping.
+    #[cfg(feature = "http3")]
+    fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error> {
+        let rt = hclient_rt_tokio::Tokio;
+        let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
+        let tcp =
+            hclient_native::Native::new(rt, tls.clone(), hclient_dns_system::SystemDns::new(rt));
+        let quic = hclient_h3::H3::new(rt, tls, hclient_dns_system::SystemDns::new(rt))?;
+        hclient_select::Selecting::new(rt, tcp, quic, hclient_dns_system::SystemDns::new(rt))
+            .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
     }
 }
 

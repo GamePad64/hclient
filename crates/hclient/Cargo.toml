@@ -73,6 +73,35 @@ default-transport = [
     "dep:hclient-dns-system",
     "dep:hclient-fetch",
 ]
+# HTTP/2 and HTTP/3 for `Client::new()`, and the pair is deliberately two
+# features per protocol rather than one.
+#
+# `http2`/`http3` COMPILE the protocol in; `default-http2`/`default-http3`
+# additionally make it the default of the transport `Client::new()` builds,
+# and imply the first. Without the split, a caller who wants the code
+# present but the protocol off at runtime has no way to say so, and one who
+# writes `http3(true)` in a build that never compiled it gets a refusal for
+# a reason that is not in their manifest.
+#
+# Cargo unifies features, so `default-http3` switched on anywhere in a
+# graph makes `Client::new()` speak HTTP/3 for everyone in it. That is a
+# BEHAVIOURAL floor, not a broken build — the four crates it adds all
+# compile for every target this list is reachable from — and it is the same
+# trade `default-transport` itself makes. What it costs a neighbour is
+# `quinn` on disk and a QUIC connect to origins whose HTTPS record
+# advertises `h3`; what it costs on a network that blocks UDP/443 is
+# bounded by `H3Failures` at one attempt per origin per TTL, and by
+# `Timeouts::connect` if the caller sets one.
+http2 = ["default-transport", "hclient-native/http2"]
+http3 = [
+    "default-transport",
+    "dep:hclient-select",
+    "dep:hclient-h3",
+    "hclient-rt-tokio/udp",
+    "hclient-tls-rustls/quic",
+]
+default-http2 = ["http2"]
+default-http3 = ["http3"]
 # `Collected::json`. Off by default: measured on a real wasm32-unknown-unknown
 # build (opt-level=z, lto=true, strip=true) — 74 bytes when `.json()` is never
 # called (LTO strips the method entirely), 46,877 bytes and +5 crates in the
@@ -350,6 +379,15 @@ hclient-native     = { path = "../hclient-native",     version = "0.1.0-alpha.1"
 hclient-rt-tokio   = { path = "../hclient-rt-tokio",   version = "0.1.0-alpha.1", optional = true }
 hclient-tls-rustls = { path = "../hclient-tls-rustls", version = "0.1.0-alpha.1", optional = true, features = ["platform-verifier"] }
 hclient-dns-system = { path = "../hclient-dns-system", version = "0.1.0-alpha.1", optional = true }
+# `http3` only. It brings `hclient-h3` and the QUIC halves of the runtime
+# and the TLS backend with it, which is why the feature below names those
+# two features rather than leaving them to a caller: `Selecting` cannot be
+# named at all unless `TokioHandle: UdpAdoptStd` and `Rustls:
+# QuicTlsConnect`, and both are behind their own crate's feature.
+hclient-select     = { path = "../hclient-select",     version = "0.1.0-alpha.1", optional = true }
+# Named here rather than reached through `hclient-select`, because
+# `Selecting::new` takes an `H3` and this crate has to build one.
+hclient-h3         = { path = "../hclient-h3",         version = "0.1.0-alpha.1", optional = true }
 
 # The browser-only extra feature `jitter`'s `getrandom` call needs: on
 # `wasm32-unknown-unknown` `getrandom` has no default backend and must be
