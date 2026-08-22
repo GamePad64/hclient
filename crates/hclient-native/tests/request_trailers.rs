@@ -5,10 +5,9 @@
 //!
 //! # Three behaviours under one field, and only one of them was wrong
 //!
-//! `docs/v04-design.md`'s Appendix B proposed making `hclient-native`
-//! enforce a `false` the way `hclient-h3` does (a typed
-//! `RequestTrailersNotSent`), **unless the h1 path turned out to send
-//! them too**. It does.
+//! The plan was to make `hclient-native` enforce a `false` the way
+//! `hclient-h3` does, with a typed `RequestTrailersNotSent`, **unless the
+//! h1 path turned out to send them too**. It does.
 //! `sends_request_trailers_on_http1_when_the_caller_declares_them` below
 //! has a raw socket read `0\r\ngrpc-status: 0\r\n\r\n` off the wire from
 //! an ordinary `Native` over plaintext HTTP/1.1 — no `http2` feature

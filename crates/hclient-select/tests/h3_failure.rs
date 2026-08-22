@@ -4,8 +4,7 @@
 //! This file shows what happens when the client believes it and QUIC does
 //! not answer — which before the staged connect could not be built at all,
 //! because the fallback would have been a request-level retry with a
-//! `RequestBody::retry_kind()` condition on it
-//! (`docs/v04-w1-acceptance.md` §9.3, blocker 1).
+//! `RequestBody::retry_kind()` condition on it.
 //!
 //! # What the counters have to tell apart
 //!
@@ -30,9 +29,9 @@
 //! test needs a bound to be *spent* rather than a connect to fail.
 //!
 //! What that leaves unverified is written down rather than implied: nothing
-//! here measures the 30 s a real UDP block costs. That number is
-//! `docs/v04-w1-acceptance.md` §7.3's, it is quinn's `max_idle_timeout`
-//! rather than anything of ours, and it is a `Timeouts::connect` question.
+//! here measures the 30 s a real UDP block costs. That number is quinn's
+//! `max_idle_timeout` rather than anything of ours, and it is a
+//! `Timeouts::connect` question.
 #![cfg(not(target_family = "wasm"))]
 
 mod fakedns;
@@ -390,8 +389,8 @@ async fn a_demand_for_http_3_does_not_fall_back_but_still_teaches_the_memory() {
 /// prefixed name only `Selecting` constructs), so the second lookup a
 /// fallback would otherwise pay is not made. **At an origin's default port
 /// it would be 2 rather than 1**, and that row is inferred rather than
-/// measured for the same reason `docs/v04-w1-acceptance.md` §9.6's is: the
-/// record travelled with the request into the QUIC arm, and there is
+/// measured, for the reason the mechanism exists: the record travelled
+/// with the request into the QUIC arm, and there is
 /// deliberately no way to pair a record with a request it was not fetched
 /// for. It is paid by the request that discovers the failure and by no
 /// other, which is what the memory is for.

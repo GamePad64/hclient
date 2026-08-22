@@ -78,10 +78,10 @@ fn stacks() -> (Tcp, Quic) {
 /// The set of fields on which the two members disagree, **measured** rather
 /// than listed from the design document.
 ///
-/// `docs/v04-design.md` §W1 cites `redirects` and `full_duplex` as its
-/// examples, and two of its examples had already been fixed under it while
-/// it was being written (`RedirectSupport::Configurable` deleted,
-/// `version_select` turned on for both). This is the set that is really
+/// The obvious examples to cite are `redirects` and `full_duplex`, and a
+/// list written by hand goes stale: `RedirectSupport::Configurable` was
+/// deleted and `version_select` turned on for both while one was being
+/// written. This is the set that is really
 /// there, and it is asserted whole so that a member changing a capability
 /// arrives here as a red test rather than as a silent change of what this
 /// transport promises.
@@ -292,8 +292,8 @@ fn pair(f: impl Fn(&mut Capabilities, bool)) -> (Capabilities, Capabilities) {
 
 #[test]
 fn a_disagreement_on_any_unordered_enum_is_refused_and_names_its_field() {
-    // `RedirectSupport` is `docs/v04-design.md` P4's own example: three
-    // variants, no order between them, and `None` is not a weaker
+    // `RedirectSupport` is the sharpest example: three variants, no
+    // order between them, and `None` is not a weaker
     // `Transparent` — it is the stronger claim that redirects are
     // impossible.
     let (a, b) = pair(|c, on| {
@@ -358,8 +358,8 @@ fn owning_a_jar_or_a_cache_is_a_refusal_rather_than_a_conjunction() {
 /// `forbidden_request_headers` refuses because the type leaves nothing
 /// else: the honest combination is the union of the two lists, and
 /// `&'static [HeaderName]` has nowhere to put a slice computed at
-/// construction — the same wall `docs/v04-design.md` P3 hit from the other
-/// side.
+/// construction, because `capabilities()` returns a reference and the
+/// answer must therefore be stored.
 #[test]
 fn two_different_forbidden_header_lists_have_no_honest_union_to_store() {
     let mut a = Capabilities::none();

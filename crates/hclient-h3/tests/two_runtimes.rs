@@ -16,9 +16,8 @@
 //!
 //! # Why one function and not two test files
 //!
-//! `docs/v03-design.md` §W1 states the trap in as many words: *"An h3 pair
-//! written as two copies would prove that both compile and nothing else."*
-//! What makes `two_runtimes.rs` worth what it is next door is that the
+//! An h3 pair written as two copies would prove that both compile and
+//! nothing else. What makes `two_runtimes.rs` worth what it is next door is that the
 //! **same** function is instantiated twice, and that its sensitivity was
 //! demonstrated rather than assumed.
 //!

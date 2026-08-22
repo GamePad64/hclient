@@ -1,5 +1,4 @@
-//! `RequireVersion` on a transport that speaks exactly one version
-//! (v0.4 W2, `docs/v04-design.md` Appendix A).
+//! `RequireVersion` on a transport that speaks exactly one version.
 //!
 //! # The interesting question here is not "does it refuse"
 //!

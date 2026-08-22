@@ -1,8 +1,8 @@
 //! The bootstrap decision, as the constructors actually enforce it.
 //!
-//! `docs/v03-design.md` §W3 says the bootstrap is the design problem, and
-//! that "the wrong choice is expensive to walk back because it shows in
-//! the constructor". These tests are what makes the constructor a
+//! The bootstrap is this crate's design problem, and the wrong choice is
+//! expensive to walk back because it shows in the constructor. These
+//! tests are what makes the constructor a
 //! statement rather than a name: `pinned` refuses a name, `bootstrapped`
 //! refuses a literal, and neither accepts an endpoint whose bytes would
 //! cross a network in the clear.

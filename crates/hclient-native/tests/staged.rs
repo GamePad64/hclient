@@ -1,8 +1,8 @@
 //! The staged connect, watched from the server's side of the wire.
 //!
-//! `docs/connect-only-seam.md` decided the shape — `connect` -> an opaque
-//! handle -> `exchange` — and three of its claims are only claims until a
-//! peer says otherwise. All three are counted by the **server**:
+//! The shape is `connect` -> an opaque handle -> `exchange`, and three of
+//! its claims are only claims until a peer says otherwise. All three are
+//! counted by the **server**:
 //!
 //! - a staged connect opens a connection and sends **no request** (the
 //!   whole point: a caller can find out whether an origin is reachable
@@ -244,8 +244,8 @@ async fn a_staged_exchange_returns_its_connection_to_the_pool() {
     }
 }
 
-/// `docs/connect-only-seam.md` §9 left open what happens to a connection
-/// whose caller decided not to use it. This is the answer: it goes back to
+/// What happens to a connection whose caller decided not to use it: it
+/// goes back to
 /// the pool, so the next request finds it.
 #[tokio::test]
 async fn a_handle_nobody_spends_leaves_a_warm_connection() {

@@ -6,10 +6,10 @@
 //! Every other test in this crate answers itself. The fixture in
 //! `tests/support` and the parser in `src/wire.rs` were written by the same
 //! author, from the same reading of the same RFCs, which is precisely the
-//! arrangement in which a fixture agrees with a bug. `docs/v03-acceptance.
-//! md` recorded that as **"no live DoH endpoint has been queried"** in four
-//! separate entries, and the most valuable of them was not about DNS at
-//! all: `Doh::pinned` takes an **IP literal**, so every pinned deployment
+//! arrangement in which a fixture agrees with a bug. **No live DoH
+//! endpoint had ever been queried**, and the sharpest consequence was not
+//! about DNS at all: `Doh::pinned` takes an **IP literal**, so every
+//! pinned deployment
 //! makes a handshake against a certificate presented for an *IP address*,
 //! and nothing in this workspace had ever done one.
 //!
@@ -516,9 +516,8 @@ const ACCEPT: http::HeaderName = http::header::ACCEPT;
 // ── 1. the question this file was written for ───────────────────────────
 
 /// **A certificate presented for an IP address, through the platform's own
-/// verifier.** `docs/v03-design.md` §W3 and four entries in
-/// `docs/v03-acceptance.md` list this as unverified, and it is the one
-/// thing `Doh::pinned` cannot work without: its endpoint is an IP literal,
+/// verifier.** It is the one thing `Doh::pinned` cannot work without: its
+/// endpoint is an IP literal,
 /// so the TLS server name is an address and the certificate must carry an
 /// IP SAN.
 ///
@@ -1013,8 +1012,8 @@ async fn nxdomain_from_a_real_authority_is_an_empty_stream_not_an_error() {
 /// and not a constraint.**
 ///
 /// RFC 8484 §4.1 defines both forms and requires a server to support both;
-/// `docs/v03-acceptance.md` records "no GET" as deliberate — the base64url
-/// encoder is a dependency this workspace does not want for one call site.
+/// "no GET" is deliberate — the base64url encoder is a dependency this
+/// workspace does not want for one call site.
 /// A decision recorded as a trade-off is worth checking is *still* a
 /// trade-off: this test builds the GET by hand (eleven lines of base64url,
 /// above) and asserts a real answer comes back, so the entry stays honest

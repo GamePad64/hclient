@@ -147,7 +147,7 @@ const CORPUS: &[Case] = &[
 
     // ── Rejections that must stay rejections ──────────────────────────
     Case { what: "an `xn--` label that is not valid punycode", input: "xn--zzzz.test", idna_says: None, icu_says: None },
-    Case { what: "the shortest invalid `xn--` label, and the one browsers accept — see docs/icu-ecosystem-survey.md", input: "xn--a.de", idna_says: None, icu_says: None },
+    Case { what: "the shortest invalid `xn--` label, and the one browsers accept", input: "xn--a.de", idna_says: None, icu_says: None },
     Case { what: "`xn--` with nothing after it at all", input: "xn--.de", idna_says: None, icu_says: None },
     Case { what: "an ACE label whose punycode is valid and decodes to ASCII alone: UIDNA_ERROR_INVALID_ACE_LABEL, which is NOT the decoder's refusal but the layer above it", input: "xn--a-.de", idna_says: None, icu_says: None },
     Case { what: "a leading combining mark", input: "\u{301}abc.de", idna_says: None, icu_says: None },

@@ -74,10 +74,10 @@ fn uri(addr: std::net::SocketAddr, path: &str) -> http::Uri {
 /// leaves this workspace's HTTP/3 stack and is accepted by a server that
 /// speaks it.
 ///
-/// `docs/w4-upgrade-seam.md` §4 asserted this was reachable from `h3`
-/// 0.0.8's client API by reading three files. This is the reading,
-/// executed: the value the server reports is the one its own QPACK decoder
-/// took off the wire, not a type the two sides share by construction.
+/// This was asserted reachable from `h3` 0.0.8's client API by reading three
+/// files. This is the reading, executed: the value the server reports is the
+/// one its own QPACK decoder took off the wire, not a type the two sides
+/// share by construction.
 #[tokio::test]
 async fn an_extended_connect_carries_the_webtransport_protocol_to_the_server() {
     let server = server::start(Options::default());
@@ -121,15 +121,15 @@ async fn an_extended_connect_carries_the_webtransport_protocol_to_the_server() {
     // `SETTINGS_WT_MAX_SESSIONS`, so the announcement the draft requires of
     // clients does not go out. Asserted rather than described, so that a
     // future `h3` which grows the setter fails this line instead of leaving
-    // a stale paragraph in a document — `docs/v04-w2-webtransport.md` §3.
+    // a stale paragraph in a document.
     assert!(
         !announced.webtransport,
         "h3 0.0.8's client cannot announce SETTINGS_ENABLE_WEBTRANSPORT; if this fails, it can now"
     );
     // The one the client *can* make, and the reason datagrams exist in
     // this crate at all: `h3::client::Builder::enable_datagram` is the
-    // setter §3 of `docs/v04-w2-webtransport.md` found missing one feature
-    // over. RFC 9297 §2.1 makes it the peer's licence to send us any HTTP
+    // setter that is missing one feature over, for WebTransport itself.
+    // RFC 9297 §2.1 makes it the peer's licence to send us any HTTP
     // Datagram, and — like the line above — nothing on the wire in this
     // suite forces it, because the fixture sends datagrams from raw
     // `quinn` and consults no HTTP/3 setting before doing so. So this
@@ -583,10 +583,10 @@ async fn the_datagram_budget_is_the_payload_the_wire_accepts() {
 /// this stack, carrying the caller's application error code and reason, and
 /// the CONNECT stream ends behind it.
 ///
-/// `docs/v04-w2-webtransport.md` §6 recorded the capsule protocol as not
-/// done and gave it a condition — *"a real one carries an application error
-/// code and a reason string on the CONNECT stream"*. This is that,
-/// executed: the bytes asserted are the ones the server's own varint
+/// The capsule protocol was recorded as not done, with a condition: a real
+/// one carries an application error code and a reason string on the CONNECT
+/// stream. This is that, executed: the bytes asserted are the ones the
+/// server's own varint
 /// decoder took off the wire, and the payload is compared **unparsed**, so
 /// the two sides cannot agree by sharing a decoder.
 ///

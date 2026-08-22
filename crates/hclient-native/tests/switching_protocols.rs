@@ -8,8 +8,7 @@
 //! the pool at exactly one place, a body ending cleanly. Read that far,
 //! the pool looks like it is being handed a socket that has stopped
 //! speaking HTTP, which would be a bug today rather than a missing
-//! WebSocket feature. `docs/v03-design.md` §W4 wrote it down as the first
-//! thing to run, and this file is that run.
+//! WebSocket feature. This file is the run that settles it.
 //!
 //! # The answer: no — and what happens first is one poll's ordering
 //!

@@ -5,9 +5,9 @@
 //! The server does not use `dns_message_parser` to build its answers and
 //! does not use this crate to read the queries it receives. If it did, a
 //! test would be comparing the crate against itself: an encoder and a
-//! decoder that agree on the same wrong thing produce a green run, and the
-//! encode path is exactly the one `docs/v03-design.md` §W3 listed as
-//! **unverified** in this workspace. So the fixtures below emit RFC 1035
+//! decoder that agree on the same wrong thing produce a green run, and
+//! nothing else in this workspace exercises the encode path. So the
+//! fixtures below emit RFC 1035
 //! wire format from first principles — a length-prefixed name, four
 //! two-byte fields, an RDATA blob — and the assertions are about those
 //! bytes.

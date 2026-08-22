@@ -511,8 +511,8 @@ async fn the_first_frame_may_arrive_in_the_same_flight_as_the_101() {
 /// What this test does **not** pin — measured, not assumed — is the
 /// *position* of that check relative to `into_parts`: moving all four
 /// handshake checks after it survives every test here, because dropping
-/// hyper's `Incoming` finishes the dispatcher whatever the status was.
-/// `docs/v03-acceptance.md` carries that row.
+/// hyper's `Incoming` finishes the dispatcher whatever the status was —
+/// a surviving mutation, recorded rather than killed.
 #[tokio::test]
 async fn a_200_is_an_error_rather_than_a_websocket() {
     let (addr, _) = serve(move |mut w| {
@@ -1080,7 +1080,7 @@ async fn a_websocket_never_takes_a_pooled_connection() {
     );
 }
 
-// ── the liveness bound (`docs/w4-upgrade-seam.md` §7) ───────────────────
+// ── the liveness bound ─────────────────────────────────────────────────
 //
 // Five tests, and each one is an A/B against the *same* fixture and the
 // same configuration, so what it measures is the difference the server
@@ -1660,8 +1660,7 @@ async fn an_inbound_message_resets_the_interval_so_a_busy_socket_never_pings() {
 ///
 /// It also covers the caller-initiated half of the close handshake — we
 /// close, the peer echoes, the stream ends — which
-/// `a_close_from_the_peer_is_echoed_and_ends_the_stream` does not reach and
-/// which `docs/v03-acceptance.md` had recorded as untested.
+/// `a_close_from_the_peer_is_echoed_and_ends_the_stream` does not reach.
 #[tokio::test]
 async fn the_keep_alive_stops_at_our_own_close() {
     const EVERY: Duration = Duration::from_millis(50);

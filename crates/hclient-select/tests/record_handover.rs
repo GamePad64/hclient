@@ -179,8 +179,7 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
 /// and an arm at any other port never reaches the third. The first version
 /// of this test named a port, connected to a real server, asserted the
 /// right thing and *passed for the wrong reason*: the mutation that reads
-/// "cannot ask" as "no record" survived it untouched (M54,
-/// `docs/v04-w1-acceptance.md` §3.3).
+/// "cannot ask" as "no record" survived it untouched.
 ///
 /// What is observed is therefore the **question**, on two resolver logs,
 /// and not the connection: nothing can listen on 443 here, so the request

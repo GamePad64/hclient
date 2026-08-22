@@ -323,9 +323,9 @@ pub fn start_two_sharing_a_certificate(behaviour: Behaviour) -> (Server, Server)
 /// and the write finishes; the ticket-issuing exchange below is that case
 /// and it is unremarkable. It is only on a connection whose early data is
 /// **discarded** that the credit never arrives, because the write itself
-/// was discarded with it — and the write is then parked in exactly the gap
-/// `docs/v04-h3-0rtt-control-stream.md` §2.1 measures, instead of having to
-/// be caught there by luck.
+/// was discarded with it — and the write is then parked in exactly the
+/// window a rejection has to land in, instead of having to be caught there
+/// by luck.
 pub fn start_two_sharing_a_certificate_and_a_tiny_window(
     behaviour: Behaviour,
     window: u64,

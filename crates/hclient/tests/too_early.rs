@@ -3,8 +3,8 @@
 //! The third of 0-RTT's three failure paths, and the only one that is a
 //! response status rather than a transport event: the server accepted the
 //! early data, declined to risk processing it, and asked for the request
-//! again outside early data. `docs/h3-research.md` §3.5 has the table of
-//! all three; the other two are the transport's, this one is
+//! again outside early data. The other two are the transport's, this one
+//! is
 //! `Client::run`'s, because the decision to repeat belongs to whoever owns
 //! the operation.
 //!

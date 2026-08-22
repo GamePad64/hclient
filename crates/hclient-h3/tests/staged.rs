@@ -11,8 +11,7 @@
 //! - **a handle nobody spends needs no `Drop`.** `hclient_native::Staged`
 //!   had to be given one, because it *owns* the connection it took out of
 //!   the pool. Here `checkout` inserted the connection into the pool before
-//!   its caller ever saw it (`docs/v04-w2-webtransport.md` §4b's first
-//!   reason, from the other side), so a dropped handle leaves the pool
+//!   its caller ever saw it, so a dropped handle leaves the pool
 //!   exactly as it found it. The test is the same test — connect, drop,
 //!   send — and the two crates reaching the same observable answer by
 //!   different means is the point.
@@ -101,9 +100,9 @@ async fn a_staged_connect_reaches_the_origin_and_sends_no_request() {
 }
 
 /// A staged connect at an origin this transport is already speaking to
-/// costs no connection — `docs/connect-only-seam.md` §7's *"it must be
-/// allowed to answer: I already had one"*, in the form this stack offers
-/// it: the `SendRequest` is cloned and the QUIC connection multiplexes.
+/// costs no connection: a staged connect must be allowed to answer *I
+/// already had one*, and here that means the `SendRequest` is cloned and
+/// the QUIC connection multiplexes.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_staged_connect_shares_the_pooled_connection() {
     let s = server::start(Behaviour::Echo);
@@ -123,8 +122,8 @@ async fn a_staged_connect_shares_the_pooled_connection() {
     );
 }
 
-/// The answer to `docs/connect-only-seam.md` §9's open question about a
-/// connection whose caller declined it — and it is a different mechanism
+/// What happens to a connection whose caller declined it — a different
+/// mechanism
 /// from `hclient-native`'s with the same observable end.
 ///
 /// There is no `Drop` on this crate's handle: `checkout` had already put

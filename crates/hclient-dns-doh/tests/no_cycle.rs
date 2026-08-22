@@ -1,7 +1,7 @@
 //! The cycle §W3 asked about, and the finite composition it does not
 //! forbid.
 //!
-//! `docs/v03-design.md` §W3 records this as *unverified*:
+//! The claim, until this file:
 //!
 //! > The interesting claim is that **the type system already refuses it**:
 //! > a `Doh<C>` parameterised by the client it uses makes

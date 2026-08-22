@@ -7,9 +7,7 @@
 //! back as an error, or it does not. **Acceptance cannot**, and the two
 //! obvious substitutes are both the client's own opinion restated: the
 //! transport awaiting `quinn::ZeroRttAccepted`, or a timestamp taken inside
-//! the client. `docs/v03-acceptance.md` recorded the gap in those words —
-//! *"0-RTT ACCEPTANCE has not been observed end to end here; rejection
-//! has"*.
+//! the client. So acceptance is observed from the server or not at all.
 //!
 //! What settles it is a fact about the wire, and it needs no clock:
 //! **a 0-RTT packet exists only to carry application data sent before the
@@ -306,8 +304,8 @@ impl Wire {
     ///
     /// The event this releases on is the second one this file supports, and
     /// it exists for the same reason as the first: an ordering that a clock
-    /// can only make likely. `docs/v04-h3-0rtt-control-stream.md`'s subject
-    /// is a rejection that has to land on h3's control stream *after* the
+    /// can only make likely. The subject there is a rejection that has to
+    /// land on h3's control stream *after* the
     /// stream was opened and *before* its write finished — a window of
     /// microseconds on loopback, and a test that waits for one is the flake
     /// it was written to replace. Held, it is not a window at all: a client

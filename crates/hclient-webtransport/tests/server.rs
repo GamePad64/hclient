@@ -824,8 +824,7 @@ impl VarintReader {
 ///
 /// The client half of the fixture, and deliberately not part of the crate
 /// under test: `hclient-webtransport` takes a `quinn::Connection` and has
-/// no opinion about where it came from — see its crate doc, and
-/// `docs/v04-w2-webtransport.md` §4 for the half that is missing.
+/// no opinion about where it came from — see its crate doc.
 pub async fn dial(server: &Server) -> quinn::Connection {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(server.cert_der.clone()).unwrap();

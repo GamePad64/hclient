@@ -1,14 +1,14 @@
 //! The hedge, watched from the servers' side of the wire.
 //!
-//! `docs/v04-design.md` §W1 deliverable 5. Two real servers behind one
-//! authority, both alive in every test, so *"which stack carried this
-//! request"* is a question a peer answers and *"how many requests reached
-//! the origin"* is a number rather than an argument.
+//! Two real servers behind one authority, both alive in every test, so
+//! *"which stack carried this request"* is a question a peer answers and
+//! *"how many requests reached the origin"* is a number rather than an
+//! argument.
 //!
 //! # The one claim this file exists for
 //!
-//! `docs/v04-w1-acceptance.md` §7.6 measured a race made of two
-//! `Transport::execute` calls and found that **with no head start the
+//! An earlier measurement of a race made of two `Transport::execute`
+//! calls found that **with no head start the
 //! losing arm delivers a complete, well-formed HTTP request to the
 //! origin** — five of six arms. That is what made the head start a safety
 //! mechanism and what stopped the race being built.
@@ -230,9 +230,9 @@ async fn settled(pair: &Pair) {
 /// **The claim the staged connect made true and this file exists for.**
 ///
 /// No head start at all, and two working servers: **exactly one request
-/// reaches the origin**. The measurement this replaces
-/// (`docs/v04-w1-acceptance.md` §7.3, M3) had a complete request delivered
-/// by the *losing* arm in five of six arms at this setting.
+/// reaches the origin**. The measurement this replaces had a complete
+/// request delivered by the *losing* arm in five of six arms at this
+/// setting.
 ///
 /// It does not assert which arm wins, and must not: on loopback there is no
 /// round trip, so the two stacks are being compared on CPU alone and TCP is
@@ -321,8 +321,8 @@ async fn the_head_start_keeps_the_hedge_from_firing_when_quic_answers() {
 /// after quinn's `max_idle_timeout`.
 ///
 /// This is the one assertion in the file that is on a clock, and the
-/// margins are the argument: `docs/v04-w1-acceptance.md` §7.3 measures this
-/// exact hop at **30.002–30.006 s** without a hedge, six runs across two
+/// margins are the argument: this exact hop measures **30.002–30.006 s**
+/// without a hedge, six runs across two
 /// profiles with a spread of four milliseconds; with the hedge it is the
 /// 50 ms head start plus a TCP exchange. **5 s** sits two orders of
 /// magnitude above the second and six times below the first.
@@ -477,8 +477,7 @@ async fn a_request_the_record_sent_to_tcp_never_touches_the_hedge() {
 /// `H >= C` — a caller's bound with no room for two connects in it — leaves
 /// the sequential fallback, and does not double the bound to make room.
 ///
-/// `docs/v04-w1-acceptance.md` §7.5 asked for this to be *"refused or
-/// documented"*, and refusing the **request** would be worse than the thing
+/// Refusing the **request** would be worse than the thing
 /// it replaces: what the caller gets is what they got before the race
 /// existed. What must not happen is a hedge started at 250 ms inside a
 /// 100 ms bound, which is a bound the transport doubled on its own
@@ -556,8 +555,7 @@ async fn the_race_spends_the_connect_bound_once_when_both_arms_fail() {
 
 /// **A QUIC arm that loses the race teaches the failure memory**, which is
 /// what stops the head start being paid on every request to a blocked
-/// origin — `docs/v04-w1-acceptance.md` §7.7 item 4, the cost that made the
-/// race not worth building without it.
+/// origin — the cost that made the race not worth building without it.
 ///
 /// Hop 1 races and the hedge wins. Hop 2 is not raced at all, and the
 /// black hole's datagram counter is what says so: a hop the memory held

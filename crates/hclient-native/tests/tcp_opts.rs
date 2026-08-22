@@ -577,8 +577,7 @@ fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
 /// declaring it, the 41 ms comes back silently on that runtime and nothing
 /// else in this crate would notice. The three are named separately because
 /// `TokioHandle` has been the odd one out once already — it applied every
-/// option and declared none, found by measurement
-/// (`docs/v04-w1-acceptance.md` §8, finding 5) rather than by reading.
+/// option and declared none, found by measurement rather than by reading.
 ///
 /// `const` blocks, so this is checked when the file is **compiled** and a
 /// regression is a build failure rather than a red test. It stays inside a

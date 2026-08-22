@@ -1,8 +1,8 @@
 //! What the first protocol choice costs, in DNS queries — counted rather
 //! than reasoned about.
 //!
-//! `docs/v04-design.md` §W1 says the fast tier *"costs no new discovery at
-//! all — only the acting"*, and that is true of the **mechanism**: the
+//! The fast tier costs no new discovery, only the acting — and that is
+//! true of the **mechanism**: the
 //! HTTPS record was already being fetched and parsed before this crate
 //! existed. It is not true of the query count, and the difference is worth
 //! a file of its own.

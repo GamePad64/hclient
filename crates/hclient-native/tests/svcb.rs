@@ -31,8 +31,7 @@
 //! it — the in-request retry after a discovered endpoint fails — and it is
 //! covered where it can be observed instead (`src/connect.rs`'s
 //! `a_failed_discovered_endpoint_is_retried_without_the_record`, on the
-//! attempt log of a fake runtime) and recorded in
-//! `docs/v03-acceptance.md`.
+//! attempt log of a fake runtime).
 
 use bytes::Bytes;
 use hclient_core::RequestBody;
@@ -614,8 +613,8 @@ async fn a_record_that_advertises_h2_leaves_it_in_the_offer() {
 
 /// `h3` in a record is read and deliberately not acted on: this transport
 /// speaks TCP, `hclient-h3` is a different crate with different bounds,
-/// and `Client<T>` names one transport (`docs/v03-design.md` §W2). What
-/// must not happen is for `h3` to reach the ALPN offer, where a server
+/// and a `Client` names one transport. What must not happen is for `h3`
+/// to reach the ALPN offer, where a server
 /// selecting it would leave the connection unusable.
 #[cfg(feature = "http2")]
 #[tokio::test]

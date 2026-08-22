@@ -1,9 +1,9 @@
 //! What actually goes over the wire, byte for byte.
 //!
-//! `docs/v03-design.md` §W3 lists one premise about the codec as
-//! **unverified**: *"`dns-message-parser` can encode a query, not only
-//! decode a response — the decode path is what `hclient-dns-system` uses;
-//! the encode path is used by nothing here."* This file settles it, and
+//! One premise about the codec had nothing behind it:
+//! `dns-message-parser` can encode a query, not only decode a response —
+//! the decode path is what `hclient-dns-system` uses, and the encode path
+//! is used by nothing else here. This file settles it, and
 //! settles it the only way that is worth anything: the expected bytes are
 //! written out here by hand from RFC 1035 §4.1, not produced by the same
 //! library the test is checking.

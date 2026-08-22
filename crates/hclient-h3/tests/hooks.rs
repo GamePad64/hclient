@@ -907,7 +907,7 @@ async fn a_clean_exchange_ends_no_connection() {
 /// Adding one would need either a field on `Connected` or a variant of its
 /// own, and `hclient-core` is not this backend's to extend; learning the
 /// *verdict* would need more than that, because it resolves after the
-/// response body (8.63 ms against 8.58 ms, `docs/h3-research.md` §3.2) — so
+/// response body (8.63 ms against 8.58 ms, measured) — so
 /// it would take either a spawned task, which this feature may not have, or
 /// making the caller wait for the round trip 0-RTT exists to skip.
 ///

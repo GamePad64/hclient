@@ -1,8 +1,8 @@
 //! `Native::multiplexed()` — one HTTP/2 connection, several requests
 //! (v0.4), observed from outside the client.
 //!
-//! `docs/h2-multiplexing.md` is the investigation this file measures. What
-//! lives here is the **opt-in's own shape and its three prices**; the three
+//! What lives here is the **opt-in's own shape and its three prices**; the
+//! three
 //! yardstick limitations it closes are measured next to the assertions they
 //! invert, in `tests/grpc_shape.rs` and `tests/http2.rs`, so that a reader
 //! meets the old rule and the new one in one place.
@@ -368,9 +368,8 @@ async fn eight_concurrent_calls_travel_over_one_connection() {
 }
 
 /// **The control, and it is this client one call earlier.** The same eight
-/// calls without `multiplexed()` take eight connections — the limitation
-/// `docs/grpc-yardstick.md` records as L1, measured here so that the test
-/// above is a difference rather than an observation.
+/// calls without `multiplexed()` take eight connections, measured here so
+/// that the test above is a difference rather than an observation.
 #[tokio::test(flavor = "multi_thread")]
 async fn without_multiplexing_the_same_eight_calls_take_eight_connections() {
     let server = spawn_server(None);
@@ -517,9 +516,9 @@ async fn a_spawner_that_never_runs_hangs_the_request_and_first_byte_is_what_cuts
 /// The assertion is the server's high-water mark, not a clock: `most_open
 /// == 2` is what "the limit was respected" means, and `accepted == 1` is
 /// what "and no second connection was opened for the overflow" means.
-/// Timing is deliberately not asserted — `docs/h2-multiplexing.md`'s
-/// 203/405/607 ms is a measurement of this machine and three timing-based
-/// assertions in this workspace have already turned out to be flakes.
+/// Timing is deliberately not asserted — the 203/405/607 ms measured here
+/// is a measurement of this machine, and three timing-based assertions in
+/// this workspace have already turned out to be flakes.
 #[tokio::test(flavor = "multi_thread")]
 async fn beyond_the_peers_stream_limit_requests_queue_on_one_connection() {
     let server = spawn_server(Some(2));

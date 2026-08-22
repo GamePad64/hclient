@@ -19,8 +19,8 @@
 //!
 //! # Why the server keeps a log of its reads
 //!
-//! `docs/v04-w1-acceptance.md` §7.3 measured 41 ms on the head of every
-//! `Native` TLS exchange and named Nagle from the outside: unchanged by an
+//! An earlier measurement found 41 ms on the head of every `Native` TLS
+//! exchange and named Nagle from the outside: unchanged by an
 //! IP literal, so not resolution; unchanged between debug and release, so
 //! not crypto. That is an argument by elimination, and it cannot tell
 //! *which direction* waited — a server that took 40 ms to answer and a

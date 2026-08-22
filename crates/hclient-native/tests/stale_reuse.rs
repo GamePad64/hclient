@@ -40,9 +40,9 @@
 //! its one non-suspending look, and `h1.rs` names that window itself. The
 //! 41 ms was covering it.
 //!
-//! It is recorded here rather than fixed, and `docs/nagle-and-nodelay.md`
-//! §6 says why, including the fix that was tried and reverted: past that
-//! window the request is inside `try_send_request`, hyper reports
+//! It is recorded here rather than fixed, and the reason is what a fix
+//! would have to reach: past that window the request is inside
+//! `try_send_request`, hyper reports
 //! `message: None` for it, and `Failed::Sent` is not retryable.
 //!
 //! **That last sentence was half right, and the half that was wrong has
@@ -53,8 +53,8 @@
 //! this file measures is therefore one look narrower than when this text
 //! was written. What it measures has not changed: the *rate*, which is a
 //! scheduler property, and which the two arms below still cannot tell
-//! apart. `docs/pooled-reuse-race.md` has the deterministic form, which
-//! is what a rate cannot give.
+//! apart. `h1.rs`'s scripted reproduction is the deterministic form,
+//! which is what a rate cannot give.
 //!
 //! ```text
 //! cargo nextest run -p hclient-native --test stale_reuse --run-ignored all \

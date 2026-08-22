@@ -396,8 +396,7 @@ fn tunnelling_proxy(origin: SocketAddr) -> (SocketAddr, mpsc::Receiver<String>) 
 
 /// **The TLS handshake rides the tunnel and carries the ORIGIN's name.**
 ///
-/// The gap `docs/proxy-design.md` §8 named as the first thing a second
-/// pass should add, and it is three claims in one run: the `CONNECT` names
+/// Three claims in one run: the `CONNECT` names
 /// the origin's authority, the origin's certificate validates (so the
 /// stream really is end to end rather than terminated at the proxy), and
 /// the SNI the origin was greeted with is `localhost` — **not**
@@ -1073,8 +1072,8 @@ fn socks4_proxy(cd: u8) -> (SocketAddr, mpsc::Receiver<(String, String, u16)>) {
 ///
 /// The host is the assertion that matters. A connector that resolved
 /// locally and sent an address would be leaking exactly the DNS a proxy
-/// user is often there to hide — `docs/proxy-design.md`'s reason a proxy
-/// is not a `TcpConnect` decorator — and here it would also be sending
+/// user is often there to hide, which is the reason a proxy is not a
+/// `TcpConnect` decorator — and here it would also be sending
 /// SOCKS4 rather than 4a.
 #[tokio::test]
 async fn a_socks4a_tunnel_carries_the_userid_and_the_unresolved_host() {

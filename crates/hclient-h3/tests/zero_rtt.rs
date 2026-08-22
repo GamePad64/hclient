@@ -2,9 +2,9 @@
 //!
 //! `live.rs` covers the failure paths: `into_0rtt` refusing for want of key
 //! material, and a server rejecting the keys it was offered. The happy path
-//! was the gap `docs/v03-acceptance.md` recorded — *"0-RTT ACCEPTANCE has
-//! not been observed end to end here; rejection has"* — and it is the one
-//! that cannot be closed from either endpoint, because both endpoints'
+//! was the gap — acceptance had never been observed end to end here,
+//! rejection had — and it is the one that cannot be closed from either
+//! endpoint, because both endpoints'
 //! answers are the thing under test. A client that awaited
 //! `quinn::ZeroRttAccepted` and printed it would be reporting its own
 //! opinion of its own behaviour.
@@ -124,8 +124,8 @@ where
 /// Wait until the server's `n`th connection has finished its handshake.
 ///
 /// It need not have happened by the time the caller holds the response —
-/// that is the whole point of 0-RTT, and the ordering `docs/h3-research.md`
-/// §3.2 measured, where the verdict landed 50 µs *after* the response body.
+/// that is the whole point of 0-RTT, and the measured ordering, where the
+/// verdict landed 50 µs *after* the response body.
 /// Here the relay widens that to the length of the hold.
 ///
 /// A bounded wait rather than a sleep: on a fast host it returns in

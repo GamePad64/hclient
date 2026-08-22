@@ -67,8 +67,8 @@ pub enum Quic {
     /// a `DROP` rather than a `REJECT`, which is what a network blocking
     /// UDP/443 actually does.
     ///
-    /// Holding the socket is the whole mechanism (`docs/v04-w1-acceptance.md`
-    /// §7.1): an *unbound* port makes the kernel answer ICMP port
+    /// Holding the socket is the whole mechanism: an *unbound* port makes
+    /// the kernel answer ICMP port
     /// unreachable. Used only where a test needs the QUIC arm to spend a
     /// `Timeouts::connect` bound rather than to fail.
     BlackHole,

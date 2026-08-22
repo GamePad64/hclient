@@ -8,10 +8,9 @@
 //!
 //! # What was recorded as the blocker, and what it actually was
 //!
-//! `docs/v04-w2-webtransport.md` §6: *"here a `Session` owns the h3 client,
-//! so there is one."* That was true and it was ours to fix. Two other
-//! blockers were recorded elsewhere, and only one of them survived being
-//! executed:
+//! A `Session` owns the h3 client, so the limit on how many can share a
+//! connection is ours rather than `h3`'s. Two other blockers were
+//! recorded, and only one of them survived being executed:
 //!
 //! - **`PoolKey`** — `hclient-h3`'s pool key, and a fact about *sharing a
 //!   pooled connection*, which is a different question. Nothing in this
@@ -114,8 +113,8 @@ async fn a_second_session_is_a_peer_of_the_first() {
 /// **The correction.** The peer's `SETTINGS_WT_MAX_SESSIONS` is read, and a
 /// session over it is refused before a byte leaves.
 ///
-/// `docs/v04-w2-webtransport.md` §3(c) recorded this number as unreadable,
-/// having looked at `h3::config::Settings`, which has no getter for it.
+/// This number was recorded as unreadable, on a reading of
+/// `h3::config::Settings`, which has no getter for it.
 /// The number is on the SETTINGS **frame** — `h3::proto::frame::Settings`,
 /// whose `get` is `pub` — and `Session::connect` was already awaiting that
 /// frame and discarding it with a `_`.
@@ -343,9 +342,9 @@ async fn closing_one_session_leaves_the_other_open() {
 /// **The blocker, executed.** A second `Session::connect` on the same QUIC
 /// connection kills the connection — and takes the first session with it.
 ///
-/// `docs/v04-w2-webtransport.md` §4 predicted the mechanism from RFC 9114
-/// §6.2.1 — two h3 clients open two control streams, and a second control
-/// stream is a **connection** error — and this is that prediction executed
+/// The mechanism was predicted from RFC 9114 §6.2.1 — two h3 clients open
+/// two control streams, and a second control stream is a **connection**
+/// error — and this is that prediction executed
 /// against `h3`'s own server. The peer answers
 /// `H3_STREAM_CREATION_ERROR` (`0x103`, read here off `quinn`'s
 /// `close_reason` rather than off `h3`'s `Display`, so the assertion is on

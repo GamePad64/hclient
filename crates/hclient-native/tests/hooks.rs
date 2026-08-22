@@ -633,9 +633,9 @@ async fn a_pooled_connection_the_server_closed_while_idle_is_reported_stale() {
     // the connection's `Closed(Ended)` arriving from inside the second
     // exchange instead of from the checkout.
     //
-    // That is the far point of the pooled-reuse window
-    // (`docs/pooled-reuse-race.md`), which this workspace documents as
-    // residual and deliberately unfixed — so what the test was catching
+    // That is the far point of the pooled-reuse window, which this
+    // workspace documents as residual and deliberately unfixed — so what
+    // the test was catching
     // was a race it exists to sit on one side of, not a defect. A sleep
     // here is a guard on the premise, not an assertion.
     tokio::time::sleep(Duration::from_millis(50)).await;

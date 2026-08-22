@@ -148,8 +148,8 @@ async fn survives_gap(keep_alive: Option<std::time::Duration>) -> usize {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_connection_survives_only_because_of_the_keep_alive() {
-    // The A/B the research ran (`docs/h3-research.md` §1.5), with one
-    // correction it did not have: there, the variable was whether anything
+    // The A/B the research ran, with one correction it did not have:
+    // there, the variable was whether anything
     // *drove* the connection. Here the driver is spawned in **both** arms —
     // it has to be, it is spawned in `connect` — so the only difference
     // left is the keep-alive, and the result says the driver alone is not
@@ -301,8 +301,7 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
 /// which is exactly the rejection this crate promises it will never see.
 ///
 /// It was found as a flake — **2 failures in 277 concurrent runs of this
-/// suite** — and `docs/v04-h3-0rtt-control-stream.md` is the capture, the
-/// mechanism and the numbers.
+/// suite**, 0 in 846 after.
 ///
 /// # Two fixtures, and each removes one half of the luck
 ///
@@ -531,10 +530,9 @@ async fn capabilities_describe_this_implementation_not_the_protocol() {
 
 // ── `Timeouts::connect`, declared and enforced in the same change ───────
 //
-// `docs/v03-acceptance.md` recorded "no timeouts" as deliberate, with
-// `connect` named as the cheapest one and deliberately not added, because
-// v0.2 W4's rule puts a declaration and its enforcement in one commit. This
-// is that commit, and these are its halves.
+// This crate had no timeouts by decision, `connect` being the cheapest one
+// and deliberately not added. The rule is that a declaration and its
+// enforcement land in one change; these are the two halves of it.
 
 /// A UDP port that is bound and answers nothing. The socket is returned so
 /// that the caller keeps it alive for the length of the test.

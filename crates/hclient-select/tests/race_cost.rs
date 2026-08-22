@@ -1,6 +1,6 @@
 //! **A measurement, not a feature.** What a race between the two stacks
-//! would cost, in numbers, so that the policy `docs/v04-design.md` §W1
-//! deliverable 5 asks for is chosen against something.
+//! would cost, in numbers, so that the policy is chosen against
+//! something.
 //!
 //! Everything here is `#[ignore]`d and prints rather than asserts. That is
 //! deliberate and is the rule this workspace already follows: three timing
@@ -19,8 +19,8 @@
 //!
 //! # The fixture, and why loopback is enough
 //!
-//! `docs/v04-w1-acceptance.md` §7 said the race needs *"a fixture that can
-//! actually block UDP/443, which loopback cannot"*. It can.
+//! The race needs a fixture that can actually block UDP/443, and loopback
+//! was thought not to manage it. It can.
 //! [`black_hole`] binds a UDP socket and answers nothing, **holding** it —
 //! so the kernel generates no ICMP port-unreachable, and from the client's
 //! side that is a packet filter with a `DROP` target and not a `REJECT`

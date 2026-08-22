@@ -1,5 +1,5 @@
-//! The h1 upgrade — this crate's half of `docs/w4-upgrade-seam.md` §8 —
-//! watched from the other side of a real socket.
+//! The h1 upgrade — this crate's half of the WebSocket seam — watched
+//! from the other side of a real socket.
 //!
 //! The framing that used to sit on top of this lives in
 //! `hclient-tungstenite` now, and its tests moved with it. What is left

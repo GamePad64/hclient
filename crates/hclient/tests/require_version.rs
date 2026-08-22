@@ -1,5 +1,5 @@
 //! The gate: **which** transports may be handed a `RequireVersion` demand
-//! at all — v0.4 W2, `docs/v04-design.md` Appendix A.
+//! at all.
 //!
 //! `hclient-native/tests/require_version.rs` and its `tests/http2.rs`
 //! siblings check what a transport that *honours* demands does with one.

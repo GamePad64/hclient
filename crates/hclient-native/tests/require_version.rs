@@ -1,5 +1,5 @@
 //! `RequireVersion` on `hclient-native`, watched from the server's side of
-//! the socket (v0.4 W2, `docs/v04-design.md` Appendix A).
+//! the socket.
 //!
 //! # The assertion that matters is a negative one
 //!

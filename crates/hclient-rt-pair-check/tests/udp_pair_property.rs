@@ -13,9 +13,7 @@
 //!
 //! Because two similar test files would prove that both backends compile
 //! and nothing else. `pair_property.rs` next door exists for the same
-//! reason for TCP, and `docs/v03-design.md` §W1 says it in as many words:
-//! *"An h3 pair written as two copies would prove that both compile and
-//! nothing else."*
+//! reason for TCP.
 //!
 //! # What is asserted, and what is only printed
 //!

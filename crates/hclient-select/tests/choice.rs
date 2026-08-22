@@ -113,9 +113,9 @@ async fn a_record_that_does_not_offer_h3_puts_the_request_on_the_tcp_server() {
     assert_eq!(pair.quic_answered(), 0, "the QUIC server was not chosen");
 }
 
-/// An origin that publishes no record at all is TCP — `docs/v04-design.md`
-/// P12's *"browsers do not race on first contact; an unknown origin gets
-/// TCP"*, which is the default this whole mechanism is an exception to.
+/// An origin that publishes no record at all is TCP: browsers do not race
+/// on first contact, and an unknown origin gets TCP — the default this
+/// whole mechanism is an exception to.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_origin_with_no_record_is_served_over_tcp() {
     let pair = servers::start();

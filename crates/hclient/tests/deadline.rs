@@ -1,11 +1,11 @@
 //! `Timeouts.total`'s replacement: a bound on the whole operation, against
 //! real servers on loopback.
 //!
-//! The gap, as `docs/v01-acceptance.md` records it, is a response that
-//! starts promptly and then dribbles just under the `between_bytes`
-//! threshold: `connect`/`first_byte`/`between_bytes` all hold, and the
-//! operation still runs for ever. So the headline test here is a server
-//! that answers in milliseconds and then drips one byte at a time until
+//! The gap is a response that starts promptly and then dribbles just under
+//! the `between_bytes` threshold: `connect`/`first_byte`/`between_bytes` all
+//! hold, and the operation still runs for ever. So the headline test here
+//! is a server that answers in milliseconds and then drips one byte at a
+//! time until
 //! the client gives up — **without the bound this test does not fail, it
 //! hangs**, which is the only shape of test that can tell the feature
 //! working apart from the feature being absent.
@@ -305,10 +305,9 @@ fn a_body_that_dribbles_for_ever_is_cut_at_the_total_deadline() {
 /// registered on the caller's own waker while the body answers `Pending` —
 /// can end this.
 ///
-/// `docs/v02-acceptance.md` used to list this case under "deliberately not
-/// done", first as impossible and then as merely undecided. It is neither
-/// now, and this test is what makes the difference observable rather than
-/// asserted.
+/// This case was written down as impossible, then as merely undecided. It
+/// is neither, and this test is what makes the difference observable
+/// rather than asserted.
 #[test]
 fn a_body_that_goes_silent_for_ever_after_the_head_is_cut_at_the_total_deadline() {
     let (addr, went_away) = head_then_silence_server(Duration::ZERO);

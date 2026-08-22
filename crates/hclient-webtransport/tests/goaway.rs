@@ -1,10 +1,9 @@
 //! `GOAWAY` is not observed here, and this file is why — executed rather
 //! than described.
 //!
-//! `docs/v04-w2-webtransport.md` §6 recorded it as deliberately not done
-//! with one reason: *"`GOAWAY` arrives on the h3 **control** stream, which
-//! the driver owns and nobody polls."* That is true and it is the least of
-//! it. Four things stand between an arriving `GOAWAY` and a caller of this
+//! The obvious reason is that `GOAWAY` arrives on the h3 **control**
+//! stream, which the driver owns and nobody polls. That is true and it is
+//! the least of it. Four things stand between an arriving `GOAWAY` and a caller of this
 //! crate, and each of them is a separate assertion below, so an `h3` that
 //! removes one fails a line instead of leaving a stale paragraph:
 //!
@@ -301,8 +300,7 @@ async fn a_session_after_a_goaway_is_rejected_by_the_peer_rather_than_by_us() {
     // of both answers, which cannot fail for the reason that was caught.
     //
     // The arm is therefore **unexercised in this environment**, and that
-    // is recorded in `docs/v04-acceptance.md` rather than left to be
-    // rediscovered.
+    // is recorded here rather than left to be rediscovered.
     //
     // What does not vary is the claim this test is named for, and it is
     // asserted on both paths: a rejection here is a **stream** error and

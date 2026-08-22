@@ -373,10 +373,10 @@ const REUSE_RESPONSE_BODY: &[u8] = b"ok";
 /// cancellation was measurable: **the server is not inside the sandbox**.
 /// The guest runs as a wasmtime subprocess and the listener is a plain
 /// `std::net::TcpListener` on a host thread, so every number asserted below
-/// is one the server produced. `docs/v02-acceptance.md` listed WASI beside
-/// `hclient-fetch` as a declaration nothing could observe, on the grounds
-/// that from inside a sandbox we cannot watch sockets. That is true of
-/// `hclient-fetch` and was never true here.
+/// is one the server produced. WASI was listed beside `hclient-fetch` as
+/// a declaration nothing could observe, on the grounds that from inside a
+/// sandbox we cannot watch sockets. That is true of `hclient-fetch` and
+/// was never true here.
 ///
 /// Returns the port to point a client at, and the counter.
 fn counting_server() -> (u16, Arc<AtomicUsize>) {

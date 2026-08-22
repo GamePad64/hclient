@@ -399,9 +399,8 @@ fn a_non_send_backend_still_satisfies_the_websocket_seam() {
 /// **P13, settled by construction: an observability hook can avoid a
 /// `Send` bound.**
 ///
-/// `docs/v04-design.md` records P13 as unverified — *"every other seam
-/// here manages it, but a hook stored in a transport and called from a
-/// body is a different shape"* — and the difference is real: the two
+/// A hook stored in a transport and called from a body is a different
+/// shape from every other seam here, and the difference is real: the two
 /// probes above put an `Rc` in a transport and in a `WebSocketConnect`,
 /// both of which are only ever *borrowed* by the request path. A response
 /// body outlives `Transport::execute`, so it cannot borrow the transport;
@@ -564,9 +563,8 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
 /// nothing here owns it, so what is asserted is the property — *never
 /// `UNWATCHED`, and never twice* — rather than any particular number.
 ///
-/// `docs/v04-w2-hooks-ambient.md` §9 is the argument this pins down: it is
-/// why a second value meaning "there is no connection" is not owed by this
-/// seam.
+/// This is what makes a second value meaning "there is no connection"
+/// unnecessary: no real connection can wear this one.
 #[test]
 fn the_id_that_names_no_connection_is_one_the_counter_never_hands_out() {
     use hclient_core::unversioned::ConnectionId;

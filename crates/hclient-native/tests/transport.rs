@@ -188,8 +188,8 @@ async fn capabilities_are_honest_about_v01_limits() {
     );
     assert!(
         caps.request_trailers,
-        "declared and enforced in one change (v0.4, `docs/v04-design.md` \
-         Appendix C): both protocols this transport speaks put a request \
+        "declared and enforced in one change: both protocols this \
+         transport speaks put a request \
          body's trailers on the wire, and the `Trailer:` header HTTP/1.1 \
          additionally wants is RFC 9110 §6.6.2's requirement of a sender \
          rather than a limitation of ours — a request that omits it is \
@@ -248,7 +248,7 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
         // `true` in `capabilities_are_honest_about_v01_limits` above,
         // where the declared fields live. Its `false` here was never the
         // floor rule holding a line — it was a field nobody had
-        // measured, and `docs/v04-design.md`'s Appendix C measured it:
+        // measured, and the measurement says otherwise:
         // HTTP/1.1 sends request trailers, HTTP/2 sends them, and the
         // one shape that lost data now raises.
         request_trailers: _,
@@ -259,11 +259,10 @@ async fn undeclared_capability_fields_match_their_conservative_defaults_today() 
         proxy,
         owns_cookie_jar,
         owns_cache,
-        // `version_select` left this list in v0.4 W2 and is asserted
-        // `true` in `capabilities_are_honest_about_v01_limits` above,
-        // where the declared fields live. It was the field this project
-        // had decided to *delete* for having no reader (`docs/v04-design
-        // .md` P5) until `RequireVersion` gave it one, so its move from
+        // `version_select` left this list and is asserted `true` in
+        // `capabilities_are_honest_about_v01_limits` above, where the
+        // declared fields live. It was about to be deleted for having no
+        // reader until `RequireVersion` gave it one, so its move from
         // "undeclared, conservative" to "declared, enforced" is the whole
         // event and belongs where the other declarations are asserted.
         version_select: _,
