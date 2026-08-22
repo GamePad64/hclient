@@ -47,6 +47,16 @@ all-features = true
 [features]
 default = []
 http2 = ["dep:h2", "dep:tokio"]
+# The QUIC arm. It brings `hclient-h3` — and through it quinn — and nothing
+# else: what `H3<R, T, D>` needs OF the runtime and the TLS backend
+# (`UdpBind`, `QuicTlsConnect`) are the caller's own features on their own
+# crates, and `Native::http3` is where those bounds are checked.
+#
+# The arm is stored erased, so this feature adds a field and a constructor
+# rather than bounds: `Native<Embassy, NoTls, IpLiteralOnly>` compiles with
+# it on, it simply never calls `http3()`. What a neighbour switching this
+# on costs such a build is dead code in the graph, not a broken one.
+http3 = ["dep:hclient-h3"]
 # No `dep:` entries, and that is the point: both protocols behind this
 # flag are written here, so the feature buys code size back for a
 # constrained target and costs nobody a dependency. See `src/proxy.rs`.
@@ -69,6 +79,7 @@ hclient-dns    = { path = "../hclient-dns",   version = "0.1.0-alpha.1" }
 hclient-proto  = { workspace = true }
 hclient-rt     = { path = "../hclient-rt",    version = "0.1.0-alpha.1" }
 hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.1" }
+hclient-h3   = { path = "../hclient-h3",   version = "0.1.0-alpha.1", optional = true }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 futures-core   = { workspace = true }
 futures-sink   = { workspace = true }

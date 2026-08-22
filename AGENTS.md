@@ -2966,12 +2966,27 @@ the target is a thing a portable library cannot reason about.
 
 **The `send-bound-exception` markers live on two short aliases now**, and
 that is the same rule this file has recorded three times from the other
-side. `cargo fmt` moves a trailing comment off a line it reflows and deletes
-one from a `where` clause, so a marker cannot survive on a long signature —
-lost that way twice more during this change. `erased::SharedTransport` and
-`erased::SharedTimer` are `dyn .. + Send + Sync` on one line each, every use
-site writes `Box<SharedTransport>`, and `cargo fmt` and `just invariants`
-now pass *together*. Four `amendment-C1` markers **left** `client.rs` with
+side: `cargo fmt` moves a trailing comment off a line it reflows, and a
+marker lost that way was lost twice more during this change.
+`erased::SharedTransport` and `erased::SharedTimer` are
+`dyn .. + Send + Sync` on one line each, every use site writes
+`Box<SharedTransport>`, and `cargo fmt` and `just invariants` now pass
+*together*.
+
+**The rule is narrower than it was stated, which is worth knowing before
+paying for it again.** "Deletes one from a `where` clause" is false as a
+general claim — measured with `rustfmt --edition 2024` on both shapes: a
+short predicate keeps its trailing marker untouched, and a predicate long
+enough to wrap keeps it too, because the marker travels with the
+continuation line that carries the `Send`. Since `no-send-or-sync` scans
+for a `Send`/`Sync` line and a marker on that same line, both survive the
+check. `Native::http3`'s four bounds are written that way and `cargo fmt`
+and `just invariants` pass together over them.
+
+So the shape that actually loses a marker is the one the first sentence
+names — a comment on a line fmt has to reflow *around*, not one on a
+`where` predicate. Believing the wider version cost three helper traits
+and two public re-exports in `hclient-native` before it was measured. Four `amendment-C1` markers **left** `client.rs` with
 the type parameter, because `Transport::to_error` is now called where `Self`
 is concrete.
 

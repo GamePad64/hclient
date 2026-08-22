@@ -34,6 +34,8 @@ mod connect;
 mod discovery;
 mod established;
 mod h1;
+#[cfg(feature = "http3")]
+mod h3_arm;
 #[cfg(feature = "http2")]
 mod http2;
 mod idle;
@@ -316,6 +318,16 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 struct Versions {
     h1: bool,
     h2: bool,
+    /// Whether the QUIC arm may serve a request. Meaningful only once
+    /// [`Native::http3`] has installed one — a `true` with no arm has
+    /// nothing to route to, which is why the constructor sets it rather
+    /// than a setter of its own.
+    ///
+    /// Behind the feature with the arm it describes: a policy field for a
+    /// protocol whose code is not compiled has no reader, and this crate
+    /// treats a field nothing reads as a defect rather than as headroom.
+    #[cfg(feature = "http3")]
+    h3: bool,
 }
 
 impl Default for Versions {
@@ -330,6 +342,8 @@ impl Default for Versions {
         Self {
             h1: true,
             h2: cfg!(feature = "http2"),
+            #[cfg(feature = "http3")]
+            h3: false,
         }
     }
 }
@@ -405,6 +419,11 @@ where
     /// compiled it should get a refusal naming the feature rather than
     /// silence.
     versions: Versions,
+    /// The QUIC arm, erased.
+    ///
+    /// See [`crate::h3_arm::Arm`] for why the box is `Send + Sync`.
+    #[cfg(feature = "http3")]
+    h3: Option<std::sync::Arc<crate::h3_arm::Arm>>,
     /// How the origin is reached, when it is not reached directly.
     ///
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
@@ -741,6 +760,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             watch_1xx: None,
             expect_continue: None,
             versions: Versions::default(),
+            #[cfg(feature = "http3")]
+            h3: None,
             unix_socket: None,
             h1_opts: crate::h1::H1Opts::default(),
             #[cfg(feature = "http2")]
@@ -910,6 +931,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             watch_1xx: self.watch_1xx,
             expect_continue: self.expect_continue,
             versions: self.versions,
+            #[cfg(feature = "http3")]
+            h3: self.h3.clone(),
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -1061,6 +1084,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             watch_1xx: None,
             expect_continue: self.expect_continue,
             versions: self.versions,
+            #[cfg(feature = "http3")]
+            h3: self.h3.clone(),
             unix_socket: self.unix_socket.clone(),
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
@@ -1420,6 +1445,46 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// on a dropped future, which goes on being owed — what changes is
     /// that the peer now sees a `RST_STREAM(CANCEL)` where it used to see
     /// the socket close. `full_duplex` and `response_trailers` still
+    /// Give this transport a QUIC arm, and let it serve HTTP/3.
+    ///
+    /// # Every bound in this crate's QUIC story is on this one signature
+    ///
+    /// `H3` needs `R: UdpBind + UdpAdoptStd + Spawn<QuinnTask> + Send +
+    /// Sync + 'static` and `T: QuicTlsConnect`. None of that reaches
+    /// [`Native`]'s own declaration or its `impl Transport`, because the
+    /// arm is stored erased — so a runtime that has no UDP and a TLS
+    /// backend that has no QUIC are unaffected by the `http3` feature
+    /// being switched on somewhere else in the graph. They simply never
+    /// write this call. `Native::new(Embassy, NoTls, IpLiteralOnly)`
+    /// compiles with the feature on, which is asserted by the workspace
+    /// building `--all-features --all-targets`.
+    ///
+    /// The shape is [`Native::multiplexed`]'s: a bound that belongs to one
+    /// opt-in lives on the opt-in.
+    ///
+    /// # It takes an `H3`, it does not build one
+    ///
+    /// Building one here would mean choosing its resolver and its TLS
+    /// backend, which are this transport's `D` and `T` — and `H3::new` is
+    /// fallible in a way `Native::new` is not. A caller who wants both
+    /// stacks over one configuration passes the same values twice, which
+    /// is what `Rustls: Clone` is for.
+    #[cfg(feature = "http3")]
+    pub fn http3(mut self, quic: hclient_h3::H3<R, T, D>) -> Self
+    where
+        hclient_h3::H3<R, T, D>: hclient_h3::StagedConnect<Error = Error> + std::fmt::Debug,
+        <hclient_h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
+            http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
+        <hclient_h3::H3<R, T, D> as hclient_h3::StagedConnect>::Staged: 'static,
+        R: Send + Sync + 'static, // send-bound-exception: amendment-C12
+        T: Send + Sync + 'static, // send-bound-exception: amendment-C12
+        D: Send + Sync + 'static, // send-bound-exception: amendment-C12
+    {
+        self.h3 = Some(std::sync::Arc::new(quic));
+        self.versions.h3 = true;
+        self
+    }
+
     /// Whether this transport may speak HTTP/1.1. On by default.
     ///
     /// **Turning it off is a guarantee, not a preference**, and that is
@@ -2505,6 +2570,56 @@ where
     /// in step: [`Transport::execute`] is this with [`Prepared::new`] —
     /// nothing looked up — and [`Prefetch::execute_prepared`] is this with
     /// whatever [`Prefetch::prepare`] found.
+    /// Serve a request the caller demanded HTTP/3 for.
+    ///
+    /// # No fallback, and that is the demand's own meaning
+    ///
+    /// A `Refused` from the arm carries the request back untouched, which
+    /// is exactly what a *routing* decision would need — and this is not
+    /// one. `RequireVersion(HTTP_3)` says the caller's code needs that
+    /// protocol, so answering over HTTP/1.1 would be the failure the
+    /// demand exists to prevent. The request goes no further and the
+    /// connect error is what the caller sees.
+    ///
+    /// Choosing between the stacks when nobody demanded anything is a
+    /// different question with a different answer, and it is not here yet.
+    ///
+    /// # An arm that is not installed is a refusal, not a fall-through
+    ///
+    /// Without [`Native::http3`] there is nothing to route to, and the
+    /// honest answer is the same `VersionNotAvailable` a connection that
+    /// negotiated the wrong protocol would raise — built through
+    /// [`check_version`] against the version this transport would have
+    /// spoken, so the caller sees one error type for one question rather
+    /// than two spellings of "you cannot have HTTP/3 here".
+    #[cfg(feature = "http3")]
+    async fn over_quic(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Result<http::Response<NativeBody<R, T, H>>, Error> {
+        let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
+            return Err(
+                check_version(req.extensions(), spoken_version(Some(Protocol::Http11)))
+                    .expect_err("the caller demanded HTTP/3, which is not HTTP/1.1"),
+            );
+        };
+        // Read before the request moves into the arm, and applied to what
+        // comes back: `hclient-h3` declares `between_bytes: false` and
+        // this transport declares `true`, so a body from the QUIC arm that
+        // escaped `bound_body` would be exactly the silent hole in a
+        // declared capability that helper exists against. The arm is
+        // erased, but the promise is this transport's.
+        let every = req
+            .extensions()
+            .get::<Timeouts>()
+            .copied()
+            .unwrap_or_default()
+            .between_bytes;
+        let staged = arm.connect_boxed(req).await.map_err(|r| r.into_error())?;
+        let resp = staged.exchange_boxed().await?;
+        Ok(self.bound_body(resp.map(established::NativeBody::from_h3), every))
+    }
+
     async fn run(&self, prepared: Prepared) -> Result<http::Response<NativeBody<R, T, H>>, Error>
     where
         D: Resolve,
@@ -2933,6 +3048,10 @@ where
         &self,
         req: http::Request<RequestBody>,
     ) -> Result<http::Response<Self::Body>, Error> {
+        #[cfg(feature = "http3")]
+        if demands_h3(req.extensions()) {
+            return self.over_quic(req).await;
+        }
         self.run(Prepared::new(req)).await
     }
 
@@ -2952,6 +3071,20 @@ where
     fn capabilities(&self) -> &Capabilities {
         &self.caps
     }
+}
+
+/// Whether the caller demanded HTTP/3 for this request.
+///
+/// Read before anything else `execute` does, because a demand for a
+/// protocol the TCP path cannot speak has no business going down it —
+/// resolving, checking the pool and opening a socket would all be work
+/// done to arrive at a refusal.
+#[cfg(feature = "http3")]
+fn demands_h3(extensions: &http::Extensions) -> bool {
+    matches!(
+        extensions.get::<hclient_core::RequireVersion>(),
+        Some(&hclient_core::RequireVersion(http::Version::HTTP_3))
+    )
 }
 
 /// The one implementation, and the contract is on the trait.

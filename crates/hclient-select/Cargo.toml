@@ -42,6 +42,11 @@ thiserror      = { workspace = true }
 # Without it `TokioHandle` does not implement
 # `UdpAdoptStd` and `Selecting<TokioHandle, ..>` cannot be named.
 [dev-dependencies]
+# `http3` for the one test that gives a bare `Native` a QUIC arm. It lives
+# in this crate's suite rather than `hclient-native`'s because the live
+# QUIC/TCP pair (`tests/servers.rs`) is here, and one test travelling to a
+# fixture is cheaper than a 200-line fixture travelling to a crate.
+hclient-native     = { path = "../hclient-native", version = "0.1.0-alpha.1", features = ["http3"] }
 futures-util       = { version = "0.3", default-features = false, features = ["std"] }
 h3                 = "0.0.8"
 h3-quinn           = "0.0.10"

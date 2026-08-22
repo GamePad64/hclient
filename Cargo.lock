@@ -1335,6 +1335,7 @@ dependencies = [
  "hclient-core",
  "hclient-dns",
  "hclient-dns-system",
+ "hclient-h3",
  "hclient-proto",
  "hclient-rt",
  "hclient-rt-smol",

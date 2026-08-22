@@ -493,6 +493,15 @@ where
     I: Read + Write + Unpin,
 {
     H1(crate::h1::H1Body<I, H>),
+    /// A body from the QUIC arm, already erased.
+    ///
+    /// `BoxBody` rather than `hclient_h3::H3Body<H>`, because the arm
+    /// itself is erased — naming that type here would put
+    /// `H3<R, T, D>: Transport`'s bounds back on `Native`, which is the
+    /// whole thing `crate::h3_arm` exists to avoid. The cost is one
+    /// allocation on a path that is already boxing a QUIC stream.
+    #[cfg(feature = "http3")]
+    H3(crate::h3_arm::SendBoxBody),
     /// **No `H`, and that is a gap rather than a decision made twice.**
     /// The h2 body reports no [`Closed`](hclient_core::unversioned::Closed)
     /// event: `Connected`, `Reused` and `Head` come from
@@ -523,6 +532,8 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.inner {
             Inner::H1(b) => b.fmt(f),
+            #[cfg(feature = "http3")]
+            Inner::H3(_) => f.write_str("H3(..)"),
             #[cfg(feature = "http2")]
             Inner::H2(b) => b.fmt(f),
         }
@@ -543,6 +554,8 @@ where
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         match &mut self.inner {
             Inner::H1(b) => Pin::new(b).poll_frame(cx),
+            #[cfg(feature = "http3")]
+            Inner::H3(b) => b.as_mut().poll_frame(cx),
             #[cfg(feature = "http2")]
             Inner::H2(b) => Pin::new(b).poll_frame(cx),
         }
@@ -551,6 +564,8 @@ where
     fn is_end_stream(&self) -> bool {
         match &self.inner {
             Inner::H1(b) => b.is_end_stream(),
+            #[cfg(feature = "http3")]
+            Inner::H3(b) => b.is_end_stream(),
             #[cfg(feature = "http2")]
             Inner::H2(b) => b.is_end_stream(),
         }
@@ -559,8 +574,27 @@ where
     fn size_hint(&self) -> SizeHint {
         match &self.inner {
             Inner::H1(b) => b.size_hint(),
+            #[cfg(feature = "http3")]
+            Inner::H3(b) => b.size_hint(),
             #[cfg(feature = "http2")]
             Inner::H2(b) => b.size_hint(),
+        }
+    }
+}
+
+impl<I, H> NativeBody<I, H>
+where
+    I: Read + Write + Unpin,
+{
+    /// Wrap a body the QUIC arm produced.
+    ///
+    /// `pub(crate)` and taking an already-erased body: the arm hands back
+    /// `BoxBody` and this is the one place that knows it becomes a
+    /// `NativeBody`, so the variant stays private to this module.
+    #[cfg(feature = "http3")]
+    pub(crate) fn from_h3(b: crate::h3_arm::SendBoxBody) -> Self {
+        Self {
+            inner: Inner::H3(b),
         }
     }
 }
