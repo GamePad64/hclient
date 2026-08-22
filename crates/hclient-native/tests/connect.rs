@@ -11,11 +11,11 @@
 //! confirmed both through `cargo test` and separately with a raw
 //! `socket.connect()` from Python in the same container. Keeping a test
 //! that's red specifically here, and only here, is pointless: it stops
-//! being a signal for anyone working here from day one (the same
-//! conclusion review Task 4 reached for a similar situation with
-//! TEST-NET-1). The property we actually care about — "a failed attempt
-//! leads to the next address" / "every failed attempt is reported as
-//! `ErrorKind::Connect`" — doesn't depend on WHY the address is dead; the
+//! being a signal for anyone working here from day one — the same
+//! conclusion TEST-NET-1 leads to. The property we actually care about — "a
+//! failed attempt leads to the next address" / "every failed attempt is
+//! reported as `ErrorKind::Connect`" — doesn't depend on WHY the address is
+//! dead; the
 //! fixtures from `net_fixtures` (see `mod` below) genuinely fail in any
 //! environment. Don't reinstate a TEST-NET version of this file — it's
 //! red specifically here.
@@ -24,9 +24,8 @@
 //! left as a bare `.await`: a "dead" address is, by construction, exactly
 //! the spot where a mutation in `drive`'s loop (e.g. a lost
 //! `mark_v6_done`/`mark_v4_done`, or a broken `Exhausted` condition) turns
-//! the test not red but hung forever — Task 3 already found exactly this
-//! shape of test, and it wasn't a hypothetical, it was a real finding
-//! (see this vertical's Global Constraints). The bound is generous (30s)
+//! the test not red but hung forever, which is the shape to avoid: a run
+//! that hangs gives no test name and no diagnosis. The bound is generous (30s)
 //! but finite; on a closed local port the real time is much shorter —
 //! `ECONNREFUSED` comes back from the kernel, not from the timeout.
 mod net_fixtures;

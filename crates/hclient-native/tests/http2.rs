@@ -321,10 +321,10 @@ async fn a_live_exchange_with_an_http2_server_is_reported_as_http2() {
 /// build turned h2 on, so the answer has to be one that is safe either
 /// way.
 ///
-/// **This used to say the `false` was the code rather than a declaration,
-/// and that half has expired.** `http2::exchange` no longer writes the
-/// whole request body before awaiting the response — v0.4 W2 split it, and
-/// `tests/http2_duplex.rs` measures the duplex from the server. The floor
+/// **The `false` is a declaration rather than a limit of the code.**
+/// `http2::exchange` does not write the whole request body before awaiting
+/// the response, and `tests/http2_duplex.rs` measures the duplex from the
+/// server. The floor
 /// is unchanged and the assertions below are unchanged with it, because
 /// the reason for the floor never was this file's implementation: it is
 /// that `Capabilities` is one static answer for a transport that speaks
@@ -346,10 +346,8 @@ async fn capabilities_report_the_floor_with_the_feature_on() {
     );
     assert!(
         caps.request_trailers,
-        "and NOT the floor, which is the correction v0.4's Appendix C \
-         made: `request_trailers` used to be listed beside \
-         `response_trailers` here as a thing only h2 could do, and \
-         HTTP/1.1 had been sending them all along (tests/request_trailers \
+        "and NOT the floor: `request_trailers` is not a thing only h2 \
+         can do, and HTTP/1.1 sends them too (tests/request_trailers \
          .rs reads the field off a raw socket over plaintext `http://`, \
          with this feature compiled in and unused). The value is \
          therefore the same with the feature on as off, exactly as every \

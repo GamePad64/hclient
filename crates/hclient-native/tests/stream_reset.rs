@@ -318,11 +318,11 @@ async fn a_connection_that_dies_mid_request_is_still_an_error() {
 /// over as a whole one.
 ///
 /// **No request body here.** It was forced when this was written —
-/// `exchange` wrote the whole request body before waiting for the
-/// response, so a client still writing a megabyte never reached the read
-/// that this server waits for, and the first draft of this test deadlocked
-/// on exactly that. v0.4 W2 made the h2 path duplex, so the constraint is
-/// gone; the test keeps its shape because the receive side is the side it
+/// An `exchange` that wrote the whole request body before waiting for the
+/// response would leave a client still writing a megabyte never reaching
+/// the read this server waits for — a deadlock. The h2 path is duplex, so
+/// the constraint is gone; the test keeps its shape because the receive
+/// side is the side it
 /// is about, and `tests/http2_duplex.rs`'s
 /// `a_reset_while_the_body_drives_the_pump_does_not_discard_the_response`
 /// is where the same server behaviour is now met *with* an upload in

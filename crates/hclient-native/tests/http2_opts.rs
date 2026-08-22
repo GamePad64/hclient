@@ -42,8 +42,8 @@ const BODY: usize = 512 * 1024;
 /// **Deliberately below h2's own 400 KiB send buffer**
 /// (`proto::DEFAULT_MAX_SEND_BUFFER_SIZE`, read rather than guessed),
 /// because `SendStream::capacity` is bounded by *both* the peer's window
-/// and the sender's buffer — a first draft asked for a megabyte and was
-/// told 409 600, which discriminates but does not measure. Under the
+/// and the sender's buffer — asking for a megabyte is answered with
+/// 409 600, which discriminates but does not measure. Under the
 /// buffer the window is the only thing binding, so the number the server
 /// is granted is the number the client advertised, exactly.
 const RAISED_WINDOW: usize = 256 * 1024;

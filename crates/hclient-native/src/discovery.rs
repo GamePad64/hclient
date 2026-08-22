@@ -17,10 +17,8 @@
 //! transport — there is nowhere in **this crate** for "choose between two
 //! protocol stacks" to live. That is a transport owning both, and it
 //! exists: `hclient-select`'s `Selecting`, which reads the same record and
-//! routes to `Native` or `H3`. This paragraph said "there is nowhere in
-//! this codebase" until that crate was written; what stays true is the
-//! part about this crate, which is why the gap is stated here and closed
-//! one level up.
+//! routes to `Native` or `H3`. So the gap is stated here and closed one
+//! level up.
 //!
 //! So [`alpn_offer`] below never returns `h3`, and it is not an oversight
 //! to be fixed by adding it to the list: offering a protocol this

@@ -19,10 +19,9 @@
 //! would return `Pending` forever (the `Incoming` channel is empty, and
 //! nothing is left to fill it, including `blocking_io`'s own busy-spin
 //! `wake_by_ref` — it only wakes on SOCKET readiness, and the socket has
-//! nothing to do with it here: nobody else is reading from it). Task 3
-//! already found exactly this shape of test (see the vertical's Global
-//! Constraints): one that hangs under mutation instead of failing wedges
-//! CI with no test name and no diagnosis. The same technique as
+//! nothing to do with it here: nobody else is reading from it). A test
+//! that hangs under mutation instead of failing wedges CI with no test
+//! name and no diagnosis. The same technique as
 //! `hclient-native::connect::tests::bounded_block_on` and
 //! `tests/dual_runtime.rs`'s watchdog for `smol`: a separate watchdog
 //! thread + `process::exit(101)`, no `Send` bound on `fut` itself.

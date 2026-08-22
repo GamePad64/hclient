@@ -225,10 +225,10 @@ where
 /// `:authority` and `:path` out of it.
 ///
 /// That this happens inside the same `match` that picks the exchange is
-/// the point, and it was not free. An earlier version had
-/// `Native::execute` rewrite the request from the *pool key*'s protocol
-/// while this function dispatched on the *connection*'s: two sources for
-/// one fact. Mutation testing found them disagreeing — check a connection
+/// the point, and it was not free. Having `Native::execute` rewrite the
+/// request from the *pool key*'s protocol while this function dispatches
+/// on the *connection*'s is two sources for one fact. Mutation testing
+/// found them disagreeing — check a connection
 /// in under the wrong protocol and the next request goes out as HTTP/2
 /// carrying an origin-form URI, which has neither a scheme nor an
 /// authority for h2 to build pseudo-headers from. Reading the protocol off

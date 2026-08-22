@@ -23,7 +23,7 @@
 //! actually finished (`None` from `poll_next`), not ahead of time. Since
 //! the HTTPS query became concurrent with them the resolver's stream is
 //! reached through [`Answers`] rather than handed over directly, and that
-//! type exists precisely so this paragraph stays true: it replays what
+//! type exists precisely so that stays true: it replays what
 //! arrived early and goes on polling for the rest, where a `Vec` of
 //! collected answers would have been the dead-Resolution-Delay shape
 //! above. `race_connect` is the second, simpler entry point: it has
@@ -111,16 +111,11 @@
 //! one line — with no backend that applies ECH, a connection to an origin that publishes a config is still made,
 //! and still sends that origin's name in the clear.
 //!
-//! # `connect` is no longer dead code outside tests
+//! # No `expect(dead_code)` here
 //!
-//! Before Task 13, nothing in the crate called the DNS-consuming `connect`
-//! outside this file's `#[cfg(test)] mod tests` (only `race_connect`, via
-//! `crate::testing::connect_for_test`), so `cfg_attr(not(test),
-//! expect(dead_code, ..))` used to sit here — the same technique as
-//! `body.rs` before Task 12. With Task 13, `Native::execute`
-//! (`src/lib.rs`) genuinely calls `connect`, not just in tests — the
-//! attribute is removed, not narrowed: there's no path left in this file
-//! (`connect`, `Conn`, `host`, `port`, `wants_tls`) that's only alive in
+//! `Native::execute` (`src/lib.rs`) genuinely calls `connect`, not just in
+//! tests, so there is no path in this file
+//! (`connect`, `Conn`, `host`, `port`, `wants_tls`) that is only alive in
 //! test builds (the same conclusion `body.rs`'s doc comment reached for
 //! `Inner`/`OutgoingBody` a year earlier in the same vertical).
 #![allow(clippy::too_many_arguments)]
@@ -275,13 +270,12 @@ impl ResolveErrors {
     }
 
     /// The first recorded resolve error (from either family) whose
-    /// `kind()` is NOT `ErrorKind::Resolve`. Review round 1, finding 1:
-    /// `drive` used to wrap any resolve error (when `launched == 0`) in a
-    /// fresh `Error::new(ErrorKind::Resolve, errs)`, and when
-    /// `launched > 0` didn't read `errs` at all — both paths erased
-    /// `ErrorKind::Cancelled` (Task 7: the background thread pool shut
-    /// down before the resolve finished) indistinguishably from "this
-    /// name doesn't resolve." The specific case found was `Cancelled`,
+    /// `kind()` is NOT `ErrorKind::Resolve`. Wrapping any resolve error
+    /// (when `launched == 0`) in a fresh `Error::new(ErrorKind::Resolve,
+    /// errs)` and not reading `errs` at all when `launched > 0` erases
+    /// `ErrorKind::Cancelled` — the background thread pool shutting down
+    /// before the resolve finished — indistinguishably from "this name
+    /// doesn't resolve." `Cancelled` is the case that was found,
     /// but the rule is general: ANY `kind()` other than the `Resolve`
     /// this module synthesizes itself carries information the connector
     /// didn't produce and has no right to rename. Called BEFORE both
@@ -556,8 +550,8 @@ where
                     }
                 }
                 let errs = ResolveErrors::from_families(v6_err, v4_err);
-                // Review round 1, finding 1: checked BEFORE both branches
-                // below, not as a special case inside one of them — so
+                // Checked BEFORE both branches below, not as a special
+                // case inside one of them — so
                 // discarding a differing kind() (in particular,
                 // ErrorKind::Cancelled) becomes structurally unreachable,
                 // not merely handled for the one case that was found.
@@ -837,10 +831,10 @@ where
 ///
 /// # The record and the addresses are asked at once
 ///
-/// RFC 9460 §10.3, and it is where this function's cost was hiding for one
-/// release: the HTTPS query used to be awaited *in front of* the address
-/// queries, so on a resolver that answers SVCB — `SystemDns` on Linux does
-/// — every new connection paid one round trip before it started resolving.
+/// RFC 9460 §10.3, and it is where this function's cost hides: awaiting
+/// the HTTPS query *in front of* the address queries makes every new
+/// connection pay one round trip before it starts resolving, on a resolver
+/// that answers SVCB — `SystemDns` on Linux does.
 ///
 /// Nothing about an address depends on the record. This connector does not
 /// resolve a record's target name (`discovery::lookup` says why), so the
@@ -1697,11 +1691,10 @@ mod tests {
     /// real (its `Timer::sleep` just advances a virtual clock and resolves
     /// immediately), so nothing below should ever take real wall-clock time
     /// — UNLESS a bug (or a mutation, see the mutation-testing notes in
-    /// this task's report) makes `drive`/`race_connect` loop forever
-    /// without ever advancing the scheduler to `Exhausted` or `Start`.
-    /// Task 3 already found exactly that shape of test — one that hangs
-    /// under mutation instead of failing, wedging CI with no name and no
-    /// diagnosis (see this vertical's Global Constraints). A watchdog
+    /// makes `drive`/`race_connect` loop forever without ever advancing
+    /// the scheduler to `Exhausted` or `Start`. A test that hangs under
+    /// mutation instead of failing wedges CI with no name and no
+    /// diagnosis, which is the shape to avoid. A watchdog
     /// thread, not a `Send`-bounded wrapper around `fut` itself: `fut` is
     /// generic with NO `Send` bound here on purpose, because several
     /// tests below deliberately drive `!Send` futures (`FakeStream` holds
@@ -2025,8 +2018,8 @@ mod tests {
     }
 
     /// Like `ErrOnce` (see above), but with a configurable `ErrorKind` —
-    /// needed to simulate `ErrorKind::Cancelled` (Task 7: the background
-    /// thread pool shut down before `getaddrinfo` finished), not just
+    /// needed to simulate `ErrorKind::Cancelled` (the background thread
+    /// pool shut down before `getaddrinfo` finished), not just
     /// `ErrorKind::Resolve`.
     struct ErrOnceWithKind(bool, ErrorKind);
     impl futures_util::Stream for ErrOnceWithKind {
@@ -2045,10 +2038,10 @@ mod tests {
         }
     }
 
-    /// Review round 1, finding 1, loss path A ("flattened to Resolve").
-    /// `drive` used to wrap ANY resolve error when `launched == 0` into a
-    /// fresh `Error::new(ErrorKind::Resolve, errs)`, discarding the
-    /// original `kind()`. `ErrorKind::Cancelled` exists
+    /// Loss path A, "flattened to Resolve": wrapping ANY resolve error
+    /// when `launched == 0` into a fresh
+    /// `Error::new(ErrorKind::Resolve, errs)` discards the original
+    /// `kind()`. `ErrorKind::Cancelled` exists
     /// specifically so a caller can tell "the runtime is shutting down"
     /// apart from "this name doesn't resolve" without downcasting, just
     /// by comparing `kind()` — and flattening into `Resolve` erased that
@@ -2080,10 +2073,10 @@ mod tests {
         );
     }
 
-    /// Review round 1, finding 1, loss path B ("silently discarded") — the
-    /// same principle, but with `launched > 0`: v6 was cancelled, v4 found
-    /// one dead address and genuinely tried it. `drive` used to return
-    /// `AllAttemptsFailed`/`ErrorKind::Connect` in this branch, and `errs`
+    /// Loss path B, "silently discarded" — the same principle, but with
+    /// `launched > 0`: v6 was cancelled, v4 found one dead address and
+    /// genuinely tried it. Returning
+    /// `AllAttemptsFailed`/`ErrorKind::Connect` in this branch leaves `errs`
     /// (holding the Cancelled signal) was never read at all — not in
     /// `.source()`, nowhere. This is the worse of the two loss paths: an
     /// error that isn't even in the source chain can't be recovered by
@@ -2890,8 +2883,8 @@ mod tests {
         addr
     }
 
-    /// Review round 1, finding 3: every `connect()` test up to this point
-    /// used a single-address resolver, so success always returned via the
+    /// Every other `connect()` test uses a single-address resolver, so
+    /// success always returns via the
     /// `Exhausted` branch's post-drain loop — a mutation that broke ONLY
     /// the `Wait` branch's `Event::Attempt(Some(Ok(s))) => return Ok(s)`
     /// (see `drive`) would be invisible through `connect()`, even though

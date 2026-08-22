@@ -65,10 +65,7 @@
 //! woken. The whole spin lives in the test helper `testing::BlockingIo`
 //! (its `poll_would_block` honestly calls `cx.waker().wake_by_ref()`
 //! because there's no reactor on bare `futures_executor::block_on` — see
-//! its doc comment) and doesn't exist on any production path. Task 14
-//! would otherwise have had to re-litigate this on two runtimes at
-//! once — written down here once, where the next reader of this file
-//! will see it.
+//! its doc comment) and doesn't exist on any production path.
 //!
 //! # What happens when `Connection` finishes first, or fails
 //!
@@ -84,10 +81,10 @@
 //!   safe for every implementation) and keeps polling the request — but
 //!   only for as long as that can lead anywhere, which is not always.
 //!
-//!   An earlier version of this paragraph said it always could: "hyper's
-//!   dispatcher can't reach `Dispatched::Shutdown` without closing the
-//!   request channel, so the request must be ready or become ready on the
-//!   very next poll — there's no hang here". That was true while every
+//!   The tempting claim is that it always can: "hyper's dispatcher can't
+//!   reach `Dispatched::Shutdown` without closing the request channel, so
+//!   the request must be ready or become ready on the very next poll —
+//!   there's no hang here". That is true while every
 //!   connection was fresh, and connection reuse made it false. A pooled
 //!   connection whose server closed it while nobody was polling reaches
 //!   `Dispatched::Shutdown` through `poll_read_keep_alive`'s "found EOF on
@@ -206,7 +203,7 @@
 //!
 //! # `ErrorKind` through `hyper::Error`
 //!
-//! Task 10 (`body.rs`, module doc comment) proved with a real handshake
+//! `body.rs`'s module doc comment proves with a real handshake
 //! that an outgoing body error (`hclient_core::Error`) survives the trip
 //! through `hyper::Error` without losing `ErrorKind` — it's recovered via
 //! `hyper::Error::source().downcast_ref()`, not lost in a `Display`
@@ -237,7 +234,7 @@ use std::task::{Context, Poll};
 
 /// The single conversion point from `hyper::Error` to `hclient_core::Error`
 /// for this file — see the module doc comment for why flattening
-/// everything into `fallback` would regress the property Task 10 proved.
+/// everything into `fallback` loses an `ErrorKind` the body already set.
 fn from_hyper_error(e: hyper::Error, fallback: ErrorKind) -> Error {
     match std::error::Error::source(&e).and_then(|s| s.downcast_ref::<Error>()) {
         Some(inner) => inner.clone(),

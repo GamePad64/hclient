@@ -11,13 +11,13 @@
 //! `self.dns.lookup_ipv6(&host).filter_map(|r| async { r.ok()... })` —
 //! which discards ANY resolver error (`ErrorKind::Cancelled` included)
 //! and synthesizes a single `ErrorKind::Resolve` if both streams are
-//! empty. Review Task 7 already caught this in exactly this spot:
-//! `Cancelled` (an ordinary runtime shutdown) is indistinguishable from
+//! empty. In that shape `Cancelled` (an ordinary runtime shutdown) is
+//! indistinguishable from
 //! "this name doesn't resolve," and a circuit breaker keyed on `Resolve`
 //! would wrongly blacklist a live host during an ordinary shutdown.
 //!
-//! Task 11 solved this ONCE, structurally, in `connect::drive`/
-//! `ResolveErrors::distinguishing_error` — it's checked BEFORE both
+//! It is solved ONCE, structurally, in `connect::drive`/
+//! `ResolveErrors::distinguishing_error` — checked BEFORE both
 //! failure branches, so discarding an error code other than the
 //! synthetic `Resolve` is structurally unreachable. `Native::execute`
 //! (`src/lib.rs`) therefore doesn't resolve on its own: it calls
@@ -125,15 +125,15 @@ async fn request_line_is_origin_form_and_host_header_is_set() {
     );
 }
 
-/// **What this test can and cannot prove — final review, §3.1.** This test
-/// reads the same struct literal `Native::new` wrote; it cannot tell a
-/// truthful capability from a lying one, because both would read back
-/// identically here. Two of these assertions used to be wrong in exactly
-/// that unfalsifiable way (`streaming_request_body` claimed `false` while
-/// the body was genuinely streamed; `timeouts.connect` claimed `true` while
-/// nothing in `execute` ever read `Timeouts` at all) — a test that only
-/// reads fields agreed with both mistakes, because it never asked whether
-/// the field matched behavior. The two claims that actually need a
+/// **What this test can and cannot prove.** It reads the same struct
+/// literal `Native::new` wrote; it cannot tell a truthful capability from
+/// a lying one, because both read back identically here. Two of these
+/// assertions have been wrong in exactly that unfalsifiable way
+/// (`streaming_request_body` claimed `false` while the body was genuinely
+/// streamed; `timeouts.connect` claimed `true` while nothing in `execute`
+/// ever read `Timeouts` at all) — a test that only reads fields agreed
+/// with both mistakes, because it never asked whether the field matched
+/// behaviour. The two claims that actually need a
 /// behavioral witness have one, elsewhere in this file:
 /// `streaming_request_body` → `streaming_request_body_is_actually_streamed_not_buffered`
 /// (captures wire bytes, asserts `transfer-encoding: chunked`);
@@ -403,7 +403,7 @@ async fn every_timeout_phase_is_accepted_at_build_time_now_that_each_is_enforced
 
 /// A TLS handshake that fails (the server accepted the TCP connection and
 /// immediately dropped it, without sending a single byte of TLS) — checks
-/// that the `Tls` category (`TlsConnect::connect`, Task 8/9) also survives
+/// that the `Tls` category (`TlsConnect::connect`) also survives
 /// to the caller through `Native::execute`, not just `Resolve`/`Cancelled`
 /// above.
 #[tokio::test]
@@ -431,15 +431,15 @@ async fn tls_handshake_failure_reports_tls_kind_through_the_client() {
 //
 // The tests above cover `Resolve`, `Cancelled` and `Tls` surviving
 // `Client::execute`. `Connect` and `Body` were the other two the brief
-// named, and fix round 1's review found neither had a test of its own at
-// this composed layer — both pass on unmodified code (no bug), but nothing
-// held that property in place: wrapping `h1::exchange`'s error in a fresh
+// named, and neither had a test of its own at this composed layer — both
+// pass on unmodified code (no bug), but nothing held that property in
+// place: wrapping `h1::exchange`'s error in a fresh
 // `Error::new(ErrorKind::Connect, e)` in `src/lib.rs` turns the `Body` test
 // below red while every other test in this file stays green (verified
 // directly, see this task's report). The two tests below close that gap.
 
 /// `ErrorKind::Connect` (`connect::connect`'s own `AllAttemptsFailed`,
-/// `ErrorKind::Connect` — Task 11) surviving `Client::execute`, the same
+/// `ErrorKind::Connect`) surviving `Client::execute`, the same
 /// property `Resolve`/`Cancelled`/`Tls` already have tests for above.
 /// `net_fixtures::closed_port` (not a hand-rolled bind-then-drop) reuses the
 /// helper this crate already has for "a port that genuinely refuses" — see
@@ -499,7 +499,7 @@ async fn streaming_request_body_error_kind_survives_the_client() {
     assert_eq!(*err.kind(), ErrorKind::Body, "{err}");
 }
 
-// --- Final review, F1: does the declared connect timeout actually fire? ---
+// --- Does the declared connect timeout actually fire? ---
 
 /// Polls `fut` in a bare loop — no parking, no reactor, and (unlike the
 /// `std::thread::spawn` + `std::process::exit` watchdog this replaces)
@@ -507,17 +507,17 @@ async fn streaming_request_body_error_kind_survives_the_client() {
 /// on timeout, letting the caller fail through an ordinary `panic!`/
 /// `assert!` instead.
 ///
-/// **Why this replaces a watchdog thread, final review round 3.** Measured
-/// directly (throwaway experiment, not assumed): a `std::process::exit`
+/// **Why this replaces a watchdog thread.** Measured directly, not
+/// assumed: a `std::process::exit`
 /// called from a spawned thread, even immediately after an `eprintln!`,
 /// prints nothing but `error: test failed` under a plain `cargo test` —
 /// libtest's output capture swallows the message and, because `exit`
 /// terminates the process before libtest's own harness can report a named
 /// failure, the test name is gone too. Only `--nocapture` reveals either.
-/// That is exactly the failure mode Task 3 and Task 9's bounded-wait work
-/// spent effort eliminating elsewhere in this vertical ("a stalled run
-/// gives no test name and no diagnosis") — reproduced here in a different
-/// shape, guarding the one capability whose silent no-op blocked this
+/// That is the failure mode the bounded waits elsewhere in this crate
+/// exist against — "a stalled run gives no test name and no diagnosis" —
+/// in a different shape, guarding the one capability whose silent no-op
+/// blocked this
 /// branch.
 ///
 /// A watchdog **thread** is unnecessary here in particular: the future this
@@ -761,16 +761,13 @@ impl hclient_tls::TlsConnect for NoOpTls {
     }
 }
 
-/// Final review, F1 (blocking): `Native` declared `timeouts.connect = true`
-/// while nothing in `execute` ever read `Timeouts` — `check_timeouts_supported`
-/// let a connect timeout through `build()` because the capability said so,
-/// and then it did nothing, forever. This is the review's own probe (its
-/// `StuckRt`/`OneAddr`/`NeverStream` renamed to match this file's naming) —
-/// not a rewrite of what it tests, since the point is to verify the
-/// review's own finding, not a different one. Driven through `poll_bounded`
-/// rather than a watchdog thread — see that function's doc comment (final
-/// review round 3: the thread-based version's failure message and even its
-/// test name were invisible under a plain `cargo test`).
+/// `Native` declaring `timeouts.connect = true` while nothing in
+/// `execute` reads `Timeouts` means `check_timeouts_supported` lets a
+/// connect timeout through `build()` because the capability says so, and
+/// then it does nothing, forever. Driven through `poll_bounded` rather
+/// than a watchdog thread — see that function's doc comment: a
+/// thread-based version's failure message and even its test name are
+/// invisible under a plain `cargo test`.
 #[test]
 fn declared_connect_timeout_is_actually_applied() {
     let t = Native::new(NeverConnects, NoOpTls, OneUnroutableAddr);
@@ -790,7 +787,7 @@ fn declared_connect_timeout_is_actually_applied() {
     let err = match result {
         None => panic!(
             "a 50 ms connect timeout never fired after 5 s — the declared capability is a \
-             silent no-op (final review, F1)"
+             silent no-op"
         ),
         Some(Ok(_)) => panic!("connect never completes, so this must be a timeout, not a success"),
         Some(Err(e)) => e,
@@ -802,8 +799,8 @@ fn declared_connect_timeout_is_actually_applied() {
     );
 }
 
-// --- Final review round 3, item 2: what does the connect deadline cover,
-// and is its declared duration actually the one used? ---
+// --- What does the connect deadline cover, and is its declared duration
+// actually the one used? ---
 
 /// `TcpConnect` that never completes any attempt (same shape as
 /// `NeverConnects`), but records the wall-clock time each attempt started —
@@ -867,8 +864,8 @@ impl Resolve for FiveUnroutableAddrs {
     }
 }
 
-/// Final review round 3, item 2: `declared_connect_timeout_is_actually_
-/// applied` above proves a deadline exists and fires; it does not prove
+/// `declared_connect_timeout_is_actually_applied` above proves a deadline
+/// exists and fires; it does not prove
 /// WHAT it covers or that its DURATION is the one the caller asked for —
 /// with only one address and one deadline, a hardcoded duration or a
 /// deadline re-armed per attempt would both still produce a `Timeout`
@@ -962,7 +959,7 @@ fn connect_timeout_covers_the_whole_race_not_a_single_attempt() {
     );
 }
 
-// --- Final review, F3: is the request body actually streamed? ---
+// --- Is the request body actually streamed? ---
 
 struct TwoFrames(u8);
 impl http_body::Body for TwoFrames {
@@ -988,11 +985,9 @@ impl http_body::Body for TwoFrames {
     }
 }
 
-/// Final review, F3 (major): `Native::new` declared `streaming_request_body
-/// = false` and the crate doc comment claimed the request body was
-/// "buffered whole" — `body.rs`'s own doc comment, written for a
-/// different task, said the opposite about the same code, and this is the
-/// tiebreaker: what actually goes out on the wire. `transfer-encoding:
+/// `Native::new` once declared `streaming_request_body = false` while
+/// `body.rs`'s own doc comment said the opposite about the same code. This
+/// is the tiebreaker: what actually goes out on the wire. `transfer-encoding:
 /// chunked` plus two separate frames is only possible if `Native` streams
 /// the body instead of buffering it first — a buffered body would go out as
 /// one `Content-Length`-framed write.
@@ -1032,17 +1027,15 @@ async fn streaming_request_body_is_actually_streamed_not_buffered() {
     );
 }
 
-// --- Final review round 3, item 1: does h1.rs's own response-body ---
-// --- classification survive to the caller, not just Response::chunk()'s ---
-// --- passthrough? ---
+// --- Does h1.rs's own response-body classification survive to the ---
+// --- caller, not just Response::chunk()'s passthrough? ---
 
-/// Final review round 2 found `Response::chunk()` relabeling an
-/// already-classified body error (fixed in round 2, F2). Round 3's re-review
-/// reproduced the review's ORIGINAL mutation (`h1.rs`'s two
-/// `from_hyper_error(e, ErrorKind::Body)` call sites in `NativeBody::
-/// poll_frame`, flipped to `ErrorKind::Other`) directly and found it still
-/// killed zero tests: round 2's fix made `chunk()` pass through whatever
-/// `h1.rs` decided, but nothing forced `h1.rs` itself to decide on a
+/// Stopping `Response::chunk()` from relabeling an already-classified body
+/// error is only half of it. The mutation that flips `h1.rs`'s two
+/// `from_hyper_error(e, ErrorKind::Body)` call sites in
+/// `NativeBody::poll_frame` to `ErrorKind::Other` kills zero tests
+/// otherwise: `chunk()` passing through whatever `h1.rs` decided does not
+/// force `h1.rs` itself to decide on a
 /// genuine, unclassified transport failure — every existing body-error test
 /// injects an already-classified `hclient_core::Error` via
 /// `RequestBody::Streaming`, which `from_hyper_error` recovers from

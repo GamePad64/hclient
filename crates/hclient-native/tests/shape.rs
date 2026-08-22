@@ -1,10 +1,8 @@
 //! Assertions about `hclient-native`'s public API shape, kept outside
 //! `src` — the same technique as `hclient-core/tests/shape.rs` and
 //! `hclient-wasi/tests/shape.rs` (see their doc comments and spec
-//! amendment-C3): CI's `no-declared-send` has scanned
-//! `crates/hclient-native/src` since Task 13 — before that,
-//! the crate exported nothing public besides `testing`, so there was
-//! nothing yet to protect. An ordinary `T: Send` here doesn't get
+//! amendment-C3): CI's `no-declared-send` scans
+//! `crates/hclient-native/src`. An ordinary `T: Send` here doesn't get
 //! confused with the production invariant, because this file isn't
 //! `src`.
 use hclient_native::testing::OutgoingBody;

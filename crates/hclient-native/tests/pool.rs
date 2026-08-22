@@ -322,7 +322,7 @@ async fn a_connection_the_server_closed_while_idle_is_not_handed_out() {
 /// This test was flaky on `main` — roughly one run in forty under load,
 /// always `Connect / hyper::Error(Io, ConnectionReset)` — and the cause
 /// was in this fixture rather than in the pool. "Already closed by the
-/// server" used to be arranged by sleeping 100 ms after the response that
+/// server" cannot be arranged by sleeping 100 ms after the response that
 /// exhausts the connection, on the reasoning that a `FIN` follows its
 /// response by microseconds. It does, on an idle machine. Writing the
 /// response and dropping the socket are two operations by a thread the OS
@@ -774,7 +774,7 @@ async fn a_request_that_loses_the_race_is_retried_on_a_fresh_connection() {
     );
 }
 
-/// **One look further, and this is the window that used to be lost.**
+/// **One look further, and this is the window a naive pool loses.**
 ///
 /// Here the close is hidden from both of this crate's own looks and
 /// revealed to hyper's first read — which happens before hyper writes

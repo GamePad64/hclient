@@ -234,8 +234,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// from [`Capabilities`], which report the floor (see [`Native::new`]).
 /// No upgrade on either protocol. The request body is **not** buffered whole:
 /// `RequestBody::Streaming` goes to the wire as a stream (see
-/// [`Native::new`]'s doc comment on `streaming_request_body` — an earlier
-/// version of this paragraph claimed the opposite and was wrong).
+/// [`Native::new`]'s doc comment on `streaming_request_body`).
 ///
 /// # `H`, the observability hook
 ///
@@ -439,12 +438,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // `Capabilities::none()` (see `tests/transport.rs`'s
         // `undeclared_capability_fields_match_their_conservative_defaults_today`).
         //
-        // `streaming_request_body: true` — NOT the same as what was here
-        // before the branch's final review (`false`). `body.rs`'s
-        // `Inner::Streaming` hands `RequestBody::Streaming` to hyper as a
-        // stream instead of buffering it into memory first (see `body.rs`'s
-        // doc comment — it has always claimed this, unlike the earlier
-        // version of THIS comment); measured on the wire:
+        // `streaming_request_body: true`. `body.rs`'s `Inner::Streaming`
+        // hands `RequestBody::Streaming` to hyper as a stream instead of
+        // buffering it into memory first; measured on the wire:
         // `tests/transport.rs`'s
         // `streaming_request_body_is_actually_streamed_not_buffered` sees
         // `transfer-encoding: chunked` and separate frames for a
@@ -488,15 +484,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // can never know whether some other crate turned h2 on. The floor is
         // the only answer such a library can act on.
         //
-        // **This half expired in v0.4 W2 and is corrected rather than
-        // deleted.** It used to read "on this implementation it is not
-        // merely a declaration: `http2::exchange` writes the whole request
-        // body before it awaits the response". That stopped being true
-        // when the h2 path became duplex — the loop lost exactly one
-        // branch, `Poll::Pending => return Poll::Pending`, which *was* the
-        // implementation this sentence described.
+        // **The h2 path is genuinely duplex**, so this is not "the
+        // implementation cannot do it": one branch,
+        // `Poll::Pending => return Poll::Pending`, is what would make it
+        // so, and that branch is gone.
         //
-        // The `false` stands anyway, and for the reason it always had:
+        // The `false` stands anyway, for the reason it always had:
         // this is the FLOOR, and the floor is HTTP/1.1, which cannot do
         // duplex at all. A library cannot know whether some other crate in
         // the graph turned `http2` on, so the static answer must hold on
@@ -569,11 +562,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // `dropping_the_execute_future_closes_the_connection_the_server_sees`
         // has the server observe its socket close.
         caps.cancel_on_drop = CancelSupport::Supported;
-        // Asked, not assumed. This line used to be a hardcoded
-        // `TlsSupport::Full` regardless of which `TlsConnect` was plugged
-        // in, so `Native<R, NoTls, D>` would have advertised full TLS while
-        // refusing every `https://` connect — a capability that lies, of
-        // exactly the kind this project has caught in three other backends.
+        // Asked, not assumed. A hardcoded `TlsSupport::Full` regardless
+        // of which `TlsConnect` was plugged in would make
+        // `Native<R, NoTls, D>` advertise full TLS while refusing every
+        // `https://` connect — a capability that lies, of exactly the kind
+        // this project has caught in three other backends.
         // `TlsConnect::tls_support` defaults to `Full`, so every real
         // implementation reports what it did before; only a stub differs.
         caps.tls_config = tls.tls_support();
@@ -636,11 +629,11 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // `tests/transport.rs`'s
             // `declared_connect_timeout_is_actually_applied`.
             //
-            // Scope, spelled out (final review round 3: the capability
-            // alone left this ambiguous — RFC 8305 staggers several TCP
-            // attempts, and "connect" could plausibly mean a budget per
-            // attempt or one budget for all of them, which are materially
-            // different promises to a caller). This is the LATTER: one
+            // Scope, spelled out, because the capability alone leaves it
+            // ambiguous: RFC 8305 staggers several TCP attempts, so
+            // "connect" could plausibly mean a budget per attempt or one
+            // budget for all of them, which are materially different
+            // promises to a caller. This is the LATTER: one
             // deadline for `connect::connect` as a whole — DNS resolution,
             // every Happy Eyeballs attempt across every address offered,
             // and (for `https`) the TLS handshake — not a per-attempt
@@ -1075,14 +1068,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// stronger than the truth, which is the one thing this crate refuses
     /// everywhere else.
     ///
-    /// This is *not* the reason that used to be recorded here and in two
-    /// documents — "a pool driven by a spawned task does not compile on
+    /// It is *not* "a pool driven by a spawned task does not compile on
     /// this seam, because `Spawn<F>` requires `F: Send + 'static` and this
-    /// vertical's IO is not `Send`". That was measured and withdrawn:
-    /// `Spawn<F>` declares no bounds whatsoever, and the pool is an
-    /// `Arc<..<Mutex<..>>>`, so a reaper over it is `Send` whenever the
-    /// connection is. See `pool.rs`'s module doc for how the mistake was
-    /// made, which is the reusable part of it.
+    /// crate's IO is not `Send`". Measured: `Spawn<F>` declares no bounds
+    /// whatsoever, and the pool is an `Arc<..<Mutex<..>>>`, so a reaper
+    /// over it is `Send` whenever the connection is. See `pool.rs`'s module
+    /// doc for how that mistake is made, which is the reusable part of it.
     ///
     /// # The bound is on this constructor, and that is the point
     ///
@@ -2362,11 +2353,10 @@ where
         } = prepared;
         let (parts, body) = req.into_parts();
 
-        // Branch final review, finding F1 (blocking): `Capabilities`
-        // claimed `timeouts.connect = true`, but nothing in this file read
-        // `Timeouts` from `parts.extensions` — the claimed timeout was a
-        // silent no-op, exactly the class of defect (B1 of vertical 1's
-        // final review) this channel exists to root out.
+        // `Capabilities` claims `timeouts.connect = true`, so this file
+        // must read `Timeouts` from `parts.extensions` — not reading it
+        // makes the claimed timeout a silent no-op, exactly the class of
+        // defect this channel exists to root out.
         // `Transport::execute`'s doc comment
         // (`hclient-core/src/unversioned/transport.rs`) spells out the
         // correct reading literally: "presence is not intent",
@@ -2859,8 +2849,7 @@ pub struct FirstByteTimedOut(pub Duration);
 struct ConnectTimedOut(Duration);
 
 /// Races `fut` against `rt.sleep(d)`: `fut` if it finished first,
-/// otherwise `Err(ErrorKind::Timeout(Phase::Connect))` — closes branch
-/// final review finding F1.
+/// otherwise `Err(ErrorKind::Timeout(Phase::Connect))`.
 ///
 /// `std::future::poll_fn`, polling both arms by hand, rather than
 /// `futures_util::select!`/`select` — the same technique and the same
@@ -2922,9 +2911,8 @@ where
 /// because `tests/*.rs` compile as a separate external crate and can't see
 /// `pub(crate)` items like `connect::race_connect`/`h1::exchange`
 /// directly. `#[doc(hidden)]` isn't part of the crate's public API, it's a
-/// gap opened specifically for this task's integration tests (see
-/// `tests/connect.rs`, `tests/dual_runtime.rs`, `tests/h1.rs`); Task 13
-/// need not, and must not, rely on it.
+/// gap opened for this crate's own integration tests (`tests/connect.rs`,
+/// `tests/dual_runtime.rs`, `tests/h1.rs`) and for nothing else.
 #[doc(hidden)]
 pub mod testing {
     /// Runs Happy Eyeballs over a ready-made address list, bypassing DNS —
@@ -2980,8 +2968,8 @@ pub mod testing {
     /// response that will never come, while the server waits for a
     /// request that was never sent, because the client is stuck reading.
     /// Caught not by reading the code but by `works_on_a_bare_futures_
-    /// executor_with_no_spawn` actually hanging (see the Task 12 report) —
-    /// it never got as far as the request's first byte.
+    /// executor_with_no_spawn` actually hanging — it never got as far as
+    /// the request's first byte.
     ///
     /// So the socket has to be non-blocking, and `poll_read`/`poll_write`
     /// have to return `Pending` on `WouldBlock` instead of waiting. But

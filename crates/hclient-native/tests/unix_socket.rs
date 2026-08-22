@@ -150,7 +150,7 @@ fn a_proxy_and_a_socket_cannot_both_be_configured() {
 /// **Two transports over two sockets, one authority, and each socket sees
 /// its own request.**
 ///
-/// The name used to say *never one pooled connection*, and that was more
+/// The name is not *never one pooled connection*, which would be more
 /// than this asserts: each `Native` has its own pool, so two of them
 /// cannot share a connection whatever the key says. The path **is** in the
 /// pool key, and that correctness is unobservable for the same structural

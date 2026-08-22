@@ -8,10 +8,10 @@
 //! either something polls it or nothing does — and this transport is
 //! deliberately built **without `Spawn`**, so nothing does.
 //!
-//! **Why there is no reaper, corrected.** This paragraph used to say that
-//! a pool driven by a spawned task "does not compile at all on this seam",
-//! because `hclient_rt::Spawn<F>` requires `F: Send + 'static` and this
-//! vertical's IO is not `Send`. **That was measured and is false.**
+//! **Why there is no reaper by default.** It is not that a pool driven by
+//! a spawned task "does not compile at all on this seam, because
+//! `hclient_rt::Spawn<F>` requires `F: Send + 'static` and this crate's IO
+//! is not `Send`". **Measured, that is false.**
 //! `hclient_rt::Spawn<F>` requires nothing — the trait has zero bounds, and
 //! its own doc comment says why; `Send + 'static` is added by two *impls*.
 //! And a reaper over this pool is `Send` whenever the connection is,
@@ -20,13 +20,12 @@
 //! connection type — measured against a real socket, with the server
 //! observing the close.
 //!
-//! **How the mistake was made, because it is the reusable part.** The
-//! reasoning went from `connect.rs`'s `FakeStream` — a *test* stub holding
+//! **How that mistake is made, because it is the reusable part.** The
+//! reasoning runs from `connect.rs`'s `FakeStream` — a *test* stub holding
 //! an `Rc<()>` — to the shipped path. The stub holds that `Rc` precisely
-//! to prove that no path here *requires* `Send`; from "the test does not
-//! require it" was inferred "production cannot have it". A fixture built
-//! to prove an absence is not evidence about presence, and this project
-//! writes such things down where they happened.
+//! to prove that no path here *requires* `Send`, and "the test does not
+//! require it" is not "production cannot have it". A fixture built to
+//! prove an absence is not evidence about presence.
 //!
 //! **The reason that does hold, and it is the project's own rule.**
 //! [`crate::Native`] is generic over `R`, and not every `R` has a `Spawn`
@@ -87,9 +86,9 @@
 //!    "close a connection older than this": a client that goes quiet for
 //!    an hour leaves its sockets open until it makes another request or
 //!    the `Native` is dropped. This is the price of the default having no
-//!    spawner — not, as this file used to say, of a reaper being
-//!    impossible — and [`crate::Native::with_reaper`] is what buys the
-//!    second meaning back for a runtime that can spawn. Measured on a real
+//!    spawner, not of a reaper being impossible, and
+//!    [`crate::Native::with_reaper`] is what buys the second meaning back
+//!    for a runtime that can spawn. Measured on a real
 //!    socket with the server watching its own end close, under a **300 ms**
 //!    idle timeout: **299.7 ms** after the response on the shipped `Tokio`
 //!    and **300.6 ms** on the shipped `Smol`, against a control differing
@@ -112,10 +111,9 @@
 //!    has it too — so it is handled rather than prevented: see the retry in
 //!    `Native::execute`.
 //!
-//!    **How far the retry reaches, corrected twice.** This paragraph used
-//!    to end "which is the reason this pool does not make previously
-//!    reliable requests fail intermittently", and that is true of the
-//!    window the retry covers and false past it. The retry fires on
+//!    **How far the retry reaches.** "This pool does not make previously
+//!    reliable requests fail intermittently" is true of the window the
+//!    retry covers and false past it. The retry fires on
 //!    [`crate::established::Failed::NotSent`] — hyper handing the request
 //!    back because not a byte of it reached the wire. If the server's close
 //!    lands *after* the request goes out, its kernel answers `RST`, hyper

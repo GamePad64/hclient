@@ -20,12 +20,11 @@
 //! Which means `BoxError` isn't needed in this file at all: wrapping
 //! `Error` in `Box<dyn StdError + Send + Sync>` here would mean losing
 //! `ErrorKind` right at the transport's entry point — exactly the defect
-//! (B2 of vertical 1's final review) that `Transport::to_error` exists in
-//! the core to prevent. hyper's `Send` bound is real and confirmed
-//! (`hyper::proto::h1::dispatch::Dispatcher` requires `Bs::Error:
-//! Into<Box<dyn StdError + Send + Sync>>` in its where-clause), but it's
-//! already satisfied by `Error` as-is; there's nowhere to get a `BoxError`
-//! from, and nowhere to put one.
+//! `Transport::to_error` exists in the core to prevent. hyper's `Send` bound
+//! is real and confirmed (`hyper::proto::h1::dispatch::Dispatcher` requires
+//! `Bs::Error: Into<Box<dyn StdError + Send + Sync>>` in its where-clause),
+//! but it's already satisfied by `Error` as-is; there's nowhere to get a
+//! `BoxError` from, and nowhere to put one.
 //!
 //! # Does `ErrorKind` survive the trip through `hyper::Error`?
 //!
@@ -50,8 +49,8 @@
 //!    (doesn't need `Any`, available on any `Error` type since 1.0) —
 //!    successfully recovers the original value, `ErrorKind` included.
 //!
-//! So the correct route for Task 12/13, when `SendRequest::
-//! send_request` returns `Err(hyper::Error)` because the body failed:
+//! So the correct route, when `SendRequest::send_request` returns
+//! `Err(hyper::Error)` because the body failed:
 //! `err.source().and_then(|s| s.downcast_ref::<hclient_core::Error>())`
 //! BEFORE wrapping the error through `Transport::to_error` — `to_error`'s
 //! default only knows how to recognize "this is already our `Error`" when
@@ -63,9 +62,9 @@
 //! # No `RequestBody` variant silently turns into an empty body
 //!
 //! `Streaming` isn't a buffer, so it's forwarded as a stream rather than
-//! collected into memory or dropped (which used to be a defect in
-//! vertical 1's `wasi` transport: a streaming body silently became an
-//! empty request while streaming support was claimed). `Rewindable` has
+//! collected into memory or dropped — dropping it is the defect where a
+//! streaming body silently becomes an empty request while streaming
+//! support is claimed. `Rewindable` has
 //! its factory called and the result is processed through the SAME path
 //! as any other `RequestBody` (recursively, via
 //! [`Inner::from_request_body`]), not a partial match that only accepts
@@ -77,20 +76,13 @@
 //! to the partial match kills exactly them, not just the new `Streaming`
 //! test.
 //!
-//! # `Inner`/`OutgoingBody` are no longer dead code outside tests
+//! # No `expect(dead_code)` here
 //!
-//! Before Task 12, nothing in the crate built `OutgoingBody` outside this
-//! file's `#[cfg(test)] mod tests`, so `#![cfg_attr(not(test),
-//! expect(dead_code, ..))]` used to sit here. With Task 12, `h1::exchange`
-//! genuinely takes an `http::Request<OutgoingBody>` (not just in tests),
-//! and `testing::empty_body`/`testing::exchange_for_test` in `lib.rs` also
-//! build and pass it in an ordinary, non-test build — `dead_code` no
-//! longer triggers outside tests, and an `expect` with no matching
-//! trigger would itself become a warning
-//! (`unfulfilled_lint_expectations`, discovered when Task 12 wired this
-//! up). The attribute is removed, not narrowed: there was nothing left to
-//! narrow it to — no path through this file still lived as dead code
-//! outside tests.
+//! `h1::exchange` genuinely takes an `http::Request<OutgoingBody>`, and
+//! `testing::empty_body`/`testing::exchange_for_test` in `lib.rs` build and
+//! pass one in an ordinary, non-test build. An `expect` with no matching
+//! trigger is itself a warning (`unfulfilled_lint_expectations`), so there
+//! is nothing to narrow the attribute to.
 //!
 //! # The HTTP/1 trailer guard, and why it lives on the way out
 //!
@@ -173,10 +165,10 @@ impl Inner {
 /// `type Error = hclient_core::Error` — see the module doc comment for why
 /// this isn't `Box<dyn StdError + Send + Sync>`.
 ///
-/// `pub`, not `pub(crate)` as it was before Task 12: the `body` module
-/// itself is still private (`mod body;` in `lib.rs`, no `pub`), but as of
-/// Task 12 `h1::exchange` isn't the only thing inside the crate that
-/// builds an `OutgoingBody` anymore; `testing::empty_body`/`testing::
+/// `pub`, not `pub(crate)`: the `body` module itself is private
+/// (`mod body;` in `lib.rs`, no `pub`), but `h1::exchange` is not the only
+/// thing inside the crate that builds an `OutgoingBody`;
+/// `testing::empty_body`/`testing::
 /// exchange_for_test` need to carry it across the crate boundary into
 /// `tests/h1.rs` exactly the way `testing` already carries `h1::
 /// NativeBody` via `pub use`. A private `mod body` still keeps external
@@ -445,11 +437,11 @@ mod tests {
     use hclient_core::{ErrorKind, RequestBody};
     use http_body_util::BodyExt;
 
-    // `error_type_satisfies_hypers_send_sync_bound` used to live here, but
-    // Task 13 added `crates/hclient-native/src` to the
-    // `no-declared-send` CI scan (it now has a public item, `Native`, worth
-    // protecting the same way `hclient-core`/`hclient` already are). Spec
-    // amendment-C3 is explicit that a `B::Error: ... + Send + Sync` bound
+    // `error_type_satisfies_hypers_send_sync_bound` cannot live here:
+    // `crates/hclient-native/src` is inside the `no-declared-send` CI scan,
+    // because it has a public item, `Native`, worth protecting the same way
+    // `hclient-core`/`hclient` are. Amendment-C3 is explicit that a
+    // `B::Error: ... + Send + Sync` bound
     // like that one belongs in `tests/`, not `src/`, precisely so the guard
     // doesn't trip on its own assertion text. Relocated to
     // `tests/shape.rs`'s `outgoing_bodys_error_satisfies_hypers_send_sync_bound`

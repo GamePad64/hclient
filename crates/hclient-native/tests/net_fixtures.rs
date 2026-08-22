@@ -8,8 +8,8 @@
 //!
 //! # Why this is a separate file, rather than just "be more careful everywhere"
 //!
-//! Review round 1 found the same class of bug twice within one task:
-//! the first version of `tests/connect.rs`'s
+//! The same class of bug turned up twice in one sitting. The first
+//! version of `tests/connect.rs`'s
 //! `falls_over_from_a_dead_address_to_a_live_one` combined a closed
 //! port's IP with the LIVE listener's port (both addresses need the same
 //! port — `connect_for_test`/`connect` take ONE port for every candidate

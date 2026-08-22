@@ -21,11 +21,9 @@ const BOUND: Duration = Duration::from_secs(30);
 // `tests/connect.rs` — see that module's doc comment for why: this file's
 // own copy of the same helper independently reproduced (dead == live.ip(),
 // both listeners bound to 127.0.0.1, the closed listener's own port
-// discarded in favor of the live one's) the exact bug found and fixed in
-// `tests/connect.rs` twenty minutes earlier in the same review round. A
-// shared, structurally-can't-return-a-live-address helper is the fix, not
-// "be more careful this time" — vigilance already failed once in that same
-// window.
+// discarded in favor of the live one's) the exact bug `tests/connect.rs`
+// has already had. A shared, structurally-can't-return-a-live-address
+// helper is the fix, not "be more careful this time".
 
 #[tokio::test]
 async fn same_connector_falls_over_to_a_live_address_on_tokio() {

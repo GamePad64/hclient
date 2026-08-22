@@ -41,7 +41,7 @@
 //! - [`nagle_on`] — the same exchange with `TcpOpts::default()` stated
 //!   explicitly, which turns the transport's own `nodelay` back off (see
 //!   `Native::tcp_opts` — a caller's set is the whole set). The number
-//!   under investigation, and what `shipped_default` used to be.
+//!   under investigation.
 //! - [`nodelay_on`] — the same exchange with `TcpOpts { nodelay: true }`.
 //!   The difference between these two is the whole finding.
 //! - [`server_side_nodelay`] — `TCP_NODELAY` set on the **server's**

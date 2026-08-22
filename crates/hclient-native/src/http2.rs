@@ -595,9 +595,9 @@ where
                     // **The duplex line.** A write that cannot proceed
                     // must not stop the response from arriving — the two
                     // halves of a stream are independent, which is the
-                    // whole of what `full_duplex` means. This used to be
-                    // `return Poll::Pending`, and that one branch was the
-                    // implementation `full_duplex: false` described.
+                    // whole of what `full_duplex` means. A
+                    // `return Poll::Pending` here is the one branch that
+                    // makes `full_duplex: false` the honest answer.
                     //
                     // The `conn_done` arm that used to sit beside it is
                     // gone rather than lost: falling through reaches
@@ -890,9 +890,9 @@ impl Pump {
     ///   is_not_an_error` in `tests/http2_duplex.rs`.
     /// - **Moving the tolerance to `poll_capacity`** — where it sat before
     ///   c56cbc9 — is killed by the last of those alone, and *only* by it.
-    ///   `a_stalled_streaming_body_…` used to be what killed this, by
-    ///   hanging; duplex ends that hang, so the discrimination had to move.
-    ///   It moved to the site the placement is really about: a reset stream
+    ///   `a_stalled_streaming_body_…` killed it by hanging until the h2
+    ///   path became duplex, which ends that hang. The discrimination is
+    ///   now at the site the placement is really about: a reset stream
     ///   has no capacity, so every *large* body meets a reset at
     ///   `poll_capacity` and a tolerance placed there covers it — but a body
     ///   that simply **ends** while the stream is reset fails at
