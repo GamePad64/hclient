@@ -342,10 +342,9 @@ where
     /// `P` is defaulted to [`NoProxy`](crate::proxy::NoProxy), which is an
     /// **empty enum** — so a transport nobody configured a proxy on holds
     /// an `Option` that cannot be `Some`, by construction rather than by
-    /// discipline, and the field costs it one word. `docs/proxy-design.md`
-    /// §2 has why this is a parameter rather than a `Box<dyn ..>`: erasing
-    /// the protocol erases the IO with it, and that needs a `Send` this
-    /// crate does not declare.
+    /// discipline, and the field costs it one word. It is a type parameter
+    /// rather than a `Box<dyn ..>` because erasing the protocol erases the
+    /// IO with it, and that needs a `Send` this crate does not declare.
     /// The proxies this transport may use, in the order the caller wrote
     /// them; the first that serves a request wins, and an empty list is
     /// direct. A `Vec` rather than an `Option` since v0.4: a caller with
@@ -461,9 +460,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // reports is the value that holds on the WORST protocol this
         // transport might negotiate.
         //
-        // **`request_trailers` used to be the third name in that sentence
-        // and it was measured wrong** (v0.4, `docs/v04-design.md` Appendix
-        // C). HTTP/1.1 sends request trailers perfectly well —
+        // **`request_trailers` is deliberately not on that list.**
+        // HTTP/1.1 sends request trailers perfectly well —
         // `tests/request_trailers.rs` reads `0\r\ngrpc-status: 0\r\n\r\n`
         // off a raw socket from a plaintext `http://` exchange — so the
         // floor was never the reason for that `false`; nobody had looked.
@@ -696,9 +694,9 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // **Nagle off, and asked for here rather than defaulted one
             // layer down.**
             //
-            // Measured, twice. `docs/v04-w1-acceptance.md` §7.3 found a
-            // cold TLS 1.3 exchange on loopback costing **41.9 ms**, all
-            // of it in the head and 10 µs of it in the body;
+            // Measured, twice. A cold TLS 1.3 exchange on loopback costs
+            // **41.9 ms**, all of it in the head and 10 µs of it in the
+            // body;
             // `tests/nagle_cost.rs` re-measures it with the observer on
             // the server's side of the wire, and the shape is
             // unambiguous. The ClientHello arrives at +0.17 ms, the
@@ -965,7 +963,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     ///
     /// The gate is a request body hyper pulls; on HTTP/2 the body is a
     /// `SendStream` this crate drives itself and there is nothing to
-    /// withhold in the same sense. `docs/expect-continue.md` §6.
+    /// withhold in the same sense.
     pub fn expect_continue(mut self, after: Duration) -> Self {
         self.expect_continue = Some(after);
         self
@@ -1141,8 +1139,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// exclusively and two concurrent requests to one origin cost two
     /// connections and two handshakes — measured at 8× the sockets and 8×
     /// the TLS handshakes for a concurrency of 8, and the largest
-    /// remaining gap between this client and a gRPC one
-    /// (`docs/grpc-yardstick.md`'s L1). With it, they cost one.
+    /// remaining gap between this client and a gRPC one. With it, they
+    /// cost one.
     ///
     /// ```
     /// # use hclient_native::Native;
@@ -1174,9 +1172,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// only leak sockets.** `Spawn::spawn` returns `()`: an executor that
     /// is never run accepts the driver, drops it, and has no way to say
     /// so. `pool.rs`'s module doc already names this as the thing no bound
-    /// can catch — and here it is worse than there. Measured
-    /// (`docs/h2-multiplexing.md` P8): a driver **dropped** fails its
-    /// requests with a broken pipe, a driver **held and never polled**
+    /// can catch — and here it is worse than there. Measured: a driver
+    /// **dropped** fails its requests with a broken pipe, a driver **held and never polled**
     /// leaves them with no verdict at all. `Timeouts::first_byte` is the
     /// only bound that cuts it and it is not a default. **A shared
     /// connection is at most as good as the executor under it.**
@@ -1223,8 +1220,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// the peer's limit (which h2 will not report to us) and on the
     /// handshake cost, which is a network property and not a loopback one.
     /// A number measured on loopback would be a number about this
-    /// machine. `docs/h2-multiplexing.md` §9.1 records what it would take;
-    /// `tests/http2_multiplex.rs` measures what queueing costs today so
+    /// machine. `tests/http2_multiplex.rs` measures what queueing costs so
     /// that the decision is a reading rather than a hope.
     ///
     /// # The two refusals, each beside the control that differs in one token
@@ -1911,8 +1907,8 @@ where
     /// transport would take the connect mark and make seven of a burst of
     /// eight wait once for a connection that is never published. No test
     /// asserts that, because what it costs is a wait rather than an
-    /// outcome; it is recorded as a surviving mutation in
-    /// `docs/h2-multiplexing.md` §11.5 rather than claimed as pinned.
+    /// outcome; it is recorded as a surviving mutation rather than
+    /// claimed as pinned.
     #[cfg(feature = "http2")]
     fn shares_connections(&self) -> bool {
         self.share_h2.is_some() && self.pool.config().is_some()
@@ -1961,10 +1957,9 @@ where
     /// the check-in an exclusive connection makes at the end of its body
     /// would be a connection shared with nobody until then.
     ///
-    /// The [`CheckIn`] comes back as `None` for the same reason, and that
-    /// is `docs/h2-multiplexing.md` §3.1's *"the whole `Reuse { checkin,
-    /// sender }` dance exists to survive an exclusive check-out"*: nothing
-    /// on this path has anything to hand back.
+    /// The [`CheckIn`] comes back as `None` for the same reason: the whole
+    /// `Reuse { checkin, sender }` dance exists to survive an exclusive
+    /// check-out, and nothing on this path has anything to hand back.
     ///
     /// Everything else — HTTP/1, an exclusive h2 connection, a transport
     /// that never asked — comes back exactly as it went in.
@@ -2029,8 +2024,7 @@ where
             // module doc). `Stale` is the honest reason: the peer closed
             // it while it sat idle, which is why this loop is walking
             // past it. A connection the pool itself drops for age never
-            // reaches this function, and that hole is written down in
-            // `docs/v03-acceptance.md` with the reason it exists.
+            // reaches this function, and that hole is deliberate.
             self.hooks.on(Event::Closed(Closed {
                 id: est.id(),
                 reason: CloseReason::Stale,
@@ -2293,8 +2287,7 @@ pub trait Prefetch: Transport {
     /// *here*, by the transport, with its own resolver and its own memory,
     /// for the authority of the request handed in — so there is no version
     /// of this call in which a caller supplies the record. See [`Prepared`]
-    /// for why that is the whole point, and `docs/v04-w1-acceptance.md` §3
-    /// for the shape that was rejected.
+    /// for why that is the whole point.
     ///
     /// **Not a cache.** What comes back is good for the one request it
     /// travels with, and nothing here remembers it — for
@@ -2672,7 +2665,7 @@ where
         // control — a server that selects something else, or a TLS backend
         // that reports one. That is precisely the case a caller cannot
         // discover any other way, which is the whole argument for the
-        // demand existing (`docs/v04-design.md`, Appendix A).
+        // demand existing.
         //
         // Checked before `checkin_for`, so a connection about to be
         // refused is never given a check-in token either. It is dropped

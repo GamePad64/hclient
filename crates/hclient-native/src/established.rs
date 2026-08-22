@@ -499,8 +499,8 @@ where
     /// `Native::execute` and are protocol-agnostic, but the end of a
     /// connection is known inside the body, and h2's has three places it
     /// can arrive (the connection future, the response stream, the pump)
-    /// where HTTP/1's has two. It is written down in
-    /// `docs/v03-acceptance.md` rather than guessed at here.
+    /// where HTTP/1's has two, so the accounting is stated as unverified
+    /// rather than guessed at here.
     #[cfg(feature = "http2")]
     H2(Box<crate::http2::H2Body<I>>),
 }

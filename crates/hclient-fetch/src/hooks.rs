@@ -62,7 +62,7 @@
 //!
 //! `uri`, `status` and `elapsed` are this transport's own facts and are
 //! reported as such. The other two were recorded as debts owed by the seam
-//! (`docs/v04-w2-hooks-ambient.md` §8) and have since been answered, one
+//! and have since been answered, one
 //! each way — §9 of that document is the working:
 //!
 //! - **`id` is [`ConnectionId::UNWATCHED`], and that is not a borrowing.**

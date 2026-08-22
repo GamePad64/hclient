@@ -4,8 +4,7 @@
 //! `wasi:http` 0.3's setters return `result<_, ...>` for exactly this
 //! reason: so the host can say "unsupported" or "immutable". This crate's
 //! predecessor, `wasi-fetch`, discarded seven such `Result`s via `let _ =`
-//! (`docs/superpowers/specs/2026-08-05-hclient-design.md`, §4.6:
-//! `set_connect_timeout`, `set_first_byte_timeout`, `set_between_bytes_timeout`,
+//! (`set_connect_timeout`, `set_first_byte_timeout`, `set_between_bytes_timeout`,
 //! `set_method`, `set_scheme`, `set_authority`, `set_path_with_query`). Here
 //! every such rejection becomes a typed `Error` instead of silently
 //! vanishing — CI checks this structurally, without relying on review

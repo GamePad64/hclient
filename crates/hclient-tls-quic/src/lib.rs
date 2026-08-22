@@ -142,7 +142,7 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// Note what it does **not** answer: whether a particular request's
     /// early data was accepted. In QUIC that verdict arrives *after* the
     /// response — measured at 8.63 ms against a response at 8.58 ms
-    /// (`docs/h3-research.md` §3.2) — so it is a future, not a property of
+    /// — so it is a future, not a property of
     /// a connector, and it is deliberately not on this trait.
     ///
     /// [`TlsConnect::reports_alpn`]: hclient_tls::TlsConnect::reports_alpn

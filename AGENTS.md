@@ -3473,4 +3473,5 @@ finishes writing the request body either — that's inherent to duplex without
 `spawn` and needs documenting. Vertical 2's work, entirely inside
 `hclient-wasi`.
 
-Design: [`docs/superpowers/specs/2026-08-05-hclient-design.md`](docs/superpowers/specs/2026-08-05-hclient-design.md).
+The two invariants CI enforces and every exception to them:
+[`docs/exceptions.md`](docs/exceptions.md).

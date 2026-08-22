@@ -1,10 +1,6 @@
 //! Connect now, send later — on the one kind of backend that has a
 //! connector to stage.
 //!
-//! `docs/connect-only-seam.md` is the investigation this implements; what
-//! follows is the part a reader of the code needs, and the places where
-//! building it decided something that document left open.
-//!
 //! # It is not a method on `Transport`, and that is the third refusal of
 //! the same shape
 //!
@@ -71,9 +67,8 @@
 //!
 //! # A dropped handle goes back to the pool
 //!
-//! `docs/connect-only-seam.md` §9 left this open: *"what happens to the
-//! loser's connection when it finishes rather than being dropped
-//! mid-handshake"*. The answer here is [`Staged`]'s `Drop`, and it is the
+//! What happens to a losing racer's connection when it finishes rather
+//! than being dropped mid-handshake is [`Staged`]'s `Drop`, and it is the
 //! same answer the pool gives every other connection: a handle dropped
 //! without an exchange **checks its connection in**, so a connection made
 //! for a request that went elsewhere is a warm connection rather than a
@@ -204,8 +199,7 @@ impl From<Refused> for Error {
 
 /// A connection with a request to spend it on.
 ///
-/// Named `Staged` rather than the `Connected` `docs/connect-only-seam.md`
-/// §5.2 proposes, for a duller reason than that document had: `Connected`
+/// Named `Staged` rather than `Connected`, for a dull reason: `Connected`
 /// is already the name of the hook event this module emits three lines
 /// after making one, and two meanings of the word in one file is how the
 /// wrong one gets read.

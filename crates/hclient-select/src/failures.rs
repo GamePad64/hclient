@@ -48,7 +48,7 @@
 //!
 //! The direction of being wrong is also different, and it is worth naming
 //! because it is why a fixed window is honest here where a fixed lifetime
-//! for an HTTPS record was not (`docs/v04-w1-acceptance.md` §9.1).
+//! for an HTTPS record was not.
 //! Remembering too long costs HTTP/3 at an origin that could now serve it;
 //! forgetting too soon costs one bounded connect attempt, after which the
 //! request still succeeds over TCP. Neither is a wrong answer, both are

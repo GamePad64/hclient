@@ -78,9 +78,8 @@
 //!    means somebody has to keep polling it, which is the `Spawn` question
 //!    again.
 //!
-//! **`docs/h2-multiplexing.md` is that question answered, and then
-//! built.** [`crate::Native::multiplexed`] lifts the exclusivity, and the
-//! two consequences above are exactly what it costs:
+//! **[`crate::Native::multiplexed`] answers it**: it lifts the
+//! exclusivity, and the two consequences above are exactly what it costs:
 //!
 //! 1. Dropping an exchange no longer closes the connection — the driver
 //!    owns it — so `Pump`'s `Drop` becomes the thing the peer sees. Its
@@ -123,9 +122,7 @@
 //!
 //! What a caller gets instead is `Response::version()`, after the fact —
 //! `version_reported` is `true` and the value comes off the wire. Whether
-//! a caller who has to decide *in advance* can be told the truth is v0.4
-//! W2's second deliverable; what this code could offer, and what each
-//! shape would cost, is written up in `docs/v03-acceptance.md` and is
+//! a caller who has to decide *in advance* can be told the truth is
 //! deliberately not decided here.
 //!
 //! ## What duplex costs, said out loud
@@ -766,8 +763,7 @@ struct Pump {
 /// outlives the stream: an abandoned upload would leave a stream open with
 /// nobody left to write it, and h2's own `maybe_cancel` would not fire
 /// either, because the response half's reference is what keeps the count
-/// above zero. Recorded in `docs/v03-acceptance.md`'s unverified list, not
-/// claimed as tested.
+/// above zero. Recorded as unverified rather than claimed as tested.
 impl Drop for Pump {
     fn drop(&mut self) {
         if !self.settled {
@@ -916,8 +912,7 @@ impl Pump {
     ///   22 after. A dead connection is `Connection::poll`'s verdict, and
     ///   that poll comes first, so the pump's is never consulted for it.
     /// - **Widening `Ready(Err(_))` into the tolerance survives**, and is
-    ///   recorded in `docs/v03-acceptance.md`'s unverified list rather than
-    ///   claimed. It survived before this branch too. The arm is shadowed:
+    ///   recorded as unverified rather than claimed. The arm is shadowed:
     ///   `poll_reset` answers `Err` from a connection error
     ///   (`ensure_reason`), and both callers poll `Connection` immediately
     ///   before the pump, so the connection reports it first — no fixture
@@ -1357,8 +1352,7 @@ where
 //
 // Everything below this line is reached only from
 // [`crate::Native::multiplexed`], and a build that never calls it runs the
-// code above exactly as it did before. `docs/h2-multiplexing.md` is the
-// investigation this implements and §8 is its decision list.
+// code above exactly as it did before.
 
 /// Which shared connection a pool entry is, for the one operation that
 /// needs to name one: removing the entry a borrowed clone came from when
@@ -1465,7 +1459,7 @@ where
 /// task, drops it, and cannot say so — and here that is **worse than the
 /// reaper's version of the same mistake**, which costs file descriptors:
 /// a request on a connection whose driver is never polled does not fail,
-/// it **hangs**. Measured (`docs/h2-multiplexing.md` P8): dropped on the
+/// it **hangs**. Measured: dropped on the
 /// floor, requests fail with a broken pipe; held and never polled, no
 /// verdict in 500 ms. `Timeouts::first_byte` is the only bound that cuts
 /// it, and it is not a default. Said again on
@@ -1542,7 +1536,7 @@ where
 /// `Connection` here to poll and because there no longer needs to be:
 /// [`is_reusable`]'s contract says one poll is the only moment a `GOAWAY`
 /// is noticed *"because nothing polls an idle connection"*, and on this
-/// path something does. Measured (`docs/h2-multiplexing.md` P11): a
+/// path something does. Measured: a
 /// `GOAWAY` that had arrived 100 ms earlier, while nothing touched the
 /// pooled clone, was reported by the first `poll_ready` 20 µs later.
 ///

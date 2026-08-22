@@ -230,10 +230,9 @@ async fn capabilities_are_honest_about_v01_limits() {
 /// silent pass) exists exactly once, inside `hclient-core`'s own
 /// `Capabilities::none_is_the_conservative_base` — `#[non_exhaustive]` makes
 /// that guarantee structurally unavailable to any test outside the crate
-/// that owns the type, this one included (design-doc **amendment-C6** —
-/// `docs/superpowers/specs/2026-08-05-hclient-design.md`, `## Design
-/// amendments`; recorded there with this exact evidence after this test
-/// found it). Any future capabilities-completeness check belongs in `hclient-core`,
+/// that owns the type, this one included (**amendment-C6**, in
+/// `docs/exceptions.md`). Any future capabilities-completeness check
+/// belongs in `hclient-core`,
 /// not in a transport crate like this one. Not the same rule as amendment-C3
 /// (which is about where `Send`/`Sync` assertions live, so
 /// `no-declared-send`'s `src`-only grep doesn't trip on its own test text) —

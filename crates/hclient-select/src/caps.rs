@@ -6,7 +6,7 @@
 //! **The stored value must be a statement that is true whichever member
 //! serves the request** — because under a selecting transport the caller
 //! does not know which one did, so a promise that holds for one and not the
-//! other is not a promise (`docs/v04-design.md` §W1).
+//! other is not a promise.
 //!
 //! That single criterion produces all three of the answers below; none of
 //! them is a policy chosen on top of it.

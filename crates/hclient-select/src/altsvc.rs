@@ -46,7 +46,7 @@
 //! request to a member whole, and the member connects to the URI's own
 //! authority. It is the same wall the fast tier hit from the other side —
 //! no record can cross the `Transport` seam, so `hclient-native` fetches
-//! its own (`docs/v04-w1-acceptance.md` §3). Acting on it is a change to a
+//! its own. Acting on it is a change to a
 //! member, not a change here.
 
 use std::collections::HashMap;

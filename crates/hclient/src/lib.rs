@@ -251,9 +251,9 @@ pub use deadline::NoClock;
 // making callers reach past it into `hclient-core` for this one would be
 // arbitrary.
 //
-// `UpgradeSupport` used to be on this list and is gone from the workspace
-//: four variants, every backend answering `None`, and no
-// caller decision turning on it. WebSocket is a trait a backend implements
+// `UpgradeSupport` used to be on this list and is gone from the workspace:
+// four variants, every backend answering `None`, and no caller decision
+// turning on it. WebSocket is a trait a backend implements
 // (`hclient_core::unversioned::WebSocketConnect`) rather than a capability
 // anyone reads, so there is nothing to re-export in its place — see
 // `docs/w4-upgrade-seam.md` §3. `tests/facade.rs`'s plumbing check moved

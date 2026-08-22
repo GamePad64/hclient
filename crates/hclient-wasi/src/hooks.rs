@@ -50,9 +50,8 @@
 //!
 //! `uri`, `status` and `elapsed` are this transport's own facts. The other
 //! two were not, and they are the *same two* `hclient-fetch` cannot fill.
-//! Both were recorded as debts owed by the seam
-//! (`docs/v04-w2-hooks-ambient.md` §8); both have since been answered, and
-//! **the two answers are different** — §9 of that document is the working:
+//! Both were debts owed by the seam; both have since been answered, and
+//! **the two answers are different**:
 //!
 //! - **`id` is `ConnectionId::UNWATCHED`, and that is not a borrowing.**
 //!   The value means *this event names no connection*. Its other producer

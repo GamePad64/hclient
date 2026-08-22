@@ -68,9 +68,9 @@
 //! A record is a claim about an origin that the network may not honour:
 //! the port it names can be filtered, the addresses it hints at can be
 //! unreachable from here. Without a memory, *every* request to such an
-//! origin pays that failed attempt again. `docs/v03-design.md` §W2
-//! corrects the assumption that this cache belongs to Alt-Svc — the cache
-//! of *what was advertised* is Alt-Svc's, the cache of *what failed* is
+//! origin pays that failed attempt again. **This cache does not belong to
+//! Alt-Svc**: the cache of *what was advertised* is Alt-Svc's, the cache
+//! of *what failed* is
 //! the connector's, and the advertisement's source (a DNS record or a
 //! header) does not change what a blocked port costs.
 //!
@@ -482,8 +482,7 @@ pub enum Discovered<'a> {
 ///
 /// # Why not a request extension
 ///
-/// That was the other shape considered, and `docs/v04-w1-acceptance.md`
-/// §3 has the argument in full. In short: extensions are the **caller's**
+/// That was the other shape considered. Extensions are the **caller's**
 /// channel — `Timeouts`, `AllowEarlyData` and `RequireVersion` are all
 /// statements a caller makes about their own request, which a transport
 /// reads and may refuse — where a record is evidence the transport would

@@ -239,7 +239,7 @@ fn the_cheap_presence_check_and_the_deciding_probe_still_agree() {
 /// Not from the brief: `Capabilities` is `#[non_exhaustive]`, so this crate
 /// cannot write the completeness check `hclient-core`'s own
 /// `Capabilities::none_is_the_conservative_base` writes (amendment C6,
-/// `docs/superpowers/specs/2026-08-05-hclient-design.md`) — any
+/// `docs/exceptions.md`) — any
 /// destructure of `Capabilities` from outside its defining crate needs
 /// `..`, and `..` silently absorbs a field added later. What CAN be
 /// checked from here: name every field `probe()` does not set explicitly

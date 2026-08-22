@@ -6,8 +6,7 @@
 //! `deny`, not `forbid` (see `Cargo.toml`'s `[lints.rust]`): this crate
 //! carries the project's one `unsafe impl`, in `promise.rs`, and `forbid`
 //! cannot be locally relaxed for it. Every other crate in the workspace
-//! keeps `forbid`; see `docs/superpowers/specs/2026-08-05-hclient-design.md`
-//! amendment C7.
+//! keeps `forbid`; see `docs/exceptions.md`, amendment C7.
 #![deny(unsafe_code)]
 
 mod body;

@@ -123,14 +123,13 @@
 //!    gets an error a client without a pool would not have had. That is
 //!    deliberate rather than missing: repeating a request a server may have
 //!    acted on is at-least-once, and choosing it selectively would need a
-//!    notion of method safety this codebase does not have (see
-//!    `docs/h3-research.md` §3.5, which declines the same notion for
-//!    0-RTT). Measured, because the correction came from a real failure —
+//!    notion of method safety this codebase does not have — the same
+//!    notion 0-RTT admission declines. Measured, because the correction
+//!    came from a real failure —
 //!    a fixture whose server closes 150 ms after its last response fails
 //!    the next request with `Connect / hyper::Error(Io, ConnectionReset)`,
-//!    five runs out of five; `docs/v02-acceptance.md` has the whole
-//!    run-down, including why `tests/pool.rs` now waits for the server to
-//!    say it has closed instead of sleeping and hoping.
+//!    five runs out of five — which is why `tests/pool.rs` waits for the
+//!    server to say it has closed instead of sleeping and hoping.
 //!
 //!    **The second correction moved the line, and it moved it in our
 //!    favour.** "Not a byte of it reached the wire" is the rule and it
@@ -144,9 +143,6 @@
 //!    [`crate::h1::claim_back`] asks for it, so that point is retried like
 //!    the first rather than reported like the third. The third is
 //!    unchanged, and the paragraph above is about it.
-//!    `docs/pooled-reuse-race.md` has both reproductions, the sweep from
-//!    outside the client, and why the two expensive fixes named in
-//!    `docs/nagle-and-nodelay.md` §6 are still refused.
 //!
 //! # What is in the key, and why each part is there
 //!
@@ -225,9 +221,8 @@
 //! build that opts into a spawner could multiplex; it would then owe W1's
 //! rule an implementation, which today it gets for free.
 //!
-//! **That sentence has been investigated and then built, and
-//! `docs/h2-multiplexing.md` is both.** [`crate::Native::multiplexed`] is
-//! the opt-in; what it changes about *this* file is three things.
+//! **[`crate::Native::multiplexed`] is the opt-in** that lifts it; what
+//! it changes about *this* file is three things.
 //!
 //! **The verb.** `take` is right for an exclusive connection and wrong for
 //! a shared one: a shared entry is **borrowed**, never taken — the pool
@@ -429,9 +424,8 @@ pub(crate) struct PoolKey {
     /// A **parameter** of [`PoolKey::new`] rather than something a builder
     /// method adds, so that a new call site cannot forget it.
     ///
-    /// **Unreachable today, and kept for exactly the reason `security` is**
-    /// — which `docs/v02-acceptance.md` already states about that field: a
-    /// proxy is configured on the transport and each transport owns its
+    /// **Unreachable today, and kept for exactly the reason `security`
+    /// is**: a proxy is configured on the transport and each transport owns its
     /// own pool, so this is a constant within any one pool, as the TLS
     /// identity is. It must be in the key *before* a pool is shared
     /// between transports, because that is the moment its absence stops

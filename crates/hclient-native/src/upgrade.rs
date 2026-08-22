@@ -1,8 +1,7 @@
 //! The HTTP/1.1 upgrade, and the seam a framing crate is handed.
 //!
-//! This module is what is left in this crate of v0.3 W4's WebSocket
-//! support after `docs/w4-upgrade-seam.md` §8 split it: **the connection
-//! and the upgrade, without a word about frames.** The framing lives in
+//! **The connection and the upgrade, without a word about frames.** The
+//! framing lives in
 //! `hclient-tungstenite`, which depends on this crate and not the other
 //! way round, so `tungstenite` cannot be switched on in this one by a
 //! neighbour in the graph — which a `websocket` feature here could not
@@ -11,9 +10,9 @@
 //! # The seam
 //!
 //! **"Here is an upgraded byte stream, plus the `read_buf` hyper had
-//! already read past."** `docs/w4-upgrade-seam.md` §2 rejected exactly
-//! that shape — as the *public* seam, where it excludes three of four
-//! backends and the browser among them. Between this crate and a framing
+//! already read past."** That shape is rejected as the *public* seam,
+//! where it excludes three of four backends and the browser among them.
+//! Between this crate and a framing
 //! crate it is correct, because it is only ever asked of the one backend
 //! that can answer it. §2's argument was about which level, not about the
 //! shape.
@@ -63,8 +62,7 @@
 //!    either way. The order is kept because reading a response before
 //!    dismantling the connection that produced it stays correct if
 //!    hyper's behaviour does not; it is not load bearing *today*, and
-//!    `docs/v03-acceptance.md` says so rather than letting this module
-//!    imply otherwise.
+//!    this module does not imply otherwise.
 //! 2. **`poll_without_shutdown` + `into_parts`, never
 //!    `hyper::upgrade::{on, Upgraded}`.** `Upgraded` holds
 //!    `Rewind<Box<dyn Io + Send>>` (`hyper/src/upgrade.rs:66-67`), which
@@ -78,9 +76,9 @@
 //!    behave *identically* on a `101` — `poll_inner` returns
 //!    `Dispatched::Upgrade` before it ever looks at `should_shutdown`, and
 //!    both then call `pending.manual()`. Swapping one for the other here
-//!    is a mutation no test in this workspace kills, and it is written
-//!    down in `docs/v03-acceptance.md` rather than left for the next
-//!    reader to rediscover. `poll_without_shutdown` is still the right
+//!    is a mutation no test in this workspace kills, recorded here rather
+//!    than left for the next reader to rediscover.
+//!    `poll_without_shutdown` is still the right
 //!    call: it is the API hyper documents for this ("Once the upgrade is
 //!    completed … you would take it back using `into_parts`"), it does not
 //!    require `B::Data: Send` where the `Future` impl does, and on any
@@ -235,8 +233,7 @@ where
         // response head to report beyond the 101 the handshake consumes;
         // and its end is the framing layer's business, which the caller
         // sees directly. Reporting `Connected` alone would put an id into
-        // a caller's log that no later event ever mentions again. The gap
-        // is recorded in `docs/v03-acceptance.md`.
+        // a caller's log that no later event ever mentions again.
         let connect_fut = connect::connect::<_, _, _, _, NoHooks>(
             &self.rt,
             &self.dns,

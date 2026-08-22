@@ -595,9 +595,9 @@ mod tests {
     }
 
     /// Checks that `poll_frame` hands back frames one at a time, not the
-    /// whole body on the first call. Without this property, `SseStream`
-    ///, built on top of `Response::chunk()`, could never see an
-    /// event split across a chunk boundary through the mock — only a
+    /// whole body on the first call. Without this property, `SseStream`,
+    /// built on top of `Response::chunk()`, could never see an event
+    /// split across a chunk boundary through the mock — only a
     /// concatenated stream.
     #[test]
     fn multi_frame_response_yields_frames_separately_not_concatenated() {

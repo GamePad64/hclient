@@ -74,10 +74,8 @@
 //! finding) now says the same thing from the other end of the seam, and
 //! this file doesn't take it on either.
 //!
-//! This is no longer an open question: it's recorded as an explicit gap
-//! in §9, "What we explicitly don't do", of
-//! `docs/superpowers/specs/2026-08-05-hclient-design.md`, not an
-//! oversight for someone to rediscover a third time. Closing it is
+//! This is not an open question: it is an explicit gap, not an oversight
+//! for someone to rediscover a third time. Closing it is
 //! possible if a separate Source Address Selection capability shows up —
 //! until then, neither `Resolve`, nor `Scheduler`, nor this file does any
 //! sorting. (For the system resolver specifically, the OS itself often
@@ -109,9 +107,8 @@
 //!
 //! What that guard costs is a privacy fact rather than an implementation
 //! detail, and it is written where a caller can find it: on
-//! `TlsConnect::applies_ech`, on `Native::new`'s `Capabilities`, and in
-//! `docs/v03-acceptance.md`. In one line — with no backend that applies
-//! ECH, a connection to an origin that publishes a config is still made,
+//! `TlsConnect::applies_ech` and on `Native::new`'s `Capabilities`. In
+//! one line — with no backend that applies ECH, a connection to an origin that publishes a config is still made,
 //! and still sends that origin's name in the clear.
 //!
 //! # `connect` is no longer dead code outside tests

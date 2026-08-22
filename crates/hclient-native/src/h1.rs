@@ -108,8 +108,6 @@
 //!   attached. So the request is one drop from being ours again, and this
 //!   file had been calling that state `Failed::Sent` — for a request not
 //!   one byte of which had reached the wire.
-//!   `docs/pooled-reuse-race.md` has both reproductions and the two
-//!   expensive fixes it makes unnecessary.
 //! - **Inside [`H1Body::poll_frame`]**, after headers have already
 //!   been handed to the caller: `Connection` behaves the same as before,
 //!   except its job now is to finish writing the remaining body bytes
@@ -138,9 +136,7 @@
 //! This crate handles no upgrades and mentions `101` nowhere else, and the
 //! shape above invites the worry that a `101` — a response whose body ends
 //! at once — walks straight through [`H1Body::hand_back_to_pool`] and
-//! parks a socket that has stopped speaking HTTP. `docs/v03-design.md`
-//! §W4 listed that as the first thing to run before any WebSocket work.
-//! It was run, and the answer is **no**.
+//! parks a socket that has stopped speaking HTTP. The answer is **no**.
 //!
 //! hyper decodes a `101` as a zero-length body with `keep_alive = false`
 //! and `wants_upgrade` (`proto/h1/role.rs:1273` and `:1169-1177`), so its
@@ -830,7 +826,7 @@ type Sent = Result<
 /// away, and the receiver is inside the `Connection` this function takes
 /// by value. So the request is one drop from being ours again, and
 /// nothing else can release it — which is why an earlier attempt at this
-/// (`docs/nagle-and-nodelay.md` §6) polled the send future *without*
+/// polled the send future *without*
 /// dropping the connection and could not move the number much: there was
 /// nothing to poll for.
 ///
@@ -1370,7 +1366,7 @@ mod tests {
         // the request's own outcome would put the one-`Closed`-per-socket
         // rule behind three exits instead of one, and that is a change to
         // the hooks seam wanting its own measurement rather than a
-        // by-product of this one. `docs/pooled-reuse-race.md` §6.
+        // by-product of this one.
         assert_eq!(closes, ["Ended"]);
         let Failed::NotSent { error, request } = failed else {
             panic!(

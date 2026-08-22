@@ -38,9 +38,7 @@
 //! them out — neither `Resolve`, nor `Scheduler`, nor
 //! `hclient_native::connect` (see its doc comment, the "RFC 6724 ... NOT
 //! implemented here" section) sort them. This is a recorded, explicitly
-//! named gap, not an oversight — see the §9 "What we explicitly don't do"
-//! table in `docs/superpowers/specs/2026-08-05-hclient-design.md`. Closing
-//! it would first require introducing a separate Source Address Selection
+//! named gap, not an oversight. Closing it would first require introducing a separate Source Address Selection
 //! capability, which no trait has today.
 //!
 //! **SVCB is a capability, not a fact.** `lookup_svcb` carries a default

@@ -218,8 +218,7 @@ web-sys = { version = "0.3.103", features = [
 # fails to compile with two E0453s). This crate carries the project's one
 # `unsafe impl` (see `src/promise.rs`), which needs `deny` — overridable by
 # a scoped `#[allow]` right next to the block — not `forbid`. Every other
-# crate keeps `forbid`; see `docs/superpowers/specs/2026-08-05-hclient-design.md`
-# amendment C7.
+# crate keeps `forbid`; see `docs/exceptions.md`, amendment C7.
 #
 # Opting out of the workspace table also drops `missing_debug_implementations`
 # and `unexpected_cfgs`, which every other crate gets from it — restated

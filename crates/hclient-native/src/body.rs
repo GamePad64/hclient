@@ -98,8 +98,7 @@
 //! **declared** in `Trailer:` (`proto/h1/encode.rs`, `Kind::Chunked(Some
 //! (allowed))`); an undeclared field is logged at `debug!` and dropped,
 //! and the message is then terminated normally — a `200` for data that
-//! never left the process. That silence is the defect `docs/v04-design
-//! .md`'s Appendix C decided to kill, and [`OutgoingBody`] is where it is
+//! never left the process. [`OutgoingBody`] is where that silence is
 //! killed: this is the body hyper polls, so it is the first place in the
 //! process that sees a trailers frame.
 //!

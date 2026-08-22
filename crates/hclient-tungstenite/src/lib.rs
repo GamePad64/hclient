@@ -2,8 +2,7 @@
 //! that opens one over `hclient-native`.
 //!
 //! Two halves, and the seam between them is the whole reason this crate
-//! exists rather than a `websocket` feature on `hclient-native`
-//! (`docs/w4-upgrade-seam.md` §8):
+//! exists rather than a `websocket` feature on `hclient-native`:
 //!
 //! - [`TungsteniteWebSocket`], the framing: generic over the IO and the
 //!   clock, it names no transport at all, and it is what

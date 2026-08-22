@@ -5,7 +5,7 @@
 //! into a crate of its own — a feature is additive, and `tungstenite`
 //! would land in every build in any graph that switched it on — has no
 //! subject; what the feature does buy is that a constrained-target build
-//! is byte for byte what it was. `docs/proxy-design.md` has the rest.
+//! is byte for byte what it was.
 //!
 //! # Why this is not a `TcpConnect` wrapper, which would have cost nothing
 //!
@@ -22,7 +22,7 @@
 //! Erasing the protocol means erasing the IO with it, and a
 //! `Box<dyn Read + Write>` needs `Send` to be useful — which is the
 //! objection that disqualified `hyper::upgrade::Upgraded` for the
-//! WebSocket work (`docs/w4-upgrade-seam.md`) and `hyper/http2` before
+//! WebSocket work and `hyper/http2` before
 //! that: *"single-threaded runtimes shut out"*, the thing this crate
 //! exists to avoid. So the protocol is a parameter, defaulted to
 //! [`NoProxy`], and `.proxy(..)` changes it the way `.hooks(..)` changes
@@ -515,7 +515,7 @@ impl ProxyProtocol for HttpConnect {
 ///
 /// The origin goes out as `ATYP=0x03 DOMAINNAME` — a name, never an
 /// address — which is what `socks5h` names in other clients' URL schemes
-/// and is the reason §2 of `docs/proxy-design.md` rejects a wrapper over
+/// and is why this is not a wrapper over
 /// [`TcpConnect`](hclient_rt::TcpConnect): the DNS leak is a property of a
 /// seam that carries only a `SocketAddr`, not of proxying.
 #[derive(Debug, Clone, Default)]
@@ -686,9 +686,9 @@ impl ProxyProtocol for Socks5 {
 ///
 /// This connector always sends the hostname form, because that is what
 /// [`ProxyProtocol::tunnel`] is given: the host is not resolved locally,
-/// which is the whole point of proxying by name — the leak
-/// `docs/proxy-design.md` records as the reason a proxy is not a
-/// `TcpConnect` decorator. A caller pointed at a SOCKS4 server with no
+/// which is the whole point of proxying by name, and the leak that keeps
+/// a proxy from being a `TcpConnect` decorator. A caller pointed at a
+/// SOCKS4 server with no
 /// 4a support gets that server's refusal, which is the honest failure.
 #[derive(Debug, Clone, Default)]
 pub struct Socks4 {

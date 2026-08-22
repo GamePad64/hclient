@@ -46,7 +46,7 @@ rstest           = { workspace = true }
 # declaration and call in `src/sys/res_query.rs`, and the `DnsQuery_UTF8`
 # record walk in `src/sys/windows.rs` — which need `deny`,
 # overridable by a scoped `#[allow]`, not `forbid`. See
-# `docs/superpowers/specs/2026-08-05-hclient-design.md` amendment C8.
+# `docs/exceptions.md`, amendment C8.
 #
 # `missing_debug_implementations` and `unexpected_cfgs` are restated here
 # because opting out of the workspace table drops them along with

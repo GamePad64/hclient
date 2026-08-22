@@ -377,9 +377,8 @@ pub trait TcpAdoptStd: TcpConnect {
 /// and here it's honest: both `tokio::task::spawn_blocking` and
 /// `blocking::unblock` require `Send + 'static`, and the `Blocking`
 /// capability doesn't exist on wasm at all — there's nothing for it to
-/// infect. The justification is `amendment-C5`
-/// (`docs/superpowers/specs/2026-08-05-hclient-design.md`), an amendment
-/// separate from C1/C2: those two are about erasing auto-traits in `dyn
+/// infect. The justification is `amendment-C5` (`docs/exceptions.md`), an
+/// amendment separate from C1/C2: those two are about erasing auto-traits in `dyn
 /// Trait` on the `Client -> Transport` path, whereas here the bound is
 /// declared directly in the signature of a capability trait that simply
 /// doesn't exist on wasm.

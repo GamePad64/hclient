@@ -439,7 +439,7 @@ where
     /// started `head_start` later — the race, and it is off until this is
     /// called.
     ///
-    /// **It is a hedge and not a chooser** (`docs/v04-design.md` §W1 P12).
+    /// **It is a hedge and not a chooser**.
     /// The record and the advertisement decide which stack an origin
     /// speaks; this decides nothing, and only stops a request waiting out
     /// quinn's 30 s `max_idle_timeout` at an origin whose UDP does not get

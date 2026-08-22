@@ -131,7 +131,7 @@ foundation = ["dep:objc2-foundation"]
 # fourth `unsafe` file — the ICU calls in `src/icu/windows.rs` — which
 # need `deny`, overridable by a scoped `#[allow]`,
 # not `forbid`. See
-# `docs/superpowers/specs/2026-08-05-hclient-design.md` amendment C9.
+# `docs/exceptions.md`, amendment C9.
 #
 # `missing_debug_implementations` and `unexpected_cfgs` are restated here
 # because opting out of the workspace table drops them along with

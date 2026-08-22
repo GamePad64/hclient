@@ -27,9 +27,8 @@
 //! **A QUIC connection that nobody polls is not idle, it is dying.** The
 //! PING that resets a peer's idle timer comes from the connection's driver,
 //! not from the kernel, so unlike an HTTP/1 socket in a pool it needs
-//! something to drive it between requests. Measured
-//! (`docs/h3-research.md` §1.5): across a 1500 ms gap under a 1000 ms idle
-//! timeout, an undriven connection's second request fails and a driven
+//! something to drive it between requests. Measured: across a 1500 ms
+//! gap under a 1000 ms idle timeout, an undriven connection's second request fails and a driven
 //! one's succeeds. That is the whole argument for the `Spawn` bound, and
 //! everything h3 is for — multiplexing, 0-RTT on a second visit — pays off
 //! across exactly those gaps.
@@ -206,7 +205,7 @@ impl fmt::Debug for Shared {
 ///
 /// # A spawned driver is necessary and not sufficient, which is a finding
 ///
-/// The research (`docs/h3-research.md` §1.5) established that an unpolled
+/// The research established that an unpolled
 /// QUIC connection dies across an idle gap, and that a *driven* one
 /// survives. Building it here turned up the other half: **the driver alone
 /// is not enough.** With a driver spawned and no keep-alive configured, the

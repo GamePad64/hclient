@@ -69,8 +69,7 @@ use wasm_bindgen::prelude::*;
 pub(crate) struct SingleThreaded<T>(pub(crate) T);
 
 /// The one exception to this project's `#![forbid(unsafe_code)]` default —
-/// see `docs/superpowers/specs/2026-08-05-hclient-design.md` amendment C7
-/// for the full argument. Both lines the CI `no-unsafe-code` job would
+/// see `docs/exceptions.md`, amendment C7, for the full argument. Both lines the CI `no-unsafe-code` job would
 /// otherwise flag carry their own `unsafe-code-exception` marker, per-line
 /// AND scoped to this one file — the same convention `no-declared-send`
 /// uses for `send-bound-exception`, narrowed further because, unlike that
