@@ -203,7 +203,7 @@ embassy-strict-link:
 # subject is a third party's server goes red for reasons nobody here can fix,
 # and a red build nobody can fix is how people learn to ignore red builds. The
 # argument, the three things it found, and what would change the answer are
-# written out in docs/v03-acceptance.md under "Live, v0.3 W3"; the short form
+# written out beside the tests themselves; the short form
 # is that what it measures is a fact about an operator, not a property of this
 # code, and the two do not belong on the same signal.
 #
@@ -286,7 +286,7 @@ test-wasi:
 # measuring why `Connected` cannot be built out of `PerformanceResourceTiming`),
 # 118 -> 119 when `Head::version` became an `Option` (one test pairing the
 # event's `None` with the `version_reported: false` that says the same thing
-# to whoever built the transport — see docs/v04-w2-hooks-ambient.md §9).
+# to whoever built the transport).
 # Measured by running both engines, not inferred from the attribute count:
 # several `#[wasm_bindgen_test]`s are cfg-gated, so the two numbers do not
 # agree. Firefox 153 reports 119; Chrome was NOT run for this change —
@@ -807,8 +807,8 @@ graph-smol-path:
         --config .github/deny/smol-path.toml -t "$t" check bans
     done
 
-# `docs/w4-upgrade-seam.md` §8, machine-checked in both directions. The
-# framing used to be a `websocket` feature of `hclient-native`, and the
+# The WebSocket framing lives in its own crate, machine-checked in both
+# directions. It was a `websocket` feature of `hclient-native` once, and the
 # argument for moving it out was that Cargo's features are additive: one
 # crate anywhere in a graph switching it on put `tungstenite` into every
 # other crate's build of the transport. `--all-features` is therefore the
@@ -824,7 +824,7 @@ graph-no-framing-in-the-transport:
     #!/usr/bin/env bash
     set -euo pipefail
     ./scripts/tree-guard.sh absent '^(tungstenite|sha1|data-encoding) ' \
-        "hclient-native has the WebSocket framing in its graph again. It lives in hclient-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here — docs/w4-upgrade-seam.md §8" \
+        "hclient-native has the WebSocket framing in its graph again. It lives in hclient-tungstenite, which depends on this crate rather than the other way round, precisely so that no feature switched on by a neighbour can put it here" \
         -- -p hclient-native --all-features
     ./scripts/tree-guard.sh present '^tungstenite ' \
         "hclient-tungstenite does not depend on tungstenite, so the ban above is vacuous — it would pass a workspace with no framing at all" \
@@ -844,7 +844,7 @@ graph-quinn-adapter-is-shared:
     #!/usr/bin/env bash
     set -euo pipefail
     ./scripts/tree-guard.sh absent '^(h3|h3-quinn|hclient-h3) ' \
-        "hclient-quinn has HTTP/3 in its graph. It is the quinn::Runtime over hclient_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3 (docs/v04-w2-webtransport.md §4)" \
+        "hclient-quinn has HTTP/3 in its graph. It is the quinn::Runtime over hclient_rt::{Timer, Spawn, UdpBind} and nothing above it — a crate that wants bare QUIC over the seam must be able to take it without h3" \
         -- -p hclient-quinn --all-features
     ./scripts/tree-guard.sh present '^quinn ' \
         "hclient-quinn does not depend on quinn, so the ban above is vacuous — it would pass a workspace where the adapter had been emptied out" \

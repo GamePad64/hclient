@@ -43,7 +43,7 @@ thiserror    = { workspace = true }
 # **relaxes**: removing `non_exhaustive` lets more patterns compile and
 # stops none. That is what makes Cargo's feature unification harmless here
 # — `hclient-h3`'s own `h3` gets strictly more surface and the same
-# behaviour. `docs/v04-w2-webtransport.md` §2.
+# behaviour.
 #
 # What it buys is the two facts a WebTransport client cannot do without and
 # `h3`'s ordinary client API does not surface: the peer's SETTINGS

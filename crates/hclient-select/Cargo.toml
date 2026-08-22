@@ -39,7 +39,7 @@ thiserror      = { workspace = true }
 # endpoint speaking HTTP/3 on UDP and a real rustls listener speaking
 # HTTP/1.1 on TCP — plus the runtime and TLS backend that satisfy both
 # members' bounds at once. `hclient-rt-tokio`'s `udp` feature is
-# `docs/v04-design.md` P2: without it `TokioHandle` does not implement
+# Without it `TokioHandle` does not implement
 # `UdpAdoptStd` and `Selecting<TokioHandle, ..>` cannot be named.
 [dev-dependencies]
 futures-util       = { version = "0.3", default-features = false, features = ["std"] }

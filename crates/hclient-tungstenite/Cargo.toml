@@ -14,7 +14,7 @@ repository.workspace = true
 # Cargo's features are additive: one crate anywhere in a graph switching it
 # on put the framing into every other crate's build of the transport. The
 # same argument kept `hclient-h3` out of `hclient-native` and
-# `hclient-tls-quic` out of `hclient-tls` — `docs/w4-upgrade-seam.md` §8.
+# `hclient-tls-quic` out of `hclient-tls`.
 # A build that wants WebSocket names this crate; one that does not cannot
 # be given it by a neighbour.
 
@@ -50,7 +50,7 @@ thiserror    = { workspace = true }
 # "sha1"]`); `http` and `httparse` are already here through `hyper`.
 # Everything else tungstenite's default would bring — its own TLS
 # connectors, its blocking `connect()` — is glue this workspace has better
-# versions of, which is `docs/w4-upgrade-seam.md` §6's whole argument.
+# versions of, which is the whole argument for driving it ourselves.
 tungstenite  = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]

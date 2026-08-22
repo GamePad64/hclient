@@ -21,8 +21,7 @@ repository.workspace = true
 #
 # So this crate is where the QUIC vocabulary and the seam's vocabulary meet,
 # and it is the only place either has to know about the other.
-# `docs/w4-upgrade-seam.md` §8 makes the same argument for the WebSocket
-# framing; `docs/v04-w2-webtransport.md` §4 recorded this one as owed.
+# The same argument puts the WebSocket framing in its own crate.
 
 # See the root Cargo.toml: `default` is near-empty here by design.
 [package.metadata.docs.rs]

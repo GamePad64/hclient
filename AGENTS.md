@@ -1,5 +1,13 @@
 # hclient
 
+**`.notes/` is untracked.** This file cites it throughout — design notes,
+acceptance records, research and measurements kept from building this.
+None of it is in git: it is written for whoever works on this rather than
+for whoever uses it, and `docs/` is for the second audience. A fresh clone
+has `docs/` and not `.notes/`, so a `.notes/` link is a pointer into the
+working copy, not a promise the file is there. The history still holds
+everything that was moved.
+
 Cross-platform async HTTP client. The same application code
 builds for native, browser and WASI — the transport is swapped out, not
 buried under `#[cfg]`.
@@ -9,7 +17,7 @@ let client = hclient::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
-On native, with the `default-transport` feature (Task 14, vertical 2) — the same
+On native, with the `default-transport` feature  — the same
 code without manually choosing a transport. **`Client::new()` is one
 constructor and panics on nothing**: it used to `.expect` a failure to read
 the OS trust store and carry a `try_new` beside it that did not, and both
@@ -136,7 +144,7 @@ cargo group there is chained with `&&` inside a subshell ending
 
 **One mutation was going to be applied by CI, and the job was withdrawn
 before it ever ran — this paragraph described it for weeks afterwards
-anyway.** `docs/v03-acceptance.md` recorded the single survivor of the UDP
+anyway.** `.notes/v03-acceptance.md` recorded the single survivor of the UDP
 work: a hardcoded `ecn: true` is indistinguishable from the truth on a
 Linux kernel, where both answers are `true`, and what would settle it was
 said to be one run on macOS, where `quinn-udp` documents `IP_RECVTOS` as
@@ -341,8 +349,8 @@ is about ergonomics rather than about semver; the two now have to be
 weighed against each other rather than only one of them stated.
 
 What is still missing is enumerated at the end of
-`docs/v01-acceptance.md`, `docs/v02-acceptance.md`,
-`docs/v03-acceptance.md` and `docs/v04-acceptance.md`. Those lists are
+`.notes/v01-acceptance.md`, `.notes/v02-acceptance.md`,
+`.notes/v03-acceptance.md` and `.notes/v04-acceptance.md`. Those lists are
 themselves the thing to check first: several entries on them were built
 after they were written.
 
@@ -615,12 +623,12 @@ Framing on native is `tungstenite`, driven by us rather than through an
 async wrapper, and the reason is not taste: `WebSocketContext` takes the
 stream as a *parameter*, so the shim can borrow the poll `Context` for one
 call — where `tokio-tungstenite`'s `AllowStd`, owning its stream across
-calls, has to smuggle a `*mut Context`. `docs/w4-upgrade-seam.md` has the
+calls, has to smuggle a `*mut Context`. `.notes/w4-upgrade-seam.md` has the
 measurements and the decisions.
 
 **It is `hclient-tungstenite`, its own crate, and until v0.4 it was a
 `websocket` feature of `hclient-native` — the one pluggable thing here
-that was not its own crate** (`docs/w4-upgrade-seam.md` §8). Features are
+that was not its own crate** (`.notes/w4-upgrade-seam.md` §8). Features are
 additive, so that feature put `tungstenite` into every build in any graph
 that switched it on: the argument that kept `hclient-h3` out of
 `hclient-native` and `hclient-tls-quic` out of `hclient-tls`, applied to
@@ -684,11 +692,11 @@ driving the socket, **so a caller that stops polling gets no keep-alive**.
 That is the mirror of HTTP/3, where a spawned driver turned out to be
 necessary and not sufficient; here there is no driver at all.
 
-See [`docs/v01-acceptance.md`](docs/v01-acceptance.md) for what v0.1
+See [`.notes/v01-acceptance.md`](.notes/v01-acceptance.md) for what v0.1
 deliberately does not do,
-[`docs/v03-acceptance.md`](docs/v03-acceptance.md) for what v0.3 does,
+[`.notes/v03-acceptance.md`](.notes/v03-acceptance.md) for what v0.3 does,
 does not, and has not checked, and
-[`docs/v04-acceptance.md`](docs/v04-acceptance.md) for v0.4 — which is
+[`.notes/v04-acceptance.md`](.notes/v04-acceptance.md) for v0.4 — which is
 the shortest of the four on purpose, because v0.4's arguments were
 written down one document per topic as they were made, and it indexes
 them rather than copying them. What it does carry, because no per-topic
@@ -929,7 +937,7 @@ asked for the repeat — but admission into early data also asks "may an
 attacker send this again", which is method safety, a notion this codebase
 deliberately does not have. `POST /transfer` with `RequestBody::Full(..)`
 is `RetryKind::Free` and is precisely what must never go into early data.
-`docs/h3-research.md` §3.5 has the three-row table.
+`.notes/h3-research.md` §3.5 has the three-row table.
 
 ### Every backend now reports events, and two of them report one thing (v0.4 W2)
 
@@ -981,7 +989,7 @@ and `Reused::version` stay plain, which is what keeps this from being a
 change made for one backend: only a transport that owns a connection emits
 either, and owning one means having negotiated its protocol. The cost to
 the other two backends was one line each plus the assertions the compiler
-demanded. `docs/v04-w2-hooks-ambient.md` §9.
+demanded. `.notes/v04-w2-hooks-ambient.md` §9.
 
 The bounds went down again: `H: Hooks` alone here, one fewer than h3 and
 two fewer than native, because the only event fires while `execute` still
@@ -1003,12 +1011,12 @@ additive. 48 crates, `tokio` with no reactor, and `quinn` arrives with
 owning no endpoint.
 
 **The premise was proved twice, and the second time is the one that counts.**
-`docs/w4-upgrade-seam.md` §4 said extended CONNECT was reachable from `h3`'s
+`.notes/w4-upgrade-seam.md` §4 said extended CONNECT was reachable from `h3`'s
 client API "verified by reading"; it is now executed — against `h3`'s own
 server, and then against **`wtransport` 0.7.2**, which carries its own
 HTTP/3 and depends on `h3` not at all. Two implementations sharing no code
 agreed on the wire. The `wtransport` spike is **not** kept as a test — 114
-crates, `url` and ICU among them — but `docs/v04-w2-webtransport.md` §10 has
+crates, `url` and ICU among them — but `.notes/v04-w2-webtransport.md` §10 has
 it verbatim to re-run.
 
 **The sharpest fact is a two-state answer to a three-state question.**
@@ -1050,7 +1058,7 @@ clients on one QUIC connection is `H3_STREAM_CREATION_ERROR`, the same
 reason a session cannot share a *pooled* one. `hclient-webtransport` still
 takes its connection from outside, and now because the remaining half is a
 **dial** it would be the second author of: measured at 48 → 56 crates,
-`ring` among them. `docs/quinn-adapter-extraction.md` §5.
+`ring` among them. `.notes/quinn-adapter-extraction.md` §5.
 
 A session cannot share an `hclient-h3` pooled connection, for three reasons
 in increasing hardness: a second h3 client on one QUIC connection opens a
@@ -1101,7 +1109,7 @@ a lost connection or an unreadable capsule. `ErrorKind::Body`, agreeing with
 inventing a second vocabulary.
 
 **It needed nothing spawned, and that disproves this workspace's own guess.**
-`docs/v04-w2-webtransport.md` §6 said observing session end *"needs a driver
+`.notes/v04-w2-webtransport.md` §6 said observing session end *"needs a driver
 — and that is the one place a future version might have to spawn"*. It does
 not: `h3`'s `RequestStream::poll_recv_data` reads through its own
 `FrameStream` straight off the `quinn::RecvStream`, and the connection driver
@@ -1187,11 +1195,11 @@ resolver and the cache, and does not fall back.
 
 Checked against a `quinn` server that **refuses** — an ALPN this client
 will not accept, so a connect fails causally in one round trip — which is
-how `docs/v04-w1-acceptance.md` §9.3's second blocker turned out to be the
+how `.notes/v04-w1-acceptance.md` §9.3's second blocker turned out to be the
 right worry about the wrong premise: the memory records *that* the connect
 failed and never reads why. The black hole is used once, where a test needs
 the bound *spent*. Twenty mutations, nineteen killed, one control.
-`docs/v04-staged-connect.md`.
+`.notes/v04-staged-connect.md`.
 
 ### One transport can now choose between the two stacks (v0.4 W1)
 
@@ -1282,7 +1290,7 @@ because when `Selecting` routes to `H3` the native transport is not called
 at all. `hclient_select::H3Failures` is the memory that was owed; the
 **staged connect** is what unblocked it, and the section below is that.
 
-`docs/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
+`.notes/v04-w1-acceptance.md` §7 and §9 say what the race would need and what
 the slow tier does and does not check.
 
 **The part that was not mechanical is the capability set, and it is not the
@@ -1337,7 +1345,7 @@ cannot be asked rather than being answered by a check. The shape that was
 rejected is the obvious one: a request extension is the caller's channel,
 and an HTTPS record carries a port and address hints, so an extension
 carrying one would let any code that can build a request move the
-connection somewhere else. `docs/v04-w1-acceptance.md` §3.1 has the
+connection somewhere else. `.notes/v04-w1-acceptance.md` §3.1 has the
 argument and §3.3 the eleven mutations behind it (ten killed, one control).
 
 The other half of the rule is what keeps `hclient-select` from owning a
@@ -1353,7 +1361,7 @@ endpoint on UDP and a `tokio-rustls` listener on TCP, on the same port
 number, both alive in every test — so a request reaching one is a choice and
 not the only possibility. Nineteen mutations applied, nineteen killed; the
 first run of them scored every one as survived and was wrong, which is why
-`docs/v04-w1-acceptance.md` §5 records how the table was checked as well as
+`.notes/v04-w1-acceptance.md` §5 records how the table was checked as well as
 what it says.
 
 ### A response cache landed, and it is the counterpart `owns_cache` never had
@@ -1448,7 +1456,7 @@ above the connection drive, asking for interim heads before the frames
 carrying them had been read, under a comment arguing for the wrong
 ordering; and the **shared** h2 path was wired and unreached, its
 mutation surviving the whole suite until a fixture reached it.
-`docs/informational-1xx.md`, including what is still unmeasured —
+`.notes/informational-1xx.md`, including what is still unmeasured —
 `Informational::id` is populated and never asserted.
 
 ### The pooled-reuse race has a third test sitting on it, and it was the premise
@@ -1462,7 +1470,7 @@ says which point of the window it reached: `accepted=1`,
 connection's end reported from **inside the second exchange** rather than
 from the checkout.
 
-That is the far point of `docs/pooled-reuse-race.md`'s three, the one this
+That is the far point of `.notes/pooled-reuse-race.md`'s three, the one this
 workspace documents as residual and deliberately unfixed — hyper wrote the
 request and then read `EOF`, which is `Failed::Sent` and no retry. **The
 client did exactly what is written down.**
@@ -1556,7 +1564,7 @@ the fix it fails three times in three with the same reset on stream 5; the
 assertion is the server's high-water mark, a count, so a slow machine
 changes nothing.
 
-That makes four: `docs/v03-acceptance.md` records three timing-based
+That makes four: `.notes/v03-acceptance.md` records three timing-based
 assertions in this workspace that turned out to be flakes, one of them
 hiding a real defect. This is the fourth, and it was hiding one too.
 
@@ -2201,7 +2209,7 @@ runs the powerset over the four as well, and fails closed on either half.
 ### Four crates this file did not name, and what each is for
 
 Recorded because `docs/competitive-gaps.md` found them missing from here
-while two of them are still listed in `docs/v01-acceptance.md` as
+while two of them are still listed in `.notes/v01-acceptance.md` as
 deliberately not done — a list that was updated for its DoH half and not
 for these.
 
@@ -2427,7 +2435,7 @@ That overflow produced the more general lesson. There are now two future
 both is what one extra `async fn` layer costs — measured at **1.81×**, so
 a ceiling at 2× would be a guard that cannot fire for the defect it
 names. They are 6 KiB and 24 KiB, and both are checked in the failing
-direction by reintroducing the layer. `docs/expect-continue.md` §7.
+direction by reintroducing the layer. `.notes/expect-continue.md` §7.
 
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
@@ -2474,7 +2482,7 @@ absolute-form request *is* a response, from a server acting as origin for
 it; both are pinned. **A non-empty `read_buf` after a tunnel is a refusal
 rather than a rewind**, because nothing the origin might say can have
 arrived before we wrote to it. And **the proxy in `PoolKey` is unreachable
-today**, for the reason `docs/v02-acceptance.md` already gives about the
+today**, for the reason `.notes/v02-acceptance.md` already gives about the
 TLS identity in the same key — a constant within any one pool — and it is
 in the key for the moment a pool is shared between transports. That
 unreachability is this work's mutation **control**, and it survives as the
@@ -2503,13 +2511,13 @@ crate, base64 included, so it buys code size back for a constrained target
 and costs nobody a dependency — the WebSocket framing's argument has no
 subject here. The seam itself is unconditional, because a third protocol
 should not have to switch on a feature named after the two that ship.
-`docs/proxy-design.md`.
+`.notes/proxy-design.md`.
 
 ### The pooled-reuse race has three points, and the middle one was ours
 
 A server can close a pooled HTTP/1 connection between the client's last
 look and its write. Every HTTP/1 pool has this; `h1.rs` has called it
-"residual" since v0.2 W2 and `docs/nagle-and-nodelay.md` §6 names the two
+"residual" since v0.2 W2 and `.notes/nagle-and-nodelay.md` §6 names the two
 expensive fixes it would take. Reproducing it deterministically — which
 had never been done, because *"that instant cannot be hit from outside"* —
 showed the window has **three** points rather than two, and that the
@@ -2563,7 +2571,7 @@ and it costs a scheduler round trip on every pooled request plus the
 *"exactly one poll, and it never suspends"* contract written where that
 poll is. Replaying a request hyper will not hand back needs a notion of
 method safety this codebase deliberately does not have, the same one
-`docs/h3-research.md` §3.5 declines for 0-RTT; `RetryKind` answers only
+`.notes/h3-research.md` §3.5 declines for 0-RTT; `RetryKind` answers only
 half of it, and the `425` precedent argues the other way, because there
 the **server** asked for the repeat.
 
@@ -2590,7 +2598,7 @@ the request did would move the emission below the request's outcome and
 put the one-`Closed`-per-socket rule behind three exits where `h1.rs`
 leans on two, which is a hooks change wanting its own measurement.
 
-`docs/pooled-reuse-race.md`, including the mutation table and its
+`.notes/pooled-reuse-race.md`, including the mutation table and its
 control — the connection's *error* arm, verified unreachable by replacing
 it with a `panic!` and running the suite rather than by reading hyper.
 
@@ -2787,7 +2795,7 @@ someone else's runtime, where this implements *quinn's* — `quinn::Runtime`,
 had always said so. It is not a fourth runtime; it is what lets quinn run on
 whichever runtime the caller already chose, and the family name made the
 wrong reading the default. `hclient-tower`'s bare-foreign-name shape is the
-one it takes now, and `docs/quinn-adapter-extraction.md` went with it. Eleven crates have
+one it takes now, and `.notes/quinn-adapter-extraction.md` went with it. Eleven crates have
 no in-workspace consumer at all and are terminal by design: a user picks the
 backend.
 
@@ -2813,7 +2821,7 @@ does not already have, so an `hclient-ws` would be a crate with nothing to
 carry. The name promised a crate the dependency rule forbids.
 
 It is **`hclient-tungstenite`** now, which keeps the framing library in the
-name — that choice is argued in `docs/w4-upgrade-seam.md`, `tungstenite`
+name — that choice is argued in `.notes/w4-upgrade-seam.md`, `tungstenite`
 over `tokio-tungstenite` because `WebSocketContext` takes the stream as a
 parameter and needs no `*mut Context` — and promises no family. Renaming
 before the first publish is free and after it is not, which is why the
@@ -2948,7 +2956,7 @@ now pass *together*. Four `amendment-C1` markers **left** `client.rs` with
 the type parameter, because `Transport::to_error` is now called where `Self`
 is concrete.
 
-`docs/erased-client.md` has the measurements, including the
+`.notes/erased-client.md` has the measurements, including the
 `package-build` trap met on the way: it verifies against the shared
 `target/debug/deps`, so a stale `rmeta` for an unchanged version makes it
 fail — or, worse, pass — misleadingly.
@@ -3313,7 +3321,7 @@ response, a message split across DATA frames arriving as the caller sent it,
 the empty end-of-stream DATA frame, back-pressure in both directions, and
 sixteen rounds of bidirectional streaming on one stream — which is the first
 consumer-shaped exercise of the duplex h2 landed in v0.4.
-`docs/grpc-yardstick.md` is the row-by-row report.
+`.notes/grpc-yardstick.md` is the row-by-row report.
 
 **Three limitations, none new, two of them one — and all three closed on
 request in v0.4.** By default there is **no multiplexing**: an h2
@@ -3329,7 +3337,7 @@ rather than promptly. The first costs a handshake per concurrent RPC; none
 of the three costs a failed call.
 
 **`Native::multiplexed()` closes all three, and the second and third cost
-no code of their own** — which is what `docs/grpc-yardstick.md` predicted
+no code of their own** — which is what `.notes/grpc-yardstick.md` predicted
 when it classified them as downstream of the first. It spawns the h2
 connection's driver, so the connection outlives the stream (the queued
 `RST_STREAM(CANCEL)` reaches the wire) and outlives the request (a `PING`
@@ -3364,7 +3372,7 @@ concurrency of 8: **480** TCP accepts and 480 TLS+h2 handshakes exclusive
 against **60** shared, for ~3× the CPU. In steady state — a warm pool,
 loopback, no handshake left to save — sharing costs *more* CPU and saves
 the sockets, which is the honest shape of the trade.
-`docs/h2-multiplexing.md` §11.
+`.notes/h2-multiplexing.md` §11.
 
 Also worth knowing before reading `capabilities()`: with `http2` on,
 `full_duplex` and `response_trailers` still report the HTTP/1.1 **floor**, so
@@ -3392,7 +3400,7 @@ Two things behind that are worth knowing before reading the code.
 connection itself, so a crate with no `Spawn` cannot supply one; the `h2`
 crate underneath it is used directly instead, its `Connection` polled by hand
 exactly as hyper's HTTP/1 one already is (`src/http2.rs`'s module doc, and
-the correction in `docs/v02-design.md` §W3). And **h2 is offered only over a
+the correction in `.notes/v02-design.md` §W3). And **h2 is offered only over a
 TLS backend that can report the negotiated ALPN** — `TlsConnect::reports_alpn`,
 defaulting to `false`, overridden to `true` by `hclient-tls-rustls`: a backend
 that sends the ALPN list and cannot read the answer back (which is exactly

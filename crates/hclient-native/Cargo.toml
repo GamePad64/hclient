@@ -33,7 +33,7 @@ repository.workspace = true
 # omission.** WebSocket over this transport is
 # `hclient-tungstenite`, a crate that depends on this one; what stays
 # here is the h1 upgrade (`src/upgrade.rs`), which is hyper and nothing
-# else. It was a feature here until `docs/w4-upgrade-seam.md` §8, and the
+# else. It was a feature here once, and the
 # reason it stopped being one is the reason `hclient-h3` is not a feature
 # of this crate either: Cargo's features are additive, so one crate
 # anywhere in a graph switching it on put `tungstenite` — measured at +17
