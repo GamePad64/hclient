@@ -736,12 +736,31 @@ for a body that never existed.
 
 ### HTTP/3: three more things that are not obvious from the outside
 
-**It is its own crate, and could not have been a feature of
-`hclient-native`.** The reason is the type system rather than the 57-crate
-QUIC stack: this transport is bounded on `R: UdpBind + Spawn<..>` and
+**It is its own crate, and the reason recorded here for two verticals was
+wrong.** It read: this transport is bounded on `R: UdpBind + Spawn<..>` and
 `T: QuicTlsConnect`, neither of which `Native<R, T, D>` has, and Cargo's
 features are additive — so a `hclient-native/http3` feature would make both
 unconditional for every build in the graph.
+
+Measured, and the load-bearing line is `H3`'s own declaration:
+`pub struct H3<R, T, D, H = NoHooks> {` carries **no where-clause at all**.
+Every bound lives on `impl Transport for H3`, so `H3<Embassy, NoTls,
+IpLiteralOnly>` is a nameable type and a feature makes the *module and the
+constructor* unconditional rather than the bounds.
+
+What is true is narrower: a field typed `Option<H3<R, T, D>>` would pull
+`H3<R, T, D>: Transport` into `impl Transport for Native`'s where-clause,
+because `execute` has to route to it — and *that* is unconditional. An
+**erased** field is not: `Option<Box<dyn BoxedTransport + Send + Sync>>`,
+whose blanket impl `hclient-core` already carries, leaves `execute` calling
+`execute_boxed` and demanding nothing of `R` or `T`, with every bound on an
+opt-in `Native::http3()` that `Native::new(Embassy, NoTls, IpLiteralOnly)`
+never calls.
+
+So the cost of the feature is not a broken build for a neighbour, it is
++18 crates of dead code in the graph — the same class as
+`default-transport`, and a weaker reason for a crate boundary than the one
+recorded here.
 
 **It requires `R: Spawn`, and it shares connections.** An idle HTTP/1 socket
 needs nobody; the kernel holds it. **A QUIC connection that nobody polls is
@@ -2977,10 +2996,11 @@ defaults, and cargo builds **one** `hclient` — `default,default-transport,idn`
 the shared graph it gets all three. **The party who wanted the small graph
 is not the party who decides.**
 
-That is the same argument that keeps `hclient-h3` out of `hclient-native`,
-`hclient-tls-quic` out of `hclient-tls` and the WebSocket framing in a crate
-of its own. Applying it to those three and not to a feature list would have
-been the inconsistency.
+That is the same argument that keeps `hclient-tls-quic` out of
+`hclient-tls` and the WebSocket framing in a crate of its own. **It is not
+what keeps `hclient-h3` out of `hclient-native`** — that reason was
+measured and is wrong, see the HTTP/3 section. Applying it to the two it
+fits and not to a feature list would have been the inconsistency.
 
 **The audience it protects is narrower than "every constrained build",
 which is worth knowing before the next time this is raised.**
@@ -3256,12 +3276,10 @@ test busy-spin.
 
 **`DefaultTransport`/`Client::new()`** (the `Client<T = DefaultTransport>`
 this line named for two verticals is gone — `Client` names no parameters) — the
-`default-transport` feature (not in `hclient`'s `default`, as for every
-crate in the vertical. **It is in `hclient`'s `default` now**, because
-`cargo add hclient` has to give a working client and the crate's own
-headline example did not compile without it; `default` carries `idn` and
-`default-transport`,
-see the `url` bullet above). On any non-wasm target it resolves to
+`default-transport` feature, **not** in `hclient`'s `default`, as for every
+crate in the vertical — it was moved in for one commit and back out, and
+the section on features as a floor is why. On any non-wasm target it
+resolves to
 `Native<Tokio, Rustls, SystemDns<Tokio>>` with the system trust store
 (`rustls-platform-verifier`, not `webpki-roots` — a client that "just works",
 not one with explicitly chosen roots). On `wasm32-unknown-unknown` it resolves
