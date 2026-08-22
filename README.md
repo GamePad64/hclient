@@ -54,6 +54,77 @@ cargo add hclient@0.1.0-alpha.1 --features default-transport
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 
+## The thirty crates, as six families
+
+You name **one**: `hclient`. Eleven reach your lockfile transitively, and
+twelve are ever chosen deliberately — the rest is plumbing. What follows is
+so the list reads as families rather than as thirty rows. On crates.io the
+same grouping is the keyword `hclient`, plus `transport`, `runtime`, `tls`
+or `dns` on the family members.
+
+**The client**
+
+| crate | what it is |
+|---|---|
+| `hclient` | the facade: one `Client`, redirects, cookies, cache, decompression, SSE |
+| `hclient-core` | the plugin contract — `Transport`, `Capabilities`, `RequestBody`, `Error`, `Timer` |
+| `hclient-proto` | pure state machines: no I/O, no async, no runtime |
+| `hclient-mock` | a mock transport and a controllable clock, for testing against the seam |
+
+**Transports** — a client sends requests over exactly one of these
+
+| crate | what it is |
+|---|---|
+| `hclient-native` | TCP + TLS + HTTP/1.1, HTTP/2 behind a feature, on hyper |
+| `hclient-h3` | HTTP/3 over QUIC |
+| `hclient-select` | both of the above, choosing by the origin's HTTPS record |
+| `hclient-fetch` | the browser's own `fetch` |
+| `hclient-wasi` | `wasi:http` 0.3 |
+| `hclient-urlsession` | Apple's `URLSession` |
+| `hclient-tower` | any `tower::Service`, so `tower-http` middleware applies |
+
+**Runtimes** — what the native transport does I/O and time with
+
+| crate | what it is |
+|---|---|
+| `hclient-rt` | the seam: `TcpConnect`, `Timer`, `Blocking`, `Spawn`, `UdpBind` |
+| `hclient-rt-tokio` · `hclient-rt-smol` | the two general-purpose ones |
+| `hclient-rt-embassy` | `embassy-net` and `embassy-time`, which is what makes embedded reachable |
+| `hclient-quinn` | quinn's own `Runtime` over that seam, for bare QUIC without h3 |
+
+**TLS**
+
+| crate | what it is |
+|---|---|
+| `hclient-tls` | the seam, plus `NoTls` for a build with no room for a stack |
+| `hclient-tls-rustls` | the default: memory-safe, same behaviour everywhere |
+| `hclient-tls-native-tls` | the platform's own stack, for OS-held trust decisions |
+| `hclient-tls-quic` | a second seam, because QUIC wants key schedules rather than a byte stream |
+
+**Resolvers**
+
+| crate | what it is |
+|---|---|
+| `hclient-dns` | the seam, plus `IpLiteralOnly` for a build with no resolver |
+| `hclient-dns-system` | `getaddrinfo`, through the `Blocking` capability |
+| `hclient-dns-hickory` | the one that can actually answer SVCB |
+| `hclient-dns-doh` | DNS-over-HTTPS, over any transport |
+
+**On top of a connection**
+
+| crate | what it is |
+|---|---|
+| `hclient-tungstenite` | WebSocket framing over an upgraded byte stream |
+| `hclient-webtransport` | WebTransport sessions over an HTTP/3 connection |
+| `hclient-cache` · `hclient-cookie` | RFC 9111 and RFC 6265bis, sans-io and clockless — neither depends on `hclient-core`, so both are usable on their own |
+| `hclient-idn` | UTS 46 through the platform's own ICU where there is one |
+
+Each crate's own README says the thing that decides its existence: **why it
+is a separate crate.** The short version is one rule — a crate exists to
+hold a dependency that a feature would otherwise spread to every graph in
+the workspace, because Cargo unifies features and a graph cannot opt out of
+one somebody else switched on.
+
 - [`AGENTS.md`](AGENTS.md) — how it is built, and why each piece is there.
   Long, and the length is the point: every seam records the argument that
   produced it and the measurement that settled it.
