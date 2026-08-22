@@ -88,7 +88,7 @@ impl Timer for NoClock {
 /// that completed in the same wake as the deadline expiring is a success
 /// rather than a timeout. On expiry `op` is dropped when this function
 /// returns — which is what actually stops the exchange, under the contract
-/// on `Transport::execute` (v0.2 W1). Without that contract this would
+/// on `Transport::execute`. Without that contract this would
 /// bound the caller's wait and leave the request running.
 pub(crate) async fn within<F, T>(
     op: F,
@@ -156,7 +156,7 @@ where
 /// the reverse.
 ///
 /// The sentence that used to end this paragraph — "which stays declared
-/// `false` by `hclient-native` (v0.2 W4's middle bullet)" — is out of date:
+/// `false` by `hclient-native`" — is out of date:
 /// that middle bullet has since landed, and `hclient-native` declares and
 /// enforces both `first_byte` and `between_bytes`
 /// (`hclient_native::IdleTimeout`, a body wrapper holding a sleep of its
@@ -206,7 +206,7 @@ where
 ///
 /// When the deadline fires the wrapped body is dropped, not merely
 /// reported on. Dropping a response body before it ends is a cancellation
-/// under `Transport::execute`'s contract (v0.2 W1), so the socket or
+/// under `Transport::execute`'s contract, so the socket or
 /// ambient exchange behind it is torn down rather than left draining. A
 /// bound that returned an error and left the transfer running would be a
 /// bound on the caller's patience, not on the operation.

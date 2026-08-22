@@ -54,7 +54,7 @@ static FORBIDDEN_REQUEST_HEADERS: std::sync::LazyLock<[http::HeaderName; 5]> =
 /// Transport over the ambient `wasi:http/client.send` — the guest holds no
 /// socket of its own, all network interaction is delegated to the host.
 ///
-/// # `H`, the observability hook (v0.4 W2)
+/// # `H`, the observability hook
 ///
 /// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
 /// `false` — so `WasiHttp` still names the transport it always named, and
@@ -144,7 +144,7 @@ impl WasiHttp {
         // (`transmitted`) — the reasoning was already done and simply
         // never applied to `write_fut`.
         //
-        // Deferred (vertical 2, entirely within this crate) for three real
+        // Deferred for three real
         // costs, none of which is about the seam:
         //  1. The guard against undeclared trailers can't run before
         //     `execute` returns: trailer names are only known once the
@@ -200,8 +200,7 @@ impl WasiHttp {
         // version selection, no upgrade.
         //
         // Redirects are `Transparent`, not `None` (M2 of the branch's
-        // final review). Measured on a live host (Task 16 review
-        // resolution, finding B-9): a 3xx reaches the guest as an ordinary
+        // final review). Measured on a live host: a 3xx reaches the guest as an ordinary
         // response, and following the chain is entirely on the guest —
         // meaning the `Client`'s redirect stage works fully here. `None`
         // couldn't say that: `Capabilities::none()` returns that same

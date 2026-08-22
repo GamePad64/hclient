@@ -278,14 +278,14 @@ pub(crate) fn supports_streaming_request_body() -> bool {
 ///
 /// **`Capabilities` describes this transport, not this browser — and those
 /// stopped being the same question the moment `Transport::capabilities()`
-/// became a public method (Task 5).** Two fields below are the reason this
+/// became a public method.** Two fields below are the reason this
 /// doc comment exists: see each one's own comment for the specific claim
 /// that changed and why.
 pub(crate) fn probe() -> Capabilities {
     let mut c = Capabilities::none();
     // `streaming_request_body` — derived, since v0.2 W6, from the one
     // function that decides it, in the shape `response_decompression`
-    // (W5) and `connection_reuse` (W2) below already use: the value a
+    // and `connection_reuse` below already use: the value a
     // caller reads off `Capabilities` and the value `convert::to_web_request`
     // branches on are not two claims that happen to agree, they are one
     // stored answer with two readers.

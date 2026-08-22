@@ -31,18 +31,18 @@ mod websocket;
 //
 // Task 5 (this file's `impl Transport for Fetch`, below) composes Tasks
 // 1-4 into the third backend in the project, after `wasi:http` and native:
-// `convert::to_web_request` (Task 3) turns the request into a
+// `convert::to_web_request` turns the request into a
 // `web_sys::Request`, the browser's own `fetch` (found through `js_sys::
 // global()`, not `web_sys::window()`, so this also works from a Worker —
-// see `execute`'s own comment) sends it, `Body::from_response` (Task 4)
-// wraps the response, and `promise::SendJsFuture` (Task 1) is what makes
+// see `execute`'s own comment) sends it, `Body::from_response`
+// wraps the response, and `promise::SendJsFuture` is what makes
 // awaiting that whole exchange a `Send` future in the first place. See
 // `.superpowers/sdd/2026-08-05-v01-fetch-and-acceptance/task-5-brief.md`.
 //
 // **One deliberate deviation from the brief's own Step 3 reference code.**
 // That code destructures `to_web_request`'s result as
 // `let (request, _abort) = ..;` and never touches the `AbortController`
-// again — but `to_web_request`'s own doc comment (Task 3, `convert.rs`)
+// again — but `to_web_request`'s own doc comment
 // says explicitly that a later task, "the `Transport` impl, driving
 // deadlines and cancellation," needs to HOLD ONTO it after the function
 // returns. An immediately-discarded local binding doesn't hold onto
@@ -85,7 +85,7 @@ use wasm_bindgen::JsCast;
 /// never depends on anything that changes over the process's lifetime —
 /// the running browser is the running browser).
 ///
-/// # `H`, the observability hook (v0.4 W2)
+/// # `H`, the observability hook
 ///
 /// [`NoHooks`] by default — a zero-sized type whose `Hooks::WATCHING` is
 /// `false` — so `Fetch` still names the transport it always named, and a
@@ -525,7 +525,7 @@ pub mod testing {
     /// custom header, body, or timeout needs none of `Fetch`'s probed
     /// `Capabilities`, and this helper deliberately does NOT route through
     /// `convert::to_web_request` — that function's `checked_url` accepts
-    /// only `http`/`https` schemes (Task 3), which would reject exactly the
+    /// only `http`/`https` schemes, which would reject exactly the
     /// `data:` URL this crate's own brief specifies for a deterministic,
     /// no-network test. The parameter stays in the signature only because
     /// the brief's own test (`tests/body.rs`,

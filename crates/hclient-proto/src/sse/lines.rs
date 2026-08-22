@@ -327,10 +327,9 @@ mod tests {
     ///
     /// Runs in its own CI job (`sse-complexity-guard`, `ci.yml`), NOT
     /// sharing a runner with the whole-workspace test job — this
-    /// is the primary defense against flakiness (Task 14, review round 1,
-    /// Finding 4). Sustained runner overcommit (several heavy test
-    /// processes at once) has been measured to break best-of-N as the main
-    /// antidote: the long "large" measurement has no structural way to
+    /// is the primary defense against flakiness. Sustained runner
+    /// overcommit (several heavy test processes at once) has been measured
+    /// to break best-of-N as the main antidote: the long "large" measurement has no structural way to
     /// dodge preemption in any of its attempts, while the short "small" one
     /// does, so the minimum over five attempts converged to the same
     /// inflated ratio (up to 18.9× against an 8.0× threshold) as a single

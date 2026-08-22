@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Bridges `tokio::net::TcpStream` → `hyper::rt`. `unsafe`-free: reads into
 /// a scratch buffer and copies out with the safe `put_slice` — the same
-/// technique as `hclient_rt::FuturesIo` (Task 2), but here directly on top
+/// technique as `hclient_rt::FuturesIo`, but here directly on top
 /// of `tokio::io::{AsyncRead, AsyncWrite}` rather than `futures_io`: tokio
 /// has its own IO traits, and an extra layer through `FuturesIo` would only
 /// add a copy.

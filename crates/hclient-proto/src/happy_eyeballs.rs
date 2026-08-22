@@ -62,7 +62,7 @@ pub enum HeAction {
 /// The Happy Eyeballs v2 scheduler's state for a single connection attempt.
 ///
 /// A pure state machine: it knows nothing about clocks or sockets. The
-/// caller (Task 11, the connector) feeds it resolver results through
+/// caller feeds it resolver results through
 /// `offer_v6` / `offer_v4` / `mark_v6_done` / `mark_v4_done` and advances
 /// it with calls to `poll(elapsed)`, where `elapsed` is the time since the
 /// attempt started, on the caller's clock. `elapsed` must be monotonically

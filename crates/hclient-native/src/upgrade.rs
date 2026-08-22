@@ -229,7 +229,7 @@ where
         // A connection of its own, and never `self.pool` — see the module
         // doc.
         let now = self.rt.elapsed_since(self.epoch);
-        // `NoHooks`, deliberately: the observability seam (v0.4 W2) is
+        // `NoHooks`, deliberately: the observability seam is
         // about HTTP requests, and this connection is not one. It is
         // never pooled, so no `Reused` can follow it; there is no
         // response head to report beyond the 101 the handshake consumes;

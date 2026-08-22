@@ -39,7 +39,7 @@
 //! core or in any backend has to move, which is why the wait is the right
 //! call rather than a resigned one.
 //!
-//! # Bounding concurrency (v0.2 W4)
+//! # Bounding concurrency
 //!
 //! Without a limit, in-flight requests are unbounded. The limit is
 //! `tower`'s, applied between the two adapters, and this crate deliberately

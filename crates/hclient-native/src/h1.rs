@@ -31,7 +31,7 @@
 //! comment then said, "and not to erase `Send`". It erased `Send` all the
 //! same: `Box<dyn Future>` is never `Send`, so `H1Body` never was
 //! either, and a caller could not put a response into `tokio::spawn`.
-//! Connection reuse (v0.2 W2) turned that from a wart into a blocker —
+//! Connection reuse turned that from a wart into a blocker —
 //! a pool holding boxed connections would have made [`crate::Native`]
 //! itself neither `Send` nor `Sync`, since `Arc<Mutex<T>>` needs `T: Send`
 //! as much as `Rc<RefCell<T>>` does. Measured on the commit before this
@@ -52,7 +52,7 @@
 //!
 //! "Polls by hand, alongside" sounds like the same thing as a busy-spin —
 //! spinning a `poll` loop hoping to catch progress. It isn't, and the
-//! question wasn't debated, it was measured (Task 12, review round 1): on
+//! question wasn't debated, it was measured: on
 //! a bare executor (`futures_executor::block_on`, no reactor) CPU time
 //! genuinely does equal wall time — the spin there is real, because
 //! there's simply nothing that can wait for socket readiness other than
@@ -183,7 +183,7 @@
 //! that's the caller's deliberate choice to cut the read short, not a
 //! silent loss of bytes: hyper documents exactly that behavior for a
 //! dropped `Connection`, and `Transport::execute`'s cancellation contract
-//! (v0.2 W1) requires precisely this.
+//! requires precisely this.
 //!
 //! # Who keeps `SendRequest`, and why the answer changed
 //!

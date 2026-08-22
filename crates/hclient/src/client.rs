@@ -635,7 +635,7 @@ impl Client {
     ///
     /// This forwarder exists so that answering the most natural question
     /// about `Capabilities` doesn't require dragging `unversioned::
-    /// Transport` into scope (Task 17 fix round 2) — the trait is
+    /// Transport` into scope — the trait is
     /// deliberately in semver quarantine (see the doc comment on
     /// `hclient-core/src/unversioned/mod.rs`) and isn't part of the
     /// `hclient` facade. Reaching the transport and calling the trait
@@ -899,7 +899,7 @@ impl Client {
     /// Split out rather than inlined so that the deadline wraps ONE future
     /// covering every hop: the redirect loop is inside here, so dropping
     /// this future on expiry drops whichever hop is in flight, and under
-    /// `Transport::execute`'s contract (v0.2 W1) that stops the exchange
+    /// `Transport::execute`'s contract that stops the exchange
     /// instead of leaving it to finish unobserved.
     async fn run(
         &self,

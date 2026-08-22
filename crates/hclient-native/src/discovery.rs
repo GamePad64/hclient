@@ -1,5 +1,5 @@
 //! Tier 2 of h3-research §4's discovery ladder: the HTTPS record this
-//! client already knows how to fetch, finally read (v0.3 W2).
+//! client already knows how to fetch, finally read.
 //!
 //! `hclient_dns::SvcbEndpoint` has carried `alpn`, `port`, `ipv4hint`,
 //! `ipv6hint` and `ech_config_list` since v0.2, and `Resolve::

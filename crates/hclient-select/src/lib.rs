@@ -52,7 +52,7 @@
 //!
 //! - **The HTTPS record is the fast tier.** It arrives at resolution time,
 //!   which is before the first connection, so QUIC can be used on the
-//!   very first request to an origin (v0.4 W1, deliverable 3).
+//!   very first request to an origin.
 //! - **`Alt-Svc` is the slow tier** (deliverable 4, [`altsvc`]). It is a
 //!   response **header**, so it can only ever help the *next* connection:
 //!   the first request to an unknown origin goes over TCP no matter what

@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 ///
 /// hyper-util only ships `TokioIo`; `smol-hyper` 0.1.1 has been dead since
 /// 2023-12-29 and bridges in the opposite direction. Without this bridge,
-/// the smol backend (Task 4) doesn't exist.
+/// the smol backend doesn't exist.
 ///
 /// The implementation is **`unsafe`-free**: it reads into a scratch buffer
 /// and copies out through the safe `ReadBufCursor::put_slice` — exactly the

@@ -121,7 +121,7 @@ impl<B> SystemDns<B> {
 struct ResolveFailed(String, #[source] std::io::Error);
 
 impl<B: Blocking> SystemDns<B> {
-    /// `Blocking::run` (Task 1, `amendment-C5`) returns `Result<T,
+    /// `Blocking::run` returns `Result<T,
     /// Cancelled>`, and `T` here is itself `Result<Vec<IpAddr>,
     /// ResolveFailed>` — so `res` below is nested two layers deep, and it
     /// has EXACTLY three inhabited shapes, not two:

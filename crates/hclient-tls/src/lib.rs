@@ -2,7 +2,7 @@
 //!
 //! The trait is typed on `hyper::rt::Read`/`Write`, and **not** on
 //! futures-io or tokio-io. Consequence: there is no such thing as a
-//! per-runtime TLS glue crate — one adapter (Task 9, rustls) serves every
+//! per-runtime TLS glue crate — one adapter serves every
 //! runtime (`hclient-rt-tokio`, `hclient-rt-smol`, and any future one),
 //! because `hyper::rt::{Read, Write}` is the one point every `S` in this
 //! vertical is already normalized to (`hclient_rt::FuturesIo`, `TokioIo`),

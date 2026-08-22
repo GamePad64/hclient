@@ -2,7 +2,7 @@
 //!
 //! Separate streams per address family, not a `Vec<SocketAddr>`: RFC 8305
 //! requires starting to connect over AAAA without waiting for A —
-//! `hclient-proto::happy_eyeballs::Scheduler` (Task 5) is fed results as
+//! `hclient-proto::happy_eyeballs::Scheduler` is fed results as
 //! they arrive, not as one block once the resolver has finished both
 //! families. This is the sole reason `Resolve` returns a `Stream` rather
 //! than a `Future<Output = Vec<_>>`: nothing in the trait forces the

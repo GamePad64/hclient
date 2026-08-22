@@ -1,4 +1,4 @@
-// `Timeouts` is defined in `hclient-core` (Task 8): transports read it from
+// `Timeouts` is defined in `hclient-core`: transports read it from
 // `http::Extensions`, and they don't depend on `hclient`.
 pub use hclient_core::Timeouts;
 use hclient_core::{

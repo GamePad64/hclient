@@ -1,41 +1,32 @@
 //! Native transport for hclient: TCP + TLS + HTTP/1.1, and HTTP/2 behind
 //! a feature.
 //!
-//! This crate wires together the runtime ([`hclient_rt`]), DNS ([`hclient_dns`])
-//! and TLS ([`hclient_tls`]) on top of `hyper`. Task 10 laid down the request
-//! body adapter (`body`, `pub(crate)`); Task 11 added the connector
-//! (`connect`, also `pub(crate)`); Task 12 added the HTTP/1 driver
-//! (`h1`, `pub(crate)`); Task 13 assembles all of this into [`Native`] —
-//! the crate's only public type, which implements `hclient_core::
-//! unversioned::Transport`. v0.2 W2 added the connection pool
-//! (`pool`); v0.2 W3 added the HTTP/2 driver (`http2`, behind the
-//! `http2` feature and **not** on hyper — see its module doc) and
-//! `established`, the one place that knows there is more than one
-//! protocol.
+//! This crate wires together the runtime ([`hclient_rt`]), DNS
+//! ([`hclient_dns`]) and TLS ([`hclient_tls`]) on top of `hyper`.
+//! [`Native`] is the only public type; the modules under it are
+//! `pub(crate)` — `body` (the request-body adapter), `connect` (resolution
+//! and Happy Eyeballs), `h1` and `http2` (the protocol drivers, the second
+//! behind the `http2` feature and **not** on hyper — see its module doc),
+//! `pool`, and `established`, the one place that knows there is more than
+//! one protocol.
 //!
 //! # `Native::execute` does not resolve DNS itself
 //!
-//! This task's draft (`task-13-brief.md`) resolved addresses by hand —
-//! `.filter_map(|r| async { r.ok() })` over `Resolve::lookup_ipv4`/
-//! `lookup_ipv6`, discarding ANY resolver error (including
-//! `ErrorKind::Cancelled` — an ordinary background-pool shutdown, Task 7)
-//! and synthesizing a single `ErrorKind::Resolve` if both streams turned
-//! out empty. Review Task 7 already found exactly this defect in exactly
-//! this spot: conflating "the resolver failed" with "the runtime is
-//! shutting down" breaks a circuit breaker keyed on `Resolve` — it would
-//! wrongly blacklist a live host during an ordinary shutdown.
+//! It calls `connect::connect`, and the reason is a defect that is easy to
+//! write twice. Resolving by hand — `.filter_map(|r| async { r.ok() })`
+//! over `Resolve::lookup_ipv4`/`lookup_ipv6`, then synthesizing an
+//! `ErrorKind::Resolve` if both streams came out empty — discards every
+//! resolver error, `ErrorKind::Cancelled` among them. Conflating *the
+//! resolver failed* with *the runtime is shutting down* breaks a circuit
+//! breaker keyed on `Resolve`: it blacklists a live host during an
+//! ordinary shutdown.
 //!
-//! Task 11 solved this once, structurally, in `connect::drive`/
-//! `ResolveErrors::distinguishing_error` (see `connect.rs`'s doc comment):
-//! a `kind()` that differs from the synthetic `Resolve` is checked BEFORE
-//! either failure branch, so discarding it becomes structurally
-//! unreachable rather than merely handled for the one case that was found.
-//! `execute` below therefore does not resolve or run Happy Eyeballs itself —
-//! it calls `connect::connect`, the same entry point already covered by
-//! `connect.rs`'s unit tests; `crates/hclient-native/tests/transport.rs`'s
+//! `connect::drive`/`ResolveErrors::distinguishing_error` closes that
+//! structurally — a `kind()` differing from the synthetic `Resolve` is
+//! checked BEFORE either failure branch — so there is one implementation
+//! rather than one per caller. `transport.rs`'s
 //! `resolver_cancelled_error_reaches_the_caller_through_execute_not_flattened`
-//! checks that this property survives the whole `Client::execute` path, not
-//! just `connect::drive` on its own.
+//! checks the property survives the whole `Client::execute` path.
 #![forbid(unsafe_code)]
 
 mod body;
@@ -230,7 +221,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// runtime `R` ([`hclient_rt::TcpConnect`] + [`hclient_rt::Timer`]), TLS `T`
 /// ([`hclient_tls::TlsConnect`]) and resolver `D` ([`hclient_dns::Resolve`]).
 ///
-/// Connections are reused (v0.2 W2): see [`PoolConfig`], [`Native::pool`]
+/// Connections are reused: see [`PoolConfig`], [`Native::pool`]
 /// and [`Native::without_pool`], and read `crate::pool`'s module doc for
 /// what "reused" costs when there is no `Spawn` to drive an idle
 /// connection.
@@ -246,7 +237,7 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// [`Native::new`]'s doc comment on `streaming_request_body` — an earlier
 /// version of this paragraph claimed the opposite and was wrong).
 ///
-/// # `H`, the observability hook (v0.4 W2)
+/// # `H`, the observability hook
 ///
 /// `NoHooks` by default, which is a zero-sized type whose
 /// `Hooks::WATCHING` is `false` — so `Native<R, T, D>` still names the
@@ -464,7 +455,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // body into memory itself when it didn't have to.
         caps.streaming_request_body = true;
         // **The floor, and it is the same value with the `http2` feature on
-        // as off** (v0.2 W3). `full_duplex` and `response_trailers` are
+        // as off**. `full_duplex` and `response_trailers` are
         // things HTTP/2 can do and HTTP/1.1 cannot, and they stay at
         // `Capabilities::none()`'s `false` here, because what this
         // reports is the value that holds on the WORST protocol this
@@ -2216,7 +2207,7 @@ where
 ///
 /// **`None` is `HTTP_11`, and that is not a fallback of convenience.**
 /// `negotiated_protocol` returns `None` for an ALPN value this transport
-/// does not speak, and the standing answer to that (v0.2 W2, unchanged) is
+/// does not speak, and the standing answer to that is
 /// to speak HTTP/1.1 on that one connection and keep it out of the pool.
 /// So HTTP/1.1 is what a [`RequireVersion`] demand is compared against
 /// there — the truth about what the next bytes will be — rather than a

@@ -648,7 +648,7 @@ mod tests {
         // test that reads it. All three shipped runtimes declare
         // `APPLIES` explicitly — tokio and smol `ALL`, embassy its own
         // two-of-six — so flipping the default to `ALL` passes the whole
-        // workspace suite otherwise: 878/878, measured (W7 mutation M4).
+        // workspace suite otherwise: 878/878, measured.
         // The rule it protects is that a backend which forgets the line
         // must understate itself, so the worst case is one refused
         // connect too many rather than an option dropped on the floor

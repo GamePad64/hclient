@@ -37,7 +37,7 @@
 //!
 //! # Cancellation: why this crate owns a socket pool
 //!
-//! `Transport::execute`'s contract (v0.2 W1) is that dropping the future
+//! `Transport::execute`'s contract is that dropping the future
 //! stops the exchange, and `hclient_native::Native` declares
 //! `CancelSupport::Supported` **structurally** — the future owns the
 //! socket, so dropping it closes the connection. On embassy-net that
@@ -490,7 +490,7 @@ mod tests {
             // plain `&str`, so a `{name}` in it is printed literally and
             // all four cases fail with the same message naming nothing.
             // Measured — each of the four `APPLIES` fields was flipped to
-            // `true` in turn (W7 mutations M5a-d), and all four reported
+            // `true` in turn, and all four reported
             // an identical "cannot apply {name}".
             let Err(err) = opts.reject_unsupported(<Rt as TcpConnect>::APPLIES) else {
                 panic!("this runtime cannot apply {name}, so asking for it must be refused");

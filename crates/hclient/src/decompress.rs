@@ -6,7 +6,7 @@
 //! `docs/v02-design.md` §W5 settles it, and it is no longer an argument
 //! but a test: a layer wrapping the transport changes the CLIENT's type,
 //! so `struct App { http: Client }` stops compiling, and
-//! `tests/deadline_client_type.rs` (W4) plus
+//! `tests/deadline_client_type.rs` plus
 //! `tests/compression_client_type.rs` (this task) pin exactly that.
 //! Decompressing here changes only the response BODY's type, which is
 //! already generic over the transport — a `Client` is still a `Client`

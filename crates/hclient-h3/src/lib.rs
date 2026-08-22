@@ -239,7 +239,7 @@ pub const DEFAULT_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_se
 
 /// The HTTP/3 transport.
 ///
-/// # `H`, the observability hook (v0.4 W2)
+/// # `H`, the observability hook
 ///
 /// [`NoHooks`] by default, a zero-sized type whose `Hooks::WATCHING` is
 /// `false` — so `H3<R, T, D>` still names the transport it always named,

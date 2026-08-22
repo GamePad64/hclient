@@ -12,10 +12,10 @@
 //! Error>`) and itself implements `Error + Send + Sync + 'static`. The
 //! standard library's blanket impl (`impl<E: Error + Send + Sync + 'a>
 //! From<E> for Box<dyn Error + Send + Sync + 'a>`) closes the required
-//! bound without a single line of our own code — `assert_bound` in the tests below checks
-//! this directly on `OutgoingBody`, not on a bare `hclient_core::Error`,
-//! because `<OutgoingBody as Body>::Error` is exactly what actually gets
-//! substituted into `handshake`.
+//! bound without a single line of our own code — `assert_bound` in the
+//! tests below checks this directly on `OutgoingBody`, not on a bare
+//! `hclient_core::Error`, because `<OutgoingBody as Body>::Error` is
+//! exactly what gets substituted into `handshake`.
 //!
 //! Which means `BoxError` isn't needed in this file at all: wrapping
 //! `Error` in `Box<dyn StdError + Send + Sync>` here would mean losing
@@ -447,7 +447,7 @@ mod tests {
     use http_body_util::BodyExt;
 
     // `error_type_satisfies_hypers_send_sync_bound` used to live here, but
-    // Task 13 (vertical 2) added `crates/hclient-native/src` to the
+    // Task 13 added `crates/hclient-native/src` to the
     // `no-declared-send` CI scan (it now has a public item, `Native`, worth
     // protecting the same way `hclient-core`/`hclient` already are). Spec
     // amendment-C3 is explicit that a `B::Error: ... + Send + Sync` bound

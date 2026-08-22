@@ -252,7 +252,7 @@ pub use deadline::NoClock;
 // arbitrary.
 //
 // `UpgradeSupport` used to be on this list and is gone from the workspace
-// (v0.3 W4 step 4): four variants, every backend answering `None`, and no
+//: four variants, every backend answering `None`, and no
 // caller decision turning on it. WebSocket is a trait a backend implements
 // (`hclient_core::unversioned::WebSocketConnect`) rather than a capability
 // anyone reads, so there is nothing to re-export in its place — see
@@ -269,7 +269,7 @@ pub use deadline::NoClock;
 // it is the seam's own comparison, for transports, and a consumer has
 // nothing to call it on.
 pub use hclient_core::{AllowEarlyData, Error, ErrorKind, RequestBody, RequireVersion};
-// The observability seam (v0.4 W2), re-exported for the same reason
+// The observability seam, re-exported for the same reason
 // `AllowEarlyData` is: what a caller writes is an `impl Hooks for MyType`
 // and a `match` over `Event`, and both live in the core. A facade that
 // let a caller *set* a hook (through the transport) but not *name* the
@@ -334,7 +334,7 @@ pub use response::{Collected, Response};
 ///   `wasm32-wasip1` (`target_os = "wasi"`): there's still no branch below
 ///   — the type doesn't exist, the same honest compile error as without
 ///   the feature at all. The WASI transport (`hclient_wasi::WasiHttp`)
-///   already exists (vertical 1) and can be used directly via
+///   already exists and can be used directly via
 ///   `Client::builder(hclient_wasi::WasiHttp::new())` — but NOT through
 ///   this mechanism: `hclient` deliberately doesn't depend on
 ///   `hclient-wasi` (`hclient-wasi/Cargo.toml` itself records this as an

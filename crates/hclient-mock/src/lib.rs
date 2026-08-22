@@ -31,7 +31,7 @@ use std::task::{Context, Poll};
 /// dropped.
 ///
 /// `extensions` is stored whole, rather than unpacked down to the specific
-/// types known today: `Timeouts` (Task 10) already travels through
+/// types known today: `Timeouts` already travels through
 /// `http::Extensions`, and it won't be the last type to start doing that —
 /// a narrow field would have to be widened again for every new case.
 /// `retry_kind` and `body_size_hint` are the little that can be said about
@@ -62,7 +62,7 @@ pub struct RecordedRequest {
 /// back) would be documented but never verified — `push_response` and
 /// `push_response_frames` produce data only. Without the second, the
 /// `Some(Err(_))` path of `Response::chunk()` in `SseStream::next`
-/// (Task 14, review round 2, Finding 2) would stay structurally similar to
+/// would stay structurally similar to
 /// the tested limit-exceeded path but unverified in its own right:
 /// `MockBody` could only hand back `Ok` frames before this round, no
 /// `poll_frame` call could ever return `Err`.
@@ -159,7 +159,7 @@ impl MockTransport {
     }
 
     /// Queues a response made of several frames — for example, to
-    /// reproduce an SSE stream split across a chunk boundary (Task 14).
+    /// reproduce an SSE stream split across a chunk boundary.
     /// Frames are handed back by `poll_frame` one at a time, in the order
     /// passed in.
     pub fn push_response_frames(&self, resp: http::Response<Vec<&'static str>>) {
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(rec[1].retry_kind, RetryKind::Free);
     }
 
-    /// `Timeouts` (Task 10) travels to the transport via `http::Extensions`
+    /// `Timeouts` travels to the transport via `http::Extensions`
     /// — that's the entire mechanism it lives there for. Without recording
     /// `extensions` whole, no test could confirm that the client actually
     /// attaches per-request timeouts and that they survive to reach the
@@ -596,7 +596,7 @@ mod tests {
 
     /// Checks that `poll_frame` hands back frames one at a time, not the
     /// whole body on the first call. Without this property, `SseStream`
-    /// (Task 14), built on top of `Response::chunk()`, could never see an
+    ///, built on top of `Response::chunk()`, could never see an
     /// event split across a chunk boundary through the mock — only a
     /// concatenated stream.
     #[test]

@@ -1,4 +1,4 @@
-//! Connection reuse for [`crate::Native`] (v0.2 W2).
+//! Connection reuse for [`crate::Native`].
 //!
 //! # Nobody polls an idle connection, and that is the design
 //!

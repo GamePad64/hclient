@@ -357,7 +357,7 @@ mod tests {
     proptest! {
         // Deliberately mixes small values with the boundary values
         // (`0`, `u32::MAX`, `u32::MAX - 1`) rather than relying solely on
-        // `any::<u32>()` — a prior review in this project (vertical 2)
+        // `any::<u32>()` — an earlier review here
         // found a proptest whose generator never actually reached the
         // interesting states, so the boundary is forced in, not hoped for.
         #[test]

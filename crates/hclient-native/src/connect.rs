@@ -6,7 +6,7 @@
 //! `hclient_dns::Resolve` deliberately returns a `Stream`, not a
 //! `Future<Output = Vec<_>>` — the only reason is that RFC 8305 §3
 //! requires starting IPv6 attempts without waiting for the IPv4 answer,
-//! and `Scheduler` (Task 5) can only react to that if it's fed as results
+//! and `Scheduler` can only react to that if it's fed as results
 //! arrive, not as one block after the resolver has finished both
 //! families. If this file first collected both streams into a `Vec` and
 //! then handed them to `Scheduler::offer_v6`/`offer_v4` in one call with
@@ -85,11 +85,11 @@
 //! `hclient-dns-system` — but that's a property of a particular backend,
 //! not a guarantee of the trait.)
 //!
-//! # RFC 9460 SVCB/HTTPS is wired up here now (v0.3 W2)
+//! # RFC 9460 SVCB/HTTPS is wired up here now
 //!
 //! This section read "isn't wired up here either" until v0.3 W2, and it
-//! was honest: `TlsRequest::ech` (Task 8) and `Resolve::lookup_svcb`/
-//! `SvcbEndpoint` (Task 6) both existed, `connect` consumed neither, and
+//! was honest: `TlsRequest::ech` and `Resolve::lookup_svcb`/
+//! `SvcbEndpoint` both existed, `connect` consumed neither, and
 //! it passed `ech: None` rather than pretending it had asked. It asks now.
 //! [`crate::discovery`] holds the record-shaped half — which record is
 //! chosen, what an `alpn` set means, and the negative cache — and this
@@ -302,7 +302,7 @@ impl ResolveErrors {
 }
 
 /// The requested `HeConfig`'s `attempt_delay` is outside the RFC 8305
-/// recommended range. `Scheduler::new` (Task 5) silently clamps such a
+/// recommended range. `Scheduler::new` silently clamps such a
 /// value, because its signature is fixed by the task's interface — `Self`,
 /// not `Result`. THIS module's signature isn't fixed by anything, so here
 /// it's a typed error rather than the same silent clamp two layers down.
@@ -2051,7 +2051,7 @@ mod tests {
     /// Review round 1, finding 1, loss path A ("flattened to Resolve").
     /// `drive` used to wrap ANY resolve error when `launched == 0` into a
     /// fresh `Error::new(ErrorKind::Resolve, errs)`, discarding the
-    /// original `kind()`. `ErrorKind::Cancelled` (Task 7) exists
+    /// original `kind()`. `ErrorKind::Cancelled` exists
     /// specifically so a caller can tell "the runtime is shutting down"
     /// apart from "this name doesn't resolve" without downcasting, just
     /// by comparing `kind()` — and flattening into `Resolve` erased that
@@ -2850,7 +2850,7 @@ mod tests {
     /// Doesn't encrypt anything — it only proves that `connect` genuinely
     /// calls `TlsConnect::connect` for `https` and doesn't call it for
     /// `http`. The same technique as `NoOpTls` in `hclient_tls`'s own
-    /// tests (Task 8).
+    /// tests.
     struct NoOpTls;
     impl hclient_tls::TlsIdentity for NoOpTls {
         /// One stub, one configuration, therefore one identity — drawn

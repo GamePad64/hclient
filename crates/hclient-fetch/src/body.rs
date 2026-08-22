@@ -2,7 +2,7 @@
 //!
 //! **Trailers aren't supported.** Fetch has none in either direction
 //! (whatwg/fetch#772 proposes removing the trailers API altogether).
-//! `Capabilities` declares this (Task 2), so `poll_frame` never produces
+//! `Capabilities` declares this, so `poll_frame` never produces
 //! `Frame::trailers` — every frame this type emits is `Frame::data`.
 //!
 //! # Two failure modes, two `ErrorKind`s — a defect in this task's own brief

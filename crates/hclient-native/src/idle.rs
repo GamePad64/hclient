@@ -77,7 +77,7 @@ pub struct BetweenBytesElapsed(pub Duration);
 pub struct IdleTimeout<B, Tm: Timer> {
     /// `None` once the bound has fired: the body is dropped there, and
     /// dropping it is what stops the exchange — under `Transport::
-    /// execute`'s contract (v0.2 W1) that is a cancellation, so the socket
+    /// execute`'s contract that is a cancellation, so the socket
     /// is torn down rather than left to drain into nobody. A bound that
     /// reported an error and left the transfer running would be a bound on
     /// the caller's patience.
