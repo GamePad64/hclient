@@ -10,15 +10,21 @@
 //! satisfy it. That is what the `no-send-or-sync` guard in `scripts/`
 //! exists for, and what `hclient-rt-embassy` would have paid.
 //!
-//! So: the seams declare none, and auto-traits still decide. The bounds
-//! that exist are on **opt-in calls that take a value from the caller and
-//! put it behind the facade's `Arc`** — [`Client::builder`],
-//! [`ClientBuilder::total_timeout`], [`ClientBuilder::cookie_jar`],
-//! [`ClientBuilder::cache`], [`ClientBuilder::redirect_predicate`] and
-//! [`sse::SseBuilder::with_timer`] — and nowhere else. Each carries a
+//! So: the seams declare none, and auto-traits still decide. The rule for
+//! where a bound is allowed is **an opt-in call that takes a value from
+//! the caller and puts it behind the facade's `Arc`** — and the types that
+//! hold such a value, like [`erased::AnyStore`] or
+//! [`predicate::RedirectPredicate`]. [`Client::builder`],
+//! [`ClientBuilder::total_timeout`] and [`sse::SseBuilder::with_timer`]
+//! are the shape.
+//!
+//! **The rule is written here and the list is not**, which is this
+//! paragraph's second correction rather than its first: an enumeration
+//! stood here for one commit and was already wrong — it missed
+//! `ClientBuilder::new` and three public types. Every site carries a
 //! `send-bound-exception` marker naming the amendment that admits it, so
-//! the count is greppable rather than asserted here and going stale a
-//! second time.
+//! `grep` answers *which* and *how many*, and cannot go stale the way a
+//! sentence does.
 //!
 //! Still absolutely true, and the half that was doing the work: **not a
 //! single `#[cfg]`-switched trait alias.** A `Send`-ness that depends on
