@@ -41,9 +41,8 @@ pub(crate) struct BadScheme;
 
 /// `BadScheme` is the same class of
 /// failure as `Rejected` (below) — "the backend just doesn't take this
-/// particular value" — and it used to be the only one of them flattened
-/// into `ErrorKind::Other`, even though it's just as useful for the caller
-/// here to be able to tell "the backend doesn't support this" from other
+/// particular value" — so it is classified the same way rather than
+/// flattened into `ErrorKind::Other`. A caller wants to tell "the backend doesn't support this" from other
 /// errors via `is_unsupported()`.
 pub(crate) fn scheme_of(uri: &http::Uri) -> Result<Scheme, Error> {
     match uri.scheme_str() {
@@ -216,18 +215,15 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 
 /// Folds the outcome of two concurrent actions (`client::send` and
 /// `BodyWriter::send_http_body`) into a single `Result`. Neither of the
-/// two input `Result`s is discarded — this is exactly the point where the
-/// task's draft proposed `let (resp, _written) = join!(..)`.
+/// two input `Result`s is discarded, which is the whole point: a
+/// `let (resp, _written) = join!(..)` would drop one of them.
 ///
-/// **On the third discarded `Result` — review resolution, finding B-3,
-/// revisited with evidence, wording refined in fix round 2 (finding 5: an
-/// earlier version of this comment overstated what had been measured —
-/// see below).** `Request::new`'s second return value — a
-/// `FutureReader<Result<(), ErrorCode>>`, documented upstream as
+/// **On the third discarded `Result`.** `Request::new`'s second return
+/// value — a `FutureReader<Result<(), ErrorCode>>`, documented upstream as
 /// "resolves to result of transmission of this request" — is also
 /// discarded (`Transport::execute` drops it explicitly, with a comment at
-/// the drop site). The review's plan — fold it in here as a third input —
-/// was implemented and **rolled back**: measured on a live host (wasmtime
+/// the drop site). Folding it in here as a third input was implemented and
+/// **rolled back**: measured on a live host (wasmtime
 /// 47, `wasip3` 0.7.0, twice — once through this crate's full path, once
 /// through bare `wasip3` calls bypassing `hclient-wasi` entirely, to rule
 /// out a bug in our own race logic) that this future is **not
@@ -249,7 +245,7 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 /// that is, after `execute()` was already obligated to have returned.
 ///
 /// Neither option is compatible with THIS shape of the seam — but a third
-/// option is compatible, and out of scope for this fix round: carry this
+/// option is compatible and is deliberately not taken here: carry this
 /// future into the returned `Body` and await it at the end of the
 /// stream, surfacing a transmission failure as a terminal body error
 /// instead of a clean `None`. Exactly what's measured here is what
@@ -276,7 +272,7 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 ///   forgotten case — telling apart "the host refused to read further"
 ///   from "our own frame source broke" from `wasip3::http_compat::Error`
 ///   alone is unreliable (both surface as similar variants), and
-///   widening `Capabilities` for this case is out of this task's scope.
+///   widening `Capabilities` for this case is deliberately not done.
 pub(crate) fn resolve_send<T>(
     resp: Result<T, ErrorCode>,
     written: Result<u64, wasip3::http_compat::Error>,
@@ -355,16 +351,15 @@ pub(crate) fn declared_trailer_names(
 /// HTTP/1.1 encoder silently drops them on the wire if the specific field
 /// name wasn't declared in advance via `Trailer:` (RFC 9110 §6.5.1: a
 /// receiver that chooses not to buffer the body is required to ignore
-/// undeclared trailers) — review resolution, fix round 2 finding 2: what
-/// needs comparing is the field NAMES themselves, not just whether the
-/// `Trailer:` header is present. A `Trailer: X-Other` header, declaring a
+/// undeclared trailers). What needs comparing is the field NAMES
+/// themselves, not just whether the `Trailer:` header is present. A `Trailer: X-Other` header, declaring a
 /// different field than the one actually emitted (`x-checksum`), loses
 /// data exactly as if the header were absent entirely — measured:
 /// `execute` returned `Ok(200)`, while the wire showed `0\r\n\r\n` with no
 /// trailer.
 ///
-/// **The error arrives after the fact** (review resolution, fix round 2
-/// finding 4): by the time the caller sees this error, the request has
+/// **The error arrives after the fact**: by the time the caller sees this
+/// error, the request has
 /// already reached the server and gotten a response — the guard only
 /// fires AFTER `race_send_with_body` has already succeeded, because
 /// trailer field names, generally speaking, are only known once the body
@@ -491,8 +486,7 @@ impl std::fmt::Debug for Payload {
 /// itself returns another `Rewindable`. There's no legitimate scenario for
 /// this — a factory calling another factory referring to a third one buys
 /// the caller nothing — so past this depth `resolve_payload` stops with a
-/// typed error instead of a silent `None` or unbounded recursion (review
-/// resolution, finding B-11).
+/// typed error instead of a silent `None` or unbounded recursion.
 const MAX_REWIND_DEPTH: u8 = 16;
 
 #[derive(Debug, thiserror::Error)]
@@ -591,16 +585,15 @@ mod tests {
         // wasi:http 0.3 is richer than native for request body streaming…
         assert!(caps.streaming_request_body);
         assert!(caps.request_trailers && caps.response_trailers);
-        // …but NOT for body duplex: review resolution, finding B-2.
-        // `WasiHttp::execute` doesn't return a response until the body
-        // write has finished (or failed) — `race_send_with_body` waits
-        // for both arms, except for an early `send` rejection (B-5). This
+        // …but NOT for body duplex. `WasiHttp::execute` doesn't return a
+        // response until the body write has finished (or failed) —
+        // `race_send_with_body` waits for both arms, except for an early
+        // `send` rejection. This
         // is a limitation of THIS implementation: the host does provide
         // duplex, and the limitation can be lifted without touching
         // `Transport` — carry the write future into `Body` and poll it
         // further from `poll_frame`. Full justification and the three
-        // costs it's deferred for — in `WasiHttp::new` (M1 of the
-        // branch's final review).
+        // costs it's deferred for — in `WasiHttp::new`.
         assert!(!caps.full_duplex);
         // And poorer everywhere else.
         // `Transparent`, not `None`: a
@@ -641,8 +634,7 @@ mod tests {
     /// true at the `wasi_err` level and false for the caller.
     ///
     /// Checks both observable consequences at once: the category and the
-    /// `Display` (which, if wrapped, would print `Other: Tls: …` — a
-    /// minor deferred to Task 6, about the doubling).
+    /// `Display` (which, if wrapped, would print `Other: Tls: …`).
     #[test]
     fn to_error_is_the_identity_so_the_classification_survives_the_client() {
         use hclient_core::unversioned::Transport as _;
@@ -755,8 +747,8 @@ mod tests {
         None
     }
 
-    /// Review resolution, finding B-5, proved deterministically rather
-    /// than by wall-clock time: `write_fut` is `std::future::pending()`,
+    /// Proved deterministically rather than by wall-clock time:
+    /// `write_fut` is `std::future::pending()`,
     /// i.e. it literally never completes on its own. If
     /// `race_send_with_body` waited for both arms via `join!` (the old
     /// behavior), the result would never arrive — `poll_bounded` would
@@ -968,9 +960,9 @@ mod tests {
 
     /// The whole classification, one row per `ErrorCode` variant.
     ///
-    /// The three tests above sample it; this one pins it. B2 of the
-    /// branch's final review was a layer discarding exactly this
-    /// classification, and the two `_ => `-style fallbacks it is built on
+    /// The three tests above sample it; this one pins it. A layer above
+    /// once discarded exactly this classification, and the two
+    /// `_ => `-style fallbacks it is built on
     /// (`wasi_err`'s own `_ => Other`, and `to_error` being the identity)
     /// mean a variant can change category — or slide into `Other` — with
     /// nothing failing to compile. Nine categories over 39 variants; the
@@ -1059,8 +1051,8 @@ mod tests {
                 ErrorCode::HttpResponseTrailerSize(field_size()),
                 ErrorKind::Body,
             ),
-            // Honest `Other`: no existing category fits, and finding B-8
-            // deliberately stopped short of inventing one. A row moving
+            // Honest `Other`: no existing category fits, and inventing
+            // one is deliberately not done. A row moving
             // out of this block is a real decision, and has to be made
             // here as well as in `wasi_err`.
             (ErrorCode::HttpRequestMethodInvalid, ErrorKind::Other),

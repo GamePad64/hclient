@@ -20,8 +20,8 @@ use hclient_core::{
 use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions};
 use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 
-/// Headers the `wasi:http` host refuses to accept from the guest (review
-/// resolution, finding B-6): `connection`/`keep-alive` — connection
+/// Headers the `wasi:http` host refuses to accept from the guest:
+/// `connection`/`keep-alive` — connection
 /// management here is entirely on the host side; `transfer-encoding` — the
 /// host itself decides the transfer encoding for the actual body;
 /// `upgrade` — no protocol upgrade support, and this crate implements
@@ -31,9 +31,9 @@ use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 /// trait's own module doc); `host` — the host computes it itself
 /// from `authority`. Measured by trying to send each of them —
 /// `wasi_request.set_method` goes through, but the host rejects the
-/// request itself if it carries any of these headers in `Fields`. The list
-/// used to be empty, so a caller filtering headers by exactly this field —
-/// the entire point of its existence — would catch a runtime error instead
+/// request itself if it carries any of these headers in `Fields`. An
+/// empty list would mean a caller filtering headers by exactly this field
+/// — the entire point of its existence — catching a runtime error instead
 /// of simply never setting the forbidden header.
 // `LazyLock`, not `static X: &[..] = &[..]`: `HeaderName` stores its name in
 // `Bytes`, which has interior mutability (an atomic refcount) — the
@@ -111,11 +111,10 @@ impl WasiHttp {
         // buffering in memory — honest streaming, see
         // `convert::resolve_payload`.
         caps.streaming_request_body = true;
-        // `full_duplex = false`;
-        // attribution rewritten per M1 of the branch's final review. The
-        // `wasi:http` 0.3 protocol itself does support body duplex (body
-        // data can flow while the response hasn't arrived yet), and the
-        // host genuinely provides it — the review measured this with
+        // `full_duplex = false`. The `wasi:http` 0.3 protocol itself does
+        // support body duplex (body data can flow while the response
+        // hasn't arrived yet), and the host genuinely provides it —
+        // measured with
         // direct `wasip3` calls bypassing this crate: `send` resolved with
         // a full 200 after only 1.6% of a 16-megabyte body had gone into
         // the writer. What does NOT provide it is THIS implementation of
@@ -163,9 +162,8 @@ impl WasiHttp {
         caps.full_duplex = false;
         // `request_trailers`/`response_trailers`: trailers DO WORK on
         // `wasi:http`, but only for fields whose NAMES the request
-        // declared in advance via the `Trailer:` header — measured
-        // (review resolution, finding B-1, refined by fix round 2 finding
-        // 2) that the host's HTTP/1.1 encoder silently drops on the wire
+        // declared in advance via the `Trailer:` header — measured, that
+        // the host's HTTP/1.1 encoder silently drops on the wire
         // any trailer field whose name wasn't declared up front, even if
         // `Trailer:` is present but names a DIFFERENT field. Trailer
         // names are only known once the body has ended — they can't be
@@ -199,9 +197,9 @@ impl WasiHttp {
         // And poorer everywhere else: the spec has no TLS, no proxy, no
         // version selection, no upgrade.
         //
-        // Redirects are `Transparent`, not `None` (M2 of the branch's
-        // final review). Measured on a live host: a 3xx reaches the guest as an ordinary
-        // response, and following the chain is entirely on the guest —
+        // Redirects are `Transparent`, not `None`. Measured on a live
+        // host: a 3xx reaches the guest as an ordinary response, and
+        // following the chain is entirely on the guest —
         // meaning the `Client`'s redirect stage works fully here. `None`
         // couldn't say that: `Capabilities::none()` returns that same
         // value, so a caller couldn't tell "the backend is transparent"
@@ -296,8 +294,7 @@ impl<H: Hooks> Transport for WasiHttp<H> {
         let (parts, body) = req.into_parts();
         let scheme = convert::scheme_of(&parts.uri)?;
 
-        // Review resolution, finding B-1 (refined by fix round 2 finding
-        // 2): captured BEFORE the headers go into `Fields` — needed
+        // Captured BEFORE the headers go into `Fields` — needed
         // afterward too, to check against the field names
         // `RequestBody::Streaming` actually emits, not just against the
         // fact that the header is present.
@@ -349,13 +346,11 @@ impl<H: Hooks> Transport for WasiHttp<H> {
             }
         };
 
-        // Review resolution, finding B-3, revisited experimentally while
-        // preparing fix round 1, wording refined in fix round 2 (finding
-        // 5). `Request::new`'s second return value is a
+        // `Request::new`'s second return value is a
         // `FutureReader<Result<(), ErrorCode>>`, documented upstream as
-        // "resolves to result of transmission of this request". The
-        // review's plan — fold it in as a third arm of
-        // `race_send_with_body` — was implemented and ROLLED BACK:
+        // "resolves to result of transmission of this request". Folding
+        // it in as a third arm of `race_send_with_body` was implemented
+        // and ROLLED BACK:
         // measured on a live host that this future is NOT GUARANTEED to
         // resolve before the response body has been fully read (a small
         // `Content-Length` response resolves it without a single
@@ -417,9 +412,8 @@ impl<H: Hooks> Transport for WasiHttp<H> {
                     w.send_http_body(&mut watched),
                 )
                 .await?;
-                // Review resolution, finding B-1 (refined by fix round 2
-                // finding 2): compare the NAMES of trailer fields that
-                // actually arrived against the declared ones, not just
+                // Compare the NAMES of trailer fields that actually
+                // arrived against the declared ones, not just
                 // whether `Trailer:` is present — a header naming the
                 // wrong field loses data exactly as if it were absent
                 // (measured). Don't return a success that would hide that
@@ -486,8 +480,7 @@ impl<H: Hooks> Transport for WasiHttp<H> {
     /// would all return `false` alike for a DNS failure, a TLS failure, a
     /// connect timeout, and a host rejection, and `Display` would print
     /// the category twice — `Other: Unsupported: wasi:http host rejected
-    /// setting 'scheme'`. This was finding B2 of the branch's final
-    /// review, and it's fixed right here.
+    /// setting 'scheme'`.
     fn to_error(&self, e: Self::Error) -> Error {
         e
     }
