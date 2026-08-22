@@ -22,8 +22,8 @@
 //! `Rustls` serving both an h1/h2 TCP path and an h3 QUIC path would
 //! therefore have one slot per host for two kinds of ticket. What actually
 //! happens when a TCP-issued ticket is offered to a QUIC handshake is
-//! **unverified** — `docs/h3-research.md` §3.4 says so and says what would
-//! settle it. This module does not answer the question; it removes it, for
+//! **unverified**. This module does not answer the question; it removes
+//! it, for
 //! the price of one `Arc`.
 //!
 //! **A second cache dimension.** `enable_early_data` is a field on

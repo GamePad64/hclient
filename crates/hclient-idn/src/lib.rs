@@ -632,7 +632,7 @@ pub fn backend() -> Backend {
 /// The bundled path: the exact call `hclient-proto` used to make itself,
 /// so a target that resolves to this backend answers what that crate
 /// answered before it took this one — byte for byte, and measured that
-/// way rather than argued (`docs/v02-design.md`, "Wired").
+/// way rather than argued.
 #[cfg(idna_backend)]
 fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
     // **Through the policy, like the other two**, and it was the one that

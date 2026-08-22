@@ -31,8 +31,7 @@
 //!
 //! # Why not "report the meet"
 //!
-//! `docs/v04-design.md` P4: `RedirectSupport`'s three surviving variants
-//! are unordered, and inventing an order over them to make a meet exist is
+//! `RedirectSupport`'s three surviving variants are unordered, and inventing an order over them to make a meet exist is
 //! deciding a semantic question in order to satisfy a helper function. The
 //! rule above never asks for an order — it asks which value is true — and
 //! where the answer is "neither", it says so.
@@ -189,9 +188,8 @@ pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, 
     // The honest combination is the **union** — a header one member refuses
     // to send is a header this transport may not promise to send — and the
     // type cannot hold one: `&'static [HeaderName]` has nowhere to put a
-    // slice computed at construction, which is the same wall
-    // `docs/v04-design.md` P3 hit from the other side (`capabilities()`
-    // returns a reference, so the answer must be stored). Equality is what
+    // slice computed at construction, because `capabilities()` returns a
+    // reference and the answer must therefore be stored. Equality is what
     // is left, and both stacks say `&[]` today.
     c.forbidden_request_headers = if tcp.forbidden_request_headers == quic.forbidden_request_headers
     {

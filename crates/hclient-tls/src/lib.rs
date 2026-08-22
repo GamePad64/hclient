@@ -202,8 +202,7 @@ pub struct TlsInfo {
     /// and must not be read as the general contract for early data.**
     /// There the verdict is known by the time the handshake completes,
     /// which is what makes a field on a handshake result the honest shape.
-    /// In QUIC it is not: measured in `docs/h3-research.md`, `into_0rtt()`
-    /// returns at 1.3 ms, the response arrives at 8.5 ms and the
+    /// In QUIC it is not: measured, `into_0rtt()` returns at 1.3 ms, the response arrives at 8.5 ms and the
     /// acceptance verdict only at 8.6 ms — *after* the response. HTTP/3
     /// will therefore need a shape of its own for this (and has a third
     /// rejection path nobody here has, `425 Too Early`, RFC 8470); it must

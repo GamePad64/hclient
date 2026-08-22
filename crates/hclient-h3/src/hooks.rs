@@ -34,9 +34,8 @@
 //!
 //! `None` there reads as "this connection has no TLS", which is false of
 //! every QUIC connection ever made. That is a defect in the seam's
-//! wording rather than in this backend, and it is written down in
-//! `docs/v03-acceptance.md` rather than fixed by editing `hclient-core`
-//! for one backend's benefit.
+//! wording rather than in this backend, and it is recorded rather than
+//! fixed by editing `hclient-core` for one backend's benefit.
 //!
 //! Everything between the phases — binding the endpoint, building the
 //! crypto configuration, and h3's own SETTINGS exchange on top of the

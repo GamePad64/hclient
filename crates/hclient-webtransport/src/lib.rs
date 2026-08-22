@@ -23,8 +23,7 @@
 //!
 //! # Why this is not the WebSocket seam
 //!
-//! `docs/w4-upgrade-seam.md` §4 decided it and this crate does not
-//! re-litigate it: a WebSocket is **one** message channel — `Stream<Item =
+//! A WebSocket is **one** message channel — `Stream<Item =
 //! Message> + Sink<Message>` — and a WebTransport session is a
 //! **multiplexer**: streams opened on demand, in both directions, plus
 //! datagrams. The intersection of the two method sets is as empty as
@@ -39,8 +38,8 @@
 //! backends implement it, and the second one — the browser — is what
 //! proved the shape. There is exactly one thing in this workspace that can
 //! open a WebTransport session, so a trait here would be a shape nobody
-//! has tested, which is the objection `docs/w4-upgrade-seam.md` §5 raises
-//! against declaring a seam before a backend fits it. The trait belongs
+//! has tested — and declaring a seam before a second backend fits it is
+//! how a seam gets the wrong shape. The trait belongs
 //! beside `WebSocketConnect` when there is a second implementer — the
 //! browser's own `WebTransport` global, which has shipped in all four
 //! engines (§4) — and not before.
@@ -59,8 +58,8 @@
 //! So this crate is the half nobody provides for a client, and the half it
 //! is missing is a **finding** rather than a design: what `hclient-h3`
 //! would have to expose, and why a WebTransport session cannot share one
-//! of its pooled connections even if it did, is
-//! `docs/v04-w2-webtransport.md` §4.
+//! of its pooled connections even if it did, is written up on
+//! [`Session::connect`].
 //!
 //! # Nothing is spawned
 //!
@@ -114,8 +113,8 @@
 //! reading it, and both were recorded here as blockers and turned out
 //! otherwise.
 //!
-//! **The limit is readable**, where `docs/v04-w2-webtransport.md` §3(c) said
-//! it was not: not from `h3::config::Settings`, which has no getter for it,
+//! **The limit is readable**: not from `h3::config::Settings`, which has
+//! no getter for it,
 //! but from the SETTINGS **frame** [`Session::connect`] already awaits and
 //! used to discard. See `PeerSettings`.
 //!
@@ -141,8 +140,8 @@
 //! `EncodedDatagram` from a **freshly zeroed array**, discarding it — so
 //! every datagram it writes carries a Quarter Stream ID of zero, of the
 //! right length. A session on stream 0 is unaffected and every other
-//! session addresses its datagrams to the wrong one. Measured rather than
-//! read: `docs/v04-w2-datagrams.md` §3. Beyond that, this crate already
+//! session addresses its datagrams to the wrong one — measured rather
+//! than read. Beyond that, this crate already
 //! owns the QUIC varint for the stream header, for the reason on
 //! `put_varint`, and the datagram header is the same two lines.
 //!
@@ -154,15 +153,13 @@
 //!   [`Session::closed`] — a future that resolves once, when the session
 //!   is over — has no honest place to report it. It is skipped along with
 //!   every other unknown capsule type, which is what RFC 9297 §3.2
-//!   requires of a receiver anyway. `docs/v04-w2-capsules.md` §7 says what
-//!   surfacing it would need.
+//!   requires of a receiver anyway.
 //! - **Server-initiated streams.** A server-opened *unidirectional*
 //!   WebTransport stream is not merely unimplemented here, it is
 //!   unreachable: `h3`'s client driver classifies it as
 //!   `AcceptedRecvStream::WebTransportUni` and then discards it, because
 //!   the arm that keeps it is guarded by `enable_webtransport`, which
-//!   `h3` 0.0.8's **client** builder has no setter for. See
-//!   `docs/v04-w2-webtransport.md` §3.
+//!   `h3` 0.0.8's **client** builder has no setter for.
 #![forbid(unsafe_code)]
 
 use bytes::{Buf, Bytes};
@@ -555,9 +552,8 @@ struct Shared {
     /// `H3_CLOSED_CRITICAL_STREAM` — a connection error, not a stream one.
     ///
     /// Never polled is the load-bearing half, and it is what makes a
-    /// `GOAWAY` invisible here. `docs/v04-goaway-and-sessions.md` §2 has
-    /// the four measurements behind leaving it that way, and
-    /// `tests/goaway.rs` asserts them.
+    /// `GOAWAY` invisible here; `tests/goaway.rs` asserts the four
+    /// measurements behind leaving it that way.
     _driver: h3::client::Connection<h3_quinn::Connection, Bytes>,
 }
 
@@ -610,7 +606,7 @@ impl Session {
     /// h3 clients on one QUIC connection would open two control streams,
     /// which RFC 9114 §6.2.1 makes a connection error. That is the whole
     /// of the answer to "can a session share a connection with ordinary
-    /// requests" — see `docs/v04-w2-webtransport.md` §4.
+    /// requests".
     ///
     /// # Order of operations, and why the SETTINGS wait is first
     ///
@@ -635,11 +631,10 @@ impl Session {
             .enable_extended_connect(true)
             // The client's half of RFC 9297 §2.1: an endpoint may not
             // *receive* HTTP Datagrams it never said it understood, so this
-            // line is what lets the peer send any at all. It is the setter
-            // §3 of `docs/v04-w2-webtransport.md` found missing for
-            // WebTransport and present for datagrams — the whole reason
-            // datagrams could be built here and the session announcement
-            // could not.
+            // line is what lets the peer send any at all. `h3`'s client
+            // builder has this setter and has none for WebTransport, which
+            // is the whole reason datagrams could be built here and the
+            // session announcement could not.
             .enable_datagram(true)
             .build::<h3_quinn::Connection, h3_quinn::OpenStreams, Bytes>(h3_quinn::Connection::new(
                 conn.clone(),
@@ -886,8 +881,7 @@ impl Session {
     /// RFC 9297 §3.2's requirement that unknown capsule types be ignored.
     /// `DRAIN_WEBTRANSPORT_SESSION` is one of them: it is skipped rather
     /// than surfaced, because a drain is not an end and this method answers
-    /// one question. `docs/v04-w2-capsules.md` §7 says what surfacing it
-    /// would need.
+    /// one question.
     pub async fn closed(&self) -> Result<SessionClose, Error> {
         poll_fn(|cx| {
             self.connect_recv
@@ -1039,8 +1033,8 @@ impl Session {
     /// `2^60 - 1` is illegal and "MUST be treated as an HTTP/3 connection
     /// error of type H3_DATAGRAM_ERROR". Such an ID cannot equal any
     /// session's, so it is dropped rather than escalated; closing the
-    /// connection from here is recorded as not done in
-    /// `docs/v04-w2-datagrams.md` rather than half-done.
+    /// connection from here is deliberately not done rather than
+    /// half-done.
     pub async fn recv_datagram(&self) -> Result<Bytes, Error> {
         let quarter = self.quarter_stream_id();
         loop {
@@ -1367,7 +1361,7 @@ const CLOSE_WEBTRANSPORT_SESSION: u64 = 0x2843;
 /// `web-transport-proto` 0.6.0, whose encoder is correct — and it is **48
 /// crates**, ten of them `url` and the ICU stack this workspace spent a
 /// whole task removing from `hclient-proto`, against this crate's 49 in
-/// total. `docs/v04-w2-capsules.md` §3.
+/// total.
 fn close_capsule(error_code: u32, reason: &str) -> Vec<u8> {
     let payload = 4 + reason.len();
     let mut capsule = Vec::with_capacity(
@@ -1590,10 +1584,10 @@ async fn settings_announce_webtransport(
 /// `datagrams` is read through `h3::config::Settings`, which has a getter
 /// for it. `max_sessions` is read off the **frame**, because that struct
 /// has no getter for `max_webtransport_sessions` — its field is
-/// `pub(crate)` — and `docs/v04-w2-webtransport.md` §3(c) recorded that as
-/// *"the peer's `max_webtransport_sessions` cannot be read"*.
+/// `pub(crate)`.
 ///
-/// **That was true of `h3::config::Settings` and false of `h3`.** The
+/// **The value is unreadable through `h3::config::Settings` and readable
+/// off the frame.** The
 /// SETTINGS frame this function already awaits *is*
 /// `h3::proto::frame::Settings`, whose `get` is `pub` and whose
 /// `SettingId::WEBTRANSPORT_MAX_SESSIONS` is a `pub const`, all under the

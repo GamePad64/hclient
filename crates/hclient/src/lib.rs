@@ -255,8 +255,8 @@ pub use deadline::NoClock;
 // four variants, every backend answering `None`, and no caller decision
 // turning on it. WebSocket is a trait a backend implements
 // (`hclient_core::unversioned::WebSocketConnect`) rather than a capability
-// anyone reads, so there is nothing to re-export in its place — see
-// `docs/w4-upgrade-seam.md` §3. `tests/facade.rs`'s plumbing check moved
+// anyone reads, so there is nothing to re-export in its place.
+// `tests/facade.rs`'s plumbing check moved
 // to `EarlyDataSupport`, and that file says why it and not another.
 //
 // `RequireVersion` and `VersionNotAvailable` arrive on the same argument as
@@ -414,8 +414,8 @@ pub type DefaultTransport = hclient_fetch::Fetch;
 /// `Client::new()?.total_timeout(d)` needs no clock argument **and stays
 /// `Client`** — the type does not grow parameters because a timeout was
 /// switched on. That property is not cosmetic: `struct App { http: Client
-/// }` is the shape a consumer actually writes, and `docs/v02-design.md`
-/// §W5 rejects tower layers for compression on exactly this ground.
+/// }` is the shape a consumer actually writes, and it is the same ground
+/// on which tower layers were rejected for compression.
 /// `crates/hclient/tests/deadline_client_type.rs` pins it.
 ///
 /// - Non-wasm, with `default-transport`: [`hclient_rt_tokio::Tokio`] — the

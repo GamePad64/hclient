@@ -2,10 +2,9 @@
 //!
 //! # The verdict is a future, not a field
 //!
-//! W3 reserved `TlsInfo::early_data_accepted: Option<bool>` for exactly
-//! this, and the reservation is right for TLS 1.3 over TCP, where the
-//! answer is known by the time the handshake completes. **In QUIC it is
-//! not.** Measured in `docs/h3-research.md` §3.2, on a live loopback
+//! `TlsInfo::early_data_accepted: Option<bool>` is the right shape for
+//! TLS 1.3 over TCP, where the answer is known by the time the handshake
+//! completes. **In QUIC it is not.** Measured on a live loopback
 //! exchange: the connection exists at 1.27 ms, the h3 layer is up at
 //! 1.68 ms, the response arrives at **8.58 ms**, and the acceptance verdict
 //! resolves at **8.63 ms** — fifty microseconds *after* the response body.

@@ -61,10 +61,10 @@
 //!
 //! # The `Timer` change that turned out not to be needed
 //!
-//! `docs/h3-research.md`'s recommendation (2) was that `Timer` must gain an
-//! absolute-deadline sleep, because `AsyncTimer::reset(i)` re-arms a timer
-//! to an absolute instant while our seam has `sleep(Duration)` over an
-//! opaque `Instant` with no conversion in either direction.
+//! `Timer` looked as if it must gain an absolute-deadline sleep, because
+//! `AsyncTimer::reset(i)` re-arms a timer to an absolute instant while our
+//! seam has `sleep(Duration)` over an opaque `Instant` with no conversion
+//! in either direction.
 //!
 //! **Measured, and the seam change is unnecessary.** quinn's `Instant` *is*
 //! `std::time::Instant` on every non-wasm target (`quinn-0.11.11/src/lib.rs:56`,

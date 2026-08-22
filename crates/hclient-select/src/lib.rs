@@ -44,8 +44,8 @@
 //!
 //! # Discovery has two tiers, and both are here
 //!
-//! `docs/v04-design.md` P12. Browsers do not race an unknown origin: they
-//! *"only try QUIC if they know the server supports it"*, so first contact
+//! Browsers do not race an unknown origin: they *"only try QUIC if they
+//! know the server supports it"*, so first contact
 //! is TCP unless something said otherwise before the connection was made.
 //! There are two things that can say so, and they are not
 //! interchangeable:
@@ -71,9 +71,8 @@
 //! could be built — before it, a race made of two `Transport::execute`
 //! calls delivered the losing arm's request to the origin as well.
 //!
-//! v0.3 W2 recorded that the size of the cost it pays was unverified, and
-//! a measurement came before the policy: `docs/v04-w1-acceptance.md` §7
-//! and `docs/v04-race.md`.
+//! The size of the cost it pays was measured before the policy was
+//! chosen; see [`race`].
 //!
 //! # The record decides where there is one, and the header only where
 //! there is not
@@ -109,10 +108,10 @@
 //! `hclient-h3` does no SVCB lookup at all and the query has already been
 //! made by then.
 //!
-//! It used to be **two** on the TCP path, which is what that seam was
-//! built for; `docs/v04-w1-acceptance.md` §3.1 is the whole argument,
-//! including why the record is fetched *by* the member rather than handed
-//! *to* it. Both counts are measured rather than reasoned —
+//! It is one rather than two on the TCP path because the record is
+//! fetched *by* the member rather than handed *to* it — see
+//! `hclient_native::Prefetch`. Both counts are measured rather than
+//! reasoned —
 //! `tests/dns_cost.rs` counts the calls a resolver received, and
 //! `tests/record_handover.rs` watches the connection, which is the half a
 //! count cannot see.
@@ -208,9 +207,8 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// A transport that owns an HTTP/1.1+HTTP/2 stack and an HTTP/3 stack and
 /// sends each request over one of them.
 ///
-/// Named for what it does. An earlier draft of `docs/v04-design.md` called
-/// it `Racing`, which put a policy in a type name before the policy was
-/// decided — and the race is the hedge, not the chooser.
+/// Named for what it does. `Racing` would put a policy in a type name
+/// that the type does not have: the race is the hedge, not the chooser.
 ///
 /// # The members are concrete, and that is the point
 ///
@@ -221,15 +219,14 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// strength of a record neither honours. With the two named, that is
 /// unrepresentable, and the one thing generality would have bought (a third
 /// member later, `hclient-urlsession` for instance) is a different decision
-/// with a different capability question attached — `docs/v04-design.md` §W3
-/// expects `RedirectSupport::Internal` from it, which [`combine`] would
-/// refuse against either member here.
+/// with a different capability question attached: it reports
+/// `RedirectSupport::Internal`, which [`combine`] would refuse against
+/// either member here.
 ///
 /// # One `R`, one `T`, one `D` — measured, not assumed
 ///
-/// `docs/v04-design.md` P1: one runtime type satisfies both bound sets, so
-/// `Native<R, T, D>` and `H3<R, T, D>` can share all three parameters. P2
-/// is the condition: `hclient-rt-tokio` needs its `udp` feature on, or
+/// One runtime type satisfies both bound sets, so `Native<R, T, D>` and
+/// `H3<R, T, D>` can share all three parameters. The condition: `hclient-rt-tokio` needs its `udp` feature on, or
 /// `TokioHandle` does not implement `UdpAdoptStd` and this type cannot be
 /// named. That is a Cargo feature a build asking for HTTP/3 turns on, and
 /// an HTTP/1.1-only build does not pay for.
@@ -282,9 +279,8 @@ where
     /// client does**, not an omission: a transport that opened a UDP
     /// socket and a TCP one for the same request would be deciding, on
     /// every caller's behalf, what to spend on a network that blocks
-    /// UDP/443. `docs/v04-design.md` §W1 says the same thing about
-    /// `DefaultTransport`, which does not become this type either. See
-    /// [`race`] and [`Selecting::hedging`].
+    /// UDP/443 — which is why `DefaultTransport` does not become this
+    /// type either. See [`race`] and [`Selecting::hedging`].
     hedge: Option<Duration>,
 }
 
@@ -860,10 +856,10 @@ where
     ///
     /// # This is the staged connect's first customer, and the race is not
     ///
-    /// `docs/v04-w1-acceptance.md` §9.3's first blocker was that a failure
-    /// memory *"degrades the caller rather than protecting them"* without a
-    /// fallback, and that the fallback would be *"request-level retry with
-    /// a `RequestBody::retry_kind()` condition on it"*. It is not, because
+    /// A failure memory without a fallback degrades the caller rather
+    /// than protecting them, and the obvious fallback would be a
+    /// request-level retry with a `RequestBody::retry_kind()` condition on
+    /// it. This is not that, because
     /// the request is never handed to the QUIC stack: `connect` takes it,
     /// fails, and gives it back untouched. Nothing was sent, so there is
     /// nothing to decide about idempotency — [`hclient_h3::Refused`] is the
@@ -971,9 +967,8 @@ pub(crate) type QuicBodyOf<R, T, D> = <H3<R, T, D> as Transport>::Body;
 ///
 /// `false` means the caller's whole connect budget went on the first arm,
 /// and the honest answer is then the first arm's error rather than a second
-/// attempt the bound has no room for. That is `docs/v04-w1-acceptance.md`
-/// §7.5's precondition met by refusing rather than by silently degrading —
-/// and it is never worse than the behaviour it replaces, where a QUIC
+/// attempt the bound has no room for — refusing rather than silently
+/// degrading, and never worse than the behaviour it replaces, where a QUIC
 /// origin that could not be reached simply failed the request.
 ///
 /// A free function so it can be read without the six `where` clauses the

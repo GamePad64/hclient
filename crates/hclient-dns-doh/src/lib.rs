@@ -37,10 +37,9 @@
 //!   [fallback](Doh::with_fallback) or expect to ship a new address.
 //! - [`Doh::bootstrapped`] — the endpoint's host is a **name**, resolved by
 //!   the inner transport's own resolver, once per connection it opens.
-//!   Pass a transport carrying `SystemDns` and you have shape 2 of
-//!   `docs/v03-design.md` §W3 ("the system resolver, once, for the DoH
-//!   host"); pass one carrying a resolver of fixed addresses and you have
-//!   shape 3 ("caller-supplied bootstrap addresses"). This crate does not
+//!   Pass a transport carrying `SystemDns` and the system resolver runs
+//!   once, for the DoH host; pass one carrying a resolver of fixed
+//!   addresses and the bootstrap is caller-supplied. This crate does not
 //!   need to distinguish them — both are "the inner transport knows how".
 //!
 //! The two constructors **partition** the space: `pinned` refuses a name
@@ -288,9 +287,8 @@ impl<C> Doh<C, NoFallback> {
     /// the provider's published addresses or take [`Doh::with_fallback`]
     /// and accept what that means.
     ///
-    /// **The certificate that address presents must carry an IP SAN**, and
-    /// `docs/v03-design.md` §W3 listed it as unverified whether the
-    /// platform verifiers accept one. **On Linux they do** — measured, not
+    /// **The certificate that address presents must carry an IP SAN.**
+    /// **On Linux the platform verifier accepts one** — measured, not
     /// argued: `tests/live.rs`'s
     /// `a_certificate_presented_for_an_ip_address_validates_through_the_platform_verifier`
     /// completes the handshake through `rustls-platform-verifier` against

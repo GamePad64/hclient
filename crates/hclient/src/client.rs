@@ -265,7 +265,7 @@ impl ClientBuilder {
     /// A bound on the **whole operation**, and the clock that measures it
     /// — in one call, because neither is any use without the other.
     ///
-    /// The gap this closes is recorded in `docs/v01-acceptance.md`:
+    /// The gap this closes:
     /// `connect`/`first_byte`/`between_bytes` bound three phases, and a
     /// response that starts promptly and then dribbles just under the
     /// `between_bytes` threshold is bounded by none of them. This one
@@ -1125,8 +1125,7 @@ impl Client {
                     // got the data, declined to risk processing it, and
                     // asked for the request again outside early data.
                     // Deciding that belongs to whoever owns the operation,
-                    // which is this loop and not a transport. The three-row
-                    // table is `docs/h3-research.md` §3.5.
+                    // which is this loop and not a transport.
                     //
                     // **Once, and by construction rather than by a
                     // counter**: there is no loop around these two lines,

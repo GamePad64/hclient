@@ -1,7 +1,6 @@
 //! The hedge: two connects at once, one request afterwards.
 //!
-//! `docs/v04-design.md` §W1 deliverable 5, and it is the last piece of that
-//! vertical. P12 is emphatic that the race is a **third** thing — applied
+//! The race is a **third** thing, after the two discovery tiers — applied
 //! *after* the choice, as a hedge against a network that blocks UDP/443,
 //! and not as a way of choosing. So nothing here decides which stack an
 //! origin speaks; [`Selecting::route`](crate::Selecting) has already
@@ -10,8 +9,8 @@
 //!
 //! # The premise this was blocked on has changed, and that is why it is here
 //!
-//! `docs/v04-w1-acceptance.md` §7.6 measured a race made of two
-//! `Transport::execute` calls and found the thing that stopped it:
+//! A race made of two `Transport::execute` calls was measured, and the
+//! measurement is what stopped it:
 //!
 //! > **A race built out of two `Transport::execute` calls races requests,
 //! > not connections.** Browsers race *connections* and send the request on
@@ -36,8 +35,8 @@
 //!
 //! # 1. The head start
 //!
-//! `docs/v04-w1-acceptance.md` §7.4 proposed 250 ms —
-//! `hclient_proto::happy_eyeballs::HeConfig::default()`'s `attempt_delay`,
+//! 250 ms — `hclient_proto::happy_eyeballs::HeConfig::default()`'s
+//! `attempt_delay`,
 //! RFC 8305 §5's Connection Attempt Delay, and this codebase's answer to
 //! the structurally identical question one layer down. That value stands.
 //! **What changed is its floor and its justification, not its number.**
@@ -57,11 +56,10 @@
 //!   **once per origin per [`crate::H3_FAILURE_TTL`]** and not once per
 //!   request.
 //! - **The reason to keep it is no longer safety but the chooser.** The TCP
-//!   floor was re-measured for this work, because
-//!   `docs/nagle-and-nodelay.md` landed after §7.3 was written and
-//!   `Native::new` now asks for `TCP_NODELAY`. It moved by an order of
-//!   magnitude: a cold TCP-by-name exchange on this host is **1.4–2.6 ms**
-//!   where §7.3 measured 41.8–42.5 ms, against QUIC's 2.5–7.8 ms. On
+//!   floor moved by an order of magnitude once `Native::new` began asking
+//!   for `TCP_NODELAY`: a cold TCP-by-name exchange on this host is
+//!   **1.4–2.6 ms** where it had been 41.8–42.5 ms, against QUIC's
+//!   2.5–7.8 ms. On
 //!   loopback — which has no round trip, so it measures CPU and nothing
 //!   else — **TCP is now the faster of the two**, and a race with no head
 //!   start is won by TCP. On a real path the order reverses, because QUIC's
@@ -111,9 +109,8 @@
 //! from an earlier start and therefore always reaches its deadline first —
 //! so the race ends, and the hedge is dropped, before a hedge bound of `C`
 //! could be exceeded. It is written because relying on the *other* arm's
-//! bound to bound this one is a coupling nothing states, and because
-//! `docs/v04-w1-acceptance.md` §7.5 is where the rule lives. The mutation
-//! run in `docs/v04-race.md` records it as survived, with this reason.
+//! bound to bound this one is a coupling nothing states. The mutation is
+//! recorded as survived, with this reason.
 //!
 //! # 3. The losing arm
 //!
@@ -267,8 +264,7 @@ fn probe_body(like: &RequestBody) -> RequestBody {
 /// `check_version` and the early-data gate take the extensions, and neither
 /// member looks at a header or a body byte before `exchange`.
 ///
-/// What follows from all this is `docs/v04-race.md` §4: the race's product is
-/// two warm connections and a decision, the request is sent afterwards
+/// What follows: the race's product is two warm connections and a decision, the request is sent afterwards
 /// through the ordinary routing, and the hand-off from the winning arm to the
 /// request goes through the **pool** rather than through the handle.
 fn probe(req: &http::Request<RequestBody>) -> http::Request<RequestBody> {
@@ -335,7 +331,7 @@ fn room(budget: Option<Duration>, head_start: Duration) -> Room {
 /// future it may await is a field of one state machine; an earlier draft in
 /// which the race did its own routing put a second copy of the whole QUIC arm
 /// inside `execute` and **overflowed the stack** of two `hclient::Client`
-/// tests in a debug build. `docs/v04-race.md` §7 has the measurement.
+/// tests in a debug build.
 enum Raced {
     /// Send it over HTTP/3 — either because the QUIC arm won, or because no
     /// race was run at all and this is the ordinary sequential path.

@@ -2,8 +2,8 @@
 //! error it becomes, and the response body that carries it past
 //! `Client::execute`.
 //!
-//! The gap this closes is written down in `docs/v01-acceptance.md`: with
-//! only `connect`/`first_byte`/`between_bytes`, a response that starts
+//! The gap this closes: with only
+//! `connect`/`first_byte`/`between_bytes`, a response that starts
 //! promptly and then dribbles just under the `between_bytes` threshold
 //! runs unbounded. Nothing bounded the operation as a whole.
 

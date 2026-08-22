@@ -14,9 +14,8 @@
 //! Windows' ICU is built with `U_DISABLE_RENAMING` — the SDK's `icu.h`
 //! opens with `#define U_DISABLE_RENAMING 1` — so its exports are
 //! **unsuffixed**, and `windows-sys` links the plain name, which could
-//! not work otherwise. There is no version probing on this platform.
-//! (This corrects a note in `docs/v02-design.md`, which said Windows'
-//! symbols were version-suffixed. That is a fact about Linux.)
+//! not work otherwise. There is no version probing on this platform —
+//! version-suffixed symbols are a fact about Linux, not about Windows.
 //!
 //! # What it costs, stated plainly rather than hedged
 //!

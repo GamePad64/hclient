@@ -3,8 +3,8 @@
 //!
 //! # Why this is in `Client` and not a `tower` layer
 //!
-//! `docs/v02-design.md` §W5 settles it, and it is no longer an argument
-//! but a test: a layer wrapping the transport changes the CLIENT's type,
+//! It is a test rather than an argument: a layer wrapping the transport
+//! changes the CLIENT's type,
 //! so `struct App { http: Client }` stops compiling, and
 //! `tests/deadline_client_type.rs` plus
 //! `tests/compression_client_type.rs` (this task) pin exactly that.

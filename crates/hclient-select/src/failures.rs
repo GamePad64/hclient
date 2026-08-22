@@ -14,9 +14,8 @@
 //!
 //! # Why it can exist now and could not before
 //!
-//! `docs/v04-w1-acceptance.md` §9.3 gave two blockers, and the first was
-//! that a suppression without a fallback *"degrades the caller rather than
-//! protecting them"*: it would cost one **failed** request per window per
+//! A suppression without a fallback degrades the caller rather than
+//! protecting them: it would cost one **failed** request per window per
 //! origin, where `hclient-native`'s own negative cache costs none because
 //! native falls back to the origin's addresses inside the same connect.
 //!
@@ -70,8 +69,7 @@
 //! later has finished is not a slow HTTP/3 — it is one that is not getting
 //! through. And the alternative is the cost that made the race not worth
 //! building at all: without it the head start is paid again on every
-//! request to a blocked origin, which is `docs/v04-w1-acceptance.md`
-//! §7.7's item 4 in full.
+//! request to a blocked origin.
 //!
 //! What is *not* stored is the mirror of it, which is the half that keeps
 //! the rule from reading as *"the hedge suppresses HTTP/3"*: a QUIC arm

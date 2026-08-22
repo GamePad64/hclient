@@ -35,10 +35,9 @@
 //!
 //! The bound excludes only runtimes that were already excluded. `embassy-net`
 //! has no descriptor at all, so `quinn-udp` cannot even be asked about
-//! GSO/GRO/ECN (`docs/h3-research.md` §2.4 quotes the `E0277`), and quinn
-//! cannot wrap the socket. And the bound is on [`H3`], not on the seam and
-//! not on `Native`, so W7's direction — a runtime may implement as little
-//! as it honestly can — is untouched.
+//! GSO/GRO/ECN, and quinn cannot wrap the socket. And the bound is on
+//! [`H3`], not on the seam and not on `Native`, so a runtime may still
+//! implement as little as it honestly can.
 //!
 //! # Connections are shared, and requests on one are multiplexed
 //!
@@ -123,10 +122,10 @@ type SendRequest = h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>;
 /// that offered early data.
 ///
 /// **A future, not a field, and that is the finding rather than a style
-/// choice.** W3 reserved `TlsInfo::early_data_accepted: Option<bool>`, which
-/// is the right shape for TLS 1.3 over TCP where the answer is known when
-/// the handshake completes. Over QUIC it is not: measured in
-/// `docs/h3-research.md` §3.2, `into_0rtt()` returns at 1.27 ms, the
+/// choice.** `TlsInfo::early_data_accepted: Option<bool>` is the right
+/// shape for TLS 1.3 over TCP, where the answer is known when the
+/// handshake completes. Over QUIC it is not: measured, `into_0rtt()`
+/// returns at 1.27 ms, the
 /// response arrives at 8.58 ms, and the verdict resolves at **8.63 ms** —
 /// after the response body. A field could only hold it by waiting for the
 /// handshake, which is the round trip 0-RTT exists to skip.
@@ -676,10 +675,9 @@ where
     /// So the rejection reached the caller as an `ErrorKind::Connect`, on a
     /// request whose only sin was carrying [`hclient_core::AllowEarlyData`].
     /// It was found as a flake — 2 failures in 277 concurrent runs of this
-    /// crate's suite — and `docs/v04-h3-0rtt-control-stream.md` is the
-    /// capture, the mechanism and the numbers.
+    /// crate's suite, 0 in 846 after.
     ///
-    /// The fallback below is the first row of that same table, one step
+    /// The fallback below is one step
     /// later, and its sentence holds verbatim: *"nothing was sent, so
     /// falling through to a full handshake risks nothing"*. Nothing had been
     /// sent — the request has not been formed at this point, let alone

@@ -3,8 +3,8 @@
 //!
 //! # Why this file is the acceptance for the seam rather than a second backend
 //!
-//! `docs/w4-upgrade-seam.md` §2 chose a message-oriented seam over "hand
-//! back the socket after the 101" on one argument: a byte-stream seam is
+//! The seam is message oriented rather than "hand back the socket after
+//! the 101", on one argument: a byte-stream seam is
 //! implementable by exactly one of this project's four backends, and the
 //! three it excludes include the browser. This crate is where that
 //! argument was written down — `caps.rs` used to set
@@ -117,9 +117,9 @@
 //! the busy-spin this workspace measured and rejected once already
 //! (`hclient_native::testing::blocking_io`, 600 ms of wall time and 600 ms
 //! of CPU). `hclient-native`'s `Sink` gives real backpressure from the
-//! socket; this one gives none, the browser's own buffer is unbounded, and
-//! `docs/v03-acceptance.md` records that as a difference between the two
-//! backends rather than a property of the seam.
+//! socket; this one gives none and the browser's own buffer is unbounded
+//! — a difference between the two backends rather than a property of the
+//! seam.
 //!
 //! **A send that goes nowhere.** The standard says `send()` on a `CLOSING`
 //! or `CLOSED` socket discards the data and *does not throw* — it only
@@ -579,7 +579,7 @@ impl Sink<Message> for FetchWebSocket {
 /// The seam, implemented — which is the whole of how this transport says it
 /// can do WebSocket. There is no capability to read: `Capabilities` used to
 /// carry an `upgrade` field, every backend set it to `None`, and nothing
-/// ever branched on it; `docs/w4-upgrade-seam.md` §3 is why it is gone.
+/// ever branched on it, which is why it is gone.
 ///
 /// Not behind a cargo feature, and that is a measurement rather than a
 /// preference. `hclient-native` gates its implementation at `websocket`

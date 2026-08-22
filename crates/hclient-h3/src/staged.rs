@@ -1,10 +1,9 @@
 //! Connect now, send later — and what that turns out to mean on a stack
 //! that has already claimed everything it makes.
 //!
-//! `docs/connect-only-seam.md` §4 and §5 decided the shape from
-//! `hclient-native`'s side and left this crate's half open: *"whether `H3`
-//! gets one at all … the sequential fallback needs only the QUIC side, and
-//! needs it in its weakest form — did this origin's QUIC connect succeed —
+//! The shape comes from `hclient-native`'s side of the same seam. What
+//! this crate's half needs is the weakest form of it — did this origin's
+//! QUIC connect succeed —
 //! for which a handle may be more than is required."*
 //!
 //! # It needs a handle, and the reason is the bound rather than the
@@ -30,8 +29,8 @@
 //! # What the handle is, and it is **not** an unclaimed connection
 //!
 //! This is the honest difference from `hclient_native::Staged`, and it is
-//! the same fact `docs/v04-w2-webtransport.md` §4b established from the
-//! other side. `H3::connect` builds an h3 client on every connection it
+//! the same fact `hclient-webtransport` meets from the other side.
+//! `H3::connect` builds an h3 client on every connection it
 //! makes and spawns that client's driver **before** it has anything to hand
 //! back, and `checkout` inserts the result into the pool before its caller
 //! sees it. There is no state in which this transport holds a connection
@@ -80,8 +79,7 @@ use std::sync::Arc;
 /// can then be spent on exactly one request.
 ///
 /// The same shape `hclient_native::StagedConnect` has, declared separately
-/// rather than shared, for the reason `docs/connect-only-seam.md` §4 gives:
-/// a trait is declared by the crate that implements it, `hclient-select`
+/// rather than shared: a trait is declared by the crate that implements it, `hclient-select`
 /// owns both members concretely and needs no polymorphism between them, and
 /// the two do not agree on what `connect` takes — `Native` takes a
 /// `hclient_native::Prepared`, because it has a record lookup worth

@@ -17,9 +17,9 @@
 //! # The seam this crate takes from `hclient-native` is "an upgraded byte
 //! stream, plus the `read_buf`"
 //!
-//! Which is exactly the shape `docs/w4-upgrade-seam.md` §2 rejected — as
-//! the **public** seam, where it excludes three of four backends and the
-//! browser among them. As the seam between a transport and a framing
+//! Which is exactly the shape rejected as the **public** seam, where it
+//! excludes three of four backends and the browser among them. As the
+//! seam between a transport and a framing
 //! crate it is right, because it is only ever asked of the one backend
 //! that can answer it. A shape can be wrong at one level and correct at
 //! the next; §2's argument was about which level.
@@ -45,7 +45,6 @@
 //!
 //! # Framing: `tungstenite`, driven by us
 //!
-//! `docs/w4-upgrade-seam.md` §6 has the measurement. In one line:
 //! `TcpConnect::Stream` is bounded by `hyper::rt::{Read, Write}`, so an
 //! adapter is needed whichever crate is picked, and the adapter that faces
 //! `std::io` removes an `unsafe`. `tungstenite::protocol::WebSocketContext`
@@ -102,9 +101,6 @@
 //! Steps 1-3 shipped with none — only the handshake read
 //! `Timeouts::connect`, so a peer that vanished without a `FIN` left a
 //! `Stream` that never yielded and never errored.
-//! `docs/w4-upgrade-seam.md` §7 decided the shape and left two questions
-//! open; both are answered below, and the answers are what this code
-//! does.
 //!
 //! **Ping/pong, not a timeout.** `Timeouts::total` is meaningless for a
 //! connection whose whole point is to outlive the exchange that opened
@@ -573,9 +569,8 @@ impl WebSocketKeepAlive {
 /// inventing a second vocabulary.
 ///
 /// It is deliberately **not** an `ErrorKind::Timeout`: no field of
-/// [`hclient_core::Timeouts`] is in force here, and `Phase::BetweenBytes` in particular
-/// would name a bound `docs/w4-upgrade-seam.md` §7 explicitly refused to
-/// give this seam.
+/// [`hclient_core::Timeouts`] is in force here, and `Phase::BetweenBytes`
+/// in particular would name a bound this seam deliberately does not have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the peer did not answer a keep-alive ping within {0:?}")]
 pub struct PongNotReceived(pub Duration);
@@ -673,8 +668,8 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
     /// the socket, whatever the server had already sent past the `101`,
     /// a clock, and the liveness bound if the caller asked for one.
     ///
-    /// **This is the internal seam of `docs/w4-upgrade-seam.md` §8**, and
-    /// it is public for that reason: everything above it is RFC 6455 and
+    /// **This is the seam between the transport and the framing**, and it
+    /// is public for that reason: everything above it is RFC 6455 and
     /// nothing above it is a socket, so anything that can upgrade an
     /// HTTP/1 connection can frame one — [`Tungstenite`] is this
     /// workspace's one caller and not a privileged one. `read_buf` is what
@@ -1100,11 +1095,10 @@ where
     /// It applies to every WebSocket opened from this connector
     /// afterwards; [`TungsteniteWebSocket::keep_alive`] reads back what a
     /// given socket got. There is no counterpart on `hclient-fetch`, so
-    /// asking a browser for this does not compile —
-    /// `docs/w4-upgrade-seam.md` §7.
+    /// asking a browser for this does not compile.
     ///
     /// **It is here rather than on `Native` because pings and pongs are
-    /// frames**, which is §8's reason for this crate existing at all. On
+    /// frames**, which is the reason this crate exists at all. On
     /// the transport it would be a knob whose type lives in a crate the
     /// transport must not depend on.
     #[must_use]
