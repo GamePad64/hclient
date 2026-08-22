@@ -59,9 +59,13 @@ order computed by cargo itself. So publishing is not the part that needed a
 tool.
 
 **The bump is.** `[workspace.package].version` is one number, and beside it
-are **68 literal `version = "0.1.0"` requirements** — 7 in the root
+are **69 literal version requirements** — 8 in the root
 `[workspace.dependencies]` and 61 in crate manifests — which must move with
-it. Cargo offers no way to write `version.workspace = true` inside a
+it. (The header says 70: that is these 69 plus the workspace version
+itself. Both counts were measured; an earlier "68 / 7" here was a narrower
+grep than the one that set the version, and a document contradicting itself
+two sections apart is the count-in-prose defect this project keeps
+finding.) Cargo offers no way to write `version.workspace = true` inside a
 dependency requirement, so the repetition is forced and nothing checked
 that the copies agreed. `cargo release version minor` does it:
 

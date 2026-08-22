@@ -367,7 +367,7 @@ tree, 29 packaged, 29 verified, and its ordering identical to the one
 derived here from `cargo metadata` before either tool was consulted. The
 table is kept because that agreement is what makes the count a fact about
 the graph rather than a guess. `cargo-release` does the half cargo does not:
-the bump, including the **68 literal `version = "0.1.0"` requirements** that
+the bump, including the **69 literal version requirements** that
 must move with `[workspace.package].version` and that cargo gives no way to
 centralise.
 
