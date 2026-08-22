@@ -79,8 +79,9 @@ use std::sync::Arc;
 /// can then be spent on exactly one request.
 ///
 /// The same shape `hclient_native::StagedConnect` has, declared separately
-/// rather than shared: a trait is declared by the crate that implements it, `hclient-select`
-/// owns both members concretely and needs no polymorphism between them, and
+/// rather than shared: a trait is declared by the crate that implements
+/// it, `hclient-select` owns both members concretely and needs no
+/// polymorphism between them, and
 /// the two do not agree on what `connect` takes — `Native` takes a
 /// `hclient_native::Prepared`, because it has a record lookup worth
 /// composing with, and this takes a request, because it has none.

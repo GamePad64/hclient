@@ -264,9 +264,10 @@ fn probe_body(like: &RequestBody) -> RequestBody {
 /// `check_version` and the early-data gate take the extensions, and neither
 /// member looks at a header or a body byte before `exchange`.
 ///
-/// What follows: the race's product is two warm connections and a decision, the request is sent afterwards
-/// through the ordinary routing, and the hand-off from the winning arm to the
-/// request goes through the **pool** rather than through the handle.
+/// What follows: the race's product is two warm connections and a decision,
+/// the request is sent afterwards through the ordinary routing, and the
+/// hand-off from the winning arm to the request goes through the **pool**
+/// rather than through the handle.
 fn probe(req: &http::Request<RequestBody>) -> http::Request<RequestBody> {
     let mut probe = http::Request::new(probe_body(req.body()));
     *probe.method_mut() = req.method().clone();

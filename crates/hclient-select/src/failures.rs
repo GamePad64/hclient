@@ -76,7 +76,8 @@
 //! that **won** teaches this nothing, so the next request to that origin
 //! goes to QUIC exactly as this one did.
 //!
-//! Beyond that the *reason* is deliberately not read. Every reason a connect fails is a reason not to
+//! Beyond that the *reason* is deliberately not read. Every reason a
+//! connect fails is a reason not to
 //! spend the next request's time trying again immediately, and the
 //! alternative — a list of `ErrorKind`s to admit — would be a third place
 //! that has to be kept in step with two crates' error vocabularies for a

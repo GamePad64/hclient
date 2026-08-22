@@ -226,7 +226,8 @@ const HTTPS_DEFAULT_PORT: u16 = 443;
 /// # One `R`, one `T`, one `D` — measured, not assumed
 ///
 /// One runtime type satisfies both bound sets, so `Native<R, T, D>` and
-/// `H3<R, T, D>` can share all three parameters. The condition: `hclient-rt-tokio` needs its `udp` feature on, or
+/// `H3<R, T, D>` can share all three parameters. The condition:
+/// `hclient-rt-tokio` needs its `udp` feature on, or
 /// `TokioHandle` does not implement `UdpAdoptStd` and this type cannot be
 /// named. That is a Cargo feature a build asking for HTTP/3 turns on, and
 /// an HTTP/1.1-only build does not pay for.

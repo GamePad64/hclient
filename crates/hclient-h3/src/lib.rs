@@ -27,11 +27,11 @@
 //! **A QUIC connection that nobody polls is not idle, it is dying.** The
 //! PING that resets a peer's idle timer comes from the connection's driver,
 //! not from the kernel, so unlike an HTTP/1 socket in a pool it needs
-//! something to drive it between requests. Measured: across a 1500 ms
-//! gap under a 1000 ms idle timeout, an undriven connection's second request fails and a driven
-//! one's succeeds. That is the whole argument for the `Spawn` bound, and
-//! everything h3 is for — multiplexing, 0-RTT on a second visit — pays off
-//! across exactly those gaps.
+//! something to drive it between requests. Measured: across a 1500 ms gap
+//! under a 1000 ms idle timeout, an undriven connection's second request
+//! fails and a driven one's succeeds. That is the whole argument for the
+//! `Spawn` bound, and everything h3 is for — multiplexing, 0-RTT on a second
+//! visit — pays off across exactly those gaps.
 //!
 //! The bound excludes only runtimes that were already excluded. `embassy-net`
 //! has no descriptor at all, so `quinn-udp` cannot even be asked about

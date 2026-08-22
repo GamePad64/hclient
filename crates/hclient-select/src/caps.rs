@@ -31,8 +31,9 @@
 //!
 //! # Why not "report the meet"
 //!
-//! `RedirectSupport`'s three surviving variants are unordered, and inventing an order over them to make a meet exist is
-//! deciding a semantic question in order to satisfy a helper function. The
+//! `RedirectSupport`'s three surviving variants are unordered, and
+//! inventing an order over them to make a meet exist is deciding a
+//! semantic question in order to satisfy a helper function. The
 //! rule above never asks for an order — it asks which value is true — and
 //! where the answer is "neither", it says so.
 //!
