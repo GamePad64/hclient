@@ -17,7 +17,7 @@ let client = hclient::Client::builder(transport).build()?;
 let text = client.get("https://example.com").send().await?.collect().await?.text()?;
 ```
 
-On native, with the `default-transport` feature  — the same
+On native, with the `default-transport` feature — the same
 code without manually choosing a transport. **`Client::new()` is one
 constructor and panics on nothing**: it used to `.expect` a failure to read
 the OS trust store and carry a `try_new` beside it that did not, and both
