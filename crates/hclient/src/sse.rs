@@ -18,8 +18,8 @@ const MIME: &str = "text/event-stream";
 /// prefix: `text/event-stream` case-insensitively (HTTP media types are
 /// case-insensitive — RFC 9110 §5.5), and the next byte is either end of
 /// string, `;` (a parameter boundary, e.g. `; charset=utf-8`), or
-/// whitespace. A bare `starts_with` (review round 1, Finding 2) accepted
-/// `"text/event-streamfoo"` as a valid type and rejected
+/// whitespace. A bare `starts_with` accepts
+/// `"text/event-streamfoo"` as a valid type and rejects
 /// `"Text/Event-Stream"` over case — both defects are closed here by one
 /// token-boundary check.
 fn is_event_stream_content_type(v: &str) -> bool {
@@ -66,7 +66,7 @@ pub struct SseStream<B> {
     /// A fatal error, held back until the decoder's queue is drained:
     /// events already parsed were received whole and correctly, and
     /// losing them for the sake of an earlier error message would mean
-    /// losing correct data (review round 1, Finding 1). Stored here both
+    /// losing correct data. Stored here both
     /// by a transport body error (`Response::chunk` returned
     /// `Some(Err(_))`) and by the decoder's limit being exceeded — both
     /// paths must let already-ready events out first. `next()` hands it
@@ -203,8 +203,8 @@ where
                     // the decoder's queue — so the queue is always empty
                     // here, and an immediate `return` would be
                     // indistinguishable from the current fall-through by
-                    // any test (review round 2, Finding 2: verified by
-                    // mutation). Left symmetric with the limit-exceeded
+                    // any test — verified by mutation. Left symmetric
+                    // with the limit-exceeded
                     // path for consistency, and in case this condition
                     // stops holding under a future refactor of `next()`.
                     self.done = true;
@@ -218,7 +218,7 @@ where
                     // an empty line; the browser's EventSource does the
                     // same thing when the connection closes without a
                     // final delimiter), not a defect in `SseStream`
-                    // (review round 1, Finding 5).
+                    // in `SseStream`.
                     self.done = true;
                 }
             }
@@ -241,8 +241,8 @@ where
 /// be built with a literal or `..Default::default()`, not something a
 /// caller constructs through a builder of its own.
 ///
-/// No `reconnect: bool` field — an earlier version of this had one, and
-/// removing it was deliberate: whether reconnect is enabled at all is
+/// No `reconnect: bool` field, deliberately: whether reconnect is
+/// enabled at all is
 /// decided at the TYPE level now, by whether [`SseBuilder::with_timer`] was
 /// called (see its doc comment), not by a runtime flag that could disagree
 /// with the type. Keeping both would have meant two things claiming to
@@ -364,8 +364,7 @@ impl<'a> SseBuilder<'a> {
     ///    having no OS thread to actually hand out under stock `wasmtime`
     ///    at runtime** — a capability that LOOKS supported and silently
     ///    isn't, which is precisely the class of defect this project's
-    ///    reviews exist to catch (it produced vertical 1's headline finding
-    ///    and vertical 2's one blocking finding). An ambient clock in
+    ///    reviews exist to catch. An ambient clock in
     ///    `hclient` would carry that lie into every crate that depends on
     ///    it, with no way for a caller to see it from the type signature.
     ///
@@ -534,7 +533,7 @@ async fn open(
 ///   path is `SseDecoder`'s own event-size limit, and that is documented
 ///   as fatal and not retried (`hclient-proto/src/sse/decode.rs`,
 ///   `DEFAULT_MAX_EVENT_SIZE`'s doc comment) — resurrecting it via
-///   reconnect would undo exactly what vertical 1 hardened. A content-type
+///   reconnect would undo exactly what that limit exists for. A content-type
 ///   rejection from `validate_sse_response` is ALSO `Decode`, for the same
 ///   reason: the server is sending something that isn't SSE, and a delay
 ///   won't change its `Content-Type` header.
@@ -559,8 +558,8 @@ async fn open(
 /// which keeps retrying forever on any transport-level hiccup unless
 /// explicitly told to stop (a terminal status/content-type, or the
 /// application closing it) — and it's not equivalent to "retries forever
-/// no matter what": `Backoff::max_attempts` (still `None`/unlimited only by
-/// the caller's own explicit choice, per Task 6) bounds it, and a caller
+/// no matter what": `Backoff::max_attempts` (`None`/unlimited only by the
+/// caller's own explicit choice) bounds it, and a caller
 /// that wants a NEW `ErrorKind` treated as terminal can already do so today
 /// by using the plain `SseStream` (`SseBuilder::connect` with no
 /// `with_timer`) and handling every `Err` itself instead of reconnecting.
@@ -840,10 +839,9 @@ impl<'a> ReconnectingSseStream<'a> {
                             // `cached_last_event_id` (see `last_event_id`'s
                             // doc comment), so at this exact point the two
                             // already agree — resyncing would be a no-op.
-                            // An earlier version of this code DID clobber
-                            // it here, before the decoder was seedable;
-                            // that bug is now structurally impossible to
-                            // reintroduce by accident, since `open` is the
+                            // Clobbering it here would be a defect, and
+                            // is structurally impossible to reintroduce
+                            // by accident, since `open` is the
                             // only place `cached_last_event_id` feeds a new
                             // decoder, and it always feeds it forward, never
                             // back.
@@ -876,9 +874,9 @@ mod reconnect_tests {
         }
     }
 
-    // Review round 1, Minor-3: `Decode`, `Status`, and `Unsupported` were
-    // each covered by an integration test that observes `is_retryable`'s
-    // effect end-to-end; `Cancelled` and `Redirect` were not — deleting
+    // `Decode`, `Status` and `Unsupported` are each covered by an
+    // integration test that observes `is_retryable`'s effect end to end;
+    // `Cancelled` and `Redirect` were not — deleting
     // both from the `matches!` at once (mutation M4) left the whole suite
     // green. Direct unit tests on the function itself, mirroring how
     // `effective_delay` below is tested, rather than another end-to-end

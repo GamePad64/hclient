@@ -70,10 +70,9 @@ fn unsupported_from_the_transport_is_still_unsupported_at_the_facade() {
     assert!(!err.is_connect());
 }
 
-/// Task 6's deferred minor ("`Display` duplicates the source's text") dies
-/// right here too: it was a symptom of this same nesting. A consumer used
-/// to see `Other: Unsupported: wasi:http host rejected …` — a category the
-/// error doesn't have, in front of the category it does have.
+/// `Display` duplicating the source's text is a symptom of the same
+/// nesting: `Other: Unsupported: wasi:http host rejected …` puts a
+/// category the error doesn't have in front of the one it does.
 #[test]
 fn display_does_not_nest_a_second_kind_in_front_of_the_real_one() {
     let c = client_failing_with(ErrorKind::Unsupported, "host rejected setting 'scheme'");

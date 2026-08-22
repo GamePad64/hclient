@@ -631,8 +631,8 @@ fn take(out: &mut Vec<u8>) -> Bytes {
 /// ended** — read in flate2 1.1's `src/zio.rs:173`. So a truncated body
 /// reached the caller as a complete, shorter document, which is the exact
 /// defect the trailer checks on the other three codings exist against. It
-/// was found by a wire test, one of the two the first draft of this file
-/// wrote in the shape `tests/compression.rs` warns against.
+/// was found by a wire test, in the shape `tests/compression.rs` warns
+/// against.
 /// `Decompress::decompress_vec` answers `Status::StreamEnd`, which is the
 /// question, and `Decompress::new(zlib_header)` is the same switch in one
 /// type instead of two.
@@ -1494,10 +1494,10 @@ mod tests {
         }
     }
 
-    /// The example used to be `zstd`, and the day this crate grew a zstd
-    /// decoder the test failed — which is the right failure and worth a
-    /// line, because the assertion is *a coding we cannot reverse is left
-    /// alone* and `zstd` had stopped being one. `compress` is RFC 9110
+    /// The example must be a coding this crate has no decoder for: the
+    /// assertion is *a coding we cannot reverse is left alone*, so naming
+    /// one that later gains a decoder turns the test red — correctly.
+    /// `compress` is RFC 9110
     /// §8.4.1.1's LZW, named in the module doc as a coding with no decoder
     /// here, so the test will fail again on the day that stops being true.
     #[test]

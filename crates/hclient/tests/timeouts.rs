@@ -1,9 +1,9 @@
 //! Composition of client and request timeouts — the exact thing the doc
 //! comments on `ClientBuilder::timeouts` and `RequestBuilder::timeouts`
-//! promise, and which didn't exist in either direction before the whole
-//! branch's final review (B1/M3): client-level ones were checked at
-//! `build()` and **never reached** the transport, request-level ones
-//! reached it but were **never checked** against `Capabilities`.
+//! promise. The hole this closes has two halves: client-level bounds
+//! checked at `build()` and **never reaching** the transport, and
+//! request-level ones reaching it but **never checked** against
+//! `Capabilities`.
 //!
 //! All three properties are checked through `MockTransport`, not a unit
 //! test on `effective_timeouts`: that function already has three unit

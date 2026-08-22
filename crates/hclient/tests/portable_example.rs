@@ -1,7 +1,7 @@
 //! Runs `examples/portable.rs` — the port of `act`'s `http-client`
 //! component — against `MockTransport`.
 //!
-//! The stop criterion for Task 10 is a *compile-time* one: three targets,
+//! The example's own acceptance is a *compile-time* one: three targets,
 //! no `#[cfg]` in the example. That property is real but narrow — an
 //! example that never streams, never sets a redirect limit and drops a
 //! timeout would satisfy it just as well. These tests are what makes the
@@ -403,9 +403,9 @@ fn follow_redirects_false_hands_the_3xx_to_the_caller_like_the_original() {
 }
 
 /// `Limited(0)` is NOT `None`: follow zero hops, so the first 3xx carrying a
-/// `Location` is an error. Task 8 pinned this when `limit: 0` was the only
-/// way to spell either intent; it survives the enum unchanged, and it must,
-/// or the two intents have quietly re-merged into one.
+/// `Location` is an error. `limit: 0` was once the only way to spell
+/// either intent; the two must stay apart, or they have quietly re-merged
+/// into one.
 #[test]
 fn limited_zero_still_errors_and_is_not_the_same_as_none() {
     let m = transparent_mock();

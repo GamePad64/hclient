@@ -35,8 +35,8 @@ pub struct Response<B = crate::body::ClientBody> {
     /// Set once `chunk()` has returned `Some(Err(_))`, after which
     /// `chunk()` returns `None`, never touching `body` again.
     ///
-    /// m6 of the branch's final review: without it, `chunk()` after an
-    /// error polled the underlying body again, and a caller working with
+    /// Without it, `chunk()` after an error polls the underlying body
+    /// again, and a caller working with
     /// `Response::chunk` directly could spin in a loop over a body that
     /// returns an error on every poll. `SseStream` compensated for this
     /// with its own `done` flag and tested it thoroughly — but only for
@@ -126,10 +126,10 @@ impl<B> Response<B> {
     /// differ exactly when a redirect was followed, and then the caller
     /// already has the first — they typed it.
     ///
-    /// It used to be the requested URL, undocumented and untested, which
-    /// meant `Response::url()` and `Collected::url()` answered *"where did
-    /// you send this"* under a name that reads *"where did this come
-    /// from"*. Found by writing [`Self::error_for_status`], whose error
+    /// The requested URL would answer *"where did you send this"* under a
+    /// name that reads *"where did this come from"*, and the two differ
+    /// exactly when a redirect was followed. Found by writing
+    /// [`Self::error_for_status`], whose error
     /// carries this value and is useless carrying the wrong one.
     pub fn url(&self) -> &http::Uri {
         &self.url
@@ -157,8 +157,8 @@ where
     /// through `into_parts` and poll the body directly.
     ///
     /// The error is terminal: after `Some(Err(_))` the body is sealed and
-    /// all subsequent calls return `None` without polling it again (m6 of
-    /// the branch's final review — see the `sealed` field).
+    /// all subsequent calls return `None` without polling it again — see
+    /// the `sealed` field.
     pub async fn chunk(&mut self) -> Option<Result<Bytes, Error>> {
         if self.sealed {
             return None;
@@ -201,16 +201,15 @@ where
 /// `Error`, its `kind()` was set at the point the backend actually
 /// classified the failure (`ErrorKind::Cancelled` from a shutting-down
 /// runtime, `ErrorKind::Tls` from a mid-stream handshake failure — whatever
-/// it genuinely was), and re-wrapping it here would be exactly finding B2 of
-/// vertical 1's final review, reproduced one seam later: `kind()` becomes
+/// it genuinely was), and re-wrapping it here would repeat the defect
+/// `Transport::to_error` exists against, one seam later: `kind()` becomes
 /// `Body` for everything, every `is_*` predicate lies, and `Display` prints
 /// the category twice. Only a body whose error type carries no category of
 /// its own — the common case for backends whose bodies are plain
 /// `std::io::Error` or similar — falls back to `ErrorKind::Body`, which
 /// remains the right default for a genuinely opaque body failure.
 ///
-/// Found by vertical 2's final review: `chunk()` used to wrap
-/// unconditionally, and nothing in the test suite noticed, because
+/// Wrapping unconditionally is invisible to the test suite, because
 /// `NativeBody::poll_frame`'s own fallback already defaults to
 /// `ErrorKind::Body` — the double-wrap was invisible by coincidence, not
 /// because it was harmless. `Body`'s own `chunk_is_terminal_after_an_error_

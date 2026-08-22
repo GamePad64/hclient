@@ -155,10 +155,8 @@ where
 /// legitimately takes an hour and stalls for ten minutes in the middle is
 /// the reverse.
 ///
-/// The sentence that used to end this paragraph — "which stays declared
-/// `false` by `hclient-native`" — is out of date:
-/// that middle bullet has since landed, and `hclient-native` declares and
-/// enforces both `first_byte` and `between_bytes`
+/// `hclient-native` declares and enforces both `first_byte` and
+/// `between_bytes`
 /// (`hclient_native::IdleTimeout`, a body wrapper holding a sleep of its
 /// own restarted on every frame). What has not changed is that the two
 /// bounds are different questions and neither implies the other, so a
@@ -360,9 +358,8 @@ where
     /// Not `B::Error`: a timeout has no `B::Error` to be, and one cannot be
     /// invented for a generic `B`. Re-classification goes through the same
     /// `classify_body_error` `Response::chunk` uses, so a body error that
-    /// was already an `Error` keeps the category the backend gave it
-    /// (finding B2, one seam later), and classifying it again in
-    /// `Response::chunk` is idempotent.
+    /// was already an `Error` keeps the category the backend gave it, and
+    /// classifying it again in `Response::chunk` is idempotent.
     type Error = Error;
 
     fn poll_frame(

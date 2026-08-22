@@ -217,8 +217,7 @@ impl ClientBuilder {
     /// The base against which each request's URI is resolved.
     ///
     /// This library's answer to reqwest #988 and #213 (open since 2017 and
-    /// 2020, 104 votes). Before fix round 3, the value stored here was
-    /// never read from anywhere — the setter was a silent no-op.
+    /// 2020, 104 votes).
     ///
     /// **The rule is RFC 3986 §5**, the exact same one that resolves a
     /// response's `Location:`: one client shouldn't understand `/x` two
@@ -931,10 +930,10 @@ impl Client {
             extensions: parts.extensions,
         };
 
-        // B1/M3 of the branch's final review, two halves of one hole.
-        // Before it, `effective_timeouts` was never called from anywhere
-        // in production code — `ClientBuilder::timeouts()` was a silent
-        // no-op, because the only channel to the transport is
+        // Two halves of one hole. Without this call,
+        // `effective_timeouts` is never reached from production code and
+        // `ClientBuilder::timeouts()` is a silent no-op, because the only
+        // channel to the transport is
         // `http::Extensions`, and the client's configuration never made
         // it in there; and symmetrically, `RequestBuilder::timeouts()`
         // wrote to `Extensions` with no check against `Capabilities` at

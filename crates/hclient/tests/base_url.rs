@@ -42,8 +42,8 @@ fn sent_uri(c: &Client) -> String {
         .to_string()
 }
 
-/// The case this setting exists for, and exactly the one that used to be
-/// a silent no-op: a relative reference + a base.
+/// The case this setting exists for, and the one a silent no-op would
+/// break: a relative reference + a base.
 #[test]
 fn a_relative_request_uri_is_resolved_against_the_base() {
     let c = client_with_base("https://example.test/api/");

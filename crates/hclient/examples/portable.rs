@@ -210,8 +210,9 @@ fn status_headers_metadata(status: u16, headers: &http::HeaderMap) -> Vec<(Strin
 ///
 /// **It takes `&Client` and is generic over its own sink and nothing
 /// else** — which is the whole argument for erasing the facade, visible
-/// in one signature. It used to be `fetch<T, S>` with four `where` lines,
-/// every one of them a bound this function does not care about and cannot
+/// in one signature. A generic facade makes it `fetch<T, S>` with four
+/// `where` lines, every one a bound this function does not care about and
+/// cannot
 /// avoid restating, because a generic function has to repeat its callee's
 /// where-clause:
 ///
@@ -244,9 +245,8 @@ where
     // output — and `wasi-fetch`, which it migrates from, did the same:
     // `redirect_limit(0)` there skipped the redirect branch entirely rather
     // than failing. `Limited(0)` would turn that answer into an error, which
-    // is the mistake a mechanical migration makes. This branch was
-    // inexpressible until the Task 10 acceptance found it and `RedirectPolicy`
-    // became an enum.
+    // is the mistake a mechanical migration makes, and the reason
+    // `RedirectPolicy` is an enum rather than a count.
     let redirect = if args.follow_redirects {
         RedirectPolicy::Limited(10)
     } else {

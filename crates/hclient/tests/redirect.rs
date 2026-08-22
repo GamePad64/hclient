@@ -4,9 +4,8 @@
 //! doesn't distort its decision while shuffling data between hops.
 
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`);
-// without this line `cargo test -p hclient` with no flags used to fail
-// with E0432 instead of compiling down to nothing — the same fix already
-// made for `shape.rs` in Task 12. Task 13 fix round 2, Residual 3.
+// without this line `cargo test -p hclient` with no flags fails with
+// E0432 instead of compiling down to nothing.
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
@@ -213,7 +212,7 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
 
 /// Only `Location` is read from the response when building the next hop.
 /// Nothing in `next_hop`/`decide()` today touches any other response
-/// header, but before fix round 1 no test checked this behaviorally — a
+/// header, and nothing else checks this behaviourally — a
 /// mutation merging `resp.headers()` into the next request's headers
 /// (`Set-Cookie` from the server, or anything else leaking into the chain)
 /// would have slipped past all six tests from the brief unnoticed.
@@ -365,9 +364,8 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
 }
 
 // =====================================================================
-// Task 8 of vertical 3: the per-request policy, the `Internal` rejection
-// through a real `Client`, and the default that `Option<RedirectPolicy>`
-// must not have changed.
+// The per-request policy, the `Internal` rejection through a real
+// `Client`, and the default `Option<RedirectPolicy>` carries.
 // =====================================================================
 
 /// The default limit is `RedirectPolicy::default()`'s ten, and it is ten

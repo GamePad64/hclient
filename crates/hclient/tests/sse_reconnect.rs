@@ -11,8 +11,8 @@
 //! instead of a real one" trick `hclient-native/src/connect.rs`'s `FakeRt`
 //! already uses for connect-timeout tests; `TestTimer` is `hclient`'s own
 //! instance of it, next to `MockTransport` in `mock.rs`, specifically
-//! because an earlier version of this file needed a real ambient clock and
-//! that design was reworked away (see the report).
+//! because a test clock is what makes these deterministic — nothing here
+//! needs a real ambient one.
 #![cfg(feature = "test-util")]
 
 use hclient::mock::{MockTransport, TestTimer};
@@ -200,8 +200,8 @@ fn honours_server_sent_retry_over_the_policy() {
     // delay` only ever REDUCES via jitter, never grows past its base, so
     // this bound holds regardless of the actual jitter draw).
     //
-    // `1000`, not `1` (review round 1, Minor-2): with a 1ms server-supplied
-    // base the lower-bound check below could flake at roughly 1-in-10^6 —
+    // `1000`, not `1`: with a 1 ms server-supplied base the lower-bound
+    // check below could flake at roughly 1-in-10^6 —
     // `Backoff`'s fixed-point jitter quantization floors a 1ms base to
     // exactly `Duration::ZERO` for any jitter draw past ≈0.9999995
     // (measured against this toolchain: `Backoff{base:1ms,..}.delay(0,
@@ -266,8 +266,7 @@ fn honours_server_sent_retry_over_the_policy() {
         // satisfy the upper-bound check above too) instead of the
         // actually-computed delay.
         //
-        // NOT actually impossible, and this comment used to claim
-        // otherwise (review round 1, Minor-2): `jitter()` is documented
+        // NOT actually impossible: `jitter()` is documented
         // (see its doc comment in `sse.rs`) to be able to return exactly
         // `1.0`, at which point `Backoff::delay` returns exactly
         // `Duration::ZERO` regardless of `base` — and even short of that,
@@ -376,8 +375,8 @@ fn a_transient_body_error_is_retried_transparently_without_surfacing_as_an_event
 #[test]
 fn connect_without_with_timer_makes_exactly_one_attempt_regardless_of_error_kind() {
     // Without `with_timer`, `SseBuilder::connect` returns a plain
-    // `SseStream` (vertical 1's type, not a reconnecting wrapper at all) —
-    // this checks the WIRING through `Client::sse` -> `open` -> a single
+    // `SseStream` — not a reconnecting wrapper at all — so this checks
+    // the WIRING through `Client::sse` -> `open` -> a single
     // `Client::execute` call behaves like `SseStream::new`'s own contract
     // (a failed construction is `Err`, full stop), independent of
     // `is_retryable`'s classification: even a kind that WOULD be silently
@@ -404,8 +403,8 @@ fn connect_without_with_timer_makes_exactly_one_attempt_regardless_of_error_kind
     );
 }
 
-/// Review round 1, Important-1: `ReconnectingSseBuilder::connect`'s own doc
-/// comment states this exact contract ("makes exactly one connection
+/// `ReconnectingSseBuilder::connect`'s own doc comment states this exact
+/// contract ("makes exactly one connection
 /// attempt — no retry, regardless of whether the failure would later be
 /// classified as retryable"), but nothing exercised it — the test above
 /// drives the *plain* `SseBuilder::connect`, a different function on a
@@ -583,9 +582,8 @@ fn gives_up_after_max_attempts_with_one_distinguishable_error_not_silence() {
 
 #[test]
 fn connect_without_with_timer_returns_a_plain_non_reconnecting_stream() {
-    // No runtime flag controls this anymore (an earlier version had
-    // `SseOptions::reconnect: bool`) — whether the stream reconnects is a
-    // type-level fact now, decided solely by whether `with_timer` was
+    // No runtime flag controls this: whether the stream reconnects is a
+    // type-level fact, decided solely by whether `with_timer` was
     // called. This test exercises the "not called" side: `Client::sse(url)
     // .connect()` must behave exactly like `SseStream`'s own vertical-1
     // contract (already covered in depth by `tests/sse.rs`) — a clean EOF
@@ -653,10 +651,9 @@ fn header_carries_a_custom_header_across_every_reconnect() {
     }
 }
 
-/// Review round 1, Important-2: `SseBuilder::error` exists specifically so
-/// an invalid `(name, value)` pair passed to `.header(..)` becomes an `Err`
-/// from `connect()` rather than the brief's own reference code, which
-/// silently dropped it — the project's headline "no silent no-ops" rule,
+/// `SseBuilder::error` exists specifically so an invalid `(name, value)`
+/// pair passed to `.header(..)` becomes an `Err` from `connect()` rather
+/// than being silently dropped — the project's headline "no silent no-ops" rule,
 /// applied here. Nothing exercised it (mutation M20: reverting `header` to
 /// silently drop an invalid pair left the whole suite green). No response
 /// is queued on the mock transport for either half of this test — the
@@ -837,7 +834,7 @@ fn an_explicit_empty_id_clears_last_event_id_and_no_header_is_sent_on_reconnect(
     );
 }
 
-/// Review round 1, Minor-4: WHATWG requires `EventSource` to send
+/// WHATWG requires `EventSource` to send
 /// `Accept: text/event-stream` — a content-negotiating server without it
 /// could answer with something else entirely and there would be no way to
 /// tell the server "no, specifically this." Deleting the line that sets it
@@ -876,8 +873,8 @@ fn accept_header_is_sent_and_survives_a_reconnect() {
     }
 }
 
-/// Review round 1, Minor-5: nothing pinned that `Client::sse` actually
-/// resolves its URL against a configured `base_url` — `effective_uri`
+/// Nothing else pins that `Client::sse` actually resolves its URL against
+/// a configured `base_url` — `effective_uri`
 /// itself is well covered (`tests/base_url.rs`), but replacing `open`'s
 /// `effective_uri(client.config().base_url.as_ref(), url)` with
 /// `effective_uri(None, url)` left the whole suite green (mutation M22):
@@ -942,8 +939,8 @@ fn client_sse_resolves_a_relative_url_against_the_configured_base() {
     );
 }
 
-/// Review round 1, Minor-6: every response queued anywhere else in this
-/// file carries a correct `Content-Type`, so only the `Status` branch of
+/// Every response queued anywhere else in this file carries a correct
+/// `Content-Type`, so only the `Status` branch of
 /// `validate_sse_response` was ever exercised THROUGH the reconnect path —
 /// a wrong `Content-Type` was only ever tested on the very first
 /// connection (`tests/sse.rs`'s vertical-1 coverage), never on a reconnect

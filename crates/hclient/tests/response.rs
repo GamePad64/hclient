@@ -1,9 +1,8 @@
 //! Tests for `Response`/`Collected`/`RequestBuilder` at the `Client` level.
 
 // `hclient::mock` lives behind the `test-util` feature (see `mock.rs`);
-// without this line `cargo test -p hclient` with no flags used to fail
-// with E0432 instead of compiling down to nothing — the same fix already
-// made for `shape.rs` in Task 12. Task 13 fix round 2, Residual 3.
+// without this line `cargo test -p hclient` with no flags fails with
+// E0432 instead of compiling down to nothing.
 #![cfg(feature = "test-util")]
 
 use hclient::mock::MockTransport;
@@ -175,11 +174,9 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 /// the class of defect the crate's design tries to avoid.
 ///
 /// This test does NOT check the "request-first, client-fallback" lookup
-/// itself (spec §4.5) — an earlier version of this comment claimed it did,
-/// but couldn't have: the client here sets no timeouts at all, so there's
-/// nothing to override. The composition of client and request lives in
-/// `tests/timeouts.rs` (B1 of the branch's final review — before it, this
-/// didn't exist in the code either).
+/// itself: the client here sets no timeouts at all, so there is nothing to
+/// override. The composition of client and request lives in
+/// `tests/timeouts.rs`.
 ///
 /// `with_capabilities` isn't decoration: since M3, `Client::execute`
 /// checks the merged timeouts against `Capabilities`, and a mock with
@@ -224,8 +221,8 @@ fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
 
 /// The brief's `header()` dropped an invalid pair silently (`if let
 /// (Ok(n), Ok(v)) = .. { .. }`, no `else`) — the exact silent no-op
-/// `ClientBuilder::build` was built against (Task 13 fix round 1,
-/// Finding 4). A valid response is queued: if the bug comes back,
+/// `ClientBuilder::build` is built against. A valid response is queued: if
+/// the bug comes back,
 /// `send()` will silently reach the transport and return `Ok`, not `Err`.
 #[test]
 fn invalid_header_name_fails_send_instead_of_silently_dropping_it() {
@@ -247,8 +244,7 @@ fn invalid_header_name_fails_send_instead_of_silently_dropping_it() {
     );
 }
 
-/// Carried finding from Task 13's review (progress.md, "Task 13: minor
-/// (deferred)"): the "first error wins" contract of `header()` is guaranteed
+/// The "first error wins" contract of `header()` is guaranteed
 /// structurally (`header()` short-circuits before parsing once the error
 /// slot is filled), but had no test pinning it. Calls an invalid *name*
 /// first, then an invalid *value*: the error `send()` reports must be the
@@ -274,10 +270,9 @@ fn header_first_error_wins_name_over_later_value_error() {
     );
 }
 
-/// `chunk()` skips trailer frames — documented in `response.rs` but, before
-/// this fix round, untested: `push_response`/`push_response_frames` only ever
-/// produce data frames. `push_response_with_trailers` closes that gap
-/// (Task 13 fix round 1, Finding 5).
+/// `chunk()` skips trailer frames. `push_response`/`push_response_frames`
+/// only ever produce data frames, so `push_response_with_trailers` is what
+/// reaches this at all.
 #[test]
 fn chunk_skips_trailer_frames() {
     let mut trailers = http::HeaderMap::new();
@@ -307,8 +302,8 @@ fn chunk_skips_trailer_frames() {
 
 /// The other half of the asymmetry `chunk_skips_trailer_frames` proves one
 /// side of: `into_parts()` hands back the raw body, and polling it directly
-/// (as `SseStream`/any caller with `Task 14`-style needs would) DOES see the
-/// trailer frame that `chunk()` swallows.
+/// (as `SseStream` does) DOES see the trailer frame that `chunk()`
+/// swallows.
 #[test]
 fn into_parts_lets_you_poll_the_trailer_frame_directly() {
     use http_body::Body as _;
@@ -355,9 +350,9 @@ fn into_parts_lets_you_poll_the_trailer_frame_directly() {
     }
 }
 
-/// `Response::version()` and `into_parts()` had no direct test (Task 13 fix
-/// round 1, Finding 6): `into_parts()` was only exercised indirectly through
-/// the trailer tests above, and `version()` not at all.
+/// `Response::version()` and `into_parts()` directly: `into_parts()` is
+/// otherwise only exercised through the trailer tests above, and
+/// `version()` not at all.
 #[test]
 fn version_and_into_parts_expose_the_full_response_head() {
     let m = MockTransport::new();
@@ -390,13 +385,12 @@ fn version_and_into_parts_expose_the_full_response_head() {
     }
 }
 
-// ── resolution of the branch's final review: minors m4/m5/m6 ─────────────
+// ── silent no-ops ──────────────────────────────────────────────────────
 
-/// m4. `RequestBuilder::headers()` used to ASSIGN (`self.headers =
-/// headers`) instead of extending — so `.header("x-a","1").headers(map)`
-/// lost `x-a` with no diagnostic at all. The same class of defect as the
-/// brief's `header()`, which Task 13 fixed and covered with a test: a
-/// value the caller passed in disappears silently.
+/// `RequestBuilder::headers()` must extend rather than ASSIGN
+/// (`self.headers = headers`): assigning makes
+/// `.header("x-a","1").headers(map)` lose `x-a` with no diagnostic at all,
+/// a value the caller passed in disappearing silently.
 #[test]
 fn headers_extends_what_header_already_set_instead_of_discarding_it() {
     let m = MockTransport::new();
@@ -526,8 +520,8 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
     let err = futures_executor::block_on(resp.chunk())
         .expect("error frame")
         .unwrap_err();
-    // Vertical 2's final review, finding F2: `chunk()` no longer relabels
-    // an already-classified error as `ErrorKind::Body` — `MockBody::Error`
+    // `chunk()` does not relabel an already-classified error as
+    // `ErrorKind::Body` — `MockBody::Error`
     // is already `hclient_core::Error`, and its `kind()` (`Other`, set one
     // line above) must survive unchanged. `chunk_survives_a_
     // non_body_error_kind_instead_of_relabeling_it_body` (below) checks the
@@ -540,11 +534,10 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
     );
 }
 
-/// Final review, F2 (major): `Response::chunk()` used to wrap EVERY body
-/// error in `Error::new(ErrorKind::Body, e)` unconditionally — the exact
-/// pattern vertical 1's final review named finding B2 and fixed with
-/// `Transport::to_error`'s "already ours? pass it through" default, except
-/// this half of the request (the response body) never got the same fix.
+/// `Response::chunk()` must not wrap EVERY body error in
+/// `Error::new(ErrorKind::Body, e)` unconditionally — the exact pattern
+/// `Transport::to_error`'s "already ours? pass it through" default exists
+/// against, on the response half of the exchange.
 /// `MockBody::Error` is `hclient_core::Error` already, so a body that fails
 /// with a real classification (`Cancelled`, chosen because it exists
 /// precisely so a caller can tell "the runtime is shutting down" apart from
@@ -558,9 +551,7 @@ fn chunk_is_terminal_after_an_error_and_does_not_poll_the_body_again() {
 ///
 /// Mutation-checked (see this task's report): reverting `classify_body_error`
 /// to the old unconditional `Error::new(ErrorKind::Body, e)` turns this test
-/// red with `kind() == Body`, confirming it is the test that would have
-/// caught finding F2 — the same mutation the review's own probe (B8) found
-/// zero tests catching before this fix round.
+/// red with `kind() == Body`, which is the mutation this test exists for.
 #[test]
 fn chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_body() {
     let m = MockTransport::new();

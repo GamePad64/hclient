@@ -39,15 +39,13 @@ impl HopParts {
 /// downgraded: in that case it's more honest to return the 3xx as-is than
 /// to send an empty body where one is expected.
 ///
-/// **`extensions` cross an origin boundary with one exception, and the
-/// exception is the reason this paragraph changed.** It used to read that
-/// they carry over unconditionally, which had no consequences while
-/// `Timeouts` was the only type in the bag — safe, and necessary, to carry
+/// **`extensions` cross an origin boundary with one exception.** Carrying
+/// them over unconditionally has no consequences while
+/// `Timeouts` is the only type in the bag — safe, and necessary, to carry
 /// across an origin (otherwise timeouts would vanish after a redirect,
 /// which is exactly where B1 puts them). It recorded a debt for the day
-/// something else moved in: *"at that point `extensions` will need the
-/// same sensitivity filter headers already have"* (m7 of that branch's
-/// final review). [`AllowEarlyData`] is that day.
+/// something else moves in, at which point `extensions` need the same
+/// sensitivity filter headers already have. [`AllowEarlyData`] is that.
 ///
 /// It is not a credential, so `SENSITIVE_HEADERS` reasoning does not reach
 /// it directly, but it is the same *kind* of thing: a statement the caller

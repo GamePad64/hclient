@@ -5,8 +5,7 @@
 //! matters more than usual: `cargo test --workspace` being green says
 //! nothing about any line below, because a host run never touches these
 //! tests at all. CI does execute them, on Chrome and Firefox, in the
-//! `browser` job — it did not when this file was written, which is why an
-//! earlier version of this comment said no CI job ran a browser test.
+//! `browser` job.
 //!
 //! Run them with
 //!
@@ -75,8 +74,8 @@ fn harness_page_url() -> String {
         .expect("the currently loaded page always has an href")
 }
 
-/// The vertical's actual acceptance claim: the same two lines that work on
-/// native in vertical 2, unchanged, in a browser. No transport named, no
+/// The actual claim: the same two lines that work on native, unchanged,
+/// in a browser. No transport named, no
 /// `Result` on the constructor, no `#[cfg]` in the caller.
 #[wasm_bindgen_test]
 async fn the_two_line_example_from_the_readme_works_in_a_browser() {

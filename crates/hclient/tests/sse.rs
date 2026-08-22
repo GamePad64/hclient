@@ -67,7 +67,7 @@ fn rejects_wrong_content_type() {
     assert!(SseStream::new(resp, DEFAULT_MAX_EVENT_SIZE).is_err());
 }
 
-// ── Content-Type: token boundaries, not a prefix (review round 1, Finding 2) ──
+// ── Content-Type: token boundaries, not a prefix ───────────────────────
 //
 // `starts_with(MIME)` accepted `"text/event-streamfoo"` and rejected
 // `"Text/Event-Stream"`. The four forms below cover both sides of the
@@ -149,7 +149,7 @@ fn rejects_non_200_status() {
     );
 }
 
-// ── Ordering of a fatal error (review round 1, Finding 1) ─────────────────
+// ── Ordering of a fatal error ──────────────────────────────────────────
 //
 // `next()` used to return `Err` on a limit violation IMMEDIATELY, before an
 // already-parsed valid event from the same `push` could reach the caller
@@ -323,11 +323,11 @@ fn event_split_mid_field_across_frames_still_yields_two_events() {
 }
 
 /// A CRLF terminator split exactly between CR and LF at a transport frame
-/// boundary, on a `data:` line — not at an empty-line boundary. (review
-/// round 1, Finding 3: a split at an *empty*-line boundary wasn't
-/// diagnostic — a mutation disabling `carried_terminator` still gave the
-/// right result, because the phantom empty line landed on an already-
-/// drained data buffer and `dispatch()` was a no-op on it. Here, though,
+/// boundary, on a `data:` line — not at an empty-line boundary. (A split
+/// at an *empty*-line boundary is not diagnostic: a mutation disabling
+/// `carried_terminator` still gives the right result, because the phantom
+/// empty line lands on an already-drained data buffer and `dispatch()` is
+/// a no-op on it. Here, though,
 /// the unconsumed LF triggers a PREMATURE dispatch between two `data:`
 /// lines of the same event: a broken `carried_terminator` produces two
 /// events `"ab"`/`"cd"` instead of one `"ab\ncd"`.) `carried_terminator`

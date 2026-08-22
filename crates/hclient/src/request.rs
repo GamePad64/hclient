@@ -44,8 +44,8 @@ pub struct RequestBuilder<'a> {
     /// invalid header is exactly the silent no-op `ClientBuilder::build` was
     /// built against (see `check_supported` in config.rs). The brief's
     /// `header()` code dropped an invalid pair silently (`if let (Ok(n),
-    /// Ok(v)) = .. { .. }`, no `else`) — a defect in the brief itself, not
-    /// intended behavior: see the task report, Task 13 fix round 1.
+    /// Ok(v)) = .. { .. }`, no `else`) — a silent drop, and never
+    /// intended behaviour.
     error: Option<Error>,
 }
 
@@ -89,8 +89,8 @@ impl<'a> RequestBuilder<'a> {
     ///
     /// `self.headers = headers` (as it was before m4 of the branch's final
     /// review) threw away everything `header()` had managed to set, with no
-    /// diagnostic at all — the same class of defect as the brief's
-    /// `header()`, which Task 13 fixed and covered with a test.
+    /// diagnostic at all — the same class of defect as a silently
+    /// dropped `header()`, and covered by a test for the same reason.
     /// `HeaderMap::extend` overrides a same-named value rather than
     /// accumulating a duplicate (verified against `http`'s contract: the
     /// first value for a key from the extending map goes through `insert`,

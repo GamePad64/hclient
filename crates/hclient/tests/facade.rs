@@ -21,9 +21,8 @@ fn public_api_types_are_reachable_from_the_facade() {
         hclient::caps::check_supported(&cfg, &caps, "probe");
 }
 
-/// `Response`, `Collected`, and `RequestBuilder` had no
-/// reachability check from the facade (Task 13 fix round 1, Finding 6).
-/// Unlike the types above, they have no public constructor without a
+/// `Response`, `Collected` and `RequestBuilder`, which
+/// unlike the types above have no public constructor without a
 /// transport — there's nothing here to construct a value with, so
 /// reachability and shape (generic arity) are checked by compiling a
 /// function that's never called: if `Response`/`Collected`/`RequestBuilder`
@@ -50,11 +49,11 @@ fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::sse::SseStream<B>) {
     let _limit: usize = hclient::sse::DEFAULT_MAX_EVENT_SIZE;
 }
 
-// ── Task 17 fix round 1 ─────────────────────────────────────────────────
+// ── `Error` ────────────────────────────────────────────────────────────
 //
-// `Error` was exactly the type that made the previous round of testing
-// incomplete: `Client::execute`, `RequestBuilder::send`, `Response::chunk`/
-// `collect`, `Collected::text`, `SseStream::new`/`next` all return it, and
+// `Error` is the type most easily left out of a reachability check:
+// `Client::execute`, `RequestBuilder::send`, `Response::chunk`/`collect`,
+// `Collected::text` and `SseStream::new`/`next` all return it, and
 // `public_api_types_are_reachable_from_the_facade` above never once names
 // it. The tests below don't just check compilation (like the
 // `#[allow(dead_code)]` functions above, which have no constructor without
@@ -66,9 +65,7 @@ fn sse_types_are_reachable_from_the_facade<B>(_s: hclient::sse::SseStream<B>) {
 /// `Error`/`ErrorKind`/`Phase` are `Result` types the facade must be able
 /// to name on its own, with no reach into `hclient-core`. The `Result`
 /// alias below is exactly what a function returning `Result<_,
-/// hclient::Error>` couldn't write before this fix round (see task 17's
-/// report, the story with the example in the brief that named a
-/// nonexistent `hclient::Error`).
+/// hclient::Error>` needs, and which is easy to leave unexported.
 #[test]
 fn error_kind_and_phase_are_reachable_and_matchable_from_the_facade() {
     type FacadeResult<T> = Result<T, hclient::Error>;
@@ -121,8 +118,8 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 /// `MockTransport::with_capabilities`) without them — the field's type has
 /// to be nameable on the caller's side.
 ///
-/// The fourth used to be `UpgradeSupport`, which v0.3 W4 step 4 deleted
-/// from the workspace: four variants, `None` from every backend, and no
+/// A fourth, `UpgradeSupport`, was deleted from the workspace: four
+/// variants, `None` from every backend, and no
 /// caller decision turning on it. What this test pins is the *plumbing* —
 /// that a `Capabilities` field's type is nameable and writable from the
 /// facade — not upgrade, so it needs a different field rather than one
@@ -246,7 +243,7 @@ fn mock_transport_round_trip_uses_only_facade_types() {
     }
 }
 
-// ── Task 17 fix round 2 ─────────────────────────────────────────────────
+// ── `Client::capabilities()` ───────────────────────────────────────────
 
 /// `Client::capabilities()` — the forwarder that answers "what can this
 /// client do" without the caller ever writing `use
@@ -271,7 +268,7 @@ fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
     assert!(client.capabilities().streaming_request_body);
 }
 
-// ── Task 14 ──────────────────────────────────────────────────────────────
+// ── the default transport ──────────────────────────────────────────────
 
 /// `DefaultTransport`/`Client<T = DefaultTransport>`/`Client::new()` — the
 /// facade rule applied to the default transport itself. Unlike
@@ -300,7 +297,7 @@ fn default_transport_is_reachable_and_is_the_bare_clients_default_param() {
     let _client_no_param: hclient::Client = client;
 }
 
-// ── Fix round 1 ──────────────────────────────────────────────────────────
+// ── the constructor ────────────────────────────────────────────────────
 
 /// **`Client::new()` names both failure causes and panics on neither** —
 /// and there is only one constructor to name them with.

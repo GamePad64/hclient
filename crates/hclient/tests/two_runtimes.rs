@@ -12,7 +12,7 @@
 //! `async-io`) — and that's the only difference between the two runs. The
 //! vertical's acceptance criterion: not a single `#[cfg]` in this file.
 //!
-//! The test's property is proven by mutation (see task 14's report):
+//! The test's property is proven by mutation:
 //! adding `+ Send` to the `R` bound on `fetch_once` doesn't break either
 //! instantiation (both capabilities are `Send`) — expected, `Send` isn't
 //! the seam being checked here (the only Send asymmetry known in this
@@ -37,10 +37,10 @@
 //! that follows still compiles for every target this test can run on at
 //! all, with no branch between tokio and smol anywhere.
 //!
-//! Introduced by Task 8 of vertical 3, which made `hclient` buildable for
-//! `wasm32-unknown-unknown` (`DefaultTransport = hclient_fetch::Fetch`) and
-//! added `tests/wasm_default.rs` to be run there by `wasm-pack test` — a
-//! command that builds EVERY test target of the crate. It pairs with the
+//! `hclient` is buildable for `wasm32-unknown-unknown`
+//! (`DefaultTransport = hclient_fetch::Fetch`), and `tests/wasm_default.rs`
+//! is run there by `wasm-pack test` — a command that builds EVERY test
+//! target of the crate. It pairs with the
 //! target gate on this file's dependencies in `Cargo.toml`
 //! (`[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]`, see the
 //! comment there): the gate and this line only work together, and removing

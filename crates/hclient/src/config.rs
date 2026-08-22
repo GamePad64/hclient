@@ -249,8 +249,7 @@ pub fn effective_timeouts(req: &http::Extensions, client: &Timeouts) -> Timeouts
 ///
 /// `pub(crate)`, unlike its `effective_timeouts` sibling above: same
 /// reasoning as `check_redirect_supported` — nothing outside this crate has
-/// a use for it, and the facade's export list is already over-wide
-/// (finding §6.7 of the branch's final review).
+/// a use for it, and the facade's export list is already over-wide.
 pub(crate) fn effective_redirect(
     req: &http::Extensions,
     client: &Option<RedirectPolicy>,
@@ -271,13 +270,11 @@ pub(crate) fn effective_redirect(
 /// "Not checked **for support**" is about `Capabilities`, and only about
 /// that. Both fields ARE applied: `base_url` in `effective_uri` on every
 /// request, `redirect` by the redirect stage in `Client::execute`. This
-/// note exists because the earlier wording read easily as "nobody handles
-/// these fields", and `base_url` used to be exactly that — saved and never
-/// applied.
+/// note exists because "nobody handles these fields" is the reading to
+/// avoid: a field saved and never applied is a silent no-op, which this
+/// crate has shipped before.
 ///
-/// `redirect` used to be `_` here too, under a note saying it "will stop
-/// being harmless the moment a backend with `RedirectSupport::Internal`
-/// shows up". **That moment arrived.** `hclient-fetch` reports
+/// `redirect` is not `_` here, because `hclient-fetch` reports
 /// `redirects: RedirectSupport::Internal`: the browser follows the chain
 /// itself, `Client`'s redirect stage never sees a single 3xx, and a
 /// configured `RedirectPolicy` would be precisely the silent no-op this
@@ -432,8 +429,7 @@ pub(crate) fn check_cache_supported(
 /// function.
 ///
 /// `pub(crate)`, like its two siblings and for the same reason: the
-/// `hclient` facade already exports more plumbing than it should (finding
-/// §6.7 of the branch's final review).
+/// `hclient` facade already exports more plumbing than it should.
 pub(crate) fn check_cookies_supported(
     cookies: bool,
     caps: &Capabilities,
@@ -472,8 +468,8 @@ pub(crate) fn check_cookies_supported(
 ///
 /// `pub(crate)`, like `check_timeouts_supported` and for the same reason:
 /// `Client::execute` needs it over a merged value rather than over a whole
-/// `Config`, and the `hclient` facade already exports more plumbing than it
-/// should (finding §6.7 of the branch's final review).
+/// `Config`, and the `hclient` facade already exports more plumbing than
+/// it should.
 pub(crate) fn check_redirect_supported(
     redirect: &Option<RedirectPolicy>,
     caps: &Capabilities,
@@ -546,10 +542,10 @@ pub(crate) fn check_version_demand_supported(
 
 /// The same check, but over a single `Timeouts` rather than the whole
 /// `Config` — because `Client::execute` checks the **merged** result of
-/// `effective_timeouts`, not the client's configuration (B1/M3 of the
-/// branch's final review: before it, per-request timeouts weren't checked
-/// at all, and client-level ones were checked here but never reached the
-/// transport). One shared body, not a second copy of the `checks` array:
+/// `effective_timeouts`, not the client's configuration — checking the
+/// latter leaves per-request timeouts unchecked and client-level ones
+/// checked but never reaching the transport. One shared body, not a second
+/// copy of the `checks` array:
 /// these two checks must not drift apart, and two phase lists will drift
 /// the moment a new phase shows up.
 ///

@@ -211,7 +211,7 @@ pub mod redirect {
 pub use config::{Config, Timeouts, effective_timeouts};
 pub use deadline::NoClock;
 
-// Task 17 fix round 1: this list must cover not just `Capabilities`/
+// This list must cover not just `Capabilities`/
 // `RequestBody`/`UnsupportedCapability`, but EVERY `hclient-core` type
 // reachable from the signature, a field, or a variant of something already
 // re-exported here — otherwise a consumer depending only on `hclient` can't
@@ -239,10 +239,10 @@ pub use deadline::NoClock;
 // consumer who just builds requests and reads responses. That decision had
 // a cost — `client.transport().capabilities()` would need `Transport` in
 // scope, since `capabilities()` is a trait method there and `.transport()`
-// hands back a bare `&T` — fix round 2 removed that cost with a
-// `Client::capabilities()` forwarder (`client.rs`) instead of re-exporting
-// the trait: the most common question about `Capabilities` is answered,
-// the quarantine stays a quarantine.
+// hands back a bare `&T` — so a `Client::capabilities()` forwarder
+// (`client.rs`) pays it instead of re-exporting the trait: the most common
+// question about `Capabilities` is answered, the quarantine stays a
+// quarantine.
 // `AllowEarlyData` and `EarlyDataSupport` are on this list for the reason
 // every other capability type is, and one of their own: `AllowEarlyData` is
 // a value the CALLER puts on a request — it is the only thing that can
@@ -309,10 +309,9 @@ pub use response::{Collected, Response};
 ///   `default = []`): the type doesn't exist at all. `Client::new()`, or
 ///   naming `hclient::DefaultTransport`, is an ordinary compile
 ///   error ("cannot find type", "no function or associated item"), not a
-///   silent fallback
-///   to something weaker. The same decision Task 9 of vertical 2 already
-///   verified empirically for trusted TLS anchors: a build without a
-///   verifier fails to compile rather than silently trusting everything.
+///   silent fallback to something weaker. The same decision the TLS
+///   backends make about trust anchors: a build without a verifier fails
+///   to compile rather than silently trusting everything.
 /// - With the `default-transport` feature on any NON-wasm target
 ///   (linux/macos/windows — the only branch below,
 ///   `not(target_family = "wasm")`): `Native<Tokio, Rustls,
@@ -325,9 +324,8 @@ pub use response::{Collected, Response};
 ///   README, "What's in the dependency graph": `hyper` depends on `tokio`
 ///   even on the HTTP/1 path, not just this branch).
 /// - With the `default-transport` feature on `wasm32-unknown-unknown`
-///   (browser): `hclient_fetch::Fetch` — the second branch below, added in
-///   vertical 3 once that transport existed and was tested in a real
-///   browser. `Client::new()` on this target returns `Self`, not a
+///   (browser): `hclient_fetch::Fetch` — the second branch below.
+///   `Client::new()` on this target returns `Self`, not a
 ///   `Result`: `Fetch::new()` has no fallible step (see `Client::new`'s own
 ///   doc comment in `client.rs`).
 /// - With the `default-transport` feature on `wasm32-wasip2`/
