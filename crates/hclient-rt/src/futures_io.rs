@@ -132,9 +132,9 @@ impl<S: futures_io::AsyncWrite + Unpin> hyper::rt::Write for FuturesIo<S> {
     ///
     /// If a concrete `S` shows up for which vectored writes are provably
     /// efficient, the right path is a separate constructor with an
-    /// explicit opt-in, not an optimistic default here. Today there is no
-    /// such consumer — Task 4 (`hclient-rt-smol`) hasn't been written yet
-    /// — so adding one now would be speculative API with no caller.
+    /// explicit opt-in, not an optimistic default here. There is no such
+    /// consumer today, so adding one would be speculative API with no
+    /// caller.
     fn is_write_vectored(&self) -> bool {
         false
     }

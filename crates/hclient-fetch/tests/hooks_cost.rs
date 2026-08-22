@@ -34,8 +34,8 @@
 //! exists. There is no allocator to count in a browser, so that
 //! allocation cannot be measured directly.
 //!
-//! It used to be gated by a second `H::WATCHING`, and **that gate
-//! survived a mutation**: removing it makes a `NoHooks` build clone a
+//! A second `H::WATCHING` gate here **survives a mutation**: removing it
+//! makes a `NoHooks` build clone a
 //! `Uri` and call `NoHooks::on` for every request, and the first test
 //! below still reads 0 — because the clock is only read from the `Some`
 //! arm of `hooks::since`. All 10 behaviour tests and all 4 tests here

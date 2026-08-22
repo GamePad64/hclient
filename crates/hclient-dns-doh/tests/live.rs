@@ -796,9 +796,9 @@ fn dig(name: &str, rtype: &str, ep: Endpoint, owner: &str) -> Option<DigRecord> 
     // fudge to make a comparison pass — it is the check that the
     // substitution HAPPENED, on a record nobody here wrote.
     //
-    // A first draft of this comment said no fixture in this crate covered
-    // the root target. **That was false, and the mutation run said so**:
-    // dropping the substitution is killed hermetically by
+    // A fixture in this crate does cover the root target, and the
+    // mutation run says so: dropping the substitution is killed
+    // hermetically by
     // `svcb.rs`'s `a_service_mode_record_with_a_root_target_takes_its_owner
     // _name` as well as by this test (L4). What is added here is not
     // coverage of the rule but coverage of the *reading*: the fixture

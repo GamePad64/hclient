@@ -57,10 +57,10 @@
 //! each calls `self.lookup` independently, and `std::net::ToSocketAddrs`
 //! for a `(host, port)` pair resolves BOTH families at once via a single
 //! system `getaddrinfo`. That means any Happy Eyeballs consumer that
-//! calls both methods for one name (which the Task 5 `Scheduler` is
-//! required to do) actually triggers TWO full dual-family `getaddrinfo`
-//! calls — measured with a counter wrapped around `Blocking::run` (see
-//! the task report, fix round 1): `2` calls for one name via
+//! calls both methods for one name (which `Scheduler` is required to do)
+//! actually triggers TWO full dual-family `getaddrinfo` calls — measured
+//! with a counter wrapped around `Blocking::run`: `2` calls for one name
+//! via
 //! `lookup_ipv4` + `lookup_ipv6`. Each call gets both families back and
 //! throws away half of it with the `is_ipv6() == want_v6` filter — i.e.
 //! the A records from the v6 call and the AAAA records from the v4 call
@@ -281,8 +281,8 @@ mod tests {
     /// actual code, so a change that shares one resolution across both
     /// families (the stated v0.2 direction) forces this test — and the doc
     /// comment it mirrors — to be updated together rather than drifting
-    /// apart silently (fix round 1: the doc previously described a single
-    /// shared call that the code never made).
+    /// apart silently: a doc describing a single shared call the code never
+    /// makes is exactly the drift this pins.
     #[test]
     fn both_families_of_one_name_cost_two_separate_blocking_calls_today() {
         use std::sync::Arc;
@@ -448,10 +448,10 @@ mod tests {
             .next()
             .unwrap()
             .expect_err("must be an error");
-        // Fix round 1: previously there was only a negative check
-        // (`assert_ne!` against `Resolve`) here — it would also have
-        // passed for `ErrorKind::Other`, which is what cancellation was
-        // wrapped in before this round. A precise check of the exact code
+        // A negative check (`assert_ne!` against `Resolve`) is not enough
+        // here — it also passes for `ErrorKind::Other`, which is what a
+        // wrapped cancellation looks like. A precise check of the exact
+        // code
         // is not weaker than the negative one, but stricter: `Cancelled`
         // is a concrete variant introduced specifically for this
         // condition (see the `ErrorKind::Cancelled` doc comment in

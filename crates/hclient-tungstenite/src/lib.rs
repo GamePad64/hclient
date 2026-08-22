@@ -94,7 +94,7 @@
 //! other side, and neither half of this arrangement can undo it: the pool
 //! is not consulted on the way in ([`hclient_native::Native::upgrade`]
 //! never asks it), and nothing here can put a connection back, because
-//! this crate is never handed one — only an `I` that used to be one.
+//! this crate is never handed one — only the `I` a connection became.
 //!
 //! # The bound an open socket has: liveness, and only when it is asked for
 //!

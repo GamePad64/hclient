@@ -13,8 +13,8 @@
 //!
 //! # Why the resolution is written out by hand
 //!
-//! [`resolve_reference`] used to be `url::Url::parse(base).join(reference)`.
-//! That single call put `url` → `idna` → `icu_normalizer` +
+//! `url::Url::parse(base).join(reference)` is the one-line alternative.
+//! That single call puts `url` → `idna` → `icu_normalizer` +
 //! `icu_properties` into every build of `hclient-proto`, the sans-io crate
 //! every target includes: measured from vendored sources,
 //! `icu_properties_data` 1.9 MB, `idna` 1004 KB, `icu_collections` 820 KB,
@@ -727,10 +727,10 @@ mod tests {
     /// `<` is the rejected character on purpose: it is illegal in an
     /// authority for BOTH `http::Uri` and `url`, so this test says
     /// "unparsable" and not "unparsable by the one of them we happen to
-    /// use". The previous version used `http://[:::1]/`, which `url`
-    /// rejected as a malformed IPv6 literal and `http::Uri` accepts — that
-    /// pair is now pinned as a divergence in `tests/uri_resolution.rs`
-    /// instead of masquerading as a property.
+    /// use". `http://[:::1]/` will not do: `url` rejects it as a malformed
+    /// IPv6 literal and `http::Uri` accepts it, so that pair is pinned as a
+    /// divergence in `tests/uri_resolution.rs` rather than masquerading as
+    /// a property.
     #[test]
     fn an_unparsable_reference_is_named_as_such() {
         assert_matches!(

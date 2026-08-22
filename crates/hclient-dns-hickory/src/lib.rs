@@ -232,12 +232,12 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
                 // default. `supports_svcb()` above is what keeps the two
                 // distinguishable; that is the whole reason it exists.
                 //
-                // This rests on the `is_empty_answer` arm below, and did not
-                // used to be true: hickory reports NODATA as an error, so
-                // without that arm "this origin publishes no HTTPS record"
-                // went out as a resolver failure — on nearly every origin,
+                // This rests on the `is_empty_answer` arm below: hickory
+                // reports NODATA as an error, so without that arm "this
+                // origin publishes no HTTPS record" goes out as a resolver
+                // failure — on nearly every origin,
                 // and in the one place `supports_svcb`'s honesty is supposed
-                // to live. Do not remove the arm and leave this paragraph.
+                // to live. Do not remove the arm.
                 Ok(lookup) => {
                     let items: Vec<_> = lookup
                         .answers()

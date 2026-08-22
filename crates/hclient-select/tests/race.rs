@@ -14,8 +14,8 @@
 //! mechanism and what stopped the race being built.
 //!
 //! [`with_no_head_start_both_stacks_connect_and_exactly_one_request_is_sent`]
-//! is the negation, at the setting that used to be worst: both arms
-//! connect, the servers say so, and **exactly one** of them is asked for
+//! is the negation, at the worst setting: both arms connect, the servers
+//! say so, and **exactly one** of them is asked for
 //! anything. Nothing else here means much without it.
 //!
 //! # What is asserted on a clock, and why only that

@@ -49,10 +49,9 @@ enum Seen {
         uri: String,
         status: u16,
         /// The `Option` `Head::version` actually is, not a `String` of
-        /// it. It used to be a `String` because the assertion was about
-        /// what the value *printed as*; the claim now is that there is no
-        /// value, and `None` is a thing to compare against rather than to
-        /// format.
+        /// it. A `String` would be the shape for an assertion about what
+        /// the value *prints as*; the claim here is that there is no value,
+        /// and `None` is a thing to compare against rather than to format.
         version: Option<http::Version>,
     },
 }
@@ -261,8 +260,8 @@ async fn the_status_is_the_one_the_server_sent() {
 /// transport in the same process, and a hook looking it up in a table of
 /// live connections cannot hit one.
 ///
-/// This used to be recorded as a value being *borrowed* against its own
-/// doc, and it is not: the other thing that produces it is a build with
+/// It is not a value being *borrowed* against its own doc: the other
+/// thing that produces it is a build with
 /// `Hooks::WATCHING == false`, whose events by that const's own definition
 /// nobody reads, so the constant's doc comment carries the meaning rather
 /// than one producer.

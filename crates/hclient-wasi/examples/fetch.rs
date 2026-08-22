@@ -1,15 +1,13 @@
-//! End-to-end example: the same application code that will work on native
-//! in vertical 2, and in the browser in vertical 3. Only the transport
-//! type changes between verticals (`WasiHttp` here, something like
-//! `NativeHttp`/`TokioHttp` in vertical 2, `FetchHttp` in vertical 3) —
-//! the `Client::builder(transport).build()` call and everything after it,
-//! no.
+//! End-to-end example: the same application code that works on native and
+//! in the browser. Only the transport type changes — `WasiHttp` here,
+//! `Native` on a host, `Fetch` in a browser — and the
+//! `Client::builder(transport).build()` call and everything after it does
+//! not.
 //!
 //! # Why this isn't `fn main()`
 //!
-//! Established, not assumed — Task 16 reproduced this on a live run
-//! under wasmtime, and the same conclusion was independently reached
-//! while preparing this example. An ordinary `fn main()` calling
+//! Established, not assumed — reproduced on a live run under wasmtime.
+//! An ordinary `fn main()` calling
 //! `futures::executor::block_on(fut)` compiles, on `wasm32-wasip2`, to a
 //! SYNCHRONOUS `wasi:cli/run@0.2.0` export — the one the rustc target
 //! gives you out of the box. A synchronous (not async-lifted) root task

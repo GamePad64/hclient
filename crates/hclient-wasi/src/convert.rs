@@ -267,11 +267,11 @@ fn body_write_failed(e: wasip3::http_compat::Error) -> Error {
 ///   asked for. An early, deliberate host rejection (the server read the
 ///   headers, returned a 4xx, and closed the request stream without
 ///   reading the body to the end) is deliberately not carved out into a
-///   success path in v0.1: this is a conscious narrowing, not a
-///   forgotten case — telling apart "the host refused to read further"
-///   from "our own frame source broke" from `wasip3::http_compat::Error`
-///   alone is unreliable (both surface as similar variants), and
-///   widening `Capabilities` for this case is deliberately not done.
+///   success path: a conscious narrowing, not a forgotten case — telling
+///   apart "the host refused to read further" from "our own frame source
+///   broke" from `wasip3::http_compat::Error` alone is unreliable (both
+///   surface as similar variants), and widening `Capabilities` for this
+///   case is deliberately not done.
 pub(crate) fn resolve_send<T>(
     resp: Result<T, ErrorCode>,
     written: Result<u64, wasip3::http_compat::Error>,

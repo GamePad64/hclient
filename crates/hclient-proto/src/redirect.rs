@@ -16,10 +16,9 @@ pub const SENSITIVE_HEADERS: [HeaderName; 3] = [
 /// exceeding. `reqwest` draws the same line as `Policy::none()` versus
 /// `Policy::limited(0)`.
 ///
-/// This was a `struct { limit: u8 }` until the Task 10 acceptance ported a
-/// live consumer onto it and found the first intent inexpressible — the
-/// consumer's `follow_redirects: false` forwards the 302 upward, and
-/// `limit: 0` turned that answer into an error.
+/// A `struct { limit: u8 }` cannot express the first intent: a consumer's
+/// `follow_redirects: false` forwards the 302 upward, where `limit: 0`
+/// turns that answer into an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedirectPolicy {
     /// Do not follow. A 3xx reaches the caller as an ordinary response, its
@@ -432,7 +431,7 @@ mod tests {
         assert!(matches!(r, RedirectAction::InvalidLocation));
     }
 
-    // ── review: finding 1 — asymmetry in default ports ──────────────
+    // ── asymmetry in default ports ─────────────────────────────────
     //
     // `current` arrives as-is from the caller (it may carry an explicit
     // `:443`), and so does the redirect target now that `url` — which
@@ -525,10 +524,11 @@ mod tests {
         );
     }
 
-    // ── review: finding 2 — the contents of SENSITIVE_HEADERS were unchecked ──
+    // ── the contents of SENSITIVE_HEADERS ──────────────────────────
     //
-    // Review's mutation test: replacing the constant with three copies of
-    // content-type left all twelve tests green, because nothing read the
+    // The mutation that matters: replacing the constant with three copies
+    // of content-type leaves every other test green, because nothing reads
+    // the
     // constant itself.
 
     #[test]
@@ -573,7 +573,7 @@ mod tests {
         );
     }
 
-    // ── review: finding 3 — Location validation was stricter than the ecosystem ──────
+    // ── Location validation, and the ecosystem's tolerance ─────────
     //
     // `HeaderValue::from_bytes` closes CR/LF injection (C0 control bytes
     // and DEL). But `to_str()` additionally rejects any byte >= 0x80, and

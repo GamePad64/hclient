@@ -286,8 +286,8 @@ async fn early_data_is_accepted_and_the_wire_shows_it_leaving_before_the_handsha
     // relay, which is the only party that knows, and answered on the
     // relay's own clock.
     //
-    // It used to read `handshake >= HOLD`, and that was **wrong by
-    // construction rather than by margin**: `handshake` is measured from
+    // `handshake >= HOLD` would be **wrong by construction rather than by
+    // margin**: `handshake` is measured from
     // the moment the SERVER accepted the connection, while `HOLD` runs from
     // the moment this test armed the relay — and between those two lie the
     // request being built, `execute` resolving and checking out, quinn

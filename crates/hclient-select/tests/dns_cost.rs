@@ -8,10 +8,11 @@
 //! a file of its own.
 //!
 //! `hclient-native` fetches the record itself, inside its own connector,
-//! for `https://` at the default port — so at the default port the type-65
-//! query used to be made **twice** for a request that ends up on TCP: once
-//! here to choose the stack, once there to open the connection. **That
-//! duplicate is gone** (v0.4 W1, the `Prefetch` seam): this transport asks
+//! for `https://` at the default port — so at the default port a naive
+//! implementation makes the type-65 query **twice** for a request that
+//! ends up on TCP: once here to choose the stack, once there to open the
+//! connection. **The `Prefetch` seam removes the duplicate**: this
+//! transport asks
 //! the TCP member to do the lookup, reads the answer, and hands both the
 //! answer and the request back, so the connector does not ask again. The
 //! first three arms below say where the cost is now, and the first of them
@@ -146,9 +147,9 @@ async fn a_request_chosen_onto_tcp_at_the_default_port_asks_for_the_record_once(
 /// The QUIC arm pays once too, because `hclient-h3` reads no HTTPS record
 /// at all — it resolves addresses and nothing else.
 ///
-/// The contrast with the test above used to be the whole measurement (2
-/// against 1, which is how the duplicate was known to be
-/// `hclient-native`'s). It is now the control for the other direction:
+/// The contrast with the test above is what located the duplicate in
+/// `hclient-native` (2 against 1). It is now the control for the other
+/// direction:
 /// with both at 1, a change that started asking twice on *either* path
 /// moves one of these two rows.
 #[tokio::test(flavor = "multi_thread")]

@@ -40,8 +40,8 @@ fn a_transport_becomes_a_service_and_the_response_arrives_intact() {
 }
 
 /// The point of `Transport::to_error`. Wrapping the backend's error afresh
-/// here would repeat branch finding B2, where a backend's whole taxonomy
-/// was discarded one layer up and every `is_*` predicate answered `false`.
+/// here discards its whole taxonomy one layer up, leaving every `is_*`
+/// predicate answering `false`.
 #[test]
 fn the_backends_error_classification_survives_the_adapter() {
     let m = MockTransport::new();

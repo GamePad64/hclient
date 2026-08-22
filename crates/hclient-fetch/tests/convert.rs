@@ -549,8 +549,7 @@ async fn trailers_error_the_stream_rather_than_being_silently_dropped() {
 // ---------------------------------------------------------------------
 // `RequestBody::Rewindable` is unwrapped through the SAME path as any
 // other body, recursively — not a partial match that only understands
-// `Full` and silently drops everything else (vertical 2's native `body.rs`
-// defect, named explicitly in this task's brief).
+// `Full` and silently drops everything else.
 // ---------------------------------------------------------------------
 
 #[wasm_bindgen_test]
@@ -572,8 +571,7 @@ fn rewindable_wrapping_full_is_bufferable() {
 /// `RequestBody::Rewindable(f) => match f() { RequestBody::Full(b) => ..,
 /// _ => {} }` — makes a `Rewindable` wrapping `Streaming` silently resolve
 /// to an empty, successfully-sent body instead of reaching the `Streaming`
-/// arm at all. That is exactly the defect vertical 2's native `body.rs`
-/// shipped and review caught.
+/// arm at all — a body the caller supplied, silently unsent.
 ///
 /// Pinned against `streaming_request_body = false` since v0.2 W6, which is
 /// what keeps it sensitive to that mutation in **both** browsers: the
@@ -921,10 +919,9 @@ fn forbidden_header_rejection_names_the_actual_header() {
 
 // ---------------------------------------------------------------------
 // `FORBIDDEN_HEADERS` is a verified subset, not the whole predicate
-// (Task 2's own doc comment: it structurally cannot express fetch's
-// `Sec-*`/`Proxy-*` prefix rule). A header outside that fixed list still
-// gets silently dropped by the browser when building the `Request` — this
-// is the exact "capability that lies" scenario this task's dispatch
+// — it structurally cannot express fetch's `Sec-*`/`Proxy-*` prefix rule.
+// A header outside that fixed list still gets silently dropped by the
+// browser when building the `Request` — the "capability that lies" scenario
 // singled out, and it must not be allowed to succeed quietly.
 // ---------------------------------------------------------------------
 

@@ -1,5 +1,4 @@
-//! Reviewer-written probe (not part of the implementer's work): direct guard
-//! on the panic-versus-cancellation split introduced in Task 3's fix round 1
+//! A direct guard on the panic-versus-cancellation split
 //! (`Blocking::run -> Result<T, Cancelled>`). That split's whole
 //! justification is that the two failure modes are different in kind: a
 //! panicking closure is a bug and must keep propagating with its original
@@ -18,9 +17,9 @@
 //!   proving `resume_unwind` really carries the original payload through
 //!   and not a replacement constructed along the way.
 //! - `panic_is_never_observed_as_cancelled_under_concurrent_load` is
-//!   insurance, not the primary argument. The Task 3 review already
-//!   established, by reading tokio 1.53.1's source
-//!   (`runtime/task/harness.rs`), that a genuine in-progress panic and a
+//!   insurance, not the primary argument. Reading tokio 1.53.1's source
+//!   (`runtime/task/harness.rs`) establishes that a genuine in-progress
+//!   panic and a
 //!   pool-shutdown-before-running cancellation go through two entirely
 //!   disjoint code paths: `poll_future`'s own `catch_unwind` (feeding
 //!   `panic_to_error`) for a task that actually runs, versus `cancel_task`
@@ -33,11 +32,8 @@
 //!   that structural argument, not as a probabilistic argument on its own
 //!   that would need more iterations to be trusted further.
 //!
-//! Ran as an integration test (`crates/hclient-rt-tokio/tests/*.rs`) in a
-//! throwaway clone during the Task 3 review: both tests passed against
-//! `hclient-rt-tokio` at `2948375`. To re-run: drop this file into
-//! `crates/hclient-rt-tokio/tests/` in a scratch clone and `cargo test -p
-//! hclient-rt-tokio --test panic_fidelity_probes --all-features`.
+//! Run with `cargo test -p hclient-rt-tokio --test panic_fidelity_probes
+//! --all-features`.
 use hclient_rt::{Blocking, Cancelled};
 use hclient_rt_tokio::Tokio;
 

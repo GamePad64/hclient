@@ -55,8 +55,8 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Tokio {
 
 impl Blocking for Tokio {
     /// `tokio::task::spawn_blocking` returns `JoinError` for two distinct
-    /// cases, and `caps::Blocking`'s contract (fix round 1, coordinator)
-    /// requires not conflating them: the closure panicked, OR the
+    /// cases, and `caps::Blocking`'s contract requires not conflating
+    /// them: the closure panicked, OR the
     /// background thread pool went away before the task got to start (not
     /// hypothetical — happens when a `spawn_blocking` task is still queued
     /// on the pool and the runtime starts shutting down). The first is
@@ -170,14 +170,14 @@ impl TcpAdoptStd for Tokio {
 /// comment on `TcpConnect::connect` promises: the runtime only adopts a
 /// finished socket.
 ///
-/// Fix round 1 (coordinator): previously, `nodelay`/`keepalive` were
-/// applied in a separate step AFTER `connect()`, on the already
-/// tokio-wrapped `TcpStream` (`apply_post_connect`), even though this
-/// comment already promised "once, on the `socket2::Socket`" at the time.
+/// Applying `nodelay`/`keepalive` in a separate step AFTER `connect()`,
+/// on the already tokio-wrapped `TcpStream` (`apply_post_connect`), is
+/// wrong even though this
+/// comment promises "once, on the `socket2::Socket`".
 /// Not a bug (`TCP_NODELAY`/`SO_KEEPALIVE` behave identically whether set
 /// before or after `connect()`), but a mismatch between the text and the
-/// code — and Task 4 (`hclient-rt-smol`) was going to copy this exact
-/// file. Both `nodelay` and `keepalive` can be set on a `socket2::Socket`
+/// code — and `hclient-rt-smol` copies this exact file. Both `nodelay` and
+/// `keepalive` can be set on a `socket2::Socket`
 /// before `connect()`; no exception turned up that would have to stay
 /// post-connect — the whole list now lives in one place.
 fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::Socket> {
@@ -379,9 +379,8 @@ mod tests {
         // option that moved into `build_socket` in this round of fixes:
         // `keepalive` is read back, not just checked for `connect()`
         // returning `Ok`. `tokio::net::TcpStream` gives no direct getter
-        // for `SO_KEEPALIVE` — use `socket2::SockRef`, the same type
-        // `apply_post_connect` (in the earlier version of this file) used,
-        // just for reading instead of writing.
+        // for `SO_KEEPALIVE` — use `socket2::SockRef`, for reading rather
+        // than writing.
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         std::thread::spawn(move || {

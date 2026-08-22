@@ -14,10 +14,10 @@
 //! trusts is `cSvcParams`, which the OS wrote next to the array it
 //! allocated.
 //!
-//! **An earlier version of this file got that wrong and is worth recording
-//! so the mistake is not repeated.** It looked at the OUTER union,
-//! `DNS_RECORDW.Data`, saw no discriminator for it, concluded that a
-//! structured Windows path was unsafe in principle, and reached instead for
+//! **The trap here is worth recording so it is not walked into twice.**
+//! Looking at the OUTER union, `DNS_RECORDW.Data`, one finds no
+//! discriminator for it, concludes that a structured Windows path is
+//! unsafe in principle, and reaches instead for
 //! `DnsQueryRaw` — the only Windows call that returns the raw wire response
 //! *with its length* — so the bytes could go through the shared RFC 9460
 //! decoder. That worked, but it cost: `DnsQueryRaw` exists only on Windows

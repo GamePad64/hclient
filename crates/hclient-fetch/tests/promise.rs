@@ -26,9 +26,9 @@ fn future_is_send_on_the_default_target() {
     assert_send::<hclient_fetch::testing::SendJsFutureAlias>();
 }
 
-/// Fix round 1, finding 2. Before this fix, `SendJsFuture` held its two
-/// `Closure`s as a sibling field, dropped as soon as the future itself was
-/// dropped — including while the underlying promise was still pending. A
+/// `SendJsFuture` must not hold its two `Closure`s as a sibling field,
+/// dropped as soon as the future itself is dropped — including while the
+/// underlying promise is still pending. A
 /// `Closure` invoked by JS after being dropped throws
 /// (`ScopedClosure::drop` invalidates the JS-side function first), and
 /// since `SendJsFuture::new` discards the promise `.then2()` returns
@@ -69,10 +69,10 @@ fn dropping_a_pending_future_does_not_drop_its_still_needed_callbacks() {
     );
 }
 
-/// Fix round 1, finding 3. Before this fix, polling `SendJsFuture` again
-/// after it had already returned `Poll::Ready` silently returned
-/// `Poll::Pending` forever — `result` had already been `take()`n by the
-/// first `Ready` and nothing ever refilled it. That's a silent hang, out
+/// Polling `SendJsFuture` again after it has already returned
+/// `Poll::Ready` must not silently return `Poll::Pending` forever, which
+/// is what happens if `result` has been `take()`n by the first `Ready` and
+/// nothing refills it. That's a silent hang, out
 /// of `Future`'s own contract; this test drives the future to completion
 /// once (the normal way), then polls it a second time and requires a loud
 /// panic instead.

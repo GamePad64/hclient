@@ -57,8 +57,7 @@ fn tls_err<E: std::error::Error + 'static>(e: E) -> std::io::Error {
 /// advanced the sequence/nonce accordingly), while the transport itself
 /// might never see those bytes at all if the next step (draining the
 /// `Vec` into the transport) returned `Pending` — the `Vec` would simply
-/// be lost along with the bytes on an early return (review finding 1, fix
-/// round 1).
+/// be lost along with the bytes on an early return.
 struct PollWriter<'a, 'cx, S> {
     io: &'a mut S,
     cx: &'a mut Context<'cx>,
@@ -125,12 +124,12 @@ pub(crate) fn flush_outgoing<S: Write + Unpin>(
 /// (`src/conn.rs:183`), on the NEXT call to `conn.reader().read()`,
 /// returns `Err(UnexpectedEof)` for the first case and `Ok(0)` for the
 /// second — but only if `read_tls` ever saw that 0-byte outcome at all.
-/// This function used to intercept `filled.is_empty()` IMMEDIATELY and
-/// return `Ok(false)`, never once passing an empty read through to
-/// rustls — a truncation-attack hole (fix round 2 review): a bare TCP FIN
-/// with no `close_notify` resolved identically to a genuine
-/// `close_notify` at the `TlsStream::poll_read` level, because rustls's
-/// own built-in distinction simply never ran. The fix does not belong
+/// Intercepting `filled.is_empty()` IMMEDIATELY and returning `Ok(false)`,
+/// never once passing an empty read through to rustls, is a
+/// truncation-attack hole: a bare TCP FIN with no `close_notify` then
+/// resolves identically to a genuine `close_notify` at the
+/// `TlsStream::poll_read` level, because rustls's own built-in distinction
+/// never runs. The fix does not belong
 /// here: this function's job is to honestly hand rustls what it knows how
 /// to tell apart, not to decide on its behalf that "nothing to read" and
 /// "the connection was cut without warning" are the same thing.
@@ -188,8 +187,7 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
                 // the transport again" — if the peer sent `close_notify`
                 // but didn't close the TCP socket itself (TLS doesn't
                 // require that), `poll_read` waited on a transport read
-                // that would never come: a permanent hang (review finding
-                // 2, fix round 1).
+                // that would never come: a permanent hang.
                 Ok(0) => return Poll::Ready(Ok(())),
                 Ok(n) => {
                     buf.put_slice(&scratch[..n]);
@@ -214,7 +212,7 @@ impl<S: Read + Write + Unpin> Read for TlsStream<S> {
 }
 
 impl<S: Read + Write + Unpin> Write for TlsStream<S> {
-    /// The order here is critical (review finding 1, fix round 1): flush
+    /// The order here is critical: flush
     /// the leftover from the previous call before touching this call's
     /// `data` — otherwise `conn.writer().write(data)` below would queue
     /// the same bytes AGAIN on top of ones not yet sent from last time.

@@ -1,5 +1,5 @@
-//! Fix round 2 review: verifies the layering decision behind the
-//! `pump_incoming`/`poll_read` fix in `src/stream.rs` — an unclean TCP close
+//! The layering decision behind `pump_incoming`/`poll_read` in
+//! `src/stream.rs` — an unclean TCP close
 //! (no `close_notify`) is now surfaced to the caller as a real
 //! `UnexpectedEof`, but WHETHER that should fail an in-flight HTTP request
 //! is not this crate's call. It belongs to whatever layer understands HTTP
@@ -12,10 +12,8 @@
 //! the requested pair alone doesn't isolate this fix (see below):
 //! - `close_notify_and_a_bare_fin_are_observably_different_at_the_stream_level`
 //!   - the direct, stream-level check: same "no close_notify, socket held
-//!     open" vs. "bare FIN, no close_notify" pair the fix round 1 review
-//!     established, now asserting the FIN case produces `UnexpectedEof`
-//!     (round 1 only documented that it didn't hang; round 2 is about what
-//!     it resolves TO).
+//!     open" vs. "bare FIN, no close_notify" pair, asserting that the FIN
+//!     case produces `UnexpectedEof` rather than merely not hanging.
 //! - `complete_response_survives_an_unclean_close_after_it` - a full,
 //!   `Content-Length`-satisfied response followed by a bare FIN (no
 //!   `close_notify`) must still succeed at the HTTP layer.

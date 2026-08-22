@@ -4,10 +4,10 @@
 //! because mutation testing revealed real gaps in those bridges, and
 //! `TlsStream` sits in the identical architectural position (a
 //! `hyper::rt::{Read, Write}` adapter wrapping another such adapter) without
-//! ever getting the same treatment (fix round 1 review, Verdict B #3).
-//! Findings 1 and 2 (ciphertext loss under transport backpressure, hang on
-//! `close_notify` without a raw TCP close) both went unfound without this
-//! kind of coverage — this file exists so the next one doesn't.
+//! ever getting the same treatment. Two defects — ciphertext loss under
+//! transport backpressure, and a hang on `close_notify` without a raw TCP
+//! close — both went unfound without this kind of coverage; this file
+//! exists so the next one does not.
 //!
 //! `Scripted<S>` wraps a real transport (a real TCP loopback pair, driven
 //! through a real rustls handshake against `server::spawn_tls_echo()`) and
@@ -240,11 +240,10 @@ async fn nothing_more_arrives<S: HyperRead + Unpin>(stream: &mut S) -> Vec<u8> {
 
 // ---------------------------------------------------------------------
 // A. Pending on the very first transport write must not lose the write
-//    (finding 1, fix round 1) nor duplicate it if the caller retries with
-//    the same buffer per the `hyper::rt::Write` contract (the corollary
-//    bug found while fixing finding 1: `poll_write` used to queue `data`
-//    into rustls BEFORE learning whether the transport could accept it,
-//    so a `Pending`-then-retry cycle queued the same plaintext twice).
+//    nor duplicate it if the caller retries with the same buffer per the
+//    `hyper::rt::Write` contract — `poll_write` queueing `data` into
+//    rustls BEFORE learning whether the transport can accept it makes a
+//    `Pending`-then-retry cycle queue the same plaintext twice.
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn pending_on_first_write_neither_loses_nor_duplicates_the_data() {
@@ -259,7 +258,7 @@ async fn pending_on_first_write_neither_loses_nor_duplicates_the_data() {
     assert_eq!(
         echoed, b"ping",
         "the peer's echo must be exactly the four bytes sent once - not empty (lost) and not \
-         a truncated/garbled prefix (sequence desync from finding 1)"
+         a truncated/garbled prefix (sequence desync)"
     );
     let extra = nothing_more_arrives(&mut stream).await;
     assert!(
@@ -316,8 +315,8 @@ async fn transport_write_error_is_propagated_not_swallowed_as_pending() {
 
 // ---------------------------------------------------------------------
 // D. An abrupt raw TCP close (RST, no close_notify) must still surface as
-//    a real error, not silently as the same clean EOF that finding 2's
-//    fix now produces for an honest `close_notify`. Confirmed empirically
+//    a real error, not silently as the clean EOF an honest
+//    `close_notify` produces. Confirmed empirically
 //    (not assumed) that a plain FIN without close_notify - as opposed to
 //    the RST forced here - currently resolves identically to a clean
 //    close_notify (`Ok(())`, nothing filled): `pump_incoming` short-

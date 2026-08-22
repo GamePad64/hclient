@@ -14,10 +14,10 @@ pub struct TokioIo {
     /// The buffer is allocated and zeroed ONCE, in [`TokioIo::new`] — not
     /// on every `poll_read`.
     ///
-    /// An earlier draft of this task kept it as `[0u8; SCRATCH]` on the
-    /// stack inside `poll_read`. Task 2 already measured the cost of this
-    /// pattern (`rustc -O --emit=asm`, see the comment on
-    /// `FuturesIo::scratch`): the stack variant calls `memset` on EVERY
+    /// A `[0u8; SCRATCH]` on the stack inside `poll_read` is the obvious
+    /// alternative, and its cost is measured (`rustc -O --emit=asm`, see
+    /// the comment on `FuturesIo::scratch`): the stack variant calls
+    /// `memset` on EVERY
     /// invocation, whereas a struct field allocated once in the
     /// constructor does not — `poll_read` is called directly on an
     /// already-ready buffer. `poll_read` is the hot path of every request;

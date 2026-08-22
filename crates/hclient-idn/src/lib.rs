@@ -36,9 +36,8 @@
 //! | this crate, default | 448,920 B | 129,144 B | 34 |
 //!
 //! **+736 bytes and +3 crates, for the same answer.** That is the honest
-//! accounting on Linux, and it is stated first rather than buried,
-//! because the earlier version of this section claimed a 138 KiB saving
-//! that a Linux build no longer gets.
+//! accounting on Linux, and it is stated first rather than buried: there
+//! is no size saving on this platform.
 //!
 //! The +3 is this harness's, not every caller's: it is `hclient-idn`,
 //! `thiserror` and `thiserror-impl`, and a graph that already had
@@ -273,8 +272,7 @@
 //! against, and only 78.2 was available here. What would settle it: run
 //! `tests/differential.rs` against a matrix of container images pinned to
 //! different `libicu` versions, and promote whatever rows move into the
-//! acceptance probe — at which point the probe becomes a version floor
-//! and this paragraph can be deleted.
+//! acceptance probe — at which point the probe becomes a version floor.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // `deny`, not `forbid`, and only since spec amendment C9: `forbid` cannot
@@ -444,9 +442,9 @@ pub const UIDNA_CHECK_CONTEXTO: u32 = 0x0040;
 /// Apple's `URL` refuses a name on any bit at all, the six this crate
 /// masks included.
 ///
-/// **An earlier version of this paragraph gave `a..b` and `ab--cd.com` as
-/// the examples, and `macos-latest` measured both as accepted.** The
-/// reason is one level up and is the whole of `foundation.rs`'s first
+/// **`a..b` and `ab--cd.com` are NOT examples of this**, and
+/// `macos-latest` measures both as accepted. The reason is one level up
+/// and is the whole of `foundation.rs`'s first
 /// section: those two are all-ASCII, so Foundation's IDNA hook never runs
 /// on them and there is no `errors` word to be strict about. The
 /// divergence is real, but its inputs are names with a non-ASCII label

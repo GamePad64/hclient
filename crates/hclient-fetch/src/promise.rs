@@ -152,8 +152,7 @@ pub struct SendJsFuture {
     /// polling again silently returned `Pending` forever — `result` had
     /// already been `take()`n by the first `Ready` and nothing ever
     /// refills it — exactly the "quiet hang, no test name, no message"
-    /// failure mode this project has spent two verticals removing (most
-    /// recently the F1 watchdog rewrite in vertical 2). This flag turns
+    /// failure mode this project spends effort removing. This flag turns
     /// that into an immediate, loud panic naming the type instead.
     completed: bool,
 }

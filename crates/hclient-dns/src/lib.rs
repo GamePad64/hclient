@@ -15,13 +15,12 @@
 //! them out in DNS-response order, cache order, or any other order.
 //!
 //! **RFC 6724 §6 sorting is nobody's job today, not "the caller's job."**
-//! The first version of this paragraph called it the connector's
-//! responsibility (`hclient-native::connect`, Task 11) — i.e. the place
-//! where results actually reach `Scheduler::offer_v4`/`offer_v6`
-//! (`Scheduler`, on its own side of the seam, says the same thing:
+//! The tempting answer is the connector — `hclient-native::connect`, the
+//! place where results actually reach `Scheduler::offer_v4`/`offer_v6`,
+//! and `Scheduler` says the same thing from its own side of the seam:
 //! "sorting is the caller's concern, before `offer_*`; it isn't done
-//! here"). Checking before Task 11 was implemented showed that this
-//! promise can't be kept in the form stated: the full rule requires
+//! here". That promise cannot be kept in the form stated: the full rule
+//! requires
 //! Source Address Selection (RFC 6724 Rule 1 onward) — knowledge of which
 //! local address the OS would actually use to connect to a given
 //! destination, i.e. access to the routing table, which NONE of this

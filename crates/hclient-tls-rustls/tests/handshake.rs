@@ -9,9 +9,9 @@ use std::time::Duration;
 
 mod server; // see Step 3: a minimal TLS echo server on a self-signed cert
 
-/// Fix round 1 (review, Verdict B #4): no call in this file used to be
-/// time-bounded — a regression that hangs during the handshake or while
-/// pumping bytes would stall CI with no diagnostic message at all, rather
+/// Every call in this file is time-bounded — a regression that hangs
+/// during the handshake or while pumping bytes would otherwise stall CI
+/// with no diagnostic message at all, rather
 /// than failing with an explicit `FAILED`. `Rustls::connect` deliberately
 /// carries no timeout of its own (`TlsRequest` carries no deadline — see
 /// `close_notify_and_handshake_bounds.rs`), so the bound belongs here, at

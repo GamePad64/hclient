@@ -66,8 +66,8 @@ impl<S: hyper::rt::Write + Unpin> futures_io::AsyncWrite for HyperIo<S> {
     /// futures-io's `close` maps to hyper's `shutdown`: both mean "no more
     /// writes".
     ///
-    /// Note which layer does what, because an earlier version of this
-    /// comment got it wrong. `close_notify` is emitted by
+    /// Note which layer does what — it is easy to get backwards.
+    /// `close_notify` is emitted by
     /// `async_native_tls::TlsStream::poll_close`, one layer ABOVE this
     /// adapter, which calls native-tls's `shutdown()`. `HyperIo` wraps the
     /// raw transport BENEATH the TLS session, so by the time this runs the

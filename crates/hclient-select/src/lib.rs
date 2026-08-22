@@ -307,9 +307,8 @@ where
 /// Which stack a request goes to, carrying the request itself — and, on
 /// the TCP arm, whatever the TCP stack has already been asked.
 ///
-/// **A `Stack` and a request used to be two values**, and the request was
-/// handed to the chosen member afterwards. They are one now because the
-/// TCP arm may carry a [`Prepared`], which is a request *with* the HTTPS
+/// **A `Stack` and a request are one value rather than two.** The TCP arm
+/// may carry a [`Prepared`], which is a request *with* the HTTPS
 /// record that was fetched for it — the pairing that makes the record
 /// impossible to misdirect (see [`hclient_native::Prepared`]) is exactly
 /// the pairing that stops them being separable here.

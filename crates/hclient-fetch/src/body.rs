@@ -37,8 +37,7 @@
 //! # `size_hint`: honest, not merely present
 //!
 //! A body that keeps promising its original `Content-Length` after the
-//! stream has already ended is exactly the defect vertical 1's `wasi` body
-//! shipped and vertical 1's review caught (see
+//! stream has already ended is a defect `hclient-wasi` shipped once (see
 //! `hclient-wasi/src/body.rs::size_hint_honoring_end`). This file applies
 //! the same discipline, plus one trap specific to `fetch` that the `wasi`
 //! precedent never had to consider: **`Content-Length`, when present,

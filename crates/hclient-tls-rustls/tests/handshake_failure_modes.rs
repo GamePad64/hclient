@@ -1,8 +1,6 @@
-//! Two of the three failure modes brief item C asked the original task to
-//! cover (fix round 1 review, Verdict B #5): only
-//! `rejects_an_untrusted_certificate` (`tests/handshake.rs`) shipped in
-//! round 1. Both below were independently re-verified in this tree - PASS
-//! against the fixed code, same as before round 1 (this is a coverage gap,
+//! Two handshake failure modes beyond
+//! `rejects_an_untrusted_certificate` (`tests/handshake.rs`). Both PASS
+//! against unmodified code (this is a coverage gap,
 //! not a behaviour defect the review found) - adapted from the reviewer's
 //! saved `review-task-9-error-path-coverage.rs`.
 use hclient_rt::TcpConnect;
@@ -46,8 +44,8 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
     let err = result.expect_err("hostname mismatch must fail");
     assert!(matches!(err.kind(), hclient_core::ErrorKind::Tls), "{err}");
     // `kind()` alone doesn't distinguish this from other TLS failures - a
-    // single flat `Tls` category is Task 8's established design, not
-    // something this crate introduced or could change - but the wrapped
+    // single flat `Tls` category is the seam's design, not something this
+    // crate introduced or could change - but the wrapped
     // source's `Display` does, which is what a caller needing to tell
     // "wrong host" from "untrusted cert" apart would inspect.
     let msg = err.to_string();
@@ -64,8 +62,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
 /// `Display` text instead pins English strings that differ per OS:
 /// "Connection reset by peer" on Linux and macOS, "An established
 /// connection was aborted by the software in your host machine." on
-/// Windows. The previous version of this test matched on text, and that is
-/// half of why it flaked.
+/// Windows. Matching on that text is half of how this test flakes.
 fn io_kind(err: &(dyn std::error::Error + 'static)) -> Option<std::io::ErrorKind> {
     let mut cur = Some(err);
     while let Some(e) = cur {

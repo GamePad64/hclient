@@ -1,16 +1,13 @@
-//! Reviewer-written adversarial test suite for `TokioIo` (Task 3 of
-//! vertical 2), independent of the implementer's work. Adapted from the
-//! sibling suite for `FuturesIo` (Task 2 review,
-//! `.superpowers/sdd/2026-08-05-v01-native-vertical/adversarial_futures_io.rs`)
-//! to the fact that `TokioIo` is concrete over `tokio::net::TcpStream`
+//! Adversarial test suite for `TokioIo`. The sibling suite for `FuturesIo`
+//! is `crates/hclient-rt/tests/adversarial_futures_io.rs`; this one is
+//! adapted to the fact that `TokioIo` is concrete over
+//! `tokio::net::TcpStream`
 //! rather than generic over an injectable `AsyncRead`/`AsyncWrite` - so
 //! these drive a real loopback TCP pair instead of hand-written mock
 //! sources, and `tokio::io::AsyncRead` fills a `ReadBuf` rather than
 //! returning a byte count.
 //!
-//! Ran as an integration test (`crates/hclient-rt-tokio/tests/*.rs`) in a
-//! throwaway clone during the Task 3 review: all 8 tests passed against
-//! `hclient-rt-tokio` at `2948375`. Confirmed non-vacuous by re-mutating
+//! Confirmed non-vacuous by mutating
 //! `poll_read`'s `.min(self.scratch.len())` away and watching
 //! `cursor_one_byte_larger_than_scratch_buffer` go red with the exact
 //! panic the doc comment predicts (`range end index 8193 out of range for
@@ -37,8 +34,8 @@ use std::time::Duration;
 
 const SCRATCH: usize = 8 * 1024; // must match the private const in io.rs
 
-/// Fix round 3 (coordinator): every direct wait on `poll_read` in this file
-/// goes through this helper instead of a bare `.await` on `poll_fn(...)`, so
+/// Every direct wait on `poll_read` in this file goes through this helper
+/// instead of a bare `.await` on `poll_fn(...)`, so
 /// a regression that makes `poll_read` never resolve (return `Pending`
 /// forever) reports `FAILED` with a named test and a clear message, instead
 /// of hanging the test binary - and, in CI, the whole job - with nothing to
@@ -338,10 +335,8 @@ async fn cursor_one_byte_larger_than_scratch_buffer() {
 //    That is a claim about private struct layout, invisible to an
 //    integration test, so it stays a comment rather than a `#[test]` fn
 //    that would report "ok" unconditionally and never be able to catch a
-//    regression (landing note, hclient-rt-tokio fix round 2: the
-//    reviewer's original version was exactly such a fn, an empty body
-//    under a name implying a real check - dropped as vacuous, see the
-//    module doc comment above).
+//    regression — an empty body under a name implying a real check is
+//    vacuous, see the module doc comment above.
 
 // Also confirmed: adopt() goes through the same TokioIo, so it inherits
 // the same read behaviour as connect() - spot check with TcpAdoptStd.

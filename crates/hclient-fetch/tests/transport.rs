@@ -35,18 +35,17 @@ use wasm_bindgen::{JsCast, JsValue};
 //    `hclient-fetch`.
 // 2. Even granting a working parse, `convert::checked_url` rejects
 //    every scheme except `http`/`https` as `ErrorKind::Unsupported` —
-//    deliberately, and documented as such. `Body::from_response`'s own
-//    Task 4 helper (`testing::fetch_body`, `lib.rs`) already flags this
-//    exact incompatibility for ITS OWN use of a `data:` URL: it "deliberately
-//    does NOT route through `convert::to_web_request`... which would reject
-//    exactly the `data:` URL." The brief's Step 1 test for THIS task does
-//    route through the ordinary `Client` path, so it inherits the rejection
-//    Task 4 specifically built around.
+//    deliberately, and documented as such. `testing::fetch_body`
+//    (`lib.rs`) flags the same incompatibility for its own use of a
+//    `data:` URL: it "deliberately does NOT route through
+//    `convert::to_web_request`... which would reject exactly the `data:`
+//    URL." A test routed through the ordinary `Client` path inherits that
+//    rejection.
 //
-// Fixed by using a real `http://` URL instead — the test harness's own
-// already-loaded page (`location.href`), so the exchange stays fully
-// offline and deterministic (no real Internet access needed, same as the
-// brief's `data:` URL was going for) while actually exercising the network
+// So these use a real `http://` URL — the test harness's own already-loaded
+// page (`location.href`), so the exchange stays fully offline and
+// deterministic (no real Internet access needed) while actually exercising
+// the network
 // path `data:` URLs skip entirely in a browser (real request/response
 // headers, a real `web_sys::Response`, not an internally-synthesized one).
 // ---------------------------------------------------------------------
@@ -111,7 +110,7 @@ async fn network_failure_reaches_the_caller_as_connect_not_other() {
     );
 }
 
-/// A forbidden header (Task 3's `check_headers`) is `ErrorKind::Unsupported`
+/// A forbidden header (`convert::check_headers`) is `ErrorKind::Unsupported`
 /// at the `convert` layer; this proves the category is still `Unsupported`,
 /// not re-wrapped into `Other`, once it has actually gone through
 /// `Fetch::execute` and `Client::execute`'s own error step.
@@ -167,13 +166,11 @@ fn to_error_is_the_identity_so_the_classification_survives_unwrapped() {
 // the ACTUAL `Transport` impl, the REAL probed `Capabilities`, and a REAL
 // `Client`: probe -> declaration -> behavior, nothing stood in.
 //
-// (`caps.streaming_request_body` varies by browser again as of v0.2 W6 —
-// Chrome 151 probes `true`, Firefox 153 `false`. This comment has now said
-// three different things across three tasks: Task 5 wrote "probes `true` in
-// headless Chrome", the reopening made it a hardcoded `false` everywhere,
-// and W6 made it the browser's own answer. The test below is written so
-// that it needs no fourth revision: it asserts BOTH outcomes and picks by
-// the probe, rather than encoding whichever one is true this month.)
+// (`caps.streaming_request_body` varies by browser — Chrome 151 probes
+// `true`, Firefox 153 `false` — and has changed answer more than once. The
+// test below is written so that it needs no revision when it changes
+// again: it asserts BOTH outcomes and picks by the probe, rather than
+// encoding whichever one is true this month.)
 // ---------------------------------------------------------------------
 
 struct NeverPolled;
@@ -276,7 +273,7 @@ fn capabilities_forwards_the_same_probe_execute_itself_consults() {
 
 // ---------------------------------------------------------------------
 // `Send`-ness of the future `execute` returns — the entire payoff of
-// Task 1's `promise::SendJsFuture` (a `Send`-compatible replacement for
+// `promise::SendJsFuture` (a `Send`-compatible replacement for
 // `wasm_bindgen_futures::JsFuture`, which is `!Send`). Mirrors
 // `hclient-wasi/tests/shape.rs`'s `execute_future_is_send_for_an_empty_
 // request_body`/`..._even_for_a_streaming_request_body`, adapted to run as

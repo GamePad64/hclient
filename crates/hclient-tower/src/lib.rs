@@ -171,10 +171,9 @@ where
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             // `to_error`, not a fresh wrap. The backend's classification is
-            // the point of that hook: dropping it here would repeat branch
-            // finding B2, where forty lines sorting `ErrorCode` variants
-            // into `ErrorKind`s were discarded one layer up and every
-            // `is_*` predicate answered `false`.
+            // the point of that hook: dropping it here discards a
+            // backend's whole taxonomy one layer up, leaving every `is_*`
+            // predicate answering `false`.
             match inner.execute(req).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => Err(inner.to_error(e)),

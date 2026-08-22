@@ -1,7 +1,6 @@
-//! Independent adversarial-review test suite for `FuturesIo` (Task 2 of
-//! vertical 2). NOT part of the implementer's work — written from scratch by
-//! the reviewer against the public API only (`FuturesIo::new`, and the
-//! `hyper::rt::{Read, Write}` impls), to probe behaviour the brief's
+//! Adversarial test suite for `FuturesIo`, written against the public API
+//! only (`FuturesIo::new`, and the `hyper::rt::{Read, Write}` impls), to
+//! probe behaviour the ordinary
 //! cooperative-source tests (which always return `Ready` immediately) cannot
 //! exercise: real `Pending`, spurious `Ok(0)`, mid-stream errors, and the
 //! exact hyper EOF contract at the raw `ReadBufCursor` level.

@@ -69,9 +69,9 @@ impl Timer for BrowserClock {
 
     /// **The adapter is not redundant.** [`SendJsFuture`] resolves to
     /// `Result<JsValue, JsValue>`, not `()`, so a named `Timer::Sleep`
-    /// has to say what happens to that value. It used to be discarded
-    /// invisibly by the `let _ =` inside an `async` block; now the
-    /// discard is in the type, and the reasoning that justifies it — a
+    /// has to say what happens to that value. A `let _ =` inside an
+    /// `async` block discards it invisibly; here the discard is in the
+    /// type, and the reasoning that justifies it — a
     /// `setTimeout` promise structurally cannot reject — is the comment
     /// on that `let _ =`, kept below on the constructor.
     ///
@@ -88,10 +88,9 @@ impl Timer for BrowserClock {
     type Sleep = Discard<SendJsFuture>;
 
     fn sleep(&self, d: Duration) -> Self::Sleep {
-        // The previous version of this comment claimed the multiply
-        // saturates to `f64::INFINITY` for a pathological `Duration` and
-        // that the browser then clamps to a ~24.8-day maximum — both
-        // false, caught in review round 1 (Minor-7). Measured directly:
+        // The multiply does NOT saturate to `f64::INFINITY` for a
+        // pathological `Duration`, and the browser does not then clamp to a
+        // ~24.8-day maximum. Measured directly:
         // `Duration::MAX.as_secs_f64() * 1000.0 ≈ 1.8447e22`, an ordinary
         // finite `f64`, nowhere near `f64::MAX` (≈1.7977e308) — no
         // saturation happens at all, and `setTimeout`'s `timeout`

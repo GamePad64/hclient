@@ -1,10 +1,11 @@
 //! The differential probe for `uri::resolve_reference` and `uri::parse`,
 //! against the `url` crate they replaced.
 //!
-//! Resolution used to be `url::Url::parse(base).join(reference)`. That
-//! single call put `url` → `idna` → `icu_normalizer` + `icu_properties`
-//! into every build of `hclient-proto`, the sans-io crate every target
-//! includes — megabytes of Unicode tables, for one URI join. It is now
+//! `url::Url::parse(base).join(reference)` is the one-line alternative.
+//! That single call puts `url` → `idna` → `icu_normalizer` +
+//! `icu_properties` into every build of `hclient-proto`, the sans-io crate
+//! every target includes — megabytes of Unicode tables, for one URI join.
+//! It is
 //! RFC 3986 §5.2 written out by hand, with IDNA reduced to a feature
 //! (`idn`, on by default) applied at one boundary.
 //!
@@ -322,7 +323,7 @@ fn the_url_oracle_still_answers_what_the_corpus_pins_for_it() {
         let got = url_resolve(&base_of(case), case.reference).map(|u| u.to_string());
         if got.as_deref() != case.url_says {
             wrong.push(format!(
-                "  base={:?} ref={:?}: url used to say {:?}, now says {:?}",
+                "  base={:?} ref={:?}: url was pinned at {:?}, now says {:?}",
                 case.base, case.reference, case.url_says, got
             ));
         }

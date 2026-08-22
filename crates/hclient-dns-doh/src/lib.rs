@@ -89,9 +89,9 @@
 //! (`Box<C>` is not a `Transport`), and `dyn Resolve` cannot be written at
 //! all, because `lookup_ipv4` returns an `impl Trait`. **The second is an
 //! accident**, not a promise anyone has made — `impl Stream` was chosen for
-//! RFC 8305 — so this paragraph is the place to look when someone proposes
-//! an object-safe `Resolve` or a blanket `impl Transport for Box<T>`.
-//! Neither would be a change to this crate.
+//! RFC 8305 — so this is the place to look when someone proposes an
+//! object-safe `Resolve` or a blanket `impl Transport for Box<T>`. Neither
+//! would be a change to this crate.
 //!
 //! ## 3. What happens when the DoH server is unreachable?
 //!
@@ -150,8 +150,7 @@
 //! makes it cacheable by intermediaries, and an intermediary cache is not
 //! obviously something a DNS-over-HTTPS deployment wants.
 //!
-//! **The other half of that argument used to read "and needs a base64
-//! encoder this workspace does not have", and that was wrong.** Measured:
+//! **It does not need a base64 encoder this workspace lacks.** Measured:
 //! `cargo tree -p hclient-dns-doh -e normal -i base64` returns `base64
 //! v0.22.1 <- dns-message-parser`, so an encoder is compiled into every
 //! build of this crate already. What GET would cost is a direct dependency

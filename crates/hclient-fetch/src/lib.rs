@@ -18,25 +18,19 @@ mod promise;
 mod timer;
 mod websocket;
 
-// Task 4 adds `body` — the RESPONSE body bridge over `ReadableStream`
-// (`web_sys::Response::body()` in, a `http_body::Body` out). It is the
-// mirror image of `convert::resolve_body`'s REQUEST-body direction: that
-// function still cannot forward a streaming REQUEST body (no
-// `wasm-streams` dependency, `ErrorKind::Unsupported` today — unchanged by
-// this task), while this module is what actually adds `wasm-streams` to
-// the crate, pinned to the 0.5 line for the MSRV reason recorded in
-// `Cargo.toml`. See
-// `.superpowers/sdd/2026-08-05-v01-fetch-and-acceptance/task-4-brief.md`.
+// `body` is the RESPONSE body bridge over `ReadableStream`
+// (`web_sys::Response::body()` in, a `http_body::Body` out), the mirror
+// image of `convert::resolve_body`'s REQUEST-body direction. It is what
+// brings `wasm-streams` into the crate, pinned to the 0.5 line for the
+// MSRV reason recorded in `Cargo.toml`.
 //
-// Task 5 (this file's `impl Transport for Fetch`, below) composes Tasks
-// 1-4 into the third backend in the project, after `wasi:http` and native:
-// `convert::to_web_request` turns the request into a
-// `web_sys::Request`, the browser's own `fetch` (found through `js_sys::
-// global()`, not `web_sys::window()`, so this also works from a Worker —
-// see `execute`'s own comment) sends it, `Body::from_response`
-// wraps the response, and `promise::SendJsFuture` is what makes
-// awaiting that whole exchange a `Send` future in the first place. See
-// `.superpowers/sdd/2026-08-05-v01-fetch-and-acceptance/task-5-brief.md`.
+// `impl Transport for Fetch`, below, composes the modules:
+// `convert::to_web_request` turns the request into a `web_sys::Request`,
+// the browser's own `fetch` (found through `js_sys::global()`, not
+// `web_sys::window()`, so this also works from a Worker — see `execute`'s
+// own comment) sends it, `Body::from_response` wraps the response, and
+// `promise::SendJsFuture` is what makes awaiting that whole exchange a
+// `Send` future in the first place.
 //
 // **One deliberate deviation from the brief's own Step 3 reference code.**
 // That code destructures `to_web_request`'s result as
@@ -66,8 +60,8 @@ mod websocket;
 pub use body::Body;
 pub use caps::FORBIDDEN_HEADERS;
 pub use timer::BrowserClock;
-// v0.3 W4 step 3: the WebSocket seam, over the browser's own `WebSocket`
-// global. Not behind a feature — see `websocket.rs`'s `impl
+// The WebSocket seam, over the browser's own `WebSocket` global. Not
+// behind a feature — see `websocket.rs`'s `impl
 // WebSocketConnect` for the measurement that decided it. `Fetch` is the
 // connector (`hclient_core::unversioned::WebSocketConnect`), so this is the
 // only type the module has to export.
@@ -252,8 +246,8 @@ impl<H: Hooks> Transport for Fetch<H> {
         // is read in exactly one place and a mutation that ignores it
         // cannot take only the half no test can see.
         //
-        // It used to be two `H::WATCHING`s, and the second one **survived
-        // a mutation run**: with the `Uri` gate removed, a `NoHooks` build
+        // A second `H::WATCHING` gate here **survives a mutation run**:
+        // with the `Uri` gate removed, a `NoHooks` build
         // clones a `Uri` and calls `NoHooks::on` for every request, and
         // `tests/hooks_cost.rs` still reads 0 — because the clock is only
         // read from the `Some` arm of `hooks::since`, and there is no
@@ -427,9 +421,9 @@ pub mod testing {
         crate::promise::SendJsFuture::new(p)
     }
 
-    /// Fix round 1, finding 2: proves — deterministically, via
-    /// `Weak::upgrade`, with no dependence on real `Promise`/browser-event
-    /// timing — that dropping `SendJsFuture` while its promise is still
+    /// Proves — deterministically, via `Weak::upgrade`, with no dependence
+    /// on real `Promise`/browser-event timing — that dropping
+    /// `SendJsFuture` while its promise is still
     /// pending does not drop the callbacks still registered against it.
     /// See `promise::SendJsFuture::downgrade_state`'s doc comment for the
     /// full argument.

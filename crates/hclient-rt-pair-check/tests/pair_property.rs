@@ -1,7 +1,6 @@
-//! Reviewer-written pair-property check for Task 4 of vertical 2
-//! (`hclient-rt-smol`). This is the whole point of the task: the same
-//! client-shaped code must run on tokio and on smol with no `#[cfg]`
-//! anywhere in the shared body.
+//! The pair property for `hclient-rt-tokio` and `hclient-rt-smol`: the
+//! same client-shaped code must run on both with no `#[cfg]` anywhere in
+//! the shared body.
 //!
 //! `exercise<R, F>` below is the one shared body. It touches all four
 //! capability traits (`Timer`, `TcpConnect`, `Blocking`, `Spawn`), does real
@@ -17,10 +16,9 @@
 //! unavoidable and outside the shared body by construction (a test fn has
 //! to pick an executor to run *in*).
 //!
-//! Ran in a throwaway clone during the Task 4 review: both
-//! `pair_property_holds_for_tokio` and `pair_property_holds_for_smol`
-//! passed against the workspace at `71cad8d`, first try, with the shared
-//! `exercise` body exactly as checked in here - it needed no `#[cfg]`, no
+//! Both `pair_property_holds_for_tokio` and `pair_property_holds_for_smol`
+//! pass with the shared `exercise` body exactly as checked in here — it
+//! needs no `#[cfg]`, no
 //! boxing, and no bound beyond what `TcpConnect`'s own associated-type
 //! bound (`Stream: hyper::rt::Read + hyper::rt::Write + Unpin`) already
 //! supplies. This is the strongest evidence available that the runtime
@@ -28,8 +26,8 @@
 //!
 //! **The two `Stream` implementations are not merely each satisfiable, they
 //! are interchangeable on every property a caller can observe.** Landing
-//! this crate (Task 4, fix round 1), the divergence check below was tried
-//! first as an auto-trait probe on `TcpConnect::Stream` itself: `Sync`,
+//! The divergence check below was tried first as an auto-trait probe on
+//! `TcpConnect::Stream` itself: `Sync`,
 //! `Send`, `std::panic::UnwindSafe`, and `std::panic::RefUnwindSafe` were
 //! each added in turn to `type Stream: hyper::rt::Read + hyper::rt::Write +
 //! Unpin` in `hclient-rt/src/caps.rs` (one at a time, `cargo check
@@ -60,9 +58,8 @@
 //! the shape of accident this crate exists to catch: a bound that happens
 //! to hold for whichever runtime its author had in mind.
 //!
-//! Landed in-tree at `crates/hclient-rt-pair-check/` (Task 4, fix round 1) -
 //! `cargo test -p hclient-rt-pair-check --all-features` from the workspace
-//! root runs it directly, no scratch clone needed.
+//! root runs it directly.
 use hclient_rt::{Blocking, Spawn, TcpConnect, TcpOpts, Timer};
 use hyper::rt::{Read as HyperRead, ReadBuf, Write as HyperWrite};
 use std::future::Future;

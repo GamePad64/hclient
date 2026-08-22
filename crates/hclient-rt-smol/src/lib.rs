@@ -60,9 +60,9 @@ impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for Smol {
 /// The executor every spawned task runs on, and the one thread that drives
 /// it.
 ///
-/// **They are two statics on purpose, and the previous shape was a race.**
-/// The thread used to be spawned *inside* `OnceLock::get_or_init`'s
-/// closure, and its first act was `EXEC.get().expect("initialised")` — but
+/// **They are two statics on purpose: one static is a race.** Spawning
+/// the thread *inside* `OnceLock::get_or_init`'s closure, with its first
+/// act `EXEC.get().expect("initialised")`, does not work —
 /// `get_or_init` publishes nothing until the closure *returns*, so a
 /// scheduler that ran the new thread first found `None` and the process
 /// died on that `expect`. Seen twice in 48 runs of the `hclient-h3` suite,

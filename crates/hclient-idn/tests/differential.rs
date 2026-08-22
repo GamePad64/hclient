@@ -187,7 +187,7 @@ fn the_bundled_oracle_answers_what_the_corpus_pins_for_it() {
         let got = idna_says(case.input);
         if got.as_deref() != case.idna_says {
             wrong.push(format!(
-                "  {}: `idna` used to say {:?}, now says {:?}",
+                "  {}: `idna` was pinned at {:?}, now says {:?}",
                 label(case),
                 case.idna_says,
                 got

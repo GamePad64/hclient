@@ -9,7 +9,7 @@ pub(crate) struct LineSplitter {
     ///
     /// Exists for complexity reasons: shifting the buffer on every line
     /// (`drain(..pos)` + `remove(0)`) costs O(n·k) for a chunk with k
-    /// lines. Measured on the previous version: 50k short lines — 51 ms,
+    /// lines. Measured on the shifting version: 50k short lines — 51 ms,
     /// 100k — 225 ms, 200k — 925 ms, i.e. 4× per doubling. This is a
     /// parser for an untrusted response body, so quadratic behavior here
     /// is an attack vector.
@@ -317,9 +317,9 @@ mod tests {
 
     /// Regression for quadratic behavior.
     ///
-    /// A threshold on absolute time is useless, and this has been verified:
-    /// a re-review copied the body of this test's previous version into
-    /// quadratic code, and it passed in 0.26 s against a 2 s budget. So
+    /// A threshold on absolute time is useless, and this has been
+    /// verified: a time-bounded version of this test passes in 0.26 s
+    /// against a 2 s budget on quadratic code. So
     /// what's checked is the complexity CLASS — the ratio of times under a
     /// fourfold growth in input. Linearity predicts ~4×, quadratic behavior
     /// ~16×; an 8× threshold leaves headroom for scheduler noise while
@@ -346,9 +346,8 @@ mod tests {
     /// regression through too.
     ///
     /// Calibration (a 30 ms threshold, not 1 ms) is a separate fix on top
-    /// of isolation (review round 3): isolation removed the overcommit
-    /// noise, but exposed a DIFFERENT noise that had always been there —
-    /// it was just previously masked by the overcommit noise. At a 1 ms
+    /// of isolation: isolation removes the overcommit noise and exposes a
+    /// DIFFERENT noise the overcommit was masking. At a 1 ms
     /// calibration threshold, the test would stop at n on the order of
     /// 8–16 thousand lines, where the measurement itself lands at 1–7 ms —
     /// deep in timer/allocator/cache noise: 8 runs of the isolated job with
@@ -362,15 +361,12 @@ mod tests {
     /// size was insufficient. At a 30 ms threshold, calibration on this
     /// machine stops at n=400,000 (small ≈ 47–53 ms, large ≈ 195–197 ms,
     /// ratio 3.7–4.16 on linear code across 10 consecutive runs, without a
-    /// single miss) — the same order of magnitude as Task 2's original
-    /// measurements (50k/100k/200k lines — 51/225/925 ms, but that was the
-    /// OLD quadratic implementation; the current linear one over the same
-    /// input range puts the signal well clear of the noise, rather than
-    /// just barely touching it). The whole test's cost, on that same order
-    /// (fractions of a second), is acceptable precisely because the
-    /// isolation from review round 1 freed it from having to share a
-    /// runner with anything else — previously this same cost would have
-    /// been considered unacceptable in the shared run.
+    /// single miss) — the same order of magnitude as the quadratic
+    /// implementation's own numbers (50k/100k/200k lines — 51/225/925 ms).
+    /// The linear one over that input range puts the signal well clear of
+    /// the noise rather than just touching it. The whole test's cost, on
+    /// the same order of fractions of a second, is acceptable precisely
+    /// because it does not share a runner with anything else.
     #[test]
     fn parsing_scales_linearly_not_quadratically() {
         fn parse_millis(lines: usize) -> f64 {

@@ -85,9 +85,9 @@ const INITIAL_N: u32 = 128;
 /// This is not a general decoder. The only caller is [`to_ascii_over`],
 /// which has already ASCII case-folded, so an upper-case digit reaching
 /// here would mean the case folding did not happen — and accepting it
-/// would hide that. A first draft did accept both cases and three of its
-/// mutants survived, which is the same statement made by measurement:
-/// nothing could reach that arm.
+/// would hide that. Accepting both cases leaves three mutants alive here,
+/// which is the same statement made by measurement: nothing reaches that
+/// arm.
 const fn decode_digit(b: u8) -> Option<u32> {
     match b {
         b'a'..=b'z' => Some((b - b'a') as u32),

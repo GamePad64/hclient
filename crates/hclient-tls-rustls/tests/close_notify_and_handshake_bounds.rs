@@ -1,24 +1,21 @@
-//! Two properties from the fix round 1 review (Verdict B #2 and #4),
-//! adapted from the reviewer's saved probes
-//! (`review-task-9-close-notify-and-hangs.rs`) after independently
-//! re-verifying both in this tree rather than inheriting their text as-is.
+//! Two properties of `Rustls::connect` and `TlsStream::poll_read`, both
+//! verified in this tree.
 //!
-//! Finding 2 (now fixed, `src/stream.rs`): a clean `close_notify` without a
-//! matching raw TCP close used to hang `poll_read` forever, because `Ok(0)`
-//! from `conn.reader().read()` (rustls's own signal for "clean close,
+//! **A clean `close_notify` without a matching raw TCP close must not hang
+//! `poll_read` forever** (`src/stream.rs`), which is what happens when
+//! `Ok(0)` from `conn.reader().read()` (rustls's own signal for "clean close,
 //! nothing more ever") was treated the same as `WouldBlock` ("nothing yet,
 //! keep waiting on the transport"). This file's first test now asserts the
 //! CORRECT behaviour (prompt clean EOF), not the bug - re-confirmed here by
 //! reverting `stream.rs`'s `Ok(0) => return Poll::Ready(Ok(()))` back to
 //! `Ok(0) => {}` via `cp` and watching this exact test go red with the
-//! bound's own timeout message before restoring (see fix round 1 report).
+//! bound's own timeout message before restoring.
 //!
-//! Finding 4: `Rustls::connect` has no internal bound against a peer that
-//! accepts the TCP connection and then goes silent - confirmed still true
-//! after this round's fixes, and documented here as intentional: `TlsRequest`
-//! (Task 8's contract) carries no deadline, so `Rustls::connect` has nothing
-//! to bound itself against. This mirrors Task 3's own resolution for its
-//! four unbounded sites - the bound belongs at the call site / a higher
+//! **`Rustls::connect` has no internal bound against a peer that accepts
+//! the TCP connection and then goes silent**, and that is intentional:
+//! `TlsRequest` carries no deadline, so `Rustls::connect` has nothing to
+//! bound itself against. Same resolution as the runtime's own unbounded
+//! sites — the bound belongs at the call site / a higher
 //! layer, not invented locally; what IS required, and is followed here, is
 //! that every WAIT IN A TEST stays bounded so a real regression fails loudly
 //! instead of hanging the job.
@@ -123,7 +120,7 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
         Err(_elapsed) => panic!(
             "poll_read did not resolve within 3s after close_notify even though the peer already \
              signalled clean TLS-level closure - it kept waiting on the still-open raw transport \
-             instead (this is the fix round 1 bug, finding 2, if it reproduces)"
+             instead — the hang this test exists against"
         ),
         Ok(Err(e)) => panic!("poll_read resolved with an unexpected error: {e}"),
         Ok(Ok(n)) => assert_eq!(
@@ -177,9 +174,9 @@ async fn handshake_against_a_silent_peer_has_no_internal_bound_by_design() {
     // Documents current, intentional behaviour, not a defect: `TlsRequest`
     // carries no deadline, so `Rustls::connect` has nothing of its
     // own to bound against - the outer timeout here is standing in for
-    // whatever higher layer is expected to supply one, same as Task 3's
-    // four sites bound at their OWN call sites rather than inside the
-    // runtime capability itself.
+    // whatever higher layer is expected to supply one, the same way the
+    // runtime's own unbounded sites are bound at their call sites rather
+    // than inside the capability.
     assert!(
         result.is_err(),
         "expected the outer 2s timeout to fire because Rustls::connect has no internal bound; \

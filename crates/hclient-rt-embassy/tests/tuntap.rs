@@ -135,9 +135,9 @@ fn connect_timeout_is_enforced_over_this_runtimes_clock() {
 /// whether `connect` ever calls it. Deleting the
 /// `opts.reject_unsupported(Self::APPLIES)?` line from `Embassy::connect`
 /// — a backend that silently ignores every option it cannot apply, the one
-/// answer `TcpConnect::connect`'s doc says is unavailable — passed the
-/// whole crate suite, 14/14 (W7 mutation M6). This scenario is what makes
-/// that mutation fail.
+/// answer `TcpConnect::connect`'s doc says is unavailable — passes the
+/// whole crate suite, 14/14. This scenario is what makes that mutation
+/// fail.
 #[test]
 fn options_this_runtime_cannot_apply_are_refused_by_connect_itself() {
     scenario("refuse-opts");
@@ -171,8 +171,7 @@ fn holding_the_execute_future_leaves_the_connection_open() {
 /// it already `Closed` and the closing list is never popped. So deleting
 /// `finish_closing`'s `sock.flush().await` — which leaves it aborting a
 /// FIN that has not been transmitted, exactly the failure the closing list
-/// exists to prevent — passed the whole crate suite, 15/15 (W7 mutation
-/// M7).
+/// exists to prevent — passes the whole crate suite, 15/15.
 ///
 /// This scenario is what makes that mutation fail. `N = 1`, so the second
 /// request cannot get a slot of its own; and the release and the next
@@ -190,9 +189,7 @@ fn a_slot_reclaimed_while_still_closing_waits_for_its_fin() {
 /// them apart. Every other scenario here ends in a FIN, so folding the
 /// `ConnectionReset` arm of [`observe`] into `Eof` — an instrument that
 /// accepts an RST wherever it is owed an orderly close — passed the whole
-/// crate suite, 16/16 (W7 mutation M16). This is the case that puts a real
-/// RST on the wire, and it is also case 2 of the research's `cancel2`
-/// spike, which until now lived only in an untracked directory:
+/// crate suite, 16/16. This is the case that puts a real RST on the wire:
 /// `abort()` with the stack given the one poll `TcpSocket::drop` denies
 /// it.
 #[test]

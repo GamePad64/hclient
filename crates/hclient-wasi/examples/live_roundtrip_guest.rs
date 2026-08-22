@@ -170,8 +170,8 @@ async fn response_roundtrip(port: u16) -> Result<(), ()> {
     if !end_flagged_at_trailers {
         eprintln!(
             "is_end_stream() must already report true right after the trailers frame \
-             arrives, while Body::inner is still Inner::Incoming — this is the exact gap \
-             Task 16 exists to close, see the doc-comment on Body::is_end_stream"
+             arrives, while Body::inner is still Inner::Incoming — see the \
+             doc-comment on Body::is_end_stream"
         );
         return Err(());
     }
@@ -314,9 +314,8 @@ enum TrailerCase {
     EmptyFrame,
 }
 
-/// Review resolution, finding B-1, live run (refined by fix round 2
-/// findings 2 and 3): a `Streaming` request body really does emit
-/// trailers (`DataThenTrailers`) in one of four configurations.
+/// On a live run, a `Streaming` request body really does emit trailers
+/// (`DataThenTrailers`) in one of four configurations.
 /// `Undeclared` and `WrongName` must fail with a typed error
 /// (`convert::undeclared_trailers`) — both lose `x-checksum` on the wire
 /// the same way. `Declared` and `EmptyFrame` must succeed: the guard
@@ -357,8 +356,8 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
         }
         (false, Err(e)) if e.kind() == &hclient_core::ErrorKind::Body => {
             let msg = e.to_string();
-            // Finding 2: the message must name the specific field, not
-            // just "rejected".
+            // The message must name the specific field, not just
+            // "rejected".
             if !msg.contains("x-checksum") {
                 eprintln!("error must name the specific field `x-checksum`: {msg}");
                 return Err(());
@@ -373,7 +372,7 @@ async fn request_trailers(port: u16, case: TrailerCase) -> Result<(), ()> {
         (false, Ok(_)) => {
             eprintln!(
                 "expected an error for undeclared/mismatched trailers, got success — this is \
-                 exactly the silent data loss Task 16's B-1 exists to catch"
+                 exactly the silent data loss this check exists to catch"
             );
             Err(())
         }

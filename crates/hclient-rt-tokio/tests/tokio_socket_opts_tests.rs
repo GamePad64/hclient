@@ -2,15 +2,12 @@
 //! four `TcpOpts` fields not already covered by the implementer's own
 //! `connects_to_a_local_listener_with_options` (nodelay) and
 //! `connects_with_keepalive_enabled` (keepalive) tests: `local_address`,
-//! `send_buffer_size`, `recv_buffer_size`, `reuse_address`. Point D of the
-//! Task 3 review: verify each option is actually applied on a real
-//! connected socket, not merely accepted without effect.
+//! `send_buffer_size`, `recv_buffer_size`, `reuse_address`. Each option
+//! must be actually applied on a real connected socket, not merely
+//! accepted without effect.
 //!
-//! Ran as an integration test (`crates/hclient-rt-tokio/tests/*.rs`) in a
-//! throwaway clone during the Task 3 review: all 6 tests passed against
-//! `hclient-rt-tokio` at `2948375`. To re-run: drop this file into
-//! `crates/hclient-rt-tokio/tests/` in a scratch clone and `cargo test -p
-//! hclient-rt-tokio --test tokio_socket_opts_tests --all-features`.
+//! Run with `cargo test -p hclient-rt-tokio --test
+//! tokio_socket_opts_tests --all-features`.
 //!
 //! IMPORTANT design note for whoever extends this file: the first version
 //! of the buffer-size tests asserted "explicit request > default/untouched

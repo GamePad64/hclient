@@ -284,8 +284,8 @@ fn undeclared_capability_fields_match_their_conservative_defaults_today() {
 /// PRE-mutation baseline too, not only the flipped state — a probe
 /// hardcoded to a constant can agree with an arbitrary single flipped
 /// state by coincidence, but not with both the natural state and its
-/// opposite; this exact gap was found by mutation-testing this test's own
-/// first draft, see the task report), and restore the prototype before
+/// opposite; that gap is what mutation-testing this test finds), and
+/// restore the prototype before
 /// returning, since `wasm-bindgen-test` runs every `#[wasm_bindgen_test]`
 /// in this file against the same page and global object.
 #[wasm_bindgen_test]

@@ -100,10 +100,10 @@ pub enum RedirectSupport {
 ///
 /// # Why two variants and not three
 ///
-/// A first draft had a third variant splitting `Supported` by who performs
-/// the cancellation: the transport tearing down a socket it owns, versus
-/// the transport asking an ambient host to stop. The split was dropped
-/// because no caller decision turns on it. A capability answers a question
+/// A third variant could split `Supported` by who performs the
+/// cancellation: the transport tearing down a socket it owns, versus the
+/// transport asking an ambient host to stop. It is not here because no
+/// caller decision turns on the difference. A capability answers a question
 /// the caller actually asks — here, "can I rely on a drop ending the
 /// exchange?" — and *who* ends it is an implementation detail. Both shapes
 /// give a guarantee of exactly the same strength, including its limit:

@@ -1,11 +1,10 @@
-//! Proof of Task 8's central thesis on a real TLS handshake, not just at
-//! the trait-contract level: `TlsConnect` is typed on `hyper::rt::{Read,
+//! The central claim, on a real TLS handshake rather than at the
+//! trait-contract level: `TlsConnect` is typed on `hyper::rt::{Read,
 //! Write}`, not on futures-io/tokio-io, so ONE adapter (`Rustls::connect`)
 //! serves both tokio and smol with no runtime-specific branch anywhere in
 //! the shared body. The model is the pair-property test in
-//! `crates/hclient-rt-pair-check` (Task 4, fix round 1): the same thing is
-//! proved there for the bare runtime capabilities, here for the TLS
-//! adapter built on top of them.
+//! `crates/hclient-rt-pair-check`, which proves the same thing for the
+//! bare runtime capabilities; this is the TLS adapter on top of them.
 //!
 //! `handshake_and_echo` below is the one shared body: TCP connect through
 //! the passed-in runtime, TLS handshake through that SAME `Rustls`, byte

@@ -6,8 +6,8 @@
 //! `rustls-ring`/`rustls-aws-lc-rs`, edition 2024. One
 //! rewritten crate is budgeted for.
 //!
-//! `forbid`, not `deny` (see `hclient-rt`, Task 2 of vertical 2, fix round
-//! 1): `deny(unsafe_code)` could be overridden with a local
+//! `forbid`, not `deny`: `deny(unsafe_code)` could be overridden with a
+//! local
 //! `#[allow(unsafe_code)]` next to the `unsafe` block itself — the
 //! compiler would stay silent; `forbid` cannot be overridden from inside
 //! the crate at all (`E0453`).

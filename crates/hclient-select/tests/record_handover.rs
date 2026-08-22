@@ -169,9 +169,8 @@ async fn an_origin_that_publishes_no_record_is_not_asked_about_twice() {
 /// reporting `supports_svcb() == false`; this transport's can ask and
 /// publishes `h3`. "The connector could not ask" is a fact about the
 /// resolver, not about the origin, so it must arrive as
-/// `Discovered::NotConsulted` — and collapsed into `NoRecord`, which is
-/// where it used to be folded, this origin would have gone to TCP with a
-/// perfectly capable resolver sitting unused.
+/// `Discovered::NotConsulted`. Collapsed into `NoRecord`, this origin
+/// would go to TCP with a perfectly capable resolver sitting unused.
 ///
 /// **At the origin's default port, deliberately, and this is the only arm
 /// where that is the point rather than a nuisance.** Discovery has three

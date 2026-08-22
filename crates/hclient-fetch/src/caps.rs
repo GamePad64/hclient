@@ -404,11 +404,10 @@ pub(crate) fn probe() -> Capabilities {
         between_bytes: false,
     };
     c.tls_config = TlsSupport::None;
-    // There is no `upgrade` field to set any more, and the sentence that
-    // used to be here is why: *"`WebSocket` in the browser is a wholly
-    // separate global, unreachable from a `fetch`-shaped `Transport`"*. It
-    // is still true, and `src/websocket.rs` is the conclusion drawn from
-    // it — this crate reaches that global through
+    // There is no `upgrade` field to set: `WebSocket` in the browser is a
+    // wholly separate global, unreachable from a `fetch`-shaped
+    // `Transport`, and `src/websocket.rs` is the conclusion drawn from
+    // that — this crate reaches the global through
     // `hclient_core::unversioned::WebSocketConnect`, which a transport
     // says it can do by implementing it rather than by declaring anything
     // here.

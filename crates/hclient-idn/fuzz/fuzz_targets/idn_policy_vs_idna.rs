@@ -90,10 +90,9 @@ fuzz_target!(|data: &[u8]| {
     // supplies", which is what the assertion below is about, so it is
     // excluded here and asserted directly by `policy.rs`'s
     // `refuses_an_empty_label_but_not_the_trailing_root`.
-    // All four separators, not just `'.'`: the first draft of this split
-    // used the ASCII dot alone and the fuzzer answered with `"．"` in
-    // seconds — a fullwidth full stop, which the policy treats as a
-    // separator and this did not.
+    // All four separators, not just `'.'`: splitting on the ASCII dot
+    // alone is answered by the fuzzer with `"．"` in seconds — a fullwidth
+    // full stop, which the policy treats as a separator.
     let sep = hclient_idn::testing::LABEL_SEPARATORS;
     let empty_label = |name: &str| {
         let n = name.split(sep).count();

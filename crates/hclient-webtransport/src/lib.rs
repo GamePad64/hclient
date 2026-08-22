@@ -452,8 +452,7 @@ pub struct AlreadyClosed;
 /// beginning and its end. The session lives exactly as long as that stream
 /// (draft §5), a `CLOSE_WEBTRANSPORT_SESSION` capsule travels on it
 /// ([`close`](Self::close)), and the peer's travels back
-/// ([`closed`](Self::closed)). Until v0.4 it was held and never read, which
-/// is why the crate doc used to say a session's end could not be observed.
+/// ([`closed`](Self::closed)).
 ///
 /// Two more things are owned and never polled, and dropping either would
 /// end the connection under the session:
@@ -532,8 +531,7 @@ struct Shared {
     peer_datagrams: bool,
     /// The peer's `SETTINGS_WT_MAX_SESSIONS`, and the only reader of it is
     /// [`Session::open_session`]. See `PeerSettings` for where it comes
-    /// from, which is not where this crate's documentation used to say it
-    /// could not be got from.
+    /// from — the SETTINGS frame, not `h3::config::Settings`.
     max_sessions: u64,
     /// How many [`Session`] handles are alive on this connection.
     /// Incremented on establishment and decremented in `Drop`, which is
@@ -677,9 +675,8 @@ impl Session {
     /// sessions"* — and whose value of `1` the draft makes an explicit
     /// *"clients MUST NOT attempt to establish more than one simultaneous
     /// WebTransport session"*. So this method is only correct if that
-    /// number can be read, and this crate's own documentation used to say
-    /// it could not: `h3::config::Settings` has getters for three flags
-    /// and none for this one.
+    /// number can be read, and `h3::config::Settings` is not where to read
+    /// it: that has getters for three flags and none for this one.
     ///
     /// That was true of `h3::config::Settings` and false of `h3`. The
     /// number arrives in the SETTINGS **frame** that

@@ -7,7 +7,7 @@
 //!
 //! 1. **A header fetch will refuse to send never disappears silently.**
 //!    [`check_headers`] rejects any header in [`crate::FORBIDDEN_HEADERS`]
-//!    (Task 2's verified-accurate, deliberately incomplete, subset of the
+//!    (a verified-accurate, deliberately incomplete subset of the
 //!    Fetch Standard's forbidden-request-header predicate) before a single
 //!    `web_sys` call is made. That list can't express fetch's `Sec-*`/
 //!    `Proxy-*` prefix rule or the ten other named headers it doesn't carry
@@ -25,9 +25,9 @@
 //!    [`resolve_body`] handles `Empty`, `Full`, `Rewindable`, and
 //!    `Streaming` on purpose — `Rewindable` by recursing into whatever its
 //!    factory hands back, through the SAME match, not a partial one that
-//!    only understands `Full` and drops everything else (that was the exact
-//!    review-caught defect in vertical 2's native `body.rs`: a `Rewindable`
-//!    wrapping anything but a non-empty `Full` collapsed to nothing sent).
+//!    only understands `Full` and drops everything else — the defect where
+//!    a `Rewindable` wrapping anything but a non-empty `Full` collapses to
+//!    nothing sent.
 //!    Since v0.2 W6 `Streaming` is forwarded rather than refused, where the
 //!    browser will genuinely send it; where it will not, it is still a
 //!    typed [`ErrorKind::Unsupported`], never a silent empty body and never
@@ -379,10 +379,9 @@ impl futures_core::Stream for BodyStream {
 /// calling its factory and feeding the result back through this SAME match
 /// — not a partial match that only recognizes `Full` and silently treats
 /// everything else (including a `Rewindable` wrapping `Streaming`, or
-/// another `Rewindable`) as an empty body. That partial-match shape is the
-/// exact defect this task's brief calls out from vertical 2's native
-/// `body.rs`; the mutation check in `tests/convert.rs` reverts to it and
-/// confirms it's caught.
+/// another `Rewindable`) as an empty body. That partial-match shape is
+/// the defect; the mutation check in `tests/convert.rs` reverts to it and
+/// confirms it is caught.
 ///
 /// Iterative, not recursive, and bounded by [`MAX_REWIND_DEPTH`] (see its
 /// own doc comment for the exact, off-by-one-from-the-constant ceiling): a
@@ -556,8 +555,8 @@ pub(crate) fn to_web_request(
 
 /// What [`to_web_request`] hands back.
 ///
-/// A struct rather than the `(Request, Option<AbortController>)` tuple it
-/// used to be, for one field: `streamed`. `execute` needs it to name the
+/// A struct rather than a `(Request, Option<AbortController>)` tuple, for
+/// one field: `streamed`. `execute` needs it to name the
 /// cause the browser hides (see [`StreamingBodyFetchFailed`]), and it
 /// cannot recompute it from the original `http::Request` — that has been
 /// consumed, and a `RequestBody::Rewindable` whose factory returns a

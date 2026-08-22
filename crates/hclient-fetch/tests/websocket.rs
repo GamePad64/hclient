@@ -1,5 +1,5 @@
 //! The browser's WebSocket, behind `hclient_core::unversioned::
-//! WebSocketConnect` — v0.3 W4 step 3.
+//! WebSocketConnect`.
 //!
 //! # Why almost every test here runs against a stand-in constructor
 //!

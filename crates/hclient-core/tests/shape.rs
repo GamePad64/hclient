@@ -21,11 +21,10 @@ fn capability_types_are_send_and_sync() {
 /// `Error: Send + Sync` — spec amendment-C1, the single documented exception
 /// from "the core declares no Send/Sync": `Error::source` must be
 /// `Send + Sync`, or the future `Client::execute` returns could never make
-/// it into `tokio::spawn` for any backend. Was a compile-time-only
-/// assertion inside `error.rs`'s own `#[cfg(test)] mod tests` until Task 12's
-/// fix round 1 moved it here (amendment-C3: such assertions belong in
-/// `tests/`, not `src`) — the runtime construction below keeps it from being
-/// a vacuous no-op, same as the original.
+/// it into `tokio::spawn` for any backend. It lives here rather than in
+/// `error.rs` per amendment-C3 — such assertions belong in `tests/`, not
+/// `src` — and the runtime construction below keeps it from being a
+/// vacuous no-op.
 #[test]
 fn error_is_send_sync_and_constructs_a_real_error_not_just_compiles() {
     assert_send_sync::<Error>();
@@ -78,7 +77,7 @@ impl Transport for Echo {
 }
 
 /// A backend with its own error type that doesn't override `to_error` —
-/// the whole reason the hook has a default (branch final review B2).
+/// the whole reason the hook has a default.
 struct Bare {
     caps: Capabilities,
 }
@@ -234,8 +233,8 @@ fn non_send_transport_still_satisfies_the_trait() {
     };
 }
 
-/// The same invariant, but along the axis `to_error` could have broken
-/// (branch final review B2): a transport whose ERROR is genuinely `!Send`.
+/// The same invariant, along the axis `to_error` could break: a transport
+/// whose ERROR is genuinely `!Send`.
 ///
 /// This is the one reason `to_error` is a defaulted method with a
 /// where-clause, rather than `Transport::Error: Into<Error>` on the trait

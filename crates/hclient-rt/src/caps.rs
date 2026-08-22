@@ -432,8 +432,8 @@ mod tests {
         // All SIX fields, not four: a hand-written `Default` that set
         // `send_buffer_size`/`recv_buffer_size` to `Some(1 << 20)` would
         // pass this test unnoticed if only the other four were checked
-        // (carried finding, review Task 1). Today `#[derive(Default)]`
-        // gives `None` by construction, but the test's name promises the
+        // if only the other four were checked. `#[derive(Default)]` gives
+        // `None` by construction, but the test's name promises the
         // whole struct — so the test must check the whole struct.
         let o = TcpOpts::default();
         // "The user turns nodelay on, not us" is how this line read until

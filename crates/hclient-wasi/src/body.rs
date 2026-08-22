@@ -123,8 +123,8 @@ impl HttpBody for Body {
     /// this branch with a hard `false` (the very `act` bug) doesn't fail a
     /// single test in the `#[cfg(test)] mod tests` below.
     ///
-    /// Task 16 closes this with `crates/hclient-wasi/tests/live_roundtrip.rs` +
-    /// `examples/live_roundtrip_guest.rs`: a real request through
+    /// `crates/hclient-wasi/tests/live_roundtrip.rs` +
+    /// `examples/live_roundtrip_guest.rs` close it: a real request through
     /// `WasiHttp::execute` under `wasmtime` (`.cargo/config.toml`, `runner
     /// = "wasmtime run -S http --"`) against a mock server that responds
     /// `chunked` with a trailer — the trailer is exactly what opens the
@@ -195,9 +195,9 @@ mod tests {
     // from `wasip3::http::types::Response`, an opaque WIT resource that
     // has nowhere to come from without a real `wasi:http` host.
     // `is_end_stream`, where this is especially sensitive, is flagged with
-    // its own doc comment on the method — that's also where the verdict
-    // lives on whether Task 16 closed this gap with an integration test
-    // under wasmtime or not. The exception is `size_hint_honoring_end`:
+    // its own doc comment on the method, which is also where the
+    // integration coverage under wasmtime is recorded. The exception is
+    // `size_hint_honoring_end`:
     // its decision, whether to return a stale estimate or not, is pulled
     // out into a pure function precisely so it doesn't have to share the
     // fate of the rest of the `Inner::Incoming` branches — it's checked
@@ -229,8 +229,8 @@ mod tests {
         assert_eq!(hint.upper(), Some(0));
     }
 
-    /// Review round 1, Finding 1: `IncomingBody::size_hint()` is computed
-    /// once from `content-length` and never shrinks on its own, while
+    /// `IncomingBody::size_hint()` is computed once from `content-length`
+    /// and never shrinks on its own, while
     /// `Body::poll_frame` keeps `self.inner` in `Incoming` for one more
     /// call after the inner body has already reported `is_end_stream() ==
     /// true`. Without a correction, a stale upper bound would leak out in
@@ -261,8 +261,8 @@ mod tests {
         assert_eq!(hint.upper(), mid.upper());
     }
 
-    // `Inner::Buffered` — added by Task 16 as a `Bytes` -> `http_body::Body`
-    // adapter for `Transport::execute` (`convert::Payload::Bytes` goes
+    // `Inner::Buffered` — a `Bytes` -> `http_body::Body` adapter for
+    // `Transport::execute` (`convert::Payload::Bytes` goes
     // into `BodyWriter::send_http_body`, which needs an `http_body::Body`,
     // not raw bytes). Doesn't need a host — tested right alongside
     // `empty()`.

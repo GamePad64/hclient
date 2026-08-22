@@ -18,10 +18,8 @@
 //! synchronous on Linux but the public contract must hold either way, so
 //! the test asserts the outcome, not the internal path.
 //!
-//! Ran as an integration test in a throwaway clone during the Task 4
-//! review: both tests below passed, repeatably, against `hclient-rt-smol`
-//! at `71cad8d`. Reviewer-only instrumentation (`eprintln!` in each match
-//! arm of `begin_connect`, not kept) showed the closed-port refusal in this
+//! Instrumentation (`eprintln!` in each match arm of `begin_connect`, not
+//! kept) showed the closed-port refusal in this
 //! sandbox resolves via the `EINPROGRESS` branch (`raw_os_error=Some(115)`,
 //! `kind=InProgress`), not the synchronous-`Err` branch - i.e. this sandbox
 //! exercises the async `writable().await` + `take_error()` path, not just

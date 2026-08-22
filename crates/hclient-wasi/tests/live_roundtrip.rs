@@ -80,13 +80,13 @@ fn wasi_transport_round_trips_a_real_response_through_wasmtime() {
     }
 }
 
-/// Review resolution, finding B-1, live run: a `Streaming` request body
-/// really does emit trailers with no `Trailer:` in the headers —
+/// On a live run, a `Streaming` request body really does emit trailers
+/// with no `Trailer:` in the headers —
 /// `WasiHttp::execute` must return an error, not silently lose them
 /// (measured: `wasi:http`'s HTTP/1.1 encoder drops undeclared trailers on
 /// the wire). The mock server doesn't check the actual trailer bytes on
-/// the wire — that was already measured while preparing the fix round;
-/// this test checks that our guard (`convert::TrailerWatch` and
+/// the wire — that is measured separately; this test checks that our
+/// guard (`convert::TrailerWatch` and
 /// `convert::undeclared_trailers`) actually reaches the caller as a typed
 /// error.
 #[test]
@@ -136,10 +136,9 @@ fn wasi_transport_accepts_streaming_request_trailers_when_declared() {
     }
 }
 
-/// Review resolution, fix round 2 finding 2, live run: `Trailer:` is
-/// present but names a DIFFERENT field (`X-Other`) than what the body
-/// actually emits (`x-checksum`) — measured that the wire loses
-/// `x-checksum` exactly as it would if the header were absent entirely.
+/// On a live run, `Trailer:` present but naming a DIFFERENT field (`X-Other`)
+/// than what the body actually emits (`x-checksum`) — measured that the wire
+/// loses `x-checksum` exactly as it would if the header were absent entirely.
 /// The guard must compare NAMES, not just whether the header is present.
 #[test]
 fn wasi_transport_rejects_streaming_request_trailers_with_the_wrong_declared_name() {
@@ -163,10 +162,9 @@ fn wasi_transport_rejects_streaming_request_trailers_with_the_wrong_declared_nam
     }
 }
 
-/// Review resolution, fix round 2 finding 3, live run: the body emits an
-/// empty trailers frame (`Frame::trailers(HeaderMap::new())`) with no
-/// `Trailer:` — nothing to lose on the wire, the guard must not reject
-/// it.
+/// On a live run, the body emits an empty trailers frame
+/// (`Frame::trailers(HeaderMap::new())`) with no `Trailer:` — nothing to
+/// lose on the wire, so the guard must not reject it.
 #[test]
 fn wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header() {
     let Some(wasmtime) =
@@ -744,8 +742,8 @@ const REQUIRE_MARKER: &str = "HCLIENT_REQUIRE_WASMTIME";
 /// job in this vertical: a green `cargo test` stops meaning anything was
 /// actually checked.
 ///
-/// **The key is `HCLIENT_REQUIRE_WASMTIME`, not `CI` (B3 of the branch's
-/// final review).** The guard was right in intent and wrong in signal:
+/// **The key is `HCLIENT_REQUIRE_WASMTIME`, not `CI`.** `CI` is the right
+/// intent and the wrong signal:
 /// `CI` is set by GitHub Actions for EVERY job, while exactly one job
 /// installs `wasmtime` — `wasip2`. The matrix `test` job runs `cargo
 /// test --workspace --all-features`, picks up this file (it's native,

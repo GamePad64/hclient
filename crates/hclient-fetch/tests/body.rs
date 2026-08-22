@@ -140,7 +140,7 @@ async fn next_data(
 
 /// One microtask tick, via this crate's own promise adapter — not
 /// `wasm_bindgen_futures::JsFuture` directly, matching how every other test
-/// in this crate awaits a `Promise` (Task 1's `SendJsFuture`, exposed at
+/// in this crate awaits a `Promise` (`SendJsFuture`, exposed at
 /// `testing::send_js_future`).
 async fn microtask_tick() {
     let p = js_sys::Promise::resolve(&JsValue::undefined());
@@ -216,8 +216,7 @@ async fn multiple_chunks_are_delivered_as_separate_frames_not_merged() {
 
 // ---------------------------------------------------------------------
 // A body that stops producing bytes without an error is the worst outcome
-// available (this vertical's own dispatch, referencing vertical 2's
-// close-delimited-body fix). A rejected `read()` mid-stream must become a
+// available. A rejected `read()` mid-stream must become a
 // typed `ErrorKind::Body`, never a quiet `Ready(None)`.
 // ---------------------------------------------------------------------
 
@@ -263,8 +262,8 @@ async fn mid_stream_error_is_a_typed_body_error_not_a_quiet_end() {
 }
 
 // ---------------------------------------------------------------------
-// Fix round 1, review finding 2: "what happens when the underlying
-// response is aborted" was never tested — `Body::from_response` only ever
+// "What happens when the underlying response is aborted" needs reaching
+// for: `Body::from_response` only ever
 // sees a `web_sys::Response`, never an `AbortController`, so the abort
 // path can't be reached from inside this crate's own construction API.
 // The reviewer's probe (`.superpowers/sdd/2026-08-05-v01-fetch-and-
@@ -383,10 +382,10 @@ async fn a_non_byte_chunk_is_a_typed_decode_error_distinct_from_a_stream_error()
 // the stream).
 // ---------------------------------------------------------------------
 
-/// Fix round 1, review finding 1: the ORIGINAL version of this test set
-/// only `content-length`, never `content-encoding` — so the `"identity"`
-/// match arm inside `content_length_hint` (`v.eq_ignore_ascii_case
-/// ("identity")`) was covered by nothing, even though the test's own name
+/// Setting only `content-length` and never `content-encoding` leaves the
+/// `"identity"` match arm inside `content_length_hint`
+/// (`v.eq_ignore_ascii_case("identity")`) covered by nothing, even though
+/// this test's own name
 /// claimed it was. The reviewer proved this by making that arm never match
 /// (e.g. comparing against a string other than `"identity"`) and finding
 /// all ten tests still green. A server that explicitly sends

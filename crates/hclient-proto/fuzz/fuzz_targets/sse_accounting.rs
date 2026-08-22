@@ -2,7 +2,7 @@
 use hclient_proto::sse::SseDecoder;
 use libfuzzer_sys::fuzz_target;
 
-// Invariant (Task 4 re-review, round 1): the decoder must never charge
+// Invariant: the decoder must never charge
 // fewer bytes against the limit than it actually consumed. `SseDecoder`
 // doesn't expose a counter of charged bytes, so the claim "charged >=
 // consumed" can't be checked directly through the public API without a

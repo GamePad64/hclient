@@ -73,9 +73,9 @@ enum MockFrame {
     Error(Error),
     /// An error the body hands back on EVERY poll, not just once.
     ///
-    /// Exists for m6 of the branch's final review: `Response::chunk` used
-    /// to not seal itself after `Some(Err(_))` and would poll the
-    /// underlying body again. A one-shot `Error` doesn't show this — after
+    /// Exists because `Response::chunk` must seal itself after
+    /// `Some(Err(_))` rather than polling the underlying body again. A
+    /// one-shot `Error` doesn't show this — after
     /// it, frames simply run out, and a repeated `chunk()` returns `None`
     /// by coincidence, not because the body is sealed.
     RepeatingError(Error),
@@ -198,8 +198,8 @@ impl MockTransport {
     /// Like `push_response_with_trailers`, but the trailers frame sits
     /// BETWEEN two groups of data, rather than last.
     ///
-    /// Exists for m5 of the branch's final review. `Response::chunk`
-    /// documents that trailer frames are SKIPPED and reading continues,
+    /// `Response::chunk` documents that trailer frames are SKIPPED and
+    /// reading continues,
     /// but with a trailer at the end, "skipped it and hit EOF" and
     /// "stopped on it" are the same observation, and mutating
     /// `Err(_) => continue` into `Err(_) => return None` left the whole
@@ -280,10 +280,10 @@ impl MockTransport {
     /// Queues a failure of the transport ITSELF — `Transport::execute`
     /// will return `Err(err)`, there will be no response at all.
     ///
-    /// Exists for B2 of the branch's final review: `Client::execute` used
-    /// to flatten the category of every transport error into
-    /// `ErrorKind::Other`, and no test saw it, because the mock could only
-    /// fail `execute` by exhausting its queue — and that one's category is
+    /// Exists because `Client::execute` must not flatten the category of
+    /// every transport error into `ErrorKind::Other`, and nothing sees that
+    /// if the mock can only fail `execute` by exhausting its queue — that
+    /// one's category is
     /// `Other` anyway, correctly. Here the caller sets the category, so
     /// "did it reach the consumer" becomes an observable property.
     pub fn push_transport_error(&self, err: Error) {
@@ -356,9 +356,9 @@ impl Transport for MockTransport {
 }
 
 /// The mock's response body: a sequence of frames, so the mock can
-/// reproduce a split at a chunk boundary. With a single-frame body, the
-/// SSE stream in Task 14 would get the whole stream as one piece, and the
-/// stitching-together path at the stream level would go unverified.
+/// reproduce a split at a chunk boundary. With a single-frame body, an
+/// SSE stream gets the whole thing as one piece, and the
+/// stitching-together path at the stream level goes unverified.
 #[derive(Debug)]
 pub struct MockBody {
     frames: VecDeque<MockFrame>,
@@ -533,8 +533,8 @@ mod tests {
     /// `body::size_hint_is_known_for_empty_and_full_bodies` in
     /// `hclient-core`). `Some(0)` for `Empty` isn't "size unknown", it's
     /// "there was no body"; telling the two apart is the whole point of
-    /// recording this field for Task 12 (a redirect must not send a body
-    /// where there wasn't one).
+    /// recording this field — a redirect must not send a body where there
+    /// wasn't one.
     #[test]
     fn body_size_hint_distinguishes_empty_from_populated() {
         let m = MockTransport::new();

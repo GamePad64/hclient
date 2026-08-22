@@ -1,24 +1,21 @@
 //! Reviewer-written adversarial test suite for `FuturesIo<hclient_rt_smol::SmolSocket>`
-//! driven through the real `Smol` runtime,
-//! independent of the implementer's work. Adapted from the sibling suite for
-//! `TokioIo` (Task 3 review,
-//! `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`), itself adapted
-//! from the mock-source suite for `FuturesIo` (Task 2 review,
-//! `.superpowers/sdd/2026-08-05-v01-native-vertical/adversarial_futures_io.rs`).
-//! `FuturesIo` was previously only exercised against hand-written mock
-//! `AsyncRead`/`AsyncWrite` sources; this drives it against a real loopback
+//! driven through the real `Smol` runtime. The sibling suite for `TokioIo`
+//! is `crates/hclient-rt-tokio/tests/adversarial_tokio_io.rs`, and the
+//! mock-source one for `FuturesIo` is
+//! `crates/hclient-rt/tests/adversarial_futures_io.rs`. Those exercise
+//! `FuturesIo` against hand-written mock `AsyncRead`/`AsyncWrite` sources;
+//! this drives it against a real loopback
 //! TCP pair through `Smol::connect`/`Smol::adopt`, so a bug that only shows
 //! up against a genuine socket (partial reads, real EOF, a real RST) is
 //! covered on the smol side the same way it already is on the tokio side.
 //!
-//! Every wait is bounded the same way Task 3's suite bounds every
+//! Every wait is bounded the same way the tokio suite bounds every
 //! `poll_read` wait: a regression that makes `poll_read` never resolve must
 //! report FAILED with a clear message, not hang the test binary (and the CI
 //! job) with nothing to investigate.
 //!
-//! Ran as an integration test in a throwaway clone during the Task 4 review:
-//! all 7 tests passed against `hclient-rt-smol` at `71cad8d`. Confirmed
-//! non-vacuous the same way Task 3's suite was: temporarily dropping
+//! Confirmed non-vacuous the same way the tokio suite is: temporarily
+//! dropping
 //! `hclient-rt`'s `FuturesIo::poll_read`'s `.min(self.scratch.len())` made
 //! `cursor_one_byte_larger_than_scratch_buffer` go red with the exact panic
 //! the doc comment predicts (`range end index 8193 out of range for slice of

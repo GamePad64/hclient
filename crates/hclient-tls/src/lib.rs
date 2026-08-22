@@ -63,8 +63,8 @@ pub struct TlsRequest<'a> {
     pub server_name: &'a str,
     pub alpn: &'a [&'a [u8]],
     /// RFC 9849 Encrypted Client Hello. The `EchConfigList` comes from an
-    /// HTTPS/SVCB record (`hclient_dns::SvcbEndpoint::ech_config_list`,
-    /// Task 6). The slot is reserved up front, not bolted on once the
+    /// HTTPS/SVCB record (`hclient_dns::SvcbEndpoint::ech_config_list`).
+    /// The slot is reserved up front, not bolted on once the
     /// first implementation needed it: adding a new field to a request
     /// struct later would be a breaking change for every already-written
     /// `TlsConnect` implementation.
