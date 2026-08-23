@@ -217,9 +217,11 @@ the week's work as out of the commit after it — and one went **up**, which
 is what says it is upstream churn rather than a systematic miscount.
 
 The three `hclient-proto` rows that did **not** move are the ones worth
-noticing: Windows 13, macOS 15 and `--no-default-features` 10 are all
-unchanged, because those graphs are this crate's own. The rows that drifted
-are the ones with a large third-party subtree.
+noticing: Windows, macOS and `--no-default-features` were all unchanged,
+because those graphs are this crate's own. The rows that drifted are the
+ones with a large third-party subtree — and the converse held later, when
+taking `base64` moved all four rows at once, which is what a change of
+this crate's own looks like.
 
 So these are colour, and the load-bearing claims beside them are the
 *absences* — no `tokio` in either wasm graph, no `h3` under
@@ -544,14 +546,21 @@ obstacle there is a dependency rather than a design:
 
   | build of `hclient-proto` | crates | what supplies UTS 46 |
   |---|---|---|
-  | default (`idn`), x86-64 Linux | **36** | `idna` + the ICU data crates |
-  | default (`idn`), `--target x86_64-pc-windows-msvc` | **13** | `icuuc.dll`, through `windows-sys` |
-  | default (`idn`), `--target aarch64-apple-darwin` | **15** | Foundation, through `objc2-foundation` |
-  | `--no-default-features` | **10** | nothing — `NonAsciiHost` |
+  | default (`idn`), x86-64 Linux | **38** | `idna` + the ICU data crates |
+  | default (`idn`), `--target x86_64-pc-windows-msvc` | **14** | `icuuc.dll`, through `windows-sys` |
+  | default (`idn`), `--target aarch64-apple-darwin` | **16** | Foundation, through `objc2-foundation` |
+  | `--no-default-features` | **11** | nothing — `NonAsciiHost` |
 
-  The Linux row is the old **36** plus `hclient-idn` itself and nothing
+  The Linux row was the old **36** plus `hclient-idn` itself and nothing
   else: `thiserror` was already there, and no new Unicode crate arrives.
   There is no `url` in any of them.
+
+  Every row is one higher than that since `encode.rs` took `base64`
+  rather than carrying its own twenty lines, and the Linux row is one
+  higher again from upstream churn — the same drift the section above
+  measures. That the crate's own change moved **all four** rows while
+  churn moved only the one with a large third-party subtree is the
+  clearest statement of what separates them.
 
 **Name resolution has a third backend, and its problem was never the wire
 format.** `hclient-dns-doh` (v0.3) puts DNS-over-HTTPS behind the same

@@ -1,42 +1,41 @@
-//! The two encodings HTTP asks for and no dependency is worth carrying.
+//! The two encodings HTTP asks for, one taken and one written here.
 //!
-//! Both are **encode only**, which is what makes them small enough to be
-//! here rather than in a crate: nothing in this workspace decodes either,
-//! and a decoder is where the sharp edges live.
+//! Both are **encode only**: nothing in this workspace decodes either, and
+//! a decoder is where the sharp edges live.
 //!
-//! # Why not `base64` and `form_urlencoded`
+//! # base64 is the crate; the form serialiser cannot be
 //!
-//! `url` was removed from this workspace's graph at real cost — see
-//! `uri.rs` and the 96-pair differential corpus that replaced it — and its
-//! `form_urlencoded` module would bring it straight back. `base64` is one
-//! crate for twenty lines. The same trade `hclient-webtransport` made for
-//! its close capsule, which is 59 lines against a 48-crate dependency.
+//! `base64` costs **nothing** in any build that resolves DNS with a codec,
+//! where `dns-message-parser` already pulls it, and one crate in a bare
+//! `hclient-proto`. Its output was checked against the twenty lines it
+//! replaced over every padding length, the empty input and high bytes —
+//! byte-identical.
+//!
+//! `form_urlencoded` is a different matter and the measurement is the
+//! argument. `url` was removed from this graph at real cost — see `uri.rs`
+//! and the 96-pair differential corpus that replaced it — so its
+//! `form_urlencoded` module is not available at any price worth paying.
+//! And the obvious small substitute is **not this encoding**:
+//! `urlencoding::encode` disagrees with the WHATWG serialiser on 3 of 11
+//! probed inputs, including the space, which is the rule that defines the
+//! form serialiser (`a b` becomes `a%20b` rather than `a+b`), plus `*` and
+//! `~`. It is no use one module over either: `uri.rs`'s
+//! `percent_encode_into` passes every ASCII octet through, where
+//! `urlencoding` escapes `/`, `?`, `&` and `#` — it turns
+//! `/a/b?x=1&y=2` into `%2Fa%2Fb%3Fx%3D1%26y%3D2` and takes the URI apart.
+
+use base64::Engine as _;
 
 /// RFC 4648 §4, encode only.
 ///
 /// Used for `Authorization: Basic` and `Proxy-Authorization: Basic`
 /// (RFC 7617), which is every use this workspace has for it.
 pub fn base64(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for i in 0..4 {
-            // `chunk.len() + 1` output characters carry data; the rest is
-            // padding, which is `=` rather than the alphabet's `A`.
-            if i <= chunk.len() {
-                out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    // `STANDARD` is §4's alphabet with padding, which is what RFC 7617
+    // wants; `STANDARD_NO_PAD` and the URL-safe engines are the three
+    // wrong answers one import away, so the choice is named here once and
+    // the callers keep taking a function.
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 
 /// One `application/x-www-form-urlencoded` name or value, appended.

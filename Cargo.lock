@@ -1355,6 +1355,7 @@ name = "hclient-proto"
 version = "0.1.0-alpha.1"
 dependencies = [
  "assert_matches",
+ "base64",
  "bytes",
  "hclient-idn",
  "http",

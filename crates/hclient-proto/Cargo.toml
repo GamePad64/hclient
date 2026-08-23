@@ -41,6 +41,7 @@ default = ["idn"]
 idn = ["dep:hclient-idn"]
 
 [dependencies]
+base64 = { workspace = true }
 bytes = { workspace = true }
 http  = { workspace = true }
 thiserror = { workspace = true }

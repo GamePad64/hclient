@@ -43,6 +43,10 @@ jiff           = { version = "0.2", default-features = false, features = ["alloc
 # hex interleaved with literal bytes rather than a hex string, and
 # `hclient-proto`'s `encode` keeps its own table for that.
 const-hex      = { version = "1", default-features = false, features = ["alloc"] }
+# RFC 4648 §4, encode only. Already in the graph of any build that does DNS
+# with a codec (`dns-message-parser` pulls it), so it is free there and one
+# crate for a bare `hclient-proto`. `alloc` alone, no build script.
+base64         = { version = "0.22", default-features = false, features = ["alloc"] }
 winnow         = { version = "0.7", default-features = false, features = ["alloc"] }
 
 # `default-features = false`: `hclient-proto`'s own default is `idn`, and
