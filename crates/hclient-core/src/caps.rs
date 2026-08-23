@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn none_is_the_conservative_base() {
+    fn the_default_is_the_conservative_base() {
         // Every field, spelled out individually — not
         // `assert_eq!` on the whole struct via a derived `PartialEq`, which
         // `Capabilities` deliberately does not implement (it's

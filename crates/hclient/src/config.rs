@@ -260,7 +260,7 @@ pub(crate) fn effective_redirect(
 /// Called from `ClientBuilder::build()`. Not a single silent no-op.
 ///
 /// Destructures `cfg` without a `..`-remainder — the same recipe as
-/// `Capabilities::none_is_the_conservative_base` in `hclient-core`: a new
+/// `Capabilities`'s `the_default_is_the_conservative_base` in `hclient-core`: a new
 /// field on `Config` becomes a compile error naming it, instead of being
 /// silently skipped (same for `Timeouts` fields, in
 /// `check_timeouts_supported`). `redirect` and `base_url` are deliberately

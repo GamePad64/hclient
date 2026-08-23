@@ -85,7 +85,7 @@ impl Default for UrlSession {
     }
 }
 
-/// Built from [`Capabilities::none`] and turned on field by field, the
+/// Built from [`Capabilities::default`] and turned on field by field, the
 /// shape every backend here uses: a field added later arrives as the
 /// conservative default rather than as a compile error somebody silences
 /// by copying its neighbour.
