@@ -46,8 +46,19 @@ const-hex      = { version = "1", default-features = false, features = ["alloc"]
 # RFC 4648 §4, encode only. Already in the graph of any build that does DNS
 # with a codec (`dns-message-parser` pulls it), so it is free there and one
 # crate for a bare `hclient-proto`. `alloc` alone, no build script.
-base64         = { version = "0.22", default-features = false, features = ["alloc"] }
-winnow         = { version = "0.7", default-features = false, features = ["alloc"] }
+base64         = { version = "0.23", default-features = false, features = ["alloc"] }
+# The other two encodings, and **not** `url`: `form_urlencoded` is its own
+# crate depending on `percent-encoding` alone, so the WHATWG serialiser
+# costs two crates and brings no `idna` and no ICU. This workspace recorded
+# the opposite for two verticals and it was never measured — see
+# `hclient-proto`'s `encode` module doc.
+form_urlencoded = "1"
+percent-encoding = "2"
+# `ascii` implies `parser`, which is what gates `combinator` and `token` —
+# winnow 1.0 split those out, so this is a smaller build than 0.7's `alloc`
+# alone rather than a wider one. `std` and `binary` are deliberately off:
+# nothing here parses a length-prefixed wire format through winnow.
+winnow         = { version = "1.0", default-features = false, features = ["alloc", "ascii"] }
 
 # `default-features = false`: `hclient-proto`'s own default is `idn`, and
 # cargo forbids a member from overriding a workspace dependency's

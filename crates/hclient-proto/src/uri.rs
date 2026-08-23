@@ -350,17 +350,19 @@ fn to_ascii(s: &str) -> Result<Option<String>, UriError> {
 /// repairs. `url` percent-encoded a wider set than this; the difference is
 /// the "no repair of illegal characters" divergence documented on
 /// [`resolve_reference`], and it is only about ASCII.
+///
+/// **`AsciiSet::EMPTY` is what states that**, and it is the whole reason
+/// this is the `percent-encoding` crate rather than a table here: an
+/// `AsciiSet` names the ASCII octets to escape and non-ASCII is always
+/// escaped, so an empty set *is* "only bytes >= 0x80". The near neighbour
+/// gets it wrong in the direction that destroys a URI — `urlencoding`
+/// escapes `/`, `?`, `&` and `#`, turning `/a/b?x=1&y=2` into
+/// `%2Fa%2Fb%3Fx%3D1%26y%3D2`.
 fn percent_encode_into(s: &str, out: &mut String) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    for byte in s.bytes() {
-        if byte.is_ascii() {
-            out.push(byte as char);
-        } else {
-            out.push('%');
-            out.push(HEX[usize::from(byte >> 4)] as char);
-            out.push(HEX[usize::from(byte & 0x0f)] as char);
-        }
-    }
+    out.extend(percent_encoding::utf8_percent_encode(
+        s,
+        &percent_encoding::AsciiSet::EMPTY,
+    ));
 }
 
 /// UTS 46, through [`hclient_idn`], which is *which* implementation of it

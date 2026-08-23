@@ -546,21 +546,30 @@ obstacle there is a dependency rather than a design:
 
   | build of `hclient-proto` | crates | what supplies UTS 46 |
   |---|---|---|
-  | default (`idn`), x86-64 Linux | **38** | `idna` + the ICU data crates |
-  | default (`idn`), `--target x86_64-pc-windows-msvc` | **14** | `icuuc.dll`, through `windows-sys` |
-  | default (`idn`), `--target aarch64-apple-darwin` | **16** | Foundation, through `objc2-foundation` |
-  | `--no-default-features` | **11** | nothing — `NonAsciiHost` |
+  | default (`idn`), x86-64 Linux | **40** | `idna` + the ICU data crates |
+  | default (`idn`), `--target x86_64-pc-windows-msvc` | **16** | `icuuc.dll`, through `windows-sys` |
+  | default (`idn`), `--target aarch64-apple-darwin` | **18** | Foundation, through `objc2-foundation` |
+  | `--no-default-features` | **13** | nothing — `NonAsciiHost` |
 
   The Linux row was the old **36** plus `hclient-idn` itself and nothing
   else: `thiserror` was already there, and no new Unicode crate arrives.
   There is no `url` in any of them.
 
-  Every row is one higher than that since `encode.rs` took `base64`
-  rather than carrying its own twenty lines, and the Linux row is one
-  higher again from upstream churn — the same drift the section above
-  measures. That the crate's own change moved **all four** rows while
-  churn moved only the one with a large third-party subtree is the
-  clearest statement of what separates them.
+  Every row is three higher than that since `encode.rs` and `uri.rs`
+  stopped carrying their own encoders — `base64`, then `form_urlencoded`
+  and `percent-encoding` — and the Linux row is one higher again from
+  upstream churn, the same drift the section above measures. That the
+  crate's own changes moved **all four** rows while churn moved only the
+  one with a large third-party subtree is the clearest statement of what
+  separates them.
+
+  **There is still no `url` in any of them, and that is the point of the
+  last two.** `form_urlencoded` is its own crate over `percent-encoding`
+  alone. This file and `encode.rs` both said for two verticals that
+  taking it *"would bring `url` straight back"*, and the claim was never
+  measured; it is two crates, no `idna`, no ICU, no build script, and
+  both wasm targets. What the measurement does rule out is the near
+  neighbour: `urlencoding` computes a different function at both sites.
 
 **Name resolution has a third backend, and its problem was never the wire
 format.** `hclient-dns-doh` (v0.3) puts DNS-over-HTTPS behind the same
@@ -2496,11 +2505,40 @@ each other, in `hclient-proto`'s `encode` module.
 **That module is where `base64` moved to**, and it is one function each:
 `hclient-native`'s proxy had written its own for
 `Proxy-Authorization: Basic`, and `Authorization: Basic` is the same
-encoding for the same reason. Neither pulls a crate — `url` was removed
-from this graph at real cost, and its `form_urlencoded` would bring it
-straight back, while `base64` is a crate for twenty lines. Encode only,
-both: nothing here decodes either, and a decoder is where the sharp edges
-live.
+encoding for the same reason. Encode only, both: nothing here decodes
+either, and a decoder is where the sharp edges live.
+
+**All three are the crate now, and the sentence that stood here was the
+defect.** It read that neither pulls a crate, because `url` was removed
+from this graph at real cost and its `form_urlencoded` *"would bring it
+straight back"*, while `base64` is *"a crate for twenty lines"*.
+`form_urlencoded` is its own crate over `percent-encoding` alone — two
+crates, no `url`, no `idna`, no ICU, no build script, both wasm targets —
+and `base64` was already in the graph of any build that resolves DNS with
+a codec. **The claim was never measured**, and it was restated once more
+after `base64` landed, which is the shape this file records three times
+over about checks: nothing forced a re-measurement, so the sentence
+outlived the fact. All three crates were checked against the lines they
+replace — every padding length for base64, the space/`*`/`~` rules for
+the form serialiser, and the delimiters for the URI encoder — and every
+one is byte-identical.
+
+What the measurement rules out is the near neighbour rather than the
+crates: `urlencoding` disagrees with the WHATWG serialiser on 3 of 11
+probed inputs including the space, and one module over it escapes `/`,
+`?`, `&` and `#`, turning `/a/b?x=1&y=2` into
+`%2Fa%2Fb%3Fx%3D1%26y%3D2`.
+
+**`base64` costs one crate rather than none, and the tense above is
+load-bearing.** It shared `dns-message-parser`'s copy at 0.22; taking
+0.23 makes it a **second** copy, which `cargo deny` reports as a
+duplicate (`multiple-versions = "warn"`). That is the cheap kind by this
+workspace's own rule — the two never exchange a `base64` type, since
+nothing here does more than call `encode` — and it is worth knowing that
+0.23 changes nothing this code touches: its additions are SIMD engines
+behind a default-on `simd-unsafe` feature this build switches off,
+decode-side error detail, and custom padding. Dropping back to 0.22
+removes the duplicate and loses nothing.
 
 **A JSON request body closes the asymmetry** the response side had left:
 `Collected::json` had existed since v0.1 and `RequestBuilder::json` had

@@ -917,7 +917,7 @@ graph-no-url:
     #!/usr/bin/env bash
     set -euo pipefail
     for flags in "" "--no-default-features"; do
-      ./scripts/tree-guard.sh absent '^(url|form_urlencoded|percent-encoding) ' \
+      ./scripts/tree-guard.sh absent '^url ' \
         "hclient-proto ${flags:-with default features} depends on url again — RFC 3986 §5.2 is written out in src/uri.rs precisely so that it does not; url belongs in [dev-dependencies], where it is the oracle for tests/uri_resolution.rs" \
         -- -p hclient-proto $flags
     done
@@ -926,6 +926,14 @@ graph-no-url:
 # measurable benefit of the feature. The usual cause of a failure is some
 # crate depending on hclient-proto WITH default features, unioning idn back
 # on — see [workspace.dependencies].
+
+# `form_urlencoded` and `percent-encoding` were named here too, as proxies
+# for url — taking either used to mean taking url with them. They are direct
+# dependencies now (encode.rs and uri.rs), and they are not proxies: both are
+# leaves with no Unicode tables, which is why the claim they were standing in
+# for had to be measured rather than inherited. What this recipe guards is
+# url itself; the 1.9 MB of ICU is `graph-idn-feature`'s, below, and it names
+# `idna|idna_adapter|icu_` directly rather than through anybody.
 
 # without idn there is no IDN implementation, with it there is
 graph-idn-feature:

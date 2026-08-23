@@ -1,28 +1,32 @@
-//! The two encodings HTTP asks for, one taken and one written here.
+//! The two encodings HTTP asks for, both taken rather than written.
 //!
 //! Both are **encode only**: nothing in this workspace decodes either, and
 //! a decoder is where the sharp edges live.
 //!
-//! # base64 is the crate; the form serialiser cannot be
+//! # `form_urlencoded` does not bring `url` back, and this file said it did
 //!
-//! `base64` costs **nothing** in any build that resolves DNS with a codec,
-//! where `dns-message-parser` already pulls it, and one crate in a bare
-//! `hclient-proto`. Its output was checked against the twenty lines it
-//! replaced over every padding length, the empty input and high bytes —
-//! byte-identical.
+//! For two verticals this module carried twenty lines of WHATWG serialiser
+//! under the claim that the crate *"would bring `url` straight back"* —
+//! the crate `uri.rs` was rewritten to remove, at the cost of a 96-pair
+//! differential corpus, because it reached `idna` and the ICU tables.
 //!
-//! `form_urlencoded` is a different matter and the measurement is the
-//! argument. `url` was removed from this graph at real cost — see `uri.rs`
-//! and the 96-pair differential corpus that replaced it — so its
-//! `form_urlencoded` module is not available at any price worth paying.
-//! And the obvious small substitute is **not this encoding**:
-//! `urlencoding::encode` disagrees with the WHATWG serialiser on 3 of 11
-//! probed inputs, including the space, which is the rule that defines the
-//! form serialiser (`a b` becomes `a%20b` rather than `a+b`), plus `*` and
-//! `~`. It is no use one module over either: `uri.rs`'s
-//! `percent_encode_into` passes every ASCII octet through, where
-//! `urlencoding` escapes `/`, `?`, `&` and `#` — it turns
-//! `/a/b?x=1&y=2` into `%2Fa%2Fb%3Fx%3D1%26y%3D2` and takes the URI apart.
+//! **Measured, and false.** `form_urlencoded` is its own crate and depends
+//! on `percent-encoding` alone: two crates, no `url`, no `idna`, no ICU,
+//! no build script, and both wasm targets build. Its output matches the
+//! lines it replaces on every probed input — the space that becomes `+`,
+//! the `*` that survives, the `~` that does not, and the empty string.
+//!
+//! The claim was never checked, and it was restated once after `base64`
+//! landed here. That is this workspace's own rule about a claim being as
+//! perishable as the thing it describes, met from the direction where
+//! nothing ever forced a re-measurement.
+//!
+//! What the measurement *does* rule out is the near neighbour:
+//! `urlencoding::encode` is a different function, disagreeing on 3 of 11
+//! probed inputs including the space (`a b` becomes `a%20b`), and one
+//! module over it escapes `/`, `?`, `&` and `#`, turning `/a/b?x=1&y=2`
+//! into `%2Fa%2Fb%3Fx%3D1%26y%3D2`. The right crate was available all
+//! along; the wrong one is one letter of a name away.
 
 use base64::Engine as _;
 
@@ -38,48 +42,22 @@ pub fn base64(input: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(input)
 }
 
-/// One `application/x-www-form-urlencoded` name or value, appended.
+/// `application/x-www-form-urlencoded`, from name/value pairs.
 ///
 /// The WHATWG URL Standard's serialiser, which is **not** RFC 3986
 /// percent-encoding and differs in two places that bite: a space becomes
 /// `+` rather than `%20`, and `*`, `-`, `.` and `_` are the only
-/// punctuation that survives. `uri.rs`'s `percent_encode_into` is the
-/// other one and they are not interchangeable — a query built with that
-/// set and read by a form parser gets `+` back as a literal plus.
-fn encode_component(raw: &str, out: &mut String) {
-    for &b in raw.as_bytes() {
-        match b {
-            b'*' | b'-' | b'.' | b'_' => out.push(b as char),
-            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => out.push(b as char),
-            b' ' => out.push('+'),
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[usize::from(b >> 4)] as char);
-                out.push(HEX[usize::from(b & 0x0F)] as char);
-            }
-        }
-    }
-}
-
-/// `a=1&b=2`, from pairs, in the order given.
-///
-/// Order is preserved rather than sorted: a server that signs a query
-/// string — which is how most request-signing schemes work — signs the
-/// bytes it was sent, and reordering them silently would break it.
+/// punctuation that survives. [`crate::uri`]'s encoder is the other one
+/// and they are not interchangeable — a query built with that set and
+/// read by a form parser gets `+` back as a literal plus.
 pub fn form_urlencoded<K: AsRef<str>, V: AsRef<str>>(
     pairs: impl IntoIterator<Item = (K, V)>,
 ) -> String {
-    let mut out = String::new();
+    let mut ser = form_urlencoded::Serializer::new(String::new());
     for (k, v) in pairs {
-        if !out.is_empty() {
-            out.push('&');
-        }
-        encode_component(k.as_ref(), &mut out);
-        out.push('=');
-        encode_component(v.as_ref(), &mut out);
+        ser.append_pair(k.as_ref(), v.as_ref());
     }
-    out
+    ser.finish()
 }
 
 #[cfg(test)]
