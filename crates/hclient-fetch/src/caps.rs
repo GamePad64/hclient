@@ -126,7 +126,7 @@ pub const FORBIDDEN_HEADERS: [http::HeaderName; 14] = [
 /// On any failure to even find `Request` or its prototype — which can't
 /// happen in a real browser `fetch()` environment, since nothing in this
 /// crate works at all without `Request` existing — the answer is `false`,
-/// the same conservative floor `Capabilities::none()` uses everywhere else.
+/// the same conservative floor `Capabilities::default()` uses everywhere else.
 pub(crate) fn supports_duplex() -> bool {
     let Ok(ctor) = js_sys::Reflect::get(
         &js_sys::global(),
@@ -282,7 +282,7 @@ pub(crate) fn supports_streaming_request_body() -> bool {
 /// doc comment exists: see each one's own comment for the specific claim
 /// that changed and why.
 pub(crate) fn probe() -> Capabilities {
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
     // `streaming_request_body` — derived, since v0.2 W6, from the one
     // function that decides it, in the shape `response_decompression`
     // and `connection_reuse` below already use: the value a

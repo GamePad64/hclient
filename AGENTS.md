@@ -1339,7 +1339,7 @@ Six fields disagree today — measured, not taken from the design document,
 whose two examples had both been fixed under it while it was being written.
 It was seven until the seventh turned out not to be a disagreement at all:
 `client_certs` was `true` from a constant in `hclient-h3` and
-`Capabilities::none()`'s `false` in `hclient-native`, so **one** TLS backend
+`Capabilities::default()`'s `false` in `hclient-native`, so **one** TLS backend
 gave two answers depending on which stack was holding it, and the v0.4
 table recorded the row as "same shape" as `full_duplex`. Both read
 `TlsIdentity::presents_client_certs` now — a defaulted-false constant on

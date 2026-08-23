@@ -370,7 +370,7 @@ fn a_client_without_a_jar_reports_none() {
 fn a_jar_against_a_transport_that_keeps_its_own_is_refused_at_build() {
     use hclient::mock::MockTransport;
 
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.owns_cookie_jar = true;
     let m = MockTransport::new().with_capabilities(caps);
 
@@ -415,7 +415,7 @@ fn the_same_jar_against_a_transport_that_keeps_none_builds() {
 fn no_jar_against_a_jar_owning_transport_is_fine() {
     use hclient::mock::MockTransport;
 
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.owns_cookie_jar = true;
     let m = MockTransport::new().with_capabilities(caps);
 

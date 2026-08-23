@@ -61,7 +61,7 @@ pub trait Transport {
     /// [`CancelSupport::None`](crate::CancelSupport::None) is the one
     /// honest way out, and it is what a backend that never fills the field
     /// in already says, since it is the value
-    /// [`Capabilities::none()`](crate::Capabilities::none) returns. What is
+    /// [`Capabilities::default()`](crate::Capabilities) returns. What is
     /// not allowed is the third option this method's documentation used to
     /// take: saying nothing at all, and leaving a caller to find out per
     /// target that a dropped future means three different things.

@@ -105,7 +105,7 @@ impl<H> WasiHttp<H> {
 
 impl WasiHttp {
     pub fn new() -> Self {
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         // `streaming_request_body`: `RequestBody::Streaming` goes straight
         // into `BodyWriter::send_http_body` as-is, frame by frame, without
         // buffering in memory — honest streaming, see
@@ -201,7 +201,7 @@ impl WasiHttp {
         // host: a 3xx reaches the guest as an ordinary response, and
         // following the chain is entirely on the guest —
         // meaning the `Client`'s redirect stage works fully here. `None`
-        // couldn't say that: `Capabilities::none()` returns that same
+        // couldn't say that: `Capabilities::default()` returns that same
         // value, so a caller couldn't tell "the backend is transparent"
         // from "the field was never filled in" and, deciding from
         // `redirects == None` that redirects were impossible here, would

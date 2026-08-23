@@ -1239,7 +1239,7 @@ mod tests {
     use hclient_core::{Capabilities, DecompressionSupport};
 
     fn caps(d: DecompressionSupport) -> Capabilities {
-        let mut c = Capabilities::none();
+        let mut c = Capabilities::default();
         c.response_decompression = d;
         c
     }

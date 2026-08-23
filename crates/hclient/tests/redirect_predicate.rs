@@ -298,7 +298,7 @@ fn the_policy_decides_before_the_predicate_and_cannot_be_overruled() {
 /// `redirect_policy`.
 #[test]
 fn a_predicate_against_an_internally_redirecting_backend_is_refused() {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient_core::RedirectSupport::Internal;
     let err = Client::builder(MockTransport::new().with_capabilities(caps))
         .redirect_predicate(|_| RedirectVerdict::Follow)

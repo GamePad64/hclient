@@ -611,9 +611,9 @@ where
 impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
     pub fn new(rt: R, tls: T, dns: D) -> Self {
         let pool = Pool::new(Some(PoolConfig::default()));
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         // Asked of the TLS backend rather than left at
-        // `Capabilities::none()`'s `false`, which understated: both
+        // `Capabilities::default()`'s `false`, which understated: both
         // backends in this workspace can present one —
         // `hclient-tls-native-tls` through its `identity()` setter, and
         // `hclient-tls-rustls` through a `from_config` whose
@@ -621,7 +621,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         caps.client_certs = tls.presents_client_certs();
         // Honest: no upgrade — the
         // remaining fields stay at the conservative baseline of
-        // `Capabilities::none()` (see `tests/transport.rs`'s
+        // `Capabilities::default()` (see `tests/transport.rs`'s
         // `undeclared_capability_fields_match_their_conservative_defaults_today`).
         //
         // `streaming_request_body: true`. `body.rs`'s `Inner::Streaming`
@@ -638,7 +638,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // **The floor, and it is the same value with the `http2` feature on
         // as off**. `full_duplex` and `response_trailers` are
         // things HTTP/2 can do and HTTP/1.1 cannot, and they stay at
-        // `Capabilities::none()`'s `false` here, because what this
+        // `Capabilities::default()`'s `false` here, because what this
         // reports is the value that holds on the WORST protocol this
         // transport might negotiate.
         //
@@ -723,7 +723,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         // be wrong in that direction.
         //
         // Not `None`, which is the stronger claim that redirects are
-        // impossible and is also what `Capabilities::none()` returns for a
+        // impossible and is also what `Capabilities::default()` returns for a
         // backend that said nothing at all — the same distinction
         // `hclient-h3` writes down beside its own `Transparent`.
         caps.redirects = RedirectSupport::Transparent;

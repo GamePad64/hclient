@@ -40,22 +40,23 @@ use http::HeaderName;
 /// `CURLOPT_MAXREDIRS` is a genuinely declarative policy) or WinHTTP would
 /// be candidates, and both would also need the seam to start carrying the
 /// merged policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedirectSupport {
     /// No redirects, and nothing to observe.
     ///
-    /// The conservative base: `Capabilities::none()` returns this same
+    /// The conservative base: `Capabilities::default()` returns this same
     /// value, so "the backend said nothing about redirects" and "the
     /// backend said `None`" are the same observation. This is exactly why
     /// "3xx arrives as-is" gets its own `Transparent`: conflating "the
     /// field wasn't filled in" with a substantive claim about backend
     /// behavior means having a capability that lies.
+    #[default]
     None,
     /// The backend doesn't follow redirects itself: the 3xx arrives at us
     /// as an ordinary response, and following the chain is the job of the
     /// redirect stage in `Client`.
     ///
-    /// Not the same as `None`, even though `Capabilities::none()` also
+    /// Not the same as `None`, even though `Capabilities::default()` also
     /// returns `None`: here redirects are fully observable and controllable,
     /// just not by the backend. `RedirectPolicy` works and does exactly
     /// what it promises.
@@ -120,13 +121,13 @@ pub enum RedirectSupport {
 /// Not `#[non_exhaustive]`, deliberately: no other enum in this file is,
 /// and consistency across the capability set is worth more than reserving
 /// the right to add a variant to this one alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CancelSupport {
     /// Dropping the future does not stop the exchange: it may run to
     /// completion, unobserved, on a connection this transport no longer
     /// reports on.
     ///
-    /// The conservative base — [`Capabilities::none()`] returns this — and
+    /// The conservative base — [`Capabilities::default()`] returns this — and
     /// here, unlike [`RedirectSupport::None`], that costs nothing. **A
     /// default must never be stronger than the truth**: a backend that
     /// never touches this field is read as "do not rely on a drop stopping
@@ -137,6 +138,7 @@ pub enum CancelSupport {
     /// `None` there is a substantive "redirects are impossible", which is a
     /// far stronger claim than "the field was not filled in", and a
     /// transparent backend forced to say it was misread.
+    #[default]
     None,
     /// Dropping the future stops the exchange, as far as this transport
     /// controls it.
@@ -188,15 +190,16 @@ pub enum CancelSupport {
 /// was being misread without it. Not before: a variant no caller can
 /// branch on is a distinction the capability set has to carry forever for
 /// nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReuseSupport {
     /// Every request opens a new connection, and closes it when it is done.
     ///
-    /// The conservative base — [`Capabilities::none()`] returns this — and,
+    /// The conservative base — [`Capabilities::default()`] returns this — and,
     /// as with [`CancelSupport::None`], silence and the substantive claim
     /// coincide: a caller who reads this plans for a handshake per request,
     /// which is exactly what a backend that never filled the field in will
     /// give them.
+    #[default]
     None,
     /// Requests to the same origin may travel over a connection an earlier
     /// request already used.
@@ -254,7 +257,7 @@ pub enum ReuseSupport {
 ///
 /// # Silence and the substantive claim coincide here
 ///
-/// [`Self::None`] is what [`Capabilities::none()`] returns, so "the
+/// [`Self::None`] is what [`Capabilities::default()`] returns, so "the
 /// backend never filled this in" and "the backend hands the bytes over
 /// untouched" are the same value — and, as with [`CancelSupport::None`]
 /// and [`ReuseSupport::None`], that costs nothing, because the two mean
@@ -265,17 +268,18 @@ pub enum ReuseSupport {
 ///
 /// Not `#[non_exhaustive]`, for consistency with every other enum in this
 /// file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DecompressionSupport {
     /// The response body arrives exactly as it came off the wire: a
     /// `Content-Encoding` the server applied is still applied, and
     /// reversing it belongs to whoever reads the body.
     ///
-    /// The conservative base — [`Capabilities::none()`] returns this — and
+    /// The conservative base — [`Capabilities::default()`] returns this — and
     /// the honest answer for every transport that moves bytes rather than
     /// interpreting them: `hclient-native` (hyper hands the body through
     /// as it arrives) and `hclient-wasi` (`wasi:http` 0.3 defines no
     /// content-coding behaviour of its own) are both this.
+    #[default]
     None,
     /// The transport decodes `Content-Encoding` itself, before a single
     /// byte reaches us, and chooses what to ask for — so `Accept-Encoding`
@@ -298,14 +302,15 @@ pub enum DecompressionSupport {
     Internal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsSupport {
+    #[default]
     None,
     ServerTrustCallbackOnly,
     Full,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimeoutSupport {
     /// Whether [`Timeouts::resolve`] is enforced. Honestly `false` on
     /// every ambient backend: `wasi:http` and `fetch` do the resolving
@@ -382,7 +387,7 @@ pub struct Timeouts {
 /// a lost optimisation, or — for `full_duplex` — a deadlock. This one costs
 /// **replay exposure**: early data is data an attacker who captured it can
 /// send again, at a moment of their choosing, to a server that will act on
-/// it. So [`Capabilities::none()`] reports `None`, every transport that
+/// it. So [`Capabilities::default()`] reports `None`, every transport that
 /// ships today reports `None`, and a transport that forgets this field
 /// reports `None`.
 ///
@@ -391,11 +396,12 @@ pub struct Timeouts {
 /// It is necessary and nothing more. The gate is the caller's, per request
 /// — see [`AllowEarlyData`] — and a transport that reports `Supported` must
 /// still refuse to place a request the caller did not mark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EarlyDataSupport {
     /// This transport never offers early data. The conservative base, what
-    /// [`Capabilities::none()`] returns, and the honest answer for every
+    /// [`Capabilities::default()`] returns, and the honest answer for every
     /// transport in this workspace except `hclient-h3`.
+    #[default]
     None,
     /// This transport can offer early data for a request the caller has
     /// marked with [`AllowEarlyData`]. See this enum's doc for the three
@@ -664,7 +670,7 @@ pub fn check_version(
 /// the struct with no `..`, so a field added later is a compile error
 /// until somebody decides which kind it is.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Capabilities {
     /// Whether a request body may be written as it is produced.
     ///
@@ -850,38 +856,6 @@ pub struct Capabilities {
     pub forbidden_request_headers: &'static [HeaderName],
 }
 
-impl Capabilities {
-    /// Everything off. The base from which a backend turns on what it actually supports.
-    pub const fn none() -> Self {
-        Self {
-            streaming_request_body: false,
-            full_duplex: false,
-            request_trailers: false,
-            response_trailers: false,
-            redirects: RedirectSupport::None,
-            cancel_on_drop: CancelSupport::None,
-            connection_reuse: ReuseSupport::None,
-            response_decompression: DecompressionSupport::None,
-            early_data: EarlyDataSupport::None,
-            tls_config: TlsSupport::None,
-            client_certs: false,
-            proxy: false,
-            owns_cookie_jar: false,
-            owns_cache: false,
-            version_select: false,
-            version_reported: false,
-            timeouts: TimeoutSupport {
-                resolve: false,
-                connect: false,
-                first_byte: false,
-                between_bytes: false,
-            },
-            informational_1xx: false,
-            forbidden_request_headers: &[],
-        }
-    }
-}
-
 /// A setting the chosen transport cannot honor.
 ///
 /// Returned from `build()` rather than silently ignored. The model is
@@ -910,7 +884,7 @@ mod tests {
     /// written: a field named in both, or in neither, fails a line.
     #[test]
     fn every_capability_is_a_gate_or_a_report() {
-        let c = Capabilities::none();
+        let c = Capabilities::default();
         let Capabilities {
             // ── gates: a `Client` setting the transport can refuse ──
             //
@@ -1011,7 +985,7 @@ mod tests {
             timeouts,
             informational_1xx,
             forbidden_request_headers,
-        } = Capabilities::none();
+        } = Capabilities::default();
         assert!(!streaming_request_body);
         assert!(!full_duplex);
         assert!(!request_trailers);

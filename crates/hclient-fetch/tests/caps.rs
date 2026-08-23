@@ -90,7 +90,7 @@ fn forbidden_headers_are_listed_not_silently_dropped() {
 /// the equality would hold if both sides were frozen to the same literal —
 /// which is why the mutation test below exists; asserting only the probe
 /// would not notice `probe()` dropping the assignment and falling back to
-/// `Capabilities::none()`'s `false`.
+/// `Capabilities::default()`'s `false`.
 #[wasm_bindgen_test]
 fn streaming_request_body_is_the_behavioural_probes_answer_not_a_constant() {
     let c = hclient_fetch::Fetch::new().capabilities_for_test();
@@ -243,7 +243,7 @@ fn the_cheap_presence_check_and_the_deciding_probe_still_agree() {
 /// destructure of `Capabilities` from outside its defining crate needs
 /// `..`, and `..` silently absorbs a field added later. What CAN be
 /// checked from here: name every field `probe()` does not set explicitly
-/// and assert each still holds `Capabilities::none()`'s conservative
+/// and assert each still holds `Capabilities::default()`'s conservative
 /// default. Same technique, same name, as
 /// `hclient-native/tests/transport.rs`'s
 /// `undeclared_capability_fields_match_their_conservative_defaults_today`.

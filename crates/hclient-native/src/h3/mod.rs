@@ -405,14 +405,14 @@ where
     }
 }
 
-/// Built from [`Capabilities::none()`] and turned on field by field, not
+/// Built from [`Capabilities::default()`] and turned on field by field, not
 /// written out as a struct literal — `Capabilities` is `#[non_exhaustive]`,
 /// so a literal would not compile from outside `hclient-core`, and the
 /// consequence is the one that matters here: a field added to the struct
 /// later arrives at this transport as the conservative default rather than
 /// as a compile error somebody silences by copying the neighbouring value.
 fn capabilities(early_data: EarlyDataSupport, client_certs: bool) -> Capabilities {
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
     // Both are `true` because `one_attempt` does both, not because HTTP/3
     // does. They were `false` for as long as `execute` wrote the whole
     // request body and then read the head, which is the arrangement the

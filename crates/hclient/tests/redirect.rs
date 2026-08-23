@@ -198,7 +198,7 @@ fn post_becomes_get_and_drops_body_on_302() {
 #[test]
 fn build_rejects_a_timeout_the_backend_cannot_honour() {
     use hclient::Timeouts;
-    let m = MockTransport::new(); // Capabilities::none() — timeouts unsupported
+    let m = MockTransport::new(); // Capabilities::default() — timeouts unsupported
     let err = Client::builder(m)
         .timeouts(Timeouts {
             resolve: None,
@@ -261,10 +261,10 @@ fn per_request_extensions_survive_a_hop_unchanged() {
 
     // Capabilities aren't decorative anymore now that `Client::execute`
     // checks the merged timeouts: a mock
-    // with `Capabilities::none()` now honestly rejects the `connect`
+    // with `Capabilities::default()` now honestly rejects the `connect`
     // timeout, and this test is about carrying `extensions` across hops,
     // not about the gate.
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         connect: true,
@@ -381,7 +381,7 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
 /// non-browser backend reports (`wasi:http`), and it is the variant under
 /// which the new check must NOT fire.
 fn transparent_mock() -> MockTransport {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient::caps::RedirectSupport::Transparent;
     MockTransport::new().with_capabilities(caps)
 }
@@ -556,7 +556,7 @@ fn without_a_per_request_policy_the_clients_limit_still_applies() {
 // and not only under `wasm-pack`.
 
 fn internal_mock() -> MockTransport {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient::caps::RedirectSupport::Internal;
     MockTransport::new().with_capabilities(caps)
 }

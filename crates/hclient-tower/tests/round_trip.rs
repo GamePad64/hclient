@@ -117,13 +117,13 @@ fn capabilities_passed_through_the_adapter_still_gate_the_builder() {
     );
 }
 
-/// `Capabilities::none()` is the tempting argument to pass and the wrong
+/// `Capabilities::default()` is the tempting argument to pass and the wrong
 /// one — it makes the stack claim it can do nothing, and `Client::build`
 /// then refuses configurations the stack supports perfectly well. Pinned
 /// here so the doc comment's warning is not the only thing holding it.
 #[test]
 fn passing_none_capabilities_loses_what_the_stack_can_actually_do() {
-    let mut real = Capabilities::none();
+    let mut real = Capabilities::default();
     real.timeouts.connect = true;
     let m = MockTransport::new().with_capabilities(real.clone());
 
@@ -134,11 +134,11 @@ fn passing_none_capabilities_loses_what_the_stack_can_actually_do() {
     );
 
     let m2 = MockTransport::new().with_capabilities({
-        let mut c = Capabilities::none();
+        let mut c = Capabilities::default();
         c.timeouts.connect = true;
         c
     });
-    let careless = ServiceTransport::new(TransportService::new(m2), Capabilities::none());
+    let careless = ServiceTransport::new(TransportService::new(m2), Capabilities::default());
     assert!(
         !careless.capabilities().timeouts.connect,
         "and none() genuinely discards them — this is not a harmless placeholder"
@@ -190,7 +190,7 @@ impl tower_service::Service<http::Request<RequestBody>> for DemandsReadiness {
 
 #[test]
 fn readiness_is_driven_on_the_clone_before_the_call() {
-    let t = ServiceTransport::new(DemandsReadiness::default(), Capabilities::none());
+    let t = ServiceTransport::new(DemandsReadiness::default(), Capabilities::default());
     let resp = futures_executor::block_on(
         t.execute(
             http::Request::builder()

@@ -165,7 +165,7 @@ impl http_body::Body for WithTrailers {
 /// browser may not be. Mirrors what `caps::probe()` sets, minus the fields
 /// no conversion here reads.
 fn caps_that_stream() -> hclient_core::Capabilities {
-    let mut caps = hclient_core::Capabilities::none();
+    let mut caps = hclient_core::Capabilities::default();
     caps.streaming_request_body = true;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     caps
@@ -312,7 +312,7 @@ async fn drain(request: &web_sys::Request) -> Vec<Vec<u8>> {
 
 #[wasm_bindgen_test]
 fn streaming_body_is_rejected_when_the_browser_would_corrupt_it() {
-    let mut caps = hclient_core::Capabilities::none();
+    let mut caps = hclient_core::Capabilities::default();
     caps.streaming_request_body = false;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     let req = http::Request::builder()
@@ -583,7 +583,7 @@ fn rewindable_wrapping_full_is_bufferable() {
 /// below, the same mutation caught from the other side.
 #[wasm_bindgen_test]
 fn rewindable_wrapping_streaming_is_rejected_not_silently_emptied() {
-    let mut caps = hclient_core::Capabilities::none();
+    let mut caps = hclient_core::Capabilities::default();
     caps.streaming_request_body = false;
     caps.forbidden_request_headers = &hclient_fetch::FORBIDDEN_HEADERS;
     let req = http::Request::builder()
@@ -1036,7 +1036,7 @@ fn abort_controller_signal_is_actually_the_requests_signal() {
 #[wasm_bindgen_test]
 fn check_headers_rejects_exactly_what_capabilities_declares_forbidden() {
     static FORBIDDEN: [http::HeaderName; 1] = [http::header::AUTHORIZATION];
-    let mut caps = hclient_core::Capabilities::none();
+    let mut caps = hclient_core::Capabilities::default();
     caps.forbidden_request_headers = &FORBIDDEN;
 
     let mut h = http::HeaderMap::new();

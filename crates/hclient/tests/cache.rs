@@ -190,7 +190,7 @@ fn no_store_means_every_call_reaches_the_server() {
 /// already holds while answering from neither.
 #[test]
 fn a_cache_against_a_transport_that_owns_one_is_refused_at_build() {
-    let mut caps = hclient_core::Capabilities::none();
+    let mut caps = hclient_core::Capabilities::default();
     caps.owns_cache = true;
     let err = Client::builder(hclient::mock::MockTransport::new().with_capabilities(caps))
         .cache(HttpCache::new())

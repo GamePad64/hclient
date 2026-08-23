@@ -115,7 +115,7 @@ impl MockTransport {
         Self {
             queue: Mutex::new(VecDeque::new()),
             seen: Mutex::new(Vec::new()),
-            caps: Capabilities::none(),
+            caps: Capabilities::default(),
         }
     }
 
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn with_capabilities_overrides_the_default_none() {
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.streaming_request_body = true;
         let m = MockTransport::new().with_capabilities(caps);
         assert!(m.capabilities().streaming_request_body);

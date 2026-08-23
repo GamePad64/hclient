@@ -90,7 +90,7 @@ impl Default for UrlSession {
 /// conservative default rather than as a compile error somebody silences
 /// by copying its neighbour.
 fn capabilities() -> Capabilities {
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
     // The delegate refuses every redirect, so a `3xx` is an ordinary
     // response and `Client` decides — see `delegate.rs`. This is the one
     // capability where this backend is stronger than `hclient-fetch`,

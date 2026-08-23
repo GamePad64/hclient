@@ -368,7 +368,7 @@ pub fn check_supported(
 /// information.
 ///
 /// **Only the cache-owning direction is rejected**, exactly as for the
-/// jar. A backend reporting `Capabilities::none()` says "keeps no cache",
+/// jar. A backend reporting `Capabilities::default()` says "keeps no cache",
 /// which is the truth for a transport that has never thought about
 /// caching, and is precisely where the client's own belongs.
 ///
@@ -411,7 +411,7 @@ pub(crate) fn check_cache_supported(
 ///
 /// **Only the jar-owning direction is rejected.** A backend that does not
 /// keep a jar is exactly where the client's own belongs, and that includes
-/// every backend reporting `Capabilities::none()` — silence there means
+/// every backend reporting `Capabilities::default()` — silence there means
 /// "keeps no jar", which is the truth for a transport that has never
 /// thought about cookies.
 ///
@@ -452,7 +452,7 @@ pub(crate) fn check_cookies_supported(
 /// variant existing separately from `None`. Under `Transparent` (what
 /// `wasi:http` does) the 3xx reaches us and `Client`'s own stage honours
 /// the policy in full; under `None` the backend has simply said nothing
-/// about redirects, which `Capabilities::none()` returns for every field it
+/// about redirects, which `Capabilities::default()` returns for every field it
 /// hasn't been told about — neither is a reason to reject a policy the
 /// stage can carry out.
 ///
@@ -646,12 +646,12 @@ mod tests {
         Some(Duration::from_secs(n))
     }
 
-    /// `Capabilities::none()` with only `redirects` changed — everything
+    /// `Capabilities::default()` with only `redirects` changed — everything
     /// else stays off, so nothing but the field under test can make
     /// `check_supported` return `Err` and pass one of these tests for the
     /// wrong reason.
     fn caps_with_redirects(r: RedirectSupport) -> Capabilities {
-        let mut c = Capabilities::none();
+        let mut c = Capabilities::default();
         c.redirects = r;
         c
     }
@@ -697,7 +697,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.timeouts = TimeoutSupport {
             resolve: true,
             connect: true,
@@ -719,7 +719,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.timeouts = TimeoutSupport {
             resolve: true,
             connect: true,
@@ -786,7 +786,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.timeouts = TimeoutSupport {
             resolve: false,
             connect: false,
@@ -808,7 +808,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.timeouts = TimeoutSupport {
             resolve: true,
             connect: true,
@@ -830,7 +830,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut caps = Capabilities::none();
+        let mut caps = Capabilities::default();
         caps.timeouts = TimeoutSupport {
             resolve: false,
             connect: true,
@@ -858,7 +858,7 @@ mod tests {
     // the whole workspace (1156 tests) and killed by exactly two, both in
     // `crates/hclient/tests/redirect.rs` — `enforces_the_hop_limit` and
     // `redirect_limit_of_zero_sends_only_the_original_request`. They catch
-    // it because `MockTransport` starts from `Capabilities::none()`, whose
+    // it because `MockTransport` starts from `Capabilities::default()`, whose
     // `redirects` is `None`, so a check keyed on `Transparent` refuses a
     // policy against every plain mock in the suite. The four tests here
     // cover `Internal` and `Transparent` and deliberately not `None`; the
@@ -904,7 +904,7 @@ mod tests {
     }
 
     /// `Transparent` specifically, not `None`: the two are different claims
-    /// (`Capabilities::none()` returns `None` for a backend that said
+    /// (`Capabilities::default()` returns `None` for a backend that said
     /// nothing, while `Transparent` is `wasi:http` — and, since v0.4 W1,
     /// `hclient-native` and `hclient-h3` — positively stating that the 3xx
     /// arrives as-is), and a check written as "reject unless `Configurable`"
@@ -917,7 +917,7 @@ mod tests {
     /// arm the mutant keeps. What catches it, measured across the whole
     /// workspace, is the pair named in the block comment above these four
     /// tests, both in `crates/hclient/tests/redirect.rs` and both by way of
-    /// `MockTransport`'s `Capabilities::none()`.
+    /// `MockTransport`'s `Capabilities::default()`.
     ///
     /// The direction this test *does* guard is the opposite one — a check
     /// that fired **on** `Transparent`, which would refuse a policy against
@@ -925,7 +925,7 @@ mod tests {
     /// too, and it is the loud mutant of the three: 22 failures across the
     /// workspace, this test among them, since `portable_example.rs` and
     /// `hclient-tower` both build mocks that positively declare
-    /// `Transparent` rather than leaving `Capabilities::none()`.
+    /// `Transparent` rather than leaving `Capabilities::default()`.
     #[test]
     fn configured_redirect_policy_against_a_transparent_backend_is_fine() {
         let cfg = Config {

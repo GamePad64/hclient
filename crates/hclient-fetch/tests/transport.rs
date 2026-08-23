@@ -250,7 +250,7 @@ async fn a_streaming_request_body_through_the_real_client_fails_for_the_measured
 // ---------------------------------------------------------------------
 // `Transport::capabilities()` must forward the SAME probed value the crate
 // itself already trusts internally (`Fetch::caps`, read by
-// `to_web_request`) — not a fresh `Capabilities::none()` or a
+// `to_web_request`) — not a fresh `Capabilities::default()` or a
 // re-probe that could disagree with what `execute` actually consulted.
 // ---------------------------------------------------------------------
 

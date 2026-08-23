@@ -15,7 +15,7 @@ fn public_api_types_are_reachable_from_the_facade() {
     // `Config.redirect` has this type.
     let _p: hclient::redirect::RedirectPolicy = hclient::redirect::RedirectPolicy::default();
     // `check_supported` takes this and returns that.
-    let caps: hclient::caps::Capabilities = hclient::caps::Capabilities::none();
+    let caps: hclient::caps::Capabilities = hclient::caps::Capabilities::default();
     let cfg = hclient::Config::default();
     let _: Result<(), hclient::error::UnsupportedCapability> =
         hclient::caps::check_supported(&cfg, &caps, "probe");
@@ -129,7 +129,7 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 /// three grounds:
 ///
 /// - It is a `Capabilities` field with an enum type re-exported from
-///   `hclient`, and its `Capabilities::none()` value (`None`) differs from
+///   `hclient`, and its `Capabilities::default()` value (`None`) differs from
 ///   the one set here (`Supported`), so the fixture sets it to something
 ///   distinguishable and the assertion can fail.
 /// - Nothing else reaches it through the facade. `DecompressionSupport`,
@@ -152,12 +152,12 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
 ///
 /// The `redirects` line said `RedirectSupport::Configurable` until v0.4 W1
 /// deleted that variant. `Transparent` carries the same proof and for the
-/// same reason `EarlyDataSupport` was chosen above: `Capabilities::none()`
+/// same reason `EarlyDataSupport` was chosen above: `Capabilities::default()`
 /// gives `None`, so the value set here still differs from the default and
 /// the assertion can still fail.
 #[test]
 fn capability_support_types_are_reachable_from_the_facade() {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.redirects = hclient::caps::RedirectSupport::Transparent;
     caps.tls_config = hclient::caps::TlsSupport::Full;
     caps.early_data = hclient::caps::EarlyDataSupport::Supported;
@@ -253,13 +253,13 @@ fn mock_transport_round_trip_uses_only_facade_types() {
 /// bare `&T` that `.transport_as::<MockTransport>().expect("the mock")` returns needs `Transport` in scope, which
 /// defeats the point of a facade that only names types reachable from
 /// `hclient::`. `MockTransport::with_capabilities` sets `streaming_request_body`
-/// deliberately (the default from `MockTransport::new()` is `Capabilities::none()`,
+/// deliberately (the default from `MockTransport::new()` is `Capabilities::default()`,
 /// all `false`) so the assertion below is checking a value that was actually
 /// threaded through, not one that happened to already be true.
 #[cfg(feature = "test-util")]
 #[test]
 fn client_capabilities_is_reachable_without_the_quarantined_transport_trait() {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.streaming_request_body = true;
     let m = hclient::mock::MockTransport::new().with_capabilities(caps);
     let client = hclient::Client::builder(m)

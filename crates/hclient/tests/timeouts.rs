@@ -29,7 +29,7 @@ fn secs(n: u64) -> Option<Duration> {
 /// would reject the configuration before the test reaches the property
 /// under test.
 fn all_timeouts_supported() -> Capabilities {
-    let mut caps = Capabilities::none();
+    let mut caps = Capabilities::default();
     caps.timeouts = TimeoutSupport {
         resolve: false,
         connect: true,
@@ -128,7 +128,7 @@ fn request_timeouts_override_the_client_field_by_field() {
 /// same timeout at the client level produced a typed error.
 #[test]
 fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
-    // `MockTransport::new()` — `Capabilities::none()`, all three phases `false`.
+    // `MockTransport::new()` — `Capabilities::default()`, all three phases `false`.
     let m = MockTransport::new();
     m.push_response(http::Response::builder().status(200).body("").unwrap());
 
@@ -169,7 +169,7 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
 /// timeout was set. Two consequences, and both must hold, or the
 /// unconditional insert would be a regression:
 ///
-/// 1. A transport with `Capabilities::none()` (all three phases
+/// 1. A transport with `Capabilities::default()` (all three phases
 ///    unsupported) doesn't reject this — the gate looks at the values, not
 ///    at presence.
 /// 2. The extension is still stored anyway, with all its fields `None`.
@@ -211,7 +211,7 @@ fn an_all_none_timeouts_is_inserted_unconditionally_and_trips_no_capability_gate
 /// `connect` was the problem.
 #[test]
 fn an_unsupported_resolve_timeout_is_refused_under_its_own_name() {
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         // The three a backend may well support while resolution is the

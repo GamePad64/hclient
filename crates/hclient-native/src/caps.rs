@@ -96,12 +96,12 @@ impl Disagreement {
 /// exercised by a member that does not exist yet would otherwise be
 /// unpinned.
 pub fn combine(tcp: &Capabilities, quic: &Capabilities) -> Result<Capabilities, Disagreement> {
-    // Built from `Capabilities::none()` and filled in field by field, for
+    // Built from `Capabilities::default()` and filled in field by field, for
     // the reason every backend here does the same: the struct is
     // `#[non_exhaustive]`, so a literal would not compile, and a field
     // added later must arrive as the conservative default rather than as a
     // compile error somebody silences by copying its neighbour.
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
 
     // --- the weaker claim, which is `false` for every `bool` here -------
     //

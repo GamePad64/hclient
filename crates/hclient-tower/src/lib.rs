@@ -230,7 +230,7 @@ impl<S> ServiceTransport<S> {
     /// the bottom of the stack —
     /// `TransportService::capabilities()` — and adjust only for a layer
     /// that genuinely changes what the stack can do. Passing
-    /// `Capabilities::none()` to avoid thinking is worse than wrong: it
+    /// `Capabilities::default()` to avoid thinking is worse than wrong: it
     /// tells `Client::build` to reject configurations the stack supports
     /// perfectly well.
     ///

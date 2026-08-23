@@ -77,10 +77,10 @@ fn args(url: &str) -> FetchArgs {
 }
 
 /// A backend that hands 3xx responses to us, the way `wasi:http` does —
-/// `Capabilities::none()` reports `RedirectSupport::None`, which is not
+/// `Capabilities::default()` reports `RedirectSupport::None`, which is not
 /// the same claim.
 fn transparent_mock() -> MockTransport {
-    let mut caps = Capabilities::none();
+    let mut caps = Capabilities::default();
     caps.redirects = RedirectSupport::Transparent;
     MockTransport::new().with_capabilities(caps)
 }
@@ -89,7 +89,7 @@ fn transparent_mock() -> MockTransport {
 /// timeout: without it `check_timeouts_supported` rejects the request
 /// before the property under test is reached.
 fn full_mock() -> MockTransport {
-    let mut caps = Capabilities::none();
+    let mut caps = Capabilities::default();
     caps.redirects = RedirectSupport::Transparent;
     caps.timeouts = TimeoutSupport {
         resolve: false,
@@ -103,7 +103,7 @@ fn full_mock() -> MockTransport {
 /// A browser-shaped backend: it follows redirects itself and lets nobody
 /// see or control it.
 fn internal_mock() -> MockTransport {
-    let mut caps = Capabilities::none();
+    let mut caps = Capabilities::default();
     caps.redirects = RedirectSupport::Internal;
     MockTransport::new().with_capabilities(caps)
 }

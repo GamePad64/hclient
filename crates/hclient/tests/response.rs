@@ -180,13 +180,13 @@ fn collected_json_decodes_the_body_and_still_keeps_status() {
 ///
 /// `with_capabilities` isn't decoration: since M3, `Client::execute`
 /// checks the merged timeouts against `Capabilities`, and a mock with
-/// `Capabilities::none()` now honestly rejects this request.
+/// `Capabilities::default()` now honestly rejects this request.
 #[test]
 fn timeouts_are_placed_in_extensions_where_the_transport_reads_them() {
     use hclient_core::Timeouts;
     use std::time::Duration;
 
-    let mut caps = hclient::caps::Capabilities::none();
+    let mut caps = hclient::caps::Capabilities::default();
     caps.timeouts = hclient::caps::TimeoutSupport {
         resolve: false,
         connect: true,

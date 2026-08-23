@@ -63,7 +63,7 @@ impl Gated {
         Self {
             started: Arc::new(AtomicUsize::new(0)),
             open: Arc::new(AtomicBool::new(false)),
-            caps: Capabilities::none(),
+            caps: Capabilities::default(),
         }
     }
     fn started(&self) -> usize {

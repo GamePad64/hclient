@@ -599,12 +599,12 @@ mod tests {
         // `Transparent`, not `None`: a
         // 3xx reaches the guest as an ordinary response and the
         // `Client`'s redirect stage handles it in full. `None` is what
-        // `Capabilities::none()` returns, and would mean "there are no
+        // `Capabilities::default()` returns, and would mean "there are no
         // redirects here".
         assert_eq!(caps.redirects, hclient_core::RedirectSupport::Transparent);
         assert_ne!(
             caps.redirects,
-            hclient_core::Capabilities::none().redirects,
+            hclient_core::Capabilities::default().redirects,
             "a declared capability must differ from \"the field was never filled in\""
         );
         assert_eq!(caps.tls_config, hclient_core::TlsSupport::None);

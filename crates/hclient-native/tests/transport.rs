@@ -727,7 +727,7 @@ impl hclient_tls::TlsConnect for CertTls {
 
 /// **`client_certs` is the TLS backend's answer, not this transport's.**
 ///
-/// It was `Capabilities::none()`'s `false` for every `T`, which understated
+/// It was `Capabilities::default()`'s `false` for every `T`, which understated
 /// two backends that can present one: `hclient-tls-native-tls` through its
 /// `identity()` setter, and `hclient-tls-rustls` through a `from_config`
 /// whose config was built with `with_client_auth_cert`. The `true` arm is

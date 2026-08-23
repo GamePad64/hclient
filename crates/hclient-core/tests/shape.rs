@@ -139,7 +139,7 @@ impl Transport for Forgetful {
 #[test]
 fn the_default_passes_our_own_error_through_even_when_a_backend_forgets_to_override() {
     let t = Forgetful {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
     };
     let e = t.to_error(Error::new(ErrorKind::Tls, Never));
     assert_eq!(
@@ -161,7 +161,7 @@ fn the_default_passes_our_own_error_through_even_when_a_backend_forgets_to_overr
 #[test]
 fn to_error_defaults_to_other_and_keeps_the_source_intact() {
     let t = Bare {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
     };
     let e = t.to_error(Custom);
     assert_eq!(e.kind(), &ErrorKind::Other);
@@ -180,7 +180,7 @@ fn to_error_defaults_to_other_and_keeps_the_source_intact() {
 #[test]
 fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
     let t = Echo {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
     };
     let e = t.to_error(Error::new(ErrorKind::Tls, Never));
     assert_eq!(
@@ -202,7 +202,7 @@ fn a_backend_whose_error_is_already_ours_can_pass_it_through_unchanged() {
 fn send_propagates_without_being_declared() {
     fn assert_send<T: Send>(_: T) {}
     let t = Echo {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
     };
     let fut = t.execute(http::Request::new(RequestBody::Empty));
     assert_send(fut);
@@ -228,7 +228,7 @@ fn non_send_transport_still_satisfies_the_trait() {
         }
     }
     let _ = Local {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
         _rc: std::rc::Rc::new(()),
     };
 }
@@ -277,7 +277,7 @@ fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
         }
     }
     let t = LocalErr {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
     };
     assert!(!t.capabilities().streaming_request_body);
 }
@@ -484,7 +484,7 @@ fn a_non_send_hook_reaches_a_bodys_poll_frame_and_the_transport_still_implements
 
     let seen = std::rc::Rc::new(std::cell::Cell::new(0));
     let t = Watched {
-        caps: Capabilities::none(),
+        caps: Capabilities::default(),
         hooks: LocalHook(std::rc::Rc::clone(&seen)),
     };
 

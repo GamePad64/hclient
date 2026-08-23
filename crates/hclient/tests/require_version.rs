@@ -38,9 +38,9 @@ use hclient::error::UnsupportedCapability;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind, RequestBody, RequireVersion};
 
-/// A backend differing from `Capabilities::none()` in exactly one field.
+/// A backend differing from `Capabilities::default()` in exactly one field.
 fn caps(version_select: bool) -> Capabilities {
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
     c.version_select = version_select;
     c
 }

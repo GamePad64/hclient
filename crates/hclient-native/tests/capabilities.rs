@@ -202,7 +202,7 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
 
     // `client_certs` was the seventh row here and is gone, because the
     // disagreement was never real: `hclient-h3` said `true` from a
-    // constant and `hclient-native` took `Capabilities::none()`'s `false`,
+    // constant and `hclient-native` took `Capabilities::default()`'s `false`,
     // so one TLS backend gave two answers depending on which stack held
     // it. Both read `TlsIdentity::presents_client_certs` now, and this
     // fixture's config says `with_no_client_auth()`, so the two agree —
@@ -232,7 +232,7 @@ async fn the_stored_answer_holds_whichever_stack_serves_the_request() {
     assert_eq!(c.early_data, EarlyDataSupport::Supported);
 
     // Untouched fields, to catch a floor computed from one member only: if
-    // `combine` returned `Capabilities::none()` with the disagreements
+    // `combine` returned `Capabilities::default()` with the disagreements
     // filled in, every assertion above would still pass and these would
     // not.
     assert!(c.streaming_request_body, "both members stream");
@@ -282,7 +282,7 @@ async fn the_same_two_stacks_with_the_pool_on_are_one_transport() {
 /// A pair of `Capabilities` differing in exactly one field, built from
 /// `none()` so that everything else agrees by construction.
 fn pair(f: impl Fn(&mut Capabilities, bool)) -> (Capabilities, Capabilities) {
-    let (mut a, mut b) = (Capabilities::none(), Capabilities::none());
+    let (mut a, mut b) = (Capabilities::default(), Capabilities::default());
     f(&mut a, false);
     f(&mut b, true);
     (a, b)
@@ -360,8 +360,8 @@ fn owning_a_jar_or_a_cache_is_a_refusal_rather_than_a_conjunction() {
 /// answer must therefore be stored.
 #[test]
 fn two_different_forbidden_header_lists_have_no_honest_union_to_store() {
-    let mut a = Capabilities::none();
-    let mut b = Capabilities::none();
+    let mut a = Capabilities::default();
+    let mut b = Capabilities::default();
     a.forbidden_request_headers = &[http::header::COOKIE];
     b.forbidden_request_headers = &[http::header::ACCEPT_ENCODING];
     assert_eq!(
@@ -397,9 +397,9 @@ fn a_capability_only_one_member_has_is_not_promised_by_the_pair() {
         "timeouts.between_bytes",
     ] {
         for swapped in [false, true] {
-            let mut yes = Capabilities::none();
+            let mut yes = Capabilities::default();
             set(&mut yes, field, true);
-            let no = Capabilities::none();
+            let no = Capabilities::default();
             let (a, b) = if swapped { (&no, &yes) } else { (&yes, &no) };
             let c = combine(a, b).expect("a bool disagreement is never a refusal");
             assert!(
@@ -409,8 +409,8 @@ fn a_capability_only_one_member_has_is_not_promised_by_the_pair() {
         }
         // …and both saying yes really does reach the composite, or the
         // assertion above would be satisfied by a function returning
-        // `Capabilities::none()`.
-        let mut yes = Capabilities::none();
+        // `Capabilities::default()`.
+        let mut yes = Capabilities::default();
         set(&mut yes, field, true);
         let c = combine(&yes, &yes).unwrap();
         assert!(
@@ -461,8 +461,8 @@ fn get(c: &Capabilities, field: &str) -> bool {
 /// value" does not pass for it.
 #[test]
 fn either_member_offering_early_data_is_enough_for_the_pair_to_offer_it() {
-    let none = Capabilities::none();
-    let mut supported = Capabilities::none();
+    let none = Capabilities::default();
+    let mut supported = Capabilities::default();
     supported.early_data = EarlyDataSupport::Supported;
 
     assert_eq!(
@@ -484,7 +484,7 @@ fn either_member_offering_early_data_is_enough_for_the_pair_to_offer_it() {
 /// `Capabilities` is `#[non_exhaustive]`, so no destructuring `let` outside
 /// `hclient-core` can be made exhaustive and there is no compile error when
 /// a field is added — it would simply arrive in [`combine`]'s output as
-/// `Capabilities::none()`'s value, decided by nobody.
+/// `Capabilities::default()`'s value, decided by nobody.
 ///
 /// So the guard is this test. It reads the field names off `Debug`, which
 /// is derived and therefore lists every field, and fails when the set
@@ -492,7 +492,7 @@ fn either_member_offering_early_data_is_enough_for_the_pair_to_offer_it() {
 /// and adds it here.
 #[test]
 fn every_capability_field_is_accounted_for_and_a_new_one_fails_this_test() {
-    let printed = format!("{:?}", Capabilities::none());
+    let printed = format!("{:?}", Capabilities::default());
     assert_eq!(
         top_level_fields(&printed),
         [

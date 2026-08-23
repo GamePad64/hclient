@@ -366,7 +366,7 @@ pub trait TlsIdentity {
     /// under a comment reading *"Read from the TLS backend, never from a
     /// constant: the capability has to come from the component that
     /// knows"* — while `hclient-native` had no line at all, so it took
-    /// `Capabilities::none()`'s `false`. Both were wrong and in opposite
+    /// `Capabilities::default()`'s `false`. Both were wrong and in opposite
     /// directions: `hclient-tls-native-tls` has an `identity` setter, and
     /// `Rustls::from_config` accepts a `rustls::ClientConfig` built with
     /// `with_client_auth_cert`, so the TCP path *can* present one; and the

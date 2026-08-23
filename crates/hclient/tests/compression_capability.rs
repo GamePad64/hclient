@@ -62,7 +62,7 @@ const GZIP_BLOB: &[u8] = &[
 const PLAINTEXT: &str = "hello, gzip — the plaintext this test asserts on\n";
 
 fn caps(decompression: DecompressionSupport) -> Capabilities {
-    let mut c = Capabilities::none();
+    let mut c = Capabilities::default();
     c.response_decompression = decompression;
     c
 }
