@@ -1388,9 +1388,10 @@ what it says.
 
 `hclient-cache` — RFC 9111 freshness, validation, `Vary` and the
 directives on both sides — **sans-io and clockless**, exactly as
-`hclient-cookie` is, and a leaf: `bytes`, `http`, `thiserror`, and not
-`hclient-core`. `ClientBuilder::cache(HttpCache::new())` switches it on
-behind `hclient`'s `cache` feature, off by default. `Client` supplies the
+`hclient-cookie` is, and a leaf: `bytes`, `http`, `jiff`, `thiserror`,
+`winnow`, and not `hclient-core`.
+`ClientBuilder::cache(HttpCache::new())` switches it on behind
+`hclient`'s `cache` feature, off by default. `Client` supplies the
 `now` as `SystemTime::now()` for the reason the jar does — `Date`,
 `Expires` and `Age` are calendar values and `Timer::Instant` is a
 stopwatch with no epoch.
@@ -1436,6 +1437,99 @@ today's number, because a test pinned to the current value gets relaxed
 without thought. `cached::Cached::recorder` was already boxed for the
 same reason with its own measurement recorded; this is that finding one
 level up.
+
+### Two date parsers were reported as identical, and the duplication was twenty lines
+
+The premise was wrong and the measurement is worth more than the fix.
+`hclient-cache`'s `date.rs` and `hclient-cookie`'s share **no parsing at
+all**: the first reads RFC 9110 §5.6.7's three fixed `HTTP-date` forms,
+the second RFC 6265 §5.1.1's position-free algorithm, and their function
+inventories intersect nowhere. What was genuinely duplicated is the
+**civil-date arithmetic** — `days_from_civil` byte for byte, `is_leap`
+and `days_in_month` differing only in integer type. Twenty lines of the
+402.
+
+**So the split that landed is: winnow parses the grammar, jiff answers
+the calendar.** It maps onto the finding rather than onto the report —
+the halves that differ stay per-crate and the half that was copied is
+delegated, which removes the copy from both crates rather than moving it
+to a third.
+
+**Neither library is asked to parse, and that decided which objections to
+either of them survived.** A date crate's `strftime` validates the
+weekday against the date and refuses a mismatch, which §5.6.7 does not
+require and this workspace deliberately does not do — a server with an
+off-by-one weekday would lose its `Date` entirely. It also reads a
+literal space as *any run of whitespace, including none*: measured on
+chrono, `06Nov1994 08:49:37 GMT` yields an ordinary 1994 timestamp, as do
+double spaces, tabs, a lowercase month, `+1994`, `-1994`, and one digit
+wherever the grammar writes two. For a format §5.6.7 fixes down to the
+character, that is a different grammar rather than leniency.
+
+The asymmetry is why that is refused rather than weighed. `None` here
+means **already stale** (§5.3), and this parser also reads `Date`, which
+feeds the `Age` arithmetic — so a surplus refusal is safe and a surplus
+*acceptance* mints a freshness lifetime out of a string no conforming
+sender produced. The `httpdate` differential would have had to record
+eight new divergences of the form *we accept what the oracle refuses*,
+turning a test that pins one deliberate decision into a list of what a
+dependency happens to do.
+
+winnow keeps every one of those properties exactly:
+`take_while(n..=n, ..)` is the `fixed_digits` this file used to hand-roll,
+each separator is a literal that means itself, and the day name is
+consumed by a parser that never shows a date library a weekday. Nothing
+in either crate's behaviour changed — 62 cache tests and 95 cookie tests
+pass unaltered, the differential among them.
+
+**Three of the four objections to `jiff` were objections to its parser,
+and the fourth was an artifact of the route taken to the answer.** With
+winnow parsing, the weekday check and the POSIX `%y` window have no
+subject. The one that looked structural was `jiff::Timestamp::MAX` —
+`9999-12-30T22:00Z`, which cannot represent `Expires: Fri, 31 Dec 9999
+23:59:59 GMT`, a real "never expires" idiom this parser has always read
+as `253402300799`. That is true of `Timestamp` and **not** of the civil
+types: `civil::Date::MAX` is `9999-12-31`, and
+`DateTime::duration_since` against a civil epoch answers `253402300799`
+exactly. Measured, after the first measurement said the opposite for the
+wrong reason.
+
+What survives is a trap rather than a defect: `civil::date(..)` and
+`Date::at(..)` **panic** on a value the calendar does not have, one
+function name from the `Date::new`/`Time::new` that return `Result`. Both
+crates use the fallible pair, and the single panicking constructor is
+inside a `const` — where an impossible date is a compile error rather
+than something a header could trigger.
+
+chrono was measured too and is equivalent for this half, agreeing with
+the existing parser on every probed point. jiff is what landed, at the
+same crate count — `jiff` + `jiff-core` against `chrono` + `num-traits`
+— and with **no build script**, where `num-traits` carries one and an
+`autocfg` build-dependency with it.
+
+**The honest cost, because one of the three numbers went the wrong way.**
+
+| file | code lines | |
+|---|---|---|
+| `hclient-cache/src/date.rs` | 138 → **118** | the calendar left; the grammar stayed |
+| `hclient-cookie/src/date.rs` | 122 → **96** | same, plus §5.1.1's productions read better as combinators |
+| `hclient-cookie/src/parse.rs` | 142 → **152** | **longer** |
+
+Graphs: `hclient-cache` 10 → 13 crates, `hclient-cookie` 11 → 14.
+`default-features = false` on jiff is what makes it affordable in a
+clockless leaf — its default `tz-system` reaches for the platform
+timezone. Both build for `wasm32-unknown-unknown` and `wasm32-wasip2`,
+checked directly rather than inferred, since `cargo nextest run
+--workspace` builds for neither.
+
+**`parse.rs` growing is the result worth keeping.** RFC 6265bis §5.2 is
+not a grammar — it is a sequence of *cuts*, "the characters up to the
+first `;`", then the same again — and a combinator that expresses a cut
+costs more text than `position(|b| *b == b';')`. The productions in
+§5.1.1 are a grammar and shrank; the algorithm around them is a search
+and is still written as one. That is the same line the whole change is
+drawn on, met from the far side: a parser combinator library pays where
+there is a grammar, and charges where there is not.
 
 ### `1xx` responses, and the third time hyper's `Send` shaped this crate
 

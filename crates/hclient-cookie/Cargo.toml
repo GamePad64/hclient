@@ -34,7 +34,21 @@ default = ["public-suffix"]
 public-suffix = ["dep:public-suffix"]
 
 [dependencies]
+# **winnow parses the grammar, chrono answers the calendar.** The grammar
+# here is RFC 6265 §5.1.1's position-free `cookie-date` and §5.2's
+# attribute algorithm, which share nothing with `hclient-cache`'s three
+# fixed `HTTP-date` forms — that is why the two date parsers were never one
+# parser. What the two *did* share, byte for byte, was the civil-date
+# arithmetic, and chrono is what removes that copy from both.
+#
+# jiff is `default-features = false` in the workspace manifest, so no
+# `tz-system` and no platform timezone lookup reaches this deliberately
+# clockless crate. `civil::Date::new` also *is* §5.1.1's refusal of
+# `31 Feb`: the arithmetic and the validation are one call, which is what
+# Chromium's `FromUTCExploded` does one language over.
+jiff = { workspace = true }
 http = { workspace = true }
+winnow = { workspace = true }
 thiserror = { workspace = true }
 # `1Password/passkey-rs`' transliteration of Go's
 # `golang.org/x/net/publicsuffix`: a compressed trie over the Mozilla list,

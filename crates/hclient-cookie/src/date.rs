@@ -42,6 +42,11 @@
 //! is a cookie that lives for the session instead of one that outlives the
 //! date the server actually meant.
 
+use jiff::civil::{Date, DateTime, Time};
+use winnow::combinator::{not, preceded, terminated};
+use winnow::token::{one_of, take_while};
+use winnow::{ModalResult, Parser};
+
 /// The RFC 6265 §5.1.1 `cookie-date` algorithm.
 ///
 /// `None` means "not a date" — every caller of this turns that into
@@ -61,27 +66,33 @@ pub(crate) fn parse_cookie_date(input: &[u8]) -> Option<i64> {
     // bearing — `1*2DIGIT` (day-of-month) is tried before `2*4DIGIT`
     // (year), which is why `Sun, 06 Nov 94 08:49:37 GMT` reads `06` as the
     // day and `94` as the year rather than the other way round.
+    //
+    // This loop is deliberately *not* a winnow parser. §5.1.1 is an
+    // assignment algorithm rather than a grammar: there is no order to
+    // match against, so what a combinator would express is the productions
+    // — which is exactly what `match_time`, `match_number` and
+    // `match_month` are below — and not the search that applies them.
     for token in input.split(|b| is_delimiter(*b)).filter(|t| !t.is_empty()) {
         if time.is_none()
-            && let Some(t) = match_time(token)
+            && let Some(t) = run(match_time, token)
         {
             time = Some(t);
             continue;
         }
         if day.is_none()
-            && let Some(d) = match_number(token, 1, 2)
+            && let Some(d) = run(number(1, 2), token)
         {
             day = Some(d);
             continue;
         }
         if month.is_none()
-            && let Some(m) = match_month(token)
+            && let Some(m) = run(match_month, token)
         {
             month = Some(m);
             continue;
         }
         if year.is_none()
-            && let Some(y) = match_number(token, 2, 4)
+            && let Some(y) = run(number(2, 4), token)
         {
             year = Some(y);
             continue;
@@ -102,17 +113,61 @@ pub(crate) fn parse_cookie_date(input: &[u8]) -> Option<i64> {
         year += 2000;
     }
 
-    // §5.1.1 step 5, plus the day/month agreement discussed in the module
-    // documentation.
-    if day < 1 || day > days_in_month(year, month) {
-        return None;
-    }
-    if year < 1601 || hour > 23 || minute > 59 || second > 59 {
+    // §5.1.1's own floor, which no calendar enforces for us.
+    if year < 1601 {
         return None;
     }
 
-    let days = days_from_civil(i64::from(year), i64::from(month), i64::from(day));
-    Some(days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second))
+    // §5.1.1 step 5 and step 6 in one call, which is the shape of the
+    // decision rather than a shortcut: step 5 checks `1 <= d <= 31` and
+    // step 6 then asks for a date that may not exist, so the day/month
+    // agreement has to be settled by whatever builds the date. Refusing —
+    // rather than normalising `31 Feb 2030` into 2 Mar — is what Chromium
+    // does through `base::Time::FromUTCExploded`, and `Date::new` is the
+    // same answer. The hour, minute and second bounds are `Time::new`'s,
+    // including the refusal of `:60`: unlike an `HTTP-date`, a
+    // `cookie-date` has no leap second to accept.
+    //
+    // `new` rather than jiff's `civil::date(..)`/`Date::at(..)`, which
+    // **panic** on a value the calendar does not have — every one of these
+    // fields came off a header. The epoch below is the one place a
+    // panicking constructor is used, and it is a `const`, so an impossible
+    // date there is a compile error.
+    //
+    // The civil types rather than `jiff::Timestamp` for the reason
+    // `hclient-cache`'s `civil` records: `Timestamp::MAX` is
+    // `9999-12-30T22:00Z`, which is inside the range §5.1.1 allows.
+    const EPOCH: DateTime = jiff::civil::datetime(1970, 1, 1, 0, 0, 0, 0);
+
+    let date = Date::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
+    )
+    .ok()?;
+    let time = Time::new(
+        i8::try_from(hour).ok()?,
+        i8::try_from(minute).ok()?,
+        i8::try_from(second).ok()?,
+        0,
+    )
+    .ok()?;
+    Some(
+        DateTime::from_parts(date, time)
+            .duration_since(EPOCH)
+            .as_secs(),
+    )
+}
+
+/// Runs one production over a token, allowing whatever follows it.
+///
+/// `Parser::parse` is deliberately not used: §5.1.1's productions end at
+/// "end of token **or a non-digit**", so `06th` is a day-of-month and
+/// unconsumed input is not an error. What must still be refused is a
+/// *digit* after the field, which each production checks for itself.
+fn run<T>(mut p: impl FnMut(&mut &[u8]) -> ModalResult<T>, token: &[u8]) -> Option<T> {
+    let mut input = token;
+    p.parse_next(&mut input).ok()
 }
 
 /// RFC 6265 §5.1.1's `delimiter`: `%x09 / %x20-2F / %x3B-40 / %x5B-60 /
@@ -131,44 +186,30 @@ fn is_delimiter(b: u8) -> bool {
 
 /// `1*2DIGIT ":" 1*2DIGIT ":" 1*2DIGIT` followed by end-of-token or a
 /// non-digit.
-fn match_time(t: &[u8]) -> Option<(u32, u32, u32)> {
-    let (hour, rest) = take_digits(t, 1, 2)?;
-    let rest = rest.strip_prefix(b":")?;
-    let (minute, rest) = take_digits(rest, 1, 2)?;
-    let rest = rest.strip_prefix(b":")?;
-    let (second, rest) = take_digits(rest, 1, 2)?;
-    if rest.first().is_some_and(u8::is_ascii_digit) {
-        return None;
-    }
-    Some((hour, minute, second))
+fn match_time(t: &mut &[u8]) -> ModalResult<(u32, u32, u32)> {
+    let hour = number(1, 2).parse_next(t)?;
+    let minute = preceded(":", number(1, 2)).parse_next(t)?;
+    let second = preceded(":", number(1, 2)).parse_next(t)?;
+    Ok((hour, minute, second))
 }
 
 /// The `day-of-month` (`min`/`max` = 1/2) and `year` (2/4) productions:
 /// digits, then either the end of the token or a non-digit. The trailing
 /// non-digit is *allowed*, not required — `06` and `06th` are both a
 /// day-of-month 6, and `1234567` is neither a day nor a year.
-fn match_number(t: &[u8], min: usize, max: usize) -> Option<u32> {
-    let (value, rest) = take_digits(t, min, max)?;
-    if rest.first().is_some_and(u8::is_ascii_digit) {
-        return None;
+///
+/// `not` is what states that second half. Without it `take_while(..=2)`
+/// would read `123` as `12`, and a seven-digit run would become a
+/// plausible year.
+fn number(min: usize, max: usize) -> impl FnMut(&mut &[u8]) -> ModalResult<u32> {
+    move |t: &mut &[u8]| {
+        terminated(
+            take_while(min..=max, |b: u8| b.is_ascii_digit())
+                .map(|d: &[u8]| d.iter().fold(0u32, |v, b| v * 10 + u32::from(b - b'0'))),
+            not(one_of(|b: u8| b.is_ascii_digit())),
+        )
+        .parse_next(t)
     }
-    Some(value)
-}
-
-fn take_digits(t: &[u8], min: usize, max: usize) -> Option<(u32, &[u8])> {
-    let n = t
-        .iter()
-        .take(max)
-        .take_while(|b| b.is_ascii_digit())
-        .count();
-    if n < min {
-        return None;
-    }
-    let mut value = 0u32;
-    for b in &t[..n] {
-        value = value * 10 + u32::from(b - b'0');
-    }
-    Some((value, &t[n..]))
 }
 
 const MONTHS: [[u8; 3]; 12] = [
@@ -179,40 +220,15 @@ const MONTHS: [[u8; 3]; 12] = [
 /// The `month` production: a case-insensitive match on the **first three
 /// characters** of the token, so `Jan`, `january` and `JANUARY-ish` all
 /// name month 1.
-fn match_month(t: &[u8]) -> Option<u32> {
-    let head: [u8; 3] = t.get(..3)?.try_into().ok()?;
-    let head = head.map(|b| b.to_ascii_lowercase());
-    MONTHS
-        .iter()
-        .position(|m| *m == head)
-        .map(|i| u32::try_from(i).unwrap_or(0) + 1)
-}
-
-fn is_leap(year: u32) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-fn days_in_month(year: u32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian date, by Howard
-/// Hinnant's `days_from_civil`. Correct for any year the RFC allows
-/// (1601..=9999) and for dates before the epoch, which `Expires` reaches
-/// every time a server deletes a cookie with a 1601 or 1970 date.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+fn match_month(t: &mut &[u8]) -> ModalResult<u32> {
+    take_while(3..=3, |b: u8| b.is_ascii_alphabetic())
+        .verify_map(|head: &[u8]| {
+            let head: [u8; 3] = head.try_into().ok()?;
+            let head = head.map(|b| b.to_ascii_lowercase());
+            let i = MONTHS.iter().position(|m| *m == head)?;
+            u32::try_from(i).ok().map(|i| i + 1)
+        })
+        .parse_next(t)
 }
 
 #[cfg(test)]

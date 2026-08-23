@@ -95,20 +95,49 @@ pub enum ParseError {
     NonUtf8,
 }
 
+use winnow::combinator::{alt, terminated};
+use winnow::token::{rest, take_until};
+use winnow::{ModalResult, Parser};
+
+/// One `;`-delimited segment, and the `;` itself where there is one.
+///
+/// RFC 6265bis §5.2 is written as a sequence of *cuts* rather than as a
+/// grammar — "the characters up to the first `;`", then the same again —
+/// so this is the whole of its shape, applied once for the name/value pair
+/// and then once per attribute. `rest` is the last segment, which has no
+/// terminator; that alternative is why an absent trailing `;` is not an
+/// error.
+fn segment<'a>(t: &mut &'a [u8]) -> ModalResult<&'a [u8]> {
+    alt((terminated(take_until(0.., b';'), ";"), rest)).parse_next(t)
+}
+
+/// Cuts one segment at its first `=`, if it has one.
+///
+/// §5.2 splits on the **first** `=` and never on a later one, which is
+/// what leaves `a=b=c=d` a cookie named `a` with the value `b=c=d`. A
+/// segment with no `=` is a whole key and an empty value — `Secure` and
+/// `HttpOnly` are that shape.
+fn split_once_on_equals(segment: &[u8]) -> (&[u8], &[u8]) {
+    let mut input = segment;
+    let key: ModalResult<&[u8]> = terminated(take_until(0.., b'='), "=").parse_next(&mut input);
+    match key {
+        Ok(key) => (trim(key), trim(input)),
+        Err(_) => (trim(segment), &segment[segment.len()..]),
+    }
+}
+
 impl SetCookie {
     /// RFC 6265bis §5.2, on the raw header bytes.
     pub fn parse(header: &[u8]) -> Result<Self, ParseError> {
-        let (pair, attributes) = match header.iter().position(|b| *b == b';') {
-            Some(i) => (&header[..i], &header[i + 1..]),
-            None => (header, &header[header.len()..]),
-        };
+        let mut input = header;
+        // Infallible: `segment`'s `rest` arm matches anything, the empty
+        // header included.
+        let pair = segment.parse_next(&mut input).unwrap_or(header);
 
-        let eq = pair
-            .iter()
-            .position(|b| *b == b'=')
-            .ok_or(ParseError::NoNameValueSeparator)?;
-        let name = trim(&pair[..eq]);
-        let value = trim(&pair[eq + 1..]);
+        if !pair.contains(&b'=') {
+            return Err(ParseError::NoNameValueSeparator);
+        }
+        let (name, value) = split_once_on_equals(pair);
 
         if name.is_empty() {
             return Err(ParseError::EmptyName);
@@ -129,11 +158,11 @@ impl SetCookie {
             same_site: None,
         };
 
-        for attribute in attributes.split(|b| *b == b';') {
-            let (key, value) = match attribute.iter().position(|b| *b == b'=') {
-                Some(i) => (trim(&attribute[..i]), trim(&attribute[i + 1..])),
-                None => (trim(attribute), &attribute[attribute.len()..]),
+        while !input.is_empty() {
+            let Ok(attribute) = segment.parse_next(&mut input) else {
+                break;
             };
+            let (key, value) = split_once_on_equals(attribute);
             out.apply_attribute(key, value);
         }
 

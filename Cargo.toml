@@ -29,6 +29,16 @@ futures-sink   = { version = "0.3", default-features = false }
 url            = "2.5"
 proptest       = "1"
 
+# `default-features = false` on both, and it is the whole reason they are
+# affordable in a sans-io leaf. jiff's default pulls `tz-system`, which
+# reaches for the platform's local timezone; `alloc` alone leaves the
+# proleptic Gregorian calendar, which is all either date parser wants —
+# neither asks jiff to parse. Measured: `jiff` + `jiff-core`, `winnow`
+# alone, no build script among the three, and every one of them builds for
+# `wasm32-unknown-unknown` and `wasm32-wasip2`.
+jiff           = { version = "0.2", default-features = false, features = ["alloc"] }
+winnow         = { version = "0.7", default-features = false, features = ["alloc"] }
+
 # `default-features = false`: `hclient-proto`'s own default is `idn`, and
 # cargo forbids a member from overriding a workspace dependency's
 # `default-features` back to false. Consumers opt in by name instead —

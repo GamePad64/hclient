@@ -37,6 +37,11 @@
 //! to `SystemTime` happens once, in [`crate::policy`], where it can be
 //! saturated against the epoch in one place.
 
+use jiff::civil::{Date, DateTime, Time};
+use winnow::combinator::{alt, preceded, terminated};
+use winnow::token::{literal, take_while};
+use winnow::{ModalResult, Parser};
+
 /// The three forms of `HTTP-date` a recipient must accept.
 ///
 /// `None` means "not a date". Every caller turns that into a *specific*
@@ -52,9 +57,10 @@ pub(crate) fn parse_http_date(input: &[u8]) -> Option<i64> {
     // a *cache miss on every request* for one server's `Date` field,
     // which nothing announces.
     let input = trim_ows(input);
-    imf_fixdate(input)
-        .or_else(|| rfc850(input))
-        .or_else(|| asctime(input))
+    // `Parser::parse` requires the whole input to be consumed, which is
+    // what makes each form's trailing literal load-bearing: `"… GMT x"` is
+    // refused by the parser rather than by a separate emptiness check.
+    alt((imf_fixdate, rfc850, asctime)).parse(input).ok()
 }
 
 fn trim_ows(v: &[u8]) -> &[u8] {
@@ -69,20 +75,13 @@ fn trim_ows(v: &[u8]) -> &[u8] {
 }
 
 /// `Sun, 06 Nov 1994 08:49:37 GMT` — the only form a sender may produce.
-fn imf_fixdate(t: &[u8]) -> Option<i64> {
-    let t = strip_day_name(t, false)?;
-    let t = t.strip_prefix(b", ")?;
-    let (day, t) = fixed_digits(t, 2)?;
-    let t = t.strip_prefix(b" ")?;
-    let (month, t) = month(t)?;
-    let t = t.strip_prefix(b" ")?;
-    let (year, t) = fixed_digits(t, 4)?;
-    let t = t.strip_prefix(b" ")?;
-    let (hms, t) = time_of_day(t)?;
-    if t != b" GMT" {
-        return None;
-    }
-    civil(year, month, day, hms)
+fn imf_fixdate(t: &mut &[u8]) -> ModalResult<i64> {
+    day_name(false).parse_next(t)?;
+    let day = preceded(", ", digits(2)).parse_next(t)?;
+    let month = preceded(" ", month).parse_next(t)?;
+    let year = preceded(" ", digits(4)).parse_next(t)?;
+    let hms = terminated(preceded(" ", time_of_day), " GMT").parse_next(t)?;
+    civil(year, month, day, hms).ok_or_else(fail)
 }
 
 /// `Sunday, 06-Nov-94 08:49:37 GMT` — RFC 850, with a two-digit year.
@@ -101,55 +100,42 @@ fn imf_fixdate(t: &[u8]) -> Option<i64> {
 /// `99`→1999 — `tests/dates.rs`), so the two agree everywhere and the
 /// clock this module does not have would have bought nothing. The
 /// disagreement that does exist is one field to the left, in
-/// [`strip_day_name`].
-fn rfc850(t: &[u8]) -> Option<i64> {
-    let t = strip_day_name(t, true)?;
-    let t = t.strip_prefix(b", ")?;
-    let (day, t) = fixed_digits(t, 2)?;
-    let t = t.strip_prefix(b"-")?;
-    let (month, t) = month(t)?;
-    let t = t.strip_prefix(b"-")?;
-    let (yy, t) = fixed_digits(t, 2)?;
-    let t = t.strip_prefix(b" ")?;
-    let (hms, t) = time_of_day(t)?;
-    if t != b" GMT" {
-        return None;
-    }
+/// [`day_name`].
+///
+/// chrono's `%y` implements the same split, and it is still not used —
+/// reaching for it would mean handing chrono the weekday too, which it
+/// would then check.
+fn rfc850(t: &mut &[u8]) -> ModalResult<i64> {
+    day_name(true).parse_next(t)?;
+    let day = preceded(", ", digits(2)).parse_next(t)?;
+    let month = preceded("-", month).parse_next(t)?;
+    let yy = preceded("-", digits(2)).parse_next(t)?;
+    let hms = terminated(preceded(" ", time_of_day), " GMT").parse_next(t)?;
     let year = if yy >= 70 { 1900 + yy } else { 2000 + yy };
-    civil(year, month, day, hms)
+    civil(year, month, day, hms).ok_or_else(fail)
 }
 
 /// `Sun Nov  6 08:49:37 1994` — C's `asctime`, whose day-of-month is
 /// space-padded rather than zero-padded.
-fn asctime(t: &[u8]) -> Option<i64> {
-    let t = strip_day_name(t, false)?;
-    let t = t.strip_prefix(b" ")?;
-    let (month, t) = month(t)?;
-    let t = t.strip_prefix(b" ")?;
+fn asctime(t: &mut &[u8]) -> ModalResult<i64> {
+    day_name(false).parse_next(t)?;
+    let month = preceded(" ", month).parse_next(t)?;
     // `%2d`: either two digits or a space and one.
-    let (day, t) = match t.strip_prefix(b" ") {
-        Some(rest) => fixed_digits(rest, 1)?,
-        None => fixed_digits(t, 2)?,
-    };
-    let t = t.strip_prefix(b" ")?;
-    let (hms, t) = time_of_day(t)?;
-    let t = t.strip_prefix(b" ")?;
-    let (year, t) = fixed_digits(t, 4)?;
-    if !t.is_empty() {
-        return None;
-    }
-    civil(year, month, day, hms)
+    let day = preceded(" ", alt((digits(2), preceded(" ", digits(1))))).parse_next(t)?;
+    let hms = preceded(" ", time_of_day).parse_next(t)?;
+    let year = preceded(" ", digits(4)).parse_next(t)?;
+    civil(year, month, day, hms).ok_or_else(fail)
 }
 
-const DAYS: [&[u8]; 7] = [b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat", b"Sun"];
-const LONG_DAYS: [&[u8]; 7] = [
-    b"Monday",
-    b"Tuesday",
-    b"Wednesday",
-    b"Thursday",
-    b"Friday",
-    b"Saturday",
-    b"Sunday",
+const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const LONG_DAYS: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
 ];
 
 /// Consumes the day name, which is **not checked against the date**.
@@ -165,88 +151,132 @@ const LONG_DAYS: [&[u8]; 7] = [
 /// rather than argued: `httpdate` refuses `Monday, 01-Jan-70 …` where this
 /// accepts it. `tests/dates.rs` pins the difference in both directions, so
 /// it stays a decision rather than becoming a surprise.
-fn strip_day_name(t: &[u8], long: bool) -> Option<&[u8]> {
-    let names = if long { LONG_DAYS } else { DAYS };
-    names.iter().find_map(|n| t.strip_prefix(*n))
+///
+/// It is also why the name is consumed here rather than by a chrono
+/// `%a`/`%A`: chrono cross-checks the weekday against the parsed date and
+/// refuses a mismatch, so delegating this field would silently adopt
+/// `httpdate`'s answer and lose the decision.
+fn day_name(long: bool) -> impl FnMut(&mut &[u8]) -> ModalResult<()> {
+    move |t: &mut &[u8]| {
+        let names = if long { LONG_DAYS } else { DAYS };
+        // Longest-first is not needed: no short name is a prefix of a
+        // different day's long name, and within one list every name has
+        // the same length.
+        alt([
+            literal(names[0]),
+            literal(names[1]),
+            literal(names[2]),
+            literal(names[3]),
+            literal(names[4]),
+            literal(names[5]),
+            literal(names[6]),
+        ])
+        .void()
+        .parse_next(t)
+    }
 }
 
-fn month(t: &[u8]) -> Option<(i64, &[u8])> {
-    const MONTHS: [&[u8]; 12] = [
-        b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
-        b"Dec",
-    ];
-    let head = t.get(..3)?;
-    let i = MONTHS.iter().position(|m| *m == head)?;
-    Some((i as i64 + 1, &t[3..]))
+fn month(t: &mut &[u8]) -> ModalResult<i64> {
+    alt([
+        literal("Jan").value(1i64),
+        literal("Feb").value(2),
+        literal("Mar").value(3),
+        literal("Apr").value(4),
+        literal("May").value(5),
+        literal("Jun").value(6),
+        literal("Jul").value(7),
+        literal("Aug").value(8),
+        literal("Sep").value(9),
+        literal("Oct").value(10),
+        literal("Nov").value(11),
+        literal("Dec").value(12),
+    ])
+    .parse_next(t)
 }
 
 /// Exactly `n` ASCII digits, no more and no fewer.
 ///
 /// "No more" is what keeps `19944` from parsing as the year 1994 with a
-/// stray digit, which is the failure a `take_while` would have.
-fn fixed_digits(t: &[u8], n: usize) -> Option<(i64, &[u8])> {
-    let head = t.get(..n)?;
-    if !head.iter().all(u8::is_ascii_digit) {
-        return None;
+/// stray digit, and "no fewer" is what keeps `6 Nov` out of a grammar that
+/// spells it `06`. Both are why chrono's `%d`/`%Y` are not used: they
+/// accept one digit where two are written, which would quietly widen what
+/// this crate calls an `HTTP-date`.
+fn digits(n: usize) -> impl FnMut(&mut &[u8]) -> ModalResult<i64> {
+    move |t: &mut &[u8]| {
+        take_while(n..=n, |b: u8| b.is_ascii_digit())
+            .map(|d: &[u8]| d.iter().fold(0i64, |v, b| v * 10 + i64::from(b - b'0')))
+            .parse_next(t)
     }
-    let mut v: i64 = 0;
-    for b in head {
-        v = v * 10 + i64::from(b - b'0');
-    }
-    Some((v, &t[n..]))
 }
 
 /// Hour, minute, second.
-type Hms = (i64, i64, i64);
+type Hms = (i8, i8, i8);
 
-fn time_of_day(t: &[u8]) -> Option<(Hms, &[u8])> {
-    let (h, t) = fixed_digits(t, 2)?;
-    let t = t.strip_prefix(b":")?;
-    let (m, t) = fixed_digits(t, 2)?;
-    let t = t.strip_prefix(b":")?;
-    let (s, t) = fixed_digits(t, 2)?;
+fn time_of_day(t: &mut &[u8]) -> ModalResult<Hms> {
+    let h = digits(2).parse_next(t)?;
+    let m = preceded(":", digits(2)).parse_next(t)?;
+    let s = preceded(":", digits(2)).parse_next(t)?;
     // 60 is a leap second and is a legal `second` in the grammar; it is
     // accepted and folded onto :59 rather than refused, because refusing
     // would make a response stale for the one second a year it can happen.
+    // chrono would fold it the same way, and is not asked to: it never
+    // sees the field, because it never sees the time as text.
     if h > 23 || m > 59 || s > 60 {
-        return None;
+        return Err(fail());
     }
-    Some(((h, m, s.min(59)), t))
+    // The cast cannot lose anything: two digits, bounded above.
+    Ok((h as i8, m as i8, s.min(59) as i8))
 }
 
+/// The calendar, which is jiff's half of this file.
+///
+/// This is what the two date parsers in this workspace genuinely had in
+/// common — `days_from_civil`, `is_leap` and `days_in_month`, copied byte
+/// for byte between here and `hclient-cookie`. Delegating it removes the
+/// copy from both rather than moving it to a third place; a proleptic
+/// Gregorian calendar has one correct answer and no versions, so nothing
+/// about the delegation can drift.
+///
+/// **The civil types are used rather than `jiff::Timestamp`, and that is
+/// load bearing.** `Timestamp::MAX` is `9999-12-30T22:00Z`, so a route
+/// through `to_zoned(..).timestamp()` cannot represent `Expires: Fri, 31
+/// Dec 9999 23:59:59 GMT` — a real "never expires" idiom, which this
+/// parser has always read as `253402300799`. `civil::Date::MAX` is
+/// `9999-12-31`, and `DateTime::duration_since` against a civil epoch
+/// answers `253402300799` exactly.
+///
+/// `Date::new` and `Time::new` are the fallible constructors on purpose:
+/// `civil::date(..)` and `Date::at(..)` **panic** on a value the calendar
+/// does not have, and both would be reachable from a header. The one
+/// panicking constructor here is in a `const`, where an impossible date
+/// is a compile error rather than anything a server could trigger.
 fn civil(year: i64, month: i64, day: i64, (h, m, s): Hms) -> Option<i64> {
-    if day < 1 || day > days_in_month(year, month) {
-        return None;
-    }
-    Some(days_from_civil(year, month, day) * 86_400 + h * 3_600 + m * 60 + s)
+    const EPOCH: DateTime = jiff::civil::datetime(1970, 1, 1, 0, 0, 0, 0);
+
+    let date = Date::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
+    )
+    .ok()?;
+    let time = Time::new(h, m, s, 0).ok()?;
+    Some(
+        DateTime::from_parts(date, time)
+            .duration_since(EPOCH)
+            .as_secs(),
+    )
 }
 
-fn is_leap(year: i64) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-}
-
-fn days_in_month(year: i64, month: i64) -> i64 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian date, by Howard
-/// Hinnant's `days_from_civil` — the same function `hclient-cookie`'s
-/// `date.rs` carries, and deliberately copied rather than shared: making
-/// one of those two crates depend on the other to save nine lines would
-/// tie a jar's release to a cache's.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+/// A refusal from a check the grammar could not express.
+///
+/// `civil` rejects `30 Feb`, and `time_of_day` rejects `25:00:00`, after
+/// the shape has already matched — so both need to fail a parser that has
+/// consumed input. Backtracking is what `alt` in [`parse_http_date`] wants
+/// here: an `imf_fixdate` that matched its shape and then found an
+/// impossible day should let `rfc850` try, exactly as a shape mismatch
+/// does.
+fn fail() -> winnow::error::ErrMode<winnow::error::ContextError> {
+    winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new())
 }
 
 #[cfg(test)]
