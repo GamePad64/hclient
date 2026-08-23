@@ -37,6 +37,12 @@ proptest       = "1"
 # alone, no build script among the three, and every one of them builds for
 # `wasm32-unknown-unknown` and `wasm32-wasip2`.
 jiff           = { version = "0.2", default-features = false, features = ["alloc"] }
+# Hex *printing*, which two places here had hand-rolled — a digest response
+# and a multipart boundary. `alloc` alone, no build script, and both wasm
+# targets. It is deliberately not asked to do percent-encoding: `%XX` is
+# hex interleaved with literal bytes rather than a hex string, and
+# `hclient-proto`'s `encode` keeps its own table for that.
+const-hex      = { version = "1", default-features = false, features = ["alloc"] }
 winnow         = { version = "0.7", default-features = false, features = ["alloc"] }
 
 # `default-features = false`: `hclient-proto`'s own default is `idn`, and

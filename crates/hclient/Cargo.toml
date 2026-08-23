@@ -335,6 +335,15 @@ encoding_rs   = { version = "0.8", optional = true }
 # `hclient-proto` is one `http` release away from being buildable there.
 md-5          = { version = "0.11", optional = true, default-features = false }
 sha2          = { version = "0.11", optional = true, default-features = false }
+# Hex printing, for the digest response and the multipart boundary — both
+# of which had hand-rolled it. Unconditional rather than behind the two
+# features that reach it: `const-hex` is `alloc`-only with no build script
+# and both wasm targets, and a `dep:` entry on each would be two places to
+# keep in step for one crate. It is deliberately *not* used for
+# percent-encoding, which is hex interleaved with literal bytes rather
+# than a hex string — `hclient-proto`'s `encode` keeps its own table.
+const-hex     = { workspace = true }
+
 # SSE reconnect's jitter source (`src/sse.rs`'s `jitter` fn). Randomness
 # isn't a seam anyone has defined in this project (unlike `Timer`, which
 # reconnect takes as an explicit `SseBuilder::with_timer` input precisely

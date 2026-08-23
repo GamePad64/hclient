@@ -43,7 +43,8 @@
 //! date the server actually meant.
 
 use jiff::civil::{Date, DateTime, Time};
-use winnow::combinator::{not, preceded, terminated};
+use winnow::ascii::Caseless;
+use winnow::combinator::{alt, not, preceded, terminated};
 use winnow::token::{one_of, take_while};
 use winnow::{ModalResult, Parser};
 
@@ -212,23 +213,31 @@ fn number(min: usize, max: usize) -> impl FnMut(&mut &[u8]) -> ModalResult<u32> 
     }
 }
 
-const MONTHS: [[u8; 3]; 12] = [
-    *b"jan", *b"feb", *b"mar", *b"apr", *b"may", *b"jun", *b"jul", *b"aug", *b"sep", *b"oct",
-    *b"nov", *b"dec",
-];
-
 /// The `month` production: a case-insensitive match on the **first three
 /// characters** of the token, so `Jan`, `january` and `JANUARY-ish` all
 /// name month 1.
+///
+/// `Caseless` states both halves at once — the fold and the three-octet
+/// width — where a table needed a `to_ascii_lowercase` beside it and a
+/// separate `take_while(3..=3, ..)` to bound it. Whatever follows the
+/// three characters is left for the caller, which is what makes `january`
+/// a month rather than a refusal.
 fn match_month(t: &mut &[u8]) -> ModalResult<u32> {
-    take_while(3..=3, |b: u8| b.is_ascii_alphabetic())
-        .verify_map(|head: &[u8]| {
-            let head: [u8; 3] = head.try_into().ok()?;
-            let head = head.map(|b| b.to_ascii_lowercase());
-            let i = MONTHS.iter().position(|m| *m == head)?;
-            u32::try_from(i).ok().map(|i| i + 1)
-        })
-        .parse_next(t)
+    alt([
+        Caseless("jan").value(1u32),
+        Caseless("feb").value(2),
+        Caseless("mar").value(3),
+        Caseless("apr").value(4),
+        Caseless("may").value(5),
+        Caseless("jun").value(6),
+        Caseless("jul").value(7),
+        Caseless("aug").value(8),
+        Caseless("sep").value(9),
+        Caseless("oct").value(10),
+        Caseless("nov").value(11),
+        Caseless("dec").value(12),
+    ])
+    .parse_next(t)
 }
 
 #[cfg(test)]

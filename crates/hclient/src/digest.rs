@@ -104,10 +104,10 @@ impl Algorithm {
         use md5::Digest as _;
         match self {
             Algorithm::Md5 | Algorithm::Md5Sess => {
-                hex(md5::Md5::digest(data.as_bytes()).as_slice())
+                const_hex::encode(md5::Md5::digest(data.as_bytes()))
             }
             Algorithm::Sha256 | Algorithm::Sha256Sess => {
-                hex(sha2::Sha256::digest(data.as_bytes()).as_slice())
+                const_hex::encode(sha2::Sha256::digest(data.as_bytes()))
             }
             // **`Sha512Trunc256`, not `Sha512` truncated by us.** FIPS
             // 180-4's SHA-512/256 has different initial hash values, so
@@ -115,21 +115,10 @@ impl Algorithm {
             // function with the same name — the sort of mistake that
             // produces a `401` nobody can explain.
             Algorithm::Sha512_256 | Algorithm::Sha512_256Sess => {
-                hex(sha2::Sha512_256::digest(data.as_bytes()).as_slice())
+                const_hex::encode(sha2::Sha512_256::digest(data.as_bytes()))
             }
         }
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        // `unwrap` would be honest here too — writing to a `String` cannot
-        // fail — but a discarded `Result` is what the `no-discarded-wasi-
-        // setter-result` rule exists against, so it is spelled out.
-        let _ = write!(s, "{b:02x}");
-    }
-    s
 }
 
 /// A `WWW-Authenticate: Digest ...` challenge, parsed.
@@ -465,10 +454,10 @@ fn escape(s: &str) -> String {
 pub(crate) fn cnonce() -> String {
     let mut buf = [0u8; 16];
     if getrandom::fill(&mut buf).is_ok() {
-        return hex(&buf);
+        return const_hex::encode(buf);
     }
     let boxed = Box::new(0u8);
     let addr = (&raw const *boxed) as usize;
     drop(boxed);
-    hex(&addr.to_ne_bytes())
+    const_hex::encode(addr.to_ne_bytes())
 }

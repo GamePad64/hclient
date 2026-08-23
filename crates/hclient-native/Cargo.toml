@@ -69,6 +69,11 @@ bytes          = { workspace = true }
 futures-util   = { version = "0.3", default-features = false, features = ["std"] }
 h2             = { version = "0.4", optional = true }
 http           = { workspace = true }
+# RFC 7838's `Alt-Svc` grammar in `altsvc.rs`: `quoted-string` with
+# `quoted-pair`, percent-encoded protocol-ids, and `token / quoted-string`
+# parameters. Deliberately *not* used for that module's member split,
+# which is a cut rather than a grammar — see the note there.
+winnow = { workspace = true }
 http-body      = { workspace = true }
 http-body-util = { workspace = true }
 hclient-core   = { workspace = true }

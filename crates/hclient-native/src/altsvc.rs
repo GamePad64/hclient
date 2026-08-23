@@ -52,6 +52,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use winnow::ascii::{digit1, hex_uint, space0};
+use winnow::combinator::{alt, delimited, preceded, repeat, terminated};
+use winnow::token::{any, none_of, one_of, take_while};
+use winnow::{ModalResult, Parser};
 
 /// RFC 7838 §3.1: *"When an alternative service is advertised using
 /// Alt-Svc, it is considered fresh for 24 hours from generation of the
@@ -387,6 +391,15 @@ pub fn parse(value: &[u8]) -> FieldValue {
 
 /// The field value's members, split on the commas that are *not* inside a
 /// quoted-string.
+///
+/// **Deliberately not a winnow parser, unlike everything below it.** This
+/// is a *cut* rather than a grammar: its job is to find the boundary at
+/// which a malformed member can be dropped while its neighbours survive,
+/// which is why `parse` can afford to refuse a whole member. Expressed as
+/// a combinator it would have to decide what an *unterminated* quote
+/// does, and the answer here — everything after it is inside the string,
+/// so no further comma splits — is a property of this loop rather than of
+/// the grammar.
 fn members(value: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let (mut start, mut i, mut quoted) = (0usize, 0usize, false);
@@ -414,35 +427,36 @@ fn members(value: &[u8]) -> Vec<&[u8]> {
 }
 
 /// One `alt-value`, or `None` when it is not one.
+///
+/// `Parser::parse` requires the whole member to be consumed, which is
+/// what implements this module's rule that *anything after a member's
+/// parameters that is not `;` drops the member*: there is no separate
+/// emptiness check to forget.
 fn alternative(member: &[u8]) -> Option<Alternative> {
-    let eq = member.iter().position(|&b| b == b'=')?;
-    let protocol_id = protocol_id(member.get(..eq)?)?;
-    let (authority, mut rest) = quoted_string(member.get(eq + 1..)?)?;
-    let (host, port) = alt_authority(&authority)?;
+    alt_value.parse(member).ok()
+}
+
+/// `alt-value = alternative *( OWS ";" OWS parameter )`, RFC 7838 §3.
+fn alt_value(input: &mut &[u8]) -> ModalResult<Alternative> {
+    let protocol_id = terminated(protocol_id, "=").parse_next(input)?;
+    let authority = quoted_string.parse_next(input)?;
+    let (host, port) = alt_authority(&authority).ok_or_else(refuse)?;
+
+    let params: Vec<(&[u8], Vec<u8>)> =
+        repeat(0.., preceded((ows, ";", ows), parameter)).parse_next(input)?;
+    ows.parse_next(input)?;
 
     let mut max_age = DEFAULT_MAX_AGE;
     let mut persist = false;
-    loop {
-        rest = trim_ows(rest);
-        if rest.is_empty() {
-            break;
-        }
-        if rest.first() != Some(&b';') {
-            // Something that is not a parameter separator: the member is
-            // not an `alt-value`.
-            return None;
-        }
-        rest = trim_ows(rest.get(1..)?);
-        let (name, v, tail) = parameter(rest)?;
-        rest = tail;
+    for (name, value) in params {
         if name.eq_ignore_ascii_case(b"ma") {
-            max_age = digits(&v)?;
+            max_age = digits(&value).ok_or_else(refuse)?;
         } else if name.eq_ignore_ascii_case(b"persist") {
-            persist = v == b"1";
+            persist = value == b"1";
         }
     }
 
-    Some(Alternative {
+    Ok(Alternative {
         protocol_id,
         host,
         port,
@@ -453,53 +467,67 @@ fn alternative(member: &[u8]) -> Option<Alternative> {
 
 /// `token`, percent-decoded — RFC 7838 §3's *"percent-encoded ALPN
 /// protocol name"*.
-fn protocol_id(id: &[u8]) -> Option<Vec<u8>> {
-    if id.is_empty() {
-        return None;
-    }
-    let mut out = Vec::with_capacity(id.len());
-    let mut i = 0usize;
-    while i < id.len() {
-        // `%` is itself a tchar, so this arm has to come first or an
-        // escape would be read as a literal percent sign.
-        if id[i] == b'%' {
-            let hi = hex(*id.get(i + 1)?)?;
-            let lo = hex(*id.get(i + 2)?)?;
-            out.push(hi * 16 + lo);
-            i += 3;
-        } else if is_tchar(id[i]) {
-            out.push(id[i]);
-            i += 1;
-        } else {
-            return None;
-        }
-    }
-    Some(out)
+///
+/// The percent arm comes first and the literal arm excludes `%`, because
+/// `%` is itself a `tchar`: letting it fall through would read a
+/// malformed escape as a literal percent sign, where the RFC's answer is
+/// that this is not a protocol-id at all.
+fn protocol_id(input: &mut &[u8]) -> ModalResult<Vec<u8>> {
+    repeat(1.., alt((escape, one_of(|b: u8| is_tchar(b) && b != b'%')))).parse_next(input)
 }
 
-/// RFC 9110 §5.6.4 `quoted-string`, unescaped, and what follows it.
-fn quoted_string(input: &[u8]) -> Option<(Vec<u8>, &[u8])> {
-    if input.first() != Some(&b'"') {
-        return None;
-    }
-    let mut out = Vec::new();
-    let mut i = 1usize;
-    while i < input.len() {
-        match input[i] {
-            // `quoted-pair`: the backslash goes, the octet stays. A
-            // backslash at the very end is an unterminated string.
-            b'\\' => {
-                out.push(*input.get(i + 1)?);
-                i += 2;
-            }
-            b'"' => return Some((out, input.get(i + 1..)?)),
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    None
+/// One `%XX`.
+///
+/// The width is stated by `take_while` rather than by `hex_uint`, which
+/// would otherwise run on: `%0aa` is an escape and a literal `a`, not a
+/// three-digit number.
+fn escape(input: &mut &[u8]) -> ModalResult<u8> {
+    preceded("%", take_while(2..=2, |b: u8| b.is_ascii_hexdigit()))
+        .and_then(hex_uint)
+        .parse_next(input)
+}
+
+/// RFC 9110 §5.6.4 `quoted-string`, unescaped.
+///
+/// The `quoted-pair` arm is first, so a backslash never reaches the
+/// literal arm; a backslash as the last octet leaves `any` with nothing
+/// and the string unterminated, which is the same refusal as a missing
+/// closing quote.
+fn quoted_string(input: &mut &[u8]) -> ModalResult<Vec<u8>> {
+    delimited(
+        "\"",
+        repeat(0.., alt((preceded("\\", any), none_of(['"'])))),
+        "\"",
+    )
+    .parse_next(input)
+}
+
+/// `token "=" ( token / quoted-string )`.
+fn parameter<'a>(input: &mut &'a [u8]) -> ModalResult<(&'a [u8], Vec<u8>)> {
+    let name = terminated(token, "=").parse_next(input)?;
+    let value = alt((quoted_string, token.map(<[u8]>::to_vec))).parse_next(input)?;
+    Ok((name, value))
+}
+
+/// RFC 9110 §5.6.2 `token`.
+fn token<'a>(input: &mut &'a [u8]) -> ModalResult<&'a [u8]> {
+    take_while(1.., is_tchar).parse_next(input)
+}
+
+/// RFC 9110 §5.6.3 `OWS`, as a parser.
+///
+/// `space0` is `*( SP / HTAB )` exactly, which is the production — and not
+/// `multispace0`, which would also swallow a bare `\n` a field value
+/// cannot contain. [`trim_ows`] is the same rule applied to a slice from
+/// both ends, which is what the member split needs and a parser cannot do.
+fn ows(input: &mut &[u8]) -> ModalResult<()> {
+    space0.void().parse_next(input)
+}
+
+/// A refusal from a check the grammar could not express — an alt-authority
+/// that is not `[host] ":" port`, or an `ma` that is not a number.
+fn refuse() -> winnow::error::ErrMode<winnow::error::ContextError> {
+    winnow::error::ErrMode::Backtrack(winnow::error::ContextError::new())
 }
 
 /// `[ uri-host ] ":" port`, from inside the alt-authority's quotes.
@@ -529,39 +557,14 @@ fn alt_authority(bytes: &[u8]) -> Option<(Option<String>, u16)> {
     Some((host, port))
 }
 
-/// `token "=" ( token / quoted-string )`, and what follows it.
-fn parameter(input: &[u8]) -> Option<(&[u8], Vec<u8>, &[u8])> {
-    // `position` is `None` when every octet is a token character, which
-    // means there is no `=` and this is not a parameter.
-    let end = input.iter().position(|b| !is_tchar(*b))?;
-    if end == 0 || input.get(end) != Some(&b'=') {
-        return None;
-    }
-    let name = input.get(..end)?;
-    let rest = input.get(end + 1..)?;
-    if rest.first() == Some(&b'"') {
-        let (v, tail) = quoted_string(rest)?;
-        Some((name, v, tail))
-    } else {
-        let end = rest
-            .iter()
-            .position(|b| !is_tchar(*b))
-            .unwrap_or(rest.len());
-        if end == 0 {
-            return None;
-        }
-        Some((name, rest.get(..end)?.to_vec(), rest.get(end..)?))
-    }
-}
-
 /// `1*DIGIT`, saturating rather than overflowing — RFC 9110 §5.6.7's rule
 /// for `delta-seconds`, which `ma` is, and the same arithmetic the port
 /// wants: a number too large for a `u16` is not a port, and this is where
 /// it stops being one number rather than two.
 fn digits(v: &[u8]) -> Option<u64> {
-    if v.is_empty() || !v.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
+    // `Parser::parse` over `digit1` is `1*DIGIT` and nothing else — the
+    // whole slice, at least one octet, every one a digit.
+    let v = digit1::<_, winnow::error::ContextError>.parse(v).ok()?;
     // All digits, so the only way this fails is overflow, and §5.6.7 says
     // what to do about that: use the largest value we can represent.
     Some(
@@ -570,15 +573,6 @@ fn digits(v: &[u8]) -> Option<u64> {
             .parse::<u64>()
             .unwrap_or(u64::MAX),
     )
-}
-
-fn hex(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// RFC 9110 §5.6.2 `tchar`.

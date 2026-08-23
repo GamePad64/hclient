@@ -199,17 +199,7 @@ impl Boundary {
     pub fn random() -> Result<Self, MultipartError> {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw)?;
-        let mut s = String::with_capacity(12 + 32);
-        s.push_str("----hclient-");
-        for b in raw {
-            // `write!` would need `fmt::Write` in scope and can fail on a
-            // `String` only in ways that cannot happen; two table lookups
-            // say the same thing and cannot.
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            s.push(HEX[usize::from(b >> 4)] as char);
-            s.push(HEX[usize::from(b & 0x0F)] as char);
-        }
-        Ok(Self(s))
+        Ok(Self(format!("----hclient-{}", const_hex::encode(raw))))
     }
 
     /// A boundary the caller chose, checked against RFC 2046 §5.1.1.
