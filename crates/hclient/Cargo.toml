@@ -23,10 +23,9 @@ all-features = true
 # `default,default-transport,idn`, and `lean` links that one. The party who
 # wanted the small graph is not the party who decides.
 #
-# That is the same argument that keeps `hclient-tls-quic` out of
-# `hclient-tls` and the WebSocket framing in a crate of its own. Applying
-# it to those two and not to this list would have been the inconsistency,
-# not the caution.
+# That is the same argument that keeps the WebSocket framing in a crate of
+# its own. Applying it there and not to this list would have been the
+# inconsistency, not the caution.
 #
 # What it costs is real and is paid in text instead: `Client::new()` needs
 # `features = ["default-transport"]`, and the first line of both READMEs and

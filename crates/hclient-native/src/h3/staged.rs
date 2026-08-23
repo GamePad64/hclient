@@ -70,7 +70,7 @@
 use crate::h3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
 use hclient_core::unversioned::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
-use hclient_tls_quic::QuicTlsConnect;
+use hclient_tls::quic::QuicTlsConnect;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;

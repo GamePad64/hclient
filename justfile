@@ -778,10 +778,22 @@ tree-ambient:
 graph-no-quic:
     #!/usr/bin/env bash
     set -euo pipefail
-    for c in hclient-rt hclient-tls; do
-      cargo deny --manifest-path "crates/$c/Cargo.toml" \
-        --config .github/deny/no-quic-in-the-seams.toml check bans
-    done
+    # `hclient-rt` has no QUIC at all, optional or otherwise, so `cargo deny`
+    # is the right tool: it analyses every edge a graph *could* have, which
+    # is the strong claim.
+    cargo deny --manifest-path crates/hclient-rt/Cargo.toml \
+      --config .github/deny/no-quic-in-the-seams.toml check bans
+    # `hclient-tls` is the weaker and more useful claim — **not by default**
+    # — and `cargo deny` structurally cannot express it: it walks optional
+    # edges regardless of features (checked with `--no-default-features`,
+    # which does not change its answer). `cargo tree` respects features, so
+    # the claim is made with it, in both directions.
+    ./scripts/tree-guard.sh absent '^(quinn-proto|quinn|quinn-udp|h3) ' \
+      "hclient-tls pulls a QUIC crate with no feature asked for. The quic seam is behind a feature precisely so a NoTls build carries none of it" \
+      -- -p hclient-tls
+    ./scripts/tree-guard.sh present '^quinn-proto ' \
+      "hclient-tls/quic does not pull quinn-proto, so the check above is vacuous — it would pass a crate whose feature had stopped doing anything" \
+      -- -p hclient-tls --features quic
 
 # And the other direction, because a ban that would pass against an empty
 # graph proves nothing: the tokio runtime's `udp` feature really does pull

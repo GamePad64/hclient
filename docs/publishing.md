@@ -1,4 +1,4 @@
-# Releasing the 26 crates
+# Releasing the 25 crates
 
 ```
 cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
@@ -40,7 +40,7 @@ right; it just does not know that `0.1.0` here was a placeholder that was
 never published. So the 70 literals — one `[workspace.package].version`, 8
 requirements in `[workspace.dependencies]` and 61 in crate manifests — were
 edited directly, once, and `cargo check --workspace --all-features` and a
-`--dry-run` publish of all 26 confirm it.
+`--dry-run` publish of all 25 confirm it.
 
 The requirements had to move with it and not merely alongside: `^0.1.0`
 does **not** accept `0.1.0-alpha.1`, because a caret requirement excludes
@@ -132,22 +132,22 @@ the wave count is a fact about the graph rather than a guess:
 
 | wave | crates |
 |---|---|
-| 1 | `hclient-core`, `hclient-cache`, `hclient-cookie`, `hclient-idn` |
+| 1 | `hclient-cache`, `hclient-cookie`, `hclient-core`, `hclient-idn` |
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
-| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-quic` |
-| 4 | `hclient-tls-rustls` |
-| 5 | `hclient-native` |
-| 6 | `hclient`, `hclient-dns-doh` |
-| 7 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
+| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
+| 4 | `hclient-native` |
+| 5 | `hclient`, `hclient-dns-doh` |
+| 6 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
 
-**It is seven and not four, and that is two questions rather than a
+**It is six and not four, and that is two questions rather than a
 miscount.** Five is the *normal* dependency graph; `cargo publish` must
 also satisfy **dev-dependencies that carry a version**, of which there are
 32 here. Cargo's own ordering includes those edges, which is how the two
 derivations were checked against each other.
 
 The chokepoints are one crate wide and each is a real edge:
-`hclient-tls-rustls` needs `hclient-tls-quic`, the second TLS seam;
+`hclient-native` needs both runtimes, the system resolver and
+`hclient-tls-rustls`;
 `hclient-native` needs that plus both runtimes and the system resolver,
 and `hclient` needs `hclient-native`.
 
@@ -195,7 +195,7 @@ there is a hard parse error, not a silent no-op** — checked on purpose
 before writing it, because a release configuration that ignores a typo is
 the shape this project refuses everywhere else.
 
-- `shared-version = true` — all 26 crates carry `version.workspace = true`,
+- `shared-version = true` — all 25 crates carry `version.workspace = true`,
   and this tells the tool the same thing.
 - `consolidate-commits = true` — one commit for the bump, not thirty.
 - `allow-branch = ["main"]` — the default is every branch except `HEAD`,
@@ -230,7 +230,7 @@ satisfying them.
 
 **cargo-release does not work out which crates changed** — it was measured
 and it does not: with a tag one commit back and one crate touched, a plain
-`cargo release patch` still planned all 26 uploads. Selecting is yours,
+`cargo release patch` still planned all 25 uploads. Selecting is yours,
 with `-p`. `cargo-smart-release` is the tool that does compute the set, and
 it is not used here for reasons in §8.
 

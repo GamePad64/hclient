@@ -354,7 +354,7 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All 26
+The mechanics are in place and were measured, not assumed. All 25
 publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
 published at all; `hclient-rt-pair-check` is the only `publish = false`.
@@ -362,8 +362,8 @@ published at all; `hclient-rt-pair-check` is the only `publish = false`.
 and `cargo package -p hclient` correctly refuses, because its dependencies
 are not in the index — which is what the order is for.
 
-**That order was recorded here as "five waves over 27 crates" and it is
-seven over 26**, which is the difference between two questions rather than a
+**That order was recorded here as "five waves over 26 crates" and it is
+six over 25**, which is the difference between two questions rather than a
 miscount. Five is the *normal* dependency graph; `cargo publish` also has
 to satisfy **dev-dependencies that carry a version**, of which there are 32
 here, and they add three waves. `hclient-core`/`-cache`/`-cookie`/`-idn`
@@ -390,7 +390,7 @@ requirement only when it must, the requirements stay at `^0.1.0`, and
 then read as mistakes and are not: an unpublished crate's version runs
 ahead of the index, and published versions are sparse per crate. And
 cargo-release does **not** work out which crates changed — measured, with a
-tag one commit back: a plain `cargo release patch` still planned all 26
+tag one commit back: a plain `cargo release patch` still planned all 25
 uploads. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
@@ -3111,7 +3111,7 @@ should count 59. Restoring is one loop; noticing is the hard part, because a
 copy behaves identically until it drifts.
 
 A README is the same shape one step down, and it was the same absence: no
-crate had one, `readme` was set nowhere, so 26 crates.io pages would have
+crate had one, `readme` was set nowhere, so 25 crates.io pages would have
 carried a single line of `description`. Each crate has one now, and each
 says the thing this workspace's own arguments turn on — **why it is its own
 crate** — because that is the question a reader landing on

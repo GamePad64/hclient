@@ -11,12 +11,14 @@
 # QUIC stack in its graph. The conversion is only worth its price while this
 # holds, so it is checked rather than asserted.
 #
-# `hclient-tls` is the same claim one crate over, and the reason
-# `hclient-tls-quic` exists as a separate crate rather than as a `quic`
-# feature here: Cargo unifies features across a graph, so a feature would
-# put `quinn-proto` into every build in which *any* crate wanted h3 —
-# including the `NoTls` builds whose whole point is having no room for a
-# stack.
+# `hclient-tls` is **not** checked by this config, and the reason is worth
+# knowing before someone adds it back. Its claim is the weaker and more
+# useful one — *no QUIC unless the `quic` feature is asked for* — and
+# `cargo deny` structurally cannot express it: it walks optional edges
+# regardless of features, which is right for a supply-chain tool and wrong
+# for a question about defaults. Measured: `--no-default-features` does not
+# change its answer. `just graph-no-quic` makes that claim with
+# `cargo tree`, in both directions.
 #
 # `exclude-dev`: this is a claim about what a consumer links. Both crates
 # have QUIC in their dev-dependencies on purpose — that is where the tests

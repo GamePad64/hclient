@@ -88,7 +88,7 @@ use hclient_core::{
 };
 use hclient_rt::{Spawn, Timer, UdpAdoptStd, UdpBind};
 use hclient_tls::TlsConfigId;
-use hclient_tls_quic::{QuicTlsConnect, QuicTlsRequest};
+use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use hooks::{ConnState, Watch, mark, since};
 use std::collections::HashMap;
 use std::fmt;

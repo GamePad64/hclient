@@ -58,7 +58,7 @@ http2 = ["dep:h2", "dep:tokio"]
 # rather than bounds: `Native<Embassy, NoTls, IpLiteralOnly>` compiles with
 # it on, it simply never calls `http3()`. What a neighbour switching this
 # on costs such a build is dead code in the graph, not a broken one.
-http3 = ["dep:h3", "dep:h3-quinn", "dep:hclient-tls-quic", "dep:quinn"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "hclient-tls/quic"]
 # No `dep:` entries, and that is the point: both protocols behind this
 # flag are written here, so the feature buys code size back for a
 # constrained target and costs nobody a dependency. See `src/proxy.rs`.
@@ -91,11 +91,10 @@ hclient-tls    = { path = "../hclient-tls",   version = "0.1.0-alpha.1" }
 # `Default` without one), the second because `h3-quinn` requires it. No
 # `runtime-*` — the runtime is `mod quinn`. No `rustls-*` — the crypto
 # arrives already built, as an `Arc<dyn quinn_proto::crypto::ClientConfig>`
-# from `hclient-tls-quic`, so nothing here picks a TLS provider.
+# from `hclient-tls`'s `quic` seam, so nothing here picks a TLS provider.
 h3               = { version = "0.0.8",  optional = true }
 pin-project-lite = "0.2"
 h3-quinn         = { version = "0.0.10", optional = true }
-hclient-tls-quic = { path = "../hclient-tls-quic", version = "0.1.0-alpha.1", optional = true }
 quinn            = { version = "0.11", default-features = false, features = ["ring", "futures-io"], optional = true }
 hyper          = { version = "1.11", default-features = false, features = ["client", "http1"] }
 futures-core   = { workspace = true }

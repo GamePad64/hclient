@@ -58,7 +58,7 @@ client then routes by the origin's HTTPS record the way a browser does.
 `0.1.0` follows when the seams stop moving. `AGENTS.md` says what that
 promise will cost.
 
-## The twenty-seven crates, as six families
+## The twenty-six crates, as six families
 
 You name **one**: `hclient`. Eleven reach your lockfile transitively, and
 twelve are ever chosen deliberately — the rest is plumbing. What follows is
@@ -97,10 +97,9 @@ or `dns` on the family members.
 
 | crate | what it is |
 |---|---|
-| `hclient-tls` | the seam, plus `NoTls` for a build with no room for a stack |
+| `hclient-tls` | the seam, plus `NoTls` for a build with no room for a stack; the QUIC seam behind a `quic` feature |
 | `hclient-tls-rustls` | the default: memory-safe, same behaviour everywhere |
 | `hclient-tls-native-tls` | the platform's own stack, for OS-held trust decisions |
-| `hclient-tls-quic` | a second seam, because QUIC wants key schedules rather than a byte stream |
 
 **Resolvers**
 

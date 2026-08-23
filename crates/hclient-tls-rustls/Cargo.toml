@@ -20,13 +20,12 @@ platform-verifier = ["dep:rustls-platform-verifier"]
 # `quinn-proto` (and the QUIC key-schedule machinery inside rustls), which
 # a build that only ever speaks TLS over TCP has no use for. Same shape as
 # every other optional dependency in this workspace.
-quic              = ["dep:hclient-tls-quic", "dep:quinn-proto"]
+quic              = ["hclient-tls/quic", "dep:quinn-proto"]
 webpki-roots      = ["dep:webpki-roots"]
 
 [dependencies]
 hclient-core     = { workspace = true }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
-hclient-tls-quic = { path = "../hclient-tls-quic", version = "0.1.0-alpha.1", optional = true }
 hyper            = { version = "1.11", default-features = false }
 rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pki-types = "1.15"

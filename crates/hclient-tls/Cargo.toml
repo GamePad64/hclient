@@ -13,8 +13,17 @@ repository.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 
+[features]
+default = []
+# TLS for QUIC, and the crates it brings. Off by default.
+quic = ["dep:quinn-proto"]
+
 [dependencies]
 hclient-core = { workspace = true }
+# `quic` only: the second seam names `quinn_proto::crypto::ClientConfig` in
+# its signature, which is why that seam is behind a feature and not simply
+# here. See `src/quic.rs`'s own doc.
+quinn-proto  = { version = "0.11", default-features = false, optional = true }
 hyper        = { version = "1.11", default-features = false }
 
 [lints]

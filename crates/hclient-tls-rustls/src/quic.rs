@@ -34,7 +34,7 @@
 
 use crate::Rustls;
 use hclient_core::{Error, ErrorKind};
-use hclient_tls_quic::{QuicTlsConnect, QuicTlsRequest};
+use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 

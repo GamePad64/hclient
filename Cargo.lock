@@ -1308,7 +1308,6 @@ dependencies = [
  "hclient-rt-smol",
  "hclient-rt-tokio",
  "hclient-tls",
- "hclient-tls-quic",
  "hclient-tls-rustls",
  "http",
  "http-body",
@@ -1422,6 +1421,7 @@ dependencies = [
  "futures-executor",
  "hclient-core",
  "hyper",
+ "quinn-proto",
 ]
 
 [[package]]
@@ -1439,15 +1439,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hclient-tls-quic"
-version = "0.1.0-alpha.1"
-dependencies = [
- "hclient-core",
- "hclient-tls",
- "quinn-proto",
-]
-
-[[package]]
 name = "hclient-tls-rustls"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1457,7 +1448,6 @@ dependencies = [
  "hclient-rt-smol",
  "hclient-rt-tokio",
  "hclient-tls",
- "hclient-tls-quic",
  "http-body-util",
  "hyper",
  "quinn-proto",

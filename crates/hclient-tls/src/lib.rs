@@ -9,6 +9,25 @@
 //! not one more layer stacked on top.
 #![forbid(unsafe_code)]
 
+/// Pluggable TLS **for QUIC** — a second seam beside [`TlsConnect`], not a
+/// widening of it, and behind a feature because it carries `quinn-proto`.
+///
+/// **Off by default, and the feature is the whole reason this can live
+/// here.** `QuicTlsConnect::quic_client_config` returns
+/// `Arc<dyn quinn_proto::crypto::ClientConfig>` — quinn's own type, in the
+/// seam's signature — so an unconditional module would put `quinn-proto`
+/// and `ring` into every build that has any TLS at all, `NoTls` ones
+/// included.
+///
+/// What a *feature* costs is narrower and is a cost this workspace already
+/// accepts one crate over: Cargo unifies features, so a neighbour
+/// switching it on adds those crates to a graph that never asked — dead
+/// code, stripped by LTO, not a broken build. `hclient-native/http3` does
+/// exactly the same thing to exactly the same builds, which is what makes
+/// a separate crate here the inconsistency rather than the caution.
+#[cfg(feature = "quic")]
+pub mod quic;
+
 use hclient_core::{Error, ErrorKind, TlsSupport};
 use std::future::Future;
 

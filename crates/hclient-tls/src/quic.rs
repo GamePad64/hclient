@@ -44,12 +44,12 @@
 //! HTTP/3 is a compile error, which is the honest outcome and the same
 //! shape [`NoTls`] already has for TLS itself.
 //!
-//! [`TlsConnect`]: hclient_tls::TlsConnect
-//! [`NoTls`]: hclient_tls::NoTls
+//! [`TlsConnect`]: crate::TlsConnect
+//! [`NoTls`]: crate::NoTls
 #![forbid(unsafe_code)]
 
+use crate::TlsIdentity;
 use hclient_core::Error;
-use hclient_tls::TlsIdentity;
 use std::sync::Arc;
 
 /// Parameters for one QUIC connection's TLS.
@@ -76,14 +76,14 @@ pub struct QuicTlsRequest<'a> {
     /// same backend cannot implement [`QuicTlsConnect`] at all, so the
     /// question has no case to answer.
     ///
-    /// [`TlsConnect::reports_alpn`]: hclient_tls::TlsConnect::reports_alpn
+    /// [`TlsConnect::reports_alpn`]: crate::TlsConnect::reports_alpn
     pub alpn: &'a [&'a [u8]],
     /// RFC 9849 Encrypted Client Hello, from an HTTPS/SVCB record — the
     /// same `EchConfigList` [`TlsRequest::ech`] carries. It belongs on the
     /// request rather than on the connector for the same reason ALPN does:
     /// it comes from a DNS answer about one origin.
     ///
-    /// [`TlsRequest::ech`]: hclient_tls::TlsRequest::ech
+    /// [`TlsRequest::ech`]: crate::TlsRequest::ech
     pub ech: Option<&'a [u8]>,
     /// Whether to offer TLS 1.3 early data (0-RTT) on this connection.
     ///
@@ -98,7 +98,7 @@ pub struct QuicTlsRequest<'a> {
     /// anything went into it — the acceptance verdict is not available at
     /// this layer or at this time, see [`QuicTlsConnect::offers_early_data`].
     ///
-    /// [`TlsRequest::early_data`]: hclient_tls::TlsRequest::early_data
+    /// [`TlsRequest::early_data`]: crate::TlsRequest::early_data
     pub early_data: bool,
 }
 
@@ -107,7 +107,7 @@ pub struct QuicTlsRequest<'a> {
 /// One method that produces anything, like [`TlsConnect`], and for the same
 /// reason: no caller in this workspace wants half of it.
 ///
-/// [`TlsConnect`]: hclient_tls::TlsConnect
+/// [`TlsConnect`]: crate::TlsConnect
 pub trait QuicTlsConnect: TlsIdentity {
     /// Build the crypto configuration for one QUIC connection.
     ///
@@ -145,7 +145,7 @@ pub trait QuicTlsConnect: TlsIdentity {
     /// — so it is a future, not a property of
     /// a connector, and it is deliberately not on this trait.
     ///
-    /// [`TlsConnect::reports_alpn`]: hclient_tls::TlsConnect::reports_alpn
+    /// [`TlsConnect::reports_alpn`]: crate::TlsConnect::reports_alpn
     fn offers_early_data(&self) -> bool {
         false
     }

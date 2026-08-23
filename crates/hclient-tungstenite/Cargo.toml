@@ -13,7 +13,8 @@ repository.workspace = true
 # `tungstenite` used to be a `websocket` feature of `hclient-native`, and
 # Cargo's features are additive: one crate anywhere in a graph switching it
 # on put the framing into every other crate's build of the transport. The
-# same argument keeps `hclient-tls-quic` out of `hclient-tls`.
+# same argument put the QUIC TLS seam behind a feature rather than in
+# every `hclient-tls` build.
 # A build that wants WebSocket names this crate; one that does not cannot
 # be given it by a neighbour.
 
