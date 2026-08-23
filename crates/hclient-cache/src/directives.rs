@@ -40,6 +40,10 @@
 //!   for a reload the caller performs; there is no reload here.
 
 use std::time::Duration;
+use winnow::ascii::space0;
+use winnow::combinator::{alt, delimited, opt, preceded, repeat, separated};
+use winnow::token::{any, none_of, take_while};
+use winnow::{ModalResult, Parser};
 
 /// The `Cache-Control` directives a **request** carries, RFC 9111 §5.2.1.
 ///
@@ -135,59 +139,65 @@ impl ResponseDirectives {
 /// difference between reading a header and guessing at one.
 fn for_each_directive(headers: &http::HeaderMap, mut f: impl FnMut(Vec<u8>, Option<&[u8]>)) {
     for value in headers.get_all(http::header::CACHE_CONTROL) {
-        for part in split_outside_quotes(value.as_bytes()) {
-            let part = trim(part);
-            if part.is_empty() {
-                continue;
-            }
-            let (name, arg) = match part.iter().position(|b| *b == b'=') {
-                Some(i) => (&part[..i], Some(unquote(trim(&part[i + 1..])))),
-                None => (part, None),
-            };
-            let name: Vec<u8> = trim(name).iter().map(u8::to_ascii_lowercase).collect();
-            f(name, arg);
+        let mut input = value.as_bytes();
+        // Not `Parser::parse`: §5.2 says an unrecognised or malformed
+        // directive is ignored, so a value whose tail does not parse must
+        // still yield the directives before it. `opt` is what lets an
+        // empty element — `max-age=0,,public` — be skipped rather than
+        // ending the list.
+        let list: Vec<Option<Directive<'_>>> =
+            preceded(ows, separated(0.., opt(directive), (ows, ",", ows)))
+                .parse_next(&mut input)
+                .unwrap_or_default();
+        for (name, arg) in list.into_iter().flatten() {
+            f(name.to_ascii_lowercase(), arg);
         }
     }
 }
 
-fn split_outside_quotes(v: &[u8]) -> Vec<&[u8]> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut quoted = false;
-    let mut i = 0usize;
-    while i < v.len() {
-        match v[i] {
-            b'"' => quoted = !quoted,
-            // A quoted-pair: the escaped byte cannot close the string and
-            // cannot be a separator.
-            b'\\' if quoted => i += 1,
-            b',' if !quoted => {
-                out.push(&v[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    out.push(&v[start.min(v.len())..]);
-    out
+/// One directive's name and its argument, both borrowed from the header
+/// value — see [`quoted_string`] for why the argument can be a borrow.
+type Directive<'a> = (&'a [u8], Option<&'a [u8]>);
+
+/// RFC 9111 §5.2 `cache-directive = token [ "=" ( token / quoted-string ) ]`.
+fn directive<'a>(i: &mut &'a [u8]) -> ModalResult<Directive<'a>> {
+    let name = token.parse_next(i)?;
+    let arg = opt(preceded((ows, "=", ows), alt((quoted_string, token)))).parse_next(i)?;
+    Ok((name, arg))
 }
 
-fn trim(v: &[u8]) -> &[u8] {
-    let start = v.iter().position(|b| !b.is_ascii_whitespace());
-    let Some(start) = start else { return &[] };
-    let end = v
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())
-        .unwrap_or(start);
-    &v[start..=end]
+/// RFC 9110 §5.6.4 `quoted-string`, **not** unescaped — the argument is
+/// handed back as the bytes between the quotes.
+///
+/// That is deliberate and it is why this hands back a borrow. §5.2's
+/// arguments that are quoted at all are field-name lists (`private`,
+/// `no-cache`), and a field name cannot contain a quote, so there is
+/// nothing an unescape would have to do; what it would cost is an
+/// allocation on every directive and an owned type in `for_each_directive`'s
+/// callback. A `quoted-pair` is still *consumed* correctly, so a `\"`
+/// inside cannot end the string early.
+fn quoted_string<'a>(i: &mut &'a [u8]) -> ModalResult<&'a [u8]> {
+    delimited(
+        "\"",
+        repeat(0.., alt((("\\", any).void(), none_of(*b"\"").void())))
+            .map(|(): ()| ())
+            .take(),
+        "\"",
+    )
+    .parse_next(i)
 }
 
-fn unquote(v: &[u8]) -> &[u8] {
-    match (v.first(), v.last()) {
-        (Some(b'"'), Some(b'"')) if v.len() >= 2 => &v[1..v.len() - 1],
-        _ => v,
-    }
+/// RFC 9110 §5.6.2 `token`.
+fn token<'a>(i: &mut &'a [u8]) -> ModalResult<&'a [u8]> {
+    take_while(1.., |b: u8| {
+        b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
+    })
+    .parse_next(i)
+}
+
+/// RFC 9110 §5.6.3 `OWS`.
+fn ows(i: &mut &[u8]) -> ModalResult<()> {
+    space0.void().parse_next(i)
 }
 
 fn seconds(arg: Option<&[u8]>) -> Option<Duration> {

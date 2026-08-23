@@ -47,6 +47,10 @@
 //! server does, in the challenge.
 
 use std::fmt::Write as _;
+use winnow::ascii::{space0, space1};
+use winnow::combinator::{alt, delimited, opt, preceded, repeat, separated};
+use winnow::token::{any, none_of, take_while};
+use winnow::{ModalResult, Parser};
 
 /// Which hash a challenge named, and whether it is the `-sess` variant.
 ///
@@ -179,10 +183,10 @@ pub fn best_challenge<'a>(
     let mut auth_int_only = false;
     for v in values {
         let Ok(s) = v.to_str() else { continue };
-        for raw in split_challenges(s) {
-            let Some(params) = digest_params(raw) else {
+        for (scheme, params) in challenges(s) {
+            if scheme != "digest" {
                 continue;
-            };
+            }
             saw_digest = true;
             match parse_one(&params) {
                 Ok(c) => {
@@ -209,111 +213,98 @@ pub fn best_challenge<'a>(
     }
 }
 
-/// Splits one header value into its challenges.
+/// Every challenge in one `WWW-Authenticate` value: its scheme,
+/// lowercased, and its `auth-param`s with lowercased names and unescaped
+/// values.
 ///
-/// RFC 9110 §11.6.1 allows several in one value, separated by commas — the
-/// same commas that separate a challenge's own parameters, so the split is
-/// on `,` followed by something that looks like `scheme ` rather than on
-/// `,` alone. A parameter is `name=value`; a new challenge is a bare token
-/// followed by whitespace.
-fn split_challenges(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    let bytes = s.as_bytes();
-    for i in 0..bytes.len() {
-        let c = bytes[i];
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            b'\\' if quoted => escaped = true,
-            b'"' => quoted = !quoted,
-            b',' if !quoted => {
-                // A new challenge starts here only if what follows is a
-                // token and then whitespace, rather than `token=`.
-                let rest = s[i + 1..].trim_start();
-                let head = rest.split([' ', '\t']).next().unwrap_or("");
-                if !head.is_empty() && !head.contains('=') && rest.len() > head.len() {
-                    out.push(&s[start..i]);
-                    start = i + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    out.push(&s[start..]);
-    out
+/// **RFC 9110 §11.6.1 is the one grammar in this crate that needs
+/// backtracking**, and that is why it is written as one rather than as a
+/// splitter. A `,` separates two challenges *and* two parameters of one
+/// challenge, so nothing local distinguishes them: `Digest realm="r",
+/// nonce="n"` and `Basic realm="b", Digest realm="r"` differ only in what
+/// follows the comma. A hand-written split had to look ahead — *a token
+/// then whitespace is a new challenge, a token then `=` is a parameter* —
+/// and a combinator does not: the parameter list simply stops where
+/// `auth-param` fails to match, and the outer list takes the comma.
+///
+/// Deliberately **not** `Parser::parse`: a value whose tail does not
+/// parse still yields the challenges before it, which is what keeps a
+/// malformed challenge from hiding a usable one. The leftover is
+/// discarded, exactly as the splitter discarded a segment with no
+/// recognised scheme.
+fn challenges(value: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let mut input = value.trim();
+    separated(0.., challenge, (ows, ',', ows))
+        .parse_next(&mut input)
+        .unwrap_or_default()
 }
 
-/// The parameters of `raw`, if it is a `Digest` challenge.
-fn digest_params(raw: &str) -> Option<Vec<(String, String)>> {
-    let raw = raw.trim();
-    let rest = raw.strip_prefix("Digest ").or_else(|| {
-        raw.get(..6)
-            .filter(|h| h.eq_ignore_ascii_case("Digest"))
-            .and_then(|_| raw.get(6..))
-            .filter(|r| r.starts_with([' ', '\t']))
-    })?;
-    let mut out = Vec::new();
-    for part in split_outside_quotes(rest, b',') {
-        let Some((k, v)) = part.split_once('=') else {
-            continue;
-        };
-        let v = v.trim();
-        let v = v
-            .strip_prefix('"')
-            .and_then(|x| x.strip_suffix('"'))
-            .unwrap_or(v);
-        // §3.3's values are quoted-strings, in which `\"` is a literal
-        // quote. Unescaped here rather than left alone — unlike the
-        // charset parameter one module over, where no encoding label can
-        // contain one — because a realm is free text a deployment chooses.
-        out.push((k.trim().to_ascii_lowercase(), unescape(v)));
-    }
-    Some(out)
+/// RFC 9110 §11.6.1 `challenge = auth-scheme [ 1*SP ( token68 / #auth-param ) ]`.
+///
+/// The `token68` arm is why a `Negotiate YWJj==` beside a `Digest` one is
+/// stepped over rather than derailing the value: `auth-param` matches its
+/// `YWJj` and then finds `=` with no value behind it, so the alternative
+/// consumes the whole thing and the comma after it still separates
+/// challenges.
+fn challenge(i: &mut &str) -> ModalResult<(String, Vec<(String, String)>)> {
+    let scheme = token.parse_next(i)?;
+    let params = opt(preceded(
+        space1,
+        alt((
+            separated(1.., auth_param, (ows, ',', ows)),
+            token68.map(|_| Vec::new()),
+        )),
+    ))
+    .parse_next(i)?
+    .unwrap_or_default();
+    Ok((scheme.to_ascii_lowercase(), params))
 }
 
-fn unescape(v: &str) -> String {
-    if !v.contains('\\') {
-        return v.to_owned();
-    }
-    let mut out = String::with_capacity(v.len());
-    let mut escaped = false;
-    for c in v.chars() {
-        match c {
-            _ if escaped => {
-                out.push(c);
-                escaped = false;
-            }
-            '\\' => escaped = true,
-            _ => out.push(c),
-        }
-    }
-    out
+/// RFC 9110 §11.2 `auth-param = token BWS "=" BWS ( token / quoted-string )`.
+fn auth_param(i: &mut &str) -> ModalResult<(String, String)> {
+    let name = token.parse_next(i)?;
+    (ows, '=', ows).parse_next(i)?;
+    // §3.3's values are quoted-strings, in which `\"` is a literal quote.
+    // Unescaped here rather than left alone — unlike the charset parameter
+    // one module over, where no encoding label can contain one — because a
+    // realm is free text a deployment chooses.
+    let value = alt((quoted_string, token.map(str::to_owned))).parse_next(i)?;
+    Ok((name.to_ascii_lowercase(), value))
 }
 
-fn split_outside_quotes(s: &str, sep: u8) -> Vec<&str> {
-    let (mut out, mut start, mut quoted, mut escaped) = (Vec::new(), 0usize, false, false);
-    for (i, c) in s.bytes().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            b'\\' if quoted => escaped = true,
-            b'"' => quoted = !quoted,
-            _ if c == sep && !quoted => {
-                out.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(&s[start..]);
-    out
+/// RFC 9110 §5.6.4 `quoted-string`, unescaped.
+fn quoted_string(i: &mut &str) -> ModalResult<String> {
+    delimited(
+        '"',
+        repeat(0.., alt((preceded('\\', any), none_of(['"'])))),
+        '"',
+    )
+    .parse_next(i)
+}
+
+/// RFC 9110 §5.6.2 `token`.
+fn token<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
+    take_while(1.., |c: char| {
+        c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+    })
+    .parse_next(i)
+}
+
+/// RFC 9110 §11.6.1 `token68`.
+fn token68<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
+    (
+        take_while(1.., |c: char| {
+            c.is_ascii_alphanumeric() || "-._~+/".contains(c)
+        }),
+        take_while(0.., '='),
+    )
+        .take()
+        .parse_next(i)
+}
+
+/// RFC 9110 §5.6.3 `OWS`.
+fn ows(i: &mut &str) -> ModalResult<()> {
+    space0.void().parse_next(i)
 }
 
 fn parse_one(params: &[(String, String)]) -> Result<Challenge, DigestError> {

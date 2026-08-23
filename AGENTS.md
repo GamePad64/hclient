@@ -1549,6 +1549,56 @@ and is still written as one. That is the same line the whole change is
 drawn on, met from the far side: a parser combinator library pays where
 there is a grammar, and charges where there is not.
 
+### Three header grammars, and one of them needed the backtracking
+
+The same line the date parsers were split on, applied to the parsers that
+were left — and it came out three different ways, which is what makes it a
+rule rather than a preference.
+
+**`WWW-Authenticate` is the case that pays, and it pays in a defect
+rather than in lines.** RFC 9110 §11.6.1 lets one value carry several
+challenges separated by commas — *the same commas that separate a
+challenge's own parameters*. Nothing local tells them apart, so the
+hand-written splitter looked ahead: *a token then whitespace begins a new
+challenge, a token then `=` is a parameter*. A combinator does not need
+the lookahead at all — the parameter list stops where `auth-param` fails
+to match, and the outer list takes the comma. `token68` is the arm that
+keeps a `Negotiate YWJj==` beside a `Digest` one from derailing the
+value: `auth-param` matches its `YWJj`, finds `=` with nothing behind it,
+and the alternative swallows the whole thing. **294 code lines to 261,
+and four hand-written helpers gone** — `split_challenges`,
+`digest_params`, `unescape` and `split_outside_quotes`.
+
+**`Cache-Control` is an ordinary win**: 196 to 185, RFC 9111 §5.2's
+`token [ "=" ( token / quoted-string ) ]` written as itself.
+
+**`charset` grew, 231 to 240**, which is the third sighting of the rule
+and the second time it has been recorded against this workspace's own
+hopes. Finding one parameter past a media type is a *cut*, and a cut
+costs more as a combinator than as `position`. It is kept converted
+anyway, because what it buys is not lines — see below.
+
+**What it buys is that "split on a separator outside a quoted-string" is
+now written zero times where it was written three.** `hclient-cache`'s
+`directives.rs`, `hclient`'s `digest.rs` and its `response.rs` each
+carried a copy, differing only in separator and in `&[u8]` versus `&str`.
+They were **measured against each other first, on twelve inputs** —
+unterminated quote, escaped separator, trailing backslash, empty input —
+and agreed on all twelve, so this was tidy-up rather than a defect, and
+worth saying because the same investigation could have found the
+opposite.
+
+Two of the three quoted-string parsers hand back a **borrow and do not
+unescape**, and that is a decision rather than a shortcut: a
+`Cache-Control` argument that is quoted at all is a field-name list and a
+`charset` is an encoding label, neither of which can contain a quote, so
+an unescape would allocate on every directive to change nothing. A
+`quoted-pair` is still consumed, so a `\"` cannot end the value early.
+`digest.rs`'s does unescape, because a `realm` is free text a deployment
+chooses — which is the same split this workspace already had between
+those two modules, now stated in the parsers instead of beside them.
+
+
 ### `1xx` responses, and the third time hyper's `Send` shaped this crate
 
 `Native::watching_1xx()`, and `Event::Informational` on the hooks seam —

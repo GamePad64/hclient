@@ -421,42 +421,64 @@ pub enum CharsetError {
 /// without a second string to allocate.
 #[cfg(feature = "charset")]
 fn charset_param(value: &str) -> Option<&str> {
-    // Past the media type. A media type is two tokens and a slash, so its
-    // terminating `;` cannot be inside a quoted string.
-    let mut rest = value.split_once(';')?.1;
-    loop {
-        let (param, tail) = split_at_unquoted_semicolon(rest);
-        if let Some((name, val)) = param.split_once('=')
-            && name.trim().eq_ignore_ascii_case("charset")
-        {
-            let val = val.trim();
-            return Some(
-                val.strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .unwrap_or(val),
-            );
-        }
-        rest = tail?;
-    }
-}
+    use winnow::ascii::space0;
+    use winnow::combinator::{alt, delimited, preceded, repeat, separated};
+    use winnow::token::{any, none_of, take_till, take_while};
+    use winnow::{ModalResult, Parser};
 
-/// Splits at the first `;` that is not inside a quoted-string, answering
-/// `None` for the tail when there is no further parameter.
-#[cfg(feature = "charset")]
-fn split_at_unquoted_semicolon(s: &str) -> (&str, Option<&str>) {
-    let (mut quoted, mut escaped) = (false, false);
-    for (i, c) in s.bytes().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            b'\\' if quoted => escaped = true,
-            b'"' => quoted = !quoted,
-            // The index is an ASCII byte's, so it is a char boundary.
-            b';' if !quoted => return (&s[..i], Some(&s[i + 1..])),
-            _ => {}
-        }
+    /// RFC 9110 §5.6.3 `OWS`.
+    fn ows(i: &mut &str) -> ModalResult<()> {
+        space0.void().parse_next(i)
     }
-    (s, None)
+
+    /// RFC 9110 §5.6.2 `token`.
+    fn token<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
+        take_while(1.., |c: char| {
+            c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)
+        })
+        .parse_next(i)
+    }
+
+    /// RFC 9110 §5.6.4 `quoted-string`, **not** unescaped — the label is
+    /// handed back as the bytes between the quotes, so this borrows.
+    ///
+    /// Nothing is lost by that here and it is the reason the wart below is
+    /// stated rather than fixed: no encoding label `encoding_rs` knows
+    /// contains a quote, so a `quoted-pair` inside one cannot name a
+    /// charset either way. It is still *consumed* correctly, so a `\"`
+    /// cannot end the parameter early and let the rest be read as further
+    /// parameters.
+    fn quoted<'a>(i: &mut &'a str) -> ModalResult<&'a str> {
+        delimited(
+            '"',
+            repeat(0.., alt((('\\', any).void(), none_of(['"']).void())))
+                .map(|(): ()| ())
+                .take(),
+            '"',
+        )
+        .parse_next(i)
+    }
+
+    /// One `parameter = token BWS "=" BWS ( token / quoted-string )`.
+    fn parameter<'a>(i: &mut &'a str) -> ModalResult<(&'a str, &'a str)> {
+        let name = preceded(ows, token).parse_next(i)?;
+        (ows, '=', ows).parse_next(i)?;
+        let v = alt((quoted, token)).parse_next(i)?;
+        ows.parse_next(i)?;
+        Ok((name, v))
+    }
+
+    let mut input = value;
+    // Past the media type. A media type is two tokens and a slash, so its
+    // terminating `;` cannot be inside a quoted string — which is what
+    // makes this first cut safe where the ones after it are not.
+    let params: Vec<(&str, &str)> =
+        preceded((take_till(0.., ';'), ';'), separated(0.., parameter, ';'))
+            .parse_next(&mut input)
+            .ok()?;
+
+    params
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("charset"))
+        .map(|(_, v)| v)
 }

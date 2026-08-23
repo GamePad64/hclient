@@ -123,7 +123,7 @@ json = ["dep:serde", "dep:serde_json"]
 # instead of as an error. That is the same hazard `Capabilities`' floor
 # rule exists for. So the charset-aware path is a SEPARATE METHOD, and a
 # caller who wants it says so at the call site rather than in a manifest.
-charset = ["dep:encoding_rs"]
+charset = ["dep:encoding_rs", "dep:winnow"]
 # `RequestBuilder::digest_auth` — RFC 7616 Digest Access Authentication.
 # OFF by default, on the same measurement as `zstd` above and for a bigger
 # number: MD5 and SHA-2 cost **nine** crates (`md-5`, `sha2`, `digest`,
@@ -138,7 +138,7 @@ charset = ["dep:encoding_rs"]
 # defects are silent and whose test vectors nobody re-derives; RustCrypto's
 # are audited, `no_std`, build-script-free and build for both wasm targets,
 # which is the same shortlist `ruzstd` was chosen from.
-digest-auth = ["dep:md-5", "dep:sha2"]
+digest-auth = ["dep:md-5", "dep:sha2", "dep:winnow"]
 # Response decompression, per coding — v0.2 W5. OFF by default, on the
 # `json` precedent above and for the same kind of reason: the browser
 # transport decodes for us already (`Capabilities::response_decompression`
@@ -334,6 +334,12 @@ encoding_rs   = { version = "0.8", optional = true }
 # dropping it keeps the pair `no_std` — which is not idle, since
 # `hclient-proto` is one `http` release away from being buildable there.
 md-5          = { version = "0.11", optional = true, default-features = false }
+# RFC 9110 §11.6.1's challenge grammar, which is the one place in this
+# crate that genuinely needs backtracking: the same comma separates two
+# challenges and two of one challenge's parameters, and only what follows
+# tells them apart. Optional and switched on by `digest-auth` alone, since
+# nothing else here parses a header grammar.
+winnow = { workspace = true, optional = true }
 sha2          = { version = "0.11", optional = true, default-features = false }
 # Hex printing, for the digest response and the multipart boundary — both
 # of which had hand-rolled it. Unconditional rather than behind the two
