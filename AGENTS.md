@@ -2540,6 +2540,31 @@ behind a default-on `simd-unsafe` feature this build switches off,
 decode-side error detail, and custom padding. Dropping back to 0.22
 removes the duplicate and loses nothing.
 
+**The SIMD engines are refused, and the measurement is the whole
+argument.** Switching the feature on changes nothing by itself:
+`simd-unsafe` gates the new `Simd`/`Avx2`/`Neon` modules, and `STANDARD`
+is `GeneralPurpose`, which the feature does not touch — so SIMD would
+have to be named at the call site. Both call sites encode a
+`user:password` for `Authorization: Basic`, and at those sizes it is not
+faster. Measured on x86-64, encode, nanoseconds per call:
+
+| input | `STANDARD` | `Simd` | |
+|---|---|---|---|
+| `alice:hunter2`, 13 B | 23.9 | 20.4 | 1.17x |
+| 40 B | 23.9 | 25.2 | **0.95x — slower** |
+| 120 B | 51.6 | 53.1 | **0.97x — slower** |
+| 64 KiB, for contrast | 17784 | 6208 | 2.86x |
+
+The runtime detection and the fallback cost more than the scalar encode
+at the sizes this workspace actually has, and the 2.86x needs an input
+base64 never sees here. What it would cost is the sharper half:
+`Simd` requires base64's **`std`** feature, where `hclient-proto` builds
+`alloc`-only for both wasm targets, and none of the three engines exists
+on `wasm32` at all — so the engine would be a per-target `#[cfg]` in a
+sans-io leaf, which is the machinery this workspace removes rather than
+hides. Nanoseconds against that, once per request, beside a network
+round trip.
+
 **A JSON request body closes the asymmetry** the response side had left:
 `Collected::json` had existed since v0.1 and `RequestBuilder::json` had
 not, both behind the same feature and for the same reason — a caller who
