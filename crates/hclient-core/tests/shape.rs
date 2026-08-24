@@ -7,6 +7,10 @@
 use bytes::Bytes;
 use hclient_core::unversioned::{Timer, Transport};
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, Timeouts, UnsupportedCapability};
+use std::error::Error as StdError;
+use std::fmt::Display;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 fn assert_send_sync<T: Send + Sync>() {}
 fn assert_send<T: Send>() {}
@@ -50,12 +54,12 @@ struct Echo {
 
 #[derive(Debug)]
 struct Never;
-impl std::fmt::Display for Never {
+impl Display for Never {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "never")
     }
 }
-impl std::error::Error for Never {}
+impl StdError for Never {}
 
 impl Transport for Echo {
     type Body = http_body_util::Full<Bytes>;
@@ -84,12 +88,12 @@ struct Bare {
 
 #[derive(Debug, PartialEq)]
 struct Custom;
-impl std::fmt::Display for Custom {
+impl Display for Custom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "backend said no")
     }
 }
-impl std::error::Error for Custom {}
+impl StdError for Custom {}
 
 impl Transport for Bare {
     type Body = http_body_util::Full<Bytes>;
@@ -165,7 +169,7 @@ fn to_error_defaults_to_other_and_keeps_the_source_intact() {
     };
     let e = t.to_error(Custom);
     assert_eq!(e.kind(), &ErrorKind::Other);
-    let src = std::error::Error::source(&e).expect("Error::new always sets a source");
+    let src = StdError::source(&e).expect("Error::new always sets a source");
     assert_eq!(
         src.downcast_ref::<Custom>(),
         Some(&Custom),
@@ -253,12 +257,12 @@ fn a_transport_whose_error_is_not_send_still_implements_the_trait() {
     // better off having nowhere.
     #[derive(Debug)]
     struct NotSend(std::marker::PhantomData<std::rc::Rc<()>>);
-    impl std::fmt::Display for NotSend {
+    impl Display for NotSend {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "not send")
         }
     }
-    impl std::error::Error for NotSend {}
+    impl StdError for NotSend {}
 
     struct LocalErr {
         caps: Capabilities,
@@ -522,14 +526,14 @@ fn a_send_hook_leaves_the_transport_and_its_body_send() {
     struct Counting(std::sync::atomic::AtomicUsize);
     impl Hooks for Counting {
         fn on(&self, _event: Event<'_>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     assert_send::<NoHooks>();
     assert_send_sync::<NoHooks>();
     assert_send::<Counting>();
-    assert_send::<std::sync::Arc<Counting>>();
+    assert_send::<Arc<Counting>>();
     assert_eq!(
         std::mem::size_of::<NoHooks>(),
         0,

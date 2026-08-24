@@ -152,7 +152,10 @@ use hclient_dns::Resolve;
 use hclient_rt::{Spawn, TcpConnect, TcpOpts, Timer};
 use hclient_tls::TlsConnect;
 use pool::{CheckIn, Pool, PoolKey, Protocol, Security};
+use std::fmt::Debug;
 use std::future::Future;
+use std::future::poll_fn;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -169,12 +172,8 @@ type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H>);
 
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
-type Watch1xx<H> = fn(
-    &H,
-    &mut http::Request<body::OutgoingBody>,
-    ConnectionId,
-    Option<std::sync::Arc<body::ContinueGate>>,
-);
+type Watch1xx<H> =
+    fn(&H, &mut http::Request<body::OutgoingBody>, ConnectionId, Option<Arc<body::ContinueGate>>);
 
 /// The same callback with nothing to report to.
 ///
@@ -183,10 +182,7 @@ type Watch1xx<H> = fn(
 /// `H: Send + Sync + 'static`, and opening a gate needs nothing of `H` at
 /// all. Folding them together would make `Native::expect_continue` demand
 /// a bound it has no use for.
-fn install_gate_only(
-    req: &mut http::Request<body::OutgoingBody>,
-    gate: std::sync::Arc<body::ContinueGate>,
-) {
+fn install_gate_only(req: &mut http::Request<body::OutgoingBody>, gate: Arc<body::ContinueGate>) {
     hyper::ext::on_informational(req, move |resp| {
         if resp.status() == http::StatusCode::CONTINUE {
             gate.open();
@@ -205,7 +201,7 @@ fn install_1xx<H>(
     hooks: &H,
     req: &mut http::Request<body::OutgoingBody>,
     id: ConnectionId,
-    gate: Option<std::sync::Arc<body::ContinueGate>>,
+    gate: Option<Arc<body::ContinueGate>>,
 ) where
     // The marker sits on the `where` line rather than in the angle
     // brackets because `cargo fmt` splits a long signature and carries a
@@ -497,7 +493,7 @@ where
     ///
     /// See [`crate::h3_arm::Arm`] for why the box is `Send + Sync`.
     #[cfg(feature = "http3")]
-    h3: Option<std::sync::Arc<crate::h3_arm::Arm>>,
+    h3: Option<Arc<crate::h3_arm::Arm>>,
     /// What origins have advertised about their own HTTP/3, and for how
     /// long — RFC 7838's `Alt-Svc`, with the lifetime the origin gave.
     ///
@@ -549,7 +545,7 @@ where
     /// argument the TLS identity and the proxy already carry there.
     /// Send every request over this Unix-domain socket instead of
     /// resolving and dialling the origin — see [`Native::unix_socket`].
-    unix_socket: Option<std::sync::Arc<std::path::Path>>,
+    unix_socket: Option<Arc<std::path::Path>>,
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
@@ -1680,7 +1676,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     #[cfg(feature = "http3")]
     pub fn http3(mut self, quic: crate::h3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
-        crate::h3::H3<R, T, D>: crate::h3::StagedConnect<Error = Error> + std::fmt::Debug,
+        crate::h3::H3<R, T, D>: crate::h3::StagedConnect<Error = Error> + Debug,
         <crate::h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
         <crate::h3::H3<R, T, D> as crate::h3::StagedConnect>::Staged: 'static,
@@ -1700,7 +1696,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         // reachable from what this workspace ships, and it is an ordinary
         // mistake rather than a contrived one.
         self.caps = caps::combine(&self.caps, quic.capabilities()).map_err(Box::new)?;
-        self.h3 = Some(std::sync::Arc::new(quic));
+        self.h3 = Some(Arc::new(quic));
         self.versions.h3 = true;
         Ok(self)
     }
@@ -1988,7 +1984,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         if !self.proxies.is_empty() {
             return Err(Error::new(ErrorKind::Unsupported, ProxyAndUnixSocket));
         }
-        self.unix_socket = Some(std::sync::Arc::from(path.as_ref()));
+        self.unix_socket = Some(Arc::from(path.as_ref()));
         Ok(self)
     }
 
@@ -2225,7 +2221,7 @@ where
     async fn within_first_byte_gated<F, V>(
         &self,
         d: Option<Duration>,
-        gate: Option<std::sync::Arc<body::ContinueGate>>,
+        gate: Option<Arc<body::ContinueGate>>,
         fut: F,
     ) -> Result<V, established::Failed>
     where
@@ -2242,7 +2238,7 @@ where
             let mut fut = std::pin::pin!(fut);
             let mut wait = std::pin::pin!(self.rt.sleep(after));
             let mut opened = false;
-            return std::future::poll_fn(|cx| {
+            return poll_fn(|cx| {
                 if let Poll::Ready(r) = fut.as_mut().poll(cx) {
                     return Poll::Ready(r);
                 }
@@ -2262,7 +2258,7 @@ where
             .as_ref()
             .map(|(_, after)| Box::pin(self.rt.sleep(*after)));
         let mut gate_opened = false;
-        std::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             // The exchange first, so a head that arrived in the same wake
             // as the deadline expiring is a response rather than a
             // timeout — the same ordering rule as `with_connect_timeout`
@@ -2511,14 +2507,14 @@ where
     fn continue_gate(
         &self,
         req: &http::Request<body::OutgoingBody>,
-    ) -> Option<std::sync::Arc<body::ContinueGate>> {
+    ) -> Option<Arc<body::ContinueGate>> {
         self.expect_continue?;
         let asked = req
             .headers()
             .get_all(http::header::EXPECT)
             .iter()
             .any(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
-        asked.then(|| std::sync::Arc::new(body::ContinueGate::default()))
+        asked.then(|| Arc::new(body::ContinueGate::default()))
     }
 }
 
@@ -3363,7 +3359,7 @@ where
     // `Tokio::sleep` panics outside a runtime, and a request that asked
     // for no bound must not need one.
     let mut sleep_fut = std::pin::pin!(rt.sleep(d));
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if let Poll::Ready(r) = fut.as_mut().poll(cx) {
             return Poll::Ready(r);
         }
@@ -3386,6 +3382,9 @@ where
 /// `tests/dual_runtime.rs`, `tests/h1.rs`) and for nothing else.
 #[doc(hidden)]
 pub mod testing {
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
     /// Runs Happy Eyeballs over a ready-made address list, bypassing DNS —
     /// a wrapper around `connect::race_connect` with a default `HeConfig`
     /// and `TcpOpts`, exactly what a test that only controls the address
@@ -3465,25 +3464,22 @@ pub mod testing {
     /// `Pending` on `WouldBlock`, but with an immediate `wake_by_ref` — see
     /// [`blocking_io`]'s doc comment for why, without a reactor, this is
     /// the only way not to lose the wakeup.
-    fn poll_would_block<T>(
-        cx: &std::task::Context<'_>,
-        r: std::io::Result<T>,
-    ) -> std::task::Poll<std::io::Result<T>> {
+    fn poll_would_block<T>(cx: &Context<'_>, r: std::io::Result<T>) -> Poll<std::io::Result<T>> {
         match r {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 cx.waker().wake_by_ref();
-                std::task::Poll::Pending
+                Poll::Pending
             }
-            other => std::task::Poll::Ready(other),
+            other => Poll::Ready(other),
         }
     }
 
     impl hyper::rt::Read for BlockingIo {
         fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
             mut buf: hyper::rt::ReadBufCursor<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
+        ) -> Poll<std::io::Result<()>> {
             // No `unsafe`: read into a stack buffer, then copy via
             // `put_slice` — the same path as the safe example in
             // `hyper::rt::Read`'s doc comment.
@@ -3493,36 +3489,30 @@ pub mod testing {
                 cx,
                 std::io::Read::read(&mut self.get_mut().0, &mut scratch[..want]),
             ) {
-                std::task::Poll::Ready(Ok(n)) => {
+                Poll::Ready(Ok(n)) => {
                     buf.put_slice(&scratch[..n]);
-                    std::task::Poll::Ready(Ok(()))
+                    Poll::Ready(Ok(()))
                 }
-                std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
-                std::task::Poll::Pending => std::task::Poll::Pending,
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                Poll::Pending => Poll::Pending,
             }
         }
     }
 
     impl hyper::rt::Write for BlockingIo {
         fn poll_write(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
             buf: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
+        ) -> Poll<std::io::Result<usize>> {
             poll_would_block(cx, std::io::Write::write(&mut self.get_mut().0, buf))
         }
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             // `TcpStream::flush` is a no-op (no userspace buffering),
             // never blocks and never returns `WouldBlock`.
-            std::task::Poll::Ready(std::io::Write::flush(&mut self.get_mut().0))
+            Poll::Ready(std::io::Write::flush(&mut self.get_mut().0))
         }
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             // `NotConnected` is success, not failure. On macOS and the BSDs
             // `shutdown(2)` on a socket whose peer has already closed
             // returns `ENOTCONN` (errno 57); Windows answers `WSAENOTCONN`.
@@ -3536,7 +3526,7 @@ pub mod testing {
             // for the socket to be shut down, and it is. Any other error
             // still propagates.
             let r = self.get_mut().0.shutdown(std::net::Shutdown::Both);
-            std::task::Poll::Ready(match r {
+            Poll::Ready(match r {
                 Err(e) if e.kind() == std::io::ErrorKind::NotConnected => Ok(()),
                 other => other,
             })

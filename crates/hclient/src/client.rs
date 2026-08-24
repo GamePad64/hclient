@@ -12,6 +12,11 @@ use hclient_core::Timeouts;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind, UnsupportedCapability};
 use hclient_proto::redirect::{RedirectAction, RedirectPolicy, decide};
+use std::fmt::Debug;
+use std::sync::Arc;
+#[cfg(any(feature = "cookies", feature = "cache"))]
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 pub struct ClientBuilder {
     transport: Box<hclient_core::unversioned::erased::SharedTransport>,
@@ -24,7 +29,7 @@ pub struct ClientBuilder {
     /// ([`crate::NoClock`]), not a `None`, so that no total timeout can be
     /// configured against a client that cannot measure one. See
     /// [`Self::total_timeout`] and [`crate::NoClock`]'s doc comment.
-    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
     config: Config,
     /// The jar itself, on its way to `Inner`. `Config` carries only the
     /// bit that says one was asked for — see `Config::cookies` for why the
@@ -54,7 +59,7 @@ impl ClientBuilder {
         Self {
             backend: std::any::type_name::<T>(),
             transport: Box::new(transport),
-            timer: std::sync::Arc::new(crate::DefaultClock::default()),
+            timer: Arc::new(crate::DefaultClock::default()),
             config: Config::default(),
             #[cfg(feature = "cookies")]
             jar: None,
@@ -311,7 +316,7 @@ impl ClientBuilder {
         Tm2::Instant: Send,                         // send-bound-exception: amendment-C12
         Tm2::Sleep: Send + 'static,                 // send-bound-exception: amendment-C12
     {
-        self.timer = std::sync::Arc::new(timer);
+        self.timer = Arc::new(timer);
         self.config.total = Some(total);
         self
     }
@@ -448,7 +453,7 @@ impl ClientBuilder {
         S: hclient_cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
     {
         self.config.cache = true;
-        self.cache = Some(std::sync::Arc::new(std::sync::Mutex::new(
+        self.cache = Some(Arc::new(Mutex::new(
             cache.map_store(crate::erased::AnyStore::new),
         )));
         self
@@ -460,12 +465,12 @@ impl ClientBuilder {
     pub fn build(self) -> Result<Client, UnsupportedCapability> {
         check_supported(&self.config, self.transport.capabilities(), self.backend)?;
         Ok(Client {
-            inner: std::sync::Arc::new(Inner {
+            inner: Arc::new(Inner {
                 backend: self.backend,
                 transport: self.transport,
                 timer: self.timer,
                 #[cfg(feature = "cookies")]
-                cookies: self.jar.map(std::sync::Mutex::new),
+                cookies: self.jar.map(Mutex::new),
                 #[cfg(feature = "cache")]
                 cache: self.cache,
             }),
@@ -479,7 +484,7 @@ impl ClientBuilder {
 // Requiring it of them would tax every backend and every clock for a
 // derive; what a reader of a `{:?}` actually wants here is which backend
 // this client holds, and erasure has kept that as a string.
-impl std::fmt::Debug for ClientBuilder {
+impl Debug for ClientBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientBuilder")
             .field("backend", &self.backend)
@@ -488,7 +493,7 @@ impl std::fmt::Debug for ClientBuilder {
     }
 }
 
-impl std::fmt::Debug for Client {
+impl Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
             .field("backend", &self.inner.backend)
@@ -504,14 +509,14 @@ impl std::fmt::Debug for Client {
 /// no `where` clause. `Clone` is an `Arc` bump.
 #[derive(Clone)]
 pub struct Client {
-    inner: std::sync::Arc<Inner>,
+    inner: Arc<Inner>,
     config: Config,
 }
 
 struct Inner {
     backend: &'static str,
     transport: Box<hclient_core::unversioned::erased::SharedTransport>,
-    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
     /// The cookie jar, if one was asked for — **here and not in `Config`**
     /// for the reason the `Config::cookies` bit records: a jar is shared
     /// state, and `Config` is cloned per handle.
@@ -523,7 +528,7 @@ struct Inner {
     /// functions of the jar, the URI and a `now`, which is what the
     /// sans-io shape of `hclient-cookie` buys here.
     #[cfg(feature = "cookies")]
-    cookies: Option<std::sync::Mutex<hclient_cookie::CookieJar<crate::erased::AnyList>>>,
+    cookies: Option<Mutex<hclient_cookie::CookieJar<crate::erased::AnyList>>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -1404,7 +1409,7 @@ impl Client {
             return;
         }
         hp.headers.remove(http::header::COOKIE);
-        if let Some(v) = lock(jar).cookie_header(&hp.uri, std::time::SystemTime::now()) {
+        if let Some(v) = lock(jar).cookie_header(&hp.uri, SystemTime::now()) {
             hp.headers.insert(http::header::COOKIE, v);
         }
     }
@@ -1434,7 +1439,7 @@ impl Client {
         let Some(jar) = self.inner.cookies.as_ref() else {
             return;
         };
-        lock(jar).store_response(uri, headers, std::time::SystemTime::now());
+        lock(jar).store_response(uri, headers, SystemTime::now());
     }
 
     /// The twin without the feature — see `attach_cookies`'.
@@ -1452,18 +1457,18 @@ impl Client {
     /// `Option` threaded through two signatures to say what the store's
     /// absence already says.
     #[cfg(feature = "cache")]
-    fn cache_now(&self) -> std::time::SystemTime {
+    fn cache_now(&self) -> SystemTime {
         if self.inner.cache.is_some() {
-            std::time::SystemTime::now()
+            SystemTime::now()
         } else {
-            std::time::SystemTime::UNIX_EPOCH
+            SystemTime::UNIX_EPOCH
         }
     }
 
     /// The twin without the feature — see `attach_cookies`'.
     #[cfg(not(feature = "cache"))]
-    fn cache_now(&self) -> std::time::SystemTime {
-        std::time::SystemTime::UNIX_EPOCH
+    fn cache_now(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH
     }
 
     /// Asks the cache about this hop, before anything is sent.
@@ -1512,7 +1517,7 @@ impl Client {
         hp.headers.remove(http::header::IF_NONE_MATCH);
         hp.headers.remove(http::header::IF_MODIFIED_SINCE);
 
-        let now = std::time::SystemTime::now();
+        let now = SystemTime::now();
         match crate::cached::lock(cache).lookup(&hp.method, &hp.uri, &hp.headers, now) {
             hclient_cache::Lookup::Miss => Continue(Plan::default()),
             hclient_cache::Lookup::Hit(stored) => Break(crate::cached::serve(stored)),
@@ -1577,12 +1582,12 @@ impl Client {
         hp: &HopParts,
         plan: Plan,
         resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
-        requested_at: std::time::SystemTime,
+        requested_at: SystemTime,
     ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
         let Some(cache) = self.inner.cache.as_ref() else {
             return resp.map(Cached::live);
         };
-        let received_at = std::time::SystemTime::now();
+        let received_at = SystemTime::now();
         let (parts, body) = resp.into_parts();
 
         if let Some(r) = plan.0 {
@@ -1616,10 +1621,7 @@ impl Client {
         drop(guard);
 
         let body = match storing {
-            Ok(s) => Cached::recording(
-                body,
-                crate::cached::Recorder::new(std::sync::Arc::clone(cache), s),
-            ),
+            Ok(s) => Cached::recording(body, crate::cached::Recorder::new(Arc::clone(cache), s)),
             // The reason is typed and is dropped here, exactly as a
             // `Set-Cookie` refusal is: one uncacheable response must not
             // fail an exchange. `hclient_cache::NotStored` is what a caller
@@ -1636,7 +1638,7 @@ impl Client {
         _: &HopParts,
         _: Plan,
         resp: http::Response<hclient_core::unversioned::erased::BoxBody>,
-        _: std::time::SystemTime,
+        _: SystemTime,
     ) -> http::Response<Cached<hclient_core::unversioned::erased::BoxBody>> {
         resp.map(Cached::live)
     }
@@ -1677,7 +1679,7 @@ fn replay_for_too_early(snapshot: Option<&RequestBody>) -> Option<RequestBody> {
 ///
 /// See [`Client::cookies`] for why a poisoned jar is still a usable one.
 #[cfg(feature = "cookies")]
-fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

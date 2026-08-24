@@ -41,6 +41,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 use hclient_rt::{Datagrams, EcnCodepoint, RecvMeta, UdpBind, UdpDatagrams};
+use std::future::poll_fn;
 use std::io::IoSliceMut;
 use std::net::SocketAddr;
 
@@ -70,7 +71,7 @@ async fn send<S: UdpDatagrams>(sock: &S, d: &Datagrams<'_>) -> std::io::Result<(
     loop {
         match sock.try_send(d) {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::future::poll_fn(|cx| sock.poll_writable(cx)).await?;
+                poll_fn(|cx| sock.poll_writable(cx)).await?;
             }
             other => return other,
         }
@@ -80,7 +81,7 @@ async fn send<S: UdpDatagrams>(sock: &S, d: &Datagrams<'_>) -> std::io::Result<(
 /// One `poll_recv` into one buffer, returning the slot it filled.
 async fn recv_one<S: UdpDatagrams>(sock: &S, buf: &mut [u8]) -> std::io::Result<RecvMeta> {
     let mut meta = [RecvMeta::default(); 1];
-    let n = std::future::poll_fn(|cx| {
+    let n = poll_fn(|cx| {
         let mut bufs = [IoSliceMut::new(buf)];
         sock.poll_recv(cx, &mut bufs, &mut meta)
     })

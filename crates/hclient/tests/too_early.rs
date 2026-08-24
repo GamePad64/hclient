@@ -359,8 +359,11 @@ mod replayability {
     use hclient::body::RetryKind;
     use hclient::mock::MockTransport;
     use hclient::{Client, RequestBody};
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Context;
+    use std::task::Poll;
 
     fn too_early() -> http::Response<&'static str> {
         http::Response::builder().status(425).body("").unwrap()
@@ -387,11 +390,10 @@ mod replayability {
             type Data = bytes::Bytes;
             type Error = hclient_core::Error;
             fn poll_frame(
-                mut self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>>
-            {
-                std::task::Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+                Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
             }
         }
 

@@ -15,8 +15,12 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 /// What the server should do with the request it receives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +29,7 @@ pub enum Behaviour {
     Echo,
     /// Answer `200` after a delay — for measuring that waiting is not
     /// spinning.
-    Slow(std::time::Duration),
+    Slow(Duration),
     /// Answer `425 Too Early`, RFC 8470 §5.2.
     TooEarly,
     /// Complete the QUIC handshake and then **close the connection at
@@ -94,7 +98,7 @@ pub enum Behaviour {
     /// a body larger than the window **cannot** have finished, whatever
     /// the machine is doing. `tests/streaming.rs`'s buffered-cancellation
     /// test needs exactly that.
-    ReadSlowly(std::time::Duration),
+    ReadSlowly(Duration),
     /// Send the whole response — head, body, end — **without ever reading
     /// the request body**, and then hold the request stream open for `d`
     /// rather than dropping it.
@@ -107,7 +111,7 @@ pub enum Behaviour {
     /// there to be read — which is the one arrangement in which a response
     /// body that waited on the request body would hang instead of merely
     /// being slow.
-    AnswerWithoutReading(std::time::Duration),
+    AnswerWithoutReading(Duration),
 }
 
 /// What one request's body looked like **from the server**, with the
@@ -126,9 +130,9 @@ pub struct BodyReport {
     pub complete: bool,
     /// When the response head was sent. `None` for behaviours that send it
     /// after reading.
-    pub head_sent: Option<std::time::Duration>,
+    pub head_sent: Option<Duration>,
     /// When the last request-body byte arrived.
-    pub last_byte: Option<std::time::Duration>,
+    pub last_byte: Option<Duration>,
 }
 
 pub struct Server {
@@ -161,11 +165,11 @@ pub struct Server {
     /// One entry per accepted connection, in accept order — see
     /// [`ConnTiming`]. Empty unless the server was started by
     /// [`start_watching_early_data`].
-    pub timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>>,
+    pub timings: Arc<Mutex<Vec<Arc<ConnTiming>>>>,
     /// One entry per request whose body this server read — see
     /// [`BodyReport`]. Empty unless the behaviour is [`Behaviour::
     /// CountBody`] or [`Behaviour::HeadThenRead`].
-    pub bodies: Arc<std::sync::Mutex<Vec<BodyReport>>>,
+    pub bodies: Arc<Mutex<Vec<BodyReport>>>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -193,21 +197,21 @@ pub struct Server {
 #[derive(Debug, Default)]
 pub struct ConnTiming {
     /// When the first HTTP/3 request on this connection was resolved.
-    pub first_request: std::sync::Mutex<Option<std::time::Duration>>,
+    pub first_request: Mutex<Option<Duration>>,
     /// When this connection's handshake completed.
-    pub handshake_done: std::sync::Mutex<Option<std::time::Duration>>,
+    pub handshake_done: Mutex<Option<Duration>>,
 }
 
 impl ConnTiming {
-    pub fn first_request(&self) -> Option<std::time::Duration> {
+    pub fn first_request(&self) -> Option<Duration> {
         *self.first_request.lock().unwrap()
     }
-    pub fn handshake_done(&self) -> Option<std::time::Duration> {
+    pub fn handshake_done(&self) -> Option<Duration> {
         *self.handshake_done.lock().unwrap()
     }
 }
 
-impl std::fmt::Debug for Server {
+impl Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Server").field("addr", &self.addr).finish()
     }
@@ -215,13 +219,13 @@ impl std::fmt::Debug for Server {
 
 impl Server {
     pub fn accepted(&self) -> usize {
-        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+        self.accepted.load(Ordering::SeqCst)
     }
     pub fn dialled(&self) -> usize {
-        self.dialled.load(std::sync::atomic::Ordering::SeqCst)
+        self.dialled.load(Ordering::SeqCst)
     }
     pub fn requests(&self) -> usize {
-        self.requests.load(std::sync::atomic::Ordering::SeqCst)
+        self.requests.load(Ordering::SeqCst)
     }
     /// One [`ConnTiming`] per accepted connection, in accept order.
     pub fn timings(&self) -> Vec<Arc<ConnTiming>> {
@@ -238,13 +242,13 @@ impl Server {
     /// server's own record, so the test never has to guess how long a
     /// reset takes to arrive. Returns `false` if it did not happen inside
     /// `within`, so a caller can fail with its own message.
-    pub async fn wait_for_bodies(&self, n: usize, within: std::time::Duration) -> bool {
+    pub async fn wait_for_bodies(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
             if self.bodies.lock().unwrap().len() >= n {
                 return true;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         self.bodies.lock().unwrap().len() >= n
     }
@@ -347,7 +351,7 @@ pub fn start_with_a_tiny_window(behaviour: Behaviour, window: u64) -> Server {
     start_windowed(behaviour, identity(), window)
 }
 
-pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<std::time::Duration>) -> Server {
+pub fn start_with_idle_timeout(behaviour: Behaviour, idle: Option<Duration>) -> Server {
     start_full(behaviour, idle, identity())
 }
 
@@ -369,7 +373,7 @@ pub fn start_watching_early_data(behaviour: Behaviour) -> Server {
     start_inner(behaviour, None, identity(), true, v4(), None).expect("a v4 loopback bind")
 }
 
-pub fn start_full(behaviour: Behaviour, idle: Option<std::time::Duration>, id: Identity) -> Server {
+pub fn start_full(behaviour: Behaviour, idle: Option<Duration>, id: Identity) -> Server {
     start_inner(behaviour, idle, id, false, v4(), None).expect("a v4 loopback bind")
 }
 
@@ -398,7 +402,7 @@ pub fn start_on_v6(behaviour: Behaviour) -> Option<Server> {
 
 fn start_inner(
     behaviour: Behaviour,
-    idle: Option<std::time::Duration>,
+    idle: Option<Duration>,
     id: Identity,
     watch_early_data: bool,
     bind: SocketAddr,
@@ -439,10 +443,8 @@ fn start_inner(
     let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let dialled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let timings: Arc<std::sync::Mutex<Vec<Arc<ConnTiming>>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let bodies: Arc<std::sync::Mutex<Vec<BodyReport>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let timings: Arc<Mutex<Vec<Arc<ConnTiming>>>> = Arc::new(Mutex::new(Vec::new()));
+    let bodies: Arc<Mutex<Vec<BodyReport>>> = Arc::new(Mutex::new(Vec::new()));
     let (a, d, r, ts, bs) = (
         accepted.clone(),
         dialled.clone(),
@@ -470,7 +472,7 @@ fn start_inner(
             tx.send(Some(endpoint.local_addr().unwrap())).unwrap();
             while let Some(incoming) = endpoint.accept().await {
                 // Before the handshake, deliberately — see `Server::dialled`.
-                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                d.fetch_add(1, Ordering::SeqCst);
                 let (a, r, ts, bs) = (a.clone(), r.clone(), ts.clone(), bs.clone());
                 tokio::spawn(async move {
                     let started = std::time::Instant::now();
@@ -498,7 +500,7 @@ fn start_inner(
                         let Ok(conn) = incoming.await else { return };
                         conn
                     };
-                    a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    a.fetch_add(1, Ordering::SeqCst);
                     if behaviour == Behaviour::CloseOnAccept {
                         // Before the h3 layer exists, deliberately: this
                         // behaviour is about the client's `build`, not
@@ -528,7 +530,7 @@ fn start_inner(
                                 .lock()
                                 .unwrap()
                                 .get_or_insert(started.elapsed());
-                            r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            r.fetch_add(1, Ordering::SeqCst);
                             if behaviour == Behaviour::DieAfterHead {
                                 quic.close(1u32.into(), b"dying on purpose");
                                 return;
@@ -541,7 +543,7 @@ fn start_inner(
                                 if stream.send_response(resp).await.is_err() {
                                     return;
                                 }
-                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                tokio::time::sleep(Duration::from_millis(150)).await;
                                 quic.close(1u32.into(), b"dying after the head");
                                 return;
                             }

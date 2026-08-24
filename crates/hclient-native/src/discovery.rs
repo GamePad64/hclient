@@ -93,6 +93,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use hclient_dns::{Resolve, SvcbEndpoint};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -150,7 +151,7 @@ pub(crate) struct NegativeCache {
     until: Arc<Mutex<HashMap<Origin, Duration>>>,
 }
 
-impl std::fmt::Debug for NegativeCache {
+impl Debug for NegativeCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NegativeCache")
             .field(
@@ -534,7 +535,7 @@ impl Prepared {
 /// Hand-written for [`crate::Native`]'s reason: a derive would print a
 /// whole request, and what is worth seeing here is which of the three
 /// states the record is in.
-impl std::fmt::Debug for Prepared {
+impl Debug for Prepared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Prepared")
             .field("uri", &self.req.uri())

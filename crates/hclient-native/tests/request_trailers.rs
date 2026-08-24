@@ -61,6 +61,9 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::error::Error as _;
 use std::io::{Read, Write};
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(30);
@@ -115,17 +118,17 @@ impl http_body::Body for DataThenTrailers {
     type Error = hclient_core::Error;
 
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
         if self.pend && self.polled == 1 {
             self.pend = false;
             cx.waker().wake_by_ref();
-            return std::task::Poll::Pending;
+            return Poll::Pending;
         }
         self.polled += 1;
         let field = self.field;
-        std::task::Poll::Ready(match self.polled {
+        Poll::Ready(match self.polled {
             1 => Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(
                 b"AAAA",
             )))),

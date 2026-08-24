@@ -65,6 +65,7 @@ use hclient_tls::NoTls;
 use hclient_tls_rustls::Rustls;
 use http_body_util::BodyExt;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -293,7 +294,7 @@ struct Sample {
 async fn one<T>(t: &T, uri: &str, origin: Instant) -> Sample
 where
     T: Transport,
-    <T::Body as http_body::Body>::Error: std::fmt::Debug,
+    <T::Body as http_body::Body>::Error: Debug,
 {
     let req = http::Request::builder()
         .uri(uri)

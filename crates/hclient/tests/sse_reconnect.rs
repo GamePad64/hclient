@@ -20,6 +20,7 @@ use hclient::sse::SseEvent;
 use hclient::sse::SseOptions;
 use hclient::{Client, ErrorKind};
 use hclient_proto::backoff::Backoff;
+use std::error::Error as StdError;
 use std::time::Duration;
 
 fn sse(body: &'static str) -> http::Response<&'static str> {
@@ -565,7 +566,7 @@ fn gives_up_after_max_attempts_with_one_distinguishable_error_not_silence() {
     }
     let e = gave_up.expect("giving up must be an observable Err, not a quiet None");
     assert!(
-        std::error::Error::source(&e)
+        StdError::source(&e)
             .expect("Error::new always sets a source")
             .to_string()
             .to_lowercase()

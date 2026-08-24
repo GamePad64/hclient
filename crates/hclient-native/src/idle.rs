@@ -52,6 +52,7 @@ use bytes::Bytes;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Error, ErrorKind, Phase};
 use http_body::{Body, Frame, SizeHint};
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -139,7 +140,7 @@ impl<B: Unpin, Tm: Timer> Unpin for IdleTimeout<B, Tm> {}
 
 /// Hand-written for the reason `hclient::body::Deadline`'s is: `#[derive(Debug)]`
 /// would demand `Debug` of the clock, which [`Timer`] does not ask for.
-impl<B: std::fmt::Debug, Tm: Timer> std::fmt::Debug for IdleTimeout<B, Tm> {
+impl<B: Debug, Tm: Timer> Debug for IdleTimeout<B, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdleTimeout")
             .field("inner", &self.inner)

@@ -13,6 +13,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
@@ -204,7 +205,7 @@ fn a_colon_in_the_username_is_a_build_error_and_nothing_is_sent() {
             .await
             .expect_err("a username with a colon is not representable");
         assert!(
-            std::error::Error::source(&err)
+            StdError::source(&err)
                 .and_then(|s| s.downcast_ref::<hclient::error::ColonInUsername>())
                 .is_some(),
             "and it must be the typed refusal: {err:?}"

@@ -38,6 +38,7 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use server::Behaviour;
+use std::error::Error as StdError;
 use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(30);
@@ -71,7 +72,7 @@ fn refusal(e: &hclient_core::Error) -> VersionNotAvailable {
         ErrorKind::Unsupported,
         "the refusal is `Unsupported`, matching `hclient-native`'s: {e}"
     );
-    *std::error::Error::source(e)
+    *StdError::source(e)
         .and_then(|s| s.downcast_ref::<VersionNotAvailable>())
         .unwrap_or_else(|| panic!("expected a typed VersionNotAvailable, got: {e}"))
 }

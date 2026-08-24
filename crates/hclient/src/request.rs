@@ -1,4 +1,5 @@
 use crate::client::Client;
+use std::error::Error as StdError;
 
 use crate::response::Response;
 use hclient_core::{Error, ErrorKind, RequestBody};
@@ -355,7 +356,7 @@ impl<'a> RequestBuilder<'a> {
         // `Error::new`'s own bound, and it is this crate's for the same
         // reason: the source is stored behind `dyn Error`, which drops
         // auto traits.
-        e: impl std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+        e: impl StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     ) {
         if self.error.is_none() {
             self.error = Some(Error::new(ErrorKind::Other, e));

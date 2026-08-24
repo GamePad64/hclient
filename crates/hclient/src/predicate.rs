@@ -37,6 +37,7 @@
 //! `tokio::spawn`, configured predicate or not, which is a far larger
 //! change than the one being asked for.
 
+use std::fmt::Debug;
 use std::sync::Arc;
 
 /// What a [predicate](crate::ClientBuilder::redirect_predicate) says about
@@ -181,7 +182,7 @@ impl RedirectPredicate {
 /// Hand-written, for [`crate::erased::AnyList`]'s reason one module over: a trait
 /// object has no `Debug`, and there is nothing honest to print about a
 /// closure anyway.
-impl std::fmt::Debug for RedirectPredicate {
+impl Debug for RedirectPredicate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RedirectPredicate(..)")
     }

@@ -302,6 +302,7 @@ use hclient_core::unversioned::Timer;
 use hclient_tls::TlsConfigId;
 use hyper::rt::{Read, Write};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -551,7 +552,7 @@ where
     }
 }
 
-impl<I> std::fmt::Debug for Pool<I>
+impl<I> Debug for Pool<I>
 where
     I: Read + Write + Unpin,
 {
@@ -863,7 +864,7 @@ where
     }
 }
 
-impl<R, I> std::fmt::Debug for Reaper<R, I>
+impl<R, I> Debug for Reaper<R, I>
 where
     R: Timer,
     I: Read + Write + Unpin,
@@ -1028,7 +1029,7 @@ where
 }
 
 #[cfg(feature = "http2")]
-impl<I> std::fmt::Debug for Connecting<I>
+impl<I> Debug for Connecting<I>
 where
     I: Read + Write + Unpin,
 {

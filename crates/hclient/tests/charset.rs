@@ -13,6 +13,7 @@
 use hclient::Client;
 use hclient::error::CharsetError;
 use hclient::mock::MockTransport;
+use std::error::Error as StdError;
 
 /// "Привет" in windows-1251. Not valid UTF-8 — `0xCF` opens a two-byte
 /// sequence and `0xF0` is not a continuation byte — which is what makes
@@ -71,7 +72,7 @@ fn without_a_charset_parameter_the_answer_is_utf8_either_way() {
 fn an_unknown_label_is_refused_and_the_error_names_it() {
     let got = collected(Some("text/plain; charset=x-mystery-9"), PRIVET_1251);
     let err = got.text_with_charset().expect_err("no such encoding");
-    match std::error::Error::source(&err).and_then(|s| s.downcast_ref::<CharsetError>()) {
+    match StdError::source(&err).and_then(|s| s.downcast_ref::<CharsetError>()) {
         Some(CharsetError::UnknownLabel { label }) => assert_eq!(label, "x-mystery-9"),
         other => panic!("the typed refusal, naming the label: {other:?} / {err:?}"),
     }
@@ -84,7 +85,7 @@ fn an_unknown_label_is_refused_and_the_error_names_it() {
 fn malformed_bytes_are_an_error_rather_than_replacement_characters() {
     let got = collected(Some("text/plain; charset=utf-8"), &[b'o', b'k', 0xff]);
     let err = got.text_with_charset().expect_err("0xff is not UTF-8");
-    match std::error::Error::source(&err).and_then(|s| s.downcast_ref::<CharsetError>()) {
+    match StdError::source(&err).and_then(|s| s.downcast_ref::<CharsetError>()) {
         Some(CharsetError::Malformed { charset }) => assert_eq!(*charset, "UTF-8"),
         other => panic!("the typed refusal: {other:?} / {err:?}"),
     }

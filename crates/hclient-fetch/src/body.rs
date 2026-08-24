@@ -97,6 +97,7 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{DecompressionSupport, Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, JsValue};
@@ -160,7 +161,7 @@ enum Inner {
     Done,
 }
 
-impl std::fmt::Debug for Body {
+impl Debug for Body {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.inner {
             Inner::Stream { .. } => f.write_str("Body(stream)"),

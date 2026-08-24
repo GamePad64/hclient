@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasip3::http_compat::IncomingResponseBody;
@@ -28,7 +29,7 @@ enum Inner {
     Done,
 }
 
-impl std::fmt::Debug for Body {
+impl Debug for Body {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.inner {
             Inner::Incoming(_) => f.write_str("Body(incoming)"),
@@ -292,7 +293,7 @@ mod tests {
 
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
-        let _ = std::pin::Pin::new(&mut b).poll_frame(&mut cx);
+        let _ = Pin::new(&mut b).poll_frame(&mut cx);
 
         assert!(
             b.is_end_stream(),
@@ -309,7 +310,7 @@ mod tests {
 
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
-        let _ = std::pin::Pin::new(&mut b).poll_frame(&mut cx);
+        let _ = Pin::new(&mut b).poll_frame(&mut cx);
 
         let after = b.size_hint();
         assert_eq!(after.lower(), 0);

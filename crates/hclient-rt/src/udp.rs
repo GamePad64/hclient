@@ -24,6 +24,8 @@
 //!    either, and cannot carry ECN at all.
 //! 3. **Offloads are capabilities, not assumptions.** See [`UdpCaps`].
 
+use std::error::Error as StdError;
+use std::fmt::Display;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, SocketAddr};
 use std::task::{Context, Poll};
@@ -318,7 +320,7 @@ impl UnsupportedUdpOffload {
     }
 }
 
-impl std::fmt::Display for UnsupportedUdpOffload {
+impl Display for UnsupportedUdpOffload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
             "this socket does not have these UDP offloads, and does not silently drop them:",
@@ -331,7 +333,7 @@ impl std::fmt::Display for UnsupportedUdpOffload {
     }
 }
 
-impl std::error::Error for UnsupportedUdpOffload {}
+impl StdError for UnsupportedUdpOffload {}
 
 impl Datagrams<'_> {
     /// How many datagrams this send describes.

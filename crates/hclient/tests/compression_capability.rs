@@ -39,6 +39,7 @@ use hclient::caps::Capabilities;
 use hclient::caps::DecompressionSupport;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind};
+use std::error::Error as StdError;
 
 /// A real gzip stream, produced by **GNU gzip 1.14**, not by this crate's
 /// own encoder:
@@ -304,7 +305,7 @@ fn a_body_that_is_not_the_coding_it_claims_is_a_decode_error() {
     let err = get(&c).expect_err("garbage under a gzip header must not pass for a body");
     assert_eq!(*err.kind(), ErrorKind::Decode);
     assert!(
-        std::error::Error::source(&err)
+        StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient::error::DecodeFailed>())
             .is_some_and(|d| d.coding == "gzip"),
         "the caller must be able to tell a bad gzip stream from bad UTF-8: {err:?}"

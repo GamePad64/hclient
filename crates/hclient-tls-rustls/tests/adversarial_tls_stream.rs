@@ -22,6 +22,7 @@ use hclient_rt_tokio::{Tokio, TokioIo};
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::{Rustls, TlsStream};
 use hyper::rt::{Read as HyperRead, ReadBuf, ReadBufCursor, Write as HyperWrite};
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -174,7 +175,7 @@ async fn scripted_client(
 /// do. If `TlsStream` ever queues the same bytes twice under this exact
 /// usage, this is the caller shape that would trigger it.
 async fn write_all<S: HyperWrite + Unpin>(stream: &mut S, mut data: &[u8]) {
-    bounded(std::future::poll_fn(|cx| {
+    bounded(poll_fn(|cx| {
         while !data.is_empty() {
             match Pin::new(&mut *stream).poll_write(cx, data) {
                 Poll::Ready(Ok(0)) => panic!("poll_write returned 0 for non-empty input"),
@@ -189,17 +190,15 @@ async fn write_all<S: HyperWrite + Unpin>(stream: &mut S, mut data: &[u8]) {
 }
 
 async fn flush<S: HyperWrite + Unpin>(stream: &mut S) {
-    bounded(std::future::poll_fn(|cx| {
-        Pin::new(&mut *stream).poll_flush(cx)
-    }))
-    .await
-    .unwrap();
+    bounded(poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx)))
+        .await
+        .unwrap();
 }
 
 async fn read_n<S: HyperRead + Unpin>(stream: &mut S, n: usize) -> Vec<u8> {
     let mut out = Vec::new();
     let mut store = [0u8; 64];
-    bounded(std::future::poll_fn(|cx| {
+    bounded(poll_fn(|cx| {
         while out.len() < n {
             let mut rb = ReadBuf::new(&mut store);
             match Pin::new(&mut *stream).poll_read(cx, rb.unfilled()) {
@@ -228,7 +227,7 @@ async fn nothing_more_arrives<S: HyperRead + Unpin>(stream: &mut S) -> Vec<u8> {
     let mut rb = ReadBuf::new(&mut store);
     match tokio::time::timeout(
         Duration::from_millis(300),
-        std::future::poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, rb.unfilled())),
+        poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, rb.unfilled())),
     )
     .await
     {
@@ -299,10 +298,7 @@ async fn transport_write_error_is_propagated_not_swallowed_as_pending() {
     let (mut stream, script) = scripted_client(addr, ca_der).await;
 
     script.arm_write_error(std::io::ErrorKind::BrokenPipe);
-    let result = bounded(std::future::poll_fn(|cx| {
-        Pin::new(&mut stream).poll_write(cx, b"ping")
-    }))
-    .await;
+    let result = bounded(poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, b"ping"))).await;
     match result {
         Err(e) => assert_eq!(
             e.kind(),
@@ -391,7 +387,7 @@ async fn abrupt_rst_close_without_close_notify_is_reported_as_a_real_error() {
 
     let mut store = [0u8; 16];
     let mut rb = ReadBuf::new(&mut store);
-    let result = bounded(std::future::poll_fn(|cx| {
+    let result = bounded(poll_fn(|cx| {
         Pin::new(&mut stream).poll_read(cx, rb.unfilled())
     }))
     .await;

@@ -67,6 +67,7 @@ use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use http_body_util::BodyExt;
+use std::error::Error as StdError;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 use support::{TYPE_A, name_wire};
@@ -248,7 +249,7 @@ fn doh(ep: Endpoint) -> Doh<Native<Tokio, Rustls, IpLiteralOnly>> {
 
 /// An error's whole chain, because `Resolve` reports `ErrorKind::Resolve`
 /// for a TLS failure by design and the cause is the interesting part.
-fn chain(e: &dyn std::error::Error) -> String {
+fn chain(e: &dyn StdError) -> String {
     let mut out = e.to_string();
     let mut cur = e.source();
     while let Some(s) = cur {
@@ -284,7 +285,7 @@ fn expect_addrs(items: Vec<Result<ResolvedAddr, hclient_core::Error>>) -> Vec<Re
 /// commonest lost packet on this network unretried.
 fn is_a_lost_packet(e: &hclient_core::Error) -> bool {
     let Some(DohError::Transport(inner)) =
-        std::error::Error::source(e).and_then(|s| s.downcast_ref::<DohError>())
+        StdError::source(e).and_then(|s| s.downcast_ref::<DohError>())
     else {
         return false;
     };

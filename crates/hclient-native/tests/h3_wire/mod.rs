@@ -45,6 +45,7 @@
 #![cfg(not(target_family = "wasm"))]
 #![allow(dead_code)]
 
+use std::fmt::Debug;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -139,7 +140,7 @@ pub struct Held {
     pub entered: usize,
 }
 
-impl std::fmt::Debug for Wire {
+impl Debug for Wire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Wire").field("addr", &self.addr).finish()
     }

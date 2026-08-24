@@ -1,3 +1,5 @@
+use std::error::Error as StdError;
+use std::fmt::Display;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -199,7 +201,7 @@ impl UnsupportedTcpOpts {
 // Hand-written rather than `thiserror`: the message is a computed list, so
 // the derive would buy nothing, and this way the names are written straight
 // into the formatter instead of through an intermediate `String`.
-impl std::fmt::Display for UnsupportedTcpOpts {
+impl Display for UnsupportedTcpOpts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
             "this runtime cannot apply these TCP socket options, and does not ignore them:",
@@ -219,7 +221,7 @@ impl std::fmt::Display for UnsupportedTcpOpts {
     }
 }
 
-impl std::error::Error for UnsupportedTcpOpts {}
+impl StdError for UnsupportedTcpOpts {}
 
 impl TcpOpts {
     /// Fail when the caller set an option `can` says this runtime does not
@@ -426,6 +428,9 @@ pub struct Cancelled;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
 
     #[test]
     fn tcp_opts_default_is_conservative() {
@@ -658,31 +663,28 @@ mod tests {
         struct NeverIo;
         impl hyper::rt::Read for NeverIo {
             fn poll_read(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
                 _: hyper::rt::ReadBufCursor<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
+            ) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
         }
         impl hyper::rt::Write for NeverIo {
             fn poll_write(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
                 _: &[u8],
-            ) -> std::task::Poll<std::io::Result<usize>> {
+            ) -> Poll<std::io::Result<usize>> {
                 unreachable!("this runtime never connects")
             }
-            fn poll_flush(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
             fn poll_shutdown(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
                 unreachable!("this runtime never connects")
             }
         }

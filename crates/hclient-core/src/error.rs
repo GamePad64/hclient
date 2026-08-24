@@ -1,3 +1,5 @@
+use std::error::Error as StdError;
+use std::fmt::Display;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,13 +70,13 @@ pub enum ErrorKind {
 #[derive(Debug, Clone)]
 pub struct Error {
     kind: ErrorKind,
-    source: Arc<dyn std::error::Error + Send + Sync + 'static>, // send-bound-exception: amendment-C1
+    source: Arc<dyn StdError + Send + Sync + 'static>, // send-bound-exception: amendment-C1
 }
 
 impl Error {
     pub fn new<E>(kind: ErrorKind, source: E) -> Self
     where
-        E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+        E: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     {
         Self {
             kind,
@@ -101,14 +103,14 @@ impl Error {
     }
 }
 
-impl std::fmt::Display for Error {
+impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}: {}", self.kind, self.source)
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         Some(&*self.source)
     }
 }
@@ -116,22 +118,24 @@ impl std::error::Error for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
+    use std::fmt::Display;
 
     #[derive(Debug)]
     struct Src;
-    impl std::fmt::Display for Src {
+    impl Display for Src {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "boom")
         }
     }
-    impl std::error::Error for Src {}
+    impl StdError for Src {}
 
     #[test]
     fn preserves_kind_and_source_without_stringifying() {
         let e = Error::new(ErrorKind::Resolve, Src);
         assert_eq!(e.kind(), &ErrorKind::Resolve);
         // The source is available whole — not as a substring of the message.
-        let src = std::error::Error::source(&e).unwrap();
+        let src = StdError::source(&e).unwrap();
         assert!(src.downcast_ref::<Src>().is_some());
     }
 
@@ -142,8 +146,8 @@ mod tests {
         assert_eq!(c.kind(), &ErrorKind::Connect);
         // The clone must share the same source, not copy or lose it: the
         // source pointers of the original and the clone must match.
-        let a = std::error::Error::source(&e).unwrap() as *const dyn std::error::Error;
-        let b = std::error::Error::source(&c).unwrap() as *const dyn std::error::Error;
+        let a = StdError::source(&e).unwrap() as *const dyn StdError;
+        let b = StdError::source(&c).unwrap() as *const dyn StdError;
         assert!(std::ptr::eq(a, b));
     }
 

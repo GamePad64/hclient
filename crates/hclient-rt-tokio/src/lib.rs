@@ -242,6 +242,7 @@ fn build_socket(addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<socket2::So
 mod tests {
     use super::*;
     use hclient_rt::{Blocking, Cancelled, TcpConnect, TcpOpts, Timer};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -313,7 +314,7 @@ mod tests {
             });
             started_rx.recv().unwrap();
 
-            let ran = std::sync::Arc::new(AtomicBool::new(false));
+            let ran = Arc::new(AtomicBool::new(false));
             let ran_inner = ran.clone();
             let handle = tokio::task::spawn_blocking(move || {
                 ran_inner.store(true, Ordering::SeqCst);

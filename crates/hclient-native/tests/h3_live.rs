@@ -19,6 +19,9 @@ use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
+use std::error::Error as StdError;
+use std::fmt::Debug;
+use std::time::Duration;
 
 /// The transport under test, over the real runtime seam.
 fn h3(
@@ -45,7 +48,7 @@ fn get(addr: std::net::SocketAddr, path: &str) -> http::Request<RequestBody> {
 async fn body_of<B>(r: http::Response<B>) -> String
 where
     B: http_body::Body<Data = bytes::Bytes>,
-    B::Error: std::fmt::Debug,
+    B::Error: Debug,
 {
     let bytes = r.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
@@ -100,7 +103,7 @@ async fn requests_are_multiplexed_not_serialised() {
     // The threshold is deliberately loose (450 ms) — this is a
     // one-bit question and the test must not become a benchmark that fails
     // on a busy runner.
-    let s = server::start(Behaviour::Slow(std::time::Duration::from_millis(300)));
+    let s = server::start(Behaviour::Slow(Duration::from_millis(300)));
     let t = h3(&s.cert_der);
 
     // One request first, so the connection and its handshake are not part
@@ -114,7 +117,7 @@ async fn requests_are_multiplexed_not_serialised() {
     assert_eq!(b.unwrap().status(), 200);
     assert_eq!(s.accepted(), 1, "still one connection");
     assert!(
-        elapsed < std::time::Duration::from_millis(450),
+        elapsed < Duration::from_millis(450),
         "two 300ms requests on one connection took {elapsed:?}: that is \
          serialised, not multiplexed"
     );
@@ -127,11 +130,8 @@ async fn requests_are_multiplexed_not_serialised() {
 /// silently replaced. The observer is the server's own accept count, which
 /// is the only thing that tells those two apart: from the client's side
 /// both look like a successful second request.
-async fn survives_gap(keep_alive: Option<std::time::Duration>) -> usize {
-    let s = server::start_with_idle_timeout(
-        Behaviour::Echo,
-        Some(std::time::Duration::from_millis(1000)),
-    );
+async fn survives_gap(keep_alive: Option<Duration>) -> usize {
+    let s = server::start_with_idle_timeout(Behaviour::Echo, Some(Duration::from_millis(1000)));
     let t = match keep_alive {
         Some(d) => h3(&s.cert_der).keep_alive_interval(d),
         None => h3(&s.cert_der).without_keep_alive(),
@@ -140,7 +140,7 @@ async fn survives_gap(keep_alive: Option<std::time::Duration>) -> usize {
     let _ = body_of(t.execute(get(s.addr, "/first")).await.unwrap()).await;
     assert_eq!(s.accepted(), 1, "the first request opens exactly one");
 
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     let second = t.execute(get(s.addr, "/second")).await.expect("a response");
     assert_eq!(second.status(), 200);
@@ -161,7 +161,7 @@ async fn an_idle_connection_survives_only_because_of_the_keep_alive() {
     // shape of thing that gets "simplified" away: a driver is running, the
     // connection is being polled, and it dies anyway, because polling is
     // what lets a connection send a PING and not what makes it decide to.
-    let with = survives_gap(Some(std::time::Duration::from_millis(300))).await;
+    let with = survives_gap(Some(Duration::from_millis(300))).await;
     assert_eq!(
         with, 1,
         "with a 300ms keep-alive under a 1000ms idle timeout, the connection \
@@ -182,7 +182,7 @@ async fn dropping_one_request_does_not_disturb_the_others() {
     // are neighbours on the connection. In `hclient-native`'s h2 the same
     // property holds vacuously, because the pool hands out a connection
     // exclusively.
-    let s = server::start(Behaviour::Slow(std::time::Duration::from_millis(400)));
+    let s = server::start(Behaviour::Slow(Duration::from_millis(400)));
     let t = h3(&s.cert_der);
     let _ = body_of(t.execute(get(s.addr, "/warm")).await.unwrap()).await;
 
@@ -196,7 +196,7 @@ async fn dropping_one_request_does_not_disturb_the_others() {
     // Poll the doomed request far enough to open its stream, then drop it.
     tokio::select! {
         _ = &mut doomed => panic!("the server holds for 400ms; this cannot finish in 50"),
-        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        _ = tokio::time::sleep(Duration::from_millis(50)) => {}
     }
     drop(doomed);
 
@@ -268,7 +268,7 @@ async fn a_rejected_0_rtt_request_is_replayed_and_the_caller_never_sees_it() {
     // NewSessionTicket arrives after the handshake, on its own schedule.
     // Without this the second connection has nothing to resume from and the
     // test would pass vacuously through the `into_0rtt` refusal path.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let mut marked = get(b.addr, "/replayed");
     marked.extensions_mut().insert(AllowEarlyData);
@@ -366,7 +366,7 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
     // As above: `NewSessionTicket` arrives on its own schedule, and without
     // this the second connection has nothing to resume from and the test
     // passes vacuously through `into_0rtt`'s refusal path.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // The relay goes in front of `b` only, and only for the marked request:
     // the ticket above is an ordinary exchange and has nothing to order.
@@ -375,8 +375,8 @@ async fn a_0_rtt_rejection_on_the_control_stream_is_not_the_callers_either() {
     // 0-RTT packet. Reaching it means the client put nothing into early
     // data, which is a failure worth seeing rather than one to wait out, and
     // it stays well under quinn's first PTO (~1 s) so nothing retransmits.
-    wire.hold_server_flight(std::time::Duration::from_millis(800));
-    let watcher = wire.release_on_early_data(std::time::Duration::from_secs(5));
+    wire.hold_server_flight(Duration::from_millis(800));
+    let watcher = wire.release_on_early_data(Duration::from_secs(5));
 
     let mut marked = get(wire.addr, "/replayed");
     marked.extensions_mut().insert(AllowEarlyData);
@@ -562,7 +562,7 @@ fn black_hole() -> (std::net::UdpSocket, std::net::SocketAddr) {
 
 /// How long the bounded arm is given, and the unit the control's window is
 /// a multiple of.
-const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_millis(300);
+const CONNECT_BOUND: Duration = Duration::from_millis(300);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
@@ -593,8 +593,7 @@ async fn a_connect_timeout_cuts_a_quic_handshake_that_never_completes() {
         "the phase has to be readable without parsing a message: {err}"
     );
     assert_eq!(
-        std::error::Error::source(&err)
-            .and_then(|s| s.downcast_ref::<hclient_native::H3ConnectTimedOut>()),
+        StdError::source(&err).and_then(|s| s.downcast_ref::<hclient_native::H3ConnectTimedOut>()),
         Some(&hclient_native::H3ConnectTimedOut(CONNECT_BOUND)),
         "and the bound that was in force has to be readable off the source rather than \
          reconstructed from the caller's own copy: {err}"

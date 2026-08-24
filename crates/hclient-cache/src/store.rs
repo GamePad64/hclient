@@ -404,6 +404,7 @@ impl CacheStore for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn key(u: &str) -> Key {
         Key::new(&Method::GET, &u.parse().unwrap()).expect("absolute uri")
@@ -417,7 +418,7 @@ mod tests {
             Bytes::new(),
             Selector::default(),
             SystemTime::UNIX_EPOCH,
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(at),
         )
     }
 

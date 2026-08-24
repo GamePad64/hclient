@@ -168,6 +168,8 @@ use h3::connection::ConnectionInner;
 use h3::proto::frame::{Frame, SettingId};
 use hclient_core::{Error, ErrorKind};
 use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::future::poll_fn;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -190,7 +192,7 @@ impl SessionId {
     }
 }
 
-impl std::fmt::Display for SessionId {
+impl Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -566,7 +568,7 @@ type ConnectRecv = h3::client::RequestStream<h3_quinn::RecvStream, Bytes>;
 // them would mean asking `h3` for an impl in order to print a field whose
 // whole purpose is to exist. What a reader wants from a `Session` is which
 // session it is and where it goes, which is what this prints.
-impl std::fmt::Debug for Session {
+impl Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
             .field("id", &self.id)

@@ -124,6 +124,8 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use http_body_util::BodyExt;
+    use std::convert::Infallible;
+    use std::sync::Arc;
 
     fn req(body: RequestBody, marked: bool) -> http::Request<RequestBody> {
         let mut r = http::Request::new(body);
@@ -142,7 +144,7 @@ mod tests {
         for body in [
             RequestBody::Empty,
             RequestBody::Full(Bytes::from_static(b"x")),
-            RequestBody::Rewindable(std::sync::Arc::new(|| RequestBody::Empty)),
+            RequestBody::Rewindable(Arc::new(|| RequestBody::Empty)),
         ] {
             assert!(!admits_early_data(&req(body, false)));
         }
@@ -156,7 +158,7 @@ mod tests {
             true
         )));
         assert!(admits_early_data(&req(
-            RequestBody::Rewindable(std::sync::Arc::new(|| RequestBody::Empty)),
+            RequestBody::Rewindable(Arc::new(|| RequestBody::Empty)),
             true
         )));
     }
@@ -166,7 +168,7 @@ mod tests {
         // Correctness, not safety: a rejected 0-RTT request is replayed by
         // this transport, and a single-pass body has nothing to replay.
         let body = RequestBody::Streaming(Box::new(
-            http_body_util::Empty::<Bytes>::new().map_err(|e: std::convert::Infallible| match e {}),
+            http_body_util::Empty::<Bytes>::new().map_err(|e: Infallible| match e {}),
         ));
         assert!(!admits_early_data(&req(body, true)));
     }

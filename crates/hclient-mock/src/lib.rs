@@ -24,8 +24,10 @@ use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind};
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 /// One recorded request: everything the mock saw before the body was
 /// dropped.
@@ -405,7 +407,7 @@ impl http_body::Body for MockBody {
 /// afterward.
 #[derive(Debug, Clone, Default)]
 pub struct TestTimer {
-    sleeps: std::sync::Arc<Mutex<Vec<std::time::Duration>>>,
+    sleeps: Arc<Mutex<Vec<Duration>>>,
 }
 
 impl TestTimer {
@@ -414,7 +416,7 @@ impl TestTimer {
     }
 
     /// Every `Duration` `sleep` was called with, in call order.
-    pub fn sleeps(&self) -> Vec<std::time::Duration> {
+    pub fn sleeps(&self) -> Vec<Duration> {
         self.sleeps.lock().expect("TestTimer lock poisoned").clone()
     }
 }
@@ -424,13 +426,13 @@ impl hclient_core::unversioned::Timer for TestTimer {
     /// sufficient for the one thing `Timer::Instant` needs to support
     /// (`Copy + PartialOrd`), without claiming any relationship to real
     /// wall-clock time.
-    type Instant = std::time::Duration;
+    type Instant = Duration;
 
     /// Already `std::future::ready(())` before `Timer` grew this
     /// associated type — naming it changed nothing here but the signature.
     type Sleep = std::future::Ready<()>;
 
-    fn sleep(&self, d: std::time::Duration) -> Self::Sleep {
+    fn sleep(&self, d: Duration) -> Self::Sleep {
         self.sleeps.lock().expect("TestTimer lock poisoned").push(d);
         std::future::ready(())
     }
@@ -439,7 +441,7 @@ impl hclient_core::unversioned::Timer for TestTimer {
         self.sleeps().into_iter().sum()
     }
 
-    fn elapsed_since(&self, earlier: Self::Instant) -> std::time::Duration {
+    fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
         self.now().saturating_sub(earlier)
     }
 }
@@ -448,6 +450,7 @@ impl hclient_core::unversioned::Timer for TestTimer {
 mod tests {
     use super::*;
     use hclient_core::unversioned::Transport;
+    use std::error::Error as StdError;
 
     #[test]
     fn records_requests_and_replays_queued_responses() {
@@ -513,7 +516,7 @@ mod tests {
         // Not just any ErrorKind::Other will do: the test must
         // specifically distinguish the mock's queue exhaustion from some
         // hypothetical other Other-error.
-        let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+        let src = StdError::source(&err).expect("Error::new always sets a source");
         assert!(
             src.downcast_ref::<QueueEmpty>().is_some(),
             "the error's source must downcast specifically to QueueEmpty"

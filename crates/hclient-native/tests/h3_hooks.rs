@@ -46,9 +46,13 @@ use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
+use std::fmt::Debug;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 
 // ── the recorder ────────────────────────────────────────────────────────
@@ -291,7 +295,7 @@ fn get(addr: SocketAddr, path: &str) -> http::Request<RequestBody> {
 async fn ok<T: Transport>(t: &T, addr: SocketAddr, path: &str)
 where
     T::Body: http_body::Body<Data = bytes::Bytes>,
-    <T::Body as http_body::Body>::Error: std::fmt::Debug,
+    <T::Body as http_body::Body>::Error: Debug,
 {
     let r = t
         .execute(get(addr, path))
@@ -731,13 +735,13 @@ impl http_body::Body for DataThenTrailers {
     type Error = Error;
 
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
         if let Some(d) = self.data.take() {
-            return std::task::Poll::Ready(Some(Ok(http_body::Frame::data(d))));
+            return Poll::Ready(Some(Ok(http_body::Frame::data(d))));
         }
-        std::task::Poll::Ready(
+        Poll::Ready(
             self.trailers
                 .take()
                 .map(|t| Ok(http_body::Frame::trailers(t))),

@@ -229,6 +229,9 @@ use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
+use std::error::Error as StdError;
+use std::fmt::Debug;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -236,7 +239,7 @@ use std::task::{Context, Poll};
 /// for this file — see the module doc comment for why flattening
 /// everything into `fallback` loses an `ErrorKind` the body already set.
 fn from_hyper_error(e: hyper::Error, fallback: ErrorKind) -> Error {
-    match std::error::Error::source(&e).and_then(|s| s.downcast_ref::<Error>()) {
+    match StdError::source(&e).and_then(|s| s.downcast_ref::<Error>()) {
         Some(inner) => inner.clone(),
         None => Error::new(fallback, e),
     }
@@ -262,7 +265,7 @@ where
     pub(crate) id: ConnectionId,
 }
 
-impl<I> std::fmt::Debug for Established<I>
+impl<I> Debug for Established<I>
 where
     I: Read + Write + Unpin,
 {
@@ -338,7 +341,7 @@ where
     sender: http1::SendRequest<OutgoingBody>,
 }
 
-impl<I, H> std::fmt::Debug for H1Body<I, H>
+impl<I, H> Debug for H1Body<I, H>
 where
     I: Read + Write + Unpin,
 {
@@ -592,7 +595,7 @@ pub(crate) async fn is_reusable<I>(est: &mut Established<I>) -> bool
 where
     I: Read + Write + Unpin + 'static,
 {
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if Pin::new(&mut est.conn).poll(cx).is_ready() {
             // The connection is over: the server closed it while it was
             // idle, or it failed. Either way there is nothing here to send
@@ -641,8 +644,7 @@ where
     // poll is what makes hyper's dispatcher ask for a request
     // (`taker.want()`), which is what `try_send_request` needs to see
     // below.
-    let dead =
-        std::future::poll_fn(|cx| Poll::Ready(Pin::new(&mut conn).poll(cx).is_ready())).await;
+    let dead = poll_fn(|cx| Poll::Ready(Pin::new(&mut conn).poll(cx).is_ready())).await;
     if dead {
         // The residual race the checkout poll cannot close: the peer
         // closed this connection while it was idle, and one poll ago it
@@ -677,7 +679,7 @@ where
         // connection is over and the request never resolved, `e` being
         // why; [`claim_back`] is what turns that into a [`Failed`], and
         // the two arms that produce it are the only two ways to get there.
-        let settled = std::future::poll_fn(|cx| {
+        let settled = poll_fn(|cx| {
             if !conn_done {
                 // The connection's two ends are reported from here and
                 // from `H1Body::poll_frame`, and between them they are
@@ -848,7 +850,7 @@ where
     F: Future<Output = Sent>,
 {
     drop(conn);
-    match std::future::poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await {
+    match poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await {
         Poll::Ready(Err(mut e)) => match e.take_message() {
             Some(request) => Failed::NotSent {
                 error,
@@ -874,6 +876,7 @@ mod tests {
     use super::*;
     use hclient_core::RequestBody;
     use hclient_core::unversioned::NoHooks;
+    use std::error::Error as StdError;
     use std::future::Future;
     use std::io;
     use std::time::Duration;
@@ -1381,8 +1384,7 @@ mod tests {
         // is `canceled: connection closed`, which describes the drop
         // [`claim_back`] performed rather than why the connection died.
         assert!(
-            std::error::Error::source(&error)
-                .is_some_and(|s| s.is::<ConnectionEndedWithTheRequestQueued>()),
+            StdError::source(&error).is_some_and(|s| s.is::<ConnectionEndedWithTheRequestQueued>()),
             "the cause a caller reads must be the connection's, not hyper's \
              answer to our dropping its dispatcher: {error:?}"
         );

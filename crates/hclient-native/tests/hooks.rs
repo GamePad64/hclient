@@ -27,6 +27,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::future::poll_fn;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -732,12 +733,9 @@ async fn a_body_polled_past_its_end_reports_one_close_and_not_two() {
 
     let mut ended = false;
     for _ in 0..8 {
-        let frame = tokio::time::timeout(
-            BOUND,
-            std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)),
-        )
-        .await
-        .expect("the body must not hang");
+        let frame = tokio::time::timeout(BOUND, poll_fn(|cx| body.as_mut().poll_frame(cx)))
+            .await
+            .expect("the body must not hang");
         match frame {
             Some(Ok(_)) => assert!(!ended, "no frame may follow the end"),
             Some(Err(e)) => panic!("the body must not fail: {e}"),

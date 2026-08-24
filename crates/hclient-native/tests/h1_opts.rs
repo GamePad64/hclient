@@ -16,6 +16,7 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::{H1Opts, MaxBufSizeTooSmall, Native};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -156,7 +157,7 @@ fn a_buffer_below_hypers_minimum_is_refused_rather_than_panicking() {
         .expect_err("hyper's minimum is 8192");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
     assert_eq!(
-        std::error::Error::source(&err).and_then(|s| s.downcast_ref::<MaxBufSizeTooSmall>()),
+        StdError::source(&err).and_then(|s| s.downcast_ref::<MaxBufSizeTooSmall>()),
         Some(&MaxBufSizeTooSmall { asked: 4096 }),
         "the refusal names the number the caller wrote: {err:?}"
     );

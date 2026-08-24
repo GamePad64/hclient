@@ -65,6 +65,7 @@ use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
+use std::fmt::Debug;
 use std::time::Duration;
 use wire::{Kind, Wire};
 
@@ -117,7 +118,7 @@ fn padded_get(addr: std::net::SocketAddr, path: &str, pad: bool) -> http::Reques
 async fn body_of<B>(r: http::Response<B>) -> String
 where
     B: http_body::Body<Data = bytes::Bytes>,
-    B::Error: std::fmt::Debug,
+    B::Error: Debug,
 {
     let bytes = r.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()

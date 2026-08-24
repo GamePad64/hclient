@@ -35,6 +35,7 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
 use hyper::body::Bytes;
+use std::future::poll_fn;
 use std::io::Read as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -301,7 +302,7 @@ async fn close_notify_and_a_bare_fin_are_observably_different_at_the_stream_leve
 
         let mut store = [0u8; 16];
         let mut rb = ReadBuf::new(&mut store);
-        bounded(std::future::poll_fn(|cx| {
+        bounded(poll_fn(|cx| {
             hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled())
         }))
         .await

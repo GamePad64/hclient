@@ -14,6 +14,7 @@
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, RequestBody};
 use http_body::{Body as HttpBody, Frame};
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -473,7 +474,7 @@ pub(crate) enum Payload {
 // http_body::Body>` — a trait object with no `Debug` bound, derive
 // wouldn't have compiled. The same trick as `body::Inner` in `body.rs` —
 // prints only the variant name.
-impl std::fmt::Debug for Payload {
+impl Debug for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Payload::Bytes(b) => f.debug_tuple("Bytes").field(b).finish(),
@@ -535,6 +536,9 @@ pub(crate) fn resolve_payload(body: RequestBody) -> Result<Option<Payload>, Erro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
+    use std::task::Context;
+    use std::task::Poll;
 
     #[test]
     fn maps_known_methods_and_passes_through_unknown() {
@@ -571,7 +575,7 @@ mod tests {
     fn bad_scheme_message_names_the_schemes_that_are_accepted() {
         let ftp: http::Uri = "ftp://a/x".parse().unwrap();
         let err = scheme_of(&ftp).unwrap_err();
-        let bad = std::error::Error::source(&err)
+        let bad = StdError::source(&err)
             .expect("Error::new always has a source")
             .downcast_ref::<BadScheme>()
             .expect("the source of a scheme rejection is BadScheme");
@@ -695,7 +699,7 @@ mod tests {
             unwritten: vec![9, 9],
         };
         let err = resolve_send::<u32>(Ok(7), Err(write_err)).unwrap_err();
-        let failed = std::error::Error::source(&err)
+        let failed = StdError::source(&err)
             .expect("Error::new always has a source")
             .downcast_ref::<BodyWriteFailed>()
             .expect("the source of a body-write failure is BodyWriteFailed");
@@ -703,7 +707,7 @@ mod tests {
             failed.to_string(),
             "failed to write request body: stream reader closed"
         );
-        let host = std::error::Error::source(failed)
+        let host = StdError::source(failed)
             .expect("BodyWriteFailed must keep the host's own error as its source");
         assert!(
             matches!(
@@ -833,11 +837,11 @@ mod tests {
         // passed to `Error::new`). Level 2: its own `source()` is the
         // host's real `RequestOptionsError`, the whole reason this type
         // exists (see the `TimeoutRejected` doc comment).
-        let level1 = std::error::Error::source(&e).expect("must preserve the host's reason");
+        let level1 = StdError::source(&e).expect("must preserve the host's reason");
         let rejected = level1
             .downcast_ref::<TimeoutRejected>()
             .expect("top-level source is TimeoutRejected");
-        let level2 = std::error::Error::source(rejected)
+        let level2 = StdError::source(rejected)
             .expect("TimeoutRejected must store the host's reason as its own source");
         assert!(
             matches!(
@@ -871,13 +875,13 @@ mod tests {
     #[test]
     fn a_bare_setter_rejection_has_no_reason_to_expose_as_a_source() {
         let e = rejected("authority");
-        let r = std::error::Error::source(&e)
+        let r = StdError::source(&e)
             .expect("Error::new always has a source")
             .downcast_ref::<Rejected>()
             .expect("the source of a setter rejection is Rejected");
         assert_eq!(r.to_string(), "wasi:http host rejected setting `authority`");
         assert!(
-            std::error::Error::source(r).is_none(),
+            StdError::source(r).is_none(),
             "the host sent no reason — the chain must end here rather than invent one"
         );
     }
@@ -910,7 +914,7 @@ mod tests {
     #[test]
     fn fields_error_keeps_the_hosts_header_error_reachable_below_the_category() {
         let e = fields_error(HeaderError::SizeExceeded);
-        let fields = std::error::Error::source(&e)
+        let fields = StdError::source(&e)
             .expect("Error::new always has a source")
             .downcast_ref::<FieldsError>()
             .expect("the source of a header rejection is FieldsError");
@@ -918,7 +922,7 @@ mod tests {
             fields.to_string(),
             "invalid headers: HeaderError::SizeExceeded"
         );
-        let host = std::error::Error::source(fields)
+        let host = StdError::source(fields)
             .expect("FieldsError must keep the host's HeaderError as its own source");
         assert!(
             matches!(
@@ -1133,10 +1137,10 @@ mod tests {
             type Data = Bytes;
             type Error = Error;
             fn poll_frame(
-                mut self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
-                std::task::Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
+                Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
             }
         }
         let body = RequestBody::Streaming(Box::new(OneShot(Some(Bytes::from_static(b"s")))));
@@ -1171,7 +1175,7 @@ mod tests {
             RequestBody::rewindable(infinite)
         }
         let err = resolve_payload(RequestBody::rewindable(infinite)).unwrap_err();
-        let too_deep = std::error::Error::source(&err)
+        let too_deep = StdError::source(&err)
             .expect("Error::new always has a source")
             .downcast_ref::<RewindTooDeep>()
             .expect("the source of a nesting-bound failure is RewindTooDeep");

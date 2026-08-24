@@ -110,6 +110,8 @@ use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use hyper::client::conn::http1;
 use hyper::rt::{Read, Write};
+use std::fmt::Debug;
+use std::future::poll_fn;
 use std::task::Poll;
 
 #[derive(Debug, thiserror::Error)]
@@ -144,7 +146,7 @@ pub struct Upgrading<I: Read + Write> {
 
 /// Hand-written because hyper's `Connection` is not `Debug`, and because
 /// the useful thing to print is the answer rather than the machinery.
-impl<I: Read + Write> std::fmt::Debug for Upgrading<I> {
+impl<I: Read + Write> Debug for Upgrading<I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Upgrading")
             .field("status", &self.head.status)
@@ -171,7 +173,7 @@ where
     /// for good, and no later read can recover them.
     pub async fn finish(mut self) -> Result<(I, Bytes), Error> {
         if !self.conn_done {
-            std::future::poll_fn(|cx| self.conn.poll_without_shutdown(cx))
+            poll_fn(|cx| self.conn.poll_without_shutdown(cx))
                 .await
                 .map_err(|e| Error::new(ErrorKind::Connect, e))?;
         }
@@ -358,7 +360,7 @@ where
     let mut conn_done = false;
     let resp = {
         let mut send = std::pin::pin!(sender.send_request(req));
-        std::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             // `poll_without_shutdown`, never `Pin::new(&mut conn).poll(cx)`
             // — see the module doc. `conn` is not polled again once it has
             // answered `Ready`, for `Future`'s own reason.

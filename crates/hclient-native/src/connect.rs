@@ -132,6 +132,7 @@ use hclient_rt::{TcpConnect, TcpOpts, Timer};
 use hclient_tls::{TlsConnect, TlsInfo, TlsRequest};
 use http::Uri;
 use hyper::rt::{Read, ReadBufCursor, Write};
+use std::future::poll_fn;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -475,7 +476,7 @@ where
                 let sleep_fut = rt.sleep(d);
                 let mut sleep_fut = std::pin::pin!(sleep_fut);
 
-                let ev = std::future::poll_fn(|cx| {
+                let ev = poll_fn(|cx| {
                     // Each source is polled only while it could, in
                     // principle, still produce a new event. A source that
                     // has already finished (a DNS stream returned `None`)
@@ -810,7 +811,7 @@ where
     F: Future,
 {
     let mut discovery = std::pin::pin!(discovery);
-    std::future::poll_fn(move |cx| {
+    poll_fn(move |cx| {
         // Before `discovery`, and on every round. The addresses must be
         // asked no later than the record is, and a stream nobody polls has
         // not been asked.
@@ -1474,8 +1475,12 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::error::Error as StdError;
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::sync::atomic::Ordering;
 
     fn v6(n: u16) -> IpAddr {
         IpAddr::V6(Ipv6Addr::new(0x20, 0, 0, 0, 0, 0, 0, n))
@@ -1705,11 +1710,11 @@ mod tests {
     /// boundary.
     fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
         const BOUND: Duration = Duration::from_secs(10);
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watchdog_done = done.clone();
         std::thread::spawn(move || {
             std::thread::sleep(BOUND);
-            if !watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
+            if !watchdog_done.load(Ordering::SeqCst) {
                 eprintln!(
                     "bounded_block_on: future did not complete within {BOUND:?} - treating \
                      as a hang (likely an infinite loop in drive/race_connect) instead of \
@@ -1719,7 +1724,7 @@ mod tests {
             }
         });
         let result = futures_executor::block_on(fut);
-        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        done.store(true, Ordering::SeqCst);
         result
     }
 
@@ -2145,7 +2150,7 @@ mod tests {
 
     /// The `ResolveErrors` one `source()` hop below what `drive` returned.
     fn resolve_errors(err: &Error) -> &ResolveErrors {
-        std::error::Error::source(err)
+        StdError::source(err)
             .expect("Error::new(ErrorKind::Resolve, ..) always has a source")
             .downcast_ref::<ResolveErrors>()
             .expect("the source of a resolve failure is ResolveErrors itself")
@@ -2155,7 +2160,7 @@ mod tests {
     /// caller walks to find out WHY the lookup failed. `None` means the
     /// chain stops at `ResolveErrors`.
     fn recorded_family_error(errs: &ResolveErrors) -> Option<&Error> {
-        std::error::Error::source(errs).map(|s| {
+        StdError::source(errs).map(|s| {
             s.downcast_ref::<Error>().expect(
                 "the recorded family failure must stay the resolver's own Error, \
                  not a stringified copy of it",
@@ -2849,7 +2854,7 @@ mod tests {
         /// `NoOpTls::new_unique()` here would quietly break for anyone who
         /// copied this stub.
         fn config_id(&self) -> hclient_tls::TlsConfigId {
-            static ID: std::sync::OnceLock<hclient_tls::TlsConfigId> = std::sync::OnceLock::new();
+            static ID: OnceLock<hclient_tls::TlsConfigId> = OnceLock::new();
             *ID.get_or_init(hclient_tls::TlsConfigId::new_unique)
         }
     }

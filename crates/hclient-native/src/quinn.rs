@@ -88,6 +88,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 use std::time::Instant;
 
 /// The future type `quinn::Runtime::spawn` hands over.
@@ -186,7 +187,7 @@ impl<R: Timer> SeamTimer<R> {
 /// versions may reintroduce the panic in some circumstances"* — so this is
 /// a choice about a guarantee rather than about today's behaviour, and the
 /// mutation is recorded as a second control rather than as a gap.
-fn until(deadline: Instant) -> std::time::Duration {
+fn until(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
@@ -425,6 +426,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     /// Two pollers on one socket, of which the inner socket can remember
     /// only the most recent — the exact shape `tokio::net::UdpSocket` and
@@ -459,7 +462,7 @@ mod tests {
     struct Counter(std::sync::atomic::AtomicUsize);
     impl Wake for Counter {
         fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -490,7 +493,7 @@ mod tests {
         let inner = sock.inner.last.lock().unwrap().clone().expect("registered");
         inner.wake();
 
-        let n = |c: &Arc<Counter>| c.0.load(std::sync::atomic::Ordering::SeqCst);
+        let n = |c: &Arc<Counter>| c.0.load(Ordering::SeqCst);
         assert_eq!(n(&a), 1, "the first poller must not be forgotten");
         assert_eq!(n(&b), 1, "the second poller must be woken too");
     }
@@ -559,7 +562,7 @@ mod tests {
         );
 
         assert_eq!(
-            stranded.0.load(std::sync::atomic::Ordering::SeqCst),
+            stranded.0.load(Ordering::SeqCst),
             1,
             "a poller left on the list after someone else took the readiness \
              must be woken to re-poll and re-register"
@@ -602,11 +605,11 @@ mod tests {
 
     #[test]
     fn a_deadline_already_past_is_a_zero_sleep_not_a_panic() {
-        let past = Instant::now() - std::time::Duration::from_secs(60);
-        assert_eq!(until(past), std::time::Duration::ZERO);
+        let past = Instant::now() - Duration::from_secs(60);
+        assert_eq!(until(past), Duration::ZERO);
         // And a future one is positive, or the subtraction is backwards and
         // every timer fires immediately.
-        let soon = Instant::now() + std::time::Duration::from_secs(30);
-        assert!(until(soon) > std::time::Duration::from_secs(29));
+        let soon = Instant::now() + Duration::from_secs(30);
+        assert!(until(soon) > Duration::from_secs(29));
     }
 }

@@ -22,7 +22,11 @@ pub use stream::TlsStream;
 use hclient_core::{Error, ErrorKind};
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use std::collections::HashMap;
+use std::future::poll_fn;
+#[cfg(feature = "quic")]
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 /// The per-ALPN config cache, named because the type outgrew the line it
 /// sat on when it moved behind an `Arc` — and `clippy::type_complexity`
@@ -68,7 +72,7 @@ pub struct Rustls {
     /// See `crate::quic`'s module doc for why they are separate from
     /// `by_alpn` and from `base`'s own resumption store.
     #[cfg(feature = "quic")]
-    quic: Arc<std::sync::OnceLock<quic::QuicState>>,
+    quic: Arc<OnceLock<quic::QuicState>>,
 }
 
 impl Rustls {
@@ -78,7 +82,7 @@ impl Rustls {
             by_alpn: Arc::new(Mutex::new(HashMap::new())),
             config_id: TlsConfigId::new_unique(),
             #[cfg(feature = "quic")]
-            quic: Arc::new(std::sync::OnceLock::new()),
+            quic: Arc::new(OnceLock::new()),
         }
     }
 
@@ -303,18 +307,18 @@ impl TlsConnect for Rustls {
         let mut stream = TlsStream::new(io, conn);
 
         // Drive the handshake to completion before handing the stream back up.
-        std::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             let (io, conn) = stream.parts_mut();
             loop {
                 std::task::ready!(stream::flush_outgoing(io, conn, cx))
                     .map_err(|e| Error::new(ErrorKind::Tls, e))?;
                 if !conn.is_handshaking() {
-                    return std::task::Poll::Ready(Ok::<(), Error>(()));
+                    return Poll::Ready(Ok::<(), Error>(()));
                 }
                 let more = std::task::ready!(stream::pump_incoming(io, conn, cx))
                     .map_err(|e| Error::new(ErrorKind::Tls, e))?;
                 if !more {
-                    return std::task::Poll::Ready(Err(Error::new(
+                    return Poll::Ready(Err(Error::new(
                         ErrorKind::Tls,
                         std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
                     )));

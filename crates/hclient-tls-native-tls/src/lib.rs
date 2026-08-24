@@ -32,6 +32,7 @@ use hclient_core::{Error, ErrorKind};
 use hclient_rt::FuturesIo;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use hyper_io::HyperIo;
+use std::fmt::Debug;
 
 /// The platform TLS backend.
 ///
@@ -73,7 +74,7 @@ impl Default for NativeTls {
 /// Hand-written because neither `native_tls::Identity` nor
 /// `native_tls::Certificate` implements `Debug`, and both are secrets or
 /// near-secrets: printing their contents would be worse than useless.
-impl std::fmt::Debug for NativeTls {
+impl Debug for NativeTls {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeTls")
             .field("identity", &self.identity.as_ref().map(|_| "<set>"))

@@ -27,6 +27,7 @@ use hclient_native::{H3, H3StagedConnect as StagedConnect};
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
+use std::fmt::Debug;
 use std::time::Duration;
 
 /// Never an assertion — it turns a mutation that hangs into a red test
@@ -54,7 +55,7 @@ fn get(addr: std::net::SocketAddr) -> http::Request<RequestBody> {
 async fn body_of<B>(r: http::Response<B>) -> String
 where
     B: http_body::Body<Data = bytes::Bytes>,
-    B::Error: std::fmt::Debug,
+    B::Error: Debug,
 {
     assert_eq!(r.status(), 200);
     let bytes = r.into_body().collect().await.unwrap().to_bytes();

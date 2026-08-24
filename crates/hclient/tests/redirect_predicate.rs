@@ -11,6 +11,7 @@ use hclient::Client;
 use hclient::error::RedirectRefused;
 use hclient::mock::MockTransport;
 use hclient::redirect::RedirectVerdict;
+use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
 
 /// A transport that answers `302` to `next` and then `200`.
@@ -85,7 +86,7 @@ fn each_verdict_decides_the_hop_and_the_server_sees_the_difference() {
         .expect("build");
     let err = go(&c).expect_err("a refusal is a failure to reach an answer");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect, "{err:?}");
-    let refused = std::error::Error::source(&err)
+    let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<RedirectRefused>())
         .unwrap_or_else(|| panic!("the typed refusal: {err:?}"));
     assert_eq!(refused.to, "https://a.test/two");

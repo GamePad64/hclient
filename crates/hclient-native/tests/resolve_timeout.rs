@@ -14,7 +14,10 @@ use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use hclient_native::{Native, ResolveTimedOut};
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// A resolver whose v4 answer arrives after `0`, and whose v6 answer never
@@ -144,7 +147,7 @@ fn a_resolver_that_never_answers_is_a_resolve_timeout_and_not_a_connect_one() {
     )
     .expect_err("nothing will ever resolve");
     assert_eq!(*err.kind(), ErrorKind::Timeout(Phase::Resolve), "{err:?}");
-    let timed_out = std::error::Error::source(&err)
+    let timed_out = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<ResolveTimedOut>())
         .unwrap_or_else(|| panic!("the typed failure, carrying the bound: {err:?}"));
     assert_eq!(timed_out.0, Duration::from_millis(150));
@@ -289,22 +292,22 @@ fn an_address_hint_from_a_record_is_not_made_to_wait_for_the_resolver() {
     });
     let _ = rt().block_on(async { transport.execute(req).await });
     assert!(
-        accepts.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        accepts.load(Ordering::SeqCst) >= 1,
         "the hinted address was dialled, which only a connector that did \
          not wait for the resolver could have done"
     );
 }
 
 /// [`server`] with a count of the connections it accepted.
-fn counting_server() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+fn counting_server() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
-    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = std::sync::Arc::clone(&n);
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&n);
     std::thread::spawn(move || {
         for s in l.incoming() {
             let Ok(mut s) = s else { continue };
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            counter.fetch_add(1, Ordering::SeqCst);
             use std::io::{Read as _, Write as _};
             let mut buf = [0u8; 2048];
             let _ = s.read(&mut buf);

@@ -135,6 +135,7 @@ use hclient_core::unversioned::{CloseFrame, Message, WebSocket, WebSocketConnect
 use hclient_core::{Error, ErrorKind};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -482,7 +483,7 @@ pub struct FetchWebSocket {
     shared: Rc<RefCell<Shared>>,
 }
 
-impl std::fmt::Debug for FetchWebSocket {
+impl Debug for FetchWebSocket {
     // `Closure` has no `Debug` (checked), so this is written out rather
     // than derived — the same reason `promise::SendJsFuture` writes its
     // own.

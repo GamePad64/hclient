@@ -16,6 +16,7 @@
 use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -45,15 +46,14 @@ async fn handshake_and_echo<R: TcpConnect>(rt: R, addr: SocketAddr, ca_der: Vec<
         .expect("handshake");
     assert_eq!(info.protocol_version.as_deref(), Some("TLSv1.3"));
 
-    let n =
-        std::future::poll_fn(|cx| hyper::rt::Write::poll_write(Pin::new(&mut stream), cx, b"ping"))
-            .await
-            .unwrap();
+    let n = poll_fn(|cx| hyper::rt::Write::poll_write(Pin::new(&mut stream), cx, b"ping"))
+        .await
+        .unwrap();
     assert_eq!(n, 4);
 
     let mut store = [0u8; 16];
     let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    std::future::poll_fn(|cx| hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled()))
+    poll_fn(|cx| hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled()))
         .await
         .unwrap();
     assert_eq!(rb.filled(), b"ping");

@@ -27,13 +27,16 @@ use bytes::Bytes;
 use hclient_core::ErrorKind;
 use hclient_webtransport::{Session, TooManySessions};
 use server::Options;
+use std::error::Error as StdError;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// The bound on "the peer acts", as in `tests/webtransport.rs`: a hang
 /// guard, not a claim about speed.
-const ACTED: std::time::Duration = std::time::Duration::from_secs(10);
+const ACTED: Duration = Duration::from_secs(10);
 
-fn source_of<T: std::error::Error + 'static>(e: &hclient_core::Error) -> &T {
-    std::error::Error::source(e)
+fn source_of<T: StdError + 'static>(e: &hclient_core::Error) -> &T {
+    StdError::source(e)
         .and_then(|s| s.downcast_ref::<T>())
         .expect("the reason is typed, not a string")
 }
@@ -263,7 +266,7 @@ async fn a_dropped_session_gives_its_slot_back() {
 async fn a_sibling_reads_a_datagram_and_hands_it_over() {
     let srv = server_for(2);
     let conn = server::dial(&srv).await;
-    let a = std::sync::Arc::new(
+    let a = Arc::new(
         Session::connect(conn.clone(), &uri(srv.addr, "/a"))
             .await
             .expect("the first session"),
@@ -282,7 +285,7 @@ async fn a_sibling_reads_a_datagram_and_hands_it_over() {
     // of the fixture**, not the assertion: if it were too short, `b` would
     // read its own datagram and the hand-over would never be exercised,
     // which is why the second half asserts `a` was there all along.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     b.send_datagram(Bytes::from_static(b"for-b"))
         .expect("the fixture's endpoint carries datagrams");

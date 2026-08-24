@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 /// Whether this body can be replayed — known **before** sending.
@@ -58,7 +59,7 @@ pub enum RequestBody {
     Streaming(Box<dyn http_body::Body<Data = Bytes, Error = crate::Error> + Unpin + Send>), // send-bound-exception: amendment-C2
 }
 
-impl std::fmt::Debug for RequestBody {
+impl Debug for RequestBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RequestBody::Empty => f.write_str("Empty"),
@@ -107,6 +108,9 @@ impl RequestBody {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
 
     #[test]
     fn replayability_is_knowable_before_sending() {
@@ -178,10 +182,10 @@ mod tests {
         type Data = Bytes;
         type Error = crate::Error;
         fn poll_frame(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
-            std::task::Poll::Ready(None)
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+            Poll::Ready(None)
         }
     }
 

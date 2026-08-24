@@ -107,6 +107,7 @@ use hclient_core::{Error, RequestBody, Timeouts, check_version};
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
+use std::fmt::Debug;
 use std::future::Future;
 use std::time::Duration;
 
@@ -244,7 +245,7 @@ where
 
 /// Hand-written for `Native`'s reason: a derive would demand `Debug` from
 /// the runtime and the TLS backend for the benefit of a formatter.
-impl<R, T, H> std::fmt::Debug for Staged<R, T, H>
+impl<R, T, H> Debug for Staged<R, T, H>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,

@@ -1,5 +1,6 @@
 #![cfg(target_arch = "wasm32")]
 
+use std::future::poll_fn;
 use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -84,5 +85,5 @@ async fn polling_after_ready_panics_loudly_instead_of_hanging_silently() {
     let p = js_sys::Promise::resolve(&wasm_bindgen::JsValue::from_str("ok"));
     let mut fut = Box::pin(hclient_fetch::testing::send_js_future(p));
     fut.as_mut().await.unwrap();
-    let _ = std::future::poll_fn(|cx| fut.as_mut().poll(cx)).await;
+    let _ = poll_fn(|cx| fut.as_mut().poll(cx)).await;
 }

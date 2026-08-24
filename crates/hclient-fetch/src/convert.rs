@@ -70,6 +70,9 @@
 //!    `tests/convert.rs` drains the built `Request`'s own stream to pin the
 //!    policy at the layer that still has it.
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, UnsupportedCapability};
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use wasm_bindgen::{JsCast, JsValue};
 
 // ---------------------------------------------------------------------
@@ -339,17 +342,14 @@ fn js_error_value(text: &str) -> JsValue {
 impl futures_core::Stream for BodyStream {
     type Item = Result<JsValue, JsValue>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         use http_body::Body as _;
         use std::task::Poll;
         // `Box<dyn ..>` is `Unpin` whatever it holds, and the trait object
         // is additionally bounded `+ Unpin` by `RequestBody::Streaming`
         // itself, so this needs no projection machinery.
         let body = &mut self.get_mut().0;
-        match std::pin::Pin::new(body).poll_frame(cx) {
+        match Pin::new(body).poll_frame(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
             // The caller's own error. It cannot be handed across as a typed

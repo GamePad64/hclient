@@ -38,6 +38,7 @@ use crate::h3::{Refused, StagedConnect};
 use bytes::Bytes;
 use hclient_core::Error as CoreError;
 use hclient_core::RequestBody;
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -90,7 +91,7 @@ type Staging<'a> =
 /// implements nothing for it — the same arrangement
 /// `hclient_core::unversioned::erased::BoxedTransport` has, and for the
 /// same reason: a seam a backend has to opt into is a seam backends forget.
-pub(crate) trait BoxedStagedConnect: std::fmt::Debug {
+pub(crate) trait BoxedStagedConnect: Debug {
     /// [`StagedConnect::connect`], boxed.
     ///
     /// `Refused` carries the request back untouched, which is the whole
@@ -123,7 +124,7 @@ struct StagedOver<'a, T: StagedConnect> {
 
 impl<T> BoxedStagedConnect for T
 where
-    T: StagedConnect<Error = CoreError> + std::fmt::Debug + 'static,
+    T: StagedConnect<Error = CoreError> + Debug + 'static,
     T::Body: 'static,
     T::Body: http_body::Body<Data = Bytes, Error = CoreError> + Send, // send-bound-exception: amendment-C12
     T::Staged: 'static,

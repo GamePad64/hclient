@@ -12,6 +12,7 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::{HttpConnect, Native, Proxy, Socks4, Socks5};
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -488,7 +489,7 @@ async fn a_proxy_that_speaks_first_is_refused() {
     // The source type, not the message: `ProxySpokeFirst(8)` names both
     // the defect and how many bytes were invented, and a test reading the
     // rendered string would pass for any wording.
-    let spoke = std::error::Error::source(&err)
+    let spoke = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<hclient_native::ProxySpokeFirst>())
         .expect("the defect must be readable off the error");
     assert_eq!(spoke.0, 8, "the eight bytes the fixture invented");
@@ -769,7 +770,7 @@ async fn a_socks5_upstream_failure_arrives_with_its_own_reply_code() {
             .expect("must not hang")
             .expect_err("a refused CONNECT is not a response");
         assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect);
-        let refused = std::error::Error::source(&err)
+        let refused = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient_native::Socks5Refused>())
             .unwrap_or_else(|| panic!("REP={rep:#04x} must be readable off the error: {err:?}"));
         assert_eq!(refused.rep, rep);
@@ -788,7 +789,7 @@ async fn a_socks5_proxy_that_refuses_every_method_says_so_and_not_a_reply_code()
         .expect("must not hang")
         .expect_err("no acceptable methods is a refusal");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect);
-    let source = std::error::Error::source(&err).expect("a source");
+    let source = StdError::source(&err).expect("a source");
     assert!(
         source
             .downcast_ref::<hclient_native::Socks5HandshakeError>()
@@ -1130,7 +1131,7 @@ async fn a_socks4_refusal_is_a_typed_connect_error() {
         .expect("must not hang")
         .expect_err("the proxy refused");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Connect, "{err:?}");
-    let refused = std::error::Error::source(&err)
+    let refused = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<Socks4Refused>())
         .unwrap_or_else(|| panic!("the typed refusal carrying CD: {err:?}"));
     assert_eq!(refused.cd, 91);
@@ -1172,7 +1173,7 @@ async fn a_reply_version_of_four_is_refused_rather_than_read_as_a_grant() {
         .expect("must not hang")
         .expect_err("VN must be 0");
     assert_eq!(
-        std::error::Error::source(&err).and_then(|s| s.downcast_ref::<Socks4HandshakeError>()),
+        StdError::source(&err).and_then(|s| s.downcast_ref::<Socks4HandshakeError>()),
         Some(&Socks4HandshakeError::BadReplyVersion(4)),
         "{err:?}"
     );

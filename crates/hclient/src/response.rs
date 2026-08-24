@@ -1,6 +1,9 @@
 use bytes::{Bytes, BytesMut};
 use hclient_core::{Error, ErrorKind};
 use http_body::Body as HttpBody;
+use std::error::Error as StdError;
+use std::fmt::Debug;
+use std::future::poll_fn;
 use std::pin::Pin;
 
 // Hand-written, so that it carries **no `B: Debug` bound**. `#[derive]`
@@ -9,7 +12,7 @@ use std::pin::Pin;
 // `.unwrap()` on a response away from every caller. What a `{:?}` wants
 // here is the head anyway: a body is a stream, and its contents were never
 // printable without consuming them.
-impl<B> std::fmt::Debug for Response<B> {
+impl<B> Debug for Response<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Response")
             .field("status", &self.parts.status)
@@ -151,7 +154,7 @@ where
     // bound as `Client::execute`, only this time required on
     // `T::Body::Error` rather than `T::Error` — the body is read after the
     // transport has already returned it.
-    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     /// The next data chunk. Trailer frames are skipped — for those, go
     /// through `into_parts` and poll the body directly.
@@ -164,7 +167,7 @@ where
             return None;
         }
         loop {
-            let frame = std::future::poll_fn(|cx| Pin::new(&mut self.body).poll_frame(cx)).await;
+            let frame = poll_fn(|cx| Pin::new(&mut self.body).poll_frame(cx)).await;
             match frame {
                 Some(Ok(f)) => match f.into_data() {
                     Ok(d) => return Some(Ok(d)),
@@ -217,7 +220,7 @@ where
 /// non-coincidental case directly.
 pub(crate) fn classify_body_error<E>(e: E) -> Error
 where
-    E: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    E: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     let boxed: Box<dyn std::any::Any> = Box::new(e);
     match boxed.downcast::<Error>() {

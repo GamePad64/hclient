@@ -17,6 +17,9 @@ use hclient_rt::{
 };
 use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -166,11 +169,11 @@ impl SmolSocket {
 
 impl futures_lite::io::AsyncRead for SmolSocket {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &mut [u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        either!(self, s => std::pin::Pin::new(s).poll_read(cx, buf))
+    ) -> Poll<std::io::Result<usize>> {
+        either!(self, s => Pin::new(s).poll_read(cx, buf))
     }
 }
 
@@ -203,31 +206,25 @@ fn shutdown_is_done(r: std::io::Result<()>) -> std::io::Result<()> {
 
 impl futures_lite::io::AsyncWrite for SmolSocket {
     fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        either!(self, s => std::pin::Pin::new(s).poll_write(cx, buf))
+    ) -> Poll<std::io::Result<usize>> {
+        either!(self, s => Pin::new(s).poll_write(cx, buf))
     }
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        either!(self, s => std::pin::Pin::new(s).poll_flush(cx))
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        either!(self, s => Pin::new(s).poll_flush(cx))
     }
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let p = either!(self, s => std::pin::Pin::new(s).poll_close(cx));
-        std::task::Poll::Ready(shutdown_is_done(std::task::ready!(p)))
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let p = either!(self, s => Pin::new(s).poll_close(cx));
+        Poll::Ready(shutdown_is_done(std::task::ready!(p)))
     }
     fn poll_write_vectored(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        either!(self, s => std::pin::Pin::new(s).poll_write_vectored(cx, bufs))
+    ) -> Poll<std::io::Result<usize>> {
+        either!(self, s => Pin::new(s).poll_write_vectored(cx, bufs))
     }
 }
 

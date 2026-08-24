@@ -74,7 +74,9 @@
 
 use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, RequestBody};
+use std::error::Error as StdError;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -269,7 +271,7 @@ where
     S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
         + Clone,
     B: http_body::Body<Data = bytes::Bytes>,
-    E: std::error::Error + 'static,
+    E: StdError + 'static,
 {
     type Body = B;
     type Error = E;
@@ -286,7 +288,7 @@ where
             // concurrency limits, rate limits — reserve their permit in
             // `poll_ready` and would otherwise hand out work they have no
             // budget for.
-            std::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
+            poll_fn(|cx| svc.poll_ready(cx)).await?;
             svc.call(req).await
         }
     }

@@ -92,8 +92,10 @@ use hclient_tls::quic::{QuicTlsConnect, QuicTlsRequest};
 use hooks::{ConnState, Watch, mark, since};
 use std::collections::HashMap;
 use std::fmt;
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::Duration;
 
 /// The ALPN token HTTP/3 is identified by (RFC 9114 §3.2). Mandatory, and
@@ -233,7 +235,7 @@ impl fmt::Debug for Shared {
 /// gets pinged or dies, so a client holding one idle for an hour sends 720
 /// PINGs. [`H3::keep_alive_interval`] and [`H3::without_keep_alive`] exist
 /// for callers who would rather pay the handshake.
-pub const DEFAULT_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(5);
+pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 /// The HTTP/3 transport.
 ///
@@ -259,7 +261,7 @@ pub struct H3<R, T, D, H = NoHooks> {
     /// build that wants nothing exactly nothing.
     hooks: H,
     caps: Capabilities,
-    keep_alive: Option<std::time::Duration>,
+    keep_alive: Option<Duration>,
     shared: Arc<Shared>,
 }
 
@@ -384,7 +386,7 @@ where
 
     /// Ping an idle pooled connection this often. See
     /// [`DEFAULT_KEEP_ALIVE`], which is what this starts at.
-    pub fn keep_alive_interval(mut self, d: std::time::Duration) -> Self {
+    pub fn keep_alive_interval(mut self, d: Duration) -> Self {
         self.keep_alive = Some(d);
         self
     }
@@ -835,7 +837,7 @@ where
         // name it and an `async` block has no name — `Pin<Box<dyn Future +
         // Send>>` does, and it is the same type quinn itself hands over.
         self.rt.spawn(Box::pin(async move {
-            let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+            let _ = poll_fn(|cx| driver.poll_close(cx)).await;
         }) as QuinnTask);
 
         Ok((send, conn, zero_rtt, handshake))
@@ -879,19 +881,19 @@ where
         // the same value move into `H3Body` two lines later.
         let resp = {
             let mut head = std::pin::pin!(reader.recv_response());
-            std::future::poll_fn(|cx| {
+            poll_fn(|cx| {
                 if let Some(p) = pump.as_mut() {
                     match p.as_mut().poll(cx) {
-                        std::task::Poll::Ready(Ok(())) => pump = None,
-                        std::task::Poll::Ready(Err(e)) => {
+                        Poll::Ready(Ok(())) => pump = None,
+                        Poll::Ready(Err(e)) => {
                             pump = None;
-                            return std::task::Poll::Ready(Err(e));
+                            return Poll::Ready(Err(e));
                         }
                         // Not returned: a write that cannot proceed must
                         // not stop the response from arriving, which is
                         // the entire point of the two halves being
                         // independent.
-                        std::task::Poll::Pending => {}
+                        Poll::Pending => {}
                     }
                 }
                 head.as_mut().poll(cx).map_err(body::stream_error)
@@ -1168,7 +1170,7 @@ impl From<Error> for DialFailed {
 /// message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("no HTTP/3 connection within the connect timeout of {0:?}")]
-pub struct ConnectTimedOut(pub std::time::Duration);
+pub struct ConnectTimedOut(pub Duration);
 
 /// Races `fut` against `rt.sleep(d)`, and reports `ErrorKind::
 /// Timeout(Phase::Connect)` if the sleep wins.
@@ -1179,24 +1181,24 @@ pub struct ConnectTimedOut(pub std::time::Duration);
 /// is a handshake that completed. The opposite order turns every bound into
 /// a race the caller loses at the boundary. The same ordering rule as
 /// `hclient_native::with_connect_timeout` and `hclient::within`.
-async fn within_connect<R, F, T>(rt: &R, d: std::time::Duration, fut: F) -> Result<T, Error>
+async fn within_connect<R, F, T>(rt: &R, d: Duration, fut: F) -> Result<T, Error>
 where
     R: Timer,
     F: Future<Output = Result<T, Error>>,
 {
     let mut fut = std::pin::pin!(fut);
     let mut sleep = std::pin::pin!(rt.sleep(d));
-    std::future::poll_fn(|cx| {
-        if let std::task::Poll::Ready(r) = fut.as_mut().poll(cx) {
-            return std::task::Poll::Ready(r);
+    poll_fn(|cx| {
+        if let Poll::Ready(r) = fut.as_mut().poll(cx) {
+            return Poll::Ready(r);
         }
         if sleep.as_mut().poll(cx).is_ready() {
-            return std::task::Poll::Ready(Err(Error::new(
+            return Poll::Ready(Err(Error::new(
                 ErrorKind::Timeout(Phase::Connect),
                 ConnectTimedOut(d),
             )));
         }
-        std::task::Poll::Pending
+        Poll::Pending
     })
     .await
 }
@@ -1280,9 +1282,9 @@ mod tests {
         );
         assert_eq!(
             h3(StubTls::early(false))
-                .keep_alive_interval(std::time::Duration::from_millis(7))
+                .keep_alive_interval(Duration::from_millis(7))
                 .keep_alive,
-            Some(std::time::Duration::from_millis(7))
+            Some(Duration::from_millis(7))
         );
     }
 

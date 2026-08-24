@@ -34,8 +34,11 @@
 use hclient_rt::{FuturesIo, TcpAdoptStd, TcpConnect, TcpOpts};
 use hclient_rt_smol::Smol;
 use hyper::rt::Read as HyperRead;
+use std::future::poll_fn;
 use std::io::Write as _;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
@@ -65,19 +68,17 @@ async fn read_ready<F: std::future::Future<Output = std::io::Result<()>>>(
     }
 }
 
-struct RecordingWaker(std::sync::Mutex<bool>);
+struct RecordingWaker(Mutex<bool>);
 impl Wake for RecordingWaker {
-    fn wake(self: std::sync::Arc<Self>) {
+    fn wake(self: Arc<Self>) {
         *self.0.lock().unwrap() = true;
     }
-    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+    fn wake_by_ref(self: &Arc<Self>) {
         *self.0.lock().unwrap() = true;
     }
 }
 fn test_waker() -> Waker {
-    Waker::from(std::sync::Arc::new(RecordingWaker(std::sync::Mutex::new(
-        false,
-    ))))
+    Waker::from(Arc::new(RecordingWaker(Mutex::new(false))))
 }
 
 async fn connected_pair() -> (FuturesIo<hclient_rt_smol::SmolSocket>, std::net::TcpStream) {
@@ -113,7 +114,7 @@ fn pending_before_data_is_not_confused_with_eof_or_data() {
         server.write_all(b"after pending").unwrap();
         let mut store2 = [0u8; 64];
         let mut rb2 = hyper::rt::ReadBuf::new(&mut store2);
-        read_ready(std::future::poll_fn(|cx| {
+        read_ready(poll_fn(|cx| {
             Pin::new(&mut client).poll_read(cx, rb2.unfilled())
         }))
         .await
@@ -147,7 +148,7 @@ fn one_byte_at_a_time_preserves_order_no_drop_no_duplicate() {
         let mut store = [0u8; 32];
         while out.len() < 256 {
             let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            read_ready(std::future::poll_fn(|cx| {
+            read_ready(poll_fn(|cx| {
                 Pin::new(&mut client).poll_read(cx, rb.unfilled())
             }))
             .await
@@ -180,7 +181,7 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
         server.write_all(b"partial").unwrap();
         server.flush().unwrap();
         socket2::Socket::from(server)
-            .set_linger(Some(std::time::Duration::ZERO))
+            .set_linger(Some(Duration::ZERO))
             .unwrap();
         // dropping the socket2::Socket above closes the fd and sends the RST.
 
@@ -188,7 +189,7 @@ fn error_after_partial_data_is_propagated_not_swallowed_or_confused_with_eof() {
         let mut store = [0u8; 4];
         loop {
             let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            let res = read_ready(std::future::poll_fn(|cx| {
+            let res = read_ready(poll_fn(|cx| {
                 Pin::new(&mut client).poll_read(cx, rb.unfilled())
             }))
             .await;
@@ -253,7 +254,7 @@ async fn read_exactly(
     let mut store = vec![0u8; dest_len];
     while out.len() < expected_len {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        read_ready(std::future::poll_fn(|cx| {
+        read_ready(poll_fn(|cx| {
             Pin::new(&mut *client).poll_read(cx, rb.unfilled())
         }))
         .await

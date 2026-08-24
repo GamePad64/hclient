@@ -17,6 +17,8 @@ use hclient_webtransport::{
     NotSupportedByPeer, Session, SessionClose, SessionRefused,
 };
 use server::{AfterResponse, Options};
+use std::error::Error as StdError;
+use std::time::Duration;
 
 /// The bound on "the peer acts on the CONNECT stream".
 ///
@@ -25,7 +27,7 @@ use server::{AfterResponse, Options};
 /// a capsule and a FIN travel on one QUIC stream, so what this bound
 /// actually catches is a client that never writes the FIN or a server that
 /// never reads the capsule, not a slow machine.
-const ACTED: std::time::Duration = std::time::Duration::from_secs(10);
+const ACTED: Duration = Duration::from_secs(10);
 
 /// Await `f`, and fail rather than hang if the session's end never comes.
 async fn ended(session: &Session) -> Result<SessionClose, hclient_core::Error> {
@@ -41,7 +43,7 @@ async fn ended(session: &Session) -> Result<SessionClose, hclient_core::Error> {
 /// one is still in flight, and a `recv_datagram` that never resolves would
 /// otherwise take the whole binary down with it. Generous on purpose — the
 /// suite's own claims are about *what* arrives, never about when.
-const ARRIVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const ARRIVAL: Duration = Duration::from_secs(10);
 
 /// Take stream 0 out of circulation, so the CONNECT does not land there.
 ///
@@ -60,8 +62,8 @@ async fn take_stream_zero(conn: &quinn::Connection) {
         .expect("a freshly opened stream can be reset");
 }
 
-fn source_of<T: std::error::Error + 'static>(e: &hclient_core::Error) -> &T {
-    std::error::Error::source(e)
+fn source_of<T: StdError + 'static>(e: &hclient_core::Error) -> &T {
+    StdError::source(e)
         .and_then(|s| s.downcast_ref::<T>())
         .expect("the reason is typed, not a string")
 }
@@ -235,7 +237,7 @@ async fn a_peer_that_does_not_announce_webtransport_is_refused_before_the_connec
         .await
         .expect_err("the peer never announced WebTransport");
     assert_eq!(e.kind(), &ErrorKind::Unsupported);
-    let refused = std::error::Error::source(&e)
+    let refused = StdError::source(&e)
         .and_then(|s| s.downcast_ref::<NotSupportedByPeer>())
         .expect("the reason is typed, not a string");
     assert!(!refused.webtransport);
@@ -271,7 +273,7 @@ async fn extended_connect_alone_is_not_webtransport() {
     let e = Session::connect(conn, &uri(server.addr, "/nope"))
         .await
         .expect_err("the peer announced no extended CONNECT");
-    let refused = std::error::Error::source(&e)
+    let refused = StdError::source(&e)
         .and_then(|s| s.downcast_ref::<NotSupportedByPeer>())
         .expect("the reason is typed, not a string");
     assert!(refused.webtransport);
@@ -296,7 +298,7 @@ async fn a_refused_session_surfaces_the_peers_status() {
         .await
         .expect_err("the server answered 501");
     assert_eq!(e.kind(), &ErrorKind::Connect);
-    let refused = std::error::Error::source(&e)
+    let refused = StdError::source(&e)
         .and_then(|s| s.downcast_ref::<SessionRefused>())
         .expect("the status is carried, not stringified");
     assert_eq!(refused.status, http::StatusCode::NOT_IMPLEMENTED);
@@ -325,7 +327,7 @@ async fn a_plaintext_session_uri_is_refused_rather_than_rewritten() {
         .await
         .expect_err("WebTransport has no plaintext form");
     assert_eq!(e.kind(), &ErrorKind::Unsupported);
-    let bad = std::error::Error::source(&e)
+    let bad = StdError::source(&e)
         .and_then(|s| s.downcast_ref::<NotHttps>())
         .expect("the reason is typed, not a string");
     assert_eq!(bad.scheme, "http");
@@ -728,7 +730,7 @@ async fn a_reset_connect_stream_is_not_a_clean_close() {
     // And deliberately not a `BadCloseCapsule`: nothing was malformed,
     // there was simply nothing.
     assert!(
-        std::error::Error::source(&e)
+        StdError::source(&e)
             .and_then(|s| s.downcast_ref::<BadCloseCapsule>())
             .is_none()
     );

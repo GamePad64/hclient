@@ -33,6 +33,8 @@ use bytes::Bytes;
 use hclient_core::Error;
 use hclient_core::unversioned::{ConnectionId, Hooks};
 use http_body::{Body, Frame, SizeHint};
+use std::fmt::Debug;
+use std::sync::Arc;
 // Only the HTTP/2 arms build an `Informational` here; the HTTP/1 one hands
 // the job to hyper's own callback, installed in `crate::install_1xx`.
 #[cfg(feature = "http2")]
@@ -145,7 +147,7 @@ where
     }
 }
 
-impl<I> std::fmt::Debug for Established<I>
+impl<I> Debug for Established<I>
 where
     I: Read + Write + Unpin,
 {
@@ -267,7 +269,7 @@ where
             // second, so there is no window in which a `100` could arrive
             // to a gate the body is not yet holding.
             if let Some(g) = &gate {
-                req.body_mut().withhold_until(std::sync::Arc::clone(g));
+                req.body_mut().withhold_until(Arc::clone(g));
             }
             match (watch_1xx, gate) {
                 (Some(install), g) => install(&hooks, &mut req, id, g),
@@ -355,7 +357,7 @@ pub(crate) struct Dispatch<'a, H> {
     /// An owned handle rather than a borrow: the same gate is held by the
     /// race in `Native::within_first_byte_gated`, and one of the two would
     /// otherwise have to outlive the other for no reason.
-    pub(crate) gate: Option<std::sync::Arc<crate::body::ContinueGate>>,
+    pub(crate) gate: Option<Arc<crate::body::ContinueGate>>,
 }
 
 /// What [`Rewritten::for_http1`] changed about a request, and how to
@@ -525,7 +527,7 @@ where
     }
 }
 
-impl<I, H> std::fmt::Debug for NativeBody<I, H>
+impl<I, H> Debug for NativeBody<I, H>
 where
     I: Read + Write + Unpin,
 {

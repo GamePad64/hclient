@@ -31,6 +31,7 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 fn transport() -> Native<Tokio, Rustls, SystemDns<Tokio>> {
     Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio))
@@ -117,7 +118,7 @@ fn serve(body: Vec<u8>, encoding: &'static str, whole: bool) -> (std::net::Socke
                     broken = true;
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(Duration::from_millis(2));
             }
             // The terminating zero-length chunk IS sent: as far as HTTP is
             // concerned this body ended normally.

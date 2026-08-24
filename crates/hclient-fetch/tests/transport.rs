@@ -8,6 +8,12 @@
 //! function in `convert.rs`/`body.rs` alone — so they're checked through a
 //! real `Client`, not only through `testing::*` directly.
 #![cfg(target_arch = "wasm32")]
+use std::error::Error as StdError;
+use std::fmt::Display;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+use std::time::Duration;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -72,7 +78,7 @@ async fn build_rejects_timeouts_fetch_cannot_express() {
     let err = Client::builder(Fetch::new())
         .timeouts(hclient::Timeouts {
             resolve: None,
-            connect: Some(std::time::Duration::from_secs(1)),
+            connect: Some(Duration::from_secs(1)),
             ..Default::default()
         })
         .build()
@@ -133,12 +139,12 @@ async fn forbidden_header_reaches_the_caller_as_unsupported_not_other() {
 
 #[derive(Debug)]
 struct DummySource;
-impl std::fmt::Display for DummySource {
+impl Display for DummySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("dummy source")
     }
 }
-impl std::error::Error for DummySource {}
+impl StdError for DummySource {}
 
 /// `to_error` must be the identity: `Fetch::Error` is already
 /// `hclient_core::Error`, so wrapping it again (the default's fallback for
@@ -178,10 +184,10 @@ impl http_body::Body for NeverPolled {
     type Data = bytes::Bytes;
     type Error = hclient_core::Error;
     fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
-        std::task::Poll::Ready(None)
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+        Poll::Ready(None)
     }
 }
 
@@ -500,7 +506,7 @@ fn get(url: &str) -> http::Request<hclient_core::RequestBody> {
 /// downstream would be measuring nothing.
 fn issue_and_poll_once(
     t: &Fetch,
-) -> std::pin::Pin<
+) -> Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<http::Response<hclient_fetch::Body>, hclient_core::Error>,

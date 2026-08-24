@@ -20,6 +20,7 @@
 use hclient::error::InvalidBaseUrl;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind, RequestBody};
+use std::error::Error as StdError;
 // Only the feature-off test names this type; importing it
 // unconditionally would be an unused import in a default build.
 #[cfg(not(feature = "idn"))]
@@ -135,7 +136,7 @@ fn a_relative_base_is_a_typed_error_not_a_silently_ignored_setting() {
         .expect_err("a relative base is unfit for use — this must be an error");
 
     assert_eq!(*err.kind(), ErrorKind::Other, "{err}");
-    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    let src = StdError::source(&err).expect("Error::new always sets a source");
     let bad = src
         .downcast_ref::<InvalidBaseUrl>()
         .expect("the source must name the specific problem, not just be a string");
@@ -273,7 +274,7 @@ fn without_the_idn_feature_a_u_label_is_a_typed_error_that_names_the_way_out() {
         let err = futures_executor::block_on(client.get("https://münchen.de/x").send())
             .expect_err("no `idn` feature, so this cannot be sent");
         assert_eq!(*err.kind(), ErrorKind::Other, "{label}: {err}");
-        let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+        let src = StdError::source(&err).expect("Error::new always sets a source");
         let named = src
             .downcast_ref::<UriError>()
             .unwrap_or_else(|| panic!("{label}: the source must be a `UriError`, got {src}"));

@@ -46,6 +46,7 @@ use hclient_native::H3;
 use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
+use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -409,7 +410,7 @@ fn bounded(port: u16, connect: Duration) -> http::Request<RequestBody> {
 async fn exchange<T>(t: &T, req: http::Request<RequestBody>) -> (Duration, String)
 where
     T: Transport<Error = hclient_core::Error>,
-    <T::Body as http_body::Body>::Error: std::fmt::Display,
+    <T::Body as http_body::Body>::Error: Display,
 {
     let started = Instant::now();
     match t.execute(req).await {
@@ -910,7 +911,7 @@ async fn m5b_dropping_the_transport_as_well_as_the_future() {
 async fn race<N>(q: &Quic, n: &N, port: u16, head_start: Duration) -> &'static str
 where
     N: Transport<Error = hclient_core::Error>,
-    <N::Body as http_body::Body>::Error: std::fmt::Display,
+    <N::Body as http_body::Body>::Error: Display,
 {
     let quic_arm = std::pin::pin!(exchange(q, get(port)));
     let tcp_arm = std::pin::pin!(async {

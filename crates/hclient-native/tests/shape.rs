@@ -6,6 +6,7 @@
 //! confused with the production invariant, because this file isn't
 //! `src`.
 use hclient_native::testing::OutgoingBody;
+use std::error::Error as StdError;
 
 /// Used to live in `src/body.rs`'s `#[cfg(test)] mod tests` as
 /// `error_type_satisfies_hypers_send_sync_bound` — the same assertion,
@@ -45,7 +46,7 @@ fn auto_traits_reach_the_transport_and_its_body() {
 fn outgoing_bodys_error_satisfies_hypers_send_sync_bound() {
     fn assert_bound<B: http_body::Body>()
     where
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        B::Error: Into<Box<dyn StdError + Send + Sync>>,
         B::Data: bytes::Buf + Send,
     {
     }

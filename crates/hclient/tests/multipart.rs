@@ -25,6 +25,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -432,7 +433,7 @@ fn a_caller_set_content_type_is_refused_in_either_order_and_nothing_is_sent() {
             };
             let err = b.send().await.expect_err("a caller-set Content-Type");
             assert!(
-                std::error::Error::source(&err)
+                StdError::source(&err)
                     .and_then(|s| s.downcast_ref::<hclient::error::ContentTypeIsNotOursToKeep>())
                     .is_some(),
                 "before = {before}: {err:?}"

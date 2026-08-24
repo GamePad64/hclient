@@ -31,8 +31,11 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 
 /// Ceiling for anything that must not hang.
@@ -642,10 +645,10 @@ struct HideFirstEof<S> {
 
 impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for HideFirstEof<S> {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         mut buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         // Reads into a scratch buffer and copies, the same shape as
         // `testing::blocking_io`: `ReadBufCursor` moves into the inner
         // call, so there is no way to look at how much it was filled
@@ -654,16 +657,16 @@ impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for HideFirstEof<S> {
         let mut scratch = [0u8; 8192];
         let want = buf.remaining().min(scratch.len());
         let mut rb = hyper::rt::ReadBuf::new(&mut scratch[..want]);
-        match std::pin::Pin::new(&mut this.inner).poll_read(cx, rb.unfilled()) {
-            std::task::Poll::Ready(Ok(())) => {
+        match Pin::new(&mut this.inner).poll_read(cx, rb.unfilled()) {
+            Poll::Ready(Ok(())) => {
                 let filled = rb.filled();
                 if filled.is_empty() && this.hide_remaining > 0 {
                     this.hide_remaining -= 1;
                     cx.waker().wake_by_ref();
-                    return std::task::Poll::Pending;
+                    return Poll::Pending;
                 }
                 buf.put_slice(filled);
-                std::task::Poll::Ready(Ok(()))
+                Poll::Ready(Ok(()))
             }
             other => other,
         }
@@ -672,23 +675,17 @@ impl<S: hyper::rt::Read + Unpin> hyper::rt::Read for HideFirstEof<S> {
 
 impl<S: hyper::rt::Write + Unpin> hyper::rt::Write for HideFirstEof<S> {
     fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
     }
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
     }
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 

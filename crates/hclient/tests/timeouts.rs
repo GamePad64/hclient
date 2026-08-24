@@ -19,6 +19,7 @@ use hclient::caps::TimeoutSupport;
 use hclient::error::UnsupportedCapability;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind, Timeouts};
+use std::error::Error as StdError;
 use std::time::Duration;
 
 fn secs(n: u64) -> Option<Duration> {
@@ -147,7 +148,7 @@ fn unsupported_per_request_timeout_is_a_typed_error_not_a_silent_noop() {
     );
 
     assert_eq!(*err.kind(), ErrorKind::Unsupported, "{err}");
-    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    let src = StdError::source(&err).expect("Error::new always sets a source");
     let unsupported = src
         .downcast_ref::<UnsupportedCapability>()
         .expect("the source must name the specific unsupported setting, not just be a string");

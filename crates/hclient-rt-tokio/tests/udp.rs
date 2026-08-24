@@ -10,6 +10,7 @@
 #![cfg(feature = "udp")]
 
 use hclient_rt::{Datagrams, EcnCodepoint, RecvMeta, UdpBind, UdpDatagrams};
+use std::future::poll_fn;
 use std::io::IoSliceMut;
 use std::net::SocketAddr;
 
@@ -30,7 +31,7 @@ async fn send(sock: &hclient_rt_tokio::TokioUdpSocket, d: &Datagrams<'_>) -> std
     loop {
         match sock.try_send(d) {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::future::poll_fn(|cx| sock.poll_writable(cx)).await?;
+                poll_fn(|cx| sock.poll_writable(cx)).await?;
             }
             other => return other,
         }
@@ -142,7 +143,7 @@ async fn ecn_claim_matches_reality(
 
     let mut buf = [0u8; 64];
     let mut meta = [RecvMeta::default(); 1];
-    let n = std::future::poll_fn(|cx| {
+    let n = poll_fn(|cx| {
         let mut bufs = [IoSliceMut::new(&mut buf)];
         b.poll_recv(cx, &mut bufs, &mut meta)
     })
@@ -297,7 +298,7 @@ async fn a_dual_stack_socket_reports_ecn_for_v4_mapped_traffic_exactly_when_it_c
 
     let mut buf = [0u8; 64];
     let mut meta = [RecvMeta::default(); 1];
-    let n = std::future::poll_fn(|cx| {
+    let n = poll_fn(|cx| {
         let mut bufs = [IoSliceMut::new(&mut buf)];
         b.poll_recv(cx, &mut bufs, &mut meta)
     })
@@ -357,7 +358,7 @@ async fn a_plain_datagram_round_trips_with_no_offload_asked_for() {
 
     let mut buf = [0u8; 64];
     let mut meta = [RecvMeta::default(); 1];
-    let n = std::future::poll_fn(|cx| {
+    let n = poll_fn(|cx| {
         let mut bufs = [IoSliceMut::new(&mut buf)];
         b.poll_recv(cx, &mut bufs, &mut meta)
     })

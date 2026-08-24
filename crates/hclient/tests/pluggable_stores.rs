@@ -17,6 +17,10 @@
 
 use hclient::Client;
 use hclient::mock::MockTransport;
+#[cfg(any(feature = "cookies", feature = "cache"))]
+use std::sync::Arc;
+#[cfg(any(feature = "cookies", feature = "cache"))]
+use std::sync::atomic::Ordering;
 
 /// A store that counts what is written into it and otherwise is
 /// `MemoryStore`. The counter is the observer: it lives outside the
@@ -26,7 +30,7 @@ use hclient::mock::MockTransport;
 #[derive(Debug, Clone, Default)]
 struct CountingStore {
     inner: hclient::cache::MemoryStore,
-    puts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    puts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(feature = "cache")]
@@ -35,7 +39,7 @@ impl hclient::cache::CacheStore for CountingStore {
         self.inner.get(key)
     }
     fn put(&mut self, key: &hclient::cache::Key, entry: hclient::cache::StoredResponse) {
-        self.puts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.puts.fetch_add(1, Ordering::Relaxed);
         self.inner.put(key, entry);
     }
     fn remove(&mut self, key: &hclient::cache::Key, selector: &hclient::cache::Selector) {
@@ -57,10 +61,10 @@ impl hclient::cache::CacheStore for CountingStore {
 #[cfg(feature = "cache")]
 #[test]
 fn the_callers_own_store_is_the_one_the_client_uses() {
-    let puts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let store = CountingStore {
         inner: hclient::cache::MemoryStore::new(),
-        puts: std::sync::Arc::clone(&puts),
+        puts: Arc::clone(&puts),
     };
 
     let t = MockTransport::new();
@@ -87,7 +91,7 @@ fn the_callers_own_store_is_the_one_the_client_uses() {
     }
 
     assert_eq!(
-        puts.load(std::sync::atomic::Ordering::Relaxed),
+        puts.load(Ordering::Relaxed),
         1,
         "the response was written into the store the test is holding"
     );

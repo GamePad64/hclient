@@ -20,6 +20,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// What the server actually received, as bytes rather than as anything
 /// this crate's types would say about them.
@@ -129,7 +130,7 @@ fn serve(
             Reply::Silence => {
                 // Hold the socket open. The client's own bound is what has
                 // to end this, which is the point of the fixture.
-                std::thread::sleep(std::time::Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(30));
                 return;
             }
         };

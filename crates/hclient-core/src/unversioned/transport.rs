@@ -1,5 +1,6 @@
 use crate::{Capabilities, Error, ErrorKind, RequestBody};
 use bytes::Bytes;
+use std::error::Error as StdError;
 use std::future::Future;
 
 /// The one seam between hclient and real HTTP.
@@ -12,7 +13,7 @@ use std::future::Future;
 /// auto-traits through the returned `impl Future`.
 pub trait Transport {
     type Body: http_body::Body<Data = Bytes>;
-    type Error: std::error::Error + 'static;
+    type Error: StdError + 'static;
 
     /// Send the request.
     ///

@@ -37,6 +37,7 @@ use hclient_native::Native;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use servers::ORIGIN;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Short, because the one request here that is meant to fail should fail
@@ -85,7 +86,7 @@ fn untrusting_tls() -> hclient_tls_rustls::Rustls {
     let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(rustls::RootCertStore::empty())
         .with_no_client_auth();
-    hclient_tls_rustls::Rustls::from_config(std::sync::Arc::new(cfg))
+    hclient_tls_rustls::Rustls::from_config(Arc::new(cfg))
 }
 
 /// The handover is real: the connection is made under the record this

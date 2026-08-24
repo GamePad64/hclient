@@ -148,7 +148,9 @@ use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks}
 use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
 use hyper::rt::{Read, Write};
+use std::fmt::Debug;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
@@ -263,7 +265,7 @@ where
     pub(crate) id: ConnectionId,
 }
 
-impl<I> std::fmt::Debug for Established<I>
+impl<I> Debug for Established<I>
 where
     I: Read + Write + Unpin,
 {
@@ -421,7 +423,7 @@ pub(crate) async fn is_reusable<I>(est: &mut Established<I>) -> bool
 where
     I: Read + Write + Unpin,
 {
-    std::future::poll_fn(|cx| {
+    poll_fn(|cx| {
         if Pin::new(&mut est.conn).poll(cx).is_ready() {
             return Poll::Ready(false);
         }
@@ -497,8 +499,7 @@ where
     // One last look at the connection while the request is still OURS —
     // the same move, in the same place and for the same reason, as
     // `h1::exchange`'s. Exactly one poll, and it never suspends.
-    let dead =
-        std::future::poll_fn(|cx| Poll::Ready(Pin::new(&mut conn).poll(cx).is_ready())).await;
+    let dead = poll_fn(|cx| Poll::Ready(Pin::new(&mut conn).poll(cx).is_ready())).await;
     if dead {
         return Err(Failed::NotSent {
             error: Error::new(ErrorKind::Connect, ConnectionWentAwayBeforeTheRequest),
@@ -511,7 +512,7 @@ where
     // alongside `Connection` because that is what updates it, and a
     // connection that ends while we wait is still a request we own.
     let mut conn_done = false;
-    let ready = std::future::poll_fn(|cx| {
+    let ready = poll_fn(|cx| {
         if !conn_done {
             match Pin::new(&mut conn).poll(cx) {
                 Poll::Ready(Ok(())) => conn_done = true,
@@ -559,7 +560,7 @@ where
     // of its own: it is polled beside `resp_fut` below, and whatever is
     // left of it when the head arrives goes into `H2Body`.
     let mut pump = (!eos).then(|| Pump::new(outgoing, send_stream));
-    let resp = std::future::poll_fn(|cx| {
+    let resp = poll_fn(|cx| {
         loop {
             if !conn_done {
                 match Pin::new(&mut conn).poll(cx) {
@@ -1142,7 +1143,7 @@ where
     id: ConnectionId,
 }
 
-impl<I> std::fmt::Debug for H2Body<I>
+impl<I> Debug for H2Body<I>
 where
     I: Read + Write + Unpin,
 {
@@ -1397,7 +1398,7 @@ pub(crate) struct Shared {
     pub(crate) slot: SharedId,
 }
 
-impl std::fmt::Debug for Shared {
+impl Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("h2::Shared")
             .field("slot", &self.slot.0)
@@ -1480,7 +1481,7 @@ where
     id: ConnectionId,
 }
 
-impl<I, H> std::fmt::Debug for H2Driver<I, H>
+impl<I, H> Debug for H2Driver<I, H>
 where
     I: Read + Write + Unpin,
 {
@@ -1549,10 +1550,7 @@ where
 /// a request" — which is [`is_reusable`]'s existing rule — stays right
 /// here rather than turning a busy connection into a fresh socket.
 pub(crate) async fn shared_is_reusable(shared: &mut Shared) -> bool {
-    std::future::poll_fn(|cx| {
-        Poll::Ready(matches!(shared.sender.poll_ready(cx), Poll::Ready(Ok(()))))
-    })
-    .await
+    poll_fn(|cx| Poll::Ready(matches!(shared.sender.poll_ready(cx), Poll::Ready(Ok(()))))).await
 }
 
 /// One request over a connection somebody else is driving.
@@ -1589,7 +1587,7 @@ where
 
     // The request is still OURS until `send_request`, and this is the one
     // question that can be asked while it is: is this connection alive.
-    let ready = std::future::poll_fn(|cx| match sender.poll_ready(cx) {
+    let ready = poll_fn(|cx| match sender.poll_ready(cx) {
         Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
         Poll::Ready(Err(e)) => Poll::Ready(Err(from_h2_error(e, ErrorKind::Connect))),
         Poll::Pending => Poll::Pending,
@@ -1626,7 +1624,7 @@ where
     // this function used to have, the whole suite is green either way, and
     // clippy then points out that the loop never loops. The code now says
     // what the tests can see.
-    let resp = std::future::poll_fn(|cx| {
+    let resp = poll_fn(|cx| {
         if let Some(p) = pump.as_mut() {
             match p.poll(cx) {
                 Poll::Ready(Ok(_)) => pump = None,

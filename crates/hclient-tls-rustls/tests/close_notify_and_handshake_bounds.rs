@@ -23,7 +23,9 @@ use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
+use std::future::poll_fn;
 use std::io::Write;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -108,11 +110,9 @@ async fn close_notify_without_a_raw_tcp_close_resolves_as_clean_eof_not_a_hang()
     let mut store = [0u8; 16];
     let result = tokio::time::timeout(Duration::from_secs(3), async {
         let mut rb = hyper::rt::ReadBuf::new(&mut store);
-        std::future::poll_fn(|cx| {
-            hyper::rt::Read::poll_read(std::pin::Pin::new(&mut stream), cx, rb.unfilled())
-        })
-        .await
-        .map(|()| rb.filled().len())
+        poll_fn(|cx| hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled()))
+            .await
+            .map(|()| rb.filled().len())
     })
     .await;
 

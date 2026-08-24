@@ -11,6 +11,10 @@
 use hclient::mock::MockTransport;
 use hclient::redirect::RedirectPolicy;
 use hclient::{Client, RequestBody};
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
+use std::time::Duration;
 
 fn redirect_to(loc: &'static str) -> http::Response<&'static str> {
     http::Response::builder()
@@ -202,7 +206,7 @@ fn build_rejects_a_timeout_the_backend_cannot_honour() {
     let err = Client::builder(m)
         .timeouts(Timeouts {
             resolve: None,
-            connect: Some(std::time::Duration::from_secs(1)),
+            connect: Some(Duration::from_secs(1)),
             ..Default::default()
         })
         .build()
@@ -324,10 +328,10 @@ fn unreplayable_streaming_body_stops_at_the_3xx_instead_of_a_second_empty_reques
         type Data = bytes::Bytes;
         type Error = hclient_core::Error;
         fn poll_frame(
-            mut self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
-            std::task::Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+            Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
         }
     }
 

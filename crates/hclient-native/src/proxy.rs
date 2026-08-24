@@ -29,6 +29,7 @@
 //! `H`.
 
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::pin::Pin;
 use std::task::Poll;
@@ -854,7 +855,7 @@ fn expect_version(v: u8) -> Result<(), Error> {
 
 async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), Error> {
     while !buf.is_empty() {
-        let n = std::future::poll_fn(|cx| Pin::new(&mut *io).poll_write(cx, buf))
+        let n = poll_fn(|cx| Pin::new(&mut *io).poll_write(cx, buf))
             .await
             .map_err(conn)?;
         if n == 0 {
@@ -862,7 +863,7 @@ async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), E
         }
         buf = &buf[n..];
     }
-    std::future::poll_fn(|cx| Pin::new(&mut *io).poll_flush(cx))
+    poll_fn(|cx| Pin::new(&mut *io).poll_flush(cx))
         .await
         .map_err(conn)
 }
@@ -870,7 +871,7 @@ async fn write_all<S: Write + Unpin>(io: &mut S, mut buf: &[u8]) -> Result<(), E
 async fn read_exact<S: Read + Unpin>(io: &mut S, buf: &mut [u8]) -> Result<(), Error> {
     let mut at = 0;
     while at < buf.len() {
-        let n = std::future::poll_fn(|cx| {
+        let n = poll_fn(|cx| {
             let mut rb = hyper::rt::ReadBuf::new(&mut buf[at..]);
             match Pin::new(&mut *io).poll_read(cx, rb.unfilled()) {
                 Poll::Ready(Ok(())) => Poll::Ready(Ok(rb.filled().len())),
@@ -897,6 +898,7 @@ fn conn(e: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
     use std::task::Context;
 
     /// A socket whose answers are decided in advance and whose writes are
@@ -1002,7 +1004,7 @@ mod tests {
             .expect_err("a 407 is a refusal");
         assert_eq!(*err.kind(), ErrorKind::Connect);
         assert!(
-            std::error::Error::source(&err)
+            StdError::source(&err)
                 .and_then(|s| s.downcast_ref::<ProxyRefused>())
                 .is_some_and(|r| r.0 == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED),
             "the status must be readable off the error: {err:?}"

@@ -55,6 +55,7 @@
 //! not a bound that had to be excluded.
 
 use bytes::Bytes;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -64,7 +65,7 @@ use std::task::{Context, Poll};
 // `.unwrap()` on a response away from every caller. What a `{:?}` wants
 // here is the head anyway: a body is a stream, and its contents were never
 // printable without consuming them.
-impl<B> std::fmt::Debug for Cached<B> {
+impl<B> Debug for Cached<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cached").finish_non_exhaustive()
     }

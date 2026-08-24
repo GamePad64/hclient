@@ -1,4 +1,5 @@
 use hyper::rt::{Read, ReadBufCursor, Write};
+use std::error::Error as StdError;
 use std::io::{Read as _, Write as _};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
@@ -30,7 +31,7 @@ impl<S> TlsStream<S> {
     }
 }
 
-fn tls_err<E: std::error::Error + 'static>(e: E) -> std::io::Error {
+fn tls_err<E: StdError + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(format!("tls: {e}"))
 }
 

@@ -45,6 +45,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::{BetweenBytesElapsed, FirstByteTimedOut, Native};
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
@@ -242,7 +243,7 @@ async fn a_server_that_never_answers_hits_the_first_byte_bound() {
         "the phase is the point: a caller retries a `FirstByte` differently from a \
          `Connect` or a `BetweenBytes`: {err}"
     );
-    let source = std::error::Error::source(&err)
+    let source = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<FirstByteTimedOut>())
         .expect("the source names the bound, so nobody has to parse the message");
     assert_eq!(*source, FirstByteTimedOut(BOUND));
@@ -303,7 +304,7 @@ async fn a_body_that_goes_silent_after_the_head_hits_the_between_bytes_bound() {
         ErrorKind::Timeout(Phase::BetweenBytes),
         "{err}"
     );
-    let source = std::error::Error::source(&err)
+    let source = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<BetweenBytesElapsed>())
         .expect("the source names the bound");
     assert_eq!(*source, BetweenBytesElapsed(BOUND));

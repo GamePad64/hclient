@@ -63,6 +63,7 @@
 use hclient_rt::{Blocking, Spawn, TcpConnect, TcpOpts, Timer};
 use hyper::rt::{Read as HyperRead, ReadBuf, Write as HyperWrite};
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -87,7 +88,7 @@ fn spawn_echo_listener() -> SocketAddr {
 
 async fn write_all<S: HyperWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Result<()> {
     while !buf.is_empty() {
-        let n = std::future::poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
+        let n = poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
         assert!(n > 0, "poll_write returned 0 for a non-empty buffer");
         buf = &buf[n..];
     }
@@ -96,7 +97,7 @@ async fn write_all<S: HyperWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Resu
 
 async fn read_some<S: HyperRead + Unpin>(s: &mut S, out: &mut [u8]) -> io::Result<usize> {
     let mut rb = ReadBuf::new(out);
-    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_read(cx, rb.unfilled())).await?;
+    poll_fn(|cx| Pin::new(&mut *s).poll_read(cx, rb.unfilled())).await?;
     Ok(rb.filled().len())
 }
 

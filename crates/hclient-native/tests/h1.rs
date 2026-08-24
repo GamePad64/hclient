@@ -26,6 +26,8 @@
 //! `tests/dual_runtime.rs`'s watchdog for `smol`: a separate watchdog
 //! thread + `process::exit(101)`, no `Send` bound on `fut` itself.
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(30);
@@ -50,11 +52,11 @@ fn spawn_h1_server(response: &'static str) -> std::net::SocketAddr {
 /// runs on the current thread as usual, so this doesn't undermine the
 /// "runtime seam with no `Send`" that this file's tests are proving.
 fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watchdog_done = done.clone();
     std::thread::spawn(move || {
         std::thread::sleep(BOUND);
-        if !watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
+        if !watchdog_done.load(Ordering::SeqCst) {
             eprintln!(
                 "bounded_block_on: did not finish within {BOUND:?} - looks like the \
                  connection stopped being polled (a regression of the inline drive); \
@@ -64,7 +66,7 @@ fn bounded_block_on<F: std::future::Future>(fut: F) -> F::Output {
         }
     });
     let result = futures_executor::block_on(fut);
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    done.store(true, Ordering::SeqCst);
     result
 }
 

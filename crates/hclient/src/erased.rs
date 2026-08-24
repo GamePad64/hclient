@@ -56,6 +56,9 @@
 //! cookies) and [`Client::cache`](crate::Client::cache) keep handing back
 //! a guard onto the real thing rather than onto a narrowed trait object.
 
+#[cfg(any(feature = "cookies", feature = "cache"))]
+use std::fmt::Debug;
+
 /// A [`PublicSuffixList`](hclient_cookie::PublicSuffixList) of any type.
 ///
 /// Built by
@@ -82,7 +85,7 @@ impl AnyList {
 /// — a `Debug` supertrait on `PublicSuffixList` — would charge every
 /// implementor of a sans-io seam for this crate's `#[derive(Debug)]`.
 #[cfg(feature = "cookies")]
-impl std::fmt::Debug for AnyList {
+impl Debug for AnyList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnyList")
             .field("has_list", &self.0.has_list())
@@ -121,7 +124,7 @@ impl AnyStore {
 }
 
 #[cfg(feature = "cache")]
-impl std::fmt::Debug for AnyStore {
+impl Debug for AnyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnyStore")
             .field("len", &self.0.len())

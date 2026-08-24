@@ -449,6 +449,7 @@ fn ascii_labels_survived(lower: &str, ascii: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::Cow;
 
     /// The oracle, called exactly as `hclient-proto::uri::host_to_ascii`
     /// reaches it through this crate — and, in [`over_idna`], standing in
@@ -457,7 +458,7 @@ mod tests {
     fn idna_says(domain: &str) -> Option<String> {
         idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
             .ok()
-            .map(std::borrow::Cow::into_owned)
+            .map(Cow::into_owned)
     }
 
     /// The policy over a backend that answers everything correctly. Any

@@ -1,4 +1,6 @@
 #![cfg(target_arch = "wasm32")]
+use std::future::poll_fn;
+use std::pin::Pin;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -133,7 +135,7 @@ fn response_from_stream(
 async fn next_data(
     body: &mut hclient_fetch::Body,
 ) -> Option<Result<bytes::Bytes, hclient_core::Error>> {
-    std::future::poll_fn(|cx| std::pin::Pin::new(&mut *body).poll_frame(cx))
+    poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx))
         .await
         .map(|r| r.map(|f| f.into_data().unwrap_or_else(|_| bytes::Bytes::new())))
 }

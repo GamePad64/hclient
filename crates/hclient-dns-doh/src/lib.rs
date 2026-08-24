@@ -172,6 +172,7 @@ use hclient_core::{Error, ErrorKind, RequestBody, Timeouts};
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use http::Uri;
 use http_body_util::BodyExt;
+use std::error::Error as StdError;
 use std::net::IpAddr;
 use std::time::Duration;
 use wire::{Family, Query};
@@ -448,7 +449,7 @@ impl<C, F> Doh<C, F>
 where
     C: Transport,
     C::Error: Send + Sync, // send-bound-exception: amendment-C1
-    <C::Body as http_body::Body>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     F: Resolve,
 {
     /// One RFC 8484 exchange: encode a query, POST it, read the answer
@@ -583,7 +584,7 @@ impl<C, F> Resolve for Doh<C, F>
 where
     C: Transport,
     C::Error: Send + Sync, // send-bound-exception: amendment-C1
-    <C::Body as http_body::Body>::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     F: Resolve,
 {
     fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {

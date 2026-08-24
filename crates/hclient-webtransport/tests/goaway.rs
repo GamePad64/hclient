@@ -78,9 +78,10 @@ use hclient_core::ErrorKind;
 use hclient_webtransport::Session;
 use server::Options;
 use std::future::poll_fn;
+use std::time::Duration;
 
 /// The bound on "the peer acts": a hang guard, as everywhere else here.
-const ACTED: std::time::Duration = std::time::Duration::from_secs(10);
+const ACTED: Duration = Duration::from_secs(10);
 
 /// How long a `poll_close` that must **not** resolve is given to resolve.
 ///
@@ -89,7 +90,7 @@ const ACTED: std::time::Duration = std::time::Duration::from_secs(10);
 /// its expiring proves nothing on its own — which is why the assertion
 /// beside it is that the bit *did* flip, so the frame demonstrably arrived
 /// and was demonstrably processed within the same window.
-const ABSORBED: std::time::Duration = std::time::Duration::from_millis(500);
+const ABSORBED: Duration = Duration::from_millis(500);
 
 fn uri(addr: std::net::SocketAddr, path: &str) -> http::Uri {
     format!("https://{addr}{path}").parse().unwrap()

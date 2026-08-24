@@ -55,9 +55,10 @@
 //! divergence cannot appear without a test failing and a fixed one cannot
 //! stay listed.
 
-#[cfg(any(icu_backend, foundation_backend))]
-use hclient_idn::testing;
 use rstest::rstest;
+#[cfg(any(icu_backend, foundation_backend))]
+use std::borrow::Cow;
+use std::borrow::Cow;
 
 /// The oracle, called exactly as `hclient-proto::uri::host_to_ascii`
 /// reaches it: that function's `idn` feature is now this crate, and on a
@@ -71,7 +72,7 @@ use rstest::rstest;
 fn idna_says(domain: &str) -> Option<String> {
     idna::domain_to_ascii_cow(domain.as_bytes(), idna::AsciiDenyList::URL)
         .ok()
-        .map(std::borrow::Cow::into_owned)
+        .map(Cow::into_owned)
 }
 
 /// One input with both implementations' answers pinned.
@@ -419,7 +420,7 @@ fn where_this_crate_is_stricter_than_idna_it_refuses_rather_than_answering_diffe
         let ours = testing::platform(input)
             .expect("the backend was found a line ago")
             .ok()
-            .map(std::borrow::Cow::into_owned);
+            .map(Cow::into_owned);
         println!("  {input:?} ({why}): `idna` {oracle:?}, {lib} {ours:?}");
         if ours.is_some() && ours != oracle {
             wrong.push(format!(
@@ -472,7 +473,7 @@ fn the_public_entry_point_answers_the_corpus() {
         };
         let got = hclient_idn::domain_to_ascii(case.input)
             .ok()
-            .map(std::borrow::Cow::into_owned);
+            .map(Cow::into_owned);
         if got.as_deref() != want {
             wrong.push(format!(
                 "  {}: expected {:?}, `domain_to_ascii` said {:?}",
@@ -606,7 +607,7 @@ fn windows_icu_answers_on_a_thread_with_no_com_apartment() {
     let answer = std::thread::spawn(|| {
         (
             hclient_idn::backend(),
-            hclient_idn::domain_to_ascii("straße.de").map(std::borrow::Cow::into_owned),
+            hclient_idn::domain_to_ascii("straße.de").map(Cow::into_owned),
         )
     })
     .join()

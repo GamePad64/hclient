@@ -7,6 +7,8 @@ use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,7 +65,7 @@ async fn name_mismatch_is_reported_as_tls_with_a_distinguishing_source() {
 /// "Connection reset by peer" on Linux and macOS, "An established
 /// connection was aborted by the software in your host machine." on
 /// Windows. Matching on that text is half of how this test flakes.
-fn io_kind(err: &(dyn std::error::Error + 'static)) -> Option<std::io::ErrorKind> {
+fn io_kind(err: &(dyn StdError + 'static)) -> Option<std::io::ErrorKind> {
     let mut cur = Some(err);
     while let Some(e) = cur {
         if let Some(io) = e.downcast_ref::<std::io::Error>() {
@@ -90,9 +92,7 @@ fn io_kind(err: &(dyn std::error::Error + 'static)) -> Option<std::io::ErrorKind
 /// exactly what had not happened.
 async fn handshake_against<F>(serve: F) -> hclient_core::Error
 where
-    F: FnOnce(
-            tokio::net::TcpStream,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+    F: FnOnce(tokio::net::TcpStream) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + 'static,
 {

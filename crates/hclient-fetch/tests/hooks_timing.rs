@@ -19,6 +19,8 @@
 //!    the protocol is blank. **Read from the specification, not measured
 //!    here** — see the last test for the two attempts that failed and why.
 #![cfg(target_arch = "wasm32")]
+use std::future::poll_fn;
+use std::pin::Pin;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -89,7 +91,7 @@ async fn drain(resp: http::Response<hclient_fetch::Body>) {
     use http_body::Body as _;
     let mut body = resp.into_body();
     loop {
-        match std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await {
+        match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
             Some(Ok(_)) => {}
             Some(Err(e)) => panic!("the harness page has a readable body: {e}"),
             None => break,

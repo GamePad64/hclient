@@ -71,6 +71,8 @@ use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
 use http_body::Body as _;
+use std::fmt::Debug;
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -480,11 +482,9 @@ async fn handle(
                 return;
             };
             shared.seen.lock().unwrap().push(record);
-            let ending = tokio::time::timeout(
-                Duration::from_secs(5),
-                std::future::poll_fn(|cx| send.poll_reset(cx)),
-            )
-            .await;
+            let ending =
+                tokio::time::timeout(Duration::from_secs(5), poll_fn(|cx| send.poll_reset(cx)))
+                    .await;
             shared.endings.lock().unwrap().push(match ending {
                 Ok(Ok(reason)) => Ending::Reset(reason.to_string()),
                 Ok(Err(_)) => Ending::ConnectionGone,
@@ -672,7 +672,7 @@ async fn next_frame<B>(body: &mut B) -> Option<Result<http_body::Frame<Bytes>, B
 where
     B: http_body::Body<Data = Bytes> + Unpin,
 {
-    std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
+    poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await
 }
 
 /// Reads a whole response body, keeping the data and the trailers apart —
@@ -681,7 +681,7 @@ where
 async fn read_to_end<B>(body: &mut B) -> (Vec<u8>, Vec<usize>, Option<http::HeaderMap>)
 where
     B: http_body::Body<Data = Bytes> + Unpin,
-    B::Error: std::fmt::Debug,
+    B::Error: Debug,
 {
     let mut data = Vec::new();
     let mut frames = Vec::new();

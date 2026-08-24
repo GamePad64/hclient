@@ -54,6 +54,9 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
+use std::error::Error as StdError;
+use std::fmt::Display;
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -240,7 +243,7 @@ async fn handle(
             let mut send = respond.send_response(ok(), false)?;
             send.send_data(Bytes::from(vec![b'y'; WINDOW]), false)?;
             send.reserve_capacity(1);
-            let _ = std::future::poll_fn(|cx| send.poll_capacity(cx)).await;
+            let _ = poll_fn(|cx| send.poll_capacity(cx)).await;
             send.send_reset(h2::Reason::NO_ERROR);
             tokio::time::sleep(Duration::from_secs(60)).await;
             drop(body);
@@ -397,13 +400,13 @@ struct FailsAfterOneChunk {
 #[derive(Debug)]
 struct TheCallersOwnBodyError;
 
-impl std::fmt::Display for TheCallersOwnBodyError {
+impl Display for TheCallersOwnBodyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("the caller's body gave up")
     }
 }
 
-impl std::error::Error for TheCallersOwnBodyError {}
+impl StdError for TheCallersOwnBodyError {}
 
 impl http_body::Body for FailsAfterOneChunk {
     type Data = Bytes;
@@ -839,7 +842,7 @@ async fn a_request_body_that_fails_fails_the_request_with_the_callers_own_error(
         "the caller's own kind, not the `Connect` a reset would produce: {err}"
     );
     assert!(
-        std::error::Error::source(&err)
+        StdError::source(&err)
             .and_then(|s| s.downcast_ref::<TheCallersOwnBodyError>())
             .is_some(),
         "and the caller's own error, carried out whole rather than replaced \

@@ -23,6 +23,8 @@ use hclient_core::{Capabilities, Error, RequestBody};
 use hclient_tower::{ServiceTransport, TransportService};
 use http_body::Body as _;
 use std::future::Future;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -37,7 +39,7 @@ impl http_body::Body for NeverEnds {
     type Data = Bytes;
     type Error = Error;
     fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
         Poll::Pending
@@ -85,7 +87,7 @@ impl Transport for Gated {
         let started = Arc::clone(&self.started);
         let open = Arc::clone(&self.open);
         let mut counted = false;
-        std::future::poll_fn(move |_| {
+        poll_fn(move |_| {
             if !counted {
                 counted = true;
                 started.fetch_add(1, Ordering::SeqCst);
@@ -215,9 +217,7 @@ fn the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded() {
     };
     let (_, mut body) = resp.into_parts();
     assert!(
-        std::pin::Pin::new(&mut body)
-            .poll_frame(&mut cx)
-            .is_pending(),
+        Pin::new(&mut body).poll_frame(&mut cx).is_pending(),
         "the first response's body must still be open for this test to mean \
          anything"
     );
@@ -233,9 +233,5 @@ fn the_permit_is_released_at_the_response_head_so_bodies_are_not_bounded() {
     // Held to here deliberately, and polled once more: the first body was
     // still unfinished for the whole of the second exchange, not merely at
     // the moment it started.
-    assert!(
-        std::pin::Pin::new(&mut body)
-            .poll_frame(&mut cx)
-            .is_pending()
-    );
+    assert!(Pin::new(&mut body).poll_frame(&mut cx).is_pending());
 }

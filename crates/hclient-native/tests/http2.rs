@@ -782,7 +782,7 @@ async fn an_unmarked_request_still_offers_h2() {
 /// different routes — hyper's `Send + Sync + 'static` callback on h1, a
 /// plain poll here — and only running both shows they agree.
 #[derive(Debug, Clone, Default)]
-struct Hints(std::sync::Arc<Mutex<Vec<String>>>);
+struct Hints(Arc<Mutex<Vec<String>>>);
 
 impl hclient_core::unversioned::Hooks for Hints {
     fn on(&self, event: hclient_core::unversioned::Event<'_>) {

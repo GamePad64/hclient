@@ -36,6 +36,7 @@ use hclient_native::H3;
 use hclient_rt_tokio::TokioHandle;
 use http_body_util::BodyExt;
 use server::Behaviour;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,7 +68,7 @@ fn post(addr: std::net::SocketAddr, path: &str, body: RequestBody) -> http::Requ
 async fn text<B>(r: http::Response<B>) -> String
 where
     B: http_body::Body<Data = Bytes>,
-    B::Error: std::fmt::Debug,
+    B::Error: Debug,
 {
     let bytes = r.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()

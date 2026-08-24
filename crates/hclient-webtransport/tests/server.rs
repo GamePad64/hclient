@@ -27,6 +27,7 @@ use bytes::{Buf, Bytes};
 use h3::ConnectionState as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// What the server announces and how it answers.
 #[derive(Debug, Clone)]
@@ -331,13 +332,13 @@ impl Server {
     /// can observe proves the server saw one. It is used only where the
     /// test's own claim is about arrival, and a `false` is that claim
     /// failing.
-    pub async fn wait_for_datagrams(&self, n: usize, within: std::time::Duration) -> bool {
+    pub async fn wait_for_datagrams(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
             if self.state.datagrams.lock().unwrap().len() >= n {
                 return true;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         false
     }
@@ -353,13 +354,13 @@ impl Server {
     /// A poll rather than a sleep: the tests that use it assert on the
     /// *content* afterwards, so a `false` here is a failure to observe and
     /// not a slow machine's fault line.
-    pub async fn wait_for_streams(&self, n: usize, within: std::time::Duration) -> bool {
+    pub async fn wait_for_streams(&self, n: usize, within: Duration) -> bool {
         let deadline = std::time::Instant::now() + within;
         while std::time::Instant::now() < deadline {
             if self.state.streams.lock().unwrap().len() >= n {
                 return true;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         false
     }

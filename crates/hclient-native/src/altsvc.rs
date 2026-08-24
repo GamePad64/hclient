@@ -50,6 +50,7 @@
 //! member, not a change here.
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use winnow::ascii::{digit1, hex_uint, space0};
@@ -209,7 +210,7 @@ struct Entry {
     persist: bool,
 }
 
-impl std::fmt::Debug for AltSvcCache {
+impl Debug for AltSvcCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AltSvcCache")
             .field(

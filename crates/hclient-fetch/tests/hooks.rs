@@ -11,6 +11,7 @@
 //! `tests/transport.rs` uses — a real `fetch()` over a real socket to a
 //! real server, with no Internet.
 #![cfg(target_arch = "wasm32")]
+use std::sync::atomic::Ordering;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -468,7 +469,7 @@ fn a_send_hook_leaves_the_execute_future_send() {
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
         fn on(&self, _event: Event<'_>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 

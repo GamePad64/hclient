@@ -67,7 +67,9 @@
 //! promises.
 use crate::Error;
 use core::time::Duration;
+use std::fmt::Display;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Somewhere to send what a transport did.
@@ -119,7 +121,7 @@ impl Hooks for NoHooks {
 /// So that a hook can be shared without the caller writing the
 /// delegation. `WATCHING` is forwarded rather than defaulted, or an
 /// `Arc<NoHooks>` would start watching by being wrapped.
-impl<H: Hooks + ?Sized> Hooks for std::sync::Arc<H> {
+impl<H: Hooks + ?Sized> Hooks for Arc<H> {
     const WATCHING: bool = H::WATCHING;
     fn on(&self, event: Event<'_>) {
         (**self).on(event);
@@ -267,7 +269,7 @@ impl ConnectionId {
     }
 }
 
-impl std::fmt::Display for ConnectionId {
+impl Display for ConnectionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

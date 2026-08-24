@@ -388,6 +388,8 @@ impl<H: Hooks> Transport for Fetch<H> {
 #[doc(hidden)]
 pub mod testing {
     pub use crate::promise::SendJsFuture as SendJsFutureAlias;
+    use std::future::poll_fn;
+    use std::pin::Pin;
 
     /// The cheap `'duplex' in Request.prototype` check — an observation,
     /// not the probe anything decides by.
@@ -548,7 +550,7 @@ pub mod testing {
         use http_body::Body as _;
         let mut buf = bytes::BytesMut::new();
         loop {
-            match std::future::poll_fn(|cx| std::pin::Pin::new(&mut *body).poll_frame(cx)).await {
+            match poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await {
                 Some(Ok(frame)) => {
                     if let Ok(data) = frame.into_data() {
                         buf.extend_from_slice(&data);

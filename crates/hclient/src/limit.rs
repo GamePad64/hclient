@@ -31,6 +31,7 @@
 //! A check at the head could only ever read `Content-Length`, which a
 //! server is free not to send and free to lie in.
 
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -57,7 +58,7 @@ pub struct ResponseTooLarge {
 // `.unwrap()` on a response away from every caller. What a `{:?}` wants
 // here is the head anyway: a body is a stream, and its contents were never
 // printable without consuming them.
-impl<B> std::fmt::Debug for Limited<B> {
+impl<B> Debug for Limited<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Limited").finish_non_exhaustive()
     }

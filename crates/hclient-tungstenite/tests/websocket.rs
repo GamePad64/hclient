@@ -59,9 +59,13 @@ use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
 use hclient_tungstenite::{PongNotReceived, Tungstenite, WebSocketKeepAlive};
 use http_body_util::BodyExt;
+use std::error::Error as StdError;
+use std::future::poll_fn;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -773,7 +777,7 @@ async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
 
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (tx, rx) = mpsc::channel::<(u8, bool, Vec<u8>)>();
-    let release_rx = std::sync::Mutex::new(release_rx);
+    let release_rx = Mutex::new(release_rx);
     // 64 KiB against an 8 MiB message: the write cannot complete in one
     // go on any platform, which is what `assert!(blocked)` below needs and
     // what "larger than any socket buffer" only happened to give on Linux.
@@ -809,15 +813,15 @@ async fn a_message_larger_than_the_socket_buffer_arrives_whole() {
 
     let sent = payload.clone();
     let blocked = tokio::time::timeout(BOUND, async move {
-        let mut ws = std::pin::Pin::new(&mut ws);
-        std::future::poll_fn(|cx| ws.as_mut().poll_ready(cx))
+        let mut ws = Pin::new(&mut ws);
+        poll_fn(|cx| ws.as_mut().poll_ready(cx))
             .await
             .expect("ready");
         ws.as_mut()
             .start_send(Message::Binary(Bytes::from(sent)))
             .expect("start_send buffers, it does not write");
         let mut blocked = false;
-        std::future::poll_fn(|cx| {
+        poll_fn(|cx| {
             let p = ws.as_mut().poll_flush(cx);
             if p.is_pending() && !blocked {
                 blocked = true;
@@ -1375,7 +1379,7 @@ async fn a_missed_pong_is_an_error_and_not_the_peer_saying_goodbye() {
         "the same kind `hclient-fetch` gives a `wasClean == false` close, and \
          deliberately not a `Timeout`: no field of `Timeouts` is in force here: {err}"
     );
-    let source = std::error::Error::source(&err)
+    let source = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<PongNotReceived>())
         .expect(
             "the source is a named type, so a caller can tell this from every other way a \
@@ -1522,7 +1526,7 @@ async fn only_a_pong_with_the_pings_own_payload_answers_it() {
         );
         assert_eq!(err.kind(), &ErrorKind::Body, "for /{path}: {err}");
         assert_eq!(
-            std::error::Error::source(&err).and_then(|s| s.downcast_ref::<PongNotReceived>()),
+            StdError::source(&err).and_then(|s| s.downcast_ref::<PongNotReceived>()),
             Some(&PongNotReceived(WITHIN)),
             "for /{path}, the failure must be the unanswered probe and not something else"
         );

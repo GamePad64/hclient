@@ -1,4 +1,7 @@
 use crate::client::Client;
+use std::error::Error as StdError;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 use crate::response::Response;
 use bytes::Bytes;
@@ -43,7 +46,7 @@ fn is_event_stream_content_type(v: &str) -> bool {
 // `.unwrap()` on a response away from every caller. What a `{:?}` wants
 // here is the head anyway: a body is a stream, and its contents were never
 // printable without consuming them.
-impl<B> std::fmt::Debug for SseStream<B> {
+impl<B> Debug for SseStream<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SseStream").finish_non_exhaustive()
     }
@@ -125,7 +128,7 @@ where
     // `Response::chunk`+`collect` sharing one bound (response.rs), and
     // `RequestBuilder::send` (request.rs) — see the counter and the rule
     // in `.github/workflows/ci.yml`.
-    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     /// Builds a stream from a response. WHATWG's terminal rules are
     /// checked here, not deferred to the first `next()`: status ≠ 200 is
@@ -392,7 +395,7 @@ impl<'a> SseBuilder<'a> {
     {
         ReconnectingSseBuilder {
             builder: self,
-            timer: std::sync::Arc::new(timer),
+            timer: Arc::new(timer),
         }
     }
 
@@ -417,7 +420,7 @@ impl<'a> SseBuilder<'a> {
 /// Builds a [`ReconnectingSseStream`]. Returned by [`SseBuilder::with_timer`].
 // Hand-written for the reason `Client`'s is: the erased clock is a trait
 // object, and asking `Debug` of it would tax every clock for a derive.
-impl std::fmt::Debug for ReconnectingSseBuilder<'_> {
+impl Debug for ReconnectingSseBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReconnectingSseBuilder<'_>")
             .finish_non_exhaustive()
@@ -426,7 +429,7 @@ impl std::fmt::Debug for ReconnectingSseBuilder<'_> {
 
 pub struct ReconnectingSseBuilder<'a> {
     builder: SseBuilder<'a>,
-    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
 }
 
 impl<'a> ReconnectingSseBuilder<'a> {
@@ -689,7 +692,7 @@ pub struct ReconnectingSseStream<'a> {
     url: String,
     headers: http::HeaderMap,
     options: SseOptions,
-    timer: std::sync::Arc<hclient_core::unversioned::erased::SharedTimer>,
+    timer: Arc<hclient_core::unversioned::erased::SharedTimer>,
     /// The last event ID observed so far, kept OUTSIDE the live
     /// `SseStream`'s own decoder so it survives the decoder being replaced
     /// on every reconnect. Snapshotted from the live stream's
@@ -719,7 +722,7 @@ pub struct ReconnectingSseStream<'a> {
 // Hand-written for the reason `ReconnectingSseBuilder`'s is, plus one more:
 // the live stream's body is erased too, and `dyn Body` is not `Debug`
 // either.
-impl std::fmt::Debug for ReconnectingSseStream<'_> {
+impl Debug for ReconnectingSseStream<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReconnectingSseStream")
             .field("attempt", &self.attempt)

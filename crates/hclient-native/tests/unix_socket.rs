@@ -13,6 +13,8 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
+#[cfg(feature = "proxy")]
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -124,7 +126,7 @@ fn a_proxy_and_a_socket_cannot_both_be_configured() {
         .expect_err("both decide where the connection goes");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
     assert!(
-        std::error::Error::source(&err)
+        StdError::source(&err)
             .and_then(|s| s.downcast_ref::<hclient_native::ProxyAndUnixSocket>())
             .is_some(),
         "the typed refusal: {err:?}"

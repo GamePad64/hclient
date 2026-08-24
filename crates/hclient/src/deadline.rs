@@ -12,7 +12,10 @@ use bytes::Bytes;
 use core::time::Duration;
 use hclient_core::unversioned::Timer;
 use hclient_core::{Error, ErrorKind, Phase};
+use std::error::Error as StdError;
+use std::fmt::Debug;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -103,7 +106,7 @@ where
     // `Tokio::sleep` is `tokio::time::sleep`, which panics outside a
     // runtime, and a client that never set a total must not need one.
     let mut sleep = timer.sleep_boxed(total);
-    std::future::poll_fn(move |cx| {
+    poll_fn(move |cx| {
         if let Poll::Ready(v) = op.as_mut().poll(cx) {
             return Poll::Ready(v);
         }
@@ -336,7 +339,7 @@ impl<B: Unpin> Unpin for Deadline<B> {}
 /// Hand-written: `#[derive(Debug)]` would require `Tm::Instant: Debug`,
 /// which [`Timer`] does not ask for, so the derive would not compile for a
 /// clock whose instant is not `Debug`. The instant is not printed.
-impl<B: std::fmt::Debug> std::fmt::Debug for Deadline<B> {
+impl<B: Debug> Debug for Deadline<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Deadline")
             .field("inner", &self.inner)
@@ -352,7 +355,7 @@ where
     // already stands on: the error is re-classified into
     // `hclient_core::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
-    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     type Data = Bytes;
     /// Not `B::Error`: a timeout has no `B::Error` to be, and one cannot be

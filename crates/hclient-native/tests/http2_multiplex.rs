@@ -41,6 +41,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -1130,14 +1131,12 @@ impl http_body::Body for Feed {
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         match self.rx.poll_recv(cx) {
-            std::task::Poll::Ready(Some(b)) => {
-                std::task::Poll::Ready(Some(Ok(http_body::Frame::data(b))))
-            }
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
+            Poll::Ready(Some(b)) => Poll::Ready(Some(Ok(http_body::Frame::data(b)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -1277,7 +1276,7 @@ async fn a_demand_for_http2_is_served_by_the_shared_connection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_1xx_on_a_shared_connection_reaches_the_hook() {
     #[derive(Debug, Clone, Default)]
-    struct Hints(std::sync::Arc<std::sync::Mutex<Vec<u16>>>);
+    struct Hints(Arc<Mutex<Vec<u16>>>);
 
     impl hclient_core::unversioned::Hooks for Hints {
         fn on(&self, event: hclient_core::unversioned::Event<'_>) {
@@ -1343,7 +1342,7 @@ impl<S> DelayFirstWrite<S> {
     }
 
     /// `Pending` until the delay has elapsed, then never again.
-    fn gate(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
+    fn gate(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let Some(sleep) = self.sleep.as_mut() else {
             return Poll::Ready(());
         };
@@ -1356,7 +1355,7 @@ impl<S> DelayFirstWrite<S> {
 impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for DelayFirstWrite<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
@@ -1366,23 +1365,17 @@ impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for DelayFirstWrite<S
 impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for DelayFirstWrite<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         std::task::ready!(self.gate(cx));
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         std::task::ready!(self.gate(cx));
         Pin::new(&mut self.inner).poll_flush(cx)
     }
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }

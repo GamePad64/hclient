@@ -651,7 +651,7 @@ fn bundled_to_ascii(domain: &str) -> Result<Cow<'_, str>, IdnError> {
         |unicode| {
             idna::domain_to_ascii_cow(unicode.as_bytes(), idna::AsciiDenyList::URL)
                 .ok()
-                .map(std::borrow::Cow::into_owned)
+                .map(Cow::into_owned)
         },
         domain,
     )

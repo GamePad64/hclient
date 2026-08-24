@@ -228,6 +228,7 @@ use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
 use http::HeaderValue;
 use hyper::rt::{Read, Write};
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -705,7 +706,7 @@ impl<I, Tm: Timer> TungsteniteWebSocket<I, Tm> {
 /// does not ask for. The keep-alive state is in it because an outstanding
 /// probe is exactly what a reader debugging a stalled socket wants to see
 /// — and, per §7's first question, the only place it is visible.
-impl<I: std::fmt::Debug, Tm: Timer> std::fmt::Debug for TungsteniteWebSocket<I, Tm> {
+impl<I: Debug, Tm: Timer> Debug for TungsteniteWebSocket<I, Tm> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TungsteniteWebSocket")
             .field("io", &self.io)
@@ -1017,7 +1018,7 @@ where
 /// `Debug` demands `R::Instant: Debug` — which [`Timer`] does not ask for.
 /// What is this type's own is the keep-alive, and that is what a reader
 /// debugging a socket that never pings is looking for.
-impl<R, T, D, H> std::fmt::Debug for Tungstenite<'_, R, T, D, H>
+impl<R, T, D, H> Debug for Tungstenite<'_, R, T, D, H>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,

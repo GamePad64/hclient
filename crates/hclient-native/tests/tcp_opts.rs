@@ -53,6 +53,7 @@ use hclient_rt::{TcpConnect, TcpOpts, TcpOptsSupport, Timer, UnsupportedTcpOpts}
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -155,7 +156,7 @@ fn refused_options<const MISSING: usize>(opts: TcpOpts) -> Vec<&'static str> {
         ErrorKind::Unsupported,
         "a socket option the runtime cannot apply is exactly `Unsupported`: {err}"
     );
-    let io = std::error::Error::source(&err)
+    let io = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<std::io::Error>())
         .expect("the source is the io::Error reject_unsupported built");
     assert_eq!(io.kind(), std::io::ErrorKind::Unsupported);
@@ -343,7 +344,7 @@ fn two_unappliable_options_are_both_named() {
         ..TcpOpts::default()
     })
     .expect_err("a runtime that applies nothing must refuse both");
-    let io = std::error::Error::source(&err)
+    let io = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<std::io::Error>())
         .expect("io::Error");
     let named = io
@@ -556,7 +557,7 @@ fn a_caller_who_asks_a_silent_runtime_for_nodelay_is_still_refused_by_name() {
         })
         .expect_err("a runtime that declares nothing must refuse what it was asked for");
     assert_eq!(*err.kind(), ErrorKind::Unsupported);
-    let io = std::error::Error::source(&err)
+    let io = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<std::io::Error>())
         .expect("the source is the io::Error reject_unsupported built");
     let named = io

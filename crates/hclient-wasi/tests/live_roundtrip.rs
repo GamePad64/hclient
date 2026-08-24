@@ -59,6 +59,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 /// Must match `EXPECTED_BODY` in `live_roundtrip_guest.rs`.
 const RESPONSE_BODY: &[u8] = b"hello from a real wasi:http host";
@@ -194,7 +195,7 @@ fn wasi_transport_accepts_an_empty_trailers_frame_without_a_trailer_header() {
 /// acts; `STAY_ALIVE_NS` = 1.5s, how long it then lives) with a wide
 /// margin on both sides, so one constant serves both directions: the drop
 /// happens well inside this window, and the hold outlasts it.
-const CANCEL_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_millis(700);
+const CANCEL_OBSERVATION_WINDOW: Duration = Duration::from_millis(700);
 
 /// What the mock server saw at its end of the connection.
 #[derive(Debug, PartialEq, Eq)]
@@ -231,7 +232,7 @@ fn observe_client_end(
     verdict: &std::sync::mpsc::Sender<ClientEnd>,
 ) {
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set_read_timeout");
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
@@ -268,7 +269,7 @@ fn observe_client_end(
         .expect("the test must still be listening");
 
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set_read_timeout");
     while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
 }
@@ -403,7 +404,7 @@ fn counting_server() -> (u16, Arc<AtomicUsize>) {
 /// not reuse" can never be "the peer could not tell the response had
 /// ended".
 fn serve_keep_alive(mut sock: std::net::TcpStream) {
-    sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+    sock.set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set_read_timeout");
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -492,7 +493,7 @@ fn two_guest_requests_to_one_origin_open_two_connections() {
 fn the_counting_server_serves_two_requests_on_one_connection() {
     let (port, accepted) = counting_server();
     let mut sock = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))
+    sock.set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set_read_timeout");
     let want = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\nok",
@@ -652,7 +653,7 @@ fn drain_headers(stream: &mut std::net::TcpStream) {
 /// guest needs to write.
 fn drain_request_fully(stream: &mut std::net::TcpStream) {
     stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(1500)))
+        .set_read_timeout(Some(Duration::from_millis(1500)))
         .expect("set_read_timeout");
     let mut buf = [0u8; 4096];
     loop {

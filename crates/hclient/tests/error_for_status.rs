@@ -5,6 +5,7 @@
 use hclient::Client;
 use hclient::error::UnexpectedStatus;
 use hclient::mock::MockTransport;
+use std::error::Error as StdError;
 
 fn answering(status: u16) -> Client {
     let t = MockTransport::new();
@@ -76,7 +77,7 @@ fn the_error_carries_the_status_and_the_url_of_the_hop_that_failed() {
     })
     .expect_err("the second hop failed");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Status, "{err:?}");
-    let unexpected = std::error::Error::source(&err)
+    let unexpected = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<UnexpectedStatus>())
         .unwrap_or_else(|| panic!("the typed status: {err:?}"));
     assert_eq!(unexpected.status, 503);

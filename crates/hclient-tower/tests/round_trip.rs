@@ -10,7 +10,10 @@ use hclient::Client;
 use hclient_core::{Capabilities, RedirectSupport, RequestBody, unversioned::Transport};
 use hclient_mock::MockTransport;
 use hclient_tower::{ServiceTransport, TransportService};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::Context;
+use std::task::Poll;
 use tower::ServiceBuilder;
 
 /// Records every request that passes through the middle of the stack, so a
@@ -163,15 +166,11 @@ struct DemandsReadiness {
 impl tower_service::Service<http::Request<RequestBody>> for DemandsReadiness {
     type Response = http::Response<http_body_util::Full<bytes::Bytes>>;
     type Error = hclient_core::Error;
-    type Future =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future = Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
 
-    fn poll_ready(
-        &mut self,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.ready = true;
-        std::task::Poll::Ready(Ok(()))
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, _: http::Request<RequestBody>) -> Self::Future {

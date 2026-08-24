@@ -1,4 +1,5 @@
 use hyper::rt::ReadBufCursor;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -109,7 +110,7 @@ macro_rules! either {
     };
 }
 
-impl std::fmt::Debug for Socket {
+impl Debug for Socket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Socket::Tcp(s) => s.fmt(f),
@@ -122,7 +123,7 @@ impl std::fmt::Debug for Socket {
 // A hand-written `Debug`, not `#[derive]`: `derive` would dump all 8 KiB of
 // `scratch` as a list of numbers on every format call — useless and noisy
 // in logs. The same technique is already used in `hclient_rt::FuturesIo`.
-impl std::fmt::Debug for TokioIo {
+impl Debug for TokioIo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokioIo")
             .field("inner", &self.inner)
@@ -226,6 +227,7 @@ impl hyper::rt::Write for TokioIo {
 
 #[cfg(test)]
 mod tests {
+    use std::future::poll_fn;
     /// The `ENOTCONN`-on-shutdown decision, checked where it can be:
     /// Linux never produces the error, so the platform cannot be the test.
     /// What is testable is our own rule, in all three directions.
@@ -281,7 +283,7 @@ mod tests {
         let mut store = vec![0u8; len];
         loop {
             let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            std::future::poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb.unfilled()))
+            poll_fn(|cx| Pin::new(&mut client).poll_read(cx, rb.unfilled()))
                 .await
                 .unwrap();
             let filled = rb.filled().to_vec();

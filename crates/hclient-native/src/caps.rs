@@ -48,6 +48,7 @@
 //! fails when the count moves.
 
 use hclient_core::Capabilities;
+use std::fmt::Debug;
 
 /// Two stacks that cannot be given one honest answer for one field.
 ///
@@ -71,7 +72,7 @@ pub struct Disagreement {
 }
 
 impl Disagreement {
-    fn new<V: std::fmt::Debug>(field: &'static str, tcp: &V, quic: &V) -> Self {
+    fn new<V: Debug>(field: &'static str, tcp: &V, quic: &V) -> Self {
         Self {
             field,
             tcp: format!("{tcp:?}"),
@@ -238,7 +239,7 @@ fn early_data(tcp: &Capabilities, quic: &Capabilities) -> hclient_core::EarlyDat
 
 /// The value if both members give it, and a [`Disagreement`] naming the
 /// field if they do not.
-fn same<V: PartialEq + Copy + std::fmt::Debug>(
+fn same<V: PartialEq + Copy + Debug>(
     field: &'static str,
     tcp: &V,
     quic: &V,

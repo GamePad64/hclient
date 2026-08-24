@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -161,7 +162,7 @@ pub struct SendJsFuture {
 // `wasm_bindgen::closure::Closure<T>` has no `Debug` impl), so this can't
 // be derived — same reason `NativeBody` (`hclient-native/src/h1.rs`) writes
 // its `Debug` by hand rather than deriving it.
-impl std::fmt::Debug for SendJsFuture {
+impl Debug for SendJsFuture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ready = self
             .state

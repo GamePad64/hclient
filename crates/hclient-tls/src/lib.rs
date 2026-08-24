@@ -585,6 +585,7 @@ mod tests {
     use super::*;
     use hyper::rt::{Read, ReadBufCursor, Write};
     use std::collections::VecDeque;
+    use std::future::poll_fn;
     use std::io;
     use std::pin::{Pin, pin};
     use std::task::{Context, Poll, Waker};
@@ -765,20 +766,20 @@ mod tests {
         // the passed-in `io`, not a new, disconnected stream.
         let mut preexisting = [0u8; 11];
         let mut rb = hyper::rt::ReadBuf::new(&mut preexisting);
-        let read = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
+        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
         poll_once(pin!(read).as_mut()).unwrap();
         assert_eq!(&preexisting, b"preexisting");
 
         // `Stream<S>` actually implements `hyper::rt::Write`, not just
         // types as one: write and read it back through the same shared
         // `Loopback` buffer.
-        let write = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, b"ping"));
+        let write = poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, b"ping"));
         let n = poll_once(pin!(write).as_mut()).unwrap();
         assert_eq!(n, 4);
 
         let mut echoed = [0u8; 4];
         let mut rb = hyper::rt::ReadBuf::new(&mut echoed);
-        let read = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
+        let read = poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, rb.unfilled()));
         poll_once(pin!(read).as_mut()).unwrap();
         assert_eq!(&echoed, b"ping");
     }

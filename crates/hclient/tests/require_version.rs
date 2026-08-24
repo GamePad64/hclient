@@ -37,6 +37,7 @@ use hclient::caps::Capabilities;
 use hclient::error::UnsupportedCapability;
 use hclient::mock::MockTransport;
 use hclient::{Client, ErrorKind, RequestBody, RequireVersion};
+use std::error::Error as StdError;
 
 /// A backend differing from `Capabilities::default()` in exactly one field.
 fn caps(version_select: bool) -> Capabilities {
@@ -84,7 +85,7 @@ fn a_demand_against_a_backend_that_cannot_honour_one_is_unsupported() {
 
     let err = send(&c, demanding(http::Version::HTTP_2)).expect_err("the demand must be refused");
     assert_eq!(*err.kind(), ErrorKind::Unsupported);
-    let named = std::error::Error::source(&err)
+    let named = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<UnsupportedCapability>())
         .expect("the same typed refusal the other three capability gates raise");
     assert_eq!(named.what, "require_version");

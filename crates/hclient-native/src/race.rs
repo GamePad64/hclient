@@ -179,6 +179,7 @@ use hclient_core::{Error, RequestBody, RetryKind, Timeouts};
 use hclient_dns::Resolve;
 use hclient_rt::{TcpConnect, Timer};
 use hclient_tls::TlsConnect;
+use std::pin::Pin;
 use std::pin::pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -211,7 +212,7 @@ impl http_body::Body for NoBody {
     type Error = Error;
 
     fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
+        self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
         Poll::Ready(None)

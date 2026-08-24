@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 use hclient_core::Error;
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 
 /// A resolver that hands back exactly the records it was built with, so
 /// what a test asserts on the far side is what it put in on this one.
@@ -210,7 +211,7 @@ fn port_and_address_hints_survive_so_the_target_need_not_be_resolved_again() {
 fn a_resolved_address_and_an_endpoint_can_be_moved_to_another_thread_and_compared() {
     let addr = ResolvedAddr {
         addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
-        ttl: Some(std::time::Duration::from_secs(30)),
+        ttl: Some(Duration::from_secs(30)),
     };
     let mut record = endpoint("svc.example");
     record.ech_config_list = Some(Bytes::from_static(b"\xfe\x0d"));

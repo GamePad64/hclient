@@ -870,6 +870,7 @@ pub struct UnsupportedCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as StdError;
 
     /// **Every field is a gate or a report, and adding one without saying
     /// which is a compile error.**
@@ -1078,7 +1079,7 @@ mod tests {
         e.insert(RequireVersion(http::Version::HTTP_2));
         let err = check_version(&e, http::Version::HTTP_11).unwrap_err();
         assert_eq!(*err.kind(), crate::ErrorKind::Unsupported);
-        let named = std::error::Error::source(&err)
+        let named = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<VersionNotAvailable>())
             .expect("the source must be the typed refusal, not an opaque string");
         assert_eq!(

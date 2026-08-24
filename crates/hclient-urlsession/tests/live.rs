@@ -13,6 +13,7 @@ use hclient_urlsession::UrlSession;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::mpsc;
+use std::time::Duration;
 
 /// A server that records the request head it was sent and answers by a
 /// script — the shape every wire-level test in this workspace uses,
@@ -125,8 +126,7 @@ fn a_redirect_is_handed_back_rather_than_followed() {
     let first = seen.recv().expect("one request");
     assert!(first.starts_with("GET /start "), "{first}");
     assert!(
-        seen.recv_timeout(std::time::Duration::from_millis(500))
-            .is_err(),
+        seen.recv_timeout(Duration::from_millis(500)).is_err(),
         "exactly one request: a followed redirect would be a second"
     );
 }
@@ -203,8 +203,7 @@ fn a_streaming_body_is_refused_rather_than_dropped() {
     .expect_err("a streaming body is not sendable here");
     assert_eq!(*err.kind(), hclient_core::ErrorKind::Unsupported, "{err:?}");
     assert!(
-        seen.recv_timeout(std::time::Duration::from_millis(300))
-            .is_err(),
+        seen.recv_timeout(Duration::from_millis(300)).is_err(),
         "and nothing reached the server: a refusal must not half-send"
     );
 }
@@ -250,7 +249,7 @@ fn dropping_the_response_stops_the_transfer_the_server_sees() {
                 if sent > 100_000_000 {
                     break false;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(5));
             };
             let _ = tx.send(stopped);
         }
@@ -271,7 +270,7 @@ fn dropping_the_response_stops_the_transfer_the_server_sees() {
     drop(resp);
 
     assert!(
-        rx.recv_timeout(std::time::Duration::from_secs(20))
+        rx.recv_timeout(Duration::from_secs(20))
             .expect("the server must notice within the bound"),
         "the server's writes failed, which is the transfer stopping"
     );

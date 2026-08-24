@@ -63,9 +63,11 @@ use hclient_native::Native;
 use hclient_rt::{TcpConnect, TcpOpts};
 use hclient_rt_embassy::{Embassy, SocketPool};
 use hclient_tls::NoTls;
+use std::future::poll_fn;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
+use std::task::Poll;
 use std::time::Duration;
 
 /// Set on the child process to say which scenario it is: its presence is
@@ -599,9 +601,7 @@ async fn cancel(stack: Stack<'static>, drop_it: bool) {
             break;
         }
         let f = fut.as_mut().expect("still held");
-        if let std::task::Poll::Ready(r) =
-            std::future::poll_fn(|cx| std::task::Poll::Ready(f.as_mut().poll(cx))).await
-        {
+        if let Poll::Ready(r) = poll_fn(|cx| Poll::Ready(f.as_mut().poll(cx))).await {
             panic!(
                 "the server never answers, so `send` must not complete: ok={}",
                 r.is_ok()
@@ -622,8 +622,7 @@ async fn cancel(stack: Stack<'static>, drop_it: bool) {
                 // single-threaded, and a blocking `recv` here would stop
                 // the stack task that has to put our FIN on the wire.
                 if let Some(f) = fut.as_mut() {
-                    let _ = std::future::poll_fn(|cx| std::task::Poll::Ready(f.as_mut().poll(cx)))
-                        .await;
+                    let _ = poll_fn(|cx| Poll::Ready(f.as_mut().poll(cx))).await;
                 }
                 Timer::after_millis(1).await;
             }
@@ -674,9 +673,7 @@ async fn reclaim(stack: Stack<'static>) {
             break;
         }
         let f = fut.as_mut().expect("still held");
-        if let std::task::Poll::Ready(r) =
-            std::future::poll_fn(|cx| std::task::Poll::Ready(f.as_mut().poll(cx))).await
-        {
+        if let Poll::Ready(r) = poll_fn(|cx| Poll::Ready(f.as_mut().poll(cx))).await {
             panic!(
                 "the silent server never answers, so `send` must not complete: ok={}",
                 r.is_ok()

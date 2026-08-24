@@ -13,6 +13,7 @@ use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
 use std::cell::Cell;
+use std::error::Error as StdError;
 use std::net::{IpAddr, Ipv4Addr};
 use std::pin::{Pin, pin};
 use std::rc::Rc;
@@ -205,7 +206,7 @@ fn a_failed_item_keeps_both_its_kind_and_its_underlying_cause() {
         .expect_err("the first item is the failure");
 
     assert_eq!(*failure.kind(), ErrorKind::Resolve, "{failure}");
-    let cause = std::error::Error::source(failure).expect("the cause must survive the wrap");
+    let cause = StdError::source(failure).expect("the cause must survive the wrap");
     let upstream = cause
         .downcast_ref::<UpstreamFailed>()
         .expect("and it must still be the resolver's own error type, not a string");

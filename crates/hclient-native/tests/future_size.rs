@@ -22,6 +22,7 @@ use hclient_dns::IpLiteralOnly;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::NoTls;
+use std::time::Duration;
 
 /// Measured **15,480 bytes** on x86-64 Linux, debug, `--all-features` —
 /// three and a half times `Client::execute`'s, which is the other half of
@@ -62,8 +63,7 @@ fn the_execute_future_stays_under_its_ceiling() {
 /// actually configures rather than the smallest one.
 #[test]
 fn the_ceiling_holds_with_the_opt_ins_switched_on() {
-    let t =
-        Native::new(Tokio, NoTls, IpLiteralOnly).expect_continue(std::time::Duration::from_secs(1));
+    let t = Native::new(Tokio, NoTls, IpLiteralOnly).expect_continue(Duration::from_secs(1));
     let fut = t.execute(http::Request::new(RequestBody::Empty));
     let size = std::mem::size_of_val(&fut);
     assert!(size <= CEILING, "with the opt-ins on it is {size} bytes");

@@ -38,6 +38,7 @@
 
 use bytes::Bytes;
 use hclient_core::{Error, ErrorKind, RequestBody};
+use std::future::poll_fn;
 use std::pin::Pin;
 
 /// The send half of a split request stream.
@@ -211,7 +212,7 @@ async fn write_stream(
     body: &mut (dyn http_body::Body<Data = Bytes, Error = Error> + Unpin + Send), // send-bound-exception: amendment-C2
 ) -> Result<bool, Error> {
     loop {
-        let frame = std::future::poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await;
+        let frame = poll_fn(|cx| Pin::new(&mut *body).poll_frame(cx)).await;
         let Some(frame) = frame else { return Ok(false) };
         let frame = match frame {
             Ok(f) => f,

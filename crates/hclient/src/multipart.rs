@@ -605,6 +605,10 @@ mod tests {
     use super::*;
     use hclient_core::RetryKind;
     use http_body_util::BodyExt;
+    use std::error::Error as StdError;
+    use std::future::poll_fn;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
     fn fixed() -> Boundary {
         Boundary::new("XbXb").expect("a token boundary")
@@ -769,7 +773,7 @@ mod tests {
         for (depth, ok) in [(15u8, true), (16u8, false)] {
             let mut b = RequestBody::Full(Bytes::from_static(b"x"));
             for _ in 0..depth {
-                let inner = std::sync::Arc::new(std::sync::Mutex::new(Some(b)));
+                let inner = Arc::new(Mutex::new(Some(b)));
                 b = RequestBody::rewindable(move || {
                     inner.lock().expect("lock").take().expect("one call")
                 });
@@ -870,10 +874,9 @@ mod tests {
             panic!("expected Streaming");
         };
         let total = s.size_hint().exact().expect("an exact total");
-        let frame =
-            futures_executor::block_on(std::future::poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
-                .expect("a frame")
-                .expect("not an error");
+        let frame = futures_executor::block_on(poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
+            .expect("a frame")
+            .expect("not an error");
         let n = frame.into_data().expect("data").len() as u64;
         assert!(n > 0 && n < total, "a partial frame: {n} of {total}");
         assert_eq!(
@@ -1019,7 +1022,7 @@ mod tests {
         };
         let mut frames = Vec::new();
         while let Some(r) =
-            futures_executor::block_on(std::future::poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
+            futures_executor::block_on(poll_fn(|cx| Pin::new(&mut *s).poll_frame(cx)))
         {
             frames.push(r.expect("not an error").into_data().expect("data"));
         }
@@ -1053,7 +1056,7 @@ mod tests {
         let err = futures_executor::block_on(s.collect()).expect_err("trailers must fail");
         assert_eq!(*err.kind(), ErrorKind::Body, "{err:?}");
         assert!(
-            std::error::Error::source(&err)
+            StdError::source(&err)
                 .and_then(|s| s.downcast_ref::<TrailersInAPart>())
                 .is_some(),
             "{err:?}"

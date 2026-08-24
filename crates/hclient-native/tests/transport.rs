@@ -39,8 +39,17 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
+use std::fmt::Display;
 use std::future::Future;
 use std::io::{Read, Write};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(30);
@@ -321,12 +330,12 @@ struct CancelledDns;
 
 #[derive(Debug)]
 struct FakeCancelled;
-impl std::fmt::Display for FakeCancelled {
+impl Display for FakeCancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("resolver background pool went away")
     }
 }
-impl std::error::Error for FakeCancelled {}
+impl StdError for FakeCancelled {}
 
 impl Resolve for CancelledDns {
     fn lookup_ipv4(
@@ -470,10 +479,10 @@ impl http_body::Body for OneShotErrBody {
     type Data = bytes::Bytes;
     type Error = hclient_core::Error;
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
-        std::task::Poll::Ready(self.0.take().map(Err))
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+        Poll::Ready(self.0.take().map(Err))
     }
     fn is_end_stream(&self) -> bool {
         self.0.is_none()
@@ -548,9 +557,9 @@ fn poll_bounded<F: Future>(fut: F, bound: Duration) -> Option<F::Output> {
     let mut fut = std::pin::pin!(fut);
     let start = std::time::Instant::now();
     let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
+    let mut cx = Context::from_waker(waker);
     loop {
-        if let std::task::Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+        if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
             return Some(v);
         }
         if start.elapsed() >= bound {
@@ -571,32 +580,26 @@ struct NeverConnects;
 struct NeverStream;
 impl hyper::rt::Read for NeverStream {
     fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
         _b: hyper::rt::ReadBufCursor<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Pending
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
     }
 }
 impl hyper::rt::Write for NeverStream {
     fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
         b: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::task::Poll::Ready(Ok(b.len()))
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(b.len()))
     }
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 impl hclient_rt::TcpConnect for NeverConnects {
@@ -622,16 +625,16 @@ impl hclient_rt::TcpConnect for NeverConnects {
 /// `bounded_block_on` watchdog and `Native::testing::BlockingIo` use for
 /// "no reactor, but still real wall-clock time".
 struct ThreadSleep {
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ThreadSleep {
     fn new(d: Duration) -> Self {
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done2 = done.clone();
         std::thread::spawn(move || {
             std::thread::sleep(d);
-            done2.store(true, std::sync::atomic::Ordering::SeqCst);
+            done2.store(true, Ordering::SeqCst);
         });
         Self { done }
     }
@@ -639,15 +642,12 @@ impl ThreadSleep {
 
 impl std::future::Future for ThreadSleep {
     type Output = ();
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        if self.done.load(std::sync::atomic::Ordering::SeqCst) {
-            std::task::Poll::Ready(())
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.done.load(Ordering::SeqCst) {
+            Poll::Ready(())
         } else {
             cx.waker().wake_by_ref();
-            std::task::Poll::Pending
+            Poll::Pending
         }
     }
 }
@@ -688,7 +688,7 @@ impl Resolve for OneUnroutableAddr {
 struct NoOpTls;
 impl hclient_tls::TlsIdentity for NoOpTls {
     fn config_id(&self) -> hclient_tls::TlsConfigId {
-        static ID: std::sync::OnceLock<hclient_tls::TlsConfigId> = std::sync::OnceLock::new();
+        static ID: OnceLock<hclient_tls::TlsConfigId> = OnceLock::new();
         *ID.get_or_init(hclient_tls::TlsConfigId::new_unique)
     }
 }
@@ -699,7 +699,7 @@ impl hclient_tls::TlsIdentity for NoOpTls {
 struct CertTls;
 impl hclient_tls::TlsIdentity for CertTls {
     fn config_id(&self) -> hclient_tls::TlsConfigId {
-        static ID: std::sync::OnceLock<hclient_tls::TlsConfigId> = std::sync::OnceLock::new();
+        static ID: OnceLock<hclient_tls::TlsConfigId> = OnceLock::new();
         *ID.get_or_init(hclient_tls::TlsConfigId::new_unique)
     }
     fn presents_client_certs(&self) -> bool {
@@ -809,7 +809,7 @@ fn declared_connect_timeout_is_actually_applied() {
 /// "Happy Eyeballs simply ran out of addresses on its own."
 #[derive(Clone, Default)]
 struct LoggingNeverConnects {
-    attempts: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+    attempts: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 impl hclient_rt::TcpConnect for LoggingNeverConnects {
     type Stream = NeverStream;
@@ -966,11 +966,11 @@ impl http_body::Body for TwoFrames {
     type Data = bytes::Bytes;
     type Error = hclient_core::Error;
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
         self.0 += 1;
-        std::task::Poll::Ready(match self.0 {
+        Poll::Ready(match self.0 {
             1 => Some(Ok(http_body::Frame::data(bytes::Bytes::from_static(
                 b"AAAA",
             )))),

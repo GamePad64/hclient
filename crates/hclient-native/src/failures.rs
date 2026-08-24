@@ -88,6 +88,7 @@
 
 use crate::altsvc::Origin;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -120,7 +121,7 @@ pub struct H3Failures {
     entries: Arc<Mutex<HashMap<Origin, Duration>>>,
 }
 
-impl std::fmt::Debug for H3Failures {
+impl Debug for H3Failures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Failures")
             .field(

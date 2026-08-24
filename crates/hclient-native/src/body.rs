@@ -127,7 +127,11 @@ use hclient_core::{Error, ErrorKind, RequestBody};
 use http::HeaderName;
 use http_body::{Body, Frame, SizeHint};
 use std::collections::HashSet;
+use std::fmt::Debug;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
 /// A buffered body or a forwarded stream — decided once, in
@@ -204,7 +208,7 @@ pub struct OutgoingBody {
     /// reason `hyper::upgrade::Upgraded` is unusable here. So the clock
     /// stays in `Native::execute`, which has one already, and this body
     /// knows only whether it may speak yet.
-    gate: Option<std::sync::Arc<ContinueGate>>,
+    gate: Option<Arc<ContinueGate>>,
 }
 
 /// Whether a request body withheld for `Expect: 100-continue` may go.
@@ -217,12 +221,12 @@ pub struct OutgoingBody {
 #[derive(Debug, Default)]
 pub struct ContinueGate {
     open: std::sync::atomic::AtomicBool,
-    waker: std::sync::Mutex<Option<std::task::Waker>>,
+    waker: Mutex<Option<std::task::Waker>>,
 }
 
 impl ContinueGate {
     pub(crate) fn open(&self) {
-        self.open.store(true, std::sync::atomic::Ordering::Release);
+        self.open.store(true, Ordering::Release);
         if let Some(w) = self.waker.lock().expect("continue gate poisoned").take() {
             w.wake();
         }
@@ -231,14 +235,14 @@ impl ContinueGate {
     /// `true` when the body may proceed. Registers `cx` otherwise, so the
     /// body is polled again when whichever side opens it does.
     fn poll_open(&self, cx: &Context<'_>) -> bool {
-        if self.open.load(std::sync::atomic::Ordering::Acquire) {
+        if self.open.load(Ordering::Acquire) {
             return true;
         }
         *self.waker.lock().expect("continue gate poisoned") = Some(cx.waker().clone());
         // Re-checked after registering, because the opener may have run
         // between the load and the lock — the ordinary lost-wakeup race,
         // and the reason this is not `if !open { register; return false }`.
-        self.open.load(std::sync::atomic::Ordering::Acquire)
+        self.open.load(Ordering::Acquire)
     }
 }
 
@@ -312,7 +316,7 @@ pub(crate) fn declared_trailer_names(headers: &http::HeaderMap) -> HashSet<Heade
         .collect()
 }
 
-impl std::fmt::Debug for Inner {
+impl Debug for Inner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Inner::Buffered(b) => f.debug_tuple("Buffered").field(b).finish(),
@@ -331,7 +335,7 @@ impl OutgoingBody {
     }
 
     /// Withhold every frame until `gate` opens.
-    pub(crate) fn withhold_until(&mut self, gate: std::sync::Arc<ContinueGate>) {
+    pub(crate) fn withhold_until(&mut self, gate: Arc<ContinueGate>) {
         self.gate = Some(gate);
     }
 
@@ -436,6 +440,7 @@ mod tests {
     use super::*;
     use hclient_core::{ErrorKind, RequestBody};
     use http_body_util::BodyExt;
+    use std::error::Error as StdError;
 
     // `error_type_satisfies_hypers_send_sync_bound` cannot live here:
     // `crates/hclient-native/src` is inside the `no-declared-send` CI scan,
@@ -590,7 +595,7 @@ mod tests {
     // `poll_once` on `conn`/`send_request` never panics.
     use std::io;
 
-    fn poll_once<F: std::future::Future>(fut: std::pin::Pin<&mut F>) -> F::Output {
+    fn poll_once<F: std::future::Future>(fut: Pin<&mut F>) -> F::Output {
         let mut cx = Context::from_waker(std::task::Waker::noop());
         match fut.poll(&mut cx) {
             Poll::Ready(v) => v,
@@ -702,7 +707,7 @@ mod tests {
             Err(e) => e,
         };
 
-        let recovered = std::error::Error::source(&err)
+        let recovered = StdError::source(&err)
             .and_then(|s| s.downcast_ref::<Error>())
             .unwrap_or_else(|| {
                 panic!("hyper::Error::source() must yield our hclient_core::Error, got: {err:?}")

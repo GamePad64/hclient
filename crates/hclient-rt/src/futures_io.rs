@@ -1,4 +1,5 @@
 use hyper::rt::ReadBufCursor;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -58,7 +59,7 @@ impl<S> FuturesIo<S> {
 // `scratch` as a list of numbers on every format call — useless and noisy
 // in logs. The same technique is already used in
 // `hclient_core::RequestBody` (length instead of contents).
-impl<S: std::fmt::Debug> std::fmt::Debug for FuturesIo<S> {
+impl<S: Debug> Debug for FuturesIo<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FuturesIo")
             .field("inner", &self.inner)
@@ -144,7 +145,10 @@ impl<S: futures_io::AsyncWrite + Unpin> hyper::rt::Write for FuturesIo<S> {
 mod tests {
     use super::*;
     use futures_executor::block_on;
+    use std::future::poll_fn;
     use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
 
     /// A source that hands out data in chunks, to catch partial reads.
     struct Chunked {
@@ -155,13 +159,13 @@ mod tests {
     impl futures_io::AsyncRead for Chunked {
         fn poll_read(
             mut self: Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
+            _: &mut Context<'_>,
             buf: &mut [u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
+        ) -> Poll<std::io::Result<usize>> {
             let n = self.step.min(buf.len()).min(self.data.len() - self.at);
             buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
             self.at += n;
-            std::task::Poll::Ready(Ok(n))
+            Poll::Ready(Ok(n))
         }
     }
 
@@ -170,7 +174,7 @@ mod tests {
         let mut store = [0u8; 8];
         loop {
             let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            let poll = block_on(std::future::poll_fn(|cx| {
+            let poll = block_on(poll_fn(|cx| {
                 hyper::rt::Read::poll_read(Pin::new(&mut io), cx, rb.unfilled())
             }));
             poll.unwrap();
@@ -234,7 +238,7 @@ mod tests {
         let mut store = vec![0u8; len];
         loop {
             let mut rb = hyper::rt::ReadBuf::new(&mut store);
-            let poll = block_on(std::future::poll_fn(|cx| {
+            let poll = block_on(poll_fn(|cx| {
                 hyper::rt::Read::poll_read(Pin::new(&mut io), cx, rb.unfilled())
             }));
             poll.unwrap();
@@ -253,22 +257,16 @@ mod tests {
     impl futures_io::AsyncWrite for NullWrite {
         fn poll_write(
             self: Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
+            _: &mut Context<'_>,
             buf: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
-            std::task::Poll::Ready(Ok(buf.len()))
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
         }
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            std::task::Poll::Ready(Ok(()))
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
         }
     }
 

@@ -76,6 +76,7 @@
 use hclient_core::Error;
 use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_rt::Timer;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -175,7 +176,7 @@ pub(crate) struct Watch<H> {
 
 // Hand-written: `H` is not required to be `Debug`, and requiring it would
 // be a bound on the caller's hook for the benefit of a formatter.
-impl<H> std::fmt::Debug for Watch<H> {
+impl<H> Debug for Watch<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Watch").field("id", &self.state.id).finish()
     }

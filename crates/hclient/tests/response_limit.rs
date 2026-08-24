@@ -10,6 +10,7 @@
 use hclient::Client;
 use hclient::error::ResponseTooLarge;
 use hclient::mock::MockTransport;
+use std::error::Error as StdError;
 
 fn drain(c: &Client) -> Result<usize, hclient_core::Error> {
     futures_executor::block_on(async {
@@ -48,7 +49,7 @@ fn a_body_over_the_limit_is_refused_and_one_under_it_is_not() {
                     over,
                     "a {len}-byte body under a {limit}-byte limit must not fail: {e:?}"
                 );
-                let too_large = std::error::Error::source(&e)
+                let too_large = StdError::source(&e)
                     .and_then(|s| s.downcast_ref::<ResponseTooLarge>())
                     .unwrap_or_else(|| panic!("the typed refusal, not any error: {e:?}"));
                 assert_eq!(too_large.limit, limit);
@@ -111,7 +112,7 @@ fn a_small_gzip_that_expands_past_the_limit_is_stopped() {
         .build()
         .expect("build");
     let err = drain(&c).expect_err("a megabyte under a 4 KiB limit must be refused");
-    let too_large = std::error::Error::source(&err)
+    let too_large = StdError::source(&err)
         .and_then(|s| s.downcast_ref::<ResponseTooLarge>())
         .unwrap_or_else(|| panic!("the typed refusal: {err:?}"));
     assert!(

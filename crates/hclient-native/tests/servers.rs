@@ -22,8 +22,10 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
+use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The authority every test dials. A name rather than a literal, because
@@ -39,7 +41,7 @@ pub const ORIGIN: &str = "both-stacks.test";
 /// the answer to request 1, and the test can then have it withdraw the
 /// advertisement, or change its `ma`, before request 2 — the same origin,
 /// the same connection story, a different thing said.
-type AltSvc = Arc<std::sync::Mutex<Option<String>>>;
+type AltSvc = Arc<Mutex<Option<String>>>;
 
 /// What the QUIC half of the pair does.
 ///
@@ -124,7 +126,7 @@ pub struct Pair {
     _threads: (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>),
 }
 
-impl std::fmt::Debug for Pair {
+impl Debug for Pair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pair")
             .field("port", &self.port)

@@ -9,6 +9,7 @@
 //! is still the right place for any future test in that spirit.
 
 use hclient::mock::MockTransport;
+use std::sync::Arc;
 
 #[test]
 fn public_api_types_are_reachable_from_the_facade() {
@@ -100,7 +101,7 @@ fn retry_kind_and_rewind_factory_are_reachable_from_the_facade() {
     assert_eq!(full.retry_kind(), hclient::body::RetryKind::Free);
 
     let factory: hclient::body::RewindFactory =
-        std::sync::Arc::new(|| hclient::RequestBody::Full(bytes::Bytes::from_static(b"y")));
+        Arc::new(|| hclient::RequestBody::Full(bytes::Bytes::from_static(b"y")));
     let rewindable = hclient::RequestBody::Rewindable(factory);
     assert_eq!(
         rewindable.retry_kind(),

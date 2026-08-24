@@ -4,6 +4,7 @@
 use bytes::{Buf, Bytes};
 use hclient_core::unversioned::Hooks;
 use hclient_core::{Error, ErrorKind};
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -125,7 +126,7 @@ impl<H> H3Body<H> {
 // Hand-written: h3's RequestStream is not Debug, and the useful thing to
 // print about a body in flight is which phase it is in, not the QPACK
 // state behind it.
-impl<H> std::fmt::Debug for H3Body<H> {
+impl<H> Debug for H3Body<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Body")
             .field("phase", &self.phase)

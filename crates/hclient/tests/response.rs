@@ -7,6 +7,10 @@
 
 use hclient::mock::MockTransport;
 use hclient::{Client, RequestBody};
+use std::error::Error as StdError;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 
 #[test]
 fn collected_keeps_status_and_headers_after_reading_the_body() {
@@ -262,7 +266,7 @@ fn header_first_error_wins_name_over_later_value_error() {
             .send(),
     );
     let err = result.expect_err("both header() calls are invalid; send() must fail");
-    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    let src = StdError::source(&err).expect("Error::new always sets a source");
     assert!(
         src.downcast_ref::<http::header::InvalidHeaderName>()
             .is_some(),
@@ -376,9 +380,9 @@ fn version_and_into_parts_expose_the_full_response_head() {
     // The body handed back by into_parts() is the real, unread one.
     use http_body::Body as _;
     let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    match std::pin::Pin::new(&mut body).poll_frame(&mut cx) {
-        std::task::Poll::Ready(Some(Ok(f))) => {
+    let mut cx = Context::from_waker(waker);
+    match Pin::new(&mut body).poll_frame(&mut cx) {
+        Poll::Ready(Some(Ok(f))) => {
             assert_eq!(f.into_data().unwrap(), bytes::Bytes::from_static(b"body"))
         }
         other => panic!("expected the data frame via the raw body, got {other:?}"),
@@ -586,7 +590,7 @@ fn chunk_survives_a_non_body_error_kind_instead_of_relabeling_it_body() {
     // Exactly one level of source(), not two: a double-wrap would insert an
     // extra `hclient::Error` the caller has to downcast through before
     // reaching the original `std::io::Error`.
-    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    let src = StdError::source(&err).expect("Error::new always sets a source");
     assert!(
         src.downcast_ref::<hclient::Error>().is_none(),
         "source() must be the original std::io::Error directly, not another hclient::Error \

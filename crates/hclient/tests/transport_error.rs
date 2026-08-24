@@ -16,15 +16,17 @@
 use hclient::error::Phase;
 use hclient::mock::MockTransport;
 use hclient::{Client, Error, ErrorKind};
+use std::error::Error as StdError;
+use std::fmt::Display;
 
 #[derive(Debug)]
 struct Backend(&'static str);
-impl std::fmt::Display for Backend {
+impl Display for Backend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
-impl std::error::Error for Backend {}
+impl StdError for Backend {}
 
 fn client_failing_with(kind: ErrorKind, msg: &'static str) -> Client {
     let m = MockTransport::new();
@@ -97,7 +99,7 @@ fn a_genuinely_other_transport_error_stays_other() {
     let err = futures_executor::block_on(c.get("https://a/x").send()).unwrap_err();
 
     assert_eq!(*err.kind(), ErrorKind::Other);
-    let src = std::error::Error::source(&err).expect("Error::new always sets a source");
+    let src = StdError::source(&err).expect("Error::new always sets a source");
     assert!(
         src.downcast_ref::<hclient::mock::QueueEmpty>().is_some(),
         "and the source is still QueueEmpty itself, not another wrapper around it"

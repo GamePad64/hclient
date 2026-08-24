@@ -1,5 +1,6 @@
 //! The transport.
 
+use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -132,7 +133,7 @@ impl Transport for UrlSession {
         // The head, and nothing before it: a task that fails to connect
         // reports `End` without ever producing a `Head`, and that is an
         // `execute` error rather than a body one.
-        let head = std::future::poll_fn(|cx| match shared.poll_next(cx) {
+        let head = poll_fn(|cx| match shared.poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Chunk::Head(s, h)) => Poll::Ready(Ok((s, h))),
             Poll::Ready(Chunk::End(msg)) => Poll::Ready(Err(Error::new(

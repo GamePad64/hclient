@@ -12,6 +12,11 @@
 //! future is polled, and the `WasiHttp`/`http::Request` constructors make
 //! no host calls at all.
 
+use std::pin::Pin;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
+
 fn assert_send<T: Send>(_: T) {}
 
 /// Review resolution: `convert::Payload::Streaming`
@@ -35,11 +40,10 @@ fn execute_future_is_send_even_for_a_streaming_request_body() {
         type Data = bytes::Bytes;
         type Error = hclient_core::Error;
         fn poll_frame(
-            mut self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>>
-        {
-            std::task::Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<bytes::Bytes>, hclient_core::Error>>> {
+            Poll::Ready(self.0.take().map(|b| Ok(http_body::Frame::data(b))))
         }
     }
 
@@ -87,7 +91,7 @@ fn a_send_hook_leaves_the_execute_future_send() {
     struct Atomic(std::sync::atomic::AtomicUsize);
     impl Hooks for Atomic {
         fn on(&self, _event: Event<'_>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 

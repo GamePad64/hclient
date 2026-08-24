@@ -51,6 +51,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConfigId, TlsConnect, TlsIdentity, TlsInfo, TlsRequest};
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -169,7 +170,7 @@ async fn handle(
         // (`h2-0.4.15/src/proto/streams/prioritize.rs:729-744`), the
         // response head included if it had not gone out yet.
         send.reserve_capacity(1);
-        let _ = std::future::poll_fn(|cx| send.poll_capacity(cx)).await;
+        let _ = poll_fn(|cx| send.poll_capacity(cx)).await;
         send.send_reset(h2::Reason::INTERNAL_ERROR);
         return Ok(());
     }

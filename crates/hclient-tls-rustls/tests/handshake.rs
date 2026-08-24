@@ -5,6 +5,9 @@ use hclient_rt::TcpConnect;
 use hclient_rt_tokio::Tokio;
 use hclient_tls::{TlsConnect, TlsRequest};
 use hclient_tls_rustls::Rustls;
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 mod server; // see Step 3: a minimal TLS echo server on a self-signed cert
@@ -37,7 +40,7 @@ async fn completes_handshake_and_echoes() {
         .with_root_certificates(roots)
         .with_no_client_auth();
 
-    let tls = Rustls::from_config(std::sync::Arc::new(cfg));
+    let tls = Rustls::from_config(Arc::new(cfg));
     let tcp = Tokio
         .connect(addr, &hclient_rt::TcpOpts::default())
         .await
@@ -62,8 +65,8 @@ async fn completes_handshake_and_echoes() {
 
     // Push bytes through the hyper::rt interface.
     let sent = b"ping";
-    let n = bounded(std::future::poll_fn(|cx| {
-        hyper::rt::Write::poll_write(std::pin::Pin::new(&mut stream), cx, sent)
+    let n = bounded(poll_fn(|cx| {
+        hyper::rt::Write::poll_write(Pin::new(&mut stream), cx, sent)
     }))
     .await
     .unwrap();
@@ -71,8 +74,8 @@ async fn completes_handshake_and_echoes() {
 
     let mut store = [0u8; 16];
     let mut rb = hyper::rt::ReadBuf::new(&mut store);
-    bounded(std::future::poll_fn(|cx| {
-        hyper::rt::Read::poll_read(std::pin::Pin::new(&mut stream), cx, rb.unfilled())
+    bounded(poll_fn(|cx| {
+        hyper::rt::Read::poll_read(Pin::new(&mut stream), cx, rb.unfilled())
     }))
     .await
     .unwrap();

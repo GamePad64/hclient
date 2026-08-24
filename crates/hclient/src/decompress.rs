@@ -151,6 +151,8 @@
 use crate::response::classify_body_error;
 use bytes::Bytes;
 use hclient_core::{Capabilities, DecompressionSupport, Error, ErrorKind};
+use std::error::Error as StdError;
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -481,7 +483,7 @@ pub(crate) enum Decoder {
 
 /// Hand-written: `brotli_decompressor`'s writer has no `Debug`, and a
 /// decoder's internal window is not something to print anyway.
-impl std::fmt::Debug for Decoder {
+impl Debug for Decoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Decoder({})", self.token())
     }
@@ -1088,7 +1090,7 @@ impl<B> Decompressed<B> {
 /// Hand-written for the same reason [`crate::body::Deadline`]'s is: the derive
 /// would demand `Debug` of things that do not need it, and the decoder's
 /// window is not worth printing.
-impl<B: std::fmt::Debug> std::fmt::Debug for Decompressed<B> {
+impl<B: Debug> Debug for Decompressed<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Decompressed")
             .field("inner", &self.inner)
@@ -1111,7 +1113,7 @@ where
     // `Response::chunk` already stand on: the error is re-classified into
     // `hclient_core::Error`, whose source is an `Arc<dyn Error + Send +
     // Sync>`.
-    B::Error: std::error::Error + Send + Sync + 'static, // send-bound-exception: amendment-C1
+    B::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
 {
     type Data = Bytes;
     /// Not `B::Error`: a corrupt gzip stream has no `B::Error` to be, and

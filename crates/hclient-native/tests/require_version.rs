@@ -45,6 +45,7 @@ use hclient_dns_system::SystemDns;
 use hclient_native::Native;
 use hclient_rt_tokio::Tokio;
 use hclient_tls_rustls::Rustls;
+use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -194,7 +195,7 @@ fn refusal(e: &hclient::Error) -> VersionNotAvailable {
         "a demand this connection cannot meet is `Unsupported`, not a \
          connect or body failure: {e}"
     );
-    *std::error::Error::source(e)
+    *StdError::source(e)
         .and_then(|s| s.downcast_ref::<VersionNotAvailable>())
         .unwrap_or_else(|| panic!("expected a typed VersionNotAvailable source, got: {e}"))
 }
