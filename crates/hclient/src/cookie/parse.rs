@@ -12,7 +12,7 @@
 //! with a domain, not a failure, because a server is entitled to send
 //! attributes newer than this crate.
 
-use crate::date::parse_cookie_date;
+use super::date::parse_cookie_date;
 
 /// A `Set-Cookie` header as parsed, before any of it has been checked
 /// against a request.

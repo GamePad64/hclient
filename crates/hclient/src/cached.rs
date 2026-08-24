@@ -35,7 +35,7 @@
 //!   that is not the one that arrived.
 //!
 //! The fourth is not silent to the store: a body over
-//! [`Limits::max_body_bytes`](hclient_cache::Limits) stops being recorded
+//! [`Limits::max_body_bytes`](crate::cache::Limits) stops being recorded
 //! the moment it passes the bound, and streams on untouched.
 //!
 //! # What the cache is *below*
@@ -225,13 +225,13 @@ where
 #[derive(Debug)]
 pub(crate) struct Recorder {
     cache: Cache,
-    storing: hclient_cache::Storing,
+    storing: crate::cache::Storing,
     buffered: Vec<u8>,
 }
 
 #[cfg(feature = "cache")]
 impl Recorder {
-    pub(crate) fn new(cache: Cache, storing: hclient_cache::Storing) -> Self {
+    pub(crate) fn new(cache: Cache, storing: crate::cache::Storing) -> Self {
         Self {
             cache,
             storing,
@@ -262,7 +262,7 @@ impl Recorder {
     /// response must not fail an exchange that has already succeeded, the
     /// same call `CookieJar::store_response`'s contract makes for a
     /// malformed `Set-Cookie`. The reasons are typed
-    /// (`hclient_cache::NotStored`) for whoever drives the cache directly.
+    /// (`crate::cache::NotStored`) for whoever drives the cache directly.
     fn commit(self) {
         let _ = lock(&self.cache).store(self.storing, Bytes::from(self.buffered));
     }
@@ -287,7 +287,7 @@ impl Recorder {
 /// cookie jar's list is the same shape one field up, for the same reason.
 #[cfg(feature = "cache")]
 pub(crate) type Cache =
-    std::sync::Arc<std::sync::Mutex<hclient_cache::HttpCache<crate::erased::AnyStore>>>;
+    std::sync::Arc<std::sync::Mutex<crate::cache::HttpCache<crate::erased::AnyStore>>>;
 
 /// Locks the cache, recovering from poisoning rather than propagating it —
 /// see [`crate::Client::cache`] for why a poisoned cache is still a usable
@@ -295,7 +295,7 @@ pub(crate) type Cache =
 #[cfg(feature = "cache")]
 pub(crate) fn lock(
     c: &Cache,
-) -> std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::erased::AnyStore>> {
+) -> std::sync::MutexGuard<'_, crate::cache::HttpCache<crate::erased::AnyStore>> {
     c.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -312,8 +312,8 @@ pub(crate) struct Plan(pub(crate) Option<Box<Revalidating>>);
 #[cfg(feature = "cache")]
 #[derive(Debug)]
 pub(crate) struct Revalidating {
-    pub(crate) key: hclient_cache::Key,
-    pub(crate) stale: hclient_cache::StoredResponse,
+    pub(crate) key: crate::cache::Key,
+    pub(crate) stale: crate::cache::StoredResponse,
 }
 
 /// The twin without the feature: there is exactly one plan, and it carries
@@ -345,10 +345,10 @@ pub(crate) fn only_if_cached_miss<B>() -> http::Response<Cached<B>> {
 /// live one except by its `Age`.
 ///
 /// The version is the stored one — see
-/// [`StoredResponse::version`](hclient_cache::StoredResponse::version) for
+/// [`StoredResponse::version`](crate::cache::StoredResponse::version) for
 /// why a stale truth beats `http`'s builder default.
 #[cfg(feature = "cache")]
-pub(crate) fn serve<B>(stored: hclient_cache::StoredResponse) -> http::Response<Cached<B>> {
+pub(crate) fn serve<B>(stored: crate::cache::StoredResponse) -> http::Response<Cached<B>> {
     let mut resp = http::Response::new(Cached::from_store(stored.body().clone()));
     *resp.status_mut() = stored.status();
     *resp.version_mut() = stored.version();

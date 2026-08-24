@@ -35,7 +35,7 @@ pub struct ClientBuilder {
     /// bit that says one was asked for — see `Config::cookies` for why the
     /// two halves live apart.
     #[cfg(feature = "cookies")]
-    jar: Option<hclient_cookie::CookieJar<crate::erased::AnyList>>,
+    jar: Option<crate::cookie::CookieJar<crate::erased::AnyList>>,
     /// The cache itself, on its way to `Inner`, already behind the `Arc`
     /// it will share with every clone of the client **and with every
     /// recording response body** — see `cached::Cache`. `Config` carries
@@ -326,7 +326,7 @@ impl ClientBuilder {
     ///
     /// `.cookie_jar(CookieJar::new())` is the "just turn it on" form; the
     /// argument is there because a jar is worth configuring
-    /// ([`Limits`](hclient_cookie::Limits), a fresher public suffix list)
+    /// ([`Limits`](crate::cookie::Limits), a fresher public suffix list)
     /// and worth restoring from disk, and a `bool` could express neither.
     /// The jar is shared by every clone of the built client — it is state,
     /// not configuration, and [`Client::cookies`] is how to read it back
@@ -371,9 +371,9 @@ impl ClientBuilder {
     /// with_public_suffix_list(NoList)` is what drops the compiled-in
     /// list's 77 KiB at run time.
     #[cfg(feature = "cookies")]
-    pub fn cookie_jar<P>(mut self, jar: hclient_cookie::CookieJar<P>) -> Self
+    pub fn cookie_jar<P>(mut self, jar: crate::cookie::CookieJar<P>) -> Self
     where
-        P: hclient_cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
+        P: crate::cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
     {
         self.config.cookies = true;
         self.jar = Some(jar.map_suffixes(crate::erased::AnyList::new));
@@ -386,10 +386,10 @@ impl ClientBuilder {
     ///
     /// `.cache(HttpCache::new())` is the "just turn it on" form. The
     /// argument is there because a cache is worth configuring — a body
-    /// bound ([`Limits`](hclient_cache::Limits)), a store size
-    /// ([`MemoryStore::with_capacity`](hclient_cache::MemoryStore::with_capacity)),
+    /// bound ([`Limits`](crate::cache::Limits)), a store size
+    /// ([`MemoryStore::with_capacity`](crate::cache::MemoryStore::with_capacity)),
     /// or a store of the caller's own
-    /// ([`CacheStore`](hclient_cache::CacheStore)) — and a `bool` could
+    /// ([`CacheStore`](crate::cache::CacheStore)) — and a `bool` could
     /// express none of it. The cache is shared by every clone of the built
     /// client, and by every response body it hands out, because a body
     /// that may be stored is recorded as the caller reads it and commits
@@ -448,9 +448,9 @@ impl ClientBuilder {
     /// form; `HttpCache::with_store(..)` is how a disk-backed or shared
     /// store gets here.
     #[cfg(feature = "cache")]
-    pub fn cache<S>(mut self, cache: hclient_cache::HttpCache<S>) -> Self
+    pub fn cache<S>(mut self, cache: crate::cache::HttpCache<S>) -> Self
     where
-        S: hclient_cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
+        S: crate::cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
     {
         self.config.cache = true;
         self.cache = Some(Arc::new(Mutex::new(
@@ -528,7 +528,7 @@ struct Inner {
     /// functions of the jar, the URI and a `now`, which is what the
     /// sans-io shape of `hclient-cookie` buys here.
     #[cfg(feature = "cookies")]
-    cookies: Option<Mutex<hclient_cookie::CookieJar<crate::erased::AnyList>>>,
+    cookies: Option<Mutex<crate::cookie::CookieJar<crate::erased::AnyList>>>,
     /// The response cache, if one was asked for.
     ///
     /// Already an `Arc<Mutex<..>>` rather than a `Mutex` like the jar
@@ -660,7 +660,7 @@ impl Client {
     /// [`ClientBuilder::build`] and so cannot reach this method at all.
     ///
     /// The guard is the API rather than a snapshot: persisting a jar
-    /// ([`CookieJar::iter`](hclient_cookie::CookieJar::iter)) and seeding
+    /// ([`CookieJar::iter`](crate::cookie::CookieJar::iter)) and seeding
     /// one from disk are both wanted, and a `Vec<Cookie>` copy would
     /// answer only the first. Every clone of this client shares the jar
     /// behind it, so a guard held across an `.await` blocks that client's
@@ -675,7 +675,7 @@ impl Client {
     #[cfg(feature = "cookies")]
     pub fn cookies(
         &self,
-    ) -> Option<std::sync::MutexGuard<'_, hclient_cookie::CookieJar<crate::erased::AnyList>>> {
+    ) -> Option<std::sync::MutexGuard<'_, crate::cookie::CookieJar<crate::erased::AnyList>>> {
         Some(lock(self.inner.cookies.as_ref()?))
     }
 
@@ -703,7 +703,7 @@ impl Client {
     #[cfg(feature = "cache")]
     pub fn cache(
         &self,
-    ) -> Option<std::sync::MutexGuard<'_, hclient_cache::HttpCache<crate::erased::AnyStore>>> {
+    ) -> Option<std::sync::MutexGuard<'_, crate::cache::HttpCache<crate::erased::AnyStore>>> {
         Some(crate::cached::lock(self.inner.cache.as_ref()?))
     }
 
@@ -1520,10 +1520,10 @@ impl Client {
 
         let now = SystemTime::now();
         match crate::cached::lock(cache).lookup(&hp.method, &hp.uri, &hp.headers, now) {
-            hclient_cache::Lookup::Miss => Continue(Plan::default()),
-            hclient_cache::Lookup::Hit(stored) => Break(crate::cached::serve(stored)),
-            hclient_cache::Lookup::Unsatisfiable => Break(crate::cached::only_if_cached_miss()),
-            hclient_cache::Lookup::Revalidate {
+            crate::cache::Lookup::Miss => Continue(Plan::default()),
+            crate::cache::Lookup::Hit(stored) => Break(crate::cached::serve(stored)),
+            crate::cache::Lookup::Unsatisfiable => Break(crate::cached::only_if_cached_miss()),
+            crate::cache::Lookup::Revalidate {
                 key,
                 stale,
                 conditions,
@@ -1625,7 +1625,7 @@ impl Client {
             Ok(s) => Cached::recording(body, crate::cached::Recorder::new(Arc::clone(cache), s)),
             // The reason is typed and is dropped here, exactly as a
             // `Set-Cookie` refusal is: one uncacheable response must not
-            // fail an exchange. `hclient_cache::NotStored` is what a caller
+            // fail an exchange. `crate::cache::NotStored` is what a caller
             // driving the cache themselves would read.
             Err(_) => Cached::live(body),
         };

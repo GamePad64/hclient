@@ -38,34 +38,13 @@
 //! `Send + Sync`, which is the half that has to be.
 #![forbid(unsafe_code)]
 
-/// The response cache, re-exported from `hclient-cache` — the `cache`
-/// feature.
-///
-/// Re-exported for the reason `cookie` is, and with the same arrangement:
-/// the cache is a leaf crate that knows nothing about this facade (nor
-/// about `hclient-core`, nor about any transport), which is what makes
-/// "caching behaves the same behind every backend" structural. A consumer
-/// needs the names to call [`ClientBuilder::cache`], to read
-/// [`Client::cache`], and to set [`Limits`](hclient_cache::Limits) or
-/// supply their own [`CacheStore`](hclient_cache::CacheStore) — and should
-/// not have to take a second dependency for them.
 #[cfg(feature = "cache")]
-pub use hclient_cache as cache;
+pub mod cache;
 mod cached;
 mod client;
 mod config;
-/// The cookie jar, re-exported from `hclient-cookie` — the `cookies`
-/// feature.
-///
-/// Re-exported for the same reason `mock` is, and with the same
-/// arrangement: the jar is a leaf crate that knows nothing about this
-/// facade (nor about `hclient-core`, nor about any transport), which is
-/// what makes "cookies behave the same behind every backend" structural.
-/// A consumer only needs the name to call
-/// [`ClientBuilder::cookie_jar`] and to read [`Client::cookies`], and
-/// should not have to take a second dependency for it.
 #[cfg(feature = "cookies")]
-pub use hclient_cookie as cookie;
+pub mod cookie;
 mod deadline;
 mod decompress;
 #[cfg(feature = "digest-auth")]

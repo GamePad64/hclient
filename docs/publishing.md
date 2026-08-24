@@ -1,4 +1,4 @@
-# Releasing the 25 crates
+# Releasing the 23 crates
 
 ```
 cargo release <patch|minor|major|VERSION>            # shows the plan, changes nothing
@@ -132,7 +132,7 @@ the wave count is a fact about the graph rather than a guess:
 
 | wave | crates |
 |---|---|
-| 1 | `hclient-cache`, `hclient-cookie`, `hclient-core`, `hclient-idn` |
+| 1 | `hclient-core`, `hclient-idn` |
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
 | 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
 | 4 | `hclient-native` |
@@ -195,7 +195,7 @@ there is a hard parse error, not a silent no-op** — checked on purpose
 before writing it, because a release configuration that ignores a typo is
 the shape this project refuses everywhere else.
 
-- `shared-version = true` — all 25 crates carry `version.workspace = true`,
+- `shared-version = true` — all 23 crates carry `version.workspace = true`,
   and this tells the tool the same thing.
 - `consolidate-commits = true` — one commit for the bump, not thirty.
 - `allow-branch = ["main"]` — the default is every branch except `HEAD`,

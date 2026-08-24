@@ -12,12 +12,12 @@
 //! when it could not check it would be worse than one that refuses the
 //! feature outright.
 
-#![cfg(not(feature = "public-suffix"))]
+#![cfg(all(feature = "cookies", not(feature = "public-suffix")))]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use assert_matches::assert_matches;
-use hclient_cookie::{BuiltinList, Cookie, CookieJar, PublicSuffixList, Rejected};
+use hclient::cookie::{BuiltinList, Cookie, CookieJar, PublicSuffixList, Rejected};
 use http::{HeaderValue, Uri};
 
 fn now() -> SystemTime {

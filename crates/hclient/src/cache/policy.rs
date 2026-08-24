@@ -13,9 +13,9 @@ use std::time::{Duration, SystemTime};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
 
-use crate::date::parse_http_date;
-use crate::directives::{RequestDirectives, ResponseDirectives};
-use crate::store::{CacheStore, Key, MemoryStore, Selector, StoredResponse};
+use super::date::parse_http_date;
+use super::directives::{RequestDirectives, ResponseDirectives};
+use super::store::{CacheStore, Key, MemoryStore, Selector, StoredResponse};
 
 /// The statuses this cache will store.
 ///
@@ -242,7 +242,7 @@ impl Storing {
 /// ```
 /// use std::time::{Duration, SystemTime};
 /// use http::{HeaderMap, Method, Response, Uri};
-/// use hclient_cache::{HttpCache, Lookup};
+/// use hclient::cache::{HttpCache, Lookup};
 ///
 /// let mut cache = HttpCache::new();
 /// let uri: Uri = "https://example.com/thing".parse().unwrap();

@@ -9,11 +9,13 @@
 //! loopback server, in `crates/hclient/tests/cache.rs`. Nothing is tested
 //! in both places.
 
+#![cfg(feature = "cache")]
+
 use std::time::{Duration, SystemTime};
 
 use assert_matches::assert_matches;
 use bytes::Bytes;
-use hclient_cache::{CacheStore, HttpCache, Limits, Lookup, NotStored, StoredResponse};
+use hclient::cache::{CacheStore, HttpCache, Limits, Lookup, NotStored, StoredResponse};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 
 /// A wall-clock instant. Far enough from the epoch that `Date` headers in

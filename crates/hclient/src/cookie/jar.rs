@@ -8,12 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use http::{HeaderMap, HeaderValue, Uri};
 
-use crate::matching::{
+use super::matching::{
     canonical_host, default_path, domain_matches, is_ip_literal, is_secure_request, path_matches,
     request_path,
 };
-use crate::parse::{ParseError, SameSite, SetCookie};
-use crate::suffix::{BuiltinList, PublicSuffixList};
+use super::parse::{ParseError, SameSite, SetCookie};
+use super::suffix::{BuiltinList, PublicSuffixList};
 
 /// RFC 6265bis §5.5: an expiry further out than this is capped to it.
 ///
@@ -153,7 +153,7 @@ pub enum Rejected {
     DomainIsPublicSuffix { domain: String },
     /// The same refusal, from a build with no list to consult: this crate
     /// without the `public-suffix` feature, or a jar built on
-    /// [`NoList`](crate::NoList). Every `Domain` attribute is refused
+    /// [`NoList`](super::NoList). Every `Domain` attribute is refused
     /// there, so the cause is the build rather than the cookie.
     #[error("Domain={domain} cannot be checked: this build has no public suffix list")]
     NoPublicSuffixList { domain: String },
@@ -184,7 +184,7 @@ pub enum Rejected {
 /// ```
 /// use std::time::SystemTime;
 /// use http::{HeaderValue, Uri};
-/// use hclient_cookie::CookieJar;
+/// use hclient::cookie::CookieJar;
 ///
 /// let mut jar = CookieJar::new();
 /// let uri: Uri = "https://www.example.com/app".parse().unwrap();
@@ -222,7 +222,7 @@ impl CookieJar<BuiltinList> {
 
 impl<P: PublicSuffixList> CookieJar<P> {
     /// A jar over a caller-supplied list — a fresher snapshot than the one
-    /// this crate was built with, or [`NoList`](crate::NoList).
+    /// this crate was built with, or [`NoList`](super::NoList).
     pub fn with_public_suffix_list(suffixes: P) -> Self {
         Self {
             cookies: Vec::new(),

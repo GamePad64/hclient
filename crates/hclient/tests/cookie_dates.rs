@@ -22,9 +22,11 @@
 //! Every expected value below was computed independently before the parser
 //! was run against it.
 
+#![cfg(feature = "cookies")]
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hclient_cookie::SetCookie;
+use hclient::cookie::SetCookie;
 use proptest::prelude::*;
 use rstest::rstest;
 
@@ -243,7 +245,7 @@ proptest! {
 /// deletes, one in the future does not.
 #[test]
 fn the_parsed_date_actually_reaches_the_jar() {
-    use hclient_cookie::CookieJar;
+    use hclient::cookie::CookieJar;
     use http::{HeaderValue, Uri};
 
     let uri: Uri = "https://example.com/".parse().expect("uri");

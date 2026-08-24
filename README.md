@@ -116,7 +116,6 @@ or `dns` on the family members.
 |---|---|
 | `hclient-tungstenite` | WebSocket framing over an upgraded byte stream |
 | `hclient-webtransport` | WebTransport sessions over an HTTP/3 connection |
-| `hclient-cache` · `hclient-cookie` | RFC 9111 and RFC 6265bis, sans-io and clockless — neither depends on `hclient-core`, so both are usable on their own |
 | `hclient-idn` | UTS 46 through the platform's own ICU where there is one |
 
 Each crate's own README says the thing that decides its existence: **why it

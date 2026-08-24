@@ -34,7 +34,7 @@
 //! platform without arithmetic that can fail, and `Expires: Thu, 01 Jan
 //! 1970 00:00:00 GMT` — a server saying *already stale* in the only way
 //! HTTP has ever had — is precisely a date at the boundary. The conversion
-//! to `SystemTime` happens once, in [`crate::policy`], where it can be
+//! to `SystemTime` happens once, in [`super::policy`], where it can be
 //! saturated against the epoch in one place.
 
 use jiff::civil::{Date, DateTime, Time};
@@ -45,7 +45,7 @@ use winnow::{ModalResult, Parser};
 /// The three forms of `HTTP-date` a recipient must accept.
 ///
 /// `None` means "not a date". Every caller turns that into a *specific*
-/// thing rather than into a shrug — see [`crate::policy::expires_at`],
+/// thing rather than into a shrug — see [`super::policy::expires_at`],
 /// where an unparsable `Expires` becomes a date in the past, which is what
 /// RFC 9111 §5.3 requires and is the opposite of ignoring the header.
 pub(crate) fn parse_http_date(input: &[u8]) -> Option<i64> {

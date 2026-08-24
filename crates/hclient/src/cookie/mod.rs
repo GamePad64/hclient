@@ -1,18 +1,28 @@
 //! A cookie jar: RFC 6265bis parsing, storage, domain and path matching,
 //! and expiry — with no I/O and no clock of its own.
 //!
-//! # Why a crate and not a module in `hclient`
+//! # Why a module and not a crate
 //!
-//! The same reason `hclient-proto` is a crate. A jar is *used* by
-//! `hclient`, but the substance of it — §5.2's parse, §5.4's retrieval,
-//! §5.7's storage model — is a pure function of headers, a URI and a
-//! `now`. Putting it here makes "cookies behave the same on every backend"
-//! a structural fact rather than a consequence of everyone happening to go
-//! through `Client`.
+//! It was `hclient-cookie` for four verticals, under the argument that a
+//! jar is a pure function of headers, a URI and a `now`, so putting it in
+//! a leaf crate made *"cookies behave the same on every backend"* a
+//! structural fact rather than a consequence of everyone going through
+//! `Client`.
 //!
-//! This crate is a leaf: it depends on `http` and `thiserror`, and on
-//! `public-suffix` behind a default feature. Not on `hclient-core`, not on
-//! `hclient`, not on any transport.
+//! That argument was about **where the code cannot reach**, and it turned
+//! out to have exactly one consumer: `cargo tree -i hclient-cookie` named
+//! `hclient` and nothing else. A crate boundary earns its keep in this
+//! workspace when it holds a dependency a feature would otherwise spread
+//! (`hclient-tls-quic` carries `quinn-proto`; `hclient-tungstenite`
+//! carries `tungstenite`), and this one carried `public-suffix` — which
+//! the `cookies` feature already gates just as well from here.
+//!
+//! **What is unchanged is the discipline, and it is worth naming because
+//! a module makes it easy to lose.** Nothing here may reach for
+//! [`crate::Client`], for `hclient_core`, or for any transport: the jar
+//! stays a pure function of its inputs, and `Client` is what supplies the
+//! `now`. The public path is unchanged too — `hclient::cookie::CookieJar`
+//! is what it always was, so no consumer's `use` line moves.
 //!
 //! # Where the interesting behaviour is
 //!
@@ -26,10 +36,10 @@
 //! - a `Secure` cookie offered over an insecure request, and the
 //!   `__Secure-`/`__Host-` name prefixes — [`CookieJar::store`];
 //! - an `Expires` that does not parse the way an HTTP-date parser would —
-//!   see the `date.rs` module documentation, and `tests/dates.rs` for the
-//!   corpus that decides it.
+//!   see the `date.rs` module documentation, and `tests/cookie_dates.rs`
+//!   for the corpus that decides it.
 //!
-//! # What this crate deliberately does not do
+//! # What this deliberately does not do
 //!
 //! - **It does not enforce `SameSite`.** The attribute is parsed and
 //!   reported; acting on it needs the initiating browsing context, which a
@@ -37,7 +47,7 @@
 //! - **It does not attach or read anything by itself.** Wiring it into
 //!   `Client` — including the `Capabilities::owns_cookie_jar` check that
 //!   must switch it off against a transport owning its own jar, such as
-//!   `hclient-fetch` — is a separate step and is not in this crate.
+//!   `hclient-fetch` — is [`Client`](crate::Client)'s, not this module's.
 //! - **It does not persist.** [`CookieJar::iter`] hands out everything
 //!   held; where that goes is the caller's decision.
 //! - **It has no background sweep.** Expired cookies are filtered on
@@ -45,8 +55,6 @@
 //!   nobody touches keeps its expired entries until it is touched. Same
 //!   reason the native pool has no reaper — there is nothing here to run
 //!   one.
-
-#![forbid(unsafe_code)]
 
 mod date;
 mod jar;

@@ -38,7 +38,7 @@ all-features = true
 # wants `Client` over a transport of their own choosing: `Native<Smol,
 # NativeTls, Hickory>` should not carry tokio, rustls and the system
 # resolver because something else in the graph was careless.
-default = ["idn"]
+default = ["idn", "public-suffix"]
 # Internationalised domain names, forwarded to `hclient-proto`, where the
 # conversion lives (`uri::parse`) so that every backend gets the same
 # behaviour without going through this facade. ON by default: it is what
@@ -215,7 +215,31 @@ zstd = ["dep:ruzstd"]
 # the retrieval order are one RFC and one crate.
 #
 # CI's `test` job runs `--all-features`, so this path stays under test.
-cookies = ["dep:hclient-cookie"]
+cookies = ["dep:jiff", "dep:winnow", "dep:public-suffix"]
+# Whether `BuiltinList` consults the compiled-in Mozilla list — what
+# makes `Domain=co.uk` a refusal rather than a cookie shared across
+# every registrant under `.uk`.
+#
+# **A flag, not a `dep:` — and that shape is the whole reason the merge
+# of `hclient-cookie` did not cost a check.** That crate carried
+# `default = ["public-suffix"]`, and `tests/without_the_list.rs` — the
+# only thing asserting a no-list build is *narrower* than a list build
+# rather than quietly wider — ran only under
+# `-p hclient-cookie --no-default-features`. Folding the crate in, the
+# obvious spelling was `cookies = [..., "public-suffix"]`, and it makes
+# that combination unreachable: features are additive, so "the module
+# without the list" stops being expressible and the test never runs
+# again. `justfile` records that deleting that line "would have been the
+# other direction", so it was not an option.
+#
+# So `cookies` pulls the *crate* and this flag gates the *code path*,
+# with the flag in `default`. A plain `--features cookies` behaves
+# exactly as it did; `--no-default-features --features cookies` is the
+# no-list build the test needs. The one thing that changed is that the
+# no-list build still links `public-suffix` as dead code — the test
+# asserts behaviour, not graph size, and `graph-no-cookie-jar` still
+# pins the crate out of a default build, where `cookies` is off.
+public-suffix = []
 # An RFC 9111 response cache owned by the `Client` —
 # `ClientBuilder::cache`, and the `hclient::cache` re-export that names its
 # types. OFF by default, the same call as `cookies` above and made on the
@@ -242,7 +266,7 @@ cookies = ["dep:hclient-cookie"]
 # are not caches anyone wants — they are one RFC and one crate.
 #
 # CI's `test` job runs `--all-features`, so this path stays under test.
-cache = ["dep:hclient-cache"]
+cache = ["dep:jiff", "dep:winnow"]
 
 [dependencies]
 bytes         = { workspace = true }
@@ -250,16 +274,15 @@ futures-core  = { workspace = true }
 http          = { workspace = true }
 http-body     = { workspace = true }
 hclient-core  = { workspace = true }
-# The `cookies` feature above. A leaf — `http`, `thiserror` and
-# `public-suffix` — with no dependency on `hclient-core` or on any
-# transport, which is what lets the same jar behave identically behind
-# every backend instead of once per backend.
-hclient-cookie = { workspace = true, optional = true }
-# The `cache` feature above. A leaf on `bytes`, `http` and `thiserror`
-# alone — the same shape as the jar, and for the same reason: a cache that
-# knew what a transport was could not behave identically behind all four.
-hclient-cache = { workspace = true, optional = true }
 hclient-mock  = { workspace = true, optional = true }
+# Calendar arithmetic for `src/cookie/date.rs` and `src/cache/date.rs`.
+# Both modules live here, not behind a new module-level seam: a feature
+# that turns them off leaves `jiff` out of the graph, and the
+# modules cannot start without it.
+jiff          = { workspace = true, optional = true }
+# Mozilla Public Suffix list, for `CookieJar::with_public_suffix_list` to
+# turn a `Domain=co.uk` into a host-only cookie — see `src/cookie/suffix.rs`.
+public-suffix  = { version = "0.1.3", optional = true }
 # No default features (that is set in `[workspace.dependencies]`): the
 # `idn` feature above is what turns IDN back on, and it is in this crate's
 # `default`, so a plain `hclient` dependency behaves as it always did while
@@ -434,6 +457,16 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.1", optional = true }
 
 [dev-dependencies]
+# The cookie and cache suites, moved in with their modules.
+rstest         = { workspace = true }
+assert_matches = { workspace = true }
+proptest       = { workspace = true }
+# Two independent oracles for both `date.rs` files, dev-only. `httpdate`
+# is the incumbent HTTP-date parser and answers the *format* question —
+# which strings are accepted at all — where the corpus answers the
+# arithmetic one over the whole 1601..=9999 range `Expires` can name.
+httpdate       = "1.0"
+time           = "0.3"
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 # `BodyExt::collect`, for draining a `RequestBody` in `multipart.rs`'s unit
 # tests and in `tests/multipart.rs`. A dev-dependency only: the crate itself

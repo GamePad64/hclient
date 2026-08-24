@@ -470,7 +470,7 @@ test-autobahn: autobahn-parser-selftest
 
 # `--all-features` turns `idn` ON, so every `#[cfg(not(feature = "idn"))]`
 # test — the typed NonAsciiHost error, the divergence list — runs only here.
-# The same is true of `hclient-cookie`'s `public-suffix`, and of
+# The same is true of `hclient`'s `public-suffix`, and of
 # `hclient-native`'s h1-only build, which went uncompiled from the moment h2
 # landed behind a feature.
 #
@@ -480,7 +480,16 @@ test-autobahn: autobahn-parser-selftest
 # only thing checking that a no-list build is NARROWER than a list build,
 # rather than quietly wider — ran on laptops and nowhere else. 78 tests.
 # Resolving the drift by deleting the line would have been the other
-# direction. `--no-fail-fast` is the same story one size smaller: the recipe
+# direction.
+#
+# That line survived the jar becoming a module of `hclient`, and it took
+# a feature shape to do it: `cookies` pulls the `public-suffix` *crate*
+# and a separate flag of that name, carried in `default`, gates the code
+# path — so `--no-default-features --features cookies` is still a build
+# with the module and without the list. Spelling it the obvious way
+# (`cookies = [..., "public-suffix"]`) makes that combination
+# unreachable, because features are additive, and the test would have
+# gone silent rather than red. `--no-fail-fast` is the same story one size smaller: the recipe
 # had it, the job did not, and it only ever reports more.
 
 # the feature-off builds, which --all-features can never exercise
@@ -495,7 +504,7 @@ test-no-default:
     for args in "-p hclient-proto --no-default-features" \
                 "-p hclient-native --no-default-features" \
                 "-p hclient-rt-embassy" \
-                "-p hclient-cookie --no-default-features" \
+                "-p hclient --no-default-features --features cookies,test-util" \
                 "-p hclient --no-default-features --features test-util"; do
       rc=0
       out="$(cargo nextest run $args --color never --no-fail-fast 2>&1)" || rc=$?
@@ -639,7 +648,10 @@ packaging:
     # Fail closed on the loop never running: an empty `crates/*/` glob, or a
     # `publish = false` added everywhere, would otherwise report success
     # over nothing checked at all.
-    [ "$n" -ge 25 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
+    # 23 since the jar and the cache became modules of `hclient`; it was 25.
+    # The number is a floor against the glob finding nothing, not an
+    # assertion about the count — see the note above.
+    [ "$n" -ge 23 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
     echo "$n publishable crates carry both licence texts and a README"
 
 # rustdoc warnings, which nothing checked until publishing made them visible
@@ -897,14 +909,21 @@ graph-proto-sans-io:
         -- -p hclient-proto $t
     done
 
-# The `cookies` feature is off by default because `hclient-cookie`'s
-# compiled-in public suffix list is +77 KiB — a claim nothing checked until
-# here. Exact analogue of the idna/ICU guard below.
+# The `cookies` feature is off by default because the compiled-in public
+# suffix list is +77 KiB — a claim nothing checked until here. Exact
+# analogue of the idna/ICU guard below.
+#
+# `public-suffix` alone now, where this named `hclient-cookie` too: the jar
+# is a module of `hclient` rather than a crate, so there is no crate name
+# left to look for and the dependency is the whole of what the feature
+# costs. That is a weaker check than it was and the weakening is real —
+# a jar compiled into a default build would no longer show up here, only
+# its list would.
 
-# the default hclient build carries no cookie jar
+# the default hclient build carries no public suffix list
 graph-no-cookie-jar:
-    ./scripts/tree-guard.sh absent '^(hclient-cookie|public-suffix) ' \
-        "hclient's default build pulled in the cookie jar and its public suffix list — the feature is off by default precisely so this does not happen" \
+    ./scripts/tree-guard.sh absent '^public-suffix ' \
+        "hclient's default build pulled in the public suffix list — the cookies feature is off by default precisely so this does not happen" \
         -- -p hclient
 
 # `url` is gone from the graph either way: hclient-proto writes out RFC 3986

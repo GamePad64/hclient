@@ -67,7 +67,7 @@
 //! and then return the cookie to every sibling tenant under it. Nothing
 //! here detects that; the only fixes are bumping the dependency or
 //! supplying a fresher list through [`PublicSuffixList`], which is why that
-//! trait is public and why [`CookieJar`](crate::CookieJar) takes it as a
+//! trait is public and why [`CookieJar`](super::CookieJar) takes it as a
 //! type parameter rather than hard-wiring [`BuiltinList`].
 //!
 //! Two smaller gaps, for completeness. The crate does not expose the
@@ -102,7 +102,7 @@ pub trait PublicSuffixList {
     /// `public-suffix` feature — refuses `Domain=example.com` for a
     /// completely different reason than a real list refusing
     /// `Domain=co.uk`, and a caller staring at
-    /// [`Rejected`](crate::Rejected) deserves to be told which.
+    /// [`Rejected`](super::Rejected) deserves to be told which.
     fn has_list(&self) -> bool {
         true
     }
@@ -116,7 +116,7 @@ pub trait PublicSuffixList {
 /// **Without the feature it answers `true` for every domain**, which makes
 /// the jar host-only: no `Domain` attribute is ever honoured beyond the
 /// exact host that sent it, and every one of them is refused with
-/// [`Rejected::NoPublicSuffixList`](crate::Rejected::NoPublicSuffixList).
+/// [`Rejected::NoPublicSuffixList`](super::Rejected::NoPublicSuffixList).
 /// That is the same behaviour as [`NoList`], and it is deliberately the
 /// *narrow* direction — a build with no list cannot be talked into sending
 /// a cookie anywhere the list build would not.
@@ -151,7 +151,7 @@ impl PublicSuffixList for BuiltinList {
 /// No list at all: every domain is treated as a public suffix.
 ///
 /// The name says what it is; the behaviour says what that costs. Since
-/// [`CookieJar`](crate::CookieJar) only rescues a public-suffix `Domain`
+/// [`CookieJar`](super::CookieJar) only rescues a public-suffix `Domain`
 /// attribute when it is identical to the request host — RFC 6265bis
 /// §5.7's own rule — a jar built on this stores **host-only cookies and
 /// nothing else**. Useful for a build that cannot spend the 75 KiB, and

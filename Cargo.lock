@@ -1121,6 +1121,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 name = "hclient"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "assert_matches",
  "brotli",
  "brotli-decompressor",
  "bytes",
@@ -1130,8 +1131,6 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "getrandom 0.4.3",
- "hclient-cache",
- "hclient-cookie",
  "hclient-core",
  "hclient-dns",
  "hclient-dns-system",
@@ -1147,48 +1146,24 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "httpdate",
+ "jiff",
  "md-5",
  "multer",
+ "proptest",
+ "public-suffix",
+ "rstest",
  "ruzstd",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "time",
  "tokio",
  "wasm-bindgen-test",
  "web-sys",
  "winnow",
  "zstd",
-]
-
-[[package]]
-name = "hclient-cache"
-version = "0.1.0-alpha.1"
-dependencies = [
- "assert_matches",
- "bytes",
- "http",
- "httpdate",
- "jiff",
- "rstest",
- "thiserror",
- "winnow",
-]
-
-[[package]]
-name = "hclient-cookie"
-version = "0.1.0-alpha.1"
-dependencies = [
- "assert_matches",
- "http",
- "httpdate",
- "jiff",
- "proptest",
- "public-suffix",
- "rstest",
- "thiserror",
- "time",
- "winnow",
 ]
 
 [[package]]

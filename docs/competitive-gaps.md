@@ -249,7 +249,7 @@ Columns: **ng** = `hclient` (all features, native), **rq** = reqwest 0.13.4,
 | cookie jar | Y\* | Y\* | Y\* | Y | (browser's) | |
 | **public-suffix rules in the jar** | **Y** | **N** | **N** | **Y\*, and a third answer** | (browser's) | the sharpest row in the table — see §5. ng compiles a list in (+77 KiB, measured). **Neither reqwest nor ureq rejects anything by default**, and both land there through `cookie_store` 0.22: reqwest's `Jar` is `#[derive(Default)] RwLock<cookie_store::CookieStore>` (`src/cookie.rs:30-31`) and `CookieStore`'s `Default`/`new()` leave `public_suffix_list: None` (`cookie_store-0.22.1/src/cookie_store.rs:40-48, :463, :467-473`); ureq builds its jar with `CookieStore::from_cookies(empty, true)` (`src/cookies.rs:177-180`), which sets the same `None` (`:460-464`), and takes `cookie_store` with `default-features = false` besides (`Cargo.toml:152-156`). Zero hits for `public_suffix` in `reqwest-0.13.4/src/`. `publicsuffix` 2.3.0 ships **no list at all**, only `LIST_URL` (`src/lib.rs:29`), so even a caller who wants one must fetch and refresh it. **`isahc` 2.0.1 does exactly that, and it is the third answer to this question rather than a fourth vote for one of the two above.** Behind its `psl` feature (not in `default`) it carries *both* a compiled-in list, through the `psl` crate, *and* a copy downloaded from `publicsuffix::LIST_URL` on a 24-hour TTL, refreshed on a background thread and falling back to the compiled-in one when the network fails (`src/cookies/psl.rs:33-137`). Its module doc gives the argument against this workspace's choice in as many words: *"HTTP clients tend to be used in a much different way and are often embedded into long-lived software without frequent (or any) updates, [so] it is better for us to download a fresh copy from the Internet every once in a while"* — and then answers itself, *"a stale list is better than no list at all"*. ng reaches the same end differently: the list is a seam (`CookieJar<P>`), and since G6 a caller can hand a fresher one through `Client`, so what isahc does by default is here a decision the caller makes and pays for |
 | **a pluggable cookie store** | Y | Y | — | Y\* | n/a | closed: `ClientBuilder::cookie_jar` takes `CookieJar<P>` for any list and erases it into `AnyList` — see §G6's entry and spec amendment C12. `reqwest…client.rs:1213` takes any `CookieStore`, which is a different seam: theirs is the storage, ours is the public suffix list, and this crate's jar *is* the storage |
-| RFC 9111 response cache | **Y** | N | N | N | (browser's) | `hclient-cache`: freshness, validation, `Vary`, both sides' directives |
+| RFC 9111 response cache | **Y** | N | N | N | (browser's) | `hclient`'s `cache` feature: freshness, validation, `Vary`, both sides' directives |
 | **a pluggable cache store** | Y | n/a | n/a | n/a | n/a | closed: `ClientBuilder::cache` takes `HttpCache<S>` for any store and erases it into `AnyStore`, so a disk-backed or shared store reaches `Client`. Erased rather than parameterised because `S` on the cache is `S` on the public `ClientBody` alias, and because both crates are optional dependencies — a defaulted parameter needs a default type that would not exist |
 | gzip | Y\* | Y\* | Y\* | Y | (browser's) | |
 | brotli | Y\* | Y\* | Y\* | Y | (browser's) | |
@@ -954,10 +954,16 @@ which is exactly the signature rejected here for
 the DNS-leak reason — and the reason `Prefetch::prepare` can hand a
 connector a fetched HTTPS record where `hyper-util` has no channel for one.
 
-**Sans-io crates a third party can use without the client.** `hclient-proto`
-(RFC 3986 resolution, redirect rules, SSE decoding, the two URL encoders),
-`hclient-cookie` (RFC 6265bis, clockless), `hclient-cache` (RFC 9111,
-clockless, and not even depending on `hclient-core`). reqwest has none.
+**Sans-io crates a third party can use without the client.**
+`hclient-proto` — RFC 3986 resolution, redirect rules, SSE decoding, the
+two URL encoders. reqwest has none.
+
+That list was two entries longer until the jar (RFC 6265bis) and the
+cache (RFC 9111) became modules of `hclient` behind its `cookies` and
+`cache` features. **They are still sans-io and still clockless — what
+they are no longer is separately usable**, and that is the whole of what
+the merge cost: `cargo tree -i` had named exactly one consumer for each,
+so the boundary was being kept for a third party who did not exist.
 
 **ureq 3 is a much closer architectural relative than expected, and the
 difference between the two is worth stating exactly rather than claimed

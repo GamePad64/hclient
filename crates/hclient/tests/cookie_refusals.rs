@@ -10,10 +10,12 @@
 //! only ever asserts `is_err()` would also pass against a jar that refuses
 //! everything, which is the other way to have no matching rules at all.
 
+#![cfg(feature = "cookies")]
+
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use assert_matches::assert_matches;
-use hclient_cookie::{CookieJar, Limits, NoList, Rejected};
+use hclient::cookie::{CookieJar, Limits, NoList, Rejected};
 use http::{HeaderValue, Uri};
 
 fn now() -> SystemTime {
@@ -157,7 +159,7 @@ fn without_a_list_every_domain_attribute_is_refused_rather_than_guessed() {
     jar.store(&at, &header("b=2; Domain=www.example.com"), now())
         .expect("domain identical to host");
     assert_eq!(jar.len(), 2);
-    assert!(jar.iter().all(hclient_cookie::Cookie::host_only));
+    assert!(jar.iter().all(hclient::cookie::Cookie::host_only));
 }
 
 /// Needs the compiled-in list, so it does not run in a
@@ -505,7 +507,7 @@ fn the_bound_is_enforced_per_domain_and_evicts_the_least_recently_used() {
 
     store(&mut jar, "https://example.com/", "c=3").expect("stored");
     assert_eq!(jar.len(), 2, "the bound holds");
-    let names: Vec<_> = jar.iter().map(hclient_cookie::Cookie::name).collect();
+    let names: Vec<_> = jar.iter().map(hclient::cookie::Cookie::name).collect();
     assert!(
         !names.contains(&"a"),
         "the least recently used one went: {names:?}"
@@ -528,7 +530,7 @@ fn the_total_bound_is_enforced_across_domains() {
     store(&mut jar, "https://b.test/", "x=2").expect("stored");
     store(&mut jar, "https://c.test/", "x=3").expect("stored");
     assert_eq!(jar.len(), 2);
-    let domains: Vec<_> = jar.iter().map(hclient_cookie::Cookie::domain).collect();
+    let domains: Vec<_> = jar.iter().map(hclient::cookie::Cookie::domain).collect();
     assert!(!domains.contains(&"a.test"), "{domains:?}");
 }
 

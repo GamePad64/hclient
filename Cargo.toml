@@ -69,23 +69,8 @@ winnow         = { version = "1.0", default-features = false, features = ["alloc
 hclient-proto = { path = "crates/hclient-proto", version = "0.1.0-alpha.1", default-features = false }
 hclient-core  = { path = "crates/hclient-core",  version = "0.1.0-alpha.1" }
 hclient-mock  = { path = "crates/hclient-mock",  version = "0.1.0-alpha.1" }
-# Default features left ON, unlike `hclient-proto` above: that crate's
-# default (`idn`) is what `hclient` forwards as a feature of its own, while
-# this one's (`public-suffix`) is what makes `Domain=co.uk` a refusal
-# rather than a cookie shared across every registrant under `.uk`. Turning
-# it off does not make the jar smaller in any way a consumer of `hclient`
-# asked for — it makes it host-only, which is a different jar, not a
-# cheaper one. A consumer who wants that build takes `hclient-cookie`
-# directly.
-hclient-cookie = { path = "crates/hclient-cookie", version = "0.1.0-alpha.1" }
-# No features at all, default or otherwise: unlike the jar, whose default
-# is the public suffix list that makes `Domain=co.uk` a refusal, there is
-# nothing in this crate a build could sensibly do without. The store is a
-# seam rather than a feature (`CacheStore`), so "a smaller cache" is a
-# different `S`, not a thinner build.
-hclient-cache = { path = "crates/hclient-cache", version = "0.1.0-alpha.1" }
-# Default features left ON, for the same reason as `hclient-cookie` and the
-# opposite of `hclient-proto`: this crate's default is `platform`, which is
+# Default features left ON, and the opposite of `hclient-proto` above:
+# this crate's default is `platform`, which is
 # not a choice a consumer makes but a fact about the target — the bundled
 # `idna` tables on Linux and wasm, `icuuc.dll` on Windows, Foundation on
 # Apple, resolved in its `build.rs`. Turning it off leaves the crate with

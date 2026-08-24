@@ -140,7 +140,14 @@ fn set_cookie_then_ask(
 /// The pair is the assertion. A client that ignored the list entirely and
 /// always used the builtin would pass the first half; one that dropped
 /// every `Domain=` would pass the second.
-#[cfg(feature = "cookies")]
+///
+/// `public-suffix` as well as `cookies`, and the second gate is younger
+/// than the first: until the jar was a module of this crate there was no
+/// way to build it without the list, so this configuration could not be
+/// reached. The first half of the pair *is* the compiled-in list, so with
+/// the flag off both clients answer alike and the assertion is about
+/// nothing.
+#[cfg(all(feature = "cookies", feature = "public-suffix"))]
 #[test]
 fn the_callers_own_public_suffix_list_is_the_one_that_decides() {
     assert_eq!(

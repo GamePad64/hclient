@@ -32,7 +32,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version}
 ///
 /// The method is in the key, which is why a `HEAD` response could never
 /// answer a `GET` even if this cache stored one. It does not: see
-/// [`crate::HttpCache::lookup`].
+/// [`super::HttpCache::lookup`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
     method: Method,
@@ -85,7 +85,7 @@ impl Key {
 ///
 /// RFC 9111 §3.5 restricts a **shared** cache's handling of a response to
 /// an authenticated request and says nothing to a private one, which is
-/// why [`crate::HttpCache`] stores such responses at all. But "private"
+/// why [`super::HttpCache`] stores such responses at all. But "private"
 /// means one user agent, not one principal, and a `Client` whose caller
 /// changes a bearer token between requests is an ordinary thing to write.
 /// The RFC's own answer to that is `Vary: Authorization`, sent by the

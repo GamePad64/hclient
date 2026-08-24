@@ -3,11 +3,11 @@
 //!
 //! # Why erased at all, when the seams are already generic
 //!
-//! `hclient_cookie::CookieJar<P>` and `hclient_cache::HttpCache<S>` are
+//! `crate::cookie::CookieJar<P>` and `crate::cache::HttpCache<S>` are
 //! generic, and until this module existed `hclient` accepted only their
 //! defaulted forms — so a caller who wanted a disk-backed cache, a store
 //! shared between processes, or a jar over
-//! [`NoList`](hclient_cookie::NoList) could reach it in `hclient-cache` or
+//! [`NoList`](crate::cookie::NoList) could reach it in `hclient-cache` or
 //! `hclient-cookie` and not through the facade. The seam existed one crate
 //! down and was unreachable one crate up.
 //!
@@ -23,7 +23,7 @@
 //!
 //! The second is that a defaulted parameter needs a default *type*, and
 //! `hclient-cookie` and `hclient-cache` are **optional dependencies**.
-//! A `Client<.., P = hclient_cookie::BuiltinList, S = ..>` would name two
+//! A `Client<.., P = crate::cookie::BuiltinList, S = ..>` would name two
 //! types that do not exist in a build without those features, so the
 //! declaration would have to be forked four ways. Erasure has no such
 //! problem: the field is inside the same `#[cfg]` as the feature, and there
@@ -59,7 +59,7 @@
 #[cfg(any(feature = "cookies", feature = "cache"))]
 use std::fmt::Debug;
 
-/// A [`PublicSuffixList`](hclient_cookie::PublicSuffixList) of any type.
+/// A [`PublicSuffixList`](crate::cookie::PublicSuffixList) of any type.
 ///
 /// Built by
 /// [`ClientBuilder::cookie_jar`](crate::ClientBuilder::cookie_jar) from
@@ -68,14 +68,14 @@ use std::fmt::Debug;
 /// when reading it back.
 #[cfg(feature = "cookies")]
 pub struct AnyList(
-    Box<dyn hclient_cookie::PublicSuffixList + Send>, // send-bound-exception: amendment-C12
+    Box<dyn crate::cookie::PublicSuffixList + Send>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cookies")]
 impl AnyList {
     pub fn new<P>(list: P) -> Self
     where
-        P: hclient_cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
+        P: crate::cookie::PublicSuffixList + Send + 'static, // send-bound-exception: amendment-C12
     {
         Self(Box::new(list))
     }
@@ -94,7 +94,7 @@ impl Debug for AnyList {
 }
 
 #[cfg(feature = "cookies")]
-impl hclient_cookie::PublicSuffixList for AnyList {
+impl crate::cookie::PublicSuffixList for AnyList {
     fn is_public_suffix(&self, domain: &str) -> bool {
         self.0.is_public_suffix(domain)
     }
@@ -103,21 +103,21 @@ impl hclient_cookie::PublicSuffixList for AnyList {
     }
 }
 
-/// A [`CacheStore`](hclient_cache::CacheStore) of any type.
+/// A [`CacheStore`](crate::cache::CacheStore) of any type.
 ///
 /// [`AnyList`]'s counterpart, built by
 /// [`ClientBuilder::cache`](crate::ClientBuilder::cache) from whatever
 /// store the caller's cache was over.
 #[cfg(feature = "cache")]
 pub struct AnyStore(
-    Box<dyn hclient_cache::CacheStore + Send>, // send-bound-exception: amendment-C12
+    Box<dyn crate::cache::CacheStore + Send>, // send-bound-exception: amendment-C12
 );
 
 #[cfg(feature = "cache")]
 impl AnyStore {
     pub fn new<S>(store: S) -> Self
     where
-        S: hclient_cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
+        S: crate::cache::CacheStore + Send + 'static, // send-bound-exception: amendment-C12
     {
         Self(Box::new(store))
     }
@@ -133,17 +133,17 @@ impl Debug for AnyStore {
 }
 
 #[cfg(feature = "cache")]
-impl hclient_cache::CacheStore for AnyStore {
-    fn get(&self, key: &hclient_cache::Key) -> Vec<hclient_cache::StoredResponse> {
+impl crate::cache::CacheStore for AnyStore {
+    fn get(&self, key: &crate::cache::Key) -> Vec<crate::cache::StoredResponse> {
         self.0.get(key)
     }
-    fn put(&mut self, key: &hclient_cache::Key, entry: hclient_cache::StoredResponse) {
+    fn put(&mut self, key: &crate::cache::Key, entry: crate::cache::StoredResponse) {
         self.0.put(key, entry);
     }
-    fn remove(&mut self, key: &hclient_cache::Key, selector: &hclient_cache::Selector) {
+    fn remove(&mut self, key: &crate::cache::Key, selector: &crate::cache::Selector) {
         self.0.remove(key, selector);
     }
-    fn invalidate(&mut self, key: &hclient_cache::Key) {
+    fn invalidate(&mut self, key: &crate::cache::Key) {
         self.0.invalidate(key);
     }
     fn len(&self) -> usize {

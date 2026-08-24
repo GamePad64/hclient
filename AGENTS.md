@@ -877,10 +877,10 @@ misbehaving servers, each with a control that must hang with the bound
 unset — `crates/hclient-native/tests/timeouts.rs`.
 
 **A cookie jar landed in `Client`, behind the `cookies` feature** (off by
-default — `hclient-cookie`'s compiled-in public suffix list is +77 KiB, and
+default — the compiled-in public suffix list is +77 KiB, and
 the browser, where paying that is certainly wrong, keeps its own jar
 anyway). `ClientBuilder::cookie_jar(jar)` switches it on; the rules are
-`hclient-cookie`'s, sans-io and clockless, and what `Client` adds is *when*
+`hclient::cookie`'s, sans-io and clockless, and what `Client` adds is *when*
 (once per redirect hop, and re-derived rather than carried, so a cookie
 scoped to `/one` cannot ride a same-origin 302 to `/two`), *whether*, and a
 `now`.
@@ -1404,10 +1404,11 @@ what it says.
 
 ### A response cache landed, and it is the counterpart `owns_cache` never had
 
-`hclient-cache` — RFC 9111 freshness, validation, `Vary` and the
+`hclient::cache` — RFC 9111 freshness, validation, `Vary` and the
 directives on both sides — **sans-io and clockless**, exactly as
-`hclient-cookie` is, and a leaf: `bytes`, `http`, `jiff`, `thiserror`,
-`winnow`, and not `hclient-core`.
+`hclient::cookie` is, and reaching for neither `Client` nor
+`hclient-core`. It was the `hclient-cache` crate when it landed; the
+section on folding the two in says what moved and what that cost.
 `ClientBuilder::cache(HttpCache::new())` switches it on behind
 `hclient`'s `cache` feature, off by default. `Client` supplies the
 `now` as `SystemTime::now()` for the reason the jar does — `Date`,
@@ -1456,10 +1457,76 @@ without thought. `cached::Cached::recorder` was already boxed for the
 same reason with its own measurement recorded; this is that finding one
 level up.
 
+### The jar and the cache became modules, and one feature shape is what made it free
+
+`hclient-cookie` and `hclient-cache` are `hclient::cookie` and
+`hclient::cache`. **No consumer's `use` line moved**: both were already
+re-exported under exactly those names (`pub use hclient_cookie as
+cookie`), so the change is `pub use` to `pub mod` and nothing else on the
+public surface.
+
+**What made it defensible is a measurement, not a preference.** This
+workspace's test for a crate boundary is whether it holds a dependency a
+feature would otherwise spread — `hclient-tls-quic` carries
+`quinn-proto`, `hclient-tungstenite` carries `tungstenite`, and both are
+kept for that. `cargo tree -i` named **`hclient` and nothing else** for
+each of these two, and their dependencies (`jiff`, `winnow`,
+`public-suffix`) are gated just as well by the `cookies` and `cache`
+features from inside. The boundary was being kept for a third-party
+consumer who did not exist.
+
+**What it cost is one sentence in `docs/competitive-gaps.md` that is now
+false and has been corrected**: the jar and the cache are still sans-io
+and still clockless, and are no longer *separately usable*. That is the
+whole of the loss, and it is worth stating plainly because the crates'
+own module docs had argued the boundary made "cookies behave the same on
+every backend" **structural** — it does not any more, it is a discipline,
+and both module docs now say so in as many words.
+
+**The part that nearly went wrong is a feature, and it is the reason to
+read this section before touching the `cookies` feature.**
+`hclient-cookie` carried `default = ["public-suffix"]`, and
+`tests/without_the_list.rs` — the only thing asserting a no-list build is
+*narrower* than a list build rather than quietly wider — ran only under
+`-p hclient-cookie --no-default-features`. The obvious spelling of the
+merge is `cookies = [.., "public-suffix"]`, and it makes that test
+**unreachable**: features are additive, so *the module without the list*
+stops being expressible. Measured before it was believed — the old
+invocation ran 78 tests, the merged one compiled the file out entirely.
+
+`justfile` had already recorded that deleting that line "would have been
+the other direction", so the resolution is a shape rather than a
+deletion: **`cookies` pulls the `public-suffix` crate, and a separate
+flag of the same name — carried in `default` — gates the code path.** A
+plain `--features cookies` behaves exactly as it did; `--no-default-
+features --features cookies,test-util` is the no-list build, and it is in
+`test-no-default`. The one thing that changed is that the no-list build
+still links `public-suffix` as dead code; the test asserts behaviour, not
+graph size, and `graph-no-cookie-jar` still pins the crate out of a
+default build.
+
+That guard is **weaker than it was** and the weakening is worth naming:
+it looked for `hclient-cookie` and `public-suffix`, and there is no crate
+name left to look for, so a jar compiled into a default build would no
+longer show up there — only its list would.
+
+**Two smaller things the move surfaced, both caught by `just docs`
+rather than by the compiler.** Doc links in the moved files pointed at
+their old crate root, which is a different crate root now; and a `///`
+doc on the `pub mod` declaration makes the module's own `//!` links
+resolve in the **parent's** scope, so thirteen of them stopped resolving
+until that outer comment went. Neither is a compile error, and neither
+would have been caught by the test suite.
+
+Counts, measured: 25 publishable crates to 23, `hclient`'s own suite 308
+tests to 465, and the workspace unchanged at 1755 — everything moved,
+nothing was lost.
+
+
 ### Two date parsers were reported as identical, and the duplication was twenty lines
 
 The premise was wrong and the measurement is worth more than the fix.
-`hclient-cache`'s `date.rs` and `hclient-cookie`'s share **no parsing at
+the cache's `date.rs` and the jar's share **no parsing at
 all**: the first reads RFC 9110 §5.6.7's three fixed `HTTP-date` forms,
 the second RFC 6265 §5.1.1's position-free algorithm, and their function
 inventories intersect nowhere. What was genuinely duplicated is the
@@ -1529,11 +1596,12 @@ same crate count — `jiff` + `jiff-core` against `chrono` + `num-traits`
 
 | file | code lines | |
 |---|---|---|
-| `hclient-cache/src/date.rs` | 138 → **118** | the calendar left; the grammar stayed |
-| `hclient-cookie/src/date.rs` | 122 → **96** | same, plus §5.1.1's productions read better as combinators |
-| `hclient-cookie/src/parse.rs` | 142 → **152** | **longer** |
+| `cache/date.rs` | 138 → **118** | the calendar left; the grammar stayed |
+| `cookie/date.rs` | 122 → **96** | same, plus §5.1.1's productions read better as combinators |
+| `cookie/parse.rs` | 142 → **152** | **longer** |
 
-Graphs: `hclient-cache` 10 → 13 crates, `hclient-cookie` 11 → 14.
+Graphs, while the two were still crates of their own: `hclient-cache`
+10 → 13 crates, `hclient-cookie` 11 → 14.
 `default-features = false` on jiff is what makes it affordable in a
 clockless leaf — its default `tz-system` reaches for the platform
 timezone. Both build for `wasm32-unknown-unknown` and `wasm32-wasip2`,
@@ -1579,7 +1647,7 @@ costs more as a combinator than as `position`. It is kept converted
 anyway, because what it buys is not lines — see below.
 
 **What it buys is that "split on a separator outside a quoted-string" is
-now written zero times where it was written three.** `hclient-cache`'s
+now written zero times where it was written three.** The cache's
 `directives.rs`, `hclient`'s `digest.rs` and its `response.rs` each
 carried a copy, differing only in separator and in `&[u8]` versus `&str`.
 They were **measured against each other first, on twelve inputs** —

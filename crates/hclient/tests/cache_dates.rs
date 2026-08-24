@@ -13,9 +13,11 @@
 //! corpus being trimmed until they agree — which is the only way a
 //! differential test is worth running twice.
 
+#![cfg(feature = "cache")]
+
 use std::time::{Duration, SystemTime};
 
-use hclient_cache::{HttpCache, Lookup};
+use hclient::cache::{HttpCache, Lookup};
 use http::{HeaderMap, HeaderValue, Method, Uri};
 
 /// Every string in the corpus, with what `httpdate` makes of it. `None`
