@@ -1097,15 +1097,16 @@ impl Client {
                 std::ops::ControlFlow::Continue(plan) => {
                     // **This is written out here rather than factored into
                     // a method, and the reason is `Send`.** A helper taking
-                    // `replay: Option<&RequestBody>` holds that borrow for
-                    // the whole of its future, which makes the future
-                    // require `RequestBody: Sync` — and `RequestBody` holds
-                    // a `Box<dyn Body + Send + Unpin>`, which is
-                    // deliberately not `Sync`. `tests/shape.rs` caught it:
-                    // `Client::execute`'s future stopped being `Send`, so
-                    // `tokio::spawn(client.get(u).send())` would have
-                    // stopped compiling for every caller. Inlined, the
-                    // borrow is a temporary that ends before the `.await`.
+                    // `replay: Option<&RequestBody>` held that borrow for
+                    // the whole of its future, which made the future
+                    // require `RequestBody: Sync`, and `RequestBody` holds
+                    // a `Box<dyn Body + Send + Unpin>` that is deliberately
+                    // not `Sync`. The future used to start as a let-bound
+                    // a `Send`-requiring chain so `tokio::spawn` could
+                    // have run it, but `tests/shape.rs` pins the opposite
+                    // — `Client::execute`'s future is `!Send` after erasure —
+                    // so the borrow is inlined: the temporary ends before
+                    // the `.await`.
                     //
                     // RFC 9111 §4.2.3's `request_time`, and it is read
                     // **before** the request rather than after the response
