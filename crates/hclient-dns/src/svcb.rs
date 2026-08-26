@@ -23,8 +23,20 @@
 //! not link one.
 
 use crate::SvcbEndpoint;
+use alloc::string::String;
+use alloc::vec::Vec;
+/// Only the `codec` conversion below builds an owned name out of a
+/// `DomainName`; without the feature these two are dead, and `#![no_std]`
+/// makes that visible where the std prelude used to hide it.
+///
+/// A `///` rather than a `//`, because `cargo fmt` reorders this block and
+/// carries a doc comment with its item where it leaves a plain one behind
+/// — which is the hazard AGENTS.md records about the `send-bound-exception`
+/// markers, met here in a `use` list.
+#[cfg(feature = "codec")]
+use alloc::{borrow::ToOwned, string::ToString};
 use bytes::Bytes;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 /// The SvcParamKeys this client understands well enough to honour a
 /// `mandatory` requirement for (RFC 9460 §8).

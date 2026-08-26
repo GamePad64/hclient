@@ -47,9 +47,18 @@
 //! **This is not yet a bare-metal build**, and the missing piece is not
 //! ours: `http` 1.x carries a `compile_error!` for `no_std`. The cross
 //! check that proves this crate compiles for `riscv32imac-unknown-none-elf`
-//! needs a patched `http`, so it is a spike rather than a CI job — which
-//! means this attribute has no guard and can rot. `docs/no-std.md` has the
-//! measurement and what would close it.
+//! needs a patched `http`, so it is a spike rather than a CI job.
+//!
+//! **That does not leave the attribute unguarded, which this comment said
+//! for one commit and was wrong about.** `#![no_std]` takes `std` out of
+//! *this crate's* extern prelude, so a `std::` path added here is
+//! `E0433: unresolved module or unlinked crate` on an ordinary host
+//! `cargo check` — no cross-build and no patched `http` involved. Checked
+//! in the failing direction rather than assumed, by adding a
+//! `std::collections::HashMap` to `host.rs` and watching it fail. What is
+//! genuinely unguarded is the other half: nothing here would notice a
+//! *dependency* that cannot go `no_std`, and only the cross build would.
+//! `docs/no-std.md` has both halves.
 
 extern crate alloc;
 #[cfg(test)]

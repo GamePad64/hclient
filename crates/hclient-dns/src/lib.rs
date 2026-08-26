@@ -1,3 +1,4 @@
+#![no_std]
 //! Pluggable name resolution.
 //!
 //! Separate streams per address family, not a `Vec<SocketAddr>`: RFC 8305
@@ -58,16 +59,39 @@
 //! reads only `supports_svcb()`.
 #![forbid(unsafe_code)]
 
+//! # `#![no_std]`, unconditionally
+//!
+//! The third crate on the device path, after `hclient-core` and
+//! `hclient-proto` — [`IpLiteralOnly`] is what
+//! `Native<Embassy, NoTls, IpLiteralOnly>` resolves with, so a bare-metal
+//! build needs this crate and not the other resolvers.
+//!
+//! The attribute is a guard on **this crate's source** and nothing more:
+//! `std` leaves the extern prelude, so a `std::` path here is a compile
+//! error on an ordinary host `cargo check`. It is not a claim that the
+//! crate links on a device — `http` still stands in the way, through
+//! `hclient-core`. See `docs/no-std.md`.
+//!
+//! The `codec` feature is the one a device turns off: `dns-message-parser`
+//! is `std`, and a build resolving through [`IpLiteralOnly`] never decodes
+//! a DNS message.
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
 pub mod svcb;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use bytes::Bytes;
+use core::marker::PhantomData;
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 use futures_core::Stream;
 use hclient_core::Error;
-use std::marker::PhantomData;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAddr {
@@ -181,6 +205,18 @@ pub trait Resolve {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IpLiteralOnly;
 
+/// The source behind [`IpLiteralOnly`]'s refusal.
+///
+/// It was `std::io::Error::other(format!(..))`, which is `io::Error` used
+/// as a box for a string — there is no I/O here and nothing downstream ever
+/// downcast to it. A named type says what happened, and it is what lets
+/// this crate be `#![no_std]`: `Error::new` wants
+/// `core::error::Error + Send + Sync`, which `io::Error` is not without
+/// `std` and this is.
+#[derive(Debug, thiserror::Error)]
+#[error("this client was built without a resolver (IpLiteralOnly); `{0}` is not an IP literal")]
+pub struct NotALiteral(pub alloc::string::String);
+
 impl IpLiteralOnly {
     /// `http::Uri::host()` returns an IPv6 literal WITH its brackets
     /// (`[::1]`), and that is the string this trait receives, so the
@@ -196,12 +232,7 @@ impl IpLiteralOnly {
     }
 
     fn not_a_literal(name: &str) -> Error {
-        Error::new(
-            hclient_core::ErrorKind::Resolve,
-            std::io::Error::other(format!(
-                "this client was built without a resolver (IpLiteralOnly); `{name}` is not an IP literal"
-            )),
-        )
+        Error::new(hclient_core::ErrorKind::Resolve, NotALiteral(name.into()))
     }
 }
 

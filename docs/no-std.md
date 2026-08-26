@@ -14,21 +14,28 @@ mandatory**. Nothing below argues for a `heapless` rewrite.
 
 ## The headline
 
-**`hclient-core` and `hclient-proto` compile for bare metal today**, once
-`http` does. That was the uncertain half and it is now measured rather
-than hoped:
+**`hclient-core`, `hclient-proto` and `hclient-dns` compile for bare metal
+today**, once `http` does. That was the uncertain half and it is now
+measured rather than hoped:
 
 ```
-cargo check -p hclient-core -p hclient-proto \
+cargo check -p hclient-core -p hclient-proto -p hclient-dns \
     --no-default-features --target riscv32imac-unknown-none-elf
     Finished `dev` profile
 ```
 
-Both crates are `#![no_std]` on `main`'s successor branch as of this
-document, their 173 tests still pass on the host, and
+All three are `#![no_std]` on `main`'s successor branch as of this
+document, their 209 tests still pass on the host, and
 `cargo check --workspace --all-features` is unchanged. The one thing that
 build needs and cannot have from crates.io is a `no_std` `http`, supplied
 in the spike by a patched checkout (see [Reproducing](#reproducing)).
+
+Those three are not an arbitrary subset: they are what this workspace's own
+device path names — `Native<Embassy, NoTls, IpLiteralOnly>`, with
+`IpLiteralOnly` in `hclient-dns`. The section on
+[what can carry the attribute today](#what-can-carry-the-attribute-today--and-what-the-attribute-actually-guards)
+has the rest of the list and, more usefully, what the attribute does and
+does not guard.
 
 What made that cheap is a property nobody had written down: **there is
 not one genuinely-`std` item in either crate's library code.** No
@@ -304,9 +311,11 @@ In rough order, with what each depends on:
 2. **A `no_std` `http-body`.** Four lines — `#![no_std]`, `extern crate
    alloc`, two prelude imports, `default-features = false` on `bytes` and
    `http`. Measured, in the spike. Upstream would probably take this one.
-3. **`hclient-core` and `hclient-proto`.** Done, in the branch this
-   document ships on. `portable-atomic` for the counter, `round()` for
-   the float, mechanical renames for the rest.
+3. **`hclient-core`, `hclient-proto` and `hclient-dns`.** Done, in the
+   branch this document ships on. `portable-atomic` for the counter,
+   `round()` for the float, a named error where `io::Error` was boxing a
+   string, mechanical renames for the rest. The attribute guards our own
+   source from a host build, so this half cannot rot while item 1 waits.
 4. **The IO seam.** `TcpConnect`/`TlsConnect` off `hyper::rt` and onto
    `embedded-io-async`, and `std::io::Error` out of 52 sites. This is the
    change with the widest blast radius inside the workspace — seven files
@@ -328,6 +337,105 @@ The honest summary is that `no_std` here is not a research question any
 more — it is a rebase somebody has to own, a seam change, and one codec.
 What it is *not* is a rewrite, and the reason is that the two crates that
 would have been hardest to port turned out to need nothing but renames.
+
+## What can carry the attribute today — and what the attribute actually guards
+
+This document's first version said the `#![no_std]` on `hclient-core`
+*"has no guard and can rot"*, because the cross build needs a patched
+`http` and cannot be a CI job. **That was wrong, and the correction is the
+reason to mark crates now rather than later.**
+
+`#![no_std]` removes `std` from **this crate's** extern prelude. A `std::`
+path added to a marked crate is `E0433: unresolved module or unlinked
+crate` on an ordinary host `cargo check` — no cross-build, no patched
+`http`, no new CI job. Checked in the failing direction rather than
+assumed: adding `pub fn probe() -> std::collections::HashMap<u8, u8>` to
+`hclient-core/src/host.rs` fails, twice, on the plain workspace build.
+
+So the attribute is two claims and only one of them is unguarded:
+
+| claim | guarded today | by what |
+|---|---|---|
+| *this crate's source reaches for nothing in `std`* | **yes** | rustc, on every host build |
+| *this crate's dependencies can all go `no_std`* | no | only the cross build, which `http` blocks |
+
+That split is what makes marking worth doing before `http` moves: the
+half that would otherwise rot — a hundred `std::` paths creeping back in
+over a year of unrelated work — is exactly the half the compiler already
+holds.
+
+### Three crates are marked, and the list is not arbitrary
+
+`hclient-core`, `hclient-proto` and `hclient-dns`. They are the three this
+workspace's own device path names: `Native<Embassy, NoTls,
+IpLiteralOnly>`, where `IpLiteralOnly` lives in `hclient-dns`.
+
+`hclient-dns` cost one real change beyond renames. `IpLiteralOnly`'s
+refusal was built with `std::io::Error::other(format!(..))` — `io::Error`
+used as a box for a string, with no I/O anywhere near it and nothing
+downstream ever downcasting to it. It is a named `NotALiteral` now, which
+is a better error either way and is what lets the crate be `no_std`:
+`Error::new` wants `core::error::Error + Send + Sync`, which `io::Error`
+is not without `std`.
+
+The `codec` feature is where the crate stops: `dns-message-parser` reaches
+`hex`, which is `std`, and the bare-metal build fails there. That is the
+documented behaviour rather than a defect — `codec` is the feature a
+device turns off, and a build resolving through `IpLiteralOnly` decodes no
+DNS messages. Both settings were built for
+`riscv32imac-unknown-none-elf`: without `codec`, green; with it, `hex`
+fails, loudly.
+
+### The two that cannot be marked, and it is not discipline
+
+`hclient-rt` and `hclient-tls` are also on the device path, and both are
+**structurally** blocked rather than merely unported. `TcpConnect::connect`
+returns `std::io::Result<Self::Stream>` and `TcpConnect::Stream` is bounded
+on `hyper::rt::Read + hyper::rt::Write`; `TlsConnect::Stream<S>` says the
+same. Those are public seam signatures, not implementation details, so no
+amount of renaming reaches them — they move when the IO seam moves, which
+is item 4 of the plan above. Marking them today would be a claim the
+compiler would immediately refuse, which is the honest outcome.
+
+### Everything else, measured rather than assumed
+
+The sweep added `#![no_std]` to every crate in turn, ran a host
+`cargo check --all-features`, and put it back. The number is the distance
+in that crate's **own** code — `std::` paths plus missing `alloc` prelude
+items — and it is not the same as being worth marking:
+
+| crate | distance | worth it? |
+|---|---|---|
+| `hclient-core`, `hclient-proto`, `hclient-dns` | done | on the device path |
+| `hclient-tower` | ~8 | no — `tower` is `std` |
+| `hclient-tls-native-tls` | ~12 | no — the platform stacks are `std` |
+| `hclient-idn` | ~13 | no — `idn` is the feature a device turns **off** |
+| `hclient-tls` | ~14 | **cannot** — `hyper::rt` in the seam |
+| `hclient-mock` | ~20 | maybe, and it buys nothing yet |
+| `hclient-rt-embassy` | ~25 | not until the seam moves |
+| `hclient-rt` | ~49 | **cannot** — `hyper::rt` in the seam |
+| `hclient-rt-tokio`, `hclient-rt-smol` | ~41–47 | no — those runtimes *are* `std` |
+| `hclient-native` | ~362 | no — hyper |
+| `hclient` | ~288 | no — the facade is not the device target |
+
+One row of that sweep was an artifact and is worth recording as one:
+`hclient-urlsession` came back **clean with zero edits**, which looked like
+a finding and is not — its crate root carries
+`#![cfg(target_vendor = "apple")]`, so on the Linux runner the whole crate
+compiles to nothing. *A counter that cannot move is not evidence*, and
+checking which ones the harness actually feeds is part of reading the
+result.
+
+### What is still owed, and cannot be paid today
+
+Nothing notices a **dependency** that cannot go `no_std`. `hclient-core`
+gained `portable-atomic` for the counter; if it gained something `std`
+tomorrow, the host build would stay green and only the cross build would
+object — and the cross build cannot run in CI until `http` moves. That is
+one gap, it is named, and inventing a weaker check for it (a `cargo tree`
+grep, say) would be the mirror of this file's argument against an MSRV
+job: a second, staler statement of a promise, and the one people would
+trust.
 
 ## Re-exporting `http`: real crate on `std`, fork otherwise
 
