@@ -654,11 +654,15 @@ packaging:
     [ "$n" -ge 23 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
     echo "$n publishable crates carry both licence texts and a README"
 
-# Which crates have changes since the version they last published — the
-# question `cargo release` does not answer. Measured: with a tag one
-# commit back and one crate touched, a plain `cargo release patch` still
-# planned every upload, so selecting with `-p` is the caller's and this
-# is what tells them what to select.
+# Which crates have changes since the version they last published.
+#
+# **Diagnostics, not a step.** The release policy is to publish every
+# crate on every release (`docs/publishing.md` §5), which cannot leave one
+# behind, so nothing has to answer this. It is kept for seeing what has
+# accumulated before choosing a version level, and for the day the policy
+# goes back to selecting with `-p` — which cargo-release does not compute
+# for you: measured, with a tag one commit back and one crate touched, a
+# plain `cargo release patch` still planned every upload.
 #
 # **Deliberately not in `ci`.** It asks crates.io over the network, which
 # is the kind of flakiness a gate must not have, and the answer is only

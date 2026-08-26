@@ -206,10 +206,31 @@ the shape this project refuses everywhere else.
   because its commit messages are the record of *why*. A release commit has
   no argument to make, so it says what it did and stops.
 
-## 5. Releases after the first: publish what changed, not all thirty
+## 5. Releases after the first: one version, everything published
 
-`cargo release <level>` publishes **every** crate. For an ordinary fix that
-is thirty releases for one change, so name the crate instead:
+**The policy is to publish all 23 crates on every release**, off the one
+shared version:
+
+```
+cargo release patch
+```
+
+The argument for it is that it removes a question rather than answering
+one. Selecting crates means knowing which changed, and *knowing* means a
+step that can be skipped, got wrong, or forgotten — the failure this
+document spent §5a building a tool against. Publishing everything cannot
+forget anything. The cost is 23 uploads for a one-line fix and a version
+history with no gaps in it, which for crates this size is cosmetic.
+
+**It is also not what guarantees compatibility, and that is worth saying
+because the intuition is wrong.** What guarantees it is the *requirement*:
+the published `hclient` asks `^0.1.0-alpha.1` of each neighbour, and
+semver is what makes the set resolve. Matching version numbers are a
+consequence, not the mechanism — under `dependent-version = "fix"` the
+numbers on crates.io are free to differ and the set still works.
+
+**Selecting by name still works and the configuration still supports it**,
+because the policy may change:
 
 ```
 cargo release -p hclient-native patch
@@ -230,27 +251,39 @@ satisfying them.
 
 **cargo-release does not work out which crates changed** — it was measured
 and it does not: with a tag one commit back and one crate touched, a plain
-`cargo release patch` still planned all 25 uploads. Selecting is yours,
-with `-p`. `cargo-smart-release` is the tool that does compute the set, and
-it is not used here for reasons in §8.
+`cargo release patch` still planned all 23 uploads. Under §5's policy that
+is the wanted behaviour rather than a shortcoming; under the `-p` form,
+selecting is yours, and §5a is what tells you what to select.
+`cargo-smart-release` is the tool that does compute the set, and it is not
+used here for reasons in §8.
 
-Two consequences that read as mistakes and are not:
+**Two consequences the `-p` form has and this policy does not**, recorded
+because they are the argument for publishing everything and because they
+read as mistakes if met without warning:
 
 - **An unpublished crate's version runs ahead of the index.**
-  `hclient-core` can be 0.1.5 in this tree and 0.1.0 on crates.io, because
-  nothing in it changed. Do not "fix" it.
-- **Published versions are sparse per crate.** A crate released at 0.1.1
-  and again at 0.1.4 has no 0.1.2 or 0.1.3, because those releases were
-  other crates'. Cargo does not care; a reader might.
+  `hclient-core` could be 0.1.5 in this tree and 0.1.0 on crates.io,
+  because nothing in it changed. Correct, and not a drift to "fix".
+- **Published versions go sparse per crate.** A crate released at 0.1.1
+  and again at 0.1.4 would have no 0.1.2 or 0.1.3, because those releases
+  were other crates'. Cargo does not care; a reader might.
 
-Both fall out of one shared version number, which is the trade
-`[workspace.package].version` was chosen for: thirty hand-maintained
-numbers could drift, and one cannot.
+Publishing everything removes both: every crate is at every version, and
+the tree and the index agree. That is the second argument for the policy,
+after the one §5 gives — the first removes a step that can be forgotten,
+this one removes two explanations a reader would otherwise need.
+
+Both artefacts fall out of one shared version number, which is the trade
+`[workspace.package].version` was chosen for: 23 hand-maintained numbers
+could drift, and one cannot.
 
 ## 5a. Knowing which crates have unreleased changes
 
-§5 leaves one thing to the person releasing — *which* crates to name after
-`-p` — and nothing answered it. `just release-pending` does:
+Under §5's policy nothing has to answer this — publishing everything
+cannot leave a crate behind. It is kept for the two cases that remain:
+seeing what has accumulated before deciding a version level, and the day
+the policy changes back to selecting with `-p`. `just release-pending`
+is that:
 
 ```
 just release-pending
@@ -264,7 +297,8 @@ third is the one worth having:
 - **unchanged** — nothing in the directory moved since it was published.
   Do not release it; `dependent-version = "fix"` is what makes that legal.
 - **CHANGED (n files)** — it has unreleased content. The recipe prints a
-  ready `cargo release -p … -p … <level>` line at the end.
+  ready `cargo release -p … -p … <level>` line at the end, which is the
+  selecting form §5 keeps rather than the policy it uses.
 - **NO TAG — cannot compare** — the anchor is missing, and the recipe
   refuses to guess a commit rather than answering wrongly.
 

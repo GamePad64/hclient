@@ -382,18 +382,33 @@ the bump, including the **69 literal version requirements** that
 must move with `[workspace.package].version` and that cargo gives no way to
 centralise.
 
-**One shared version does not mean one release of twenty-nine crates**, and the
-setting that decides it is `dependent-version`. Its default, `upgrade`,
-rewrites every dependent's requirement to the new number — and a
-requirement is a demand, so `hclient-native` 0.1.1 requiring `hclient-core`
-0.1.1 obliges a release of a crate nothing changed in. `fix` touches a
-requirement only when it must, the requirements stay at `^0.1.0`, and
-`cargo release -p <crate> patch` publishes that crate alone. Two things
-then read as mistakes and are not: an unpublished crate's version runs
-ahead of the index, and published versions are sparse per crate. And
-cargo-release does **not** work out which crates changed — measured, with a
-tag one commit back: a plain `cargo release patch` still planned all 25
-uploads. `docs/publishing.md` has the table, the script that derives it,
+**The policy is one shared version and every crate published on every
+release** — `cargo release <level>`, no `-p`. Its argument is that it
+removes a question rather than answering one: selecting means knowing
+which crates changed, and knowing means a step that can be forgotten,
+where publishing everything cannot forget. The cost is 23 uploads for a
+one-line fix, which for crates this size is cosmetic.
+
+**What guarantees the set resolves is the requirement, not the matching
+numbers**, and the intuition runs the other way: the published `hclient`
+asks `^0.1.0-alpha.1` of each neighbour, and semver is the mechanism.
+Equal version numbers are a consequence.
+
+Selecting is still configured, because the policy may change, and the
+setting that makes it legal is `dependent-version`. Its default,
+`upgrade`, rewrites every dependent's requirement to the new number — and
+a requirement is a demand, so `hclient-native` 0.1.1 requiring
+`hclient-core` 0.1.1 obliges a release of a crate nothing changed in.
+`fix` touches a requirement only when it must, the requirements stay at
+`^0.1.0`, and `cargo release -p <crate> patch` publishes that crate
+alone. Two things then read as mistakes and are not — an unpublished
+crate's version runs ahead of the index, and published versions go sparse
+per crate — and **publishing everything removes both**, which is the
+second argument for the policy. cargo-release does **not** work out which
+crates changed — measured, with a tag one commit back: a plain `cargo
+release patch` still planned all 23 uploads, which under this policy is
+the wanted behaviour. `just release-pending` answers it for the day the
+policy changes back. `docs/publishing.md` has the table, the script that derives it,
 and the reason the waves are **not** collapsed back to five — a version-carrying
 dev-dependency is what lets a downloaded `.crate` run its own tests, which
 distribution packagers do.
