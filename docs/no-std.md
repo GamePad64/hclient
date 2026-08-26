@@ -123,6 +123,12 @@ fork and publish, which costs the family a name it does not want and
 splits `HeaderMap` in two — a `http`-typed and an `hclient-http`-typed
 `Request` do not convert, and every crate here has one in its signature.
 
+That third option is not as bad as it reads here, and it has a section of
+its own below: the split can be confined to the target that has no other
+`http` in its graph, and it costs **zero source lines** to do it. See
+[Re-exporting `http`](#re-exporting-http-real-crate-on-std-fork-otherwise),
+which was built rather than argued.
+
 ### 2. hyper — and it is not one blocker but two
 
 `hyper` is `std` throughout: 32 uses of `std::io::Error`, and its
@@ -322,6 +328,171 @@ The honest summary is that `no_std` here is not a research question any
 more — it is a rebase somebody has to own, a seam change, and one codec.
 What it is *not* is a rewrite, and the reason is that the two crates that
 would have been hardest to port turned out to need nothing but renames.
+
+## Re-exporting `http`: real crate on `std`, fork otherwise
+
+The question asked after the first pass, and it has a better answer than
+the one this document opened with. **Both shapes work.** They were built
+rather than reasoned about — `spikes/nostd/shim-probe/`, four crates, and
+the interesting half is the failure modes.
+
+### Shape A — a feature and a re-export
+
+`hclient-core` depends on two packages under two rename keys and
+re-exports one of them:
+
+```toml
+[features]
+default = ["std"]
+std   = ["dep:http-std",   "dep:http-body-std"]
+nostd = ["dep:http-nostd", "dep:http-body-nostd"]
+
+[dependencies]
+http-std        = { package = "http",              version = "1.5", optional = true }
+http-nostd      = { package = "hclient-http",      version = "0.1", optional = true }
+http-body-std   = { package = "http-body",         version = "1.1", optional = true }
+http-body-nostd = { package = "hclient-http-body", version = "0.1", optional = true }
+```
+
+```rust
+#[cfg(feature = "std")]
+pub use {http_std as http, http_body_std as http_body};
+#[cfg(all(feature = "nostd", not(feature = "std")))]
+pub use {http_nostd as http, http_body_nostd as http_body};
+```
+
+**It compiles both ways, and each arm resolves only its own pair** — a
+host build never downloads the fork, a device build never downloads
+`http`. Verified with `cargo tree` on both.
+
+**The consumer's source is byte-identical between the arms.** That is the
+number that matters: 61 files here name `http::Foo` about 800 times, and
+the swap costs **one `use hclient_core::{http, http_body};` per file**, not
+800 rewrites — an item imported under the name `http` shadows the extern
+prelude crate for everything below it.
+
+**The forked crates need no source edits either.** `http-body` uses
+`http::{Request, Response, HeaderMap}`, so the fork is a *family* rather
+than a crate; `hclient-http-body` is `http-body` with one line changed in
+its manifest —
+
+```toml
+[dependencies.http]
+package = "hclient-http"
+```
+
+— and not a line changed in its code.
+
+The probe crosses the seam where it actually matters rather than at a bare
+re-export: `Transport::Body: http_body::Body<Data = Bytes>` with a body of
+the consumer's own, and `Frame::trailers(http::HeaderMap::new())`, which
+only compiles when the two forks agree about `http`. Green on
+`riscv32imac-unknown-none-elf`.
+
+**The hazard is the one this file already has a name for.** Cargo's
+features are additive, so `std` and `nostd` are not alternatives — they can
+both be on, and then **all four packages land in the graph and `std`
+silently wins**. Measured. On a host that is harmless; on a device the
+build then dies deep inside `bytes` with `can't find crate for std`, a
+message pointing at the wrong crate entirely. *A default is not a default
+when Cargo unifies features — it is a floor*, and here the floor is `std`.
+So this shape is only honest with a `compile_error!` on the collision,
+naming it.
+
+It also needs a discipline rule — *never name `http` directly* — which is
+grep-checkable and would join the other `just invariants` scripts.
+
+### Shape B — swap by target, with no feature at all
+
+Better, and it is the rule this workspace already states one level up:
+`DefaultTransport` resolves *"by target, not by a feature the user picks."*
+
+```toml
+[target.'cfg(not(target_os = "none"))'.dependencies]
+http = { workspace = true }
+
+[target.'cfg(target_os = "none")'.dependencies]
+http = { package = "hclient-http", version = "0.1" }
+```
+
+Two tables, one key, disjoint conditions. **Zero source lines** — not even
+the `use`: the name `http` is bound by the manifest, so all ~800 sites are
+untouched, in crates that never learn the swap exists. And there is no
+feature to unify, so Shape A's hazard has no subject.
+
+**Cargo refuses this when the two sides differ in *source kind*** — which
+is exactly what a local spike looks like, and is worth knowing before
+concluding the shape is illegal:
+
+```
+Dependency 'http' has different source paths depending on the build target.
+Each dependency must have a single canonical source path irrespective of
+build target.
+```
+
+That is a `path` dependency against a registry one. With **both from the
+registry — the published world — it is legal**, and resolves per target:
+the probe's host build takes `itoa` and its
+`riscv32imac-unknown-none-elf` build takes `ryu`, from one unchanged
+source file.
+
+Two mechanical notes. `[workspace.dependencies]` inherits **by key**, so
+the fork side cannot be inherited under a rename — `workspace = true` with
+a `package` key fails with *"`dependency.swapped` was not found in
+`workspace.dependencies`"*. The hybrid above is what works: the std side
+inherits, the fork side restates one version literal, per crate. Thirteen
+manifests, about six lines each. And `cargo package`'s verify step builds
+the **host** target only, so the bare-metal arm is never checked at publish
+time — that would want a cross-check job of its own.
+
+**The predicate is exact and needs no exceptions.** Measured with
+`rustc --print cfg`:
+
+| target | `target_os` | arm |
+|---|---|---|
+| `riscv32imac-unknown-none-elf`, `thumbv7em-none-eabihf`, `xtensa-esp32-none-elf` | `none` | fork |
+| `riscv32imc-esp-espidf` and the other esp-idf targets | `espidf` | real `http` — it has `std` |
+| `wasm32-unknown-unknown` | `unknown` | real `http` |
+| `wasm32-wasip2` | `wasi` | real `http` |
+
+### What a caller who gets it wrong actually sees
+
+The mistake to price is a downstream crate that writes `http = "1.5"`
+itself instead of going through the shim. In the `std` arm it is not a
+mistake at all — the shim re-exports that very crate, so the types are
+identical, and the probe's `naive` member compiles. In the `nostd` arm
+rustc says:
+
+```
+expected `http::Response<..>`, found `Response<..>`
+= note: `Response<..>` and `http::Response<..>` have similar names, but are
+        actually distinct types
+note: `Response<..>` is defined in crate `hclient_http`
+note: `http::Response<..>` is defined in crate `http`
+```
+
+Which is a good message: it names both crates and both files. The split
+fails loudly rather than silently, and that is what makes either shape
+tolerable.
+
+### The recommendation does not change while upstream is unresolved
+
+**`[patch.crates-io]` in the application's own lock file still wins**, and
+the re-export does not replace it — it competes with it:
+
+| | patch | fork + swap |
+|---|---|---|
+| `http` types in the universe | **one** | two, split by target |
+| our published crates | unchanged | 13 manifests, a discipline rule |
+| crate to publish and track for ever | none | `hclient-http` + `hclient-http-body` |
+| cost to the device user | two lines in their `Cargo.toml` | none |
+| the day #749 lands | the patch evaporates | a deprecation to walk |
+
+So the swap is what to build **if** the decision is to publish a
+bare-metal story rather than document a patch line — and then Shape B,
+because it costs no source and cannot be mis-unified. Shape A stays the
+fallback for the one thing a target cfg cannot do: let a caller force the
+fork on a `std` target, which is how the fork would be tested at all.
 
 ## Reproducing
 
