@@ -247,6 +247,59 @@ Both fall out of one shared version number, which is the trade
 `[workspace.package].version` was chosen for: thirty hand-maintained
 numbers could drift, and one cannot.
 
+## 5a. Knowing which crates have unreleased changes
+
+§5 leaves one thing to the person releasing — *which* crates to name after
+`-p` — and nothing answered it. `just release-pending` does:
+
+```
+just release-pending
+```
+
+For each publishable crate it reads the last version in the crates.io
+sparse index, finds the git tag naming that version, and diffs the
+crate's directory between that tag and `HEAD`. Three answers, and the
+third is the one worth having:
+
+- **unchanged** — nothing in the directory moved since it was published.
+  Do not release it; `dependent-version = "fix"` is what makes that legal.
+- **CHANGED (n files)** — it has unreleased content. The recipe prints a
+  ready `cargo release -p … -p … <level>` line at the end.
+- **NO TAG — cannot compare** — the anchor is missing, and the recipe
+  refuses to guess a commit rather than answering wrongly.
+
+**The anchor is a git tag and it is not optional.**
+`[workspace.metadata.release]` sets `tag-name = "v{{version}}"`, so every
+release cargo-release makes leaves one; with `shared-version` that single
+tag covers whichever crates went out under it, which is enough, because
+the index says *which version* each crate is at and the tag says *which
+commit* that version was.
+
+**As of this writing there is no such tag.** All 23 crates are published
+at `0.1.0-alpha.1` and `git tag` is empty, so the recipe answers
+"cannot compare" for every one of them — the first release was made
+without cargo-release, or with its tagging off. Plant it once on the
+commit that was published:
+
+```
+git tag -a v0.1.0-alpha.1 <commit> -m "hclient 0.1.0-alpha.1"
+git push origin v0.1.0-alpha.1
+```
+
+From then on the tags maintain themselves.
+
+**It is not in `just ci`, deliberately.** It asks crates.io over the
+network — the kind of flakiness a gate must not have — and the answer is
+only wanted before a release. It was checked in the discriminating
+direction rather than trusted: with a tag planted six commits back it
+reported 20 changed and 3 unchanged, not one blanket answer.
+
+**What it does not catch**, said here because the boundary is real: a
+change *outside* a crate's directory that still alters what it publishes
+— the workspace `Cargo.toml`'s lints or a `[workspace.dependencies]`
+version bump. Those move every crate at once, and the honest handling is
+to treat a workspace-manifest change as touching everything.
+
 ## 6. Keywords and categories: how twenty-nine crates stay one family
 
 Every publishable crate carries the keyword **`hclient`**, and that is the

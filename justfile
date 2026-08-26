@@ -654,6 +654,20 @@ packaging:
     [ "$n" -ge 23 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
     echo "$n publishable crates carry both licence texts and a README"
 
+# Which crates have changes since the version they last published — the
+# question `cargo release` does not answer. Measured: with a tag one
+# commit back and one crate touched, a plain `cargo release patch` still
+# planned every upload, so selecting with `-p` is the caller's and this
+# is what tells them what to select.
+#
+# **Deliberately not in `ci`.** It asks crates.io over the network, which
+# is the kind of flakiness a gate must not have, and the answer is only
+# wanted before a release.
+
+# crates with unreleased changes (network; run before releasing)
+release-pending:
+    ./scripts/release-pending.sh
+
 # rustdoc warnings, which nothing checked until publishing made them visible
 docs:
     #!/usr/bin/env bash
