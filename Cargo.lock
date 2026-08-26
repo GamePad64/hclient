@@ -1293,6 +1293,7 @@ dependencies = [
  "hclient-core",
  "http",
  "http-body",
+ "spin",
  "thiserror",
 ]
 

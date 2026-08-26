@@ -32,7 +32,13 @@ extern crate std;
 /// (rust-lang/rust#147319). `hclient-core` carries the same module for
 /// the same reason, one name long — the difference is that these tests
 /// build strings and vectors and those barely allocate.
+/// The `allow` is the point rather than an oversight: which of these five a
+/// test module needs depends on the **feature set**, so `ToOwned` is live
+/// with `idn` and dead without it. `just test-no-default` caught exactly
+/// that — the recipe this workspace records as having once printed
+/// `error:` and exited zero, earning its place again.
 #[cfg(test)]
+#[allow(unused_imports)]
 mod test_prelude {
     pub use alloc::borrow::ToOwned;
     pub use alloc::string::{String, ToString};

@@ -29,6 +29,15 @@ http          = { workspace = true }
 http-body     = { workspace = true }
 hclient-core  = { workspace = true }
 thiserror     = { workspace = true }
+# `core` has no mutex, and the module doc rules out every single-threaded
+# substitute — a `RefCell` here would make `Client::execute`'s future
+# `!Send` and take a property this crate exists to check with it.
+#
+# `default-features = false` leaves `spin` with **no dependencies at all**:
+# its default pulls `lock_api`, `rwlock`, `once`, `lazy` and `barrier`, and
+# none of those has a subject here. `mutex` + `spin_mutex` is the whole of
+# what is used.
+spin          = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [lints]
 workspace = true

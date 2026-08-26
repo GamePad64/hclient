@@ -1,3 +1,4 @@
+#![no_std]
 //! Mock transport and a controllable timer: let you test a `Transport`
 //! implementation, or a client built on one, on the host — with no network
 //! and no wasm runtime.
@@ -8,8 +9,8 @@
 //! the whole client. Re-exported as `hclient::mock` behind the facade's
 //! `test-util` feature, so existing callers see no change.
 //!
-//! The response queue and request log sit behind a `std::sync::Mutex`, not
-//! a `RefCell`. This isn't a style choice: `RefCell` would make
+//! The response queue and request log sit behind a **mutex**, not a
+//! `RefCell`. This isn't a style choice: `RefCell` would make
 //! `MockTransport` `!Sync`, which would make `&MockTransport` `!Send`, and
 //! therefore the future `Client::execute` returns (it borrows the
 //! transport) would also be `!Send` — `tokio::spawn(client.get(u).send())`
@@ -17,17 +18,37 @@
 //! "the client's future is Send when the transport is" is central to the
 //! crate's design, and a test double shouldn't be what stops it from being
 //! checked.
+//!
+//! It is `spin::Mutex` rather than `std::sync::Mutex`, and that is what
+//! lets this crate be `#![no_std]` — `core` has no mutex of any kind, and
+//! the argument above rules out every single-threaded substitute. What the
+//! swap costs is **poisoning**: `std`'s mutex refuses the lock after a
+//! panic while it was held, and a spinlock does not. For a test double the
+//! loss is nil, because a panic inside a critical section here *is* a
+//! failed test and the harness already reports it — the thirteen
+//! `.expect("mock lock poisoned")` calls that went with it never fired for
+//! any other reason.
+//!
+//! What it buys, on a host, is nothing at all; the critical sections are a
+//! `push_back` and a `clone`, and a spinlock and a futex are
+//! indistinguishable at that size. It is here for the target that has no
+//! futex.
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use bytes::Bytes;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 use hclient_core::unversioned::Transport;
 use hclient_core::{Capabilities, Error, ErrorKind, RequestBody, RetryKind};
-use std::collections::VecDeque;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::task::{Context, Poll};
-use std::time::Duration;
+use spin::Mutex;
 
 /// One recorded request: everything the mock saw before the body was
 /// dropped.
@@ -134,7 +155,6 @@ impl MockTransport {
         frames.push_back(MockFrame::Data(Bytes::from_static(body.as_bytes())));
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -156,7 +176,6 @@ impl MockTransport {
         let frames: VecDeque<MockFrame> = body.into_iter().map(MockFrame::Data).collect();
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -172,7 +191,6 @@ impl MockTransport {
             .collect();
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -193,7 +211,6 @@ impl MockTransport {
         frames.push_back(MockFrame::Trailers(trailers));
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -226,7 +243,6 @@ impl MockTransport {
         );
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -246,7 +262,6 @@ impl MockTransport {
         frames.push_back(MockFrame::RepeatingError(err));
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -275,7 +290,6 @@ impl MockTransport {
         frames.push_back(MockFrame::Error(err));
         self.queue
             .lock()
-            .expect("mock lock poisoned")
             .push_back(Ok(http::Response::from_parts(parts, frames)));
     }
 
@@ -289,14 +303,11 @@ impl MockTransport {
     /// `Other` anyway, correctly. Here the caller sets the category, so
     /// "did it reach the consumer" becomes an observable property.
     pub fn push_transport_error(&self, err: Error) {
-        self.queue
-            .lock()
-            .expect("mock lock poisoned")
-            .push_back(Err(err));
+        self.queue.lock().push_back(Err(err));
     }
 
     pub fn requests(&self) -> Vec<RecordedRequest> {
-        self.seen.lock().expect("mock lock poisoned").clone()
+        self.seen.lock().clone()
     }
 }
 
@@ -319,18 +330,15 @@ impl Transport for MockTransport {
         // before it's dropped along with the rest of `parts`.
         let retry_kind = body.retry_kind();
         let body_size_hint = body.size_hint();
-        self.seen
-            .lock()
-            .expect("mock lock poisoned")
-            .push(RecordedRequest {
-                method: parts.method,
-                uri: parts.uri,
-                headers: parts.headers,
-                extensions: parts.extensions,
-                retry_kind,
-                body_size_hint,
-            });
-        match self.queue.lock().expect("mock lock poisoned").pop_front() {
+        self.seen.lock().push(RecordedRequest {
+            method: parts.method,
+            uri: parts.uri,
+            headers: parts.headers,
+            extensions: parts.extensions,
+            retry_kind,
+            body_size_hint,
+        });
+        match self.queue.lock().pop_front() {
             Some(Ok(r)) => {
                 let (p, frames) = r.into_parts();
                 Ok(http::Response::from_parts(p, MockBody { frames }))
@@ -417,7 +425,7 @@ impl TestTimer {
 
     /// Every `Duration` `sleep` was called with, in call order.
     pub fn sleeps(&self) -> Vec<Duration> {
-        self.sleeps.lock().expect("TestTimer lock poisoned").clone()
+        self.sleeps.lock().clone()
     }
 }
 
@@ -428,13 +436,13 @@ impl hclient_core::unversioned::Timer for TestTimer {
     /// wall-clock time.
     type Instant = Duration;
 
-    /// Already `std::future::ready(())` before `Timer` grew this
+    /// Already `core::future::ready(())` before `Timer` grew this
     /// associated type — naming it changed nothing here but the signature.
-    type Sleep = std::future::Ready<()>;
+    type Sleep = core::future::Ready<()>;
 
     fn sleep(&self, d: Duration) -> Self::Sleep {
-        self.sleeps.lock().expect("TestTimer lock poisoned").push(d);
-        std::future::ready(())
+        self.sleeps.lock().push(d);
+        core::future::ready(())
     }
 
     fn now(&self) -> Self::Instant {
@@ -449,8 +457,10 @@ impl hclient_core::unversioned::Timer for TestTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `vec!` is in `std`'s prelude and not in `core`'s.
+    use alloc::vec;
+    use core::error::Error as StdError;
     use hclient_core::unversioned::Transport;
-    use std::error::Error as StdError;
 
     #[test]
     fn records_requests_and_replays_queued_responses() {
@@ -573,8 +583,8 @@ mod tests {
     /// transport.
     #[test]
     fn extensions_round_trip_through_the_recording_so_timeouts_survive() {
+        use core::time::Duration;
         use hclient_core::Timeouts;
-        use std::time::Duration;
 
         let m = MockTransport::new();
         m.push_response(http::Response::builder().status(200).body("").unwrap());
@@ -616,9 +626,9 @@ mod tests {
         let resp =
             futures_executor::block_on(m.execute(http::Request::new(RequestBody::Empty))).unwrap();
 
-        let waker = std::task::Waker::noop();
+        let waker = core::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
-        let mut pinned = std::pin::pin!(resp.into_body());
+        let mut pinned = core::pin::pin!(resp.into_body());
 
         let first = match pinned.as_mut().poll_frame(&mut cx) {
             Poll::Ready(Some(Ok(f))) => f,
@@ -685,8 +695,8 @@ mod tests {
 
     #[test]
     fn test_timer_records_every_sleep_call_in_order() {
+        use core::time::Duration;
         use hclient_core::unversioned::Timer;
-        use std::time::Duration;
 
         let t = TestTimer::new();
         futures_executor::block_on(t.sleep(Duration::from_millis(1)));
@@ -708,8 +718,8 @@ mod tests {
     /// see the SAME sleeps, not an independent, empty log.
     #[test]
     fn test_timer_clones_share_the_same_recording() {
+        use core::time::Duration;
         use hclient_core::unversioned::Timer;
-        use std::time::Duration;
 
         let original = TestTimer::new();
         let handed_to_caller = original.clone();
@@ -723,8 +733,8 @@ mod tests {
 
     #[test]
     fn test_timer_now_and_elapsed_since_track_the_virtual_clock() {
+        use core::time::Duration;
         use hclient_core::unversioned::Timer;
-        use std::time::Duration;
 
         let t = TestTimer::new();
         let t0 = t.now();

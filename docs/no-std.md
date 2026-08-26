@@ -14,28 +14,30 @@ mandatory**. Nothing below argues for a `heapless` rewrite.
 
 ## The headline
 
-**`hclient-core`, `hclient-proto` and `hclient-dns` compile for bare metal
-today**, once `http` does. That was the uncertain half and it is now
-measured rather than hoped:
+**Four crates compile for bare metal today**, once `http` does — and they
+are every crate in this workspace that can, which is measured below rather
+than asserted:
 
 ```
-cargo check -p hclient-core -p hclient-proto -p hclient-dns \
+cargo check -p hclient-core -p hclient-proto -p hclient-dns -p hclient-mock \
     --no-default-features --target riscv32imac-unknown-none-elf
     Finished `dev` profile
 ```
 
-All three are `#![no_std]` on `main`'s successor branch as of this
-document, their 209 tests still pass on the host, and
-`cargo check --workspace --all-features` is unchanged. The one thing that
+All four are `#![no_std]`, the workspace's **1755 tests** still pass on the
+host, and every `just` gate — `docs`, `invariants`, `test-no-default`,
+`packaging`, `features`, `graph`, `test-doc` — is green. The one thing that
 build needs and cannot have from crates.io is a `no_std` `http`, supplied
 in the spike by a patched checkout (see [Reproducing](#reproducing)).
 
-Those three are not an arbitrary subset: they are what this workspace's own
-device path names — `Native<Embassy, NoTls, IpLiteralOnly>`, with
-`IpLiteralOnly` in `hclient-dns`. The section on
+The first three are what this workspace's own device path names —
+`Native<Embassy, NoTls, IpLiteralOnly>`, with `IpLiteralOnly` in
+`hclient-dns`. **Everything left over is blocked by `hyper`, nine crates of
+it, and by one third-party crate that simply lacks the attribute.** The
+section on
 [what can carry the attribute today](#what-can-carry-the-attribute-today--and-what-the-attribute-actually-guards)
-has the rest of the list and, more usefully, what the attribute does and
-does not guard.
+has the table and, more usefully, what the attribute does and does not
+guard.
 
 What made that cheap is a property nobody had written down: **there is
 not one genuinely-`std` item in either crate's library code.** No
@@ -311,11 +313,14 @@ In rough order, with what each depends on:
 2. **A `no_std` `http-body`.** Four lines — `#![no_std]`, `extern crate
    alloc`, two prelude imports, `default-features = false` on `bytes` and
    `http`. Measured, in the spike. Upstream would probably take this one.
-3. **`hclient-core`, `hclient-proto` and `hclient-dns`.** Done, in the
-   branch this document ships on. `portable-atomic` for the counter,
-   `round()` for the float, a named error where `io::Error` was boxing a
-   string, mechanical renames for the rest. The attribute guards our own
-   source from a host build, so this half cannot rot while item 1 waits.
+3. **Every crate here that can be `no_std`** — `hclient-core`,
+   `hclient-proto`, `hclient-dns`, `hclient-mock`. **Done**, in the branch
+   this document ships on: `portable-atomic` for the counter, `round()`
+   for the float, a named error where `io::Error` was boxing a string,
+   `spin::Mutex` where `core` has none, mechanical renames for the rest.
+   The attribute guards our own source from a host build, so this cannot
+   rot while item 1 waits. **It is item 4 that unblocks the next crate,
+   not more marking.**
 4. **The IO seam.** `TcpConnect`/`TlsConnect` off `hyper::rt` and onto
    `embedded-io-async`, and `std::io::Error` out of 52 sites. This is the
    change with the widest blast radius inside the workspace — seven files
@@ -364,11 +369,13 @@ half that would otherwise rot — a hundred `std::` paths creeping back in
 over a year of unrelated work — is exactly the half the compiler already
 holds.
 
-### Three crates are marked, and the list is not arbitrary
+### Four crates are marked, and the list is not a preference
 
-`hclient-core`, `hclient-proto` and `hclient-dns`. They are the three this
-workspace's own device path names: `Native<Embassy, NoTls,
-IpLiteralOnly>`, where `IpLiteralOnly` lives in `hclient-dns`.
+`hclient-core`, `hclient-proto`, `hclient-dns` and `hclient-mock`. The
+first three are what this workspace's own device path names —
+`Native<Embassy, NoTls, IpLiteralOnly>`, where `IpLiteralOnly` lives in
+`hclient-dns`. The fourth is there because the measurement said so rather
+than because anybody wanted it there; see below.
 
 `hclient-dns` cost one real change beyond renames. `IpLiteralOnly`'s
 refusal was built with `std::io::Error::other(format!(..))` — `io::Error`
@@ -378,13 +385,26 @@ is a better error either way and is what lets the crate be `no_std`:
 `Error::new` wants `core::error::Error + Send + Sync`, which `io::Error`
 is not without `std`.
 
-The `codec` feature is where the crate stops: `dns-message-parser` reaches
+The `codec` feature is where that crate stops: `dns-message-parser` reaches
 `hex`, which is `std`, and the bare-metal build fails there. That is the
 documented behaviour rather than a defect — `codec` is the feature a
 device turns off, and a build resolving through `IpLiteralOnly` decodes no
 DNS messages. Both settings were built for
 `riscv32imac-unknown-none-elf`: without `codec`, green; with it, `hex`
 fails, loudly.
+
+`hclient-mock` cost a **dependency**, and it is the one judgement call in
+this change. Its queue and request log sit behind a mutex, and the module
+doc has always said why that is not a `RefCell`: a `RefCell` makes
+`MockTransport` `!Sync`, which makes `Client::execute`'s future `!Send`,
+and that property is one this crate exists to let tests check. `core` has
+no mutex at all, so the choice was `spin::Mutex` or leaving the crate
+behind. `spin` with `default-features = false` has **no dependencies of
+its own**, and the swap costs **poisoning** — `std`'s mutex refuses the
+lock after a panic held it, a spinlock does not. For a test double that
+loss is nil: a panic inside one of these critical sections *is* a failed
+test, and the harness reports it. The thirteen
+`.expect("mock lock poisoned")` calls are gone with it.
 
 ### The two that cannot be marked, and it is not discipline
 
@@ -393,38 +413,56 @@ fails, loudly.
 returns `std::io::Result<Self::Stream>` and `TcpConnect::Stream` is bounded
 on `hyper::rt::Read + hyper::rt::Write`; `TlsConnect::Stream<S>` says the
 same. Those are public seam signatures, not implementation details, so no
-amount of renaming reaches them — they move when the IO seam moves, which
-is item 4 of the plan above. Marking them today would be a claim the
-compiler would immediately refuse, which is the honest outcome.
+amount of renaming reaches them.
 
-### Everything else, measured rather than assumed
+The attribute would in fact *compile* on them — `#![no_std]` does not
+forbid depending on a `std` crate, only writing `std::` — but only with an
+`extern crate std;` at the top to get `io::Result` back, which is the
+attribute and its own contradiction on the same page. They move when the
+IO seam moves, which is item 4 of the plan above.
 
-The sweep added `#![no_std]` to every crate in turn, ran a host
-`cargo check --all-features`, and put it back. The number is the distance
-in that crate's **own** code — `std::` paths plus missing `alloc` prelude
-items — and it is not the same as being worth marking:
+### Everything else, and the blocker is named rather than guessed
 
-| crate | distance | worth it? |
-|---|---|---|
-| `hclient-core`, `hclient-proto`, `hclient-dns` | done | on the device path |
-| `hclient-tower` | ~8 | no — `tower` is `std` |
-| `hclient-tls-native-tls` | ~12 | no — the platform stacks are `std` |
-| `hclient-idn` | ~13 | no — `idn` is the feature a device turns **off** |
-| `hclient-tls` | ~14 | **cannot** — `hyper::rt` in the seam |
-| `hclient-mock` | ~20 | maybe, and it buys nothing yet |
-| `hclient-rt-embassy` | ~25 | not until the seam moves |
-| `hclient-rt` | ~49 | **cannot** — `hyper::rt` in the seam |
-| `hclient-rt-tokio`, `hclient-rt-smol` | ~41–47 | no — those runtimes *are* `std` |
-| `hclient-native` | ~362 | no — hyper |
-| `hclient` | ~288 | no — the facade is not the device target |
+The first sweep measured *distance* — how many `std::` paths and prelude
+items a crate's own code would need. That turned out to be the wrong
+number, because it says nothing about whether the crate could ever link.
+The second one asks the question that decides it: with the `http` overlay
+applied, cross-compile every crate for `riscv32imac-unknown-none-elf` and
+record what cargo could not build.
 
-One row of that sweep was an artifact and is worth recording as one:
+| crate | what stops it |
+|---|---|
+| `hclient-core`, `hclient-proto`, `hclient-dns`, `hclient-mock` | **nothing — they build** |
+| `hclient-rt`, `hclient-rt-tokio`, `hclient-rt-smol`, `hclient-rt-embassy`, `hclient-tungstenite` | `hyper`, surfacing as `futures-io`'s `std` feature |
+| `hclient-tls`, `hclient-tls-rustls` | `hyper`, surfacing as `bytes` pulled with defaults |
+| `hclient-native`, `hclient-tls-native-tls`, `hclient-webtransport` | `hyper`, surfacing as `futures-core`'s `std` feature |
+| `hclient-tower` | **`tower-service`** — 0.3.3 has no `#![no_std]` of its own, and that is the whole of it |
+| `hclient-wasi` | its wasm bindings, and the target is `wasm32-wasip2` regardless |
+| `hclient-fetch` | `wasm-bindgen`, likewise |
+| `hclient-idn` | the platform UTS 46 backends — and `idn` is the feature a device turns **off** |
+| `hclient-dns-doh`, `hclient-dns-hickory`, `hclient-dns-system` | their transports; a device resolves with `IpLiteralOnly` |
+| `hclient-urlsession` | its own source, and it is Apple-only by `#![cfg]` |
+| `hclient` | the facade, which is not the device target |
+
+**So the answer to "which crates can be `no_std`" is four, and it is four
+because of `hyper` rather than because of us.** Nine of the rows above are
+one dependency, and it is the same one. Removing it is item 4 and item 5,
+not a marking exercise.
+
+One row of the first sweep was an artifact and is worth recording as one:
 `hclient-urlsession` came back **clean with zero edits**, which looked like
 a finding and is not — its crate root carries
 `#![cfg(target_vendor = "apple")]`, so on the Linux runner the whole crate
 compiles to nothing. *A counter that cannot move is not evidence*, and
 checking which ones the harness actually feeds is part of reading the
 result.
+
+And one gate earned its keep during this change, which is worth a line
+because this file argues about gates constantly: `just test-no-default` —
+the recipe recorded here as having once printed `error:` and exited zero —
+caught `hclient-proto`'s test prelude carrying a `ToOwned` that is live
+with `idn` and dead without it. Nothing else in the suite looks at that
+combination.
 
 ### What is still owed, and cannot be paid today
 
