@@ -144,6 +144,7 @@
 use crate::body::OutgoingBody;
 use crate::pool::CheckIn;
 use bytes::Bytes;
+use hclient_core::unversioned::Timer;
 use hclient_core::unversioned::{CloseReason, Closed, ConnectionId, Event, Hooks};
 use hclient_core::{Error, ErrorKind};
 use http_body::{Body, Frame, SizeHint};
@@ -153,11 +154,14 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 mod errors;
+mod keepalive;
 use errors::{
     ConnectionEndedWithTheRequestQueued, ConnectionWentAwayBeforeTheRequest,
     StreamClosedWhileSendingTheRequestBody, UnknownRequestBodyFrame, from_h2_error,
     stopped_after_a_complete_response,
 };
+pub use keepalive::{H2KeepAlive, PingNotAnswered};
+use keepalive::{KeepAlive, Lapsed};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
@@ -1349,18 +1353,38 @@ impl Debug for Shared {
 /// without its driver being spawned is a connection nobody will ever
 /// poll — which is [`H2Driver`]'s first failure mode, arrived at by
 /// accident instead of by a caller's mistake.
-pub(crate) fn share<I, H>(est: Established<I>, hooks: H) -> (Shared, H2Driver<I, H>)
+pub(crate) fn share<I, H, Tm>(
+    est: Established<I>,
+    hooks: H,
+    keep_alive: Option<(H2KeepAlive, Tm)>,
+) -> (Shared, H2Driver<I, H, Tm>)
 where
     I: Read + Write + Unpin,
+    Tm: Timer,
 {
-    let Established { sender, conn, id } = est;
+    let Established {
+        sender,
+        mut conn,
+        id,
+    } = est;
+    // `ping_pong` hands out its handle **once** (`take_user_pings`), so
+    // this is the only place it can be taken — which is also why the
+    // driver holds it rather than the pool: whoever takes it must be the
+    // one polling the connection.
+    let keep_alive =
+        keep_alive.and_then(|(cfg, timer)| conn.ping_pong().map(|p| KeepAlive::new(p, cfg, timer)));
     (
         Shared {
             sender,
             id,
             slot: SharedId::next(),
         },
-        H2Driver { conn, hooks, id },
+        H2Driver {
+            conn,
+            hooks,
+            id,
+            keep_alive,
+        },
     )
 }
 
@@ -1400,9 +1424,10 @@ where
 /// verdict in 500 ms. `Timeouts::first_byte` is the only bound that cuts
 /// it, and it is not a default. Said again on
 /// [`crate::Native::multiplexed`], which is where a caller meets it.
-pub struct H2Driver<I, H>
+pub struct H2Driver<I, H, Tm>
 where
     I: Read + Write + Unpin,
+    Tm: Timer,
 {
     conn: h2::client::Connection<TokioIo<I>, Bytes>,
     /// **The driver carries the hook, and that is what makes `Closed`
@@ -1414,11 +1439,15 @@ where
     /// paid on `multiplexed()` and nowhere else.
     hooks: H,
     id: ConnectionId,
+    /// `None` unless the caller asked, which is the default: a client
+    /// that pings puts traffic on the wire nobody requested.
+    keep_alive: Option<KeepAlive<Tm>>,
 }
 
-impl<I, H> Debug for H2Driver<I, H>
+impl<I, H, Tm> Debug for H2Driver<I, H, Tm>
 where
     I: Read + Write + Unpin,
+    Tm: Timer,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H2Driver")
@@ -1427,10 +1456,11 @@ where
     }
 }
 
-impl<I, H> Future for H2Driver<I, H>
+impl<I, H, Tm> Future for H2Driver<I, H, Tm>
 where
     I: Read + Write + Unpin,
     H: Hooks + Unpin,
+    Tm: Timer + Unpin,
 {
     /// `()`, and reached exactly once: when the connection ends. There is
     /// nothing for a driver to hand back — every error it can see belongs
@@ -1461,7 +1491,28 @@ where
                 }));
                 Poll::Ready(())
             }
-            Poll::Pending => Poll::Pending,
+            // The connection is alive, so the keep-alive gets its turn.
+            // **After** the connection and never before it: a connection
+            // that ended on its own is reported by the arms above, and a
+            // probe polled first would race them for the same event.
+            Poll::Pending => {
+                let Some(ka) = this.keep_alive.as_mut() else {
+                    return Poll::Pending;
+                };
+                let lapsed = std::task::ready!(ka.poll(cx));
+                let error = match lapsed {
+                    Lapsed::NoPong => Error::new(ErrorKind::Connect, PingNotAnswered),
+                    Lapsed::Broken(e) => from_h2_error(e, ErrorKind::Connect),
+                };
+                this.hooks.on(Event::Closed(Closed {
+                    id: this.id,
+                    reason: CloseReason::Failed(&error),
+                }));
+                // Dropping the driver drops the connection, which is what
+                // ends it: there is no `GOAWAY` to send to a peer that has
+                // stopped answering.
+                Poll::Ready(())
+            }
         }
     }
 }

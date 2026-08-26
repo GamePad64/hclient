@@ -1447,3 +1447,252 @@ async fn a_burst_before_the_peers_settings_does_not_open_streams_on_a_guess() {
          guessed at before the frame carrying it arrived"
     );
 }
+
+// ── the idle connection, and what keeps it ────────────────────────────
+
+/// Cuts the connection after `idle` with no **inbound bytes**, which is
+/// what a NAT or a load balancer's flow timer actually does: it watches
+/// traffic, not HTTP semantics.
+///
+/// That is the whole reason this wrapper and not a server-side timer. A
+/// `PING` is answered by `h2` itself and never reaches `accept()`, so a
+/// server counting *requests* cannot tell a kept-alive connection from a
+/// dead one — and neither can the middlebox this models, which is the
+/// point.
+struct IdleCut<S> {
+    inner: S,
+    idle: Duration,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl<S> IdleCut<S> {
+    fn new(inner: S, idle: Duration) -> Self {
+        Self {
+            inner,
+            idle,
+            deadline: Box::pin(tokio::time::sleep(idle)),
+        }
+    }
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for IdleCut<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // The deadline is armed before the read, so a connection that
+        // never reads again still dies on time.
+        if self.deadline.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "idle too long",
+            )));
+        }
+        let before = buf.filled().len();
+        let out = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(out, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            let idle = self.idle;
+            self.deadline
+                .as_mut()
+                .reset(tokio::time::Instant::now() + idle);
+        }
+        out
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for IdleCut<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+fn spawn_idle_cutting_server(idle: Duration) -> Fixture {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::new(Shared::default());
+    let shared_t = Arc::clone(&shared);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            while let Ok((tcp, _)) = listener.accept().await {
+                shared_t.accepted.fetch_add(1, Ordering::SeqCst);
+                let shared = Arc::clone(&shared_t);
+                tokio::spawn(async move {
+                    let io = IdleCut::new(tcp, idle);
+                    let _ = serve_io(io, Arc::clone(&shared), None).await;
+                    shared.closed.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+    });
+
+    Fixture { addr, shared }
+}
+
+/// **A pooled h2 connection that goes quiet longer than the path allows is
+/// dropped by the path, and a keep-alive `PING` is what stops that.**
+///
+/// The gap between the two requests is longer than the middlebox's idle
+/// bound, so without something on the wire the second request cannot have
+/// the first one's connection. The assertion is the server's **accept
+/// count**, which is a count and not a clock.
+#[tokio::test(flavor = "current_thread")]
+async fn a_pooled_connection_that_goes_quiet_is_kept_by_the_keep_alive_ping() {
+    let idle = Duration::from_millis(200);
+    let fixture = spawn_idle_cutting_server(idle);
+    // Well inside the middlebox's bound, so the ping lands before the cut
+    // rather than racing it — the assertion is a count, and this is what
+    // keeps it one.
+    let client = Client::builder(
+        transport()
+            .h2_keep_alive(hclient_native::H2KeepAlive::new(idle / 4, idle))
+            .multiplexed(),
+    )
+    .build()
+    .unwrap();
+
+    call(&client, fixture.url("/one")).await.expect("first");
+    tokio::time::sleep(idle * 3).await;
+    call(&client, fixture.url("/two")).await.expect("second");
+
+    assert_eq!(
+        fixture.shared.accepted.load(Ordering::SeqCst),
+        1,
+        "the second request reused the first connection, so the pause did \
+         not cost a handshake — without a keep-alive ping the path would \
+         have cut it and this would be 2"
+    );
+}
+
+/// Keeps the text of every `Closed::Failed`, which [`Counting`] flattens.
+#[derive(Clone, Default)]
+struct WhyClosed(Arc<Mutex<Vec<String>>>);
+
+impl Hooks for WhyClosed {
+    fn on(&self, event: Event<'_>) {
+        if let Event::Closed(c) = event
+            && let CloseReason::Failed(e) = c.reason
+        {
+            self.0.lock().unwrap().push(e.to_string());
+        }
+    }
+}
+
+impl WhyClosed {
+    fn reasons(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// A peer that answers one request and then **stops polling its own
+/// connection**, holding the socket open.
+///
+/// That is what a silent peer is, and it is simpler than lying about
+/// frames: h2 answers a `PING` automatically, but only while something
+/// drives it. Dropping the connection future and keeping the `TcpStream`
+/// alive produces a socket that is open, readable by the kernel, and
+/// answering nothing — which no wire-level trick models more honestly.
+fn spawn_going_silent_server() -> Fixture {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::new(Shared::default());
+    let shared_t = Arc::clone(&shared);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            while let Ok((tcp, _)) = listener.accept().await {
+                shared_t.accepted.fetch_add(1, Ordering::SeqCst);
+                let shared = Arc::clone(&shared_t);
+                tokio::spawn(async move {
+                    let Ok(mut conn) = h2::server::Builder::new().handshake(tcp).await else {
+                        return;
+                    };
+                    let Some(Ok((req, respond))) = conn.accept().await else {
+                        return;
+                    };
+                    tokio::spawn(handle(req, respond, Arc::clone(&shared)));
+                    // The response is only *queued* by `respond`; the
+                    // connection has to be polled for it to reach the
+                    // wire, and `accept()` is what polls it. So drive for
+                    // a moment — long enough to flush, short enough that
+                    // the silence that follows is most of the test.
+                    let _ = tokio::time::timeout(Duration::from_millis(120), conn.accept()).await;
+                    // Then stop polling while keeping the fd: the client
+                    // sees a socket that is open and answers nothing,
+                    // which is what a silent peer is.
+                    let _socket = conn;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+    });
+
+    Fixture { addr, shared }
+}
+
+/// **A peer that stops answering the probe ends the connection, and the
+/// error says which probe.**
+///
+/// The control is the test above: the same fixture with the same bound,
+/// differing only in whether the pongs come back. Without it a keep-alive
+/// that never noticed anything would pass both — the first because the
+/// connection survived, this one because *something* failed.
+///
+/// The peer answers the first request and then stops polling its own
+/// connection while holding the socket open, which is what silence is.
+#[tokio::test(flavor = "current_thread")]
+async fn a_peer_that_stops_answering_the_probe_loses_the_connection() {
+    let fixture = spawn_going_silent_server();
+    let hook = WhyClosed::default();
+    let client = Client::builder(
+        transport()
+            .hooks(hook.clone())
+            .h2_keep_alive(hclient_native::H2KeepAlive::new(
+                Duration::from_millis(50),
+                Duration::from_millis(100),
+            ))
+            .multiplexed(),
+    )
+    .build()
+    .unwrap();
+
+    call(&client, fixture.url("/one")).await.expect(
+        "the first request \
+        succeeds on the same connection — this is a test about the probe, \
+        not about a broken socket",
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let closes = hook.reasons();
+    let named = closes
+        .iter()
+        .any(|reason| reason.contains("keep-alive PING"));
+    assert!(
+        named,
+        "the connection ended, and the reason names the probe rather than \
+         a generic connection error — saw {closes:?}"
+    );
+}

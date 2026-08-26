@@ -117,7 +117,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 /// The future [`Native::multiplexed`] spawns — public because that
 /// constructor's `Spawn` bound has to name it, and for no other reason.
 #[cfg(feature = "http2")]
-pub use http2::{H2Driver, H2Opts};
+pub use http2::{H2Driver, H2KeepAlive, H2Opts, PingNotAnswered};
 // `Prefetch` is declared in this file, beside the exchange it refines.
 pub use http1::{H1Opts, MaxBufSizeTooSmall};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
@@ -161,7 +161,7 @@ use std::time::Duration;
 /// the whole mechanism behind [`Native::multiplexed`] and is easy to lose
 /// sight of when the type is spelled out inline.
 #[cfg(feature = "http2")]
-type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H>);
+type SpawnH2<R, T, H> = fn(&R, http2::H2Driver<NativeIo<R, T>, H, R>);
 
 /// Monomorphised where `H: Clone + Send + Sync + 'static` is known, called
 /// where it is not.
@@ -587,6 +587,11 @@ where
     /// borrowed, and no task is created.
     #[cfg(feature = "http2")]
     share_h2: Option<SpawnH2<R, T, H>>,
+    /// `None` unless [`Native::h2_keep_alive`] was called, and only ever
+    /// read on the `multiplexed()` path — an unshared connection has no
+    /// driver to hold the clock.
+    #[cfg(feature = "http2")]
+    h2_keep_alive: Option<http2::H2KeepAlive>,
 }
 
 /// `T: TlsConnect` and `R: TcpConnect + Timer` are on the struct as of
@@ -931,6 +936,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             // it possible.
             #[cfg(feature = "http2")]
             share_h2: None,
+            #[cfg(feature = "http2")]
+            h2_keep_alive: None,
         }
     }
 }
@@ -1048,6 +1055,8 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             svcb_failures: self.svcb_failures,
             #[cfg(feature = "http2")]
             share_h2: self.share_h2,
+            #[cfg(feature = "http2")]
+            h2_keep_alive: self.h2_keep_alive,
         }
     }
 
@@ -1218,6 +1227,10 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             // above says the cost out loud.
             #[cfg(feature = "http2")]
             share_h2: None,
+            // Carried, unlike `share_h2` above: the setting names no type
+            // parameter, so changing `H` cannot invalidate it.
+            #[cfg(feature = "http2")]
+            h2_keep_alive: self.h2_keep_alive,
         }
     }
 
@@ -1785,13 +1798,40 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     }
 
     /// report the HTTP/1.1 floor for [`Native::new`]'s reason.
+    /// Send a `PING` on every **shared** HTTP/2 connection, and close one
+    /// whose peer stops answering.
+    ///
+    /// Off by default, which is the decision rather than an omission: a
+    /// client that pings puts traffic on the wire nobody asked for. What
+    /// it is for is the path rather than the peer — a NAT or a load
+    /// balancer whose flow timer drops a connection that has been quiet,
+    /// which is what a long-poll or an SSE stream between events looks
+    /// like from the middle of a network.
+    ///
+    /// **Only reached with [`Native::multiplexed`]**, and that is
+    /// structural: an idle pooled connection has no holder at all, so
+    /// there is nothing to write a `PING` or read its answer. Set here
+    /// without `multiplexed()`, it is inert.
+    ///
+    /// The peer's failure to answer within
+    /// [`H2KeepAlive::within`](http2::H2KeepAlive::within) closes the
+    /// connection with [`PingNotAnswered`] —
+    /// `ErrorKind::Connect`, because what ended is a connection and not
+    /// an exchange.
+    #[must_use]
+    #[cfg(feature = "http2")]
+    pub fn h2_keep_alive(mut self, cfg: http2::H2KeepAlive) -> Self {
+        self.h2_keep_alive = Some(cfg);
+        self
+    }
+
     #[cfg(feature = "http2")]
     pub fn multiplexed(mut self) -> Self
     where
-        R: Spawn<http2::H2Driver<NativeIo<R, T>, H>>,
+        R: Spawn<http2::H2Driver<NativeIo<R, T>, H, R>> + Unpin,
         H: Hooks + Unpin,
     {
-        self.share_h2 = Some(<R as Spawn<http2::H2Driver<NativeIo<R, T>, H>>>::spawn);
+        self.share_h2 = Some(<R as Spawn<http2::H2Driver<NativeIo<R, T>, H, R>>>::spawn);
         self
     }
 
@@ -2403,7 +2443,11 @@ where
         };
         match est {
             established::Established::H2(h2) => {
-                let (shared, driver) = http2::share(*h2, self.hooks.clone());
+                let (shared, driver) = http2::share(
+                    *h2,
+                    self.hooks.clone(),
+                    self.h2_keep_alive.map(|cfg| (cfg, self.rt.clone())),
+                );
                 spawn(&self.rt, driver);
                 self.pool.put(
                     parts_of_key.key(Protocol::H2),

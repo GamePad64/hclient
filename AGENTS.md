@@ -2305,14 +2305,43 @@ thing binding. And `max_header_list_size` is enforced by `h2` on **receive**
 as well as advertised (`codec/framed_read.rs`), which is what gives the
 fourth field a local observable instead of a forwarding line nobody checks.
 
-**Three of reqwest's eight are still absent, each for its own reason.** An
-adaptive window is hyper's, computed from measured RTT; `h2` has none, so
-it would be ours to write and a wrong estimator is worse than an honest
-constant. Keepalive pings need somebody polling an idle connection, which
-here means `multiplexed()` and its `Spawn` bound — a property of the driver
-rather than of the settings frame. And `max_concurrent_streams` governs
+**Two of reqwest's eight are still absent, and the third landed where it
+belongs.** An adaptive window is hyper's, computed from measured RTT;
+`h2` has none, so it would be ours to write and a wrong estimator is
+worse than an honest constant. And `max_concurrent_streams` governs
 streams the *server* opens, i.e. server push, which `h2` does not enable
 and RFC 9113 §8.4 deprecates: a knob with no subject.
+
+**Keepalive pings are `Native::h2_keep_alive`, and not an `H2Opts`
+field** — this paragraph used to say they need somebody polling an idle
+connection, which is true and is the whole shape of the answer: a
+`SETTINGS` field is written once at handshake, where this is a *driver*
+behaviour, so it belongs on the opt-in constructor that has a driver.
+Set without `multiplexed()` it is inert, which is stated where the
+setter is.
+
+**The interval measures time, not silence, and that is the one place it
+differs from the WebSocket keep-alive it is otherwise modelled on.**
+`hclient-tungstenite`'s restarts on any inbound frame, which is what
+makes it free on a busy connection; `h2::client::Connection` reports no
+traffic at all, and a driver polling it cannot tell a poll that moved
+bytes from one that did not. So a busy connection pays one `PING` per
+interval — nine bytes, against a feature whose entire purpose is that
+the path sees traffic. The second clock is the same in both, and `h2`
+makes it easier: `poll_pong` resolves for *our* ping, so there is no
+unsolicited pong to mistake for it — the mutation the WebSocket version
+had to be taught.
+
+Two tests, and the pair is the assertion. One models a middlebox — an IO
+wrapper that cuts the connection after a bound with no inbound bytes,
+which is what a NAT flow timer watches — and asserts the server's
+**accept count** stays 1 across a pause three times that bound. The
+other has the peer answer one request and then stop polling its own
+connection while holding the socket open, which is what silence is, and
+asserts the close names the probe. Checked by mutation rather than
+assumed: suppressing the `send_ping` kills the first and leaves the
+second passing, and making the deadline never fire kills the second and
+leaves the first — so neither test covers for the other.
 
 `H2Opts` is deliberately **not** `#[non_exhaustive]`, copying `TcpOpts`:
 its whole use is `H2Opts { one: Some(n), ..Default::default() }`, which the
