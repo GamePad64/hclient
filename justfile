@@ -648,10 +648,17 @@ packaging:
     # Fail closed on the loop never running: an empty `crates/*/` glob, or a
     # `publish = false` added everywhere, would otherwise report success
     # over nothing checked at all.
-    # 23 since the jar and the cache became modules of `hclient`; it was 25.
-    # The number is a floor against the glob finding nothing, not an
-    # assertion about the count — see the note above.
-    [ "$n" -ge 23 ] || { echo "::error::only $n crates checked — the glob found almost nothing"; exit 1; }
+    #
+    # **Derived, not written down**, the same way `package-build` above
+    # derives its own floor and for the reason that recipe gives: a literal
+    # goes stale the next time a crate is added or folded in, and a stale
+    # floor is a check that passes for a run that did less than it should.
+    # It was a literal until the jar and the cache became modules of
+    # `hclient` — 25 to 23 — which is exactly the edit the derivation
+    # removes.
+    want="$(cargo metadata --format-version 1 --no-deps \
+        | python3 -c 'import json,sys; print(sum(1 for p in json.load(sys.stdin)["packages"] if p.get("publish") != []))')"
+    [ "$n" -eq "$want" ] || { echo "::error::checked $n crates, workspace has $want publishable — the glob missed some"; exit 1; }
     echo "$n publishable crates carry both licence texts and a README"
 
 # Which crates have changes since the version they last published.
@@ -667,6 +674,24 @@ packaging:
 # **Deliberately not in `ci`.** It asks crates.io over the network, which
 # is the kind of flakiness a gate must not have, and the answer is only
 # wanted before a release.
+
+# Everything a release needs green, in the order a failure is cheapest to
+# find. `packaging` and `package-build` are the two that only a publish
+# would otherwise exercise: the first checks what a `.crate` would carry,
+# the second builds each one out of its own tarball — the only check here
+# that compiles a crate the way a reader would receive it rather than the
+# way this workspace sits on disk.
+#
+# `release-pending` is last and is **diagnostics**: the policy publishes
+# every crate (`docs/publishing.md` §5), so nothing here has to answer
+# which changed. It is printed so whoever is releasing can see what has
+# accumulated before choosing a level.
+#
+# Not in `ci`: `package-build` is minutes of work for a question only a
+# release asks, and `release-pending` reaches the network.
+
+# everything a release needs, plus what has accumulated since the last one
+release-check: ci packaging package-build release-pending
 
 # crates with unreleased changes (network; run before releasing)
 release-pending:

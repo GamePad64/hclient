@@ -376,12 +376,25 @@ one the dependency rule forbids. That is the same defect that renamed
 
 ## 7. What is checked before any of this runs
 
+One command, `just release-check`, which is `ci` plus the three below in
+the order a failure is cheapest to find. Not part of `ci` itself:
+`package-build` is minutes of work for a question only a release asks,
+and `release-pending` reaches the network.
+
 - `just package-build` — `cargo package --workspace`, which builds each
   `.crate` from the files that would ship and then **verifies** it by
   compiling out of that tarball. The only check here that builds a crate
   the way a reader would get it.
 - `just packaging` — the licence texts and READMEs are in the **packaged
-  file list**, not merely in the working tree.
+  file list**, not merely in the working tree. Its floor is derived from
+  `cargo metadata` rather than written down, for the reason
+  `package-build` derives its own: a literal goes stale the next time a
+  crate is added or folded in, and a stale floor is a check that passes
+  for a run that did less than it should. It was a literal until the jar
+  and the cache became modules — 25 to 23 — which is the edit the
+  derivation removes.
+- `just release-pending` — §5a, and **diagnostics rather than a gate**:
+  under §5's policy nothing has to answer which crates changed.
 
 Neither can catch a wrong publish *order*, because `cargo package
 --workspace` makes every member available to every other through a local

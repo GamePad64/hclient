@@ -85,7 +85,21 @@ published and this answers properly from then on:
 EOF
 fi
 
-if [ ${#pending[@]} -gt 0 ]; then
+total=$((changed + clean + unpublished))
+if [ ${#pending[@]} -eq 0 ]; then
+  :
+elif [ ${#pending[@]} -eq "$total" ] && [ "$total" -gt 0 ]; then
+  # Everything changed, which is what the policy publishes anyway.
   echo
-  echo "cargo release -p ${pending[*]// / -p } <level>"
+  echo "cargo release <level>"
+else
+  # The selecting form, for the policy `docs/publishing.md` §5 keeps
+  # rather than the one it uses. Built with a loop: `${a[*]// / -p }`
+  # looks like it works and does not — it leaves the `-p` off every
+  # entry but the first, and a half-right command someone pastes is
+  # worse than none.
+  line="cargo release"
+  for c in "${pending[@]}"; do line="$line -p $c"; done
+  echo
+  echo "$line <level>"
 fi
