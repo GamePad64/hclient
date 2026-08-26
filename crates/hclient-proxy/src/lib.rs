@@ -74,8 +74,6 @@
 use bytes::{Bytes, BytesMut};
 
 mod connect;
-#[cfg(feature = "pac")]
-pub mod pac;
 mod proxy;
 mod socks4;
 mod socks5;

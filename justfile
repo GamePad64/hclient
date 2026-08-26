@@ -999,17 +999,16 @@ graph-no-url:
 # `hclient-idn` exists to keep those off.
 #
 # Measured while writing: 19 crates with no features, 19 with `system` on
-# Linux, 23 on Windows, 25 on macOS, and 124 with `pac` — the JavaScript
-# engine. The counts are deliberately NOT pinned here; what is pinned is
-# the absence, for the reason the crate-count table in CLAUDE.md gives: a
-# check that fails for an upstream release which broke nothing is a check
-# people silence.
+# Linux, 23 on Windows, 25 on macOS. The counts are deliberately NOT
+# pinned here; what is pinned is the absence, for the reason the
+# crate-count table in CLAUDE.md gives: a check that fails for an upstream
+# release which broke nothing is a check people silence.
 
 # the proxy protocols cost no third-party crate; only the OS and PAC do
 graph-proxy-cost:
     #!/usr/bin/env bash
     set -euo pipefail
-    for flags in "" "--features system" "--features pac"; do
+    for flags in "" "--features system"; do
       ./scripts/tree-guard.sh absent '^(hyper|tokio) ' \
         "hclient-proxy \${flags:-with no features} pulls in an HTTP client or a runtime — the whole point of the sans-io handshakes is that driving them is the transport's job" \
         -- -p hclient-proxy $flags
@@ -1022,11 +1021,16 @@ graph-proxy-cost:
         "hclient-proxy with 'system' \${target:-on this host} pulls in url or the ICU tables — reading the machine's proxy settings must not cost a Unicode table, which is what taking a crate for it did cost" \
         -- -p hclient-proxy --features system $target
     done
-    ./scripts/tree-guard.sh absent '^boa' \
-      "hclient-proxy has a JavaScript engine without the 'pac' feature — it is 105 crates and 3.4 MB of binary, and it is opt-in" \
-      -- -p hclient-proxy --features system
-    ./scripts/tree-guard.sh absent '^(url|idna|idna_adapter|icu_|boa)' \
-      "the 'proxy' feature of hclient-native now costs url, the ICU tables or a JavaScript engine — it never has, and a transport that speaks to a proxy must not have to carry any of them" \
+    # A JavaScript engine, which is what running a PAC script would take
+    # and what this crate deliberately does not carry — see the withdrawn
+    # feature in CLAUDE.md. Named rather than left implicit because the
+    # measurement that withdrew it is the argument, and an engine
+    # arriving quietly is how the argument gets lost.
+    ./scripts/tree-guard.sh absent '^(boa|viperjs|nova_vm|quickjs|rquickjs)' \
+      "hclient-proxy has picked up a JavaScript engine — running a PAC script was measured at 114 crates and +3.4 MB and withdrawn for want of a consumer, so an engine arriving here needs that argument answered rather than repeated" \
+      -- -p hclient-proxy --all-features
+    ./scripts/tree-guard.sh absent '^(url|idna|idna_adapter|icu_)' \
+      "the 'proxy' feature of hclient-native now costs url or the ICU tables — it never has, and a transport that speaks to a proxy must not have to carry a Unicode table to do it" \
       -- -p hclient-native --features proxy
     # And the other direction, which no `absent` check can see: each
     # reader must actually arrive when it is asked for, or every check
@@ -1037,9 +1041,6 @@ graph-proxy-cost:
     ./scripts/tree-guard.sh present '^system-configuration ' \
       "hclient-proxy with 'system' has no dynamic-store reader on macOS" \
       -- -p hclient-proxy --features system --target aarch64-apple-darwin
-    ./scripts/tree-guard.sh present '^boa_engine ' \
-      "hclient-proxy with 'pac' has no JavaScript engine in it at all" \
-      -- -p hclient-proxy --features pac
 
 # icu_properties_data alone is 1.9 MB of vendored source; that is the entire
 # measurable benefit of the feature. The usual cause of a failure is some

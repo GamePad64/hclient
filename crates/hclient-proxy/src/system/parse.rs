@@ -55,29 +55,6 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// An entry whose protocol is already decided — see
-/// [`super::entry_from_authority`].
-///
-/// The value may still carry a scheme, and where it does it **wins**: a
-/// PAC verdict of `PROXY socks5://p:1080` is a script contradicting
-/// itself, and the more specific of the two spellings is the one to
-/// believe.
-#[cfg(feature = "pac")]
-pub(crate) fn entry_of_kind(
-    kind: ProxyKind,
-    value: &str,
-    applies_to: Option<Scheme>,
-) -> Result<ProxyEntry, ParseError> {
-    let key = match kind {
-        ProxyKind::Http => "http",
-        ProxyKind::Socks4 => "socks",
-        ProxyKind::Socks5 => "socks5",
-    };
-    // The key is what `entry` reads a scheme-less value's protocol from,
-    // so naming it is how the caller's decision gets in.
-    entry(key, value, applies_to)
-}
-
 /// One `(key, value)` from the platform into an entry.
 pub(crate) fn entry(
     key: &str,

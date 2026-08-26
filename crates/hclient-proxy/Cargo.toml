@@ -32,24 +32,8 @@ system = [
     "dep:system-configuration",
 ]
 
-# Running the machine's `.pac` script, which is a JavaScript program — so
-# this feature carries a JavaScript engine and is **the most expensive one
-# in this workspace by a wide margin**. Measured on a stripped
-# `opt-level = "z"` binary: 313 KiB for the protocols alone, 341 KiB with
-# `system`, and **3,840 KiB with this** — twelve times over, and 114
-# crates, more than twice `hclient`'s whole graph.
-#
-# It implies `system` because a PAC URL is a system setting and a
-# `PacVerdict` is a `system::ProxyEntry`; nothing else here has any use
-# for the engine.
-pac = ["system", "dep:boa_engine"]
-
 [dependencies]
 bytes         = { workspace = true }
-# Pure Rust, for the reason `ruzstd` and `flate2`'s `rust_backend` are
-# chosen over their C siblings: this workspace builds for two wasm
-# targets, where a C build script is not a dependency but a wall.
-boa_engine    = { version = "0.20", optional = true }
 http          = { workspace = true }
 # For `Error`/`ErrorKind` alone. Taking the workspace's error vocabulary
 # rather than minting a second one is what makes this a refactor: every

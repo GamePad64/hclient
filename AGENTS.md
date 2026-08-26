@@ -2867,7 +2867,7 @@ side of the wire — the request line's shape, the origin travelling by name
 A refactor of a connect path with no such net would have been a different
 proposition.
 
-### The machine's own proxy settings, read by us, and the PAC file behind a very expensive door
+### The machine's own proxy settings, read by us, and the PAC script reported rather than run
 
 `hclient-proxy`'s `system` feature, `Native::system_proxy()`, and
 `hclient`'s `proxy`/`system-proxy` features so that a caller reaches all
@@ -2941,45 +2941,54 @@ assumed is only that the pointer is a valid CF object; **which class it
 is, is checked** — `downcast::<CFString>()` compares the type id. The
 crate carries `#![deny(unsafe_code)]` rather than losing the attribute.
 
-**`pac` is the most expensive feature in this workspace by a wide
-margin**, and it is off by default with nothing implying it. A PAC file
-is a JavaScript program, so honouring one means carrying a JavaScript
-engine: `boa_engine`, **114 crates**, more than twice `hclient`'s whole
-graph. Measured on a stripped `opt-level = "z"` binary that really
-evaluates a script:
+**Running the script was built, measured and withdrawn, and the
+measurement is what is kept.** A PAC file is a JavaScript program, so
+honouring one means carrying a JavaScript engine. It was written —
+evaluator, the twelve host functions, 24 tests — and then removed, for
+three reasons that are all about demand rather than about code:
 
-| build | binary | over the protocols alone |
-|---|---|---|
-| the three protocols | 313 KiB | — |
-| `system` | 341 KiB | +28 KiB |
-| `pac` | **3,840 KiB** | **+3.4 MiB, twelve times over** |
+- **reqwest does not run one**, checked by `grep` over 0.13.4's source:
+  zero mentions. Neither does curl. The two most-used HTTP clients in the
+  world ship without it.
+- **The whole Rust ecosystem has one PAC crate**, `rama-pac`, at **57
+  downloads** against its parent framework's 65,062.
+- **It had no consumer here and no user anywhere.** `hclient-native`
+  never asked it anything, and `hclient` is not published, so there was
+  no request to answer. A feature with no reader is the shape this file
+  records deleting `UpgradeSupport`'s spare variants for, one size up.
 
-The evaluator is sans-io twice over, which for a PAC file takes saying
-twice: **fetching the script is not there** — that needs an HTTP client,
-the dependency direction the crate exists to avoid — and **the script's
-own IO is not either**. `dnsResolve`, `isResolvable`, `myIpAddress` and
-`isInNet` are answered from a `PacEnv` the caller fills, whose default
-answers *unresolvable* rather than inventing an address that would send
-the script down the wrong branch; the calendar functions read a clock the
-caller supplies, in **UTC**, and answer `false` without one.
+What it would have cost, measured on one program — the same PAC file and
+the same four host functions on each engine, `opt-level = "z"`, fat LTO,
+`panic = "abort"`, stripped:
 
-Three decisions inside it are worth knowing. `shExpMatch` is a **shell
-glob implemented directly** rather than translated into a regex, because
-the translation is where implementations go wrong — an unescaped `.`
-quietly becomes *any character*, and a script excluding `10.0.0.1`
-starts excluding `10x0y0z1`. A verdict is a **list**, the fallback chain
-the format specifies, so choosing among it stays the caller's. And
-Chromium's `HTTPS` keyword is **skipped rather than read as `PROXY`**,
-because it means TLS to the proxy, which this workspace refuses
-everywhere for one reason: reading it as plaintext would send the
-`CONNECT` line and any credential with it in the clear.
+| engine | crates | binary | ran the file |
+|---|---|---|---|
+| `boa_engine` 0.20 | 114 | 3,798 KiB | yes |
+| `viperjs` 0.3 | **2** | **1,563 KiB** | yes |
+| `nova_vm` 1.0 | 169 | — | not tried, heavier than Boa |
 
-**What is deliberately not wired up**: nothing in `hclient-native`
-consults a PAC file. A static list is installed on a transport once; a
-script decides per request, which is a different shape in the connect
-path and brings questions this module does not answer — when the script
-is refetched, what happens while it is being fetched, and whether a
-failed proxy is remembered.
+Two findings from that worth keeping. **Boa carries ICU without the
+`intl` feature** — `icu_normalizer(_data)`, `icu_properties(_data)`,
+`icu_collections`, `icu_locid(_transform)`, `icu_provider` — and it has
+**no `default` feature at all**, so `default-features = false` buys
+nothing; `icu_properties_data` alone is the 1.9 MB this file measures
+elsewhere. And a 2-crate engine really does run a real PAC file
+correctly, at 2.4× less binary — the argument against it is not size but
+**WPAD**: a script can arrive from DHCP or DNS rather than from a
+setting, which makes the engine an attack surface fed by the network, and
+86% of test262 from one author is not the thing to point at it.
+
+The wiring was never designed either, and its first question is the
+sharpest: **fetching the script needs an HTTP client**, which is the
+bootstrap problem `Doh::pinned`/`Doh::bootstrapped` solves for DNS and
+nobody has solved here.
+
+**What stayed is the half that was actually missing**:
+`SystemProxies::pac()` reports the URL, behind no feature and at no
+dependency cost, and `SystemProxyRefused::PacScript` turns a PAC machine
+from *silently direct* into a named refusal pointing at
+`hclient-urlsession`, which runs the script in the OS. The engine was
+never what closed that defect.
 
 **One thing knowable and not done**: `hclient-urlsession` still reports
 `Capabilities::proxy == false` while the OS applies a proxy underneath

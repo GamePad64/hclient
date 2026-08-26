@@ -4,6 +4,13 @@ Proxy protocols for [`hclient`](https://crates.io/crates/hclient) — HTTP
 `CONNECT`, SOCKS5 and SOCKS4a — as **sans-io handshakes**, plus the
 operating system's own proxy settings behind the `system` feature.
 
+It reports a proxy auto-config (PAC) script's URL and **does not run
+one**: that needs a JavaScript engine, which was built here, measured at
+114 crates and +3.4 MB of binary, and withdrawn — neither reqwest nor
+curl runs one either. A machine configured with a script is a named
+refusal rather than a silent direct connection, which is the half that
+was actually missing.
+
 Nothing here opens a socket, and nothing here names an IO trait. A
 handshake is a state machine: it is handed the bytes that arrived and
 answers with the bytes to send, or *not yet*, or *the tunnel is open*.

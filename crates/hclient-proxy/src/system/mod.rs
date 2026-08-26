@@ -42,21 +42,6 @@ mod read;
 mod translate;
 
 pub use parse::ParseError;
-
-/// One `host:port` under a protocol somebody else chose.
-///
-/// The static settings decide a [`ProxyKind`] from the key the platform
-/// used; a PAC verdict decides it from the keyword the script wrote. Both
-/// then need the same `host:port` reading, and this is the one place it
-/// lives — a second parser for the same shape is how two spellings of
-/// `[::1]:8080` end up disagreeing.
-#[cfg(feature = "pac")]
-pub(crate) fn entry_from_authority(
-    kind: ProxyKind,
-    authority: &str,
-) -> Result<ProxyEntry, ParseError> {
-    parse::entry_of_kind(kind, authority, None)
-}
 pub use translate::{SystemProxyRefused, http_proxies};
 
 /// Which protocol a proxy speaks.
