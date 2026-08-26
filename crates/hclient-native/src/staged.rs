@@ -300,7 +300,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     type Staged = Staged<R, T, H>;
 
@@ -401,7 +401,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// The body of [`StagedConnect::connect`], written where the `Refused`
     /// packing is not, so that each failure arm is a pair rather than a

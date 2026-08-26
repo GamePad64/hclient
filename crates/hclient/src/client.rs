@@ -1746,7 +1746,8 @@ impl Client {
     /// fail at all (ordinary constructors, no IO) — wrapping their
     /// nonexistent failure in a `Result` would have nothing to justify it.
     #[cfg(not(feature = "http3"))]
-    fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error> {
+    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error>
+    {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         Ok(hclient_native::Native::new(
@@ -1780,7 +1781,8 @@ impl Client {
     /// `H3` — so this maps it into the `ErrorKind::Unsupported` the caller
     /// already has to handle rather than unwrapping.
     #[cfg(feature = "http3")]
-    fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error> {
+    pub(crate) fn default_native_transport() -> Result<crate::DefaultTransport, hclient_core::Error>
+    {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
         let tcp =

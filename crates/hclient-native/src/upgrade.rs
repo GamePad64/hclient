@@ -190,7 +190,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     D: Resolve,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// Send `req` on a connection of this transport's own and hand back
     /// the `101` it was answered with, undismantled.
@@ -261,11 +261,7 @@ where
         let (conn, _tls_info, _facts) =
             crate::with_connect_timeout(&self.rt, timeouts.connect, connect_fut).await?;
 
-        exchange(conn, wire, |status| {
-            (status != http::StatusCode::SWITCHING_PROTOCOLS)
-                .then(|| Error::new(ErrorKind::Status, NotSwitchingProtocols(status)))
-        })
-        .await
+        exchange(conn, wire).await
     }
 
     /// This transport's clock, for a socket that outlives the call that
@@ -331,24 +327,24 @@ fn for_http1(req: http::Request<()>) -> http::Request<http_body_util::Empty<Byte
 
 /// The exchange, from a connected socket to a `101` — see the module doc
 /// for the three rules it keeps.
-/// The handshake both callers share: send one bodiless request, keep the
-/// connection undismantled, and hand back the head plus the machinery that
-/// can still reclaim the socket.
+/// The handshake: send one bodiless request, keep the connection
+/// undismantled, and hand back the head plus the machinery that can still
+/// reclaim the socket.
 ///
-/// `accept` is the only thing the two differ in, and it is a parameter
-/// rather than a second copy of this function because the forty lines
-/// below are the delicate part — `poll_without_shutdown`, the dead-end
-/// branch, the order of the drops — and a second copy would be forty
-/// lines nobody re-reads. A WebSocket accepts `101` alone (rule 1); an
-/// HTTP proxy accepts any `2xx`, which hyper's own h1 client already
-/// treats as an upgrade: `role.rs` sets `wants_upgrade` for
-/// `Method::CONNECT` and skips the body for `CONNECT` + `is_success`, so
-/// `into_parts` yields the tunnel and the bytes read past it exactly as
-/// it does for a `101`. Read in `hyper-1.11.0`, not assumed.
+/// **The status test used to be a parameter, and it is not any more.**
+/// There were two callers with two accepted statuses — a WebSocket takes
+/// `101` alone (rule 1), an HTTP proxy took any `2xx` — and a parameter
+/// was worth it because the forty lines below are the delicate part:
+/// `poll_without_shutdown`, the dead-end branch, the order of the drops.
+/// The second caller left when `CONNECT` stopped needing an HTTP client
+/// at all: `hclient-proxy` writes one request head and reads one response
+/// head over `hclient_proto::head`, because a `CONNECT` response has no
+/// body under any framing rule. A knob with one setting is a distinction
+/// with one reachable side, which is the shape this workspace deleted
+/// `UpgradeSupport`'s spare variants for.
 pub(crate) async fn exchange<I>(
     io: I,
     req: http::Request<http_body_util::Empty<Bytes>>,
-    accept: impl Fn(http::StatusCode) -> Option<Error>,
 ) -> Result<Upgrading<I>, Error>
 where
     I: Read + Write + Unpin + 'static,
@@ -394,8 +390,11 @@ where
     // which is the same observation for an ordinary exchange — see the
     // module doc.
     let (head, body) = resp.into_parts();
-    if let Some(refused) = accept(head.status) {
-        return Err(refused);
+    if head.status != http::StatusCode::SWITCHING_PROTOCOLS {
+        return Err(Error::new(
+            ErrorKind::Status,
+            NotSwitchingProtocols(head.status),
+        ));
     }
     // A `101` carries no body (hyper decodes it as zero-length), and the
     // connection underneath it is about to be taken apart.

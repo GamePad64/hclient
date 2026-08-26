@@ -123,7 +123,7 @@ pub use http1::{H1Opts, MaxBufSizeTooSmall};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 pub use proxy::{
-    Approach, NoProxy, Proxy, ProxyAndUnixSocket, ProxyProtocol, ProxyScheme, ProxySpokeFirst,
+    Approach, Handshake, NoProxy, Proxy, ProxyAndUnixSocket, ProxyScheme, ProxySpokeFirst,
 };
 #[cfg(feature = "proxy")]
 pub use proxy::{
@@ -1011,6 +1011,20 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// symmetrical and the asymmetry is stated rather than hidden: put
     /// `.proxy(..)` first and `unix_socket` refuses politely.
     pub fn proxy<P2>(self, proxy: crate::proxy::Proxy<P2>) -> Native<R, T, D, H, P2> {
+        self.with_proxies(vec![proxy])
+    }
+
+    /// The list form, private, and the one place the `P`-changing struct
+    /// literal is written.
+    ///
+    /// [`proxy`](Self::proxy) is one entry and
+    /// [`system_proxies_from`](Self::system_proxies_from) is however many
+    /// the machine named, **including none** — which is why this takes a
+    /// `Vec` rather than a first-plus-rest: a machine with no proxy still
+    /// has to come out of that method with the `P` its return type
+    /// promises, and there is no `Proxy` to pass through the public
+    /// method to get there.
+    fn with_proxies<P2>(self, proxies: Vec<crate::proxy::Proxy<P2>>) -> Native<R, T, D, H, P2> {
         assert!(
             self.unix_socket.is_none(),
             "a proxy and a Unix socket both answer `where does this connection go`; \
@@ -1024,7 +1038,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         // `#[non_exhaustive]` — a field added later must arrive here as
         // whatever it already was, not as a compile error somebody
         // silences by copying its neighbour.
-        caps.proxy = true;
+        // Read off the list rather than written as `true`: the empty
+        // list is reachable now (a machine with no proxy configured),
+        // and a transport reporting `proxy` while proxying nothing would
+        // be a capability that lies — the defect `Native::hooks` was
+        // found to have one field over.
+        caps.proxy = !proxies.is_empty();
         Native {
             // Carried: the installer's type names `H`, which this method
             // does not change.
@@ -1043,7 +1062,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             h1_opts: self.h1_opts,
             #[cfg(feature = "http2")]
             h2_opts: self.h2_opts,
-            proxies: vec![proxy],
+            proxies,
             rt: self.rt,
             tls: self.tls,
             dns: self.dns,
@@ -1058,6 +1077,105 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
             #[cfg(feature = "http2")]
             h2_keep_alive: self.h2_keep_alive,
         }
+    }
+
+    /// Reach every origin through the proxies **the machine itself is
+    /// configured with**.
+    ///
+    /// ```no_run
+    /// # use hclient_native::Native;
+    /// # use hclient_rt::{TcpConnect, Timer};
+    /// # use hclient_tls::TlsConnect;
+    /// # fn f<R: TcpConnect + Timer, T: TlsConnect, D>(t: Native<R, T, D>)
+    /// # -> Result<(), Box<dyn std::error::Error>> {
+    /// let t = t.system_proxy()?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// `HTTP_PROXY` and `HTTPS_PROXY` where the environment names them,
+    /// and otherwise the platform's own settings — the registry through
+    /// `WinHttpGetIEProxyConfigForCurrentUser` on Windows, the dynamic
+    /// store on macOS. `NO_PROXY`, `ProxyOverride` and macOS's exceptions
+    /// list all become this proxy's own
+    /// [`bypass`](crate::proxy::Proxy::bypass) list, and the `<local>`
+    /// rule becomes [`bypass_local`](crate::proxy::Proxy::bypass_local).
+    ///
+    /// A machine with nothing configured is not an error: the list is
+    /// empty, nothing is proxied, and `capabilities().proxy` stays
+    /// `false` — which is the same answer this transport gives when
+    /// nobody called this at all, because it is the same fact.
+    ///
+    /// # Why it is a call rather than a default
+    ///
+    /// Reading the environment is policy — *which* variables, and whether
+    /// a library may look at all — and this workspace's rule is that
+    /// policy belongs to whoever builds the transport. This method is
+    /// that person saying yes. `Native::new` reads nothing, and a build
+    /// that does not name the `system-proxy` feature does not link a
+    /// reader at all.
+    ///
+    /// # Errors
+    ///
+    /// It **refuses rather than narrowing**, and the refusal names what
+    /// it could not honour: a SOCKS proxy when this call installs HTTP
+    /// ones (`Native` holds one proxy protocol — see
+    /// [`SystemProxyRefused`](crate::proxy::system::SystemProxyRefused)), or a
+    /// bypass pattern in a shape this client's matcher cannot state
+    /// exactly, such as a subnet.
+    ///
+    /// Both alternatives are worse in the same way: quietly dropping a
+    /// proxy sends traffic direct that the machine's owner routed through
+    /// one, and quietly dropping a bypass sends traffic through a proxy
+    /// they excluded. Neither is visible from the call site, and both
+    /// change where the bytes go. A caller who wants to decide for
+    /// themselves reads
+    /// [`SystemProxies`](crate::proxy::system::SystemProxies) and builds
+    /// the proxies by hand — this method is the convenience, not the only
+    /// road.
+    ///
+    /// # Panics
+    ///
+    /// If a Unix socket is already configured, for
+    /// [`proxy`](Self::proxy)'s reason and by way of it.
+    #[cfg(feature = "system-proxy")]
+    pub fn system_proxy(
+        self,
+    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::Error> {
+        self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
+    }
+
+    /// [`system_proxy`](Self::system_proxy) over settings already read.
+    ///
+    /// Separate so that every rule in the translation is testable without
+    /// a machine that has such settings — which is every machine this
+    /// workspace is developed on — and so that a caller who reads
+    /// [`SystemProxies`](crate::proxy::system::SystemProxies) once can
+    /// hand it to several transports rather than asking the OS again for
+    /// each.
+    #[cfg(feature = "system-proxy")]
+    pub fn system_proxies_from(
+        self,
+        sys: &crate::proxy::system::SystemProxies,
+    ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::Error> {
+        let proxies = crate::proxy::system::http_proxies(sys)
+            .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))?;
+        Ok(self.with_proxies(proxies))
+    }
+
+    /// The proxy this transport would use for one request, or `None` for
+    /// direct — `Proxy::choose` over the list this transport is holding.
+    ///
+    /// `pub(crate)` and reached from `testing::chosen_proxy`: routing is
+    /// not a caller's question, but it is the only question a test of the
+    /// routing has.
+    #[cfg(feature = "proxy")]
+    pub(crate) fn chosen_proxy(
+        &self,
+        use_tls: bool,
+        host: &str,
+        port: u16,
+    ) -> Option<&crate::proxy::Proxy<P>> {
+        crate::proxy::Proxy::choose(&self.proxies, use_tls, host, port)
     }
 
     /// A second proxy, and a third — **the first that serves a request
@@ -2071,7 +2189,7 @@ where
     // worth writing is `Unpin` already — `Rc`, `Arc`, an atomic, a
     // closure that captures them.
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// Everything about a pool key except the protocol — and, as a side
     /// effect the rest of `execute` relies on, the point at which an
@@ -2508,7 +2626,7 @@ impl<R, T, D, H, P> Native<R, T, D, H, P>
 where
     R: TcpConnect + Timer,
     T: TlsConnect,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// How this request's head must be written, which a tunnel does not
     /// change — see [`crate::proxy::Via`].
@@ -2814,7 +2932,7 @@ where
     T: TlsConnect,
     T::Stream<R::Stream>: 'static,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// The whole of an exchange, from a request that may or may not have
     /// been prepared.
@@ -3231,7 +3349,7 @@ where
     // this transport's. `H: Unpin` is argued where the sibling impl
     // above declares it.
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     /// The pooled body, with the `between_bytes` bound wrapped round it.
     ///
@@ -3290,7 +3408,7 @@ where
     T::Stream<R::Stream>: 'static,
     D: Resolve,
     H: Hooks + Clone + Unpin,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
 {
     async fn prepare(&self, req: http::Request<RequestBody>) -> Prepared {
         // The same reading of the same clock the negative cache's window
@@ -3444,6 +3562,28 @@ pub mod testing {
             hclient_proto::happy_eyeballs::HeConfig::default(),
         )
         .await
+    }
+
+    /// Which proxy — if any — a request to `host:port` under `use_tls`
+    /// would be sent through.
+    ///
+    /// The chooser is `pub(crate)` because nothing outside this crate
+    /// routes a request, and `tests/*.rs` is outside it. What this opens
+    /// is the one question a proxy test actually has: an installed proxy
+    /// that is never *chosen* would satisfy every assertion that reads
+    /// fields back, and fail every request.
+    #[cfg(feature = "proxy")]
+    pub fn chosen_proxy<'a, R, T, D, H, P>(
+        native: &'a crate::Native<R, T, D, H, P>,
+        use_tls: bool,
+        host: &str,
+        port: u16,
+    ) -> Option<&'a crate::proxy::Proxy<P>>
+    where
+        R: hclient_rt::TcpConnect + hclient_rt::Timer,
+        T: hclient_tls::TlsConnect,
+    {
+        native.chosen_proxy(use_tls, host, port)
     }
 
     pub use crate::body::OutgoingBody;

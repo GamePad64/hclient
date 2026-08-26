@@ -990,6 +990,57 @@ graph-no-url:
         -- -p hclient-proto $flags
     done
 
+# What `hclient-proxy` costs, asserted instead of written down. Three
+# claims, and the middle one is the one that changed the design: reading
+# the machine's settings costs **nothing on Linux** (the environment needs
+# no crate), four small Microsoft crates on Windows and six on macOS —
+# where the crate that was taken first, `proxy_cfg`, cost 28 including
+# `url`, `idna` and the ICU tables on exactly the two targets
+# `hclient-idn` exists to keep those off.
+#
+# Measured while writing: 19 crates with no features, 19 with `system` on
+# Linux, 23 on Windows, 25 on macOS, and 124 with `pac` — the JavaScript
+# engine. The counts are deliberately NOT pinned here; what is pinned is
+# the absence, for the reason the crate-count table in CLAUDE.md gives: a
+# check that fails for an upstream release which broke nothing is a check
+# people silence.
+
+# the proxy protocols cost no third-party crate; only the OS and PAC do
+graph-proxy-cost:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for flags in "" "--features system" "--features pac"; do
+      ./scripts/tree-guard.sh absent '^(hyper|tokio) ' \
+        "hclient-proxy \${flags:-with no features} pulls in an HTTP client or a runtime — the whole point of the sans-io handshakes is that driving them is the transport's job" \
+        -- -p hclient-proxy $flags
+    done
+    # The ICU tables, on every target rather than only this one: the
+    # reader is written here precisely so that reading a registry key does
+    # not cost a Unicode table.
+    for target in "" "--target x86_64-pc-windows-msvc" "--target aarch64-apple-darwin"; do
+      ./scripts/tree-guard.sh absent '^(url|idna|idna_adapter|icu_)' \
+        "hclient-proxy with 'system' \${target:-on this host} pulls in url or the ICU tables — reading the machine's proxy settings must not cost a Unicode table, which is what taking a crate for it did cost" \
+        -- -p hclient-proxy --features system $target
+    done
+    ./scripts/tree-guard.sh absent '^boa' \
+      "hclient-proxy has a JavaScript engine without the 'pac' feature — it is 105 crates and 3.4 MB of binary, and it is opt-in" \
+      -- -p hclient-proxy --features system
+    ./scripts/tree-guard.sh absent '^(url|idna|idna_adapter|icu_|boa)' \
+      "the 'proxy' feature of hclient-native now costs url, the ICU tables or a JavaScript engine — it never has, and a transport that speaks to a proxy must not have to carry any of them" \
+      -- -p hclient-native --features proxy
+    # And the other direction, which no `absent` check can see: each
+    # reader must actually arrive when it is asked for, or every check
+    # above would pass over a feature that does nothing.
+    ./scripts/tree-guard.sh present '^windows-registry ' \
+      "hclient-proxy with 'system' has no registry reader on Windows" \
+      -- -p hclient-proxy --features system --target x86_64-pc-windows-msvc
+    ./scripts/tree-guard.sh present '^system-configuration ' \
+      "hclient-proxy with 'system' has no dynamic-store reader on macOS" \
+      -- -p hclient-proxy --features system --target aarch64-apple-darwin
+    ./scripts/tree-guard.sh present '^boa_engine ' \
+      "hclient-proxy with 'pac' has no JavaScript engine in it at all" \
+      -- -p hclient-proxy --features pac
+
 # icu_properties_data alone is 1.9 MB of vendored source; that is the entire
 # measurable benefit of the feature. The usual cause of a failure is some
 # crate depending on hclient-proto WITH default features, unioning idn back
@@ -1098,7 +1149,7 @@ features:
         --no-dev-deps check
 
 # every dependency-graph claim, together
-graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-idn-feature graph-idn-backend
+graph: supply-chain tree-ambient graph-no-quic graph-udp-pulls-quic graph-no-framing-in-the-transport quinn-stays-in-its-module graph-smol-path features graph-no-cookie-jar graph-proto-sans-io graph-no-url graph-proxy-cost graph-idn-feature graph-idn-backend
 
 # ── the whole pipeline ──────────────────────────────────────────────────
 

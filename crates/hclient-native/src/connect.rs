@@ -934,7 +934,7 @@ async fn through_proxy<R, L, P, H>(
 where
     R: TcpConnect + Timer,
     L: TlsConnect,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
     R::Stream: 'static,
     H: Hooks,
 {
@@ -958,7 +958,12 @@ where
         // line, one layer up.
         crate::proxy::Approach::Absolute => tcp,
         crate::proxy::Approach::Tunnel => {
-            let (stream, read_buf) = proxy.protocol().tunnel(tcp, host, port).await?;
+            // A fresh state machine per connection: the configured
+            // protocol is a template — credentials and options — and
+            // running a handshake mutates it.
+            let mut handshake = proxy.handshake();
+            let mut stream = tcp;
+            let read_buf = crate::proxy::drive(&mut stream, &mut handshake, host, port).await?;
             // **It must be empty, and this is a check rather than a
             // rewind.** We have not written a byte to the origin, so
             // nothing it might answer can have arrived; anything past the
@@ -1087,7 +1092,7 @@ where
     R: TcpConnect + Timer,
     D: Resolve,
     L: TlsConnect,
-    P: crate::proxy::ProxyProtocol,
+    P: crate::proxy::Handshake + Clone,
     R::Stream: 'static,
     H: Hooks,
 {

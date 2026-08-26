@@ -7,6 +7,7 @@
 pub mod backoff;
 pub mod encode;
 pub mod happy_eyeballs;
+pub mod head;
 pub mod redirect;
 pub mod sse;
 pub mod uri;

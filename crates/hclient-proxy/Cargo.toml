@@ -1,0 +1,103 @@
+[package]
+name = "hclient-proxy"
+version.workspace = true
+description = "Proxy protocols for hclient — HTTP CONNECT, SOCKS5 and SOCKS4a as sans-io handshakes, and the operating system's own proxy settings"
+keywords     = ["hclient", "proxy", "socks5", "connect", "sans-io"]
+categories   = ["network-programming"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See the root Cargo.toml: `default` is near-empty here by design.
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = []
+# The machine's own settings. A feature rather than always-on because it
+# is the only thing here that costs a third-party crate at all: the three
+# protocols carry none, which is why `hclient-native`'s `proxy` feature
+# still has no `dep:` line. What this one costs is four small crates on
+# Windows and three on macOS, and nothing anywhere else.
+# Every entry is a TARGET-specific optional dependency, and naming them
+# all here unconditionally is correct rather than sloppy: a `dep:` that
+# names an optional dependency declared only under a `[target.'cfg(..)']`
+# table is a no-op on any target that table does not match — the same
+# arrangement `hclient`'s `default-transport` relies on.
+system = [
+    "dep:windows-registry",
+    "dep:core-foundation",
+    "dep:core-foundation-sys",
+    "dep:system-configuration",
+]
+
+# Running the machine's `.pac` script, which is a JavaScript program — so
+# this feature carries a JavaScript engine and is **the most expensive one
+# in this workspace by a wide margin**. Measured on a stripped
+# `opt-level = "z"` binary: 313 KiB for the protocols alone, 341 KiB with
+# `system`, and **3,840 KiB with this** — twelve times over, and 114
+# crates, more than twice `hclient`'s whole graph.
+#
+# It implies `system` because a PAC URL is a system setting and a
+# `PacVerdict` is a `system::ProxyEntry`; nothing else here has any use
+# for the engine.
+pac = ["system", "dep:boa_engine"]
+
+[dependencies]
+bytes         = { workspace = true }
+# Pure Rust, for the reason `ruzstd` and `flate2`'s `rust_backend` are
+# chosen over their C siblings: this workspace builds for two wasm
+# targets, where a C build script is not a dependency but a wall.
+boa_engine    = { version = "0.20", optional = true }
+http          = { workspace = true }
+# For `Error`/`ErrorKind` alone. Taking the workspace's error vocabulary
+# rather than minting a second one is what makes this a refactor: every
+# message a caller sees is the one they saw before the protocols moved.
+hclient-core  = { workspace = true }
+# For `head`: RFC 9112 §4's response head, which is the whole of what
+# `CONNECT` needed hyper for.
+hclient-proto = { workspace = true }
+thiserror     = { workspace = true }
+
+# The platform half of `system`, one crate per platform and **both safe
+# APIs** — `windows_registry::Key::get_string` and
+# `SCDynamicStore::get_proxies` hold their own `unsafe`, so this crate
+# keeps `#![forbid(unsafe_code)]` where raw bindings would have needed an
+# amendment in `docs/exceptions.md`.
+#
+# The alternative was `proxy_cfg`, one crate doing all of it. It was taken
+# first and dropped, measured: it depends on `url`, and through it on
+# `idna` and the ICU data crates — 28 crates, on exactly the two targets
+# `hclient-idn` exists to keep those tables off — and it pulls a second
+# `windows-sys` major through `winreg`. Two things it also does not read
+# are two this now does: the auto-config URL, and the platform's own
+# SOCKS entry.
+[target.'cfg(windows)'.dependencies]
+windows-registry = { version = "0.6", optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+core-foundation      = { version = "0.9", optional = true }
+core-foundation-sys  = { version = "0.8", optional = true }
+system-configuration = { version = "0.6", optional = true }
+
+[dev-dependencies]
+rstest = { workspace = true }
+
+# NOT `[lints] workspace = true`, for the reason `hclient-urlsession`'s
+# manifest gives: the workspace sets `unsafe_code = "forbid"`, and `forbid`
+# cannot be relaxed from inside a crate (E0453). **One expression** here
+# needs it — reading an element of the `CFArray` macOS returns for the
+# proxy exceptions list, which `core-foundation` types as raw pointers —
+# and the crate root carries `#![deny(unsafe_code)]` in its place, so a
+# second site is a compile error rather than a quiet arrival.
+#
+# The compiler lint is not the control either way:
+# `scripts/unsafe-code-policy.sh` is, and it is stricter — a marker on
+# EVERY such line, naming the amendment that excuses it, in a file listed
+# by name. Amendment C13.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"

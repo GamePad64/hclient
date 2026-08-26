@@ -41,6 +41,10 @@ default = ["idn"]
 idn = ["dep:hclient-idn"]
 
 [dependencies]
+# `winnow`, and only for `head`: an HTTP response head is a grammar, which
+# is where a combinator library pays — the line this workspace drew when
+# the date parsers were split, and measured in both directions there.
+winnow = { workspace = true }
 base64 = { workspace = true }
 form_urlencoded = { workspace = true }
 percent-encoding = { workspace = true }

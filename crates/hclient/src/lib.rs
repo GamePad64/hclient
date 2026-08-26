@@ -187,6 +187,89 @@ pub mod redirect {
     pub use hclient_proto::redirect::RedirectPolicy;
 }
 
+/// Reaching origins through a proxy, behind the `proxy` feature.
+///
+/// A proxy is configured on the **transport**, not on the `Client` — it
+/// answers *where does this connection go*, which is a question the thing
+/// that opens connections owns. So the shape is
+/// [`default_transport`], then one of these,
+/// then [`Client::builder`](crate::Client::builder):
+///
+/// ```no_run
+/// # #[cfg(all(feature = "proxy", not(target_family = "wasm")))]
+/// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// use hclient::proxy::{HttpConnect, Proxy};
+///
+/// let transport = hclient::default_transport()?
+///     .proxy(Proxy::new(HttpConnect::new(), "proxy.corp", 8080).bypass([".internal"]));
+/// let client = hclient::Client::builder(transport).build()?;
+/// # Ok(()) }
+/// ```
+///
+/// With the `system-proxy` feature, the machine's own settings instead —
+/// `HTTP_PROXY` and `HTTPS_PROXY` where the environment names them, the
+/// registry on Windows, the dynamic store on macOS:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "system-proxy", not(target_family = "wasm")))]
+/// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = hclient::Client::builder(hclient::default_transport()?.system_proxy()?).build()?;
+/// # Ok(()) }
+/// ```
+///
+/// These are `hclient-native`'s types, re-exported. A caller who builds a
+/// transport of their own — a different runtime, a different TLS backend
+/// — reaches them there and needs nothing from here.
+#[cfg(all(feature = "proxy", not(target_family = "wasm")))]
+pub mod proxy {
+    /// The machine's proxy settings as data, for a caller who wants to
+    /// read them and decide rather than hand them straight over.
+    #[cfg(feature = "system-proxy")]
+    pub use hclient_native::proxy::system;
+    pub use hclient_native::proxy::{
+        Approach, ConnectError, Handshake, HttpConnect, NoProxy, Proxy, ProxyRefused, ProxyScheme,
+        Socks4, Socks4HandshakeError, Socks4Refused, Socks5, Socks5HandshakeError, Socks5Refused,
+        Step,
+    };
+}
+
+/// The transport [`Client::new`] would have built, for a caller who wants
+/// to configure it first.
+///
+/// `Client::new()` is `Client::builder(default_transport()?).build()`,
+/// and this is the half in the middle — which is where a proxy, a socket
+/// option or an `h1_opts` bound is set, because all of them belong to the
+/// thing that opens connections rather than to the client above it.
+///
+/// ```no_run
+/// # #[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+/// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = hclient::Client::builder(hclient::default_transport()?).build()?;
+/// # Ok(()) }
+/// ```
+///
+/// # The signature forks by target, exactly as `Client::new`'s does
+///
+/// On `wasm32-unknown-unknown` the default transport is the browser's
+/// `fetch`, whose constructor cannot fail, so there is no `Result` and no
+/// `?` — the same single difference `Client::new` has, for the same
+/// reason and in the same place. See [`DefaultTransport`].
+#[cfg(all(feature = "default-transport", not(target_family = "wasm")))]
+pub fn default_transport() -> Result<DefaultTransport, Error> {
+    Client::default_native_transport()
+}
+
+/// The browser branch of [`default_transport`] — infallible, because
+/// `Fetch::new()` is.
+#[cfg(all(
+    feature = "default-transport",
+    target_family = "wasm",
+    target_os = "unknown"
+))]
+pub fn default_transport() -> DefaultTransport {
+    hclient_fetch::Fetch::new()
+}
+
 pub use config::{Config, Timeouts, effective_timeouts};
 pub use deadline::NoClock;
 

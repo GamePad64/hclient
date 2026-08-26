@@ -91,6 +91,20 @@ default-transport = [
 # advertises `h3`; what it costs on a network that blocks UDP/443 is
 # bounded by `H3Failures` at one attempt per origin per TTL, and by
 # `Timeouts::connect` if the caller sets one.
+# Reach origins through a proxy — an HTTP one, or SOCKS5/SOCKS4 — with
+# `Client`'s own transport. Off by default, like every protocol here.
+#
+# `default-transport` is implied for the reason `http2` implies it: what
+# the feature configures is the transport `Client::new` builds, so a build
+# that has no such transport has nothing for this to switch on.
+proxy = ["default-transport", "hclient-native/proxy"]
+# The machine's own proxy settings — `DefaultTransport::system_proxy`.
+# Implies `proxy` because it is the same machinery with a different source
+# for the values, and it adds `hclient-system-proxy`, which carries `url`
+# and the ICU tables on Windows and macOS. That cost is the reason the
+# reader is a crate rather than a module, and the reason this is a feature
+# of its own rather than part of `proxy`.
+system-proxy = ["proxy", "hclient-native/system-proxy"]
 http2 = ["default-transport", "hclient-native/http2"]
 http3 = [
     "default-transport",

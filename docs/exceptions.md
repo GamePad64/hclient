@@ -125,6 +125,25 @@ optimisation, so a crate-wide `forbid` would mean no backend. `body.rs`
 has none at all, which is the check the file naming exists to make
 possible.
 
+**C13 — Core Foundation types an array's elements as raw pointers**, in
+`hclient-proxy/src/system/read.rs`. macOS returns the proxy exceptions
+list as a `CFArray` of `CFString`, and `core-foundation` implements
+`ConcreteCFType` for `CFArray<*const c_void>` alone — so the value can be
+downcast to an untyped array and to no other, and its elements arrive as
+pointers with no safe way to read one. Checked in 0.9 and 0.10;
+`objc2-core-foundation` has the same wall one level up, at the dictionary.
+
+Two things make this narrower than it looks. **The class is checked, not
+assumed**: the pointer is borrowed as a `CFType`, whose `downcast` compares
+the type id, so an array of something else yields nothing rather than a
+string read out of the wrong object. And **skipping the list was weighed
+and is worse** — every Mac ships `*.local` and `169.254/16` as defaults, so
+a reader that dropped it would silently proxy the traffic its owner
+excluded, which is the failure this whole module refuses everywhere else.
+
+The crate carries `#![deny(unsafe_code)]` rather than losing the attribute:
+one site, marked, in a file this script names.
+
 ## One that is neither
 
 **C6 — a `#[non_exhaustive]` type can only be checked for completeness

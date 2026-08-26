@@ -134,7 +134,7 @@ the wave count is a fact about the graph rather than a guess:
 |---|---|
 | 1 | `hclient-core`, `hclient-idn` |
 | 2 | `hclient-dns`, `hclient-fetch`, `hclient-mock`, `hclient-proto`, `hclient-rt`, `hclient-tls`, `hclient-webtransport` |
-| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
+| 3 | `hclient-dns-hickory`, `hclient-dns-system`, `hclient-proxy`, `hclient-rt-smol`, `hclient-rt-tokio`, `hclient-tls-native-tls`, `hclient-tls-rustls` |
 | 4 | `hclient-native` |
 | 5 | `hclient`, `hclient-dns-doh` |
 | 6 | `hclient-rt-embassy`, `hclient-tower`, `hclient-tungstenite`, `hclient-urlsession`, `hclient-wasi` |
@@ -219,7 +219,7 @@ The argument for it is that it removes a question rather than answering
 one. Selecting crates means knowing which changed, and *knowing* means a
 step that can be skipped, got wrong, or forgotten — the failure this
 document spent §5a building a tool against. Publishing everything cannot
-forget anything. The cost is 23 uploads for a one-line fix and a version
+forget anything. The cost is 24 uploads for a one-line fix and a version
 history with no gaps in it, which for crates this size is cosmetic.
 
 **It is also not what guarantees compatibility, and that is worth saying
@@ -251,7 +251,7 @@ satisfying them.
 
 **cargo-release does not work out which crates changed** — it was measured
 and it does not: with a tag one commit back and one crate touched, a plain
-`cargo release patch` still planned all 23 uploads. Under §5's policy that
+`cargo release patch` still planned all 24 uploads. Under §5's policy that
 is the wanted behaviour rather than a shortcoming; under the `-p` form,
 selecting is yours, and §5a is what tells you what to select.
 `cargo-smart-release` is the tool that does compute the set, and it is not

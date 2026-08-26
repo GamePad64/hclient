@@ -356,7 +356,7 @@ What is still missing is enumerated at the end of
 themselves the thing to check first: several entries on them were built
 after they were written.
 
-The mechanics are in place and were measured, not assumed. All 25
+The mechanics are in place and were measured, not assumed. All 24
 publishable crates carry `description`, `license` and `repository`; inter-crate dependencies
 carry `version` beside `path`, without which nothing here could be
 published at all; `hclient-rt-pair-check` is the only `publish = false`.
@@ -561,10 +561,10 @@ obstacle there is a dependency rather than a design:
 
   | build of `hclient-proto` | crates | what supplies UTS 46 |
   |---|---|---|
-  | default (`idn`), x86-64 Linux | **40** | `idna` + the ICU data crates |
-  | default (`idn`), `--target x86_64-pc-windows-msvc` | **16** | `icuuc.dll`, through `windows-sys` |
-  | default (`idn`), `--target aarch64-apple-darwin` | **18** | Foundation, through `objc2-foundation` |
-  | `--no-default-features` | **13** | nothing — `NonAsciiHost` |
+  | default (`idn`), x86-64 Linux | **41** | `idna` + the ICU data crates |
+  | default (`idn`), `--target x86_64-pc-windows-msvc` | **17** | `icuuc.dll`, through `windows-sys` |
+  | default (`idn`), `--target aarch64-apple-darwin` | **19** | Foundation, through `objc2-foundation` |
+  | `--no-default-features` | **14** | nothing — `NonAsciiHost` |
 
   The Linux row was the old **36** plus `hclient-idn` itself and nothing
   else: `thiserror` was already there, and no new Unicode crate arrives.
@@ -577,6 +577,16 @@ obstacle there is a dependency rather than a design:
   crate's own changes moved **all four** rows while churn moved only the
   one with a large third-party subtree is the clearest statement of what
   separates them.
+
+  **All four moved again, by exactly one, when `head.rs` arrived** —
+  `winnow`, for RFC 9112 §4's response head, which is what let
+  `CONNECT` stop needing an HTTP client. The rule above demonstrated
+  itself: a change of this crate's own moves every row, and the +1 is
+  the same +1 on Windows and macOS as on Linux because `winnow` has no
+  Unicode tables and no platform half. It is **not** behind a feature,
+  which was the first shape and was withdrawn: gating it would have
+  bought one crate back at the floor and cost every consumer a feature
+  to remember.
 
   **There is still no `url` in any of them, and that is the point of the
   last two.** `form_urlencoded` is its own crate over `percent-encoding`
@@ -2785,6 +2795,198 @@ a ceiling at 2× would be a guard that cannot fire for the defect it
 names. They are 6 KiB and 24 KiB, and both are checked in the failing
 direction by reintroducing the layer. `.notes/expect-continue.md` §7.
 
+### The proxy protocols became sans-io, and `CONNECT` stopped needing an HTTP client
+
+`hclient-proxy`: the seam, `Proxy<P>`, the bypass matcher and all three
+protocols, as **state machines with no IO trait in them at all**. A
+handshake is handed the bytes that arrived and answers with the bytes to
+send, or *not yet*, or *the tunnel is open*; `hclient-native`'s driver is
+thirty lines and is the only thing left in the family that knows what a
+`poll_read` is.
+
+**The premise of the move was `CONNECT`, and it was the one protocol that
+looked immovable.** It drove `hyper`'s h1 dispatcher through
+`crate::upgrade` — `http1::Connection`, `poll_without_shutdown`,
+`into_parts` for the leftover read buffer — because writing one request
+and reading one response needed an HTTP client. What made it movable is a
+fact about the *message* rather than about hyper: **a `CONNECT` response
+has no body under any framing rule** (RFC 9110 §9.3.6), so chunked
+decoding, `Content-Length` and the interaction between the two — the hard
+half of HTTP/1 — have no subject. What replaced forty lines of dispatcher
+is `hclient_proto::head`, forty lines of parser.
+
+**That parser is `winnow` and the head is a grammar**, which is this
+workspace's own rule about where combinators pay, applied for the third
+time and coming out the other way from the last two: `Cache-Control` was a
+grammar and shrank, `charset` was a *cut* and grew. The input is
+`winnow::Partial`, so **incomplete is the parser's answer rather than a
+scan of ours** — the case a hand-written scan gets wrong is a terminator
+split across two reads, and a scan restarted from the beginning on every
+read is quadratic in the head's length. `a_head_arriving_one_byte_at_a_time_is_never_wrong_before_it_is_complete`
+pins it at every prefix.
+
+**Three refusals are the parser's own**, each a `MUST` somewhere: a bare
+`LF` (RFC 9112 §2.2 *permits* accepting one, and two line grammars is a
+thing two implementations disagree about), an obs-fold continuation (§5.2),
+and whitespace before the colon (§5, the request-smuggling shape).
+
+**What sans-io bought is not tidiness, it is reach.** Every rule in every
+protocol is now killed by a test that opens no file descriptor, against
+the byte sequences the RFCs print — and the SOCKS5 reply, whose length is
+not known until `ATYP` and its length byte have arrived, is fed one byte
+at a time with the buffer asserted untouched at each step. The contract
+that makes that possible is one sentence and it is the only thing the two
+SOCKS protocols share: **a handshake that answers `NeedMore` has consumed
+nothing.** They share no bytes at all otherwise — `VN=4` against `0x05`,
+`CD=90` against `REP=0`, NUL-terminated fields against length prefixes —
+which is the same evidence for the seam that two protocols sharing nothing
+was before the move. What they *used* to share, `frames.rs`'s byte-exact
+IO, is gone: the driver does it once for all three.
+
+**The seam is narrower than the trait it replaced, and the loss is
+stated.** A protocol that has to **wrap** the IO cannot be written against
+`Handshake` — TLS to the proxy itself is the real example — where the old
+`ProxyProtocol::tunnel` took the stream and could have. That is not a
+regression: it was unsupported before, and it is where
+`system::ParseError::TlsToProxyUnsupported` already refuses. Lifting it is
+a change to the driver's thirty lines, not to the seam.
+
+**One knob turned out to have one setting and was deleted.**
+`upgrade::exchange` took the accepted status as a parameter *because there
+were two callers*, and its doc said so; with `CONNECT` gone there is one,
+and a parameter with one value is the distinction-with-one-reachable-side
+that `UpgradeSupport`'s spare variants were deleted for. The `101` check is
+inlined and the paragraph explaining the parameter is now the paragraph
+explaining its absence — which is the maintenance this file records
+failing three times over.
+
+**The regression net was already there, and it is the reason this was
+attemptable at all.** `tests/proxy.rs` watches bytes from the proxy's own
+side of the wire — the request line's shape, the origin travelling by name
+— and its 20 tests passed against the rewritten implementation unchanged.
+A refactor of a connect path with no such net would have been a different
+proposition.
+
+### The machine's own proxy settings, read by us, and the PAC file behind a very expensive door
+
+`hclient-proxy`'s `system` feature, `Native::system_proxy()`, and
+`hclient`'s `proxy`/`system-proxy` features so that a caller reaches all
+of it without naming `hclient-native` — with `hclient::default_transport()`
+as the piece that was missing, since a proxy is configured **on the
+transport** and there was no way to get one from the facade.
+
+**The readers are ours, and taking a crate for them was tried first and
+measured.** `proxy_cfg` does all of it in one dependency; it also depends
+on `url`, and through it on `idna` and the ICU tables — **28 crates**, on
+exactly the two targets `hclient-idn` exists to keep those tables off —
+and it pulls a second `windows-sys` major through `winreg`. Written here
+over `windows-registry` and `system-configuration`, both of which expose
+**safe** APIs, the cost is: **nothing on Linux**, where the environment
+needs no crate at all; **+4** on Windows; **+6** on macOS. And two things
+`proxy_cfg` does not read at all are now read — the auto-config URL, and
+the platform's own SOCKS entry.
+
+**Every rule is a pure function, and the OS-touching half holds no
+decisions.** `WinHttpGetIEProxyConfigForCurrentUser`'s registry keys and
+`SCDynamicStoreCopyProxies`'s dictionary are four lines each and cannot
+run on the platform this workspace is developed on; what they hand to
+`from_wininet` and to `from_parts` is data, and every rule — the
+`scheme=host:port` list, `<local>`, which key means which scheme, the
+`host:port` reading — is tested on any host. That is
+`hclient-dns-system`'s split between `sys` and its parsers, applied
+again.
+
+**Everything ambiguous is a named refusal rather than a quiet narrowing.**
+A transport holds one proxy protocol, so a machine naming a SOCKS proxy
+*and* an HTTP one is refused naming the SOCKS one; a bypass pattern the
+matcher cannot state exactly is refused naming the pattern; a credential
+that cannot become a header is refused naming its proxy. Each
+alternative is the same defect in a different direction — dropping a
+proxy sends traffic direct that the machine's owner routed, dropping a
+bypass sends traffic through a proxy they excluded — and neither is
+visible from the call site. This is the *silently ignored setting* defect
+one layer below `Capabilities`, where the setting comes from the machine
+rather than from the caller.
+
+**A PAC script is the fourth refusal and the sharpest**, because ignoring
+it means going **direct** on a machine whose owner routed its traffic
+through a proxy — a policy violation, and on a network with no direct
+egress a failure nobody can explain from the client's side. It is asked
+first, before the static entries, because WinINET keeps those as the
+script's *fallback*: honouring them would be taking the machine's second
+answer while ignoring its first.
+
+**Two rules came from looking at what a Mac actually ships, and both
+would have been wrong by reasoning alone.** `Proxy::bypass_local()` is
+the `<local>` / *Exclude simple hostnames* rule — a rule about the shape
+of a name, so a flag rather than a pattern — and macOS ships it **on**.
+And the bypass dialect grew a **subnet** form, `10.0.0.0/8` and the
+abbreviated `169.254/16`, because `169.254/16` is in the default
+exceptions list of every Mac: the design refused a subnet on the grounds
+that the matcher deliberately has no address arithmetic, which would have
+meant refusing the platform's own default configuration. A subnet never
+matches a **name**, not even one that resolves into it — matching would
+mean resolving a host to decide whether to proxy it, which is an extra
+lookup and, on a proxied request, the DNS leak a proxy user is often
+there to avoid.
+
+**One `unsafe` came with the macOS reader, and it is amendment C13.**
+`core-foundation` implements `ConcreteCFType` for `CFArray<*const
+c_void>` alone, so the exceptions list can be downcast to an untyped
+array and to no other, and its elements arrive as pointers with no safe
+way to read one — checked in 0.9 and 0.10, and `objc2-core-foundation`
+has the same wall one level up, at the dictionary. Skipping the list was
+weighed and is worse, for the reason above: every Mac has one. What is
+assumed is only that the pointer is a valid CF object; **which class it
+is, is checked** — `downcast::<CFString>()` compares the type id. The
+crate carries `#![deny(unsafe_code)]` rather than losing the attribute.
+
+**`pac` is the most expensive feature in this workspace by a wide
+margin**, and it is off by default with nothing implying it. A PAC file
+is a JavaScript program, so honouring one means carrying a JavaScript
+engine: `boa_engine`, **114 crates**, more than twice `hclient`'s whole
+graph. Measured on a stripped `opt-level = "z"` binary that really
+evaluates a script:
+
+| build | binary | over the protocols alone |
+|---|---|---|
+| the three protocols | 313 KiB | — |
+| `system` | 341 KiB | +28 KiB |
+| `pac` | **3,840 KiB** | **+3.4 MiB, twelve times over** |
+
+The evaluator is sans-io twice over, which for a PAC file takes saying
+twice: **fetching the script is not there** — that needs an HTTP client,
+the dependency direction the crate exists to avoid — and **the script's
+own IO is not either**. `dnsResolve`, `isResolvable`, `myIpAddress` and
+`isInNet` are answered from a `PacEnv` the caller fills, whose default
+answers *unresolvable* rather than inventing an address that would send
+the script down the wrong branch; the calendar functions read a clock the
+caller supplies, in **UTC**, and answer `false` without one.
+
+Three decisions inside it are worth knowing. `shExpMatch` is a **shell
+glob implemented directly** rather than translated into a regex, because
+the translation is where implementations go wrong — an unescaped `.`
+quietly becomes *any character*, and a script excluding `10.0.0.1`
+starts excluding `10x0y0z1`. A verdict is a **list**, the fallback chain
+the format specifies, so choosing among it stays the caller's. And
+Chromium's `HTTPS` keyword is **skipped rather than read as `PROXY`**,
+because it means TLS to the proxy, which this workspace refuses
+everywhere for one reason: reading it as plaintext would send the
+`CONNECT` line and any credential with it in the clear.
+
+**What is deliberately not wired up**: nothing in `hclient-native`
+consults a PAC file. A static list is installed on a transport once; a
+script decides per request, which is a different shape in the connect
+path and brings questions this module does not answer — when the script
+is refetched, what happens while it is being fetched, and whether a
+failed proxy is remembered.
+
+**One thing knowable and not done**: `hclient-urlsession` still reports
+`Capabilities::proxy == false` while the OS applies a proxy underneath
+it. The reader exists now, so the honest value is computable — what is
+missing is that `SystemProxies::detect` reads the environment first, and
+`URLSession` does not honour the environment, so the two would disagree.
+
 ### Proxies: an HTTP one and SOCKS5, behind one seam
 
 `Native::proxy(Proxy::new(protocol, host, port))`, behind `hclient-native`'s
@@ -3423,7 +3625,7 @@ alone.
 **The detail that decides where the files live is that a file at the
 repository root never reaches the tarball.** `cargo package` takes only
 what is inside the crate's own directory, so one pair at the root would
-have looked right in every git view and shipped nothing. Each of the 29
+have looked right in every git view and shipped nothing. Each of the 24
 publishable crates carries its own copy, as a symlink — cargo follows one
 and packs the content, verified by extracting the `.crate` rather than by
 reading the file list: 18 files where there were 16, and the first line of

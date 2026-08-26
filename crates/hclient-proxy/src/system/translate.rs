@@ -1,0 +1,354 @@
+//! The machine's settings, turned into [`Proxy`] values.
+//!
+//! # What can go wrong, and why it is an error rather than a shrug
+//!
+//! A transport holds **one** proxy protocol `P`, which is the limit this
+//! crate's root doc records against `Box<dyn Handshake>`. A machine can
+//! name a SOCKS proxy and an HTTP one at once, and one transport cannot
+//! hold both. Two more things can arrive that no [`Proxy`] can state
+//! exactly: a subnet in the bypass list, and a wildcard in the middle of
+//! a pattern.
+//!
+//! Every one of them is a **named refusal**, never a quiet narrowing, and
+//! the reason is what the narrowing would do: traffic the machine's owner
+//! routed through a proxy would go direct, or traffic they excluded would
+//! go through one. Both are changes to where the bytes go, made on
+//! somebody's behalf, and invisible from the call site. This workspace
+//! has closed the *silently ignored setting* defect four times at the
+//! `Capabilities` layer; this is the same defect one layer down, where
+//! the setting comes from the machine instead of from the caller.
+//!
+//! The escape hatch is not a flag on the refusal — it is
+//! [`SystemProxies`] itself, which a caller can read and act on however
+//! they like.
+
+use super::{ProxyKind, Scheme, SystemProxies};
+use crate::{HttpConnect, Proxy, ProxyScheme};
+
+/// Why the system's configuration could not be installed on a transport
+/// as it stands.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SystemProxyRefused {
+    /// The machine names a proxy whose protocol is not the one this call
+    /// installs.
+    ///
+    /// A transport holds one `P`, so a configuration naming both an HTTP
+    /// and a SOCKS proxy has no faithful reading here. Build the one you
+    /// want by hand — `Proxy::new(Socks5::new(), host, port)` — which
+    /// also makes the choice visible at the call site, where a rule of
+    /// ours would not be.
+    #[error(
+        "the system names a {kind:?} proxy at {host}:{port}, and this call installs HTTP proxies; \
+         a transport holds one proxy protocol, so build that one with `Proxy::new(..)`"
+    )]
+    MixedProtocols {
+        kind: ProxyKind,
+        host: Box<str>,
+        port: u16,
+    },
+    /// A bypass pattern this crate's matcher cannot express — a subnet,
+    /// or a wildcard that is not a leading `*.`.
+    ///
+    /// Honouring it approximately is what the matcher's own dialect
+    /// refuses to do (*a pattern in no accepted shape matches nothing
+    /// rather than approximately something*), and dropping it would put a
+    /// host the machine excluded back on the proxy.
+    #[error(
+        "the system's bypass list contains {0}, which this client's matcher cannot state exactly; \
+         read `SystemProxies` yourself and decide, rather than have this call guess"
+    )]
+    UnrepresentableBypass(Box<str>),
+    /// The machine's proxy is a **PAC script**, which decides per request
+    /// by running JavaScript, and nothing here runs one.
+    ///
+    /// Refused rather than ignored, and this is the sharpest of the four:
+    /// ignoring it means going **direct** on a machine whose owner routed
+    /// its traffic through a proxy — a policy violation, and on a network
+    /// where direct egress is blocked, a failure nobody can explain from
+    /// the client's side. `hclient-urlsession` honours it on Apple
+    /// platforms, because `URLSession` runs the script in the OS.
+    #[error(
+        "the machine's proxy is the auto-config script at {0}, which decides per request and \
+         which nothing here runs; on Apple platforms `hclient-urlsession` honours it in the OS, \
+         and otherwise name a proxy explicitly with `Proxy::new(..)`"
+    )]
+    PacScript(Box<str>),
+    /// A credential the machine named cannot become a header — a colon in
+    /// the username, or a byte no header value may carry.
+    ///
+    /// Installing the proxy without it would authenticate against
+    /// nothing and collect a `407` the caller could not explain.
+    #[error("the credential for the proxy at {host}:{port} cannot be sent as a header")]
+    UnusableCredential { host: Box<str>, port: u16 },
+}
+
+/// The HTTP proxies in `sys`, in the order they should be tried.
+///
+/// Empty is an ordinary answer: most machines have no proxy, and a
+/// transport that installs an empty list proxies nothing, which is what
+/// it should do.
+pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, SystemProxyRefused> {
+    // Asked first, because it is the one that makes every other answer
+    // beside the point: where a script decides, the static entries are
+    // WinINET's *fallback* rather than the configuration.
+    if let Some(pac) = sys.pac() {
+        return Err(SystemProxyRefused::PacScript(pac.into()));
+    }
+    if let Some(u) = sys.unsupported_bypass().first() {
+        return Err(SystemProxyRefused::UnrepresentableBypass(
+            u.to_string().into_boxed_str(),
+        ));
+    }
+    // A `*` bypass says *no proxy at all*, which is an answer and not a
+    // failure: the honest installation of it is an empty list.
+    if sys.bypass_everything() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::with_capacity(sys.entries().len());
+    for entry in sys.entries() {
+        if entry.kind() != ProxyKind::Http {
+            return Err(SystemProxyRefused::MixedProtocols {
+                kind: entry.kind(),
+                host: entry.host().into(),
+                port: entry.port(),
+            });
+        }
+        let mut protocol = HttpConnect::new();
+        if let Some(c) = entry.credentials() {
+            protocol = protocol.basic_auth(c.user(), c.password()).map_err(|_| {
+                SystemProxyRefused::UnusableCredential {
+                    host: entry.host().into(),
+                    port: entry.port(),
+                }
+            })?;
+        }
+        let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
+            .bypass(sys.bypass().iter().map(|p| p.to_string()));
+        if sys.bypass_local() {
+            proxy = proxy.bypass_local();
+        }
+        if let Some(scheme) = entry.applies_to() {
+            proxy = proxy.only_for(match scheme {
+                Scheme::Http => ProxyScheme::Http,
+                Scheme::Https => ProxyScheme::Https,
+            });
+        }
+        out.push(proxy);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system::testing::system_proxies;
+
+    /// Where a request to `host` under `use_tls` would go, asked through
+    /// the chooser a transport uses rather than by reading fields back: a
+    /// proxy installed but never *chosen* would satisfy every assertion
+    /// that reads fields and fail every request.
+    fn route(list: &[Proxy<HttpConnect>], use_tls: bool, host: &str, port: u16) -> Option<String> {
+        Proxy::choose(list, use_tls, host, port).map(|p| format!("{}:{}", p.host(), p.port()))
+    }
+
+    #[test]
+    fn an_https_proxy_and_an_http_one_each_take_their_own_scheme() {
+        // The case the whole feature exists for: the ordinary corporate
+        // pair at different hosts, which one `Option` could never hold.
+        let sys = system_proxies(
+            &[("http", "plain.corp:8080"), ("https", "secure.corp:8443")],
+            &[],
+            false,
+        );
+        let list = http_proxies(&sys).expect("installs");
+
+        assert_eq!(
+            route(&list, false, "example.com", 80).as_deref(),
+            Some("plain.corp:8080")
+        );
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("secure.corp:8443")
+        );
+    }
+
+    #[test]
+    fn a_catch_all_proxy_does_not_shadow_a_scheme_specific_one() {
+        // `choose` is first-match-wins and the platform hands its settings
+        // over as an unordered map, so if the ordering imposed by
+        // `SystemProxies` were lost, every `https://` request would go to
+        // the wrong host. This is that ordering asserted where it has a
+        // consequence.
+        let sys = system_proxies(
+            &[("*", "everything.corp:3128"), ("https", "secure.corp:8443")],
+            &[],
+            false,
+        );
+        let list = http_proxies(&sys).expect("installs");
+
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("secure.corp:8443")
+        );
+        assert_eq!(
+            route(&list, false, "example.com", 80).as_deref(),
+            Some("everything.corp:3128")
+        );
+    }
+
+    #[test]
+    fn the_bypass_list_takes_a_host_direct() {
+        let sys = system_proxies(
+            &[("*", "proxy.corp:8080")],
+            &["internal.example.com", "*.corp.example.com"],
+            false,
+        );
+        let list = http_proxies(&sys).expect("installs");
+
+        assert_eq!(route(&list, true, "internal.example.com", 443), None);
+        // `*.corp.example.com` translated to `.corp.example.com`: the host
+        // and everything under it.
+        assert_eq!(route(&list, true, "build.corp.example.com", 443), None);
+        assert_eq!(route(&list, true, "corp.example.com", 443), None);
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("proxy.corp:8080")
+        );
+    }
+
+    #[test]
+    fn exclude_simple_hostnames_takes_a_dotless_host_direct() {
+        // macOS ships with this on, so it is the common case rather than
+        // a corner: without it, every `http://intranet/` on a Mac behind a
+        // proxy would go through the proxy the machine's owner told it not
+        // to use for exactly those names.
+        let sys = system_proxies(&[("*", "proxy.corp:8080")], &[], true);
+        let list = http_proxies(&sys).expect("installs");
+
+        assert_eq!(route(&list, false, "intranet", 80), None);
+        assert_eq!(
+            route(&list, false, "10.0.0.5", 80).as_deref(),
+            Some("proxy.corp:8080")
+        );
+    }
+
+    #[test]
+    fn without_the_local_rule_a_dotless_host_is_proxied() {
+        // The control: a `bypass_local` that was always on would pass
+        // every assertion in the test above.
+        let sys = system_proxies(&[("*", "proxy.corp:8080")], &[], false);
+        let list = http_proxies(&sys).expect("installs");
+        assert_eq!(
+            route(&list, false, "intranet", 80).as_deref(),
+            Some("proxy.corp:8080")
+        );
+    }
+
+    #[test]
+    fn a_socks_proxy_is_refused_by_name_rather_than_dropped() {
+        // Installing the HTTP entries and discarding this one would send
+        // traffic direct that the machine routes through SOCKS —
+        // invisibly, from a call site that asked for the machine's
+        // configuration.
+        let sys = system_proxies(&[("all", "socks5://socks.corp:1080")], &[], false);
+        let err = http_proxies(&sys).expect_err("not installable here");
+        let rendered = err.to_string();
+        assert!(rendered.contains("socks.corp"), "{rendered}");
+        assert!(rendered.contains("1080"), "{rendered}");
+    }
+
+    #[test]
+    fn a_bypass_pattern_that_cannot_be_stated_exactly_is_refused_by_name() {
+        // The mirror failure: honouring a pattern approximately would put
+        // a host on the proxy that the machine excluded from it.
+        let sys = system_proxies(&[("*", "proxy.corp:8080")], &["192.168.1.*"], false);
+        let err = http_proxies(&sys).expect_err("a mid-pattern wildcard is not statable");
+        assert!(err.to_string().contains("192.168.1.*"), "{err}");
+    }
+
+    #[test]
+    fn the_default_macos_exceptions_install_rather_than_refuse() {
+        // What every Mac ships: a leading-label wildcard and an
+        // abbreviated subnet. Both are statable, so the common case is an
+        // installation rather than the refusal this used to be.
+        let sys = system_proxies(
+            &[("*", "proxy.corp:8080")],
+            &["*.local", "169.254/16"],
+            true,
+        );
+        let list = http_proxies(&sys).expect("the platform's own default installs");
+
+        assert_eq!(route(&list, true, "printer.local", 443), None);
+        assert_eq!(route(&list, true, "169.254.3.4", 443), None);
+        assert_eq!(route(&list, true, "intranet", 80), None);
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("proxy.corp:8080")
+        );
+    }
+
+    #[test]
+    fn a_pac_machine_is_refused_rather_than_taken_direct() {
+        // The sharpest of the four refusals: ignoring a PAC script means
+        // going direct on a machine whose owner routed its traffic
+        // through a proxy — a policy violation, and on a network with no
+        // direct egress a failure nobody can explain from here.
+        use crate::system::testing::system_proxies_with_pac;
+        let sys = system_proxies_with_pac(&[], &[], false, "http://wpad.corp/proxy.pac");
+        let err = http_proxies(&sys).expect_err("a script is not a proxy list");
+        assert!(err.to_string().contains("wpad.corp/proxy.pac"), "{err}");
+    }
+
+    #[test]
+    fn a_pac_url_beside_static_entries_still_refuses() {
+        // WinINET keeps `ProxyServer` as a *fallback* when a script is
+        // configured, so installing those entries would be honouring the
+        // machine's second choice while ignoring its first.
+        use crate::system::testing::system_proxies_with_pac;
+        let sys = system_proxies_with_pac(
+            &[("*", "fallback.corp:8080")],
+            &[],
+            false,
+            "http://wpad.corp/proxy.pac",
+        );
+        assert!(http_proxies(&sys).is_err());
+    }
+
+    #[test]
+    fn a_machine_with_no_proxy_installs_none() {
+        // Not an error: most machines are this one.
+        let list = http_proxies(&system_proxies(&[], &[], false)).expect("ordinary");
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn a_star_bypass_installs_nothing_at_all() {
+        // `NO_PROXY=*` is *use no proxy*, which is an answer rather than a
+        // failure — and the honest installation of it is an empty list,
+        // not a refusal and not a proxy nobody asked for.
+        let sys = system_proxies(&[("*", "proxy.corp:8080")], &["*"], false);
+        assert!(http_proxies(&sys).expect("installs").is_empty());
+    }
+
+    #[test]
+    fn credentials_from_a_proxy_url_reach_the_connector() {
+        // `http://user:pass@proxy` is how the environment carries a proxy
+        // credential, and a proxy installed without it authenticates
+        // against nothing and gets a 407 the caller cannot explain.
+        use crate::Handshake;
+        let sys = system_proxies(&[("*", "http://alice:hunter2@proxy.corp:8080")], &[], false);
+        let list = http_proxies(&sys).expect("installs");
+
+        let header = list[0]
+            .protocol()
+            .proxy_authorization()
+            .expect("a credential reached the connector");
+        // RFC 7617: `alice:hunter2` base64-encoded.
+        assert_eq!(header.as_bytes(), b"Basic YWxpY2U6aHVudGVyMg==");
+        // And it is marked sensitive, so it does not reach a log through
+        // a `Debug`.
+        assert!(header.is_sensitive());
+    }
+}
