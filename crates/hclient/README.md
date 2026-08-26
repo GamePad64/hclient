@@ -90,12 +90,45 @@ rather than a runtime refusal.
 
 Almost everything is a feature and almost nothing is on by default — a
 build should carry nothing it did not ask for. `default` here is `idn`
-alone.
+and `public-suffix`.
+
+## Proxies are opt-in twice, and one of those will surprise you
+
+Nothing here reads `HTTP_PROXY`, `HTTPS_PROXY` or `NO_PROXY` unless you
+ask it to. `Client::new()` does not, and neither does anything else: the
+`system-proxy` feature makes the reader *exist*, and one call makes it
+*run*.
+
+```toml
+hclient = { version = "0.1", features = ["default-transport", "system-proxy"] }
+```
+
+```rust
+let transport = hclient::default_transport()?.system_proxy()?;
+let client = hclient::Client::builder(transport).build()?;
+```
+
+**This differs from reqwest**, which pushes a system proxy matcher into
+every client it builds, with no feature and no call — so a port from
+reqwest that does not add those two lines will quietly stop using the
+proxy its environment names, and the traffic goes direct. That is worth
+one line in a migration checklist, and it is why this paragraph exists
+rather than only a doc comment.
+
+Why it is a call rather than a default: reading the machine's settings can
+**fail on purpose**. A machine whose proxy is a PAC script, or one naming
+both an HTTP and a SOCKS proxy, is a named refusal — because installing
+half of what it said would send traffic somewhere its owner did not
+choose. A `Client::new()` that read the settings would therefore fail to
+construct on a network with WPAD, which is a worse answer than going
+direct. So the reading is a call you make, and the refusal is one you can
+see and handle.
 
 ## Related crates
 
 `hclient-native` (TCP, TLS, h1/h2, and h3 behind a feature),
-`hclient-fetch`, `hclient-wasi`, `hclient-urlsession`; runtimes
+`hclient-fetch`, `hclient-wasi`, `hclient-urlsession`; `hclient-proxy`
+(the proxy protocols, sans-io, and the OS's own settings); runtimes
 `hclient-rt-tokio`, `-smol`, `-embassy`; TLS `hclient-tls-rustls`,
 `-native-tls`; resolvers `hclient-dns-system`, `-doh`, `-hickory`.
 
