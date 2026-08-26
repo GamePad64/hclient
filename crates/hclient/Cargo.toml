@@ -460,7 +460,6 @@ hclient-fetch = { path = "../hclient-fetch", version = "0.1.0-alpha.1", optional
 # The cookie and cache suites, moved in with their modules.
 rstest         = { workspace = true }
 assert_matches = { workspace = true }
-proptest       = { workspace = true }
 # Two independent oracles for both `date.rs` files, dev-only. `httpdate`
 # is the incumbent HTTP-date parser and answers the *format* question —
 # which strings are accepted at all — where the corpus answers the
@@ -528,6 +527,18 @@ tokio              = { version = "1", features = ["rt-multi-thread"] }
 # is any use, and an ungated dev-dependency still has to BUILD for a target
 # whose test file is cfg'd out.
 flate2             = { version = "1.1" }
+
+# `proptest`, for `tests/cookie_dates.rs`, and it is the same pairing again
+# rather than a third exception. It is the one dev-dependency the cookie and
+# cache merge left in the unconditional table, and it does not build for
+# either wasm target: `rusty-fork` -> `wait-timeout` is unix-only, and
+# `rand_core` -> `getrandom` refuses `wasm32-unknown-unknown` without
+# `--cfg getrandom_backend="wasm_js"`. Neither is reachable from a test —
+# a dev-dependency has to BUILD for a target whether or not anything on it
+# runs — so this broke `just build-three-targets`, which is the check that
+# the ONE example claiming to build for native, wasip2 and the browser from
+# a single source actually does.
+proptest           = { workspace = true }
 brotli             = { version = "8.0", default-features = false, features = ["std"] }
 # The zstd ENCODER for the same server, and it is an oracle rather than a
 # convenience — the role `multer` plays for `multipart.rs` and `url` for

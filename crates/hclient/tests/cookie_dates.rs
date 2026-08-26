@@ -22,7 +22,7 @@
 //! Every expected value below was computed independently before the parser
 //! was run against it.
 
-#![cfg(feature = "cookies")]
+#![cfg(all(feature = "cookies", not(target_family = "wasm")))]
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
