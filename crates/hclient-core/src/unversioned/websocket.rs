@@ -43,9 +43,10 @@
 //!   supported. A subprotocol *can* be asked for, because the request
 //!   carries headers; nothing here checks what came back.
 use crate::Error;
+use alloc::string::String;
+use core::future::Future;
 use futures_core::Stream;
 use futures_sink::Sink;
-use std::future::Future;
 
 /// One WebSocket message, in the vocabulary every backend can speak.
 ///

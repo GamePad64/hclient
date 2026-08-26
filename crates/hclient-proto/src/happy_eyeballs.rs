@@ -1,9 +1,9 @@
 //! The Happy Eyeballs v2 scheduler (RFC 8305). Pure: time comes in as the
 //! `elapsed` parameter, so the constants can be checked without `sleep`.
 
+use alloc::collections::VecDeque;
+use core::net::IpAddr;
 use core::time::Duration;
-use std::collections::VecDeque;
-use std::net::IpAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeConfig {
@@ -199,8 +199,10 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-    use std::time::Duration;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
+    use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use core::time::Duration;
 
     fn v6(n: u16) -> IpAddr {
         IpAddr::V6(Ipv6Addr::new(0x20, 0, 0, 0, 0, 0, 0, n))

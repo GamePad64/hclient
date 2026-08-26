@@ -1,3 +1,4 @@
+#![no_std]
 //! Plugin contract for hclient: the traits a backend, a runtime or a
 //! resolver implements, and the vocabulary types they exchange.
 //!
@@ -28,6 +29,44 @@
 //! that does not. `grep` is therefore the authority on which sites exist;
 //! this list says what kind they are.
 #![forbid(unsafe_code)]
+
+//! # Why `#![no_std]`, unconditionally
+//!
+//! Not behind a feature, for the reason `bytes` and rustls are not either:
+//! a `std`/`no_std` split is two preludes, and the difference shows up as
+//! imports that are "unused" in one of them and load-bearing in the other
+//! — a warning that teaches a reader to delete the wrong line. Nothing
+//! here wants anything from `std`: measured, there is not one genuinely
+//! std-only item in this crate's library code, which is what
+//! [`Timer::Instant`](unversioned::Timer::Instant) being an associated
+//! type bought long before anyone asked for a device.
+//!
+//! `alloc` is mandatory and stays so. `#[cfg(test)] extern crate std` is
+//! how the test modules keep their prelude.
+//!
+//! **This is not yet a bare-metal build**, and the missing piece is not
+//! ours: `http` 1.x carries a `compile_error!` for `no_std`. The cross
+//! check that proves this crate compiles for `riscv32imac-unknown-none-elf`
+//! needs a patched `http`, so it is a spike rather than a CI job — which
+//! means this attribute has no guard and can rot. `docs/no-std.md` has the
+//! measurement and what would close it.
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+/// What this crate's test modules lose to `#![no_std]`: `ToString` lives
+/// in `alloc`'s prelude and not in `core`'s.
+///
+/// Deliberately **not** `use std::prelude::v1::*` — that glob re-imports
+/// `panic!`, which is already in `core`'s prelude, and the ambiguity is a
+/// `-D warnings` error today and a hard error later
+/// (rust-lang/rust#147319). Naming what is used has no such edge, and the
+/// list is short because these tests barely allocate.
+#[cfg(test)]
+mod test_prelude {
+    pub use alloc::string::ToString;
+}
 
 mod body;
 mod caps;

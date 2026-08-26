@@ -177,6 +177,8 @@ pub fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use http::{Method, StatusCode, Uri};
 
     fn p() -> RedirectPolicy {

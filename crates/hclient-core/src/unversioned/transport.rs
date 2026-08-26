@@ -1,7 +1,8 @@
 use crate::{Capabilities, Error, ErrorKind, RequestBody};
+use alloc::boxed::Box;
 use bytes::Bytes;
-use std::error::Error as StdError;
-use std::future::Future;
+use core::error::Error as StdError;
+use core::future::Future;
 
 /// The one seam between hclient and real HTTP.
 ///

@@ -1,6 +1,7 @@
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use bytes::Bytes;
-use std::fmt::Debug;
-use std::sync::Arc;
+use core::fmt::Debug;
 
 /// Whether this body can be replayed — known **before** sending.
 ///
@@ -60,7 +61,7 @@ pub enum RequestBody {
 }
 
 impl Debug for RequestBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             RequestBody::Empty => f.write_str("Empty"),
             RequestBody::Full(b) => write!(f, "Full({} bytes)", b.len()),
@@ -107,10 +108,12 @@ impl RequestBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use bytes::Bytes;
-    use std::pin::Pin;
-    use std::task::Context;
-    use std::task::Poll;
+    use core::pin::Pin;
+    use core::task::Context;
+    use core::task::Poll;
 
     #[test]
     fn replayability_is_knowable_before_sending() {
@@ -140,7 +143,7 @@ mod tests {
 
     #[test]
     fn a_factory_survives_repeated_replays() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use core::sync::atomic::{AtomicUsize, Ordering};
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
         let b = RequestBody::rewindable(move || {

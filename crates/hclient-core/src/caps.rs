@@ -870,7 +870,9 @@ pub struct UnsupportedCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error as StdError;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
+    use core::error::Error as StdError;
 
     /// **Every field is a gate or a report, and adding one without saying
     /// which is a compile error.**

@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 /// Splits a byte stream into lines per the WHATWG EventSource rules:
 /// exactly one leading BOM is stripped, terminators are CRLF, LF, or a lone
 /// CR. Survives a chunk break at any point, including mid-BOM and between
@@ -120,6 +121,8 @@ impl LineSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
 
     fn collect(chunks: &[&[u8]]) -> Vec<Vec<u8>> {
         let mut s = LineSplitter::new();

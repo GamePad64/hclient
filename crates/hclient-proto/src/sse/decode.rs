@@ -1,6 +1,7 @@
 use super::LineSplitter;
+use alloc::collections::VecDeque;
+use alloc::string::String;
 use core::time::Duration;
-use std::collections::VecDeque;
 
 /// An SSE event. `Comment` and `Retry` are first-class on purpose: without
 /// the former you can't build a keep-alive detector, without the latter
@@ -183,6 +184,8 @@ impl SseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use core::time::Duration;
 
     fn events(input: &[u8]) -> Vec<SseEvent> {

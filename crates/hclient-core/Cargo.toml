@@ -27,6 +27,25 @@ futures-sink = { workspace = true }
 http      = { workspace = true }
 http-body = { workspace = true }
 thiserror = { workspace = true }
+# `ConnectionId`'s counter is an `AtomicU64` and a 32-bit target has no
+# 64-bit atomics — not `riscv32imac`, not `thumbv7em`. `core`'s type simply
+# is not there, which is a compile error rather than a slow path.
+#
+# **`fallback` is not decoration and `default-features = false` alone
+# breaks this**: `cfg_has_atomic_64` is gated on `feature = "fallback"` AND
+# one of the CAS sources, so turning defaults off removes the very thing
+# that makes the 64-bit type exist. Measured, after it failed with
+# `critical-section` alone.
+#
+# `critical-section` is the same `#[no_mangle]` contract
+# `hclient-rt-embassy`'s manifest documents at length: the implementation
+# is the APPLICATION's, because on a device it is an interrupt mask and
+# nothing below can know which one. On a host target the whole dependency
+# is inert — the native atomics are used and no section is ever taken.
+#
+# See `docs/no-std.md`. The cheaper alternative is narrowing the counter to
+# `AtomicU32`, which changes a public type.
+portable-atomic = { version = "1", default-features = false, features = ["critical-section", "fallback"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

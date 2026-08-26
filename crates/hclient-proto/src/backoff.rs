@@ -136,7 +136,14 @@ fn scale_by_kept_fraction(d: Duration, kept: f64) -> Duration {
         (0.0..=1.0).contains(&kept),
         "scale_by_kept_fraction precondition violated: kept={kept} out of [0.0, 1.0]"
     );
-    let keep_num = (kept * FIXED_POINT_DENOM as f64).round() as u128;
+    // `+ 0.5` and a truncating cast rather than `.round()`, and it is a
+    // `no_std` requirement rather than a style: **float functions live in
+    // `std`**, not in `core` — `core` has the arithmetic and none of
+    // `round`, `floor`, `sqrt`. The two agree exactly here because the
+    // `debug_assert!` above pins `kept` to `[0.0, 1.0]`, so the product is
+    // non-negative and `round` is `floor(x + 0.5)`. The general answer is
+    // `libm`; for one call site that would be a dependency for a line.
+    let keep_num = (kept * FIXED_POINT_DENOM as f64 + 0.5) as u128;
     let raw_nanos = d.as_nanos();
     let scaled_nanos = raw_nanos
         .checked_mul(keep_num)
@@ -150,6 +157,8 @@ fn scale_by_kept_fraction(d: Duration, kept: f64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
 
     fn b() -> Backoff {
         Backoff::default()

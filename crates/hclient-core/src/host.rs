@@ -63,6 +63,8 @@ pub fn bare_host(host: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::bare_host;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
 
     /// The case the function exists for, and the four ways of getting it
     /// wrong that a mutation reaches: a strip that fires on every host, a
@@ -102,6 +104,6 @@ mod tests {
     #[test]
     fn an_empty_bracketed_host_is_empty() {
         assert_eq!(bare_host("[]"), "");
-        assert!("".parse::<std::net::IpAddr>().is_err());
+        assert!("".parse::<core::net::IpAddr>().is_err());
     }
 }

@@ -80,6 +80,9 @@
 //! also keeps UTS 46's own ASCII lower-casing away from hosts that never
 //! asked for it.
 
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
 use http::Uri;
 
 /// Why a string could not be turned into an [`http::Uri`].
@@ -378,7 +381,7 @@ fn percent_encode_into(s: &str, out: &mut String) {
 #[cfg(feature = "idn")]
 fn host_to_ascii(host: &str) -> Result<String, UriError> {
     hclient_idn::domain_to_ascii(host)
-        .map(std::borrow::Cow::into_owned)
+        .map(alloc::borrow::Cow::into_owned)
         .map_err(|e| idn_error(host, e))
 }
 
@@ -600,6 +603,8 @@ fn pop_segment(out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
     use assert_matches::assert_matches;
 
     fn uri(s: &str) -> Uri {

@@ -28,6 +28,7 @@
 //! into `%2Fa%2Fb%3Fx%3D1%26y%3D2`. The right crate was available all
 //! along; the wrong one is one letter of a name away.
 
+use alloc::string::String;
 use base64::Engine as _;
 
 /// RFC 4648 §4, encode only.
@@ -63,6 +64,8 @@ pub fn form_urlencoded<K: AsRef<str>, V: AsRef<str>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
 
     /// RFC 4648 §10's own vectors, plus RFC 7617 §2's `Aladdin` line —
     /// the one this function exists to produce.

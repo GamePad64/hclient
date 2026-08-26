@@ -1,6 +1,6 @@
-use std::error::Error as StdError;
-use std::fmt::Display;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::error::Error as StdError;
+use core::fmt::Display;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -104,7 +104,7 @@ impl Error {
 }
 
 impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}: {}", self.kind, self.source)
     }
 }
@@ -118,13 +118,15 @@ impl StdError for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error as StdError;
-    use std::fmt::Display;
+    #[allow(unused_imports)]
+    use crate::test_prelude::*;
+    use core::error::Error as StdError;
+    use core::fmt::Display;
 
     #[derive(Debug)]
     struct Src;
     impl Display for Src {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             write!(f, "boom")
         }
     }
@@ -148,7 +150,7 @@ mod tests {
         // source pointers of the original and the clone must match.
         let a = StdError::source(&e).unwrap() as *const dyn StdError;
         let b = StdError::source(&c).unwrap() as *const dyn StdError;
-        assert!(std::ptr::eq(a, b));
+        assert!(core::ptr::eq(a, b));
     }
 
     #[test]

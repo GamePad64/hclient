@@ -66,11 +66,11 @@
 //! backend's view. See this module's parent for what `unversioned`
 //! promises.
 use crate::Error;
+use alloc::sync::Arc;
+use core::fmt::Display;
+use core::net::SocketAddr;
 use core::time::Duration;
-use std::fmt::Display;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use portable_atomic::{AtomicU64, Ordering};
 
 /// Somewhere to send what a transport did.
 ///
@@ -132,7 +132,7 @@ impl<H: Hooks + ?Sized> Hooks for Arc<H> {
 /// the shape P13 asks about. A hook behind an `Rc` makes the transport
 /// holding it `!Send`, and everything still compiles — see
 /// `crates/hclient-core/tests/shape.rs`.
-impl<H: Hooks + ?Sized> Hooks for std::rc::Rc<H> {
+impl<H: Hooks + ?Sized> Hooks for alloc::rc::Rc<H> {
     const WATCHING: bool = H::WATCHING;
     fn on(&self, event: Event<'_>) {
         (**self).on(event);
@@ -270,7 +270,7 @@ impl ConnectionId {
 }
 
 impl Display for ConnectionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
     }
 }

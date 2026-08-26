@@ -1,7 +1,7 @@
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use core::time::Duration;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 /// The one runtime capability the portable core needs: timeouts and
 /// backoff. Networking and spawning live in the transports.

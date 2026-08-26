@@ -40,11 +40,12 @@
 use crate::Error;
 use crate::RequestBody;
 use crate::unversioned::Timer;
+use alloc::boxed::Box;
 use bytes::Bytes;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use std::time::Duration;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 
 /// A response body with its type erased, as an erased transport hands back.
 ///
@@ -125,7 +126,7 @@ pub trait BoxedTransport {
     /// never generic.
     fn capabilities(&self) -> &crate::Capabilities;
 
-    /// The transport as [`std::any::Any`], so a caller can ask for its
+    /// The transport as [`core::any::Any`], so a caller can ask for its
     /// concrete type back.
     ///
     /// Erasure is what makes a facade one type rather than two parameters,
@@ -135,7 +136,7 @@ pub trait BoxedTransport {
     /// `Option` is the honest answer, because the client holds whatever
     /// backend it was built with and nothing checked it against this
     /// caller's guess.
-    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 impl<T> BoxedTransport for T
@@ -158,7 +159,7 @@ where
         crate::unversioned::Transport::capabilities(self)
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
+    fn as_any(&self) -> &dyn core::any::Any {
         self
     }
 }
