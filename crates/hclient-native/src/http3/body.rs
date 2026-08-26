@@ -22,7 +22,7 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 ///
 /// `full_duplex` is `true` on this transport, which means the head can be
 /// delivered while the request body is still going out. The unfinished
-/// write is a future (`crate::h3::pump`) and it comes here, because this is
+/// write is a future (`crate::http3::pump`) and it comes here, because this is
 /// the object the caller still holds: `poll_frame` polls it first, so the
 /// upload advances every time the download is read.
 ///
@@ -50,14 +50,14 @@ pub(crate) type RecvHalf = h3::client::RequestStream<
 /// never finished. **The connection is untouched**, which is the point of
 /// HTTP/3: a cancelled request must not disturb its neighbours on the same
 /// connection, and on this transport there genuinely are neighbours — see
-/// [`crate::h3::H3`]'s pool policy. Nothing is spawned, so there is no pump
+/// [`crate::http3::H3`]'s pool policy. Nothing is spawned, so there is no pump
 /// left running behind a dropped body either.
 ///
 /// # It also reports the connection's end, and only the connection's
 ///
 /// A body outlives `Transport::execute`, so if the connection underneath
 /// it dies while it is being read there is nothing else left to say so.
-/// `crate::h3::hooks::Watch` is what it says it with, and the discrimination
+/// `crate::http3::hooks::Watch` is what it says it with, and the discrimination
 /// is `quinn::Connection::close_reason()`: a stream that failed on a
 /// connection that is still alive — a `RESET_STREAM`, a server that
 /// stopped reading — is one request's failure and **not** a close, which
@@ -73,13 +73,13 @@ pub struct H3Body<H = hclient_core::unversioned::NoHooks> {
     /// `None` once the request body has been written in full — which for
     /// an empty body is before this type exists, and for a large one may
     /// be long after.
-    pump: Option<crate::h3::pump::Pump>,
+    pump: Option<crate::http3::pump::Pump>,
     /// Trailers are read after the data has ended, and `http_body` wants
     /// them as one more frame, so the body has a second phase rather than
     /// one loop.
     phase: Phase,
-    /// `None` unless somebody is watching — see [`crate::h3::hooks`].
-    watch: Option<Box<crate::h3::hooks::Watch<H>>>,
+    /// `None` unless somebody is watching — see [`crate::http3::hooks`].
+    watch: Option<Box<crate::http3::hooks::Watch<H>>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -92,8 +92,8 @@ enum Phase {
 impl<H> H3Body<H> {
     pub(crate) fn new(
         stream: RecvHalf,
-        pump: Option<crate::h3::pump::Pump>,
-        watch: Option<Box<crate::h3::hooks::Watch<H>>>,
+        pump: Option<crate::http3::pump::Pump>,
+        watch: Option<Box<crate::http3::hooks::Watch<H>>>,
     ) -> Self {
         Self {
             stream,

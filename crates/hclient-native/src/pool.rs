@@ -3,7 +3,7 @@
 //! # Nobody polls an idle connection, and that is the design
 //!
 //! hyper's `Connection` is a future someone has to poll or bytes stop
-//! moving. Today that someone is the request future itself ([`crate::h1`]'s
+//! moving. Today that someone is the request future itself ([`crate::http1`]'s
 //! module doc). Between two pooled requests there is no request future, so
 //! either something polls it or nothing does — and this transport is
 //! deliberately built **without `Spawn`**, so nothing does.
@@ -64,7 +64,7 @@
 //! replacement for it.
 //!
 //! What replaces it *by default* is a **check at checkout**: before a
-//! pooled connection is used, [`crate::h1::is_reusable`] polls its
+//! pooled connection is used, [`crate::http1::is_reusable`] polls its
 //! `Connection` exactly once and asks `SendRequest::poll_ready`. One poll
 //! is enough to see a server that closed the socket while it was idle,
 //! because a reactor's readiness is remembered rather than delivered: the
@@ -138,7 +138,7 @@
 //!    at all — a closed read side makes `can_write_head()` false — and
 //!    leaves the request whole in its queue, from where `Envelope::drop`
 //!    hands it back the moment the connection is dropped.
-//!    [`crate::h1::claim_back`] asks for it, so that point is retried like
+//!    [`crate::http1::claim_back`] asks for it, so that point is retried like
 //!    the first rather than reported like the third. The third is
 //!    unchanged, and the paragraph above is about it.
 //!
@@ -1265,10 +1265,10 @@ mod tests {
     /// and `Pending` here would mean a broken assumption rather than "wait
     /// a little longer", which is why it panics instead of looping.
     fn parked() -> Established<NeverIo> {
-        let mut h = Box::pin(crate::h1::handshake(
+        let mut h = Box::pin(crate::http1::handshake(
             NeverIo,
             hclient_core::unversioned::ConnectionId::UNWATCHED,
-            crate::h1::H1Opts::default(),
+            crate::http1::H1Opts::default(),
         ));
         match poll_once(&mut h) {
             Poll::Ready(Ok(est)) => Established::H1(est),

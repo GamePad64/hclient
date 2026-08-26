@@ -44,21 +44,21 @@ pub mod caps;
 mod established;
 #[cfg(feature = "http3")]
 mod failures;
-mod h1;
+mod http1;
 #[cfg(feature = "http3")]
-mod h3;
+mod http3;
 /// Bind a QUIC endpoint on this workspace's own runtime seam — quinn
 /// driven by whichever `hclient_rt` implementation the caller already has.
 ///
 /// A build that wants bare QUIC and no HTTP opinion takes this and nothing
 /// else from the crate; it was `hclient-quinn`'s whole public surface.
 #[cfg(feature = "http3")]
-pub use crate::quinn::endpoint;
+pub use crate::http3::runtime::endpoint;
 /// The QUIC connect deadline's error, renamed on the way out: this crate's
 /// own TCP one is private and carries the same name, and two types with
 /// one name in one crate is how a reader ends up reading the wrong doc.
 #[cfg(feature = "http3")]
-pub use h3::ConnectTimedOut as H3ConnectTimedOut;
+pub use http3::ConnectTimedOut as H3ConnectTimedOut;
 /// The HTTP/3 stack this transport's QUIC arm is built from.
 ///
 /// It was `hclient-h3`, a crate of its own, on a reason that measurement
@@ -73,7 +73,7 @@ pub use h3::ConnectTimedOut as H3ConnectTimedOut;
 /// has `Client::builder(H3::new(..))`: the type is a full `Transport` and
 /// nothing about it changed in the move.
 #[cfg(feature = "http3")]
-pub use h3::{
+pub use http3::{
     DEFAULT_KEEP_ALIVE, H3, H3Body, H3Runtime, QuinnTask, RequestTrailersNotSent,
     UnknownRequestBodyFrame,
 };
@@ -90,14 +90,7 @@ pub use h3::{
 /// Nothing needs polymorphism between them: the routing owns both
 /// concretely.
 #[cfg(feature = "http3")]
-pub use h3::{Refused as H3Refused, Staged as H3Staged, StagedConnect as H3StagedConnect};
-#[cfg(feature = "http3")]
-mod h3_arm;
-/// quinn's `Runtime` over this workspace's own seams — and **the one
-/// module in this crate that names `quinn`**, which
-/// `just quinn-stays-in-its-module` asserts.
-#[cfg(feature = "http3")]
-mod quinn;
+pub use http3::{Refused as H3Refused, Staged as H3Staged, StagedConnect as H3StagedConnect};
 #[cfg(feature = "http3")]
 mod race;
 #[cfg(feature = "http3")]
@@ -126,7 +119,7 @@ pub use discovery::{Discovered, Prepared, SVCB_FAILURE_TTL};
 #[cfg(feature = "http2")]
 pub use http2::{H2Driver, H2Opts};
 // `Prefetch` is declared in this file, beside the exchange it refines.
-pub use h1::{H1Opts, MaxBufSizeTooSmall};
+pub use http1::{H1Opts, MaxBufSizeTooSmall};
 pub use idle::{BetweenBytesElapsed, IdleTimeout};
 pub use pool::{PoolConfig, Reaper};
 pub use proxy::{
@@ -491,9 +484,9 @@ where
     versions: Versions,
     /// The QUIC arm, erased.
     ///
-    /// See [`crate::h3_arm::Arm`] for why the box is `Send + Sync`.
+    /// See [`crate::http3::arm::Arm`] for why the box is `Send + Sync`.
     #[cfg(feature = "http3")]
-    h3: Option<Arc<crate::h3_arm::Arm>>,
+    h3: Option<Arc<crate::http3::arm::Arm>>,
     /// What origins have advertised about their own HTTP/3, and for how
     /// long — RFC 7838's `Alt-Svc`, with the lifetime the origin gave.
     ///
@@ -549,7 +542,7 @@ where
     /// What this client accepts in an HTTP/1 response head — see
     /// [`crate::H1Opts`]. Not `#[cfg]`-ed like `h2_opts` below, because
     /// the HTTP/1 path is the one every build has.
-    h1_opts: crate::h1::H1Opts,
+    h1_opts: crate::http1::H1Opts,
     #[cfg(feature = "http2")]
     h2_opts: crate::http2::H2Opts,
     caps: Capabilities,
@@ -707,7 +700,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         caps.request_trailers = true;
         // `Transparent`, and it is a correction rather than a change: this
         // crate has never followed a redirect. A 3xx comes back from
-        // `h1::exchange`/`http2::exchange` as an ordinary response and
+        // `http1::exchange`/`http2::exchange` as an ordinary response and
         // `Client`'s redirect stage does the chain — grep `src/` for
         // `Location` or a 3xx status and there is nothing to find.
         //
@@ -734,7 +727,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
         caps.connection_reuse = reuse_of(&pool);
         // Structural, not a promise made in prose: `execute`'s future owns
         // everything the exchange runs on. The connected stream goes into
-        // `h1::exchange`, which hands hyper's `Connection` future to
+        // `http1::exchange`, which hands hyper's `Connection` future to
         // `NativeBody` — and until `execute` returns, all of it lives
         // inside this one future. Dropping it drops the `Connection`, which
         // drops the socket, which closes the TCP connection; there is no
@@ -863,7 +856,7 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D> Native<R, T, D, NoHooks> {
             #[cfg(feature = "http3")]
             hedge: None,
             unix_socket: None,
-            h1_opts: crate::h1::H1Opts::default(),
+            h1_opts: crate::http1::H1Opts::default(),
             #[cfg(feature = "http2")]
             h2_opts: crate::http2::H2Opts::default(),
             // `P` is `NoProxy` here, an empty enum, so this is the only
@@ -1674,12 +1667,12 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// stacks over one configuration passes the same values twice, which
     /// is what `Rustls: Clone` is for.
     #[cfg(feature = "http3")]
-    pub fn http3(mut self, quic: crate::h3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
+    pub fn http3(mut self, quic: crate::http3::H3<R, T, D>) -> Result<Self, Box<caps::Disagreement>>
     where
-        crate::h3::H3<R, T, D>: crate::h3::StagedConnect<Error = Error> + Debug,
-        <crate::h3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
+        crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
+        <crate::http3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <crate::h3::H3<R, T, D> as crate::h3::StagedConnect>::Staged: 'static,
+        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: 'static,
         R: Send + Sync + 'static, // send-bound-exception: amendment-C12
         T: Send + Sync + 'static, // send-bound-exception: amendment-C12
         D: Send + Sync + 'static, // send-bound-exception: amendment-C12
@@ -1988,13 +1981,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         Ok(self)
     }
 
-    pub fn h1_opts(mut self, opts: crate::h1::H1Opts) -> Result<Self, Error> {
+    pub fn h1_opts(mut self, opts: crate::http1::H1Opts) -> Result<Self, Error> {
         if let Some(asked) = opts.max_buf_size
-            && asked < crate::h1::MINIMUM_MAX_BUF_SIZE
+            && asked < crate::http1::MINIMUM_MAX_BUF_SIZE
         {
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                crate::h1::MaxBufSizeTooSmall { asked },
+                crate::http1::MaxBufSizeTooSmall { asked },
             ));
         }
         self.h1_opts = opts;
@@ -2587,7 +2580,7 @@ async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
     id: ConnectionId,
-    h1_opts: crate::h1::H1Opts,
+    h1_opts: crate::http1::H1Opts,
     h2_opts: crate::http2::H2Opts,
 ) -> Result<established::Established<I>, Error>
 where
@@ -2599,7 +2592,7 @@ where
         )))
     } else {
         Ok(established::Established::H1(
-            h1::handshake(conn, id, h1_opts).await?,
+            http1::handshake(conn, id, h1_opts).await?,
         ))
     }
 }
@@ -2614,14 +2607,14 @@ async fn handshake_for<I>(
     conn: I,
     protocol: Option<Protocol>,
     id: ConnectionId,
-    h1_opts: crate::h1::H1Opts,
+    h1_opts: crate::http1::H1Opts,
 ) -> Result<established::Established<I>, Error>
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     debug_assert!(!is_h2(protocol));
     Ok(established::Established::H1(
-        h1::handshake(conn, id, h1_opts).await?,
+        http1::handshake(conn, id, h1_opts).await?,
     ))
 }
 
@@ -3223,7 +3216,7 @@ where
     /// Identity: `Self::Error` is already `hclient_core::Error`, and its
     /// category is set wherever the failure happened (`Resolve`/`Connect`/
     /// `Unsupported` in `connect::connect`, `Tls` in `TlsConnect::connect`,
-    /// `Body`/`Connect` in `h1::exchange`). The hook's default would do
+    /// `Body`/`Connect` in `http1::exchange`). The hook's default would do
     /// exactly the same thing (it recognizes our `Error` and passes it
     /// through unchanged) — the line is behaviorally redundant and
     /// semantically needed: it names the intent where it's read, and it
@@ -3376,7 +3369,7 @@ where
 
 /// For this crate's integration tests only: `pub`, not `pub(crate)`,
 /// because `tests/*.rs` compile as a separate external crate and can't see
-/// `pub(crate)` items like `connect::race_connect`/`h1::exchange`
+/// `pub(crate)` items like `connect::race_connect`/`http1::exchange`
 /// directly. `#[doc(hidden)]` isn't part of the crate's public API, it's a
 /// gap opened for this crate's own integration tests (`tests/connect.rs`,
 /// `tests/dual_runtime.rs`, `tests/h1.rs`) and for nothing else.
@@ -3412,7 +3405,7 @@ pub mod testing {
     pub use crate::body::OutgoingBody;
     pub use crate::established::NativeBody;
 
-    /// An empty request body — what any `h1::exchange` test with nothing
+    /// An empty request body — what any `http1::exchange` test with nothing
     /// to send needs (a bodyless GET).
     pub fn empty_body() -> crate::body::OutgoingBody {
         crate::body::OutgoingBody::from_request_body(hclient_core::RequestBody::Empty)
@@ -3534,7 +3527,7 @@ pub mod testing {
     }
 
     /// One exchange over `io`, with no pool: the handshake and
-    /// `h1::exchange` in one call, exactly as `Native::execute` does them
+    /// `http1::exchange` in one call, exactly as `Native::execute` does them
     /// for a fresh connection that is not to be reused.
     ///
     /// `None` for the check-in is not a simplification for tests' sake —
@@ -3550,8 +3543,9 @@ pub mod testing {
     {
         use hclient_core::unversioned::{ConnectionId, NoHooks};
         let est =
-            crate::h1::handshake(io, ConnectionId::UNWATCHED, crate::h1::H1Opts::default()).await?;
-        crate::h1::exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED)
+            crate::http1::handshake(io, ConnectionId::UNWATCHED, crate::http1::H1Opts::default())
+                .await?;
+        crate::http1::exchange(est, req, None, NoHooks, ConnectionId::UNWATCHED)
             .await
             .map(|r| r.map(crate::established::NativeBody::h1))
             .map_err(crate::established::Failed::into_error)

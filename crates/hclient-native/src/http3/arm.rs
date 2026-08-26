@@ -34,7 +34,7 @@
 //! the contract `StagedConnect` already has and the reason this is safe
 //! to erase at all.
 
-use crate::h3::{Refused, StagedConnect};
+use crate::http3::{Refused, StagedConnect};
 use bytes::Bytes;
 use hclient_core::Error as CoreError;
 use hclient_core::RequestBody;

@@ -26,7 +26,7 @@
 //! `pending.manual(); Poll::Ready(Ok(()))` (`client/conn/http1.rs:310-320`,
 //! under its own comment *"With no `Send` bound on `I`, we can't try to do
 //! upgrades here"*). So **"the exchange finished" and "the upgrade was
-//! destroyed" are the same observation**, and [`crate::h1::exchange`] polls
+//! destroyed" are the same observation**, and [`crate::http1::exchange`] polls
 //! `Connection` exactly that way — which is why a `101` there is a response
 //! with an empty body and a socket that closes when the locals drop
 //! (`tests/switching_protocols.rs`).

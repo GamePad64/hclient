@@ -55,7 +55,7 @@
 //!
 //! The one place a *graceful* end could be seen promptly is the spawned
 //! connection driver, and it is shut to a hook by P13's own answer:
-//! [`crate::h3::QuinnTask`] is `Pin<Box<dyn Future + Send>>` because quinn
+//! [`crate::http3::QuinnTask`] is `Pin<Box<dyn Future + Send>>` because quinn
 //! declares `Runtime::spawn` that way, and `Hooks` deliberately promises
 //! no `Send` — so a future capturing an `H` does not coerce. Calling a
 //! hook from there would cost every hook a `Send` bound, which is the

@@ -3,7 +3,7 @@
 //!
 //! [`crate::connect`] makes connections; this module is about *using* one
 //! that already exists. It holds no protocol logic of its own: every
-//! function here is a two-line match onto [`crate::h1`] or
+//! function here is a two-line match onto [`crate::http1`] or
 //! [`crate::http2`], and it exists so that exactly one place in the crate
 //! knows there is more than one protocol.
 //!
@@ -70,7 +70,7 @@ pub(crate) enum Established<I>
 where
     I: Read + Write + Unpin,
 {
-    H1(crate::h1::Established<I>),
+    H1(crate::http1::Established<I>),
     #[cfg(feature = "http2")]
     H2(Box<crate::http2::Established<I>>),
     /// An HTTP/2 connection **somebody else is driving** — a
@@ -211,7 +211,7 @@ where
     I: Read + Write + Unpin + 'static,
 {
     match est {
-        Established::H1(e) => crate::h1::is_reusable(e).await,
+        Established::H1(e) => crate::http1::is_reusable(e).await,
         #[cfg(feature = "http2")]
         Established::H2(e) => crate::http2::is_reusable(e).await,
         #[cfg(feature = "http2")]
@@ -278,7 +278,7 @@ where
                 (None, Some(g)) => crate::install_gate_only(&mut req, g),
                 (None, None) => {}
             }
-            match crate::h1::exchange(e, req, checkin, hooks, id).await {
+            match crate::http1::exchange(e, req, checkin, hooks, id).await {
                 Ok(r) => Ok(r.map(|b| NativeBody {
                     inner: Inner::H1(b),
                 })),
@@ -494,16 +494,16 @@ enum Inner<I, H>
 where
     I: Read + Write + Unpin,
 {
-    H1(crate::h1::H1Body<I, H>),
+    H1(crate::http1::H1Body<I, H>),
     /// A body from the QUIC arm, already erased.
     ///
     /// `BoxBody` rather than `hclient_h3::H3Body<H>`, because the arm
     /// itself is erased — naming that type here would put
     /// `H3<R, T, D>: Transport`'s bounds back on `Native`, which is the
-    /// whole thing `crate::h3_arm` exists to avoid. The cost is one
+    /// whole thing `crate::http3::arm` exists to avoid. The cost is one
     /// allocation on a path that is already boxing a QUIC stream.
     #[cfg(feature = "http3")]
-    H3(crate::h3_arm::SendBoxBody),
+    H3(crate::http3::arm::SendBoxBody),
     /// **No `H`, and that is a gap rather than a decision made twice.**
     /// The h2 body reports no [`Closed`](hclient_core::unversioned::Closed)
     /// event: `Connected`, `Reused` and `Head` come from
@@ -520,7 +520,7 @@ impl<I, H> NativeBody<I, H>
 where
     I: Read + Write + Unpin,
 {
-    pub(crate) fn h1(b: crate::h1::H1Body<I, H>) -> Self {
+    pub(crate) fn h1(b: crate::http1::H1Body<I, H>) -> Self {
         Self {
             inner: Inner::H1(b),
         }
@@ -594,7 +594,7 @@ where
     /// `BoxBody` and this is the one place that knows it becomes a
     /// `NativeBody`, so the variant stays private to this module.
     #[cfg(feature = "http3")]
-    pub(crate) fn from_h3(b: crate::h3_arm::SendBoxBody) -> Self {
+    pub(crate) fn from_h3(b: crate::http3::arm::SendBoxBody) -> Self {
         Self {
             inner: Inner::H3(b),
         }

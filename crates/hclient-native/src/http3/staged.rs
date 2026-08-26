@@ -56,7 +56,7 @@
 //!   staged a connect and then declined it has left a live connection at an
 //!   origin it did not use, for as long as it keeps the transport. That is
 //!   the same trade every pooled HTTP/3 connection makes and is written
-//!   down at [`crate::h3::DEFAULT_KEEP_ALIVE`]; what is new is only that the
+//!   down at [`crate::http3::DEFAULT_KEEP_ALIVE`]; what is new is only that the
 //!   caller may not have wanted this one. It matters to a **race**, which
 //!   this workspace does not build; the one consumer here connects on the
 //!   arm it intends to use.
@@ -67,7 +67,7 @@
 //! for a `Prefetch` to save and nothing for [`StagedConnect::connect`] to
 //! take but the request itself.
 
-use crate::h3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
+use crate::http3::{CheckedOut, H3, H3Runtime, PoolKey, SendRequest, ZeroRtt, hooks::ConnState};
 use hclient_core::unversioned::{ConnectTiming, Connected, Event, Hooks, Reused, Transport};
 use hclient_core::{Error, ErrorKind, RequestBody, Timeouts, check_version};
 use hclient_tls::quic::QuicTlsConnect;
@@ -265,14 +265,14 @@ where
             .to_string();
         let port = uri.port_u16().unwrap_or(443);
 
-        let wants_early = crate::h3::early::admits_early_data(req);
+        let wants_early = crate::http3::early::admits_early_data(req);
         if req
             .extensions()
             .get::<hclient_core::AllowEarlyData>()
             .is_some()
             && self.caps.early_data == hclient_core::EarlyDataSupport::None
         {
-            return Err(crate::h3::early::refuse_early_data("hclient-h3"));
+            return Err(crate::http3::early::refuse_early_data("hclient-h3"));
         }
 
         // `Timeouts` is read field by field, from a copy, and never
@@ -331,7 +331,7 @@ where
         // nobody is watching. The three figures share one mark
         // deliberately: the pair (`Head::elapsed`, `ConnectTiming::total`)
         // is what answers "was it the connection or was it the server".
-        let began = crate::h3::mark::<H, R>(&self.rt);
+        let began = crate::http3::mark::<H, R>(&self.rt);
 
         // Everything between "a URI" and "a connection that can carry a
         // request" — address resolution, the QUIC handshake, and h3's own
@@ -347,7 +347,7 @@ where
         // it needs one.
         let connect = async {
             let addr = self.resolve(&host, port).await?;
-            let dns = crate::h3::since::<R>(&self.rt, began);
+            let dns = crate::http3::since::<R>(&self.rt, began);
             let key = PoolKey {
                 host,
                 port,
@@ -357,7 +357,7 @@ where
             self.checkout(&key, addr, dns).await
         };
         let checked = match timeouts.connect {
-            Some(d) => crate::h3::within_connect(&self.rt, d, connect).await,
+            Some(d) => crate::http3::within_connect(&self.rt, d, connect).await,
             None => connect.await,
         };
         let CheckedOut {
@@ -394,7 +394,7 @@ where
                     dns: m.dns,
                     tcp: m.handshake,
                     tls: None,
-                    total: crate::h3::since::<R>(&self.rt, began),
+                    total: crate::http3::since::<R>(&self.rt, began),
                 },
             })),
             None => self.hooks.on(Event::Reused(Reused {
@@ -421,7 +421,7 @@ where
     pub(crate) async fn finish(
         &self,
         staged: Staged<R, H>,
-    ) -> Result<http::Response<crate::h3::H3Body<H>>, Error> {
+    ) -> Result<http::Response<crate::http3::H3Body<H>>, Error> {
         let Staged {
             mut send,
             zero_rtt,
@@ -452,7 +452,7 @@ where
         let head = http::Request::from_parts(parts.clone(), ());
         let first = Self::one_attempt(&mut send, head, body, watch.clone()).await;
 
-        // The second of the three 0-RTT failure paths (`crate::h3::early` has
+        // The second of the three 0-RTT failure paths (`crate::http3::early` has
         // the table). The rejection is detected by AWAITING THE VERDICT,
         // not by matching on an error string: h3 surfaces the QUIC error as
         // an opaque `Undefined(..)` whose `Display` is not a stable

@@ -550,7 +550,7 @@ where
     /// it. This is not that, because
     /// the request is never handed to the QUIC stack: `connect` takes it,
     /// fails, and gives it back untouched. Nothing was sent, so there is
-    /// nothing to decide about idempotency — [`crate::h3::Refused`] is the
+    /// nothing to decide about idempotency — [`crate::http3::Refused`] is the
     /// type that makes that a fact about the code rather than a promise.
     ///
     /// # The budget is spent once, which took work
@@ -597,7 +597,7 @@ where
             .between_bytes;
         // Through the erased pair rather than a concrete `H3`, which is
         // what keeps the QUIC bounds off this transport's own signature —
-        // see `crate::h3_arm`. `connect_boxed` hands back a handle
+        // see `crate::http3::arm`. `connect_boxed` hands back a handle
         // borrowed from the arm, so it cannot outlive this call.
         let Some(arm) = self.h3.as_ref().filter(|_| self.versions.h3) else {
             return Err(Error::new(hclient_core::ErrorKind::Unsupported, NoQuicArm));

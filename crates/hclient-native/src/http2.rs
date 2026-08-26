@@ -1,5 +1,5 @@
 //! HTTP/2 exchange, driven all the way to the response without a single
-//! `spawn` — the same property [`crate::h1`] holds, on a protocol that
+//! `spawn` — the same property [`crate::http1`] holds, on a protocol that
 //! makes it much harder to keep.
 //!
 //! # Why this is not `hyper/http2`, which the v0.2 design document proposed
@@ -250,7 +250,7 @@ where
 
 /// A connection that has completed its HTTP/2 handshake: the two halves
 /// [`h2::client::handshake`] hands back, kept together for the same reason
-/// [`crate::h1::Established`] keeps hyper's two — neither is usable alone.
+/// [`crate::http1::Established`] keeps hyper's two — neither is usable alone.
 pub(crate) struct Established<I>
 where
     I: Read + Write + Unpin,
@@ -258,7 +258,7 @@ where
     sender: h2::client::SendRequest<Bytes>,
     conn: h2::client::Connection<TokioIo<I>, Bytes>,
     /// Which connection this is, for the observability seam — the same
-    /// field, for the same reason, as `crate::h1::Established::id`. This
+    /// field, for the same reason, as `crate::http1::Established::id`. This
     /// path reports `Connected`, `Reused` and `Head` (all of which
     /// `Native::execute` emits, knowing nothing about the protocol) and
     /// no `Closed`: see `crate::established::Inner`.
@@ -410,7 +410,7 @@ where
 /// Whether a connection taken out of the pool is still worth a request.
 ///
 /// **Exactly one poll, and it never suspends** — the same contract as
-/// [`crate::h1::is_reusable`], for the same two reasons (nothing polls an
+/// [`crate::http1::is_reusable`], for the same two reasons (nothing polls an
 /// idle connection, so this is the only moment a `GOAWAY` or a closed
 /// socket is noticed; and a checkout that suspended could cost the whole
 /// request rather than one socket).
@@ -460,7 +460,7 @@ fn strip_connection_headers(headers: &mut http::HeaderMap) {
 ///
 /// # What it does with `Failed`, and where it is weaker than HTTP/1
 ///
-/// [`crate::h1::exchange`] can report `Failed::NotSent` on hyper's own
+/// [`crate::http1::exchange`] can report `Failed::NotSent` on hyper's own
 /// verdict, because `SendRequest::try_send_request` hands the request
 /// object back when nothing of it reached the wire. h2 has no equivalent:
 /// `SendRequest::send_request` consumes the head and returns only an
@@ -1069,7 +1069,7 @@ fn stopped_after_a_complete_response(e: &h2::Error) -> bool {
     e.is_reset() && e.reason() == Some(h2::Reason::NO_ERROR)
 }
 
-/// The h2 counterpart of [`crate::h1`]'s connection-went-away error: the
+/// The h2 counterpart of [`crate::http1`]'s connection-went-away error: the
 /// pooled connection turned out to be finished at the last moment before
 /// its request was handed over.
 #[derive(Debug, thiserror::Error)]
@@ -1094,7 +1094,7 @@ struct StreamClosedWhileSendingTheRequestBody;
 struct UnknownRequestBodyFrame;
 
 /// The half of [`CheckIn`] that only exists once the request has been
-/// sent — see [`crate::h1`]'s `Reuse`, which this mirrors.
+/// sent — see [`crate::http1`]'s `Reuse`, which this mirrors.
 struct Reuse<I>
 where
     I: Read + Write + Unpin,
@@ -1104,7 +1104,7 @@ where
 }
 
 /// A response body that **polls the connection itself**, for the same
-/// reason [`crate::h1::H1Body`] does: nothing else will.
+/// reason [`crate::http1::H1Body`] does: nothing else will.
 ///
 /// Generic over the IO rather than boxed — see this module's doc comment
 /// on what boxing would have cost.

@@ -916,23 +916,29 @@ quinn-stays-in-its-module:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/hclient-native/src
-    # `mod h3` legitimately names `quinn` — it drives the connection — so
-    # the boundary is the two modules together against the rest of the
-    # crate, not `quinn.rs` alone. What must stay out is everything a build
-    # without the `http3` feature compiles.
-    # `(?<!crate::)` so this crate's own `crate::quinn::` module path — a
-    # re-export in `lib.rs`, say — is not mistaken for the third-party
-    # crate the boundary is about.
+    # `mod http3` legitimately names `quinn` — it drives the connection —
+    # and so does its `runtime` submodule, which implements
+    # `quinn::Runtime`. The boundary is that directory against the rest of
+    # the crate: what must stay out is everything a build without the
+    # `http3` feature compiles.
+    #
+    # One `grep -vE` where there were two alternatives, because the module
+    # move put both inside `http3/`. `runtime.rs` is also no longer called
+    # `quinn.rs`, which it could not be: a submodule of that name shadows
+    # the crate for every `quinn::` path in `http3/mod.rs`.
+    #
+    # `(?<!crate::)` so this crate's own `crate::http3::` module paths are
+    # not mistaken for the third-party crate the boundary is about.
     stray="$(grep -rlnP '(?<!crate::)\bquinn(_proto|_udp)?::' . --include='*.rs' \
-        | grep -vE '^\./(quinn\.rs|h3/)' || true)"
+        | grep -vE '^\./http3/' || true)"
     if [ -n "$stray" ]; then
-      echo "::error::quinn is named outside \`mod quinn\` and \`mod h3\`, which is the boundary the crate merge kept when the crate went away:"
+      echo "::error::quinn is named outside \`mod http3\`, which is the boundary the crate merge kept when the crate went away:"
       echo "$stray"
       exit 1
     fi
-    n="$(grep -rcP '(?<!crate::)\bquinn(_proto|_udp)?::' quinn.rs | head -1)"
+    n="$(grep -rcP '(?<!crate::)\bquinn(_proto|_udp)?::' http3/runtime.rs | head -1)"
     if [ "${n:-0}" -eq 0 ]; then
-      echo "::error::src/quinn.rs names quinn nowhere, so the check above is vacuous — it would pass a crate whose adapter had been emptied out"
+      echo "::error::src/http3/runtime.rs names quinn nowhere, so the check above is vacuous — it would pass a crate whose adapter had been emptied out"
       exit 1
     fi
     echo "quinn named in mod quinn and mod h3 only; $n sites in quinn.rs"

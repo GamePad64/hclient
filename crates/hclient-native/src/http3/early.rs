@@ -56,7 +56,7 @@
 //! the request says — so the replay could not go into early data even if
 //! it tried. That is true of the connection this crate happens to have
 //! pooled, and it is an accident of it still being there. The mark is part
-//! of `crate::h3::PoolKey`, so a marked replay asks for the early-data
+//! of `crate::http3::PoolKey`, so a marked replay asks for the early-data
 //! connection specifically; if that entry has been evicted, closed by the
 //! peer, or timed out in the meantime, the replay builds a **fresh**
 //! connection and `into_0rtt` puts it straight back into early data —
