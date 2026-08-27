@@ -11,12 +11,19 @@
 //! The response queue and request log sit behind a `std::sync::Mutex`, not
 //! a `RefCell`. This isn't a style choice: `RefCell` would make
 //! `MockTransport` `!Sync`, which would make `&MockTransport` `!Send`, and
-//! therefore the future `Client::execute` returns (it borrows the
-//! transport) would also be `!Send` — `tokio::spawn(client.get(u).send())`
-//! wouldn't compile in a single test built on this mock. The property
-//! "the client's future is Send when the transport is" is central to the
-//! crate's design, and a test double shouldn't be what stops it from being
-//! checked.
+//! therefore the future `execute` returns — it borrows the transport —
+//! would be `!Send` too. A test double should not be the thing that stops
+//! that property from being checked.
+//!
+//! **The level that sentence is about changed and the sentence did not,
+//! until now.** It used to say *the client's future is Send when the
+//! transport is*, and that was true when `Client` carried its transport as
+//! a type parameter. `Client` is one erased type since, and
+//! `Client::execute`'s future is `!Send` whatever is underneath it, so the
+//! property lives at the `Transport` seam and nowhere above it — which is
+//! exactly where this mock sits, so the `Mutex` still earns its place. The
+//! transport whose future that property is now checked on is
+//! `hclient-native`'s, in its `tests/send_future.rs`.
 #![forbid(unsafe_code)]
 
 use bytes::Bytes;

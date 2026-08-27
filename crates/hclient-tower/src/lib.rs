@@ -39,6 +39,20 @@
 //! core or in any backend has to move, which is why the wait is the right
 //! call rather than a resigned one.
 //!
+//! **That last sentence was half true when it was written, and the missing
+//! half has since been paid.** `T: Transport<execute(..): Send>` is a
+//! bound, and a bound is only worth having if something satisfies it —
+//! `hclient-native`'s future was itself `!Send` at the time, from a single
+//! `Box<dyn Stream<..>>` in its connector that discarded every shipped
+//! resolver's `Send`, so the promised one-line fix would have compiled and
+//! then excluded the one transport anybody would reach for. The box holds
+//! its concrete type now and the future is `Send` on the shipped stacks
+//! (`hclient-native`'s `tests/send_future.rs`), so what is left really is
+//! the one bound. Worth knowing because it is the same lesson twice: a
+//! `dyn` that declares no auto traits removes them, and a fix waiting on
+//! an external feature can also be waiting on a local one nobody
+//! measured.
+//!
 //! # Bounding concurrency
 //!
 //! Without a limit, in-flight requests are unbounded. The limit is
