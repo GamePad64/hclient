@@ -3556,17 +3556,27 @@ still the latest), and it arrives in the body through
 the erased `ClientBody` is **one crate's read loop** away from being
 `Send` on every backend here.
 
-Two shapes would close it, and the cheaper one is not the obvious one.
-An actor per response — pump the stream under `spawn_local` and hand
-`Bytes` over an `mpsc` — works, and costs a spawn this workspace refuses
-everywhere else, plus cancellation and back-pressure written by hand.
-The other is a `Send`-capable promise adapter of our own:
-`Arc<Mutex<..>>` where `JsFuture` has `Rc<RefCell<..>>`, and
-`Closure<dyn FnMut(JsValue) + Send>`, which the same probe shows is
-`Send` — no spawn, no channel, and nothing changes about when anything is
-polled. Neither is built. What is settled is that the obstacle is one
-adapter rather than the target, which is not what this paragraph said for
-a vertical and a half.
+**And the adapter that closes it already exists in this crate**, which
+the paragraph above got wrong within a day of being written.
+`promise::SendJsFuture` is exactly the `Arc<Mutex<..>>`-where-`JsFuture`-
+has-`Rc<RefCell<..>>` shape, with `SingleThreaded<T>` carrying the one
+`unsafe impl Send` this workspace allows (amendment C7, and the only
+`unsafe` in the crate). `Timer::sleep` and the WebSocket are built on it.
+The body is not: `from_response` reaches for
+`wasm_streams::ReadableStream::into_stream()`, and `IntoStream` holds a
+`js_sys::JsFuture`. So the remaining work is **using the adapter in one
+more place**, not writing one — a hand-rolled loop over
+`ReadableStreamDefaultReader::read()`, whose cost is the reader
+lifecycle and cancel-on-drop that `wasm_streams` is doing today.
+
+It is not done, because on its own it buys nothing: the beneficiary is a
+`Send` erased `ClientBody`, and declaring that is a separate decision
+with its own costs. The alternative shape — an actor per response
+pumping the stream under `spawn_local` and handing `Bytes` over an
+`mpsc` — would also work and is worse here, because it costs a spawn
+this workspace refuses everywhere else plus cancellation and
+back-pressure written by hand, to reach a property the existing adapter
+reaches without either.
 
 
 **A `!Send` hook cannot be watched through `Client`.** `hclient-fetch`'s P13

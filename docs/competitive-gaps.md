@@ -766,8 +766,20 @@ does not weaken the browser backend, it **excludes** it:
 future is `Send`, and `hclient-wasi` is `Send` throughout. The one `!Send`
 type is `js_sys::JsFuture`, whose `Rc<RefCell<Inner<T>>>` reaches the body
 through `wasm_streams::readable::IntoStream`. So this is one read loop
-rather than a property of the target — see CLAUDE.md for the two shapes
-that would close it. The cost of the other
+rather than a property of the target — and the adapter that would replace
+it, `promise::SendJsFuture`, is already in the crate and already carries
+`Timer::sleep` and the WebSocket. See CLAUDE.md.
+
+**`+atomics` is supported, and what is not supported there is `Send`.**
+Measured: `cargo check -p hclient-fetch --target wasm32-unknown-unknown
+-Zbuild-std` under `-Ctarget-feature=+atomics,+bulk-memory` **succeeds**
+for the library. What fails is `--tests`, deliberately — the
+`fetch-must-fail-under-atomics` job requires that failure, with `E0277`
+about `Send` specifically, because `SingleThreaded<T>`'s soundness
+argument is single-threadedness and the `cfg` must strip it. Nothing
+holding a JS handle can be `Send` under wasm threads by anyone's hand:
+wasm-bindgen's own `unsafe impl Send for JsValue` is `#[cfg(not(
+target_feature = "atomics"))]`. The cost of the other
 direction is that a response body no longer crosses a `tokio::spawn`, which
 worked on `hclient-native`; a caller who needs it reaches past the facade
 with `Client::transport_as::<Native<..>>()`.
