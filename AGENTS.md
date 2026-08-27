@@ -3578,6 +3578,18 @@ this workspace refuses everywhere else plus cancellation and
 back-pressure written by hand, to reach a property the existing adapter
 reaches without either.
 
+**The two are not interchangeable, and which one is right depends on a
+configuration nobody here builds yet.** The adapter's `Send` is a claim
+about there being one thread, so it is stripped under `+atomics` by the
+same `cfg` that strips wasm-bindgen's own — under wasm threads it cannot
+help, and nothing holding a `JsValue` can be `Send` there by any means.
+The actor can: it keeps every JS handle on the thread that owns it and
+hands `Bytes` — already `Send` — across a channel, so the type crossing
+the boundary holds no JS at all. So the adapter is the cheap answer for
+the single-threaded target this workspace ships for today, and the actor
+is the only answer that survives wasm threads. Worth knowing before the
+cheap one is taken as the answer to both.
+
 
 **A `!Send` hook cannot be watched through `Client`.** `hclient-fetch`'s P13
 test — *a single-threaded runtime can watch* — ran through `Client` with a
