@@ -763,6 +763,16 @@ direction is that a response body no longer crosses a `tokio::spawn`, which
 worked on `hclient-native`; a caller who needs it reaches past the facade
 with `Client::transport_as::<Native<..>>()`.
 
+**Reaching past the facade buys more than it did when that was written.**
+`Native::execute`'s future is `Send` now — not by a bound on any seam, but
+because `connect.rs` stopped discarding its resolver stream's type behind a
+`dyn` that declared no auto traits. So a caller holding the transport
+concretely can `tokio::spawn` the *request*, which the erased `Client`
+still cannot hand them. The seam is untouched and stays untouched: the
+conversion that would let `Client` promise it was built and measured, and
+it costs `hclient-dns-doh` entirely. See CLAUDE.md, *A `dyn` that declares
+no auto traits does not hide `Send`*.
+
 Two smaller costs, both recorded where they land: the embedded target has no
 `Client` at all (`RefCell<embassy_net::Inner>` is not `Sync`, and
 `hclient-rt-embassy`'s live TAP scenarios use `Transport` directly now), and

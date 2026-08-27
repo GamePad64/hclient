@@ -59,3 +59,43 @@ fn the_exchange_future_crosses_a_thread_on_the_default_stack() {
     // it does, and 192.0.2.1 (RFC 5737 TEST-NET-1) is unroutable anyway.
     assert_send(t.execute(req));
 }
+
+/// The type-level claim above, spent the way a caller spends it: the
+/// exchange runs on a **multi-threaded** runtime through `tokio::spawn`,
+/// which takes `F: Send + 'static`, so this file would not compile if the
+/// property were only nearly true.
+///
+/// It is a separate test from the one above and not a replacement for it.
+/// This one needs a socket, a server and a runtime, so a failure here has
+/// several possible causes; the one above has exactly one, and names it.
+/// The pair is the assertion: `assert_send` says the type is right, this
+/// says the type is the one a `spawn` actually demands — `'static` among
+/// them, which `assert_send` does not ask for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_spawned_exchange_answers() {
+    use std::io::{Read, Write};
+
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut s, _)) = l.accept() {
+            let mut b = [0u8; 2048];
+            let _ = s.read(&mut b);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        }
+    });
+
+    let t = Native::new(Tokio, Rustls::with_webpki_roots(), SystemDns::new(Tokio));
+    let req = http::Request::builder()
+        .uri(format!("http://{addr}/"))
+        .body(hclient_core::RequestBody::Empty)
+        .unwrap();
+
+    // The transport is moved into the task, so the future is `'static` as
+    // well as `Send` — the two halves `spawn` asks for.
+    let joined = tokio::spawn(async move { t.execute(req).await })
+        .await
+        .expect("the task must not panic")
+        .expect("the exchange must succeed");
+    assert_eq!(joined.status(), 200);
+}

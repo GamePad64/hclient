@@ -3536,9 +3536,10 @@ merges once before. The cheap check is `cargo test -p hclient-fetch --target
 wasm32-unknown-unknown --no-run`. So `tokio::spawn` of a response body is
 gone, which worked on `hclient-native`; a caller who needs it reaches past
 the facade with `Client::transport_as::<Native<..>>()`. The request future
-is cheaper to lose: `Native`'s is *already* `!Send`, pinned by a paired
-doctest, so the mock is the only backend that had it. **`Client` itself
-stays `Send + Sync`**, which is the half that has to.
+was cheaper to lose, because `Native`'s was *already* `!Send` — and that
+half has since been fixed at its cause, so the sentence now cuts the
+other way: see the section below. **`Client` itself stays `Send +
+Sync`**, which is the half that has to.
 
 **A `!Send` hook cannot be watched through `Client`.** `hclient-fetch`'s P13
 test — *a single-threaded runtime can watch* — ran through `Client` with a
@@ -3584,6 +3585,74 @@ is concrete.
 `package-build` trap met on the way: it verifies against the shared
 `target/debug/deps`, so a stale `rmeta` for an unchanged version makes it
 fail — or, worse, pass — misleadingly.
+
+### A `dyn` that declares no auto traits does not hide `Send` — it removes it
+
+`Native::execute`'s future is `Send` now, and the change is one field of
+one private struct: `connect.rs`'s `Answers` held the resolver's stream as
+`Pin<Box<dyn Stream<..> + 'a>>` and holds it as `Pin<Box<S>>`. Same
+allocation, same absence of `unsafe` — the box is there for pin
+projection, which is what its comment always said — and the concrete type
+is simply no longer thrown away. **No bound, no `send-bound-exception`
+marker, no dependency**: the property is *inferred* per instantiation,
+so a `!Send` resolver still works and still yields a `!Send` future.
+
+`tokio::spawn` of a request works, which is what the consumer asking for
+this needed. `tests/send_future.rs` pins it twice — once on the type, once
+by actually spawning one against a server — and was checked in the failing
+direction, where the old `dyn` names `Answers` as the type that contains
+it.
+
+**This crate's own doc comment had named the box as the single cause for
+two verticals and drawn the opposite conclusion**, because it weighed
+exactly one repair: declaring `+ Send` on the `dyn`. That does oblige the
+seam — `Resolve::lookup_ipv4` returns `impl Stream`, unnameable, so
+unbounded, still `E0658` on 1.98 — and the argument was right about its
+own question. *Removing* the `dyn` was never asked.
+
+**The alternative was built and measured before this one was believed.**
+Converting `Resolve` to `BoxStream` and `Blocking::run` to `BoxFuture`
+(both from `futures-core`, already in every graph here; one feature,
+`alloc`, no crate added) works, makes `Resolve` object-safe, and takes 71
+call sites across 17 files. It costs **`hclient-dns-doh` entirely**: DoH
+resolves through a generic `C: Transport`, whose RPITIT future is equally
+unnameable, and no consumer can supply the impl, because both the trait
+and the type are foreign to them. One crate, no fix inside the design.
+
+**The rule that came out of it is the part worth keeping**, and it
+explains the erased-`Client` section above from the other side:
+
+- at a **concrete** type `Send` is *inferred* — nothing has to be named;
+- in a **generic** impl `Send` must be *proven* — every RPITIT future in
+  the chain has to be named, and `impl Future` has no name.
+
+So the six RPITIT seams here — `Transport`, `Resolve`, `TcpConnect`,
+`TlsConnect`, `Blocking`, `WebSocketConnect` — block a *declaration* and
+not an *instantiation*. Which is why the cheap repairs are the places a
+`dyn` discards a property the concrete type already had, and the
+expensive ones are the places something must promise it in advance.
+
+**The `http3` arm is still `!Send`, and it is the same decision rather
+than a second one.** `H3` itself is clean — `H3::resolve` boxes the
+concrete stream, and `UdpBind::bind` and
+`QuicTlsConnect::quic_client_config` are **synchronous**, so nothing
+there loses the property. What loses it is `http3::arm`'s deliberate
+erasure, `Box<dyn BoxedStaged<'_>>` and `Staging<'a>`, which exists to
+keep `H3`'s bounds off `Native`'s `Transport` impl. Declaring `Send`
+there obliges that **blanket** impl to prove `StagedConnect::connect`'s
+RPITIT future `Send` for a generic `T`, and behind it `Resolve` again.
+So the QUIC arm and the DoH resolver are one question with one answer.
+
+**And the doctest gate did not catch the claim going stale**, which is
+this file's recurring rule met from a new direction. The `compile_fail`
+fence asserting the old `!Send` had to start failing, and it did — in the
+**default** build. `just test-doc` runs `--all-features`, where `http3`
+keeps the future `!Send`, so the fence still passed there. A doctest
+cannot be gated on `not(feature = "http3")`, so the positive half lives
+in `tests/send_future.rs` and the fence that stays is the one true in
+every configuration. Worth knowing before adding another: **a doc fence
+can only assert what holds under `--all-features`.**
+
 
 ### A default is not a default when Cargo unifies features — it is a floor
 

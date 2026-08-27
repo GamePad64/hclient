@@ -314,63 +314,105 @@ pub(crate) fn connection_id<H: Hooks>() -> ConnectionId {
 /// `H` is deliberately last, after the three seams: it is the only one of
 /// the four that is not a seam a backend author has to fill in.
 ///
-/// # `execute`'s future is **not** `Send`, and pinning that is the point
+/// # `execute`'s future **is** `Send`, and what that rests on
 ///
 /// The transport is `Send + Sync` and so is its body — both asserted in
-/// `tests/shape.rs`. The future is neither, so **a caller cannot
-/// `tokio::spawn` a request**; they can hold the client across a spawn and
-/// drive the request where they are.
+/// `tests/shape.rs`. So is the future, on the shipped stacks, so a caller
+/// **can** `tokio::spawn` a request; `tests/send_future.rs` pins it twice,
+/// once as a type and once by actually spawning one.
 ///
-/// The single cause is one box: `connect.rs` holds the resolver's stream as
-/// `Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>`, with no
-/// `Send`, across an await. The three shipped resolvers all *produce* `Send`
-/// streams — measured — so the property exists and the box throws it away.
+/// **It is not declared anywhere, and that is the whole design.** Nothing
+/// on any seam says `Send`; the property is *inferred* from the concrete
+/// resolver, TLS backend and runtime a caller instantiated. A `Resolve`
+/// that hands back a `!Send` stream still works and still yields a `!Send`
+/// future — the answer is per instantiation, which is what a declaration
+/// on the seam would have taken away.
 ///
-/// **Recovering it is not one line, and the price is the embedded target.**
-/// Declaring `+ Send` on `Resolve`'s three methods does not compile:
-/// `hclient-dns-system`'s streams await `Blocking::run`, itself an RPITIT,
-/// unprovable `Send` for a generic `R` without return type notation — still
-/// `E0658` on rustc 1.98.0. Following that down means the bound on seven
-/// seam methods: `TcpConnect::connect`, `connect_unix`, `Blocking::run`,
-/// `TlsConnect::connect` and the three `Resolve` lookups. And
-/// `hclient-rt-embassy`'s `connect` future holds `RefCell<embassy_net::
-/// Inner>` — structurally, because it is a single-threaded executor — so
-/// that bound would exclude the embedded target, whose live TAP scenarios
-/// run in CI on every push.
+/// **What used to remove it was one box.** `connect.rs`'s `Answers` held
+/// the resolver's stream as `Pin<Box<dyn Stream<..> + 'a>>`. The three
+/// shipped resolvers all *produce* `Send` streams — measured — and the
+/// `dyn` threw the fact away on the way past: a trait object that declares
+/// no auto traits is not neutral about them, it **removes** them from
+/// everything behind it. It is `Pin<Box<S>>` now. Same allocation, same
+/// absence of `unsafe` — the box is there for pin projection, which is
+/// what its comment always said — and the type simply is not discarded.
+///
+/// **Declaring `+ Send` on the `dyn` instead was the other direction, and
+/// it was built and measured before this one was believed.** It obliges
+/// the seam, and `Resolve::lookup_ipv4` returns `impl Stream`: a type that
+/// cannot be named and so cannot be bounded, still `E0658` on rustc
+/// 1.98.0. Converting the seam to `BoxStream` closes that — 71 call sites,
+/// no crate added — and costs `hclient-dns-doh` **entirely**: it resolves
+/// through a generic `C: Transport` whose RPITIT future is equally
+/// unnameable, and no consumer can supply the impl for it, because both
+/// the trait and the type are foreign to them. Following the same bound
+/// down the other seams — `TcpConnect::connect`, `connect_unix`,
+/// `Blocking::run`, `TlsConnect::connect` — reaches
+/// `hclient-rt-embassy`, whose `connect` future holds
+/// `RefCell<embassy_net::Inner>` structurally, because it is a
+/// single-threaded executor.
 ///
 /// Which is `scripts/no-send-or-sync-in-the-core-surface.sh`'s own sentence
 /// with a real subject: *declaring the bound in the seam forces it on
-/// backends that cannot satisfy it*.
+/// backends that cannot satisfy it*. Removing the `dyn` forces it on
+/// nobody.
 ///
-/// `hclient-fetch` and `hclient-wasi` both assert the **opposite** of their
-/// own `execute` futures, and the asymmetry is not an oversight: neither
-/// has a resolver at all.
+/// **The `http3` arm is still `!Send`, and for the same reason one level
+/// up.** It erases through `Box<dyn BoxedStaged<'_>>` and `Staging<'a>`,
+/// neither of which declares an auto trait — a deliberate erasure, since
+/// it is what keeps `H3`'s bounds off `Native`'s `Transport` impl. `H3`
+/// itself is clean: `H3::resolve` boxes the concrete stream, and
+/// `UdpBind::bind` and `QuicTlsConnect::quic_client_config` are
+/// synchronous, so nothing there loses the property. Declaring `Send` on
+/// those two boxes obliges `http3::arm`'s **blanket** impl to prove
+/// `StagedConnect::connect`'s RPITIT future `Send` for a generic `T` —
+/// unnameable again, and behind it `Resolve`. So the QUIC arm and the DoH
+/// resolver are one decision, not two.
+///
+/// **The positive half of this is `tests/send_future.rs` and not a fence
+/// here**, because it is exactly as true as the paragraph above says and
+/// no more: a doctest cannot be gated on `not(feature = "http3")`, so a
+/// fence asserting it would be false in the configuration `just test-doc`
+/// actually runs. What stays here is the control and the refusal.
+///
+/// The control, true in every configuration, so the block below is
+/// failing for its own reason rather than because `assert_send` is
+/// vacuous:
+///
+/// ```no_run
+/// # use hclient_native::Native;
+/// # use hclient_dns::IpLiteralOnly;
+/// # use hclient_tls::NoTls;
+/// # use hclient_rt_tokio::Tokio;
+/// fn assert_send<T: Send>(_: T) {}
+/// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
+/// assert_send(t); // the transport, which has always been `Send`
+/// ```
+///
+/// And the refusal, which differs in one seam. A hook holding an `Rc` is
+/// the documented `!Send` allowance on that seam, and it travels into the
+/// future — in every configuration, so this one can be a fence:
 ///
 /// ```compile_fail
 /// # use hclient_core::unversioned::Transport;
 /// # use hclient_core::RequestBody;
+/// # use hclient_core::unversioned::{Event, Hooks};
 /// # use hclient_native::Native;
 /// # use hclient_dns::IpLiteralOnly;
 /// # use hclient_tls::NoTls;
 /// # use hclient_rt_tokio::Tokio;
+/// # use std::rc::Rc;
+/// #[derive(Clone)]
+/// struct Counting(Rc<std::cell::Cell<u32>>);
+/// impl Hooks for Counting {
+///     const WATCHING: bool = true;
+///     fn on_event(&self, _: Event<'_>) {
+///         self.0.set(self.0.get() + 1);
+///     }
+/// }
 /// fn assert_send<T: Send>(_: T) {}
-/// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
+/// let t = Native::new(Tokio, NoTls, IpLiteralOnly).hooks(Counting(Rc::default()));
 /// assert_send(t.execute(http::Request::new(RequestBody::Empty)));
-/// ```
-///
-/// The pair that differs in one line and **does** compile, so the block
-/// above is failing for its own reason rather than for a typo:
-///
-/// ```no_run
-/// # use hclient_core::unversioned::Transport;
-/// # use hclient_core::RequestBody;
-/// # use hclient_native::Native;
-/// # use hclient_dns::IpLiteralOnly;
-/// # use hclient_tls::NoTls;
-/// # use hclient_rt_tokio::Tokio;
-/// fn assert_send<T: Send>(_: T) {}
-/// let t = Native::new(Tokio, NoTls, IpLiteralOnly);
-/// assert_send(t); // the transport, not the future it returns
 /// ```
 /// Which HTTP versions a [`Native`] may speak.
 ///
