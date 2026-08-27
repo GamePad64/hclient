@@ -48,6 +48,14 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The two stream shapes this crate hands back, named so the marker sits
+/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+/// records about where a bound is written.
+type SendAddrs<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+type SendRecords<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
 /// A [`Resolve`] backed by hickory.
 ///
 /// Holds an `Arc` because the streams this trait returns must own their
@@ -205,12 +213,24 @@ fn to_endpoint(svcb: &SVCB) -> SvcbEndpoint {
 }
 
 impl<P: ConnectionProvider> Resolve for Hickory<P> {
-    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        self.lookup_ips(name, RecordType::A)
+    type Ipv4<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
+        Box::pin(self.lookup_ips(name, RecordType::A))
     }
 
-    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        self.lookup_ips(name, RecordType::AAAA)
+    type Ipv6<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
+        Box::pin(self.lookup_ips(name, RecordType::AAAA))
     }
 
     /// `true`, unconditionally — and overridden together with
@@ -222,10 +242,19 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
         true
     }
 
-    fn lookup_svcb(&self, name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        let resolver = Arc::clone(&self.inner);
-        let owned = name.to_owned();
-        futures_util::stream::once(async move { resolver.lookup(owned, RecordType::HTTPS).await })
+    type Svcb<'a>
+        = SendRecords<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            let resolver = Arc::clone(&self.inner);
+            let owned = name.to_owned();
+            futures_util::stream::once(
+                async move { resolver.lookup(owned, RecordType::HTTPS).await },
+            )
             .flat_map(|res| match res {
                 // An empty result is a real answer — "asked, found none" —
                 // and becomes an empty stream, the same shape as `Resolve`'s
@@ -252,6 +281,7 @@ impl<P: ConnectionProvider> Resolve for Hickory<P> {
                 Err(e) if is_empty_answer(&e) => futures_util::stream::iter(Vec::new()),
                 Err(e) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
             })
+        })
     }
 }
 

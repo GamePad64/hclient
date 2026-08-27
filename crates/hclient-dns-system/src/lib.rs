@@ -89,6 +89,14 @@ mod svcb;
 mod sys;
 
 use futures_core::Stream;
+
+/// The two stream shapes this crate hands back, named so the marker sits
+/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+/// records about where a bound is written.
+type SendAddrs<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+type SendRecords<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
 #[cfg(test)]
 use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
@@ -152,7 +160,15 @@ impl<B: Blocking> SystemDns<B> {
     ///   `Blocking` consumer will encounter, not just this one crate —
     ///   the full justification for the variant is in the
     ///   `ErrorKind::Cancelled` doc comment in `hclient-core`).
-    fn lookup(&self, name: &str, want_v6: bool) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
+    // `use<'a>` so the stream does NOT capture `name`: it owns a copy on
+    // the line below, and `Resolve`'s associated types are parameterised
+    // by `&self`'s lifetime alone. Edition 2024 captures every lifetime in
+    // scope unless told otherwise.
+    fn lookup<'a>(
+        &'a self,
+        name: &str,
+        want_v6: bool,
+    ) -> impl Stream<Item = Result<ResolvedAddr, Error>> + use<'a, B> {
         let owned = name.to_owned();
         let fut = self.blocking.run(move || {
             (owned.as_str(), 0u16)
@@ -177,11 +193,23 @@ impl<B: Blocking> SystemDns<B> {
 }
 
 impl<B: Blocking> Resolve for SystemDns<B> {
-    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        self.lookup(name, false)
+    type Ipv4<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
+        Box::pin(self.lookup(name, false))
     }
-    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        self.lookup(name, true)
+    type Ipv6<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
+        Box::pin(self.lookup(name, true))
     }
 
     /// Both SVCB methods are overridden together, which is the only way
@@ -193,24 +221,35 @@ impl<B: Blocking> Resolve for SystemDns<B> {
         sys::SUPPORTS_SVCB
     }
 
-    fn lookup_svcb(&self, name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        let owned = name.to_owned();
-        let fut = self.blocking.run(move || sys::lookup(&owned));
-        futures_util::stream::once(fut).flat_map(move |res| match res {
-            // An empty `Vec` here is a real answer — "asked, found none" —
-            // and becomes an empty stream, exactly like the `Resolve`
-            // default. It is `supports_svcb()` above that keeps the two
-            // distinguishable, which is the whole reason that method
-            // exists.
-            Ok(Ok(endpoints)) => {
-                futures_util::stream::iter(endpoints.into_iter().map(Ok).collect::<Vec<_>>())
-            }
-            Ok(Err(e)) => futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))]),
-            // Same reasoning as `lookup`: the pool going away is not a DNS
-            // failure and not an absence of records.
-            Err(Cancelled) => {
-                futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Cancelled, Cancelled))])
-            }
+    type Svcb<'a>
+        = SendRecords<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            let owned = name.to_owned();
+            let fut = self.blocking.run(move || sys::lookup(&owned));
+            futures_util::stream::once(fut).flat_map(move |res| match res {
+                // An empty `Vec` here is a real answer — "asked, found none" —
+                // and becomes an empty stream, exactly like the `Resolve`
+                // default. It is `supports_svcb()` above that keeps the two
+                // distinguishable, which is the whole reason that method
+                // exists.
+                Ok(Ok(endpoints)) => {
+                    futures_util::stream::iter(endpoints.into_iter().map(Ok).collect::<Vec<_>>())
+                }
+                Ok(Err(e)) => {
+                    futures_util::stream::iter(vec![Err(Error::new(ErrorKind::Resolve, e))])
+                }
+                // Same reasoning as `lookup`: the pool going away is not a DNS
+                // failure and not an absence of records.
+                Err(Cancelled) => futures_util::stream::iter(vec![Err(Error::new(
+                    ErrorKind::Cancelled,
+                    Cancelled,
+                ))]),
+            })
         })
     }
 }

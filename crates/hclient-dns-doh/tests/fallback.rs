@@ -14,7 +14,6 @@
 
 mod support;
 
-use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{Resolve, ResolvedAddr};
@@ -210,15 +209,38 @@ impl Stub {
 }
 
 impl Resolve for Stub {
-    fn lookup_ipv4(&self, _name: &str) -> impl Stream<Item = Item> {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        futures_util::stream::iter(vec![Ok(ResolvedAddr {
-            addr: IpAddr::V4(self.addr),
-            ttl: None,
-        })])
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(&self, _name: &str) -> impl Stream<Item = Item> {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        futures_util::stream::iter(Vec::new())
+
+    type Ipv4<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            futures_util::stream::iter(vec![Ok(ResolvedAddr {
+                addr: IpAddr::V4(self.addr),
+                ttl: None,
+            })])
+        })
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin({
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            futures_util::stream::iter(Vec::new())
+        })
     }
 }

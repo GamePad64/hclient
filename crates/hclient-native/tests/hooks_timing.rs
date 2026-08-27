@@ -34,7 +34,6 @@
 //! handshake seam, not anybody's cryptography.
 #![cfg(not(target_family = "wasm"))]
 
-use futures_core::Stream;
 use hclient_core::RequestBody;
 use hclient_core::unversioned::{Event, Hooks, Transport};
 use hclient_dns::{Resolve, ResolvedAddr};
@@ -100,27 +99,46 @@ impl Hooks for FirstConnect {
 struct SlowDns(Duration);
 
 impl Resolve for SlowDns {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        let d = self.0;
-        futures_util::stream::once(async move {
-            tokio::time::sleep(d).await;
-            Ok(ResolvedAddr {
-                addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                ttl: None,
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
+    }
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            let d = self.0;
+            futures_util::stream::once(async move {
+                tokio::time::sleep(d).await;
+                Ok(ResolvedAddr {
+                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    ttl: None,
+                })
             })
         })
     }
     /// Empty, not slow: RFC 8305 races the families, and a v6 answer that
     /// never comes is what a v4-only host looks like. Making *both* slow
     /// would leave the scheduler's Resolution Delay in the measurement.
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 

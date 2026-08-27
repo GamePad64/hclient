@@ -164,7 +164,6 @@ mod wire;
 
 pub use wire::{DohError, MAX_RESPONSE_BYTES};
 
-use futures_core::Stream;
 use futures_util::StreamExt;
 use futures_util::stream;
 use hclient_core::unversioned::Transport;
@@ -216,11 +215,30 @@ const DEFAULT_TIMEOUTS: Timeouts = Timeouts {
 pub struct NoFallback;
 
 impl Resolve for NoFallback {
-    fn lookup_ipv4(&self, _name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::empty()
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(&self, _name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::empty()
+
+    type Ipv4<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin(stream::empty())
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(stream::empty())
     }
 }
 
@@ -587,14 +605,28 @@ where
     <C::Body as http_body::Body>::Error: StdError + Send + Sync + 'static, // send-bound-exception: amendment-C1
     F: Resolve,
 {
-    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        let name = name.to_owned();
-        stream::once(async move { self.addrs(&name, Family::V4).await }).flat_map(stream::iter)
+    type Ipv4<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            let name = name.to_owned();
+            stream::once(async move { self.addrs(&name, Family::V4).await }).flat_map(stream::iter)
+        })
     }
 
-    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        let name = name.to_owned();
-        stream::once(async move { self.addrs(&name, Family::V6).await }).flat_map(stream::iter)
+    type Ipv6<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
+        Box::pin({
+            let name = name.to_owned();
+            stream::once(async move { self.addrs(&name, Family::V6).await }).flat_map(stream::iter)
+        })
     }
 
     /// **`true`, and this is the reason the crate exists.**
@@ -613,28 +645,35 @@ where
         true
     }
 
-    fn lookup_svcb(&self, name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        let name = name.to_owned();
-        stream::once(async move {
-            // An IP literal has no owner name to carry an HTTPS record, so
-            // there is nothing to ask — the same rule as `Self::addrs`, and
-            // the same reason. Empty rather than an error, because with
-            // `supports_svcb() == true` an empty stream reads as "asked,
-            // found none", and for a literal there is genuinely none.
-            if ip_literal(&name).is_some() {
-                return Vec::new();
-            }
-            match self.exchange(&name, Query::Https).await {
-                Ok(answer) => answer.endpoints.into_iter().map(Ok).collect(),
-                // Deliberately NOT routed through `recover`: a fallback
-                // resolver is a `Resolve`, and asking it for SVCB when it
-                // reports `supports_svcb() == false` would turn its
-                // honest "I cannot" into our empty "there are none". The
-                // DoH error stands.
-                Err(e) => vec![Err(Error::from(e))],
-            }
+    type Svcb<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            let name = name.to_owned();
+            stream::once(async move {
+                // An IP literal has no owner name to carry an HTTPS record, so
+                // there is nothing to ask — the same rule as `Self::addrs`, and
+                // the same reason. Empty rather than an error, because with
+                // `supports_svcb() == true` an empty stream reads as "asked,
+                // found none", and for a literal there is genuinely none.
+                if ip_literal(&name).is_some() {
+                    return Vec::new();
+                }
+                match self.exchange(&name, Query::Https).await {
+                    Ok(answer) => answer.endpoints.into_iter().map(Ok).collect(),
+                    // Deliberately NOT routed through `recover`: a fallback
+                    // resolver is a `Resolve`, and asking it for SVCB when it
+                    // reports `supports_svcb() == false` would turn its
+                    // honest "I cannot" into our empty "there are none". The
+                    // DoH error stands.
+                    Err(e) => vec![Err(Error::from(e))],
+                }
+            })
+            .flat_map(stream::iter)
         })
-        .flat_map(stream::iter)
     }
 }
 

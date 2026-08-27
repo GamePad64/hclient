@@ -62,18 +62,33 @@ fn refused(name: &str) -> Result<ResolvedAddr, Error> {
 }
 
 impl Resolve for NoAnswers {
-    fn lookup_ipv4(
-        &self,
-        name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::iter(vec![refused(name)])
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
 
-    fn lookup_ipv6(
-        &self,
-        name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::iter(vec![refused(name)])
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
+        Box::pin(stream::iter(vec![refused(name)]))
+    }
+
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
+        Box::pin(stream::iter(vec![refused(name)]))
     }
 }
 
@@ -96,18 +111,33 @@ impl Pointing {
 }
 
 impl Resolve for Pointing {
-    fn lookup_ipv4(
-        &self,
-        _: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::iter(self.answer(self.0.is_ipv4()))
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
 
-    fn lookup_ipv6(
-        &self,
-        _: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-        stream::iter(self.answer(self.0.is_ipv6()))
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(stream::iter(self.answer(self.0.is_ipv4())))
+    }
+
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(stream::iter(self.answer(self.0.is_ipv6())))
     }
 }
 

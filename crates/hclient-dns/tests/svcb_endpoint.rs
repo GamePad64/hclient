@@ -9,7 +9,6 @@
 //! streamed out of `lookup_svcb` and read, would be no use to anyone.
 
 use bytes::Bytes;
-use futures_core::Stream;
 use futures_util::StreamExt;
 use hclient_core::Error;
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
@@ -22,17 +21,37 @@ use std::time::Duration;
 struct Canned(Vec<SvcbEndpoint>);
 
 impl Resolve for Canned {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        futures_util::stream::empty()
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(futures_util::stream::empty())
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        futures_util::stream::empty()
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
     fn supports_svcb(&self) -> bool {
         true
     }
-    fn lookup_svcb(&self, _: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        futures_util::stream::iter(self.0.clone().into_iter().map(Ok).collect::<Vec<_>>())
+    type Svcb<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            futures_util::stream::iter(self.0.clone().into_iter().map(Ok).collect::<Vec<_>>())
+        })
     }
 }
 

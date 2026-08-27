@@ -247,40 +247,56 @@ impl FakeDns {
 }
 
 impl Resolve for FakeDns {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter(
-            self.v4
-                .clone()
-                .into_iter()
-                .map(|a| {
-                    Ok(ResolvedAddr {
-                        addr: IpAddr::V4(a),
-                        ttl: None,
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::iter(
+                self.v4
+                    .clone()
+                    .into_iter()
+                    .map(|a| {
+                        Ok(ResolvedAddr {
+                            addr: IpAddr::V4(a),
+                            ttl: None,
+                        })
                     })
-                })
-                .collect::<Vec<_>>(),
-        )
+                    .collect::<Vec<_>>(),
+            )
+        })
     }
 
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter(Vec::new())
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::iter(Vec::new()))
     }
 
     fn supports_svcb(&self) -> bool {
         self.supports_svcb
     }
 
-    fn lookup_svcb(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> {
-        futures_util::stream::iter(self.records.clone().into_iter().map(Ok).collect::<Vec<_>>())
+    type Svcb<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            futures_util::stream::iter(self.records.clone().into_iter().map(Ok).collect::<Vec<_>>())
+        })
     }
 }
 

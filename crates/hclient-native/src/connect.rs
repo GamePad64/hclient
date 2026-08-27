@@ -2326,27 +2326,44 @@ mod tests {
         v4: Vec<IpAddr>,
     }
     impl Resolve for StaticResolve {
-        fn lookup_ipv6(
-            &self,
-            _: &str,
-        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-            futures_util::stream::iter(
-                self.v6
-                    .clone()
-                    .into_iter()
-                    .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
-            )
+        type Svcb<'a>
+            = hclient_dns::NoSvcb
+        where
+            Self: 'a;
+
+        fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+            hclient_dns::NoSvcb::new()
         }
-        fn lookup_ipv4(
-            &self,
-            _: &str,
-        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-            futures_util::stream::iter(
-                self.v4
-                    .clone()
-                    .into_iter()
-                    .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
-            )
+
+        type Ipv6<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+            Box::pin({
+                futures_util::stream::iter(
+                    self.v6
+                        .clone()
+                        .into_iter()
+                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
+                )
+            })
+        }
+        type Ipv4<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+            Box::pin({
+                futures_util::stream::iter(
+                    self.v4
+                        .clone()
+                        .into_iter()
+                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None })),
+                )
+            })
         }
     }
 
@@ -2358,32 +2375,46 @@ mod tests {
     }
 
     impl Resolve for SvcbResolve {
-        fn lookup_ipv6(
-            &self,
-            _: &str,
-        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-            futures_util::stream::iter(Vec::new())
+        type Ipv6<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+            Box::pin(futures_util::stream::iter(Vec::new()))
         }
-        fn lookup_ipv4(
-            &self,
-            _: &str,
-        ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, Error>> {
-            futures_util::stream::iter(
-                self.v4
-                    .clone()
-                    .into_iter()
-                    .map(|addr| Ok(ResolvedAddr { addr, ttl: None }))
-                    .collect::<Vec<_>>(),
-            )
+        type Ipv4<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+            Box::pin({
+                futures_util::stream::iter(
+                    self.v4
+                        .clone()
+                        .into_iter()
+                        .map(|addr| Ok(ResolvedAddr { addr, ttl: None }))
+                        .collect::<Vec<_>>(),
+                )
+            })
         }
         fn supports_svcb(&self) -> bool {
             true
         }
-        fn lookup_svcb(
-            &self,
-            _: &str,
-        ) -> impl futures_util::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> {
-            futures_util::stream::iter(self.records.clone().into_iter().map(Ok).collect::<Vec<_>>())
+        type Svcb<'a>
+            = std::pin::Pin<
+            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
+        >
+        where
+            Self: 'a;
+
+        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+            Box::pin({
+                futures_util::stream::iter(
+                    self.records.clone().into_iter().map(Ok).collect::<Vec<_>>(),
+                )
+            })
         }
     }
 
@@ -2570,49 +2601,69 @@ mod tests {
     }
 
     impl Resolve for WatchedResolve {
-        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-            self.note("aaaa:call");
-            Staged {
-                log: Rc::clone(&self.log),
-                asked: "aaaa:ask",
-                answered: "aaaa:answer",
-                items: Vec::<ResolvedAddr>::new().into_iter(),
-                started: false,
-            }
+        type Ipv6<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+            Box::pin({
+                self.note("aaaa:call");
+                Staged {
+                    log: Rc::clone(&self.log),
+                    asked: "aaaa:ask",
+                    answered: "aaaa:answer",
+                    items: Vec::<ResolvedAddr>::new().into_iter(),
+                    started: false,
+                }
+            })
         }
 
-        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-            self.note("a:call");
-            Staged {
-                log: Rc::clone(&self.log),
-                asked: "a:ask",
-                answered: "a:answer",
-                items: self
-                    .v4
-                    .iter()
-                    .map(|&addr| ResolvedAddr { addr, ttl: None })
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-                started: false,
-            }
+        type Ipv4<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+            Box::pin({
+                self.note("a:call");
+                Staged {
+                    log: Rc::clone(&self.log),
+                    asked: "a:ask",
+                    answered: "a:answer",
+                    items: self
+                        .v4
+                        .iter()
+                        .map(|&addr| ResolvedAddr { addr, ttl: None })
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                    started: false,
+                }
+            })
         }
 
         fn supports_svcb(&self) -> bool {
             true
         }
 
-        fn lookup_svcb(
-            &self,
-            _: &str,
-        ) -> impl Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> {
-            self.note("https:call");
-            Staged {
-                log: Rc::clone(&self.log),
-                asked: "https:ask",
-                answered: "https:answer",
-                items: self.records.clone().into_iter(),
-                started: false,
-            }
+        type Svcb<'a>
+            = std::pin::Pin<
+            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
+        >
+        where
+            Self: 'a;
+
+        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+            Box::pin({
+                self.note("https:call");
+                Staged {
+                    log: Rc::clone(&self.log),
+                    asked: "https:ask",
+                    answered: "https:answer",
+                    items: self.records.clone().into_iter(),
+                    started: false,
+                }
+            })
         }
     }
 
@@ -2804,20 +2855,34 @@ mod tests {
     }
 
     impl Resolve for HangingResolve {
-        fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-            self.record("aaaa", futures_util::stream::empty())
+        type Ipv6<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+            Box::pin(self.record("aaaa", futures_util::stream::empty()))
         }
-        fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-            self.record("a", futures_util::stream::empty())
+        type Ipv4<'a>
+            = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+        where
+            Self: 'a;
+
+        fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+            Box::pin(self.record("a", futures_util::stream::empty()))
         }
         fn supports_svcb(&self) -> bool {
             true
         }
-        fn lookup_svcb(
-            &self,
-            _: &str,
-        ) -> impl Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> {
-            self.record("https", futures_util::stream::pending())
+        type Svcb<'a>
+            = std::pin::Pin<
+            Box<dyn futures_core::Stream<Item = Result<hclient_dns::SvcbEndpoint, Error>> + 'a>,
+        >
+        where
+            Self: 'a;
+
+        fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+            Box::pin(self.record("https", futures_util::stream::pending()))
         }
     }
 

@@ -69,6 +69,12 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+/// The two stream shapes this crate hands back, named so the marker sits
+/// on a line `cargo fmt` has no reason to reflow — the rule amendment C12
+/// records about where a bound is written.
+type SendAddrs<'a> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAddr {
     pub addr: IpAddr,
@@ -104,6 +110,48 @@ pub struct SvcbEndpoint {
 /// consumer's dependency graph.
 struct EmptyStream<T>(PhantomData<T>);
 
+/// What a resolver with no SVCB answer names as its
+/// [`Resolve::Svcb`].
+///
+/// It exists because associated type defaults are unstable: the method
+/// used to be defaulted to an empty stream and now the type has to be
+/// named, so this is the name. `Resolve`'s own doc explains why the
+/// emptiness is indistinguishable from *asked and found nothing* on
+/// purpose, and why [`Resolve::supports_svcb`] is the distinction.
+pub struct NoSvcb(EmptyStream<SvcbEndpoint>);
+
+impl NoSvcb {
+    /// The only way to make one.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(EmptyStream::new())
+    }
+}
+
+impl Default for NoSvcb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for NoSvcb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NoSvcb")
+    }
+}
+
+impl Stream for NoSvcb {
+    type Item = Result<SvcbEndpoint, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(None)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(0))
+    }
+}
+
 impl<T> EmptyStream<T> {
     const fn new() -> Self {
         Self(PhantomData)
@@ -126,13 +174,41 @@ pub trait Resolve {
     /// A records. Each stream item is independent: an error on one is not
     /// required to stop the rest (for example, a resolver with multiple
     /// upstreams may report a partial failure and keep going).
-    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>;
+    /// **Associated types, not RPITITs**, for the reason
+    /// `hclient_rt::TcpConnect::Connecting` gives at length: a consumer
+    /// that must prove its own future `Send` — `hclient-native`, so that
+    /// `hclient::Client`'s request future can be — has to *name* these,
+    /// and `impl Stream` has no name. Naming is not requiring: each
+    /// resolver still says for itself, and one whose answers cannot cross
+    /// a thread writes a box without the `Send` and is a `Resolve` like
+    /// any other.
+    ///
+    /// The lifetime is `&self`'s alone, so `name` is **not** borrowed by
+    /// the stream — every implementor here already owned it.
+    type Ipv4<'a>: Stream<Item = Result<ResolvedAddr, Error>>
+    where
+        Self: 'a;
+    /// [`Ipv4`](Self::Ipv4)'s counterpart; see [`lookup_ipv6`](Self::lookup_ipv6)
+    /// for why the two are separate streams rather than one.
+    type Ipv6<'a>: Stream<Item = Result<ResolvedAddr, Error>>
+    where
+        Self: 'a;
+    /// **Not defaulted, unlike the method it used to accompany.**
+    /// Associated type defaults are unstable, so a resolver that has no
+    /// SVCB answer names [`NoSvcb`] here and forwards to it — two lines,
+    /// and the pair still has to be written together, which is what
+    /// [`supports_svcb`](Self::supports_svcb)'s own doc already asked for.
+    type Svcb<'a>: Stream<Item = Result<SvcbEndpoint, Error>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a>;
     /// AAAA records. A separate stream from `lookup_ipv4`, not a variant
     /// of one enum and not a shared `Vec` — RFC 8305 §3/§4 requires
     /// starting IPv6 attempts without waiting for the IPv4 answer, and
     /// separate streams are the only shape that allows this without extra
     /// parsing on the caller's side.
-    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>>;
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a>;
 
     /// Whether the resolver can do SVCB/HTTPS queries at all.
     ///
@@ -153,9 +229,7 @@ pub trait Resolve {
     /// distinction is carried by `supports_svcb()` above; a caller that
     /// cares about the difference must ask it, rather than inferring an
     /// answer from the stream's emptiness.
-    fn lookup_svcb(&self, _name: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        EmptyStream::new()
-    }
+    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a>;
 }
 
 /// A [`Resolve`] that performs no name resolution: it accepts IP literals
@@ -218,26 +292,51 @@ impl<T: Unpin> Stream for OnceStream<T> {
 }
 
 impl Resolve for IpLiteralOnly {
-    fn lookup_ipv4(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        OnceStream(match Self::literal(name) {
-            Some(IpAddr::V4(a)) => Some(Ok(ResolvedAddr {
-                addr: IpAddr::V4(a),
-                ttl: None,
-            })),
-            // A v6 literal has no A record, and that is not an error.
-            Some(IpAddr::V6(_)) => None,
-            None => Some(Err(Self::not_a_literal(name))),
+    type Svcb<'a>
+        = crate::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        crate::NoSvcb::new()
+    }
+
+    type Ipv4<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            OnceStream(match Self::literal(name) {
+                Some(IpAddr::V4(a)) => Some(Ok(ResolvedAddr {
+                    addr: IpAddr::V4(a),
+                    ttl: None,
+                })),
+                // A v6 literal has no A record, and that is not an error.
+                Some(IpAddr::V6(_)) => None,
+                None => Some(Err(Self::not_a_literal(name))),
+            })
         })
     }
 
-    fn lookup_ipv6(&self, name: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        OnceStream(match Self::literal(name) {
-            Some(IpAddr::V6(a)) => Some(Ok(ResolvedAddr {
-                addr: IpAddr::V6(a),
-                ttl: None,
-            })),
-            Some(IpAddr::V4(_)) => None,
-            None => Some(Err(Self::not_a_literal(name))),
+    type Ipv6<'a>
+        = SendAddrs<'a>
+    // send-bound-exception: amendment-C15
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, name: &str) -> Self::Ipv6<'a> {
+        Box::pin({
+            OnceStream(match Self::literal(name) {
+                Some(IpAddr::V6(a)) => Some(Ok(ResolvedAddr {
+                    addr: IpAddr::V6(a),
+                    ttl: None,
+                })),
+                Some(IpAddr::V4(_)) => None,
+                None => Some(Err(Self::not_a_literal(name))),
+            })
         })
     }
 }

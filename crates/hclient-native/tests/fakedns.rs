@@ -89,47 +89,63 @@ impl Resolve for FakeDns {
     /// Every name resolves to loopback: the servers are there, and a
     /// resolver that answered differently per name would be a second thing
     /// under test.
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter(vec![Ok(ResolvedAddr {
-            addr: IpAddr::from([127, 0, 0, 1]),
-            ttl: None,
-        })])
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::iter(vec![Ok(ResolvedAddr {
+                addr: IpAddr::from([127, 0, 0, 1]),
+                ttl: None,
+            })])
+        })
     }
 
     /// Empty, and that is an answer rather than a failure — the servers
     /// are bound on the v4 loopback, and RFC 8305 has both families
     /// queried in parallel.
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter(Vec::new())
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::iter(Vec::new()))
     }
 
     fn supports_svcb(&self) -> bool {
         self.inner.supports_svcb
     }
 
-    fn lookup_svcb(
-        &self,
-        name: &str,
-    ) -> impl futures_util::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> {
-        self.inner
-            .svcb_names
-            .lock()
-            .expect("fake dns log")
-            .push(name.to_owned());
-        futures_util::stream::iter(
+    type Svcb<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, name: &str) -> Self::Svcb<'a> {
+        Box::pin({
             self.inner
-                .records
-                .clone()
-                .into_iter()
-                .map(Ok)
-                .collect::<Vec<_>>(),
-        )
+                .svcb_names
+                .lock()
+                .expect("fake dns log")
+                .push(name.to_owned());
+            futures_util::stream::iter(
+                self.inner
+                    .records
+                    .clone()
+                    .into_iter()
+                    .map(Ok)
+                    .collect::<Vec<_>>(),
+            )
+        })
     }
 }
 

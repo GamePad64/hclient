@@ -338,26 +338,47 @@ impl Display for FakeCancelled {
 impl StdError for FakeCancelled {}
 
 impl Resolve for CancelledDns {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::once(async {
-            Err(hclient_core::Error::new(
-                ErrorKind::Cancelled,
-                FakeCancelled,
-            ))
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
+    }
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::once(async {
+                Err(hclient_core::Error::new(
+                    ErrorKind::Cancelled,
+                    FakeCancelled,
+                ))
+            })
         })
     }
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::once(async {
-            Err(hclient_core::Error::new(
-                ErrorKind::Cancelled,
-                FakeCancelled,
-            ))
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin({
+            futures_util::stream::once(async {
+                Err(hclient_core::Error::new(
+                    ErrorKind::Cancelled,
+                    FakeCancelled,
+                ))
+            })
         })
     }
 }
@@ -673,20 +694,39 @@ impl hclient_rt::Timer for NeverConnects {
 
 struct OneUnroutableAddr;
 impl Resolve for OneUnroutableAddr {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter([Ok(ResolvedAddr {
-            addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
-            ttl: None,
-        })])
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::iter([Ok(ResolvedAddr {
+                addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
+                ttl: None,
+            })])
+        })
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 
@@ -872,22 +912,41 @@ impl hclient_rt::Timer for LoggingNeverConnects {
 /// below has expired, if nothing cut it off first.
 struct FiveUnroutableAddrs;
 impl Resolve for FiveUnroutableAddrs {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::iter((1..=5u8).map(|n| {
-            Ok(ResolvedAddr {
-                addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, n)),
-                ttl: None,
-            })
-        }))
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl futures_util::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::iter((1..=5u8).map(|n| {
+                Ok(ResolvedAddr {
+                    addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, n)),
+                    ttl: None,
+                })
+            }))
+        })
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 

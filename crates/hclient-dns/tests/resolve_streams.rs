@@ -76,13 +76,34 @@ struct Lazy {
 }
 
 impl Resolve for Lazy {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        AddressesOnDemand {
-            produced: Rc::clone(&self.produced),
-        }
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        MustNotBePolled
+
+    type Ipv4<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            AddressesOnDemand {
+                produced: Rc::clone(&self.produced),
+            }
+        })
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(MustNotBePolled)
     }
 }
 
@@ -92,25 +113,46 @@ impl Resolve for Lazy {
 struct PartiallyFailing;
 
 impl Resolve for PartiallyFailing {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        futures_util::stream::iter(vec![
-            Err(Error::new(
-                ErrorKind::Resolve,
-                UpstreamFailed {
-                    upstream: "192.0.2.53",
-                },
-            )),
-            Ok(v4(7)),
-            Err(Error::new(
-                ErrorKind::Resolve,
-                UpstreamFailed {
-                    upstream: "192.0.2.54",
-                },
-            )),
-        ])
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        MustNotBePolled
+
+    type Ipv4<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::iter(vec![
+                Err(Error::new(
+                    ErrorKind::Resolve,
+                    UpstreamFailed {
+                        upstream: "192.0.2.53",
+                    },
+                )),
+                Ok(v4(7)),
+                Err(Error::new(
+                    ErrorKind::Resolve,
+                    UpstreamFailed {
+                        upstream: "192.0.2.54",
+                    },
+                )),
+            ])
+        })
+    }
+    type Ipv6<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(MustNotBePolled)
     }
 }
 

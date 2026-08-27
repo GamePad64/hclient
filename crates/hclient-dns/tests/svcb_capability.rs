@@ -45,11 +45,32 @@ fn no_addresses() -> impl Stream<Item = Result<ResolvedAddr, Error>> {
 #[derive(Debug)]
 struct CannotAsk;
 impl Resolve for CannotAsk {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(no_addresses())
+    }
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(no_addresses())
     }
 }
 
@@ -59,17 +80,35 @@ impl Resolve for CannotAsk {
 #[derive(Debug)]
 struct AskedFoundNothing;
 impl Resolve for AskedFoundNothing {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(no_addresses())
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(no_addresses())
     }
     fn supports_svcb(&self) -> bool {
         true
     }
-    fn lookup_svcb(&self, _: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        futures_util::stream::empty()
+    type Svcb<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 
@@ -77,17 +116,37 @@ impl Resolve for AskedFoundNothing {
 #[derive(Debug)]
 struct AskedFoundRecords;
 impl Resolve for AskedFoundRecords {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(no_addresses())
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(no_addresses())
     }
     fn supports_svcb(&self) -> bool {
         true
     }
-    fn lookup_svcb(&self, _: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        futures_util::stream::iter(vec![Ok(endpoint("svc.example"))])
+    type Svcb<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+        Box::pin(futures_util::stream::iter(vec![Ok(endpoint(
+            "svc.example",
+        ))]))
     }
 }
 
@@ -97,15 +156,34 @@ impl Resolve for AskedFoundRecords {
 #[derive(Debug)]
 struct OverrodeOnlyTheLookup;
 impl Resolve for OverrodeOnlyTheLookup {
-    fn lookup_ipv4(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv4<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _: &str) -> Self::Ipv4<'a> {
+        Box::pin(no_addresses())
     }
-    fn lookup_ipv6(&self, _: &str) -> impl Stream<Item = Result<ResolvedAddr, Error>> {
-        no_addresses()
+    type Ipv6<'a>
+        =
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _: &str) -> Self::Ipv6<'a> {
+        Box::pin(no_addresses())
     }
     // `supports_svcb` deliberately left at the default.
-    fn lookup_svcb(&self, _: &str) -> impl Stream<Item = Result<SvcbEndpoint, Error>> {
-        futures_util::stream::iter(vec![Ok(endpoint("unreachable.example"))])
+    type Svcb<'a>
+        = std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, Error>> + 'a>>
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _: &str) -> Self::Svcb<'a> {
+        Box::pin(futures_util::stream::iter(vec![Ok(endpoint(
+            "unreachable.example",
+        ))]))
     }
 }
 

@@ -7,7 +7,6 @@
 //! is worth a different retry.
 #![cfg(not(target_family = "wasm"))]
 
-use futures_util::Stream;
 use hclient_core::unversioned::Transport;
 use hclient_core::{ErrorKind, Phase, RequestBody, Timeouts};
 use hclient_dns::{Resolve, ResolvedAddr, SvcbEndpoint};
@@ -32,30 +31,49 @@ use std::time::{Duration, Instant};
 struct Answering(Option<Duration>);
 
 impl Resolve for Answering {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        let d = self.0;
-        futures_util::stream::once(async move {
-            match d {
-                Some(d) => tokio::time::sleep(d).await,
-                None => std::future::pending::<()>().await,
-            }
-            Ok(ResolvedAddr {
-                addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                ttl: None,
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
+    }
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            let d = self.0;
+            futures_util::stream::once(async move {
+                match d {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+                Ok(ResolvedAddr {
+                    addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    ttl: None,
+                })
             })
         })
     }
     /// Empty rather than slow: RFC 8305 races the families and a v6 answer
     /// that never comes is what a v4-only host looks like. Making both
     /// slow would put the scheduler's Resolution Delay in the measurement.
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 
@@ -65,22 +83,41 @@ impl Resolve for Answering {
 struct Failing;
 
 impl Resolve for Failing {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::once(async {
-            Err(hclient_core::Error::new(
-                ErrorKind::Resolve,
-                std::io::Error::other("no such host"),
-            ))
+    type Svcb<'a>
+        = hclient_dns::NoSvcb
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        hclient_dns::NoSvcb::new()
+    }
+
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin({
+            futures_util::stream::once(async {
+                Err(hclient_core::Error::new(
+                    ErrorKind::Resolve,
+                    std::io::Error::other("no such host"),
+                ))
+            })
         })
     }
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
 }
 
@@ -226,34 +263,48 @@ fn a_resolver_that_fails_reports_the_failure_rather_than_the_bound() {
 struct Hinting(u16);
 
 impl Resolve for Hinting {
-    fn lookup_ipv4(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::once(std::future::pending())
+    type Ipv4<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv4<'a>(&'a self, _name: &str) -> Self::Ipv4<'a> {
+        Box::pin(futures_util::stream::once(std::future::pending()))
     }
-    fn lookup_ipv6(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<ResolvedAddr, hclient_core::Error>> {
-        futures_util::stream::empty()
+    type Ipv6<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<ResolvedAddr, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_ipv6<'a>(&'a self, _name: &str) -> Self::Ipv6<'a> {
+        Box::pin(futures_util::stream::empty())
     }
     fn supports_svcb(&self) -> bool {
         true
     }
-    fn lookup_svcb(
-        &self,
-        _name: &str,
-    ) -> impl Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> {
-        futures_util::stream::once(std::future::ready(Ok(SvcbEndpoint {
-            priority: 1,
-            target: "example.invalid".to_string(),
-            alpn: Vec::new(),
-            port: Some(self.0),
-            ipv4hint: vec![Ipv4Addr::LOCALHOST],
-            ipv6hint: Vec::new(),
-            ech_config_list: None,
-        })))
+    type Svcb<'a>
+        = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<SvcbEndpoint, hclient_core::Error>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn lookup_svcb<'a>(&'a self, _name: &str) -> Self::Svcb<'a> {
+        Box::pin({
+            futures_util::stream::once(std::future::ready(Ok(SvcbEndpoint {
+                priority: 1,
+                target: "example.invalid".to_string(),
+                alpn: Vec::new(),
+                port: Some(self.0),
+                ipv4hint: vec![Ipv4Addr::LOCALHOST],
+                ipv6hint: Vec::new(),
+                ech_config_list: None,
+            })))
+        })
     }
 }
 

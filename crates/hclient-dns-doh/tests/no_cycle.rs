@@ -74,7 +74,7 @@
 //! Neither trait is dyn compatible, and for the same reason in both cases:
 //!
 //! ```text
-//! fn probe(_: Arc<dyn Resolve>) {}
+//! fn probe(_: Arc<dyn Resolve>) {
 //! error[E0038]: the trait `hclient_dns::Resolve` is not dyn compatible
 //!   --> crates/hclient-dns/src/lib.rs:132:42
 //!   = the trait is not dyn compatible because method `lookup_ipv4`
