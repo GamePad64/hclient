@@ -331,3 +331,94 @@ fn a_client_with_a_predicate_still_crosses_a_spawn() {
         .expect("build");
     assert_send_sync(&c);
 }
+
+/// **The chain a count cannot see.** Two hosts a policy allows redirect to
+/// each other; every hop passes a host check, and only
+/// [`ProposedRedirect::previous`] can say the destination has been
+/// visited.
+///
+/// The control is the first assertion: the same fixture with a predicate
+/// that only counts is followed to the policy's limit, so the second is
+/// about the chain rather than about redirects failing in general.
+#[test]
+fn a_ring_between_two_allowed_hosts_is_visible_in_the_chain() {
+    fn ring() -> MockTransport {
+        let t = MockTransport::new();
+        for next in ["https://b.test/", "https://a.test/one"]
+            .iter()
+            .cycle()
+            .take(12)
+        {
+            t.push_response(
+                http::Response::builder()
+                    .status(302)
+                    .header("location", *next)
+                    .body("")
+                    .unwrap(),
+            );
+        }
+        t
+    }
+
+    // Control: a predicate that sees only the count follows until the
+    // policy's own limit stops it.
+    let counting = Client::builder(ring())
+        .redirect_predicate(|_| RedirectVerdict::Follow)
+        .build()
+        .unwrap();
+    let err = go(&counting).expect_err("the policy's hop limit ends it");
+    assert_eq!(*err.kind(), hclient_core::ErrorKind::Redirect);
+
+    // The chain: refused the moment the target has been seen before.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let ringed = Client::builder(ring())
+        .redirect_predicate(move |hop| {
+            record.lock().unwrap().push(hop.previous().len());
+            if hop.previous().contains(hop.to()) {
+                RedirectVerdict::Refuse
+            } else {
+                RedirectVerdict::Follow
+            }
+        })
+        .build()
+        .unwrap();
+
+    let err = go(&ringed).expect_err("the ring closes on the third hop");
+    let refused = err
+        .source()
+        .and_then(|e| e.downcast_ref::<hclient::error::RedirectRefused>())
+        .expect("refused by the predicate, naming the target");
+    assert_eq!(refused.to.to_string(), "https://a.test/one");
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![1, 2],
+        "the chain grows by one per hop and starts at the operation's own \
+         URI — so `previous().len()` is `hops() + 1`"
+    );
+}
+
+/// **`hops()` and `previous().len()` differ by exactly one**, pinned
+/// because the two are otherwise easy to swap and the swap is silent: a
+/// cap written against the wrong one is off by a hop.
+#[test]
+fn the_hop_count_is_one_less_than_the_chain() {
+    let pairs = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&pairs);
+    let client = Client::builder(hop_to("https://b.test/two"))
+        .redirect_predicate(move |hop| {
+            record
+                .lock()
+                .unwrap()
+                .push((hop.hops(), hop.previous().len()));
+            RedirectVerdict::Follow
+        })
+        .build()
+        .unwrap();
+
+    go(&client).expect("arrives");
+    for (hops, chain) in pairs.lock().unwrap().iter() {
+        assert_eq!(usize::from(*hops) + 1, *chain);
+    }
+}

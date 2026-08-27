@@ -1040,6 +1040,13 @@ impl Client {
             || hp.headers.contains_key(http::header::IF_MODIFIED_SINCE);
 
         let mut hops: u8 = 0;
+        // Only when something will read it: the chain costs a `Uri` clone
+        // per hop, and a client with no predicate has nobody to hand it to.
+        let mut visited: Vec<http::Uri> = if self.config().redirect_predicate.is_some() {
+            vec![hp.uri.clone()]
+        } else {
+            Vec::new()
+        };
 
         loop {
             // Cookies are attached PER HOP, not once for the operation,
@@ -1315,6 +1322,7 @@ impl Client {
                             &f.method,
                             f.strip_sensitive,
                             hops,
+                            &visited,
                         );
                         match pred.ask(&hop) {
                             crate::predicate::RedirectVerdict::Follow => {}
@@ -1331,6 +1339,9 @@ impl Client {
                         }
                     }
                     hops += 1;
+                    if !visited.is_empty() {
+                        visited.push(f.uri.clone());
+                    }
                     let Some((next_hp, next_body)) = next_hop(&hp, replay, &f) else {
                         return Ok((resp, hp.uri));
                     };

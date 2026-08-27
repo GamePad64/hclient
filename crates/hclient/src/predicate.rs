@@ -81,6 +81,7 @@ pub struct ProposedRedirect<'a> {
     method: &'a http::Method,
     cross_origin: bool,
     hops: u8,
+    previous: &'a [http::Uri],
 }
 
 impl<'a> ProposedRedirect<'a> {
@@ -91,6 +92,7 @@ impl<'a> ProposedRedirect<'a> {
         method: &'a http::Method,
         cross_origin: bool,
         hops: u8,
+        previous: &'a [http::Uri],
     ) -> Self {
         Self {
             from,
@@ -99,7 +101,42 @@ impl<'a> ProposedRedirect<'a> {
             method,
             cross_origin,
             hops,
+            previous,
         }
+    }
+
+    /// Every URI already requested in this operation, oldest first, ending
+    /// with [`from`](Self::from).
+    ///
+    /// **What this is for is a ring, which a count cannot see.** Two hosts
+    /// a policy allows can redirect to each other for ever, and
+    /// [`hops`](Self::hops) only bounds how long that takes — it cannot
+    /// say the destination has been visited. `previous().contains(to)` can:
+    ///
+    /// ```
+    /// # use hclient::redirect::{ProposedRedirect, RedirectVerdict};
+    /// # fn check(hop: &ProposedRedirect<'_>) -> RedirectVerdict {
+    /// if hop.previous().contains(hop.to()) {
+    ///     return RedirectVerdict::Refuse;
+    /// }
+    /// # RedirectVerdict::Follow
+    /// # }
+    /// ```
+    ///
+    /// **It is one longer than [`hops`](Self::hops)**, and that is worth
+    /// reading twice because the two are otherwise easy to swap: `hops`
+    /// counts redirects already *followed*, `previous` lists URIs already
+    /// *requested*, and the operation's original URI is in the second and
+    /// not the first. At the first redirect decision `hops()` is `0` and
+    /// `previous()` has one element.
+    ///
+    /// **Empty unless a predicate is installed.** The chain costs a `Uri`
+    /// clone per hop, and a client that never asks about a hop should not
+    /// pay for one — so `Client` accumulates it only when there is
+    /// something to hand it to. A predicate always sees it filled.
+    #[must_use]
+    pub fn previous(&self) -> &[http::Uri] {
+        self.previous
     }
 
     /// Where this hop would leave from — the URI of the request that was
@@ -140,6 +177,13 @@ impl<'a> ProposedRedirect<'a> {
     }
 
     /// How many hops this chain has already taken. `0` on the first `3xx`.
+    ///
+    /// **One less than [`previous`](Self::previous)'s length**, because
+    /// this counts redirects *followed* where that lists URIs
+    /// *requested*, and the operation's original URI has been requested
+    /// without a redirect having been followed to reach it. Use this for
+    /// a cap and `previous` for a ring; the pair is pinned by
+    /// `tests/redirect.rs`.
     pub fn hops(&self) -> u8 {
         self.hops
     }
