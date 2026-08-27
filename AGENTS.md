@@ -3656,6 +3656,52 @@ declares `Send` (quinn's `AsyncTimer`, `AsyncUdpSocket`, rustls'
 `ClientSessionStore`) or a `dyn Any`/`dyn Error` that never crosses an
 await.
 
+**Three of those four are one blocker, and it was taken all the way to a
+working build before being reverted.** They are not four walls: they are
+the same wall, that a `dyn` declaring `Send` obliges whoever boxes into it
+to *prove* it, and proving it for a generic parameter means naming an
+RPITIT future. Return type notation is the language feature for naming
+one, so the whole thing was built on nightly under `--cfg rtn_probe` to
+see what it actually costs.
+
+**It works.** `T: Transport<execute(..): Send> + Sync` on
+`BoxedTransport`'s blanket impl, `Send` on `BoxExchange`, the same
+treatment for `http3::arm`'s three boxes with
+`StagedConnect<connect(..): Send, exchange(..): Send>` and its bounds on
+the opt-in `Native::http3`, and `Send` on `hclient-tower`'s `type Future`
+— the whole workspace compiles, and
+`assert_send(client.get(u).send())` passes. **`Client::execute`'s future
+is `Send` under RTN**, which is the property this file has recorded as
+lost since erasure. Neither `hclient-dns-doh` nor `hclient-rt-embassy` is
+touched: nothing moves to a seam, so nothing has to be satisfied by a
+backend that cannot.
+
+**And then the bill arrives somewhere else, which is the finding.** Two
+consumers in this workspace stop compiling, and both are the same shape:
+
+- `crates/hclient/tests/two_runtimes.rs` is generic — `fetch_once<R>` over
+  `R: TcpConnect + Timer + Blocking`. Under RTN, `Client::builder(t)`
+  demands `execute(..): Send` of a *type parameter*, so the caller must
+  restate the whole chain: `TcpConnect<connect(..): Send>`,
+  `Blocking<run(..): Send>`, `Resolve<lookup_ipv4(..): Send, ..>`. That is
+  **the seven-seam cascade this file already records — moved out of the
+  seam and into every generic consumer**, which is the exact tax erasure
+  was introduced to remove.
+- `crates/hclient-tower/tests/round_trip.rs` returns `impl Transport`, and
+  an opaque type does **not** leak an RPITIT bound, so it has to be
+  restated there too — and restating it **ICEs**:
+  `DefId(.. Transport::execute::{anon_assoc#0}) does not have a "type_of"`,
+  `rustc_metadata/src/rmeta/decoder/cstore_impl.rs:231`, on
+  1.100.0-nightly (f7d782a3b, 2026-08-19). So today the shape a library
+  consumer most needs is not merely unstable, it does not compile at all.
+
+So the answer to *can we fix all of it* is: **yes for a concrete
+transport, and the generic case pays what the seam would have paid.**
+Everything above was reverted; what is kept is the measurement, because
+the next person to ask will otherwise re-derive it. `hclient-tower`'s own
+module doc says the fix is one bound when #109417 lands — true of that
+crate, and this is the rest of the bill.
+
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim
 about there being one thread, so it is stripped under `+atomics` by the
