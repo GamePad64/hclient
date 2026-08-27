@@ -53,7 +53,7 @@ use std::time::Duration;
 /// auto trait, so the bound would exclude that backend rather than weaken
 /// it. A caller who needs a spawnable body reaches past the facade for the
 /// concrete transport's own body type.
-pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error>>>;
+pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send>>; // send-bound-exception: amendment-C14
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
 pub type BoxExchange<'a> =
@@ -64,7 +64,7 @@ pub type BoxExchange<'a> =
 /// Not `Send`, for [`BoxBody`]'s reason and inseparably from it: a response
 /// body holds a sleep — that is how a total timeout cuts a silent body — so
 /// the two answer the same question.
-pub type BoxSleep = Pin<Box<dyn Future<Output = ()>>>;
+pub type BoxSleep = Pin<Box<dyn Future<Output = ()> + Send>>; // send-bound-exception: amendment-C14
 
 /// Erase a body, mapping its error into [`Error`] on the way.
 ///
@@ -73,7 +73,7 @@ pub type BoxSleep = Pin<Box<dyn Future<Output = ()>>>;
 /// lines against a dependency every backend would then carry.
 pub fn box_body<B>(body: B) -> BoxBody
 where
-    B: http_body::Body<Data = Bytes> + 'static,
+    B: http_body::Body<Data = Bytes> + Send + 'static, // send-bound-exception: amendment-C14
     B::Error: Into<Error>,
 {
     Box::pin(MapErr(Box::pin(body)))
@@ -141,7 +141,7 @@ pub trait BoxedTransport {
 impl<T> BoxedTransport for T
 where
     T: crate::unversioned::Transport + 'static,
-    T::Body: 'static,
+    T::Body: Send + 'static, // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {
@@ -193,7 +193,7 @@ pub trait ErasedInstant {
 ///
 /// Not `Send`, for [`BoxSleep`]'s reason: the same body holds the stamp the
 /// sleep was computed from.
-pub type BoxInstant = Box<dyn ErasedInstant>;
+pub type BoxInstant = Box<dyn ErasedInstant + Send>; // send-bound-exception: amendment-C14
 
 /// [`Timer`], with the sleep boxed and the instant behind [`ErasedInstant`].
 pub trait BoxedTimer {
@@ -224,8 +224,9 @@ impl<Tm: Timer> ErasedInstant for Stamp<Tm> {
 
 impl<Tm> BoxedTimer for Tm
 where
-    Tm: Timer + Clone + 'static,
-    Tm::Sleep: 'static,
+    Tm: Timer + Clone + Send + 'static, // send-bound-exception: amendment-C14
+    Tm::Instant: Send,                  // send-bound-exception: amendment-C14
+    Tm::Sleep: Send + 'static,          // send-bound-exception: amendment-C14
 {
     fn now_boxed(&self) -> BoxInstant {
         Box::new(Stamp {

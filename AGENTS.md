@@ -3597,10 +3597,35 @@ only the channel passes
 `dropping_a_body_whose_read_will_never_answer_still_cancels`, verified by
 applying exactly that mutation.
 
-What it does **not** do on its own is give anybody a spawnable response
-body: the beneficiary is a `Send` erased `ClientBody`, and declaring that
-is still a separate decision. What has changed is that the browser is no
-longer the thing standing in its way.
+**And the declaration it was for has followed.**
+`erased::{BoxBody, BoxSleep, BoxInstant}` carry `Send` now — amendment
+C14 — so a `Response<ClientBody>` from the erased `Client` crosses a
+thread again, which it stopped doing when `Client` gave up its type
+parameter. `crates/hclient/tests/spawnable_body.rs` collects one on
+another thread.
+
+**The request future is deliberately still `!Send`.** `BoxExchange` is
+unbounded, so `Transport::execute` is untouched and
+`hclient-rt-embassy`'s `RefCell`-holding `connect` future is not
+excluded — the bound that abandoned the first erasure attempt is exactly
+the one not taken here. What crosses a thread is what a request
+*produced*, not the act of making it; a caller who needs the second
+still reaches past the facade.
+
+**Checked where it would have hurt most.** `hclient` with
+`default-transport` builds for `wasm32-unknown-unknown` under
+`-Ctarget-feature=+atomics` — the browser keeps `Client` under wasm
+threads. That took one more repair of the same kind: `BrowserClock::Sleep`
+was `Discard<SendJsFuture>`, whose `Send` is the `unsafe impl` the
+atomics `cfg` strips, so it is `timer::Elapsed` now — a
+`oneshot::Receiver<()>` the spawned waiter fires, holding no JS and
+claiming nothing about threads. The timer still starts when `sleep` is
+called, because the promise is built before the spawn.
+
+`fetch-must-fail-under-atomics` still rejects, which is the check working
+rather than a leftover: `SendJsFuture` is what the WebSocket and the
+sleep's own waiter still run on, and its `Send` must still disappear
+under threads.
 
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim

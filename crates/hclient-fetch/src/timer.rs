@@ -44,7 +44,11 @@
 
 use crate::promise::SendJsFuture;
 use core::time::Duration;
-use hclient_core::unversioned::{Discard, Timer};
+use futures_channel::oneshot;
+use hclient_core::unversioned::Timer;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 
@@ -85,7 +89,7 @@ impl Timer for BrowserClock {
     /// on the first poll. For a timer that is the more correct of the
     /// two — the delay starts when the caller asked for it, not whenever
     /// somebody first polls.
-    type Sleep = Discard<SendJsFuture>;
+    type Sleep = Elapsed;
 
     fn sleep(&self, d: Duration) -> Self::Sleep {
         // The multiply does NOT saturate to `f64::INFINITY` for a
@@ -133,7 +137,18 @@ impl Timer for BrowserClock {
         // buried in an async block. `SendJsFuture`, not
         // `wasm_bindgen_futures::JsFuture`: see the module doc comment on
         // why this is what keeps this file free of a second `unsafe`.
-        Discard(SendJsFuture::new(promise))
+        // The promise is built above, so `setTimeout` is already running
+        // by the time this returns — the delay starts when the caller
+        // asked for it, which is the property the previous shape had and
+        // this one keeps. What is spawned only *waits* on it.
+        let (tx, rx) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(async move {
+            // A `setTimeout` promise structurally cannot reject, which is
+            // the reasoning the discarded `Result` has always rested on.
+            let _ = SendJsFuture::new(promise).await;
+            let _ = tx.send(());
+        });
+        Elapsed(rx)
     }
 
     fn now(&self) -> Self::Instant {
@@ -142,5 +157,44 @@ impl Timer for BrowserClock {
 
     fn elapsed_since(&self, earlier: Self::Instant) -> Duration {
         Duration::from_secs_f64((js_sys::Date::now() - earlier).max(0.0) / 1000.0)
+    }
+}
+
+/// What [`BrowserClock::sleep`] hands back: a `oneshot` the browser's
+/// timer fires, and **nothing JS-shaped**.
+///
+/// # Why this is not `Discard<SendJsFuture>` any more
+///
+/// It was, and that was fewer moving parts. `SendJsFuture`'s `Send` is an
+/// `unsafe impl` whose argument is that `wasm32-unknown-unknown` has one
+/// thread, so it is stripped under `target_feature = "atomics"` by the
+/// same `cfg` that strips wasm-bindgen's own impl for `JsValue`. A
+/// `Timer::Sleep` that is `Send` only without wasm threads is enough for
+/// this crate on its own — but not for `hclient::Client`, whose erased
+/// timer boxes the sleep as `Send`, so the browser would have lost
+/// `Client` entirely the moment anybody built with threads.
+///
+/// `oneshot::Receiver<()>` is `Send` because `()` is, with no claim about
+/// threads anywhere in it. This is the same trade `body::pump` makes one
+/// module over and for the same reason: keep the JS on the thread that
+/// owns it and let a plain value cross.
+///
+/// The cost is one `spawn_local` per sleep. It is bounded by the sleep —
+/// the task awaits one promise and sends one `()` — and the timer was
+/// already running before it started, so nothing about *when* the delay
+/// begins changed.
+#[derive(Debug)]
+pub struct Elapsed(oneshot::Receiver<()>);
+
+impl Future for Elapsed {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // `Err` is the sender dropped without sending, which means the
+        // spawned task was destroyed — only possible if the whole wasm
+        // instance is going away, at which point nothing is polling this
+        // either. Resolving rather than hanging is the answer that cannot
+        // wedge a caller.
+        Pin::new(&mut self.0).poll(cx).map(|_| ())
     }
 }

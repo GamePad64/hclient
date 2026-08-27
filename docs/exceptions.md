@@ -81,6 +81,32 @@ of a public alias would change with a feature — and Cargo unifies
 features. The bound sits on the opt-in call and nowhere else, so no
 signature a caller already writes gains one.
 
+**C14 — the erased response body, sleep and instant declare `Send`.**
+C1/C2's class again — a `dyn` lets no auto trait through unless the
+object is bounded — applied to `erased::{BoxBody, BoxSleep, BoxInstant}`,
+so that a `Response<ClientBody>` handed back by the erased `Client` can
+cross a thread. That was lost when `Client` stopped carrying its
+transport as a type parameter, and this is what gives it back:
+`tokio::spawn` of a response body works again.
+
+**What makes it payable is that every backend here satisfies it**, which
+was not true until the browser's body stopped holding a `js_sys::JsFuture`
+— measured on all three targets, including `wasm32-unknown-unknown` under
+`-Ctarget-feature=+atomics`, where `body::pump` and `timer::Elapsed` hold
+no JS handle at all and so need no claim about how many threads there
+are. A backend added later must produce a `Send` body and a `Send`
+sleep, and that is the cost: it is a promise the seam now makes on every
+implementor's behalf.
+
+**It is deliberately not the bound the first erasure attempt was
+abandoned over.** That one put `Send` on the boxed *future*, which
+propagates down seven seam methods and excludes `hclient-rt-embassy`,
+whose `connect` future holds a `RefCell` because its executor is
+single-threaded. `BoxExchange` is still unbounded here, so
+`Transport::execute` is untouched and `Client::execute`'s future stays
+`!Send` — what crosses a thread is what a request *produced*, not the
+act of making it.
+
 **Where C12's bound is written matters.** `cargo fmt` moves a trailing
 comment off a line it reflows and deletes one from a `where` clause
 outright, so a marker cannot survive on a long signature. Bounds of this

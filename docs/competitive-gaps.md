@@ -769,10 +769,14 @@ through `wasm_streams::readable::IntoStream`. So this is one read loop
 rather than a property of the target — and it is closed now:
 `hclient_fetch::Body` is `Send`, because `body::pump` keeps the stream on
 the thread that owns it and hands `Bytes` across a channel. So every
-backend here produces a `Send` body, and declaring `Send` on the erased
-`ClientBody` no longer excludes anybody. That declaration is still a
-decision and still unmade; what changed is that the browser is no longer
-the reason against it. See CLAUDE.md for what the pump cost.
+backend here produces a `Send` body — so the declaration has been made:
+`erased::{BoxBody, BoxSleep, BoxInstant}` carry `Send` (amendment C14),
+and `tokio::spawn` of a response body works through `Client` again. The
+*request* future is still `!Send` on purpose, because bounding
+`BoxExchange` is the thing that excludes `hclient-rt-embassy`. So the
+half-paid price this section describes is now paid the other way round:
+`Client` is `Send + Sync` **and** what a request produces crosses a
+thread; what does not is the act of making one.
 
 **`+atomics` is supported, and what is not supported there is `Send`.**
 Measured: `cargo check -p hclient-fetch --target wasm32-unknown-unknown
