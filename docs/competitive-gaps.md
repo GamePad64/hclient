@@ -758,7 +758,16 @@ nothing a request *produces* is `Send`.
 than argued.** One `ClientBody` serves every backend, and `hclient-fetch`'s
 body holds a `dyn Stream` with no auto trait — so `Send` on the erased body
 does not weaken the browser backend, it **excludes** it:
-`Client::builder(Fetch::new())` stops compiling. The cost of the other
+`Client::builder(Fetch::new())` stops compiling.
+
+**The exclusion is real and the reason given for it was not.** Asked on
+`wasm32-unknown-unknown`, `JsValue`, `js_sys::Promise` and
+`web_sys::ReadableStreamDefaultReader` are all `Send`, `Fetch::execute`'s
+future is `Send`, and `hclient-wasi` is `Send` throughout. The one `!Send`
+type is `js_sys::JsFuture`, whose `Rc<RefCell<Inner<T>>>` reaches the body
+through `wasm_streams::readable::IntoStream`. So this is one read loop
+rather than a property of the target — see CLAUDE.md for the two shapes
+that would close it. The cost of the other
 direction is that a response body no longer crosses a `tokio::spawn`, which
 worked on `hclient-native`; a caller who needs it reaches past the facade
 with `Client::transport_as::<Native<..>>()`.

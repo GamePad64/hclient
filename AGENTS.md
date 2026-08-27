@@ -3541,6 +3541,34 @@ half has since been fixed at its cause, so the sentence now cuts the
 other way: see the section below. **`Client` itself stays `Send +
 Sync`**, which is the half that has to.
 
+**True, and not for the reason it reads as — measured later, and the
+difference is what makes it fixable.** *The browser* is not a category
+that is `!Send`. `wasm32-unknown-unknown` without atomics is one thread,
+and wasm-bindgen marks its handles accordingly: asked directly on that
+target, `JsValue`, `js_sys::Promise` and
+`web_sys::ReadableStreamDefaultReader` are all **`Send`**, and so is
+`Fetch::execute`'s own future. `hclient-wasi` is `Send` **throughout** —
+transport, future and body — so it was never part of this question at
+all. What is `!Send` is exactly one third-party type: `js_sys::JsFuture`
+holds `Rc<RefCell<Inner<T>>>` for its two promise callbacks (0.3.104,
+still the latest), and it arrives in the body through
+`wasm_streams::readable::IntoStream`. `NativeBody` is `Send` as well, so
+the erased `ClientBody` is **one crate's read loop** away from being
+`Send` on every backend here.
+
+Two shapes would close it, and the cheaper one is not the obvious one.
+An actor per response — pump the stream under `spawn_local` and hand
+`Bytes` over an `mpsc` — works, and costs a spawn this workspace refuses
+everywhere else, plus cancellation and back-pressure written by hand.
+The other is a `Send`-capable promise adapter of our own:
+`Arc<Mutex<..>>` where `JsFuture` has `Rc<RefCell<..>>`, and
+`Closure<dyn FnMut(JsValue) + Send>`, which the same probe shows is
+`Send` — no spawn, no channel, and nothing changes about when anything is
+polled. Neither is built. What is settled is that the obstacle is one
+adapter rather than the target, which is not what this paragraph said for
+a vertical and a half.
+
+
 **A `!Send` hook cannot be watched through `Client`.** `hclient-fetch`'s P13
 test — *a single-threaded runtime can watch* — ran through `Client` with a
 hook holding an `Rc`. It asserts the same property at the `Transport` layer
