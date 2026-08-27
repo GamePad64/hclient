@@ -626,14 +626,20 @@ impl hclient_rt::Timer for LateEof {
 
 impl hclient_rt::TcpConnect for LateEof {
     type Stream = HideFirstEof<<Tokio as hclient_rt::TcpConnect>::Stream>;
-    async fn connect(
-        &self,
-        addr: SocketAddr,
-        opts: &hclient_rt::TcpOpts,
-    ) -> std::io::Result<Self::Stream> {
-        Ok(HideFirstEof {
-            inner: self.0.connect(addr, opts).await?,
-            hide_remaining: self.1,
+    type Connecting<'a>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &hclient_rt::TcpOpts) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move {
+            Ok(HideFirstEof {
+                inner: self.0.connect(addr, &opts).await?,
+                hide_remaining: self.1,
+            })
         })
     }
 }

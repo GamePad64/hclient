@@ -93,8 +93,15 @@ impl<const MISSING: usize> TcpConnect for FakeRt<MISSING> {
     type Stream = hclient_rt_tokio::TokioIo;
     const APPLIES: TcpOptsSupport = all_but(MISSING);
 
-    async fn connect(&self, _addr: SocketAddr, _opts: &TcpOpts) -> std::io::Result<Self::Stream> {
-        std::future::pending().await
+    type Connecting<'a>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn connect<'a>(&'a self, _addr: SocketAddr, _opts: &TcpOpts) -> Self::Connecting<'a> {
+        Box::pin(async move { std::future::pending().await })
     }
 }
 
@@ -311,12 +318,15 @@ fn two_unappliable_options_are_both_named() {
         type Stream = hclient_rt_tokio::TokioIo;
         // No `APPLIES` line: the trait's default is `NONE`, and this type
         // exists to use it.
-        async fn connect(
-            &self,
-            _addr: SocketAddr,
-            _opts: &TcpOpts,
-        ) -> std::io::Result<Self::Stream> {
-            std::future::pending().await
+        type Connecting<'a>
+            = std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
+        >
+        where
+            Self: 'a;
+
+        fn connect<'a>(&'a self, _addr: SocketAddr, _opts: &TcpOpts) -> Self::Connecting<'a> {
+            Box::pin(async move { std::future::pending().await })
         }
     }
     impl Timer for AppliesNothing {
@@ -403,11 +413,18 @@ macro_rules! recording_runtime {
             type Stream = hclient_rt_tokio::TokioIo;
             $(const APPLIES: TcpOptsSupport = $applies;)?
 
-            async fn connect(
-                &self,
+            type Connecting<'a>
+        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn connect<'a>(
+                &'a self,
                 _addr: SocketAddr,
                 opts: &TcpOpts,
-            ) -> std::io::Result<Self::Stream> {
+            ) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move {
                 self.0
                     .0
                     .lock()
@@ -419,7 +436,8 @@ macro_rules! recording_runtime {
                 Err(std::io::Error::other(
                     "recorded, and this runtime has no socket",
                 ))
-            }
+            })
+    }
         }
 
         impl Timer for $ty {

@@ -272,46 +272,55 @@ impl TcpConnect for Smol {
         ..TcpOptsSupport::ALL
     };
 
-    async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<Self::Stream> {
-        // Options are applied here, on the `socket2::Socket`, BEFORE the
-        // descriptor is ever handed to the runtime — the same seam as
-        // `hclient-rt-tokio::build_socket`, and deliberately the same
-        // order of operations: the runtime only adopts an already
-        // configured socket.
-        let sock = build_socket(addr, opts)?;
-        sock.set_nonblocking(true)?;
-        begin_connect(&sock, addr)?;
+    /// A `Send` box, like `hclient_rt_tokio::Tokio`'s and for the same reason:
+    /// everything awaited here is `async-io`'s, and a consumer proving a
+    /// `Send` future has to be able to name this one.
+    type Connecting<'a> =
+        std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>;
 
-        let std_stream: std::net::TcpStream = sock.into();
-        // `async_io::Async::new_nonblocking` registers the descriptor with
-        // smol's reactor WITHOUT setting non-blocking mode again —
-        // `sock.set_nonblocking(true)` two lines above already did that
-        // once. `Async::new` (the plain, non-`_nonblocking` variant) is
-        // itself built as `set_nonblocking(io) + Self::new_nonblocking(io)`
-        // (`async-io-2.6.0/src/lib.rs:658-663` and `:752-757`, for both the
-        // unix and windows `impl` blocks — read, not assumed): calling it
-        // here would mean paying a second, redundant syscall on every
-        // `connect()`. `new_nonblocking` is an ordinary `pub fn` on both
-        // `impl` blocks, exported alongside `new`.
-        let async_stream = async_io::Async::new_nonblocking(std_stream)?;
-        // The socket becomes writable once the non-blocking `connect()`
-        // finishes — whether with success or an error. The same technique
-        // `async_io::Async::<TcpStream>::connect` uses (the only reason
-        // this CAN be borrowed instead of reinvented: `async-io` itself
-        // gives no way to pass in an already configured socket — it has no
-        // `connect` overload that takes a `socket2::Socket`).
-        async_stream.writable().await?;
-        // A non-blocking socket's `connect()` doesn't guarantee that
-        // "became writable" means "connected successfully" — an error also
-        // makes the socket writable. `take_error` is the only reliable way
-        // to tell them apart.
-        if let Some(err) = async_stream.get_ref().take_error()? {
-            return Err(err);
-        }
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move {
+            // Options are applied here, on the `socket2::Socket`, BEFORE the
+            // descriptor is ever handed to the runtime — the same seam as
+            // `hclient-rt-tokio::build_socket`, and deliberately the same
+            // order of operations: the runtime only adopts an already
+            // configured socket.
+            let sock = build_socket(addr, &opts)?;
+            sock.set_nonblocking(true)?;
+            begin_connect(&sock, addr)?;
 
-        Ok(FuturesIo::new(SmolSocket::Tcp(async_net::TcpStream::from(
-            async_stream,
-        ))))
+            let std_stream: std::net::TcpStream = sock.into();
+            // `async_io::Async::new_nonblocking` registers the descriptor with
+            // smol's reactor WITHOUT setting non-blocking mode again —
+            // `sock.set_nonblocking(true)` two lines above already did that
+            // once. `Async::new` (the plain, non-`_nonblocking` variant) is
+            // itself built as `set_nonblocking(io) + Self::new_nonblocking(io)`
+            // (`async-io-2.6.0/src/lib.rs:658-663` and `:752-757`, for both the
+            // unix and windows `impl` blocks — read, not assumed): calling it
+            // here would mean paying a second, redundant syscall on every
+            // `connect()`. `new_nonblocking` is an ordinary `pub fn` on both
+            // `impl` blocks, exported alongside `new`.
+            let async_stream = async_io::Async::new_nonblocking(std_stream)?;
+            // The socket becomes writable once the non-blocking `connect()`
+            // finishes — whether with success or an error. The same technique
+            // `async_io::Async::<TcpStream>::connect` uses (the only reason
+            // this CAN be borrowed instead of reinvented: `async-io` itself
+            // gives no way to pass in an already configured socket — it has no
+            // `connect` overload that takes a `socket2::Socket`).
+            async_stream.writable().await?;
+            // A non-blocking socket's `connect()` doesn't guarantee that
+            // "became writable" means "connected successfully" — an error also
+            // makes the socket writable. `take_error` is the only reliable way
+            // to tell them apart.
+            if let Some(err) = async_stream.get_ref().take_error()? {
+                return Err(err);
+            }
+
+            Ok(FuturesIo::new(SmolSocket::Tcp(async_net::TcpStream::from(
+                async_stream,
+            ))))
+        })
     }
 
     #[cfg(unix)]

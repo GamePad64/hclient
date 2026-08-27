@@ -247,38 +247,49 @@ impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N,
         reuse_address: false,
     };
 
-    async fn connect(
-        &self,
-        addr: SocketAddr,
-        opts: &TcpOpts,
-    ) -> std::io::Result<EmbassyIo<N, TX, RX>> {
-        // First, before a slot is taken: an option this runtime cannot
-        // apply fails the connect, naming itself. See `TcpConnect::connect`
-        // — silently ignoring it is the one answer that is not available.
-        opts.reject_unsupported(Self::APPLIES)?;
-        let endpoint = endpoint(addr)?;
+    /// **A plain box, deliberately not a `Send` one**, and this is the
+    /// case the seam's associated type exists for. `embassy_net::Stack`
+    /// is `&'d RefCell<Inner>` and this executor is single-threaded, so a
+    /// `Send` claim here would be false — measured: embassy-net carries
+    /// no `unsafe impl Send` anywhere, by design. Writing `+ Send` into
+    /// `TcpConnect` instead of naming it would have excluded this runtime
+    /// from the seam entirely, which is why it is named.
+    type Connecting<'a>
+        = std::pin::Pin<Box<dyn Future<Output = std::io::Result<EmbassyIo<N, TX, RX>>> + 'a>>
+    where
+        Self: 'a;
 
-        let mut sock = self.sockets.acquire().await;
-        // Every setting is written on every connect, because smoltcp's
-        // `reset()` — which `connect` calls — deliberately does NOT clear
-        // them (`smoltcp-0.13.1/src/socket/tcp.rs`, `reset`), so a reused
-        // socket would otherwise inherit whatever the previous exchange,
-        // or the closing handshake, left behind.
-        //
-        // `set_timeout(None)`: an established connection here has no
-        // inactivity timeout. The one the pool sets while closing
-        // (`CLOSING_TIMEOUT`) would otherwise survive into this connection
-        // and abort a legitimately slow response.
-        sock.get_mut().set_timeout(None);
-        // Nagle is smoltcp's default-on; `nodelay` is its inverse.
-        sock.get_mut().set_nagle_enabled(!opts.nodelay);
-        sock.get_mut()
-            .set_keep_alive(opts.keepalive.map(to_embassy));
-        sock.get_mut()
-            .connect(endpoint)
-            .await
-            .map_err(connect_err)?;
-        Ok(EmbassyIo::new(sock))
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move {
+            // First, before a slot is taken: an option this runtime cannot
+            // apply fails the connect, naming itself. See `TcpConnect::connect`
+            // — silently ignoring it is the one answer that is not available.
+            opts.reject_unsupported(Self::APPLIES)?;
+            let endpoint = endpoint(addr)?;
+
+            let mut sock = self.sockets.acquire().await;
+            // Every setting is written on every connect, because smoltcp's
+            // `reset()` — which `connect` calls — deliberately does NOT clear
+            // them (`smoltcp-0.13.1/src/socket/tcp.rs`, `reset`), so a reused
+            // socket would otherwise inherit whatever the previous exchange,
+            // or the closing handshake, left behind.
+            //
+            // `set_timeout(None)`: an established connection here has no
+            // inactivity timeout. The one the pool sets while closing
+            // (`CLOSING_TIMEOUT`) would otherwise survive into this connection
+            // and abort a legitimately slow response.
+            sock.get_mut().set_timeout(None);
+            // Nagle is smoltcp's default-on; `nodelay` is its inverse.
+            sock.get_mut().set_nagle_enabled(!opts.nodelay);
+            sock.get_mut()
+                .set_keep_alive(opts.keepalive.map(to_embassy));
+            sock.get_mut()
+                .connect(endpoint)
+                .await
+                .map_err(connect_err)?;
+            Ok(EmbassyIo::new(sock))
+        })
     }
 }
 

@@ -1692,21 +1692,32 @@ mod tests {
 
     impl TcpConnect for FakeRt {
         type Stream = FakeStream;
-        async fn connect(&self, addr: SocketAddr, _opts: &TcpOpts) -> std::io::Result<FakeStream> {
-            self.log
-                .borrow_mut()
-                .push((addr.ip(), *self.clock.borrow()));
-            let ok = self
-                .outcomes
-                .borrow()
-                .get(&addr.ip())
-                .copied()
-                .unwrap_or(false);
-            if ok {
-                Ok(FakeStream(Rc::new(())))
-            } else {
-                Err(std::io::Error::other("fake refused"))
-            }
+        // A plain box on purpose: this fixture keeps its log in a
+        // `RefCell` and its stream holds an `Rc`, so it is genuinely
+        // `!Send` — and the seam's associated type is what lets it say so
+        // and still be a `TcpConnect`.
+        type Connecting<'a>
+            = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<FakeStream>> + 'a>>
+        where
+            Self: 'a;
+
+        fn connect<'a>(&'a self, addr: SocketAddr, _opts: &TcpOpts) -> Self::Connecting<'a> {
+            Box::pin(async move {
+                self.log
+                    .borrow_mut()
+                    .push((addr.ip(), *self.clock.borrow()));
+                let ok = self
+                    .outcomes
+                    .borrow()
+                    .get(&addr.ip())
+                    .copied()
+                    .unwrap_or(false);
+                if ok {
+                    Ok(FakeStream(Rc::new(())))
+                } else {
+                    Err(std::io::Error::other("fake refused"))
+                }
+            })
         }
     }
 

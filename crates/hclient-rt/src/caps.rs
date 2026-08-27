@@ -289,11 +289,29 @@ pub trait TcpConnect {
     /// finished socket ([`TcpAdoptStd`]) — which is why both shipped
     /// runtimes declare [`TcpOptsSupport::ALL`] and never have to refuse
     /// anything.
-    fn connect(
-        &self,
-        addr: SocketAddr,
-        opts: &TcpOpts,
-    ) -> impl Future<Output = std::io::Result<Self::Stream>>;
+    /// **An associated type, not an RPITIT, and it demands nothing.**
+    /// A consumer that must prove its own future `Send` — `Native`, so
+    /// that `hclient::Client`'s can be — has to *name* this one, and
+    /// `impl Future` has no name. An associated type is nameable while
+    /// leaving the answer to the implementor: `Tokio` and `Smol` box it
+    /// `Send`, `hclient-rt-embassy` boxes it plain, because
+    /// `embassy_net::Stack` is `&RefCell<..>` and its executor is
+    /// single-threaded. Both satisfy this trait. Writing `+ Send` into the
+    /// seam instead would have excluded the second, which is the whole
+    /// difference between naming a property and requiring it.
+    ///
+    /// It costs the implementor a `Box::pin`, because an `async fn` body
+    /// has no name either — one allocation per connect, against a round
+    /// trip.
+    ///
+    /// `opts` is **not** borrowed by the future: the lifetime here is
+    /// `&self`'s alone, so an implementor clones what it needs. That is
+    /// what keeps the type one parameter wide rather than two.
+    type Connecting<'a>: Future<Output = std::io::Result<Self::Stream>>
+    where
+        Self: 'a;
+
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a>;
 
     /// Whether [`connect_unix`](Self::connect_unix) does anything.
     ///
@@ -702,12 +720,22 @@ mod tests {
                 unreachable!("this runtime never connects")
             }
         }
+        /// Short and named, so the marker sits on a line `cargo fmt` has
+        /// no reason to reflow — the rule C12 records about where a bound
+        /// is written.
+        type NeverConnect<'a> = Pin<Box<dyn Future<Output = std::io::Result<NeverIo>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
         impl TcpConnect for Forgetful {
             type Stream = NeverIo;
             // No `APPLIES` line, deliberately — that absence is the
             // subject of this test.
-            async fn connect(&self, _: SocketAddr, _: &TcpOpts) -> std::io::Result<NeverIo> {
-                unreachable!("this runtime never connects")
+            type Connecting<'a>
+                = NeverConnect<'a>
+            where
+                Self: 'a;
+
+            fn connect<'a>(&'a self, _: SocketAddr, _: &TcpOpts) -> Self::Connecting<'a> {
+                Box::pin(async move { unreachable!("this runtime never connects") })
             }
         }
 

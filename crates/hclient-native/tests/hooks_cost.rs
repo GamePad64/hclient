@@ -87,12 +87,16 @@ impl Timer for Counting {
 impl TcpConnect for Counting {
     type Stream = <Tokio as TcpConnect>::Stream;
     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
-    fn connect(
-        &self,
-        addr: SocketAddr,
-        opts: &TcpOpts,
-    ) -> impl std::future::Future<Output = std::io::Result<Self::Stream>> {
-        Tokio.connect(addr, opts)
+    type Connecting<'a>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move { Tokio.connect(addr, &opts).await })
     }
 }
 

@@ -187,12 +187,14 @@ impl TcpConnect for TokioHandle {
     /// body, where no `EnterGuard` can reach it. Delegating rather than
     /// copying keeps `build_socket`'s "all options, once, on the
     /// `socket2::Socket`" promise stated in exactly one place.
-    fn connect(
-        &self,
-        addr: SocketAddr,
-        opts: &TcpOpts,
-    ) -> impl Future<Output = std::io::Result<TokioIo>> {
-        Tokio.connect(addr, opts)
+    /// [`Tokio`]'s, forwarded — including the `Send`, which is what lets
+    /// a handle stand in for the ambient runtime wherever one is proved.
+    type Connecting<'a> =
+        std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>;
+
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+        let opts = opts.clone();
+        Box::pin(async move { Tokio.connect(addr, &opts).await })
     }
 }
 

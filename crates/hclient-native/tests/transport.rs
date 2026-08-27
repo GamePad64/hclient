@@ -604,12 +604,19 @@ impl hyper::rt::Write for NeverStream {
 }
 impl hclient_rt::TcpConnect for NeverConnects {
     type Stream = NeverStream;
-    async fn connect(
-        &self,
+    type Connecting<'a>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn connect<'a>(
+        &'a self,
         _addr: std::net::SocketAddr,
         _opts: &hclient_rt::TcpOpts,
-    ) -> std::io::Result<NeverStream> {
-        std::future::pending().await
+    ) -> Self::Connecting<'a> {
+        Box::pin(async move { std::future::pending().await })
     }
 }
 /// A real clock (not a virtual one, unlike `connect.rs`'s `FakeRt`): this
@@ -813,16 +820,25 @@ struct LoggingNeverConnects {
 }
 impl hclient_rt::TcpConnect for LoggingNeverConnects {
     type Stream = NeverStream;
-    async fn connect(
-        &self,
+    type Connecting<'a>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
+    >
+    where
+        Self: 'a;
+
+    fn connect<'a>(
+        &'a self,
         _addr: std::net::SocketAddr,
         _opts: &hclient_rt::TcpOpts,
-    ) -> std::io::Result<NeverStream> {
-        self.attempts
-            .lock()
-            .unwrap()
-            .push(std::time::Instant::now());
-        std::future::pending().await
+    ) -> Self::Connecting<'a> {
+        Box::pin(async move {
+            self.attempts
+                .lock()
+                .unwrap()
+                .push(std::time::Instant::now());
+            std::future::pending().await
+        })
     }
 }
 impl hclient_rt::Timer for LoggingNeverConnects {

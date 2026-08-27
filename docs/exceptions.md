@@ -120,6 +120,25 @@ at the opt-in call. Where a bound is demanded by *someone else's* trait,
 the question is which external contract is being satisfied, and that is
 C10's shape rather than C12's.
 
+**C15 — an implementor names the auto traits of its own future.** The
+seams whose futures a consumer must *prove* `Send` — `TcpConnect`,
+`TlsConnect`, `Resolve` — carry an **associated type** rather than an
+RPITIT, so the answer is written by each implementor: `Tokio` and `Smol`
+write `Pin<Box<dyn Future<..> + Send + 'a>>`, `hclient-rt-embassy` writes
+the same without the `Send`, and both satisfy the same trait.
+
+This is the opposite of C1/C2's shape and has to be read as such. There
+the bound is *discovered* at an erasure and lands on everybody; here it is
+a statement one implementor makes about itself, and the seam demands
+nothing — which is the entire reason the associated type exists rather
+than a `+ Send` in the trait. A marker is still required at each site,
+because the scanner cannot tell the two apart by looking, and telling them
+apart is the decision worth recording.
+
+The test fixtures in these crates are the proof that it costs nothing:
+`connect.rs`'s `FakeRuntime` keeps a `RefCell` and writes a plain box, and
+it is a `TcpConnect` like any other.
+
 ## `unsafe` exceptions
 
 The rule: `unsafe` is permitted where Rust has no other way to reach a

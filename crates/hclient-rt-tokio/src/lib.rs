@@ -133,18 +133,30 @@ impl TcpConnect for Tokio {
         ..TcpOptsSupport::ALL
     };
 
-    async fn connect(&self, addr: SocketAddr, opts: &TcpOpts) -> std::io::Result<TokioIo> {
-        // Options are applied on the `socket2::Socket` **once**, and the
-        // runtime adopts the finished descriptor. This is exactly the seam
-        // `TcpAdoptStd` provides: without it, every runtime crate would
-        // rewrite this whole rigmarole again.
-        let sock = build_socket(addr, opts)?;
-        sock.set_nonblocking(true)?;
-        let std_stream: std::net::TcpStream = sock.into();
-        let tcp = tokio::net::TcpSocket::from_std_stream(std_stream)
-            .connect(addr)
-            .await?;
-        Ok(TokioIo::new(tcp))
+    /// A `Send` box: everything this awaits is `tokio`'s own, and a
+    /// consumer that wants to prove a `Send` future needs to be able to
+    /// say so. See the trait's own doc for why the choice is here rather
+    /// than in the seam.
+    type Connecting<'a> =
+        std::pin::Pin<Box<dyn Future<Output = std::io::Result<TokioIo>> + Send + 'a>>;
+
+    fn connect<'a>(&'a self, addr: SocketAddr, opts: &TcpOpts) -> Self::Connecting<'a> {
+        // `opts` is cloned rather than borrowed: the seam's future is
+        // parameterised by `&self`'s lifetime alone.
+        let opts = opts.clone();
+        Box::pin(async move {
+            // Options are applied on the `socket2::Socket` **once**, and the
+            // runtime adopts the finished descriptor. This is exactly the seam
+            // `TcpAdoptStd` provides: without it, every runtime crate would
+            // rewrite this whole rigmarole again.
+            let sock = build_socket(addr, &opts)?;
+            sock.set_nonblocking(true)?;
+            let std_stream: std::net::TcpStream = sock.into();
+            let tcp = tokio::net::TcpSocket::from_std_stream(std_stream)
+                .connect(addr)
+                .await?;
+            Ok(TokioIo::new(tcp))
+        })
     }
 
     #[cfg(unix)]
