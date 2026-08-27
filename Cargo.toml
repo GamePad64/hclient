@@ -13,7 +13,7 @@ members = ["crates/*"]
 # the target docs.rs uses, and `just docs` keeps it that way on every push.
 
 [workspace.package]
-version      = "0.1.0-alpha.1"
+version      = "0.1.0-alpha.2"
 edition      = "2024"
 rust-version = "1.98"
 license      = "MIT OR Apache-2.0"
