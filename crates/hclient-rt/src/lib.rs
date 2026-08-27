@@ -11,7 +11,7 @@ mod udp;
 
 pub use caps::{
     Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport,
-    UnixSocketsUnsupported, UnsupportedTcpOpts,
+    UnixSocketsUnsupported, UnixUnsupported, UnsupportedTcpOpts,
 };
 pub use futures_io::FuturesIo;
 pub use udp::{

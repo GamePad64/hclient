@@ -90,6 +90,15 @@ const fn all_but(i: usize) -> TcpOptsSupport {
 struct FakeRt<const MISSING: usize>;
 
 impl<const MISSING: usize> TcpConnect for FakeRt<MISSING> {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = hclient_rt_tokio::TokioIo;
     const APPLIES: TcpOptsSupport = all_but(MISSING);
 
@@ -315,6 +324,15 @@ fn two_unappliable_options_are_both_named() {
     #[derive(Debug, Clone, Copy)]
     struct AppliesNothing;
     impl TcpConnect for AppliesNothing {
+        type ConnectingUnix<'a>
+            = hclient_rt::UnixUnsupported<Self::Stream>
+        where
+            Self: 'a;
+
+        fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+            hclient_rt::UnixUnsupported::new()
+        }
+
         type Stream = hclient_rt_tokio::TokioIo;
         // No `APPLIES` line: the trait's default is `NONE`, and this type
         // exists to use it.
@@ -410,6 +428,15 @@ struct Silent(Seen);
 macro_rules! recording_runtime {
     ($ty:ty $(, $applies:expr)?) => {
         impl TcpConnect for $ty {
+            type ConnectingUnix<'a>
+                = hclient_rt::UnixUnsupported<Self::Stream>
+            where
+                Self: 'a;
+
+            fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+                hclient_rt::UnixUnsupported::new()
+            }
+
             type Stream = hclient_rt_tokio::TokioIo;
             $(const APPLIES: TcpOptsSupport = $applies;)?
 

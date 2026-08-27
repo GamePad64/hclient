@@ -738,9 +738,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
-    >
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -749,7 +747,7 @@ impl TlsConnect for FakeTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Box::pin(async move {
+        std::future::ready({
             Ok((
                 io,
                 TlsInfo {

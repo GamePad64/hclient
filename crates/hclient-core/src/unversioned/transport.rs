@@ -191,3 +191,45 @@ pub trait Transport {
         }
     }
 }
+
+/// What [`SendTransport::execute_send`] hands back: the same exchange
+/// [`Transport::execute`] produces, in a form whose `Send` has a **name**.
+///
+/// Named as an alias rather than written out at each site for the reason
+/// `docs/exceptions.md` records under C12: `cargo fmt` reflows the long
+/// form and carries the marker comment away with it.
+pub type BoxSendExchange<'a, B, E> =
+    std::pin::Pin<Box<dyn Future<Output = Result<http::Response<B>, E>> + Send + 'a>>; // send-bound-exception: amendment-C16
+
+/// A transport whose exchange can cross a thread, said in a way a
+/// consumer can rely on.
+///
+/// # Why this is a second trait and not a bound on the first
+///
+/// [`Transport::execute`] returns `impl Future`, which has no name — so a
+/// consumer that must *prove* its own future `Send` cannot ask for this
+/// one to be. Return type notation is the language feature for naming an
+/// RPITIT; it is unstable, and across a crate boundary it makes the
+/// compiler ICE (measured — see CLAUDE.md).
+///
+/// A separate trait sidesteps all of it, because **an impl may carry
+/// bounds the trait does not**. `hclient-native` implements this for every
+/// `Native` whose runtime, TLS backend and resolver name `Send` associated
+/// futures, and for no other — so `Native` over `hclient-rt-embassy` is
+/// still a `Transport` and simply not a `SendTransport`. Nothing is
+/// excluded from the seam; something is excluded from a promise.
+///
+/// # What it costs a backend
+///
+/// One method, and at a concrete type its body is `Box::pin(self.execute(
+/// req))` — `Send` is *inferred* there rather than proved, which is the
+/// asymmetry the whole design rests on. A backend that cannot make the
+/// claim does not implement this, and loses `hclient::Client` while
+/// keeping everything else.
+pub trait SendTransport: Transport {
+    /// [`Transport::execute`], boxed with its `Send` named.
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> BoxSendExchange<'_, Self::Body, Self::Error>;
+}

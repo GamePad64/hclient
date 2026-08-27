@@ -9,19 +9,21 @@
 //! *produces* crosses a thread too: `tests/spawnable_body.rs` collects a
 //! response body on another one.
 //!
-//! **What does not compile is `tokio::spawn(client.get(u).send())`**, and
-//! that is deliberate rather than pending. `Client` is one erased type,
-//! and its `BoxExchange` declares no auto trait; bounding it obliges the
-//! blanket `BoxedTransport` impl to *prove* `Transport::execute`'s RPITIT
-//! future `Send` for a generic parameter, which cannot be named on stable.
-//! That whole change was built on nightly under return type notation and
-//! reverted — CLAUDE.md carries the measurement, including what it costs
-//! every generic consumer.
+//! **And `tokio::spawn(client.get(u).send())` compiles**, which for a
+//! while it did not. `BoxExchange` declares `Send` (amendment C16), which
+//! obliges whoever boxes into it to prove it — and proving it for a
+//! generic transport means naming every future the transport awaits.
+//! `impl Future` has no name, so this needed the four runtime seams to
+//! carry associated futures instead: `Blocking`, `TcpConnect`,
+//! `TlsConnect`, `Resolve`. Naming is not requiring — each implementor
+//! still says for itself, and one that says no keeps `Transport` and
+//! loses only this.
 //!
-//! Two things work today in its place, and both are checked here rather
-//! than asserted: requests concurrently on a `LocalSet`, and — where a
-//! `tokio::spawn` is really wanted — the transport held directly, whose
-//! future *is* `Send` (`hclient-native`'s `tests/send_future.rs`).
+//! Concurrency never depended on it, and the `LocalSet` test below stays
+//! for that reason: a `!Send` future bars a `spawn`, not two requests in
+//! flight. It is what a caller over `hclient-tls-native-tls` or a DoH
+//! resolver still has, both of which cannot make the `Send` claim — see
+//! their own docs for why.
 #![cfg(all(not(target_family = "wasm"), feature = "default-transport"))]
 
 use std::io::{Read, Write};
@@ -56,7 +58,27 @@ fn a_client_is_send_sync_clone_and_static() {
     .unwrap();
 }
 
-/// Concurrency without a `Send` future: three requests in flight at once,
+/// The reqwest-shaped one: a request spawned onto a multi-threaded
+/// runtime, which is what `Send` on the request future buys.
+#[test]
+fn a_request_can_be_spawned() {
+    let u = serve(1);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let c = hclient::Client::new().unwrap();
+        let joined = tokio::spawn(async move { c.get(&u).send().await })
+            .await
+            .expect("the task must not panic")
+            .expect("the request must succeed");
+        assert_eq!(joined.status(), 200);
+    });
+}
+
+/// Concurrency does not depend on it: three requests in flight at once,
 /// on one thread. This is what a `!Send` request future does and does not
 /// cost — it bars `tokio::spawn`, not concurrency.
 #[test]

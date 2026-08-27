@@ -85,6 +85,14 @@ where
     R::Stream: Send + 'static,
     R::Instant: Send + Sync,
     R::Sleep: Send + 'static,
+    // The seams' associated futures, named. This is the tax a generic
+    // consumer pays for `Client`'s request future being `Send`, and the
+    // whole point of the associated types is that it CAN be paid: these
+    // are ordinary bounds. The same restatement expressed through return
+    // type notation is unstable and, when written across a crate
+    // boundary, ICEs — measured, and recorded in CLAUDE.md.
+    for<'a> R::Connecting<'a>: Send,
+    for<'a> R::ConnectingUnix<'a>: Send,
 {
     let t = Native::new(rt.clone(), Rustls::with_webpki_roots(), SystemDns::new(rt));
     let c = Client::builder(t)

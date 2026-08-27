@@ -1676,8 +1676,14 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// impl TcpConnect for NoSpawn {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
-    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
-    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
+    ///     type ConnectingUnix<'a> = <Tokio as TcpConnect>::ConnectingUnix<'a>;
+    ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
+    ///         Tokio.connect(a, o)
+    ///     }
+    ///     fn connect_unix<'a>(&'a self, p: &std::path::Path) -> Self::ConnectingUnix<'a> {
+    ///         Tokio.connect_unix(p)
+    ///     }
     /// }
     ///
     /// // Builds, and would run: no bound anywhere on this line.
@@ -1707,8 +1713,14 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
     /// impl TcpConnect for CanSpawn {
     ///     type Stream = <Tokio as TcpConnect>::Stream;
     ///     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
-    ///     fn connect(&self, a: SocketAddr, o: &TcpOpts)
-    ///         -> impl Future<Output = std::io::Result<Self::Stream>> { Tokio.connect(a, o) }
+    ///     type Connecting<'a> = <Tokio as TcpConnect>::Connecting<'a>;
+    ///     type ConnectingUnix<'a> = <Tokio as TcpConnect>::ConnectingUnix<'a>;
+    ///     fn connect<'a>(&'a self, a: SocketAddr, o: &TcpOpts) -> Self::Connecting<'a> {
+    ///         Tokio.connect(a, o)
+    ///     }
+    ///     fn connect_unix<'a>(&'a self, p: &std::path::Path) -> Self::ConnectingUnix<'a> {
+    ///         Tokio.connect_unix(p)
+    ///     }
     /// }
     /// impl<F: Future<Output = ()> + Send + 'static> Spawn<F> for CanSpawn {
     ///     fn spawn(&self, f: F) { Tokio.spawn(f) }
@@ -1892,10 +1904,13 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         crate::http3::H3<R, T, D>: crate::http3::StagedConnect<Error = Error> + Debug,
         <crate::http3::H3<R, T, D> as hclient_core::unversioned::Transport>::Body:
             http_body::Body<Data = bytes::Bytes, Error = Error> + Send + 'static, // send-bound-exception: amendment-C12
-        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: 'static,
-        R: Send + Sync + 'static, // send-bound-exception: amendment-C12
-        T: Send + Sync + 'static, // send-bound-exception: amendment-C12
-        D: Send + Sync + 'static, // send-bound-exception: amendment-C12
+        <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Staged: Send + 'static, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+        for<'a> <crate::http3::H3<R, T, D> as crate::http3::StagedConnect>::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
+        crate::http3::H3<R, T, D>: Sync, // send-bound-exception: amendment-C15
+        R: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+        T: Send + Sync + 'static,        // send-bound-exception: amendment-C12
+        D: Send + Sync + 'static,        // send-bound-exception: amendment-C12
     {
         // **The stored value must be true whichever path serves the
         // request**, and `capabilities()` hands back a reference computed
@@ -3832,5 +3847,47 @@ pub mod testing {
     {
         use http_body_util::BodyExt;
         Ok(b.collect().await?.to_bytes())
+    }
+}
+
+/// The `Send` half of the seam — what makes `hclient::Client`'s request
+/// future crossable, and the reason the four runtime seams carry
+/// associated futures at all.
+///
+/// **Every bound here is nameable, and that is the whole design.** A
+/// generic impl must *prove* its future `Send`, which means naming every
+/// future it awaits; `impl Future` has no name, so this impl could not
+/// have been written while `TcpConnect`, `TlsConnect`, `Blocking` and
+/// `Resolve` returned RPITITs. They return associated types now, so the
+/// proof is a list of ordinary bounds — and one this transport's own
+/// pieces may fail without being excluded from anything: `Native` over
+/// `hclient-rt-embassy` is still a `Transport`, over a resolver that
+/// cannot promise `Send` it is still a `Transport`, and what it is not is
+/// a `SendTransport`.
+impl<R, T, D, H, P> hclient_core::unversioned::SendTransport for Native<R, T, D, H, P>
+where
+    R: TcpConnect + Timer + Clone + Sync + Send, // send-bound-exception: amendment-C16
+    R::Stream: 'static + Send,                   // send-bound-exception: amendment-C16
+    R::Instant: Send + Sync,                     // send-bound-exception: amendment-C16
+    R::Sleep: Send,                              // send-bound-exception: amendment-C16
+    for<'a> R::Connecting<'a>: Send,             // send-bound-exception: amendment-C16
+    for<'a> R::ConnectingUnix<'a>: Send,         // send-bound-exception: amendment-C16
+    T: TlsConnect + Sync + Send,                 // send-bound-exception: amendment-C16
+    T::Stream<R::Stream>: 'static + Send,        // send-bound-exception: amendment-C16
+    for<'a> T::Handshake<'a, R::Stream>: Send,   // send-bound-exception: amendment-C16
+    D: Resolve + Sync + Send,                    // send-bound-exception: amendment-C16
+    for<'a> D::Ipv4<'a>: Send,                   // send-bound-exception: amendment-C16
+    for<'a> D::Ipv6<'a>: Send,                   // send-bound-exception: amendment-C16
+    for<'a> D::Svcb<'a>: Send,                   // send-bound-exception: amendment-C16
+    H: Hooks + Clone + Unpin + Sync + Send,      // send-bound-exception: amendment-C16
+    P: crate::proxy::Handshake + Clone + Sync + Send, // send-bound-exception: amendment-C16
+{
+    fn execute_send(
+        &self,
+        req: http::Request<hclient_core::RequestBody>,
+    ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Error> {
+        Box::pin(<Self as hclient_core::unversioned::Transport>::execute(
+            self, req,
+        ))
     }
 }

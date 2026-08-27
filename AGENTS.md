@@ -3731,6 +3731,55 @@ the next person to ask will otherwise re-derive it. `hclient-tower`'s own
 module doc says the fix is one bound when #109417 lands — true of that
 crate, and this is the rest of the bill.
 
+### `Client`'s request future is `Send`, and RTN was never needed
+
+**`tokio::spawn(client.get(u).send())` compiles.** The route is not the
+one above and does not wait on anything: the four seams whose futures
+`Native::execute` awaits — `Blocking`, `TcpConnect`, `TlsConnect`,
+`Resolve` — carry **associated future types** instead of RPITITs, so a
+consumer can *name* them, and `SendTransport` (amendment C16) is a
+separate trait whose impl carries the bounds `Transport` does not.
+
+**Naming is not requiring, and that is the whole of why this works where
+`Resolve → BoxStream` did not.** A fixed `Send` box in a seam excludes
+whoever cannot satisfy it; an associated type lets each implementor
+answer for itself. Measured in-tree, three ways:
+
+- `Tokio` and `Smol` box `Connecting` `Send`; `hclient-rt-embassy` boxes
+  it plain, because `embassy_net::Stack` is `&'d RefCell<Inner>`. Both
+  are `TcpConnect`s.
+- `hclient-dns-doh` boxes its streams plain, because it resolves through
+  a generic `C: Transport` whose `execute` is an RPITIT. It is a
+  `Resolve` like any other; what it loses is one layer up.
+- `hclient-tls-native-tls` boxes its handshake plain, because
+  `async_native_tls::TlsConnector::connect` is a `pub async fn` and its
+  future has no name.
+
+**One seam needed a named type rather than a box, and the reason
+generalises.** `TlsConnect::connect` is generic over `S`, so its future is
+`Send` exactly when `S` is — a box would have to pick one answer for
+every `S`, and both answers are wrong (`+ Send` excludes embassy's IO,
+which would take embassy out of `Native` entirely; without it every
+handshake is `!Send` for everybody). `hclient-tls-rustls` writes
+`Handshaking<S>`, two states and a poll loop, and the answer is derived.
+The sync preparation moved into `connect`, which is what made that a
+dozen lines instead of a state machine.
+
+**What a generic consumer pays is real and, unlike under RTN, payable.**
+`two_runtimes.rs` and `reaper.rs` restate `for<'a> R::Connecting<'a>:
+Send` and its neighbours — ordinary bounds, three lines each. The same
+restatement expressed as return type notation is unstable and, across a
+crate boundary, ICEs.
+
+**What it costs at runtime** is one allocation per connect, resolve,
+handshake and blocking call. `hclient-tls-rustls`'s handshake allocates
+none: it is a named type, not a box.
+
+**And what it costs a backend** is one method, whose body at a concrete
+type is `Box::pin(self.execute(req))` — `Send` inferred, not proved.
+Proof is only ever owed by generic code, which is the asymmetry the whole
+design rests on.
+
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim
 about there being one thread, so it is stripped under `+atomics` by the

@@ -166,6 +166,15 @@ impl Blocking for TokioHandle {
 }
 
 impl TcpConnect for TokioHandle {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = TokioIo;
 
     /// **The same `ALL` [`Tokio`] declares, and leaving it out was a bug.**

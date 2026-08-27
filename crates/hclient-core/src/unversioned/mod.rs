@@ -20,5 +20,5 @@ pub use hooks::{
     NoHooks, Reused,
 };
 pub use timer::{Discard, Timer};
-pub use transport::Transport;
+pub use transport::{BoxSendExchange, SendTransport, Transport};
 pub use websocket::{CloseFrame, Message, WebSocket, WebSocketConnect};

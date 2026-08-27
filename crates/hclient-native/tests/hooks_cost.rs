@@ -85,6 +85,15 @@ impl Timer for Counting {
 }
 
 impl TcpConnect for Counting {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = <Tokio as TcpConnect>::Stream;
     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
     type Connecting<'a>

@@ -105,6 +105,15 @@ impl Transport for Gated {
     }
 }
 
+impl hclient_core::unversioned::SendTransport for Gated {
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> hclient_core::unversioned::BoxSendExchange<'_, NeverEnds, Error> {
+        Box::pin(<Self as Transport>::execute(self, req))
+    }
+}
+
 fn req() -> http::Request<RequestBody> {
     http::Request::builder()
         .uri("https://example.com/")
@@ -112,7 +121,10 @@ fn req() -> http::Request<RequestBody> {
         .unwrap()
 }
 
-fn limited(g: Gated, max: usize) -> impl Transport<Body = NeverEnds, Error = Error> {
+fn limited(
+    g: Gated,
+    max: usize,
+) -> impl hclient_core::unversioned::SendTransport<Body = NeverEnds, Error = Error> {
     let caps = g.capabilities().clone();
     ServiceTransport::new(ConcurrencyLimit::new(TransportService::new(g), max), caps)
 }

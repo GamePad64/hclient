@@ -59,7 +59,7 @@ pub(crate) type SendBoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = 
 
 /// What [`BoxedStaged::exchange_boxed`] hands back.
 type SendExchange<'a> =
-    Pin<Box<dyn Future<Output = Result<http::Response<SendBoxBody>, CoreError>> + 'a>>;
+    Pin<Box<dyn Future<Output = Result<http::Response<SendBoxBody>, CoreError>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
 /// The QUIC arm as a field type: erased, shareable, and named so the
 /// bound sits on one short line.
@@ -70,6 +70,9 @@ type SendExchange<'a> =
 /// on — a transport that stops crossing a thread because of a neighbour's
 /// manifest. The concrete `H3` satisfies both anyway: quinn requires them
 /// of the runtime it is given.
+/// The staged handle, named so its `Send` marker survives `cargo fmt`.
+pub(crate) type SendHandle<'a> = Box<dyn BoxedStaged<'a> + Send + 'a>; // send-bound-exception: amendment-C15
+
 pub(crate) type Arm = dyn BoxedStagedConnect + Send + Sync; // send-bound-exception: amendment-C12
 
 /// What [`BoxedStagedConnect::connect_boxed`] hands back, named because
@@ -78,8 +81,9 @@ pub(crate) type Arm = dyn BoxedStagedConnect + Send + Sync; // send-bound-except
 ///
 /// The `'a` is the transport's: the handle borrows it, which is what makes
 /// erasing the pair safe at all.
-type Staging<'a> =
-    Pin<Box<dyn Future<Output = Result<Box<dyn BoxedStaged<'a> + 'a>, Refused>> + 'a>>;
+type Staging<'a> = Pin<
+    Box<dyn Future<Output = Result<SendHandle<'a>, Refused>> + Send + 'a>, // send-bound-exception: amendment-C15
+>; // send-bound-exception: amendment-C15
 
 /// A staged connect whose transport type is gone.
 ///
@@ -124,15 +128,17 @@ struct StagedOver<'a, T: StagedConnect> {
 
 impl<T> BoxedStagedConnect for T
 where
-    T: StagedConnect<Error = CoreError> + Debug + 'static,
+    T: StagedConnect<Error = CoreError> + Debug + Sync + 'static, // send-bound-exception: amendment-C15
+    for<'a> T::Connecting<'a>: Send, // send-bound-exception: amendment-C15
+    for<'a> T::Exchanging<'a>: Send, // send-bound-exception: amendment-C15
     T::Body: 'static,
     T::Body: http_body::Body<Data = Bytes, Error = CoreError> + Send, // send-bound-exception: amendment-C12
-    T::Staged: 'static,
+    T::Staged: Send + 'static, // send-bound-exception: amendment-C15
 {
     fn connect_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> Staging<'a> {
         Box::pin(async move {
             let staged = self.connect(req).await?;
-            let handle: Box<dyn BoxedStaged<'a> + 'a> = Box::new(StagedOver {
+            let handle: SendHandle<'a> = Box::new(StagedOver {
                 transport: self,
                 staged,
             });
@@ -143,7 +149,9 @@ where
 
 impl<'a, T> BoxedStaged<'a> for StagedOver<'a, T>
 where
-    T: StagedConnect<Error = CoreError>,
+    T: StagedConnect<Error = CoreError> + Sync, // send-bound-exception: amendment-C15
+    for<'b> T::Exchanging<'b>: Send,            // send-bound-exception: amendment-C15
+    T::Staged: Send,                            // send-bound-exception: amendment-C15
     T::Body: http_body::Body<Data = Bytes, Error = CoreError> + Send + 'static, // send-bound-exception: amendment-C12
 {
     fn exchange_boxed(self: Box<Self>) -> SendExchange<'a> {

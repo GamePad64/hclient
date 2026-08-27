@@ -57,7 +57,7 @@ pub type BoxBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Se
 
 /// An erased exchange, as [`BoxedTransport`] hands one back.
 pub type BoxExchange<'a> =
-    Pin<Box<dyn Future<Output = Result<http::Response<BoxBody>, Error>> + 'a>>;
+    Pin<Box<dyn Future<Output = Result<http::Response<BoxBody>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C16
 
 /// An erased sleep, as [`BoxedTimer`] hands one back.
 ///
@@ -140,14 +140,14 @@ pub trait BoxedTransport {
 
 impl<T> BoxedTransport for T
 where
-    T: crate::unversioned::Transport + 'static,
-    T::Body: Send + 'static, // send-bound-exception: amendment-C14
+    T: crate::unversioned::SendTransport + Sync + 'static, // send-bound-exception: amendment-C16
+    T::Body: Send + 'static,                               // send-bound-exception: amendment-C14
     <T::Body as http_body::Body>::Error: Into<Error>,
     T::Error: Into<Error>,
 {
     fn execute_boxed<'a>(&'a self, req: http::Request<RequestBody>) -> BoxExchange<'a> {
         Box::pin(async move {
-            match crate::unversioned::Transport::execute(self, req).await {
+            match crate::unversioned::SendTransport::execute_send(self, req).await {
                 Ok(resp) => Ok(resp.map(box_body)),
                 Err(e) => Err(e.into()),
             }

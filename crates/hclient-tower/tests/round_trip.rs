@@ -27,7 +27,7 @@ type Seen = Arc<Mutex<Vec<http::Uri>>>;
 fn stack(
     m: MockTransport,
     seen: Seen,
-) -> impl Transport<
+) -> impl hclient_core::unversioned::SendTransport<
     Error = hclient_core::Error,
     Body: http_body::Body<Error: Into<hclient_core::Error>> + Send + 'static,
 > + Clone {

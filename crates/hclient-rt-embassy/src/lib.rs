@@ -205,6 +205,15 @@ fn to_embassy(d: Duration) -> embassy_time::Duration {
 }
 
 impl<const N: usize, const TX: usize, const RX: usize> TcpConnect for Embassy<N, TX, RX> {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = EmbassyIo<N, TX, RX>;
 
     /// Two of the six, and the other four are refused rather than ignored.

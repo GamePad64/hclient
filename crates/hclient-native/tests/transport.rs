@@ -624,9 +624,20 @@ impl hyper::rt::Write for NeverStream {
     }
 }
 impl hclient_rt::TcpConnect for NeverConnects {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = NeverStream;
     type Connecting<'a>
-        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + 'a>>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
+    >
     where
         Self: 'a;
 
@@ -763,7 +774,8 @@ impl hclient_tls::TlsConnect for CertTls {
         Box<
             dyn std::future::Future<
                     Output = Result<(Self::Stream<S>, hclient_tls::TlsInfo), hclient_core::Error>,
-                > + 'a,
+                > + Send
+                + 'a,
         >,
     >
     where
@@ -803,12 +815,7 @@ impl hclient_tls::TlsConnect for NoOpTls {
     /// One stub, one configuration, one identity — drawn once rather than
     /// per call, which is what `TlsConnect::config_id` requires.
     type Handshake<'a, S>
-        = std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
-                + 'a,
-        >,
-    >
+        = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -817,7 +824,7 @@ impl hclient_tls::TlsConnect for NoOpTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Box::pin(async move { Ok((io, hclient_tls::TlsInfo::default())) })
+        std::future::ready(Ok((io, hclient_tls::TlsInfo::default())))
     }
 }
 
@@ -872,9 +879,20 @@ struct LoggingNeverConnects {
     attempts: Arc<Mutex<Vec<std::time::Instant>>>,
 }
 impl hclient_rt::TcpConnect for LoggingNeverConnects {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = NeverStream;
     type Connecting<'a>
-        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + 'a>>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<NeverStream>> + Send + 'a>,
+    >
     where
         Self: 'a;
 

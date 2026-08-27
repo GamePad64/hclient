@@ -147,7 +147,7 @@ impl<T> TransportService<T> {
 
 impl<T> tower_service::Service<http::Request<RequestBody>> for TransportService<T>
 where
-    T: Transport + 'static,
+    T: hclient_core::unversioned::SendTransport + Send + Sync + 'static, // send-bound-exception: amendment-C16
     // The ONLY declared bound in this crate, and not its choice:
     // `Transport::to_error`'s own where-clause requires it, because
     // `Error::new` stores its source as `Arc<dyn Error + Send + Sync>` —
@@ -165,7 +165,7 @@ where
 {
     type Response = http::Response<T::Body>;
     type Error = Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Error>>>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Error>> + Send>>; // send-bound-exception: amendment-C16
 
     /// Always ready.
     ///
@@ -190,7 +190,7 @@ where
             // the point of that hook: dropping it here discards a
             // backend's whole taxonomy one layer up, leaving every `is_*`
             // predicate answering `false`.
-            match inner.execute(req).await {
+            match hclient_core::unversioned::SendTransport::execute_send(&*inner, req).await {
                 Ok(resp) => Ok(resp),
                 Err(e) => Err(inner.to_error(e)),
             }
@@ -309,5 +309,37 @@ where
 
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
+    }
+}
+
+/// The `Send` half of the seam, forwarded from the tower service beneath.
+///
+/// The bounds are the service's own: a `tower::Service` whose `Future` and
+/// `Response` cross a thread makes a `Transport` whose exchange does. They
+/// are ordinary trait bounds rather than anything exotic, which is the
+/// difference between this and naming an RPITIT — a consumer returning
+/// `impl Transport` can add `+ SendTransport` to say so, and that is a
+/// thing the language has always been able to write.
+/// The three auto-trait bounds this crate asks of a tower service,
+/// behind one short name so the marker sits on a line `cargo fmt` has no
+/// reason to reflow — the rule amendment C12 records.
+trait SendSyncStatic: Send + Sync + 'static {} // send-bound-exception: amendment-C16
+impl<T: Send + Sync + 'static> SendSyncStatic for T {} // send-bound-exception: amendment-C16
+
+impl<S, B, E> hclient_core::unversioned::SendTransport for ServiceTransport<S>
+where
+    S: tower_service::Service<http::Request<RequestBody>, Response = http::Response<B>, Error = E>
+        + Clone
+        + SendSyncStatic,
+    S::Future: Send + 'static, // send-bound-exception: amendment-C16
+    B: http_body::Body<Data = bytes::Bytes> + Send + 'static, // send-bound-exception: amendment-C16
+    E: StdError + Send + 'static, // send-bound-exception: amendment-C16
+{
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> Pin<Box<dyn Future<Output = Result<http::Response<B>, E>> + Send + '_>> // send-bound-exception: amendment-C16
+    {
+        Box::pin(<Self as Transport>::execute(self, req))
     }
 }

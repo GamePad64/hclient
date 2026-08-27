@@ -110,18 +110,23 @@ pub trait StagedConnect: Transport {
     /// half the answer. Nothing was sent, so a caller sending it elsewhere
     /// is not retrying: *this is not a second request, it is the first one,
     /// which never left.*
-    fn connect(
-        &self,
-        req: http::Request<RequestBody>,
-    ) -> impl Future<Output = Result<Self::Staged, Refused>>;
+    /// Associated types rather than RPITITs, so that `http3::arm`'s
+    /// erasure can *name* these when it declares its own boxes `Send` —
+    /// the same reason `hclient_rt::TcpConnect::Connecting` is one.
+    type Connecting<'a>: Future<Output = Result<Self::Staged, Refused>>
+    where
+        Self: 'a;
+    /// [`Connecting`](Self::Connecting)'s counterpart for the second half.
+    type Exchanging<'a>: Future<Output = Result<http::Response<Self::Body>, Self::Error>>
+    where
+        Self: 'a;
+
+    fn connect(&self, req: http::Request<RequestBody>) -> Self::Connecting<'_>;
 
     /// The rest of `Transport::execute`, on the connection
     /// [`Self::connect`] produced — including the 0-RTT replay, which is
     /// this transport's business and not the caller's.
-    fn exchange(
-        &self,
-        staged: Self::Staged,
-    ) -> impl Future<Output = Result<http::Response<Self::Body>, Self::Error>>;
+    fn exchange(&self, staged: Self::Staged) -> Self::Exchanging<'_>;
 }
 
 /// A connect that did not produce a connection, with the request back.
@@ -191,6 +196,13 @@ where
 /// The one implementation, and the contract is on the trait — for
 /// `Prefetch`'s reason one crate over: an inherent method of the same name
 /// wins method resolution over a trait one.
+/// Short and named, so the marker sits where `cargo fmt` leaves it — the
+/// rule amendment C12 records about where a bound is written.
+type SendStaging<'a, S> = std::pin::Pin<Box<dyn Future<Output = Result<S, Refused>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
+type SendExchange<'a, B> =
+    std::pin::Pin<Box<dyn Future<Output = Result<http::Response<B>, Error>> + Send + 'a>>; // send-bound-exception: amendment-C15
+
 impl<R, T, D, H> StagedConnect for H3<R, T, D, H>
 where
     R: H3Runtime,
@@ -198,19 +210,43 @@ where
     R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
     T: QuicTlsConnect,
     D: hclient_dns::Resolve,
+    // Nameable, which is the point: `H3`'s own handshake is `Send` when
+    // its resolver's answers are, and the associated types let that be
+    // said. A resolver that cannot — `hclient-dns-doh` — leaves this
+    // `H3` without a `StagedConnect`, which is narrower than the arm
+    // being `!Send` for everybody.
+    Self: Sync,                // send-bound-exception: amendment-C15
+    Staged<R, H>: Send,        // send-bound-exception: amendment-C15
+    H: Send + Sync,            // send-bound-exception: amendment-C15
+    R::Instant: Send + Sync,   // send-bound-exception: amendment-C15
+    for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C15
+    for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C15
+    for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C15
     H: Hooks + Clone,
 {
     type Staged = Staged<R, H>;
 
-    async fn connect(&self, req: http::Request<RequestBody>) -> Result<Self::Staged, Refused> {
-        match self.stage(req).await {
-            Ok(staged) => Ok(staged),
-            Err((error, request)) => Err(Refused { error, request }),
-        }
+    type Connecting<'a>
+        = SendStaging<'a, Self::Staged>
+    where
+        Self: 'a;
+
+    type Exchanging<'a>
+        = SendExchange<'a, Self::Body>
+    where
+        Self: 'a;
+
+    fn connect(&self, req: http::Request<RequestBody>) -> Self::Connecting<'_> {
+        Box::pin(async move {
+            match self.stage(req).await {
+                Ok(staged) => Ok(staged),
+                Err((error, request)) => Err(Refused { error, request }),
+            }
+        })
     }
 
-    async fn exchange(&self, staged: Self::Staged) -> Result<http::Response<Self::Body>, Error> {
-        self.finish(staged).await
+    fn exchange(&self, staged: Self::Staged) -> Self::Exchanging<'_> {
+        Box::pin(async move { self.finish(staged).await })
     }
 }
 

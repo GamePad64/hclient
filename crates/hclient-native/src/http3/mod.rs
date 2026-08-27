@@ -1210,6 +1210,33 @@ where
     .await
 }
 
+/// The `Send` half of the seam. Its bounds are the ones
+/// `StagedConnect for H3` already carries, for the same reason and named
+/// the same way: this backend's exchange crosses a thread exactly when
+/// its runtime's and its resolver's answers do.
+impl<R, T, D, H> hclient_core::unversioned::SendTransport for H3<R, T, D, H>
+where
+    R: H3Runtime + Sync,      // send-bound-exception: amendment-C16
+    R::Sleep: Send + 'static, // send-bound-exception: amendment-C10
+    R::Instant: Send + Sync,  // send-bound-exception: amendment-C16
+    R::Socket: fmt::Debug + Send + Sync + 'static, // send-bound-exception: amendment-C10
+    T: QuicTlsConnect + Sync, // send-bound-exception: amendment-C16
+    D: hclient_dns::Resolve + Sync, // send-bound-exception: amendment-C16
+    for<'a> D::Ipv4<'a>: Send, // send-bound-exception: amendment-C16
+    for<'a> D::Ipv6<'a>: Send, // send-bound-exception: amendment-C16
+    for<'a> D::Svcb<'a>: Send, // send-bound-exception: amendment-C16
+    H: Hooks + Clone + Send + Sync, // send-bound-exception: amendment-C16
+{
+    fn execute_send(
+        &self,
+        req: http::Request<RequestBody>,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<http::Response<H3Body<H>>, Error>> + Send + '_>, // send-bound-exception: amendment-C16
+    > {
+        Box::pin(<Self as Transport>::execute(self, req))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

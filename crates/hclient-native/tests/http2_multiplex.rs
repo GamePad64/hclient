@@ -285,9 +285,7 @@ impl TlsConnect for FakeTls {
     }
 
     type Handshake<'a, S>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
-    >
+        = std::future::Ready<Result<(S, TlsInfo), hclient_core::Error>>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -296,7 +294,7 @@ impl TlsConnect for FakeTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Box::pin(async move {
+        std::future::ready({
             Ok((
                 io,
                 TlsInfo {
@@ -429,10 +427,21 @@ impl hclient_core::unversioned::Timer for HoldsTasks {
 }
 
 impl TcpConnect for HoldsTasks {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = <Tokio as TcpConnect>::Stream;
     const APPLIES: TcpOptsSupport = <Tokio as TcpConnect>::APPLIES;
     type Connecting<'a>
-        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + 'a>>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>,
+    >
     where
         Self: 'a;
 
@@ -944,10 +953,12 @@ impl TlsConnect for SlowTls {
         true
     }
 
+    // A named type rather than a box, for the reason `hclient-tls-rustls`
+    // gives: `io` has to survive the sleep, so the future is `Send` only
+    // when `S` is, and a `dyn` would have to pick one answer for every
+    // `S`. A struct derives it.
     type Handshake<'a, S>
-        = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(S, TlsInfo), hclient_core::Error>> + 'a>,
-    >
+        = SlowHandshake<S>
     where
         Self: 'a,
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -956,24 +967,16 @@ impl TlsConnect for SlowTls {
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
     {
-        Box::pin(async move {
-            let nth = self.handshakes.fetch_add(1, Ordering::SeqCst);
-            if nth == 0 {
-                tokio::time::sleep(FIRST_TLS).await;
-                return Err(hclient_core::Error::new(
-                    hclient_core::ErrorKind::Connect,
-                    std::io::Error::other("the first handshake fails, slowly"),
-                ));
-            }
-            tokio::time::sleep(LATER_TLS).await;
-            Ok((
-                io,
-                TlsInfo {
-                    alpn: Some(b"h2".to_vec()),
-                    ..Default::default()
-                },
-            ))
-        })
+        let nth = self.handshakes.fetch_add(1, Ordering::SeqCst);
+        SlowHandshake {
+            io: Some(io),
+            sleep: Box::pin(tokio::time::sleep(if nth == 0 {
+                FIRST_TLS
+            } else {
+                LATER_TLS
+            })),
+            fail: nth == 0,
+        }
     }
 }
 
@@ -1709,4 +1712,37 @@ async fn a_peer_that_stops_answering_the_probe_loses_the_connection() {
         "the connection ended, and the reason names the probe rather than \
          a generic connection error — saw {closes:?}"
     );
+}
+
+/// [`SlowTls`]'s handshake, as a type — see the note on
+/// [`SlowTls::Handshake`].
+struct SlowHandshake<S> {
+    io: Option<S>,
+    sleep: std::pin::Pin<Box<tokio::time::Sleep>>,
+    fail: bool,
+}
+
+impl<S: Unpin> std::future::Future for SlowHandshake<S> {
+    type Output = Result<(S, TlsInfo), hclient_core::Error>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::ready!(self.sleep.as_mut().poll(cx));
+        if self.fail {
+            return std::task::Poll::Ready(Err(hclient_core::Error::new(
+                hclient_core::ErrorKind::Connect,
+                std::io::Error::other("the first handshake fails, slowly"),
+            )));
+        }
+        let io = self.io.take().expect("polled after Ready");
+        std::task::Poll::Ready(Ok((
+            io,
+            TlsInfo {
+                alpn: Some(b"h2".to_vec()),
+                ..Default::default()
+            },
+        )))
+    }
 }

@@ -259,6 +259,42 @@ impl TcpOpts {
     }
 }
 
+/// The refusal a runtime with no `AF_UNIX` hands back from
+/// [`TcpConnect::connect_unix`], as a type it can name.
+///
+/// Ready on the first poll, and `Send` whatever `S` is, because it never
+/// holds one.
+#[derive(Debug)]
+pub struct UnixUnsupported<S>(std::marker::PhantomData<fn() -> S>);
+
+impl<S> UnixUnsupported<S> {
+    /// The only way to make one.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+impl<S> Default for UnixUnsupported<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> Future for UnixUnsupported<S> {
+    type Output = std::io::Result<S>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            UnixSocketsUnsupported,
+        )))
+    }
+}
+
 pub trait TcpConnect {
     type Stream: hyper::rt::Read + hyper::rt::Write + Unpin;
 
@@ -358,18 +394,19 @@ pub trait TcpConnect {
     /// through some path that skipped
     /// [`SUPPORTS_UNIX`](Self::SUPPORTS_UNIX) still gets an answer rather
     /// than an abort.
-    fn connect_unix(
-        &self,
-        path: &std::path::Path,
-    ) -> impl Future<Output = std::io::Result<Self::Stream>> {
-        let _ = path;
-        async {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                UnixSocketsUnsupported,
-            ))
-        }
-    }
+    /// [`Connecting`](Self::Connecting)'s shape, and defaulted the same
+    /// way: a runtime with no `AF_UNIX` returns the refusal without
+    /// naming a type of its own.
+    /// [`Connecting`](Self::Connecting)'s shape. **Not defaulted**, for
+    /// the reason nothing here is: an associated type default is
+    /// unstable, so a runtime with no `AF_UNIX` names
+    /// [`UnixUnsupported`] and forwards to it — two lines, and the
+    /// refusal it hands back is the one this method always had.
+    type ConnectingUnix<'a>: Future<Output = std::io::Result<Self::Stream>>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a>;
 }
 
 /// A runtime that declares no Unix-domain support was asked for a
@@ -726,6 +763,15 @@ mod tests {
         type NeverConnect<'a> = Pin<Box<dyn Future<Output = std::io::Result<NeverIo>> + Send + 'a>>; // send-bound-exception: amendment-C15
 
         impl TcpConnect for Forgetful {
+            type ConnectingUnix<'a>
+                = super::UnixUnsupported<Self::Stream>
+            where
+                Self: 'a;
+
+            fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+                super::UnixUnsupported::new()
+            }
+
             type Stream = NeverIo;
             // No `APPLIES` line, deliberately — that absence is the
             // subject of this test.

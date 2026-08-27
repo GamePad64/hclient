@@ -118,7 +118,17 @@ trait Harness {
     /// `hclient/tests/two_runtimes.rs` carries; it is written as an
     /// associated-type bound here because a trait alias carrying it does
     /// not elaborate through `Self::Rt` (E0310).
-    type Rt: TcpConnect<Stream: 'static> + Timer + Blocking + Clone;
+    /// The seams' associated futures are named here for the same reason
+    /// `hclient/tests/two_runtimes.rs` names them: the erased `Client`
+    /// hands back a `Send` request future, and a generic consumer says so
+    /// with ordinary bounds.
+    type Rt: TcpConnect<Stream: 'static + Send>
+        + Timer<Instant: Send + Sync, Sleep: Send>
+        + Blocking
+        + Clone
+        + Send
+        + Sync
+        + 'static;
     fn rt(&self) -> Self::Rt;
     fn run<F: Future>(&self, f: F) -> F::Output;
 }
@@ -199,6 +209,8 @@ where
     H::Rt: Send + Sync + 'static,
     <H::Rt as Timer>::Instant: Send + Sync,
     <H::Rt as Timer>::Sleep: Send + 'static,
+    for<'a> <H::Rt as TcpConnect>::Connecting<'a>: Send,
+    for<'a> <H::Rt as TcpConnect>::ConnectingUnix<'a>: Send,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {
@@ -233,6 +245,8 @@ where
     H::Rt: Send + Sync + 'static,
     <H::Rt as Timer>::Instant: Send + Sync,
     <H::Rt as Timer>::Sleep: Send + 'static,
+    for<'a> <H::Rt as TcpConnect>::Connecting<'a>: Send,
+    for<'a> <H::Rt as TcpConnect>::ConnectingUnix<'a>: Send,
 {
     let (addr, closed) = watching_server();
     let client = h.run(async {

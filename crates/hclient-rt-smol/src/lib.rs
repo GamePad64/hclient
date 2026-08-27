@@ -324,13 +324,23 @@ impl TcpConnect for Smol {
     }
 
     #[cfg(unix)]
-    async fn connect_unix(&self, path: &std::path::Path) -> std::io::Result<Self::Stream> {
-        // No `TcpOpts` and no `socket2` dance, for the reason the trait's
-        // own doc gives: `AF_UNIX` has none of those options, so there is
-        // nothing to set before the connect.
-        Ok(FuturesIo::new(SmolSocket::Unix(
-            async_net::unix::UnixStream::connect(path).await?,
-        )))
+    type ConnectingUnix<'a>
+        = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        // Owned, because the seam's future is parameterised by `&self`'s
+        // lifetime alone — the same rule `connect` follows for `opts`.
+        let path = path.to_owned();
+        Box::pin(async move {
+            // No `TcpOpts` and no `socket2` dance, for the reason the trait's
+            // own doc gives: `AF_UNIX` has none of those options, so there is
+            // nothing to set before the connect.
+            Ok(FuturesIo::new(SmolSocket::Unix(
+                async_net::unix::UnixStream::connect(&path).await?,
+            )))
+        })
     }
 }
 

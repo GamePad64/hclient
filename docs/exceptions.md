@@ -139,6 +139,30 @@ The test fixtures in these crates are the proof that it costs nothing:
 `connect.rs`'s `FakeRuntime` keeps a `RefCell` and writes a plain box, and
 it is a `TcpConnect` like any other.
 
+**C16 — `SendTransport`, and the bound that finally reaches `Client`.**
+`erased::BoxExchange` declares `Send`, so `hclient::Client`'s request
+future crosses a thread. Whoever boxes into it must *prove* it, and for a
+generic transport that means naming every future the transport awaits —
+which is why C15's associated types had to come first.
+
+**It is a separate trait rather than a bound on `Transport`, and the
+difference is where the bounds may live.** An impl may carry bounds its
+trait does not, so `hclient-native` implements this for every `Native`
+whose runtime, TLS backend and resolver name `Send` futures, and for no
+other. `Native` over `hclient-rt-embassy` remains a `Transport`; it is not
+a `SendTransport`. Nothing left the seam.
+
+**The two that cannot make the claim are named where a caller meets
+them**, and neither is a shortcoming of this workspace's code:
+`hclient-tls-native-tls`'s handshake is `async_native_tls`'s `pub async
+fn`, whose future has no name, and `hclient-dns-doh` resolves through a
+generic `C: Transport`, whose `execute` is an RPITIT. Both keep every
+other capability and lose `hclient::Client`'s spawnable request future.
+
+At a concrete type — which is what a backend is — the body is
+`Box::pin(self.execute(req))` and `Send` is *inferred*. Proof is only ever
+owed by generic code, which is the asymmetry the whole design rests on.
+
 ## `unsafe` exceptions
 
 The rule: `unsafe` is permitted where Rust has no other way to reach a

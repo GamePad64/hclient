@@ -1691,6 +1691,15 @@ mod tests {
     }
 
     impl TcpConnect for FakeRt {
+        type ConnectingUnix<'a>
+            = hclient_rt::UnixUnsupported<Self::Stream>
+        where
+            Self: 'a;
+
+        fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+            hclient_rt::UnixUnsupported::new()
+        }
+
         type Stream = FakeStream;
         // A plain box on purpose: this fixture keeps its log in a
         // `RefCell` and its stream holds an `Rc`, so it is genuinely
@@ -2967,7 +2976,7 @@ mod tests {
             S: Read + Write + Unpin;
 
         type Handshake<'a, S>
-            = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(S, TlsInfo), Error>> + 'a>>
+            = std::future::Ready<Result<(S, TlsInfo), Error>>
         where
             Self: 'a,
             S: Read + Write + Unpin + 'a;
@@ -2976,7 +2985,7 @@ mod tests {
         where
             S: Read + Write + Unpin + 'a,
         {
-            Box::pin(async move {
+            std::future::ready({
                 Ok((
                     io,
                     TlsInfo {

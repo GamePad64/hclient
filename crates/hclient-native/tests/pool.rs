@@ -625,9 +625,20 @@ impl hclient_rt::Timer for LateEof {
 }
 
 impl hclient_rt::TcpConnect for LateEof {
+    type ConnectingUnix<'a>
+        = hclient_rt::UnixUnsupported<Self::Stream>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, _path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        hclient_rt::UnixUnsupported::new()
+    }
+
     type Stream = HideFirstEof<<Tokio as hclient_rt::TcpConnect>::Stream>;
     type Connecting<'a>
-        = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + 'a>>
+        = std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<Self::Stream>> + Send + 'a>, // send-bound-exception: amendment-C15
+    >
     where
         Self: 'a;
 
@@ -863,13 +874,7 @@ mod alpn_guard {
         where
             S: hyper::rt::Read + hyper::rt::Write + Unpin;
         type Handshake<'a, S>
-            = std::pin::Pin<
-            Box<
-                dyn std::future::Future<
-                        Output = Result<(S, hclient_tls::TlsInfo), hclient_core::Error>,
-                    > + 'a,
-            >,
-        >
+            = std::future::Ready<Result<(S, hclient_tls::TlsInfo), hclient_core::Error>>
         where
             Self: 'a,
             S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a;
@@ -882,7 +887,7 @@ mod alpn_guard {
         where
             S: hyper::rt::Read + hyper::rt::Write + Unpin + 'a,
         {
-            Box::pin(async move {
+            std::future::ready({
                 Ok((
                     io,
                     hclient_tls::TlsInfo {

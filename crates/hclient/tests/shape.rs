@@ -137,6 +137,20 @@ fn clone_does_not_require_the_transport_to_be_clone() {
             self.0.capabilities()
         }
     }
+    // One line, and it is the whole of what a backend now owes the erased
+    // `Client`: hand the same exchange over in a form whose `Send` has a
+    // name. At a concrete type — which is what a backend always is — that
+    // is inference, not proof.
+    impl hclient_core::unversioned::SendTransport for NotClone {
+        fn execute_send(
+            &self,
+            req: http::Request<hclient_core::RequestBody>,
+        ) -> hclient_core::unversioned::BoxSendExchange<'_, Self::Body, Self::Error> {
+            Box::pin(<Self as hclient_core::unversioned::Transport>::execute(
+                self, req,
+            ))
+        }
+    }
 
     let c = hclient::Client::builder(NotClone(hclient::mock::MockTransport::new()))
         .build()

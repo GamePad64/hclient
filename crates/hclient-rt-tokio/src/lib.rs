@@ -160,14 +160,24 @@ impl TcpConnect for Tokio {
     }
 
     #[cfg(unix)]
-    async fn connect_unix(&self, path: &std::path::Path) -> std::io::Result<Self::Stream> {
-        // No `TcpOpts`, because `AF_UNIX` has none of them — see the
-        // trait's own doc. And no `socket2` dance either: there is nothing
-        // to set before the connect, so tokio's own connector is the whole
-        // of it.
-        Ok(crate::io::TokioIo::unix(
-            tokio::net::UnixStream::connect(path).await?,
-        ))
+    type ConnectingUnix<'a>
+        = std::pin::Pin<Box<dyn Future<Output = std::io::Result<Self::Stream>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn connect_unix<'a>(&'a self, path: &std::path::Path) -> Self::ConnectingUnix<'a> {
+        // Owned, because the seam's future is parameterised by `&self`'s
+        // lifetime alone — the same rule `connect` follows for `opts`.
+        let path = path.to_owned();
+        Box::pin(async move {
+            // No `TcpOpts`, because `AF_UNIX` has none of them — see the
+            // trait's own doc. And no `socket2` dance either: there is nothing
+            // to set before the connect, so tokio's own connector is the whole
+            // of it.
+            Ok(crate::io::TokioIo::unix(
+                tokio::net::UnixStream::connect(&path).await?,
+            ))
+        })
     }
 }
 
