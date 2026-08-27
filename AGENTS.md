@@ -3649,12 +3649,41 @@ checked now — 282 tests.
 | `erased::BoxExchange` | `Client::execute`'s future | bounding it is the bound that excludes `hclient-rt-embassy` — deliberate, amendment C14's own paragraph |
 | `http3::arm`'s three boxes | `Native::execute` under `http3` | the blanket impl would have to prove `StagedConnect::connect`'s RPITIT `Send`, and behind it `Resolve` — the DoH decision |
 | `hclient-tower`'s `type Future` | the tower `Service` | needs return type notation, `E0658` on 1.98 — and its other half is paid now |
-| `hclient-fetch`'s WebSocket `Closure`s | `FetchWebSocket` | the seam's documented `!Send` allowance, whose whole subject this is |
+| ~~`hclient-fetch`'s WebSocket `Closure`s~~ | — | **closed**: `Arc<Mutex<..>>` and the existing `SingleThreaded`, see below |
 
 Everything else that grep finds is a trait object whose trait already
 declares `Send` (quinn's `AsyncTimer`, `AsyncUdpSocket`, rustls'
 `ClientSessionStore`) or a `dyn Any`/`dyn Error` that never crosses an
 await.
+
+**The fourth row is closed, and it cost no `unsafe` and no actor.**
+`FetchWebSocket` is `Send`: the state cell is `Arc<Mutex<..>>` like
+`promise::State` beside it, and the three `Closure`s ride
+`promise::SingleThreaded`, which already carries this crate's one
+`unsafe impl Send`. Its own module doc had read *"`Rc<RefCell<..>>`, not
+`Arc<Mutex<..>>` — so no `unsafe`"* for a vertical, and the second half
+did not follow from the first: `Arc<Mutex<..>>` needs no `unsafe` either,
+and the wrapper the closures needed was already written.
+
+**Giving the closures a `Send` inner `dyn` was tried first and is
+impossible**, which is worth knowing before someone tries it again:
+`WasmClosure` is implemented for `dyn FnMut(..) -> R + 'a` and no other
+shape (wasm-bindgen 0.2.126, `convert/closures.rs`), so
+`Closure<dyn FnMut() + Send>` is a type that exists, satisfies `Send` by
+auto-derivation, and cannot be constructed. That is also the reason
+`promise.rs`'s `unsafe` cannot be deleted.
+
+**And the actor was refused here, having been chosen one module over.**
+The difference is what each buys. `body::pump` feeds `ClientBody`, an
+erased type shared by every backend, which must be `Send` for everyone or
+for no one — so paying a spawn there bought the property for the whole
+facade. `WebSocketConnect`/`WebSocket` declare no `Send` at all and
+nothing erases them, so an actor here would buy a property nothing reads
+— and it would cost a real one, because `Sink::start_send`'s refusal and
+`poll_close` are **synchronous** today and a channel would make both
+asynchronous. So this is `Send` exactly as far as `JsValue` is, and it
+disappears under `+atomics`, which is honest: a JS `WebSocket` belongs to
+the realm that made it.
 
 **Three of those four are one blocker, and it was taken all the way to a
 working build before being reverted.** They are not four walls: they are

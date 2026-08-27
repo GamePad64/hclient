@@ -793,3 +793,38 @@ async fn a_handshake_against_a_server_that_is_not_a_websocket_server_fails() {
         "a handshake that never completed is a connect failure: {err}"
     );
 }
+
+/// The socket handle crosses a thread.
+///
+/// # Why this is worth pinning when the seam does not ask for it
+///
+/// `WebSocketConnect`/`WebSocket` declare no `Send` anywhere — that is the
+/// allowance this backend was the predicted subject of, and it has not
+/// moved. What changed is that being `!Send` stopped being *free*: every
+/// other type this crate hands back is `Send`, so a caller who holds a
+/// socket beside a response body had one type deciding the auto traits of
+/// the struct around it, for a reason that was an implementation detail
+/// (`Rc<RefCell<..>>`) rather than anything about WebSockets.
+///
+/// It costs no `unsafe` of its own: the state cell is `Arc<Mutex<..>>`
+/// like `promise::State` beside it, and the three `Closure`s ride
+/// `promise::SingleThreaded`, which already carries this crate's one
+/// `unsafe impl Send` (amendment C7). Giving the closures a `Send` inner
+/// `dyn` instead does not work and is not a matter of taste:
+/// `WasmClosure` is implemented for `dyn FnMut(..) -> R + 'a` and no other
+/// shape, so `Closure<dyn FnMut() + Send>` is a type that exists and
+/// cannot be constructed.
+///
+/// **So this is `Send` exactly as far as `JsValue` is**, and it disappears
+/// under `-Ctarget-feature=+atomics` with the `cfg` that strips
+/// wasm-bindgen's own impl — which `fetch-must-fail-under-atomics` still
+/// requires. A JS `WebSocket` belongs to the realm that made it, so an
+/// honest `Send` under wasm threads would have to be an actor holding the
+/// socket on its own thread; that is deliberately not built, because it
+/// would move `start_send`'s refusal and `poll_close` off the synchronous
+/// path they are on today, and the seam asks for none of it.
+#[wasm_bindgen_test]
+fn the_socket_handle_crosses_a_thread() {
+    fn is_send<T: Send>() {}
+    is_send::<hclient_fetch::FetchWebSocket>();
+}

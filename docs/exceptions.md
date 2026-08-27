@@ -170,6 +170,20 @@ excluded, which is the failure this whole module refuses everywhere else.
 The crate carries `#![deny(unsafe_code)]` rather than losing the attribute:
 one site, marked, in a file this script names.
 
+**C7 covers two sites now, and the second one added no `unsafe`.**
+`SingleThreaded<T>` was written for `promise.rs`'s pair of `Closure`s;
+`websocket.rs`'s three ride the same wrapper rather than a claim of their
+own, which is what keeps this crate at exactly one `unsafe impl`. The
+argument is unchanged and so is its scope — it is about `!atomics`
+meaning one thread, and the `cfg` strips it under wasm threads for both
+sites at once.
+
+The alternative was checked rather than assumed: `Closure` cannot be
+given a `Send` inner `dyn`, because `WasmClosure` is implemented for
+`dyn FnMut(..) -> R + 'a` and no other shape (wasm-bindgen 0.2.126,
+`convert/closures.rs`). `Closure<dyn FnMut() + Send>` is a type that
+exists, satisfies `Send` by auto-derivation, and cannot be constructed.
+
 ## One that is neither
 
 **C6 — a `#[non_exhaustive]` type can only be checked for completeness

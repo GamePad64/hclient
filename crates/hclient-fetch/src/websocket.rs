@@ -57,16 +57,39 @@
 //! in it, and closures that fill it and wake. This file follows that
 //! idiom, with two deliberate differences.
 //!
-//! **`Rc<RefCell<..>>`, not `Arc<Mutex<..>>` — so no `unsafe`.**
-//! `promise.rs` carries this project's one `unsafe impl Send`, needed
-//! because `Transport::execute`'s future has to be `Send` for
-//! `Client::execute`. The WebSocket seam declares no `Send` anywhere —
-//! `hclient-core/tests/shape.rs`'s
+//! **`Arc<Mutex<..>>`, and it costs no `unsafe` of its own.** The seam
+//! declares no `Send` anywhere — `hclient-core/tests/shape.rs`'s
 //! `a_non_send_backend_still_satisfies_the_websocket_seam` pinned that
 //! against a synthetic `!Send` backend when the trait landed, and
 //! [`FetchWebSocket`] is the real one it was predicting. The seam did not
-//! have to be widened for it, and no second `unsafe` was needed to make
-//! this backend fit.
+//! have to be widened, and no *second* `unsafe` was needed.
+//!
+//! **This read `Rc<RefCell<..>>, not Arc<Mutex<..>> — so no unsafe` for a
+//! vertical, and the second half did not follow from the first.** Being
+//! `!Send` was free while it was the only such type here; it stopped
+//! being free once everything else this crate hands back — the response
+//! body, the timer's sleep — became `Send`, because then one
+//! implementation detail decided the auto traits of whatever struct a
+//! caller put a socket in. The cell is `Arc<Mutex<..>>` now, like
+//! `promise::State` beside it, and the three `Closure`s ride
+//! [`crate::promise::SingleThreaded`], which already carries this crate's
+//! one `unsafe impl Send` — the same reuse `timer.rs` makes, and the
+//! reason there is still exactly one.
+//!
+//! Giving the closures a `Send` inner `dyn` instead is not a matter of
+//! taste: `WasmClosure` is implemented for `dyn FnMut(..) -> R + 'a` and
+//! no other shape (wasm-bindgen 0.2.126, `convert/closures.rs`), so
+//! `Closure<dyn FnMut() + Send>` is a type that exists and cannot be
+//! constructed.
+//!
+//! **So this is `Send` exactly as far as `JsValue` is**, and it goes away
+//! under `-Ctarget-feature=+atomics`. An honest `Send` under wasm threads
+//! would have to be an actor holding the socket on the thread that made
+//! it — a JS `WebSocket` belongs to its realm — and that is deliberately
+//! not built: it would move [`Sink::start_send`]'s refusal and
+//! `poll_close` off the synchronous path they are on today, in exchange
+//! for a property this seam does not ask for. `body.rs`'s pump answers
+//! the opposite way for the opposite reason, and says so.
 //!
 //! **The queue is a queue.** Messages arrive when the browser says so, not
 //! when the caller polls, and a caller that awaits something else between
@@ -133,12 +156,11 @@ use futures_core::Stream;
 use futures_sink::Sink;
 use hclient_core::unversioned::{CloseFrame, Message, WebSocket, WebSocketConnect};
 use hclient_core::{Error, ErrorKind};
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -341,7 +363,7 @@ fn wake(w: Option<Waker>) {
 /// are installed on.
 ///
 /// Held by [`Socket`] rather than by [`Shared`], which is not an
-/// arrangement detail: a closure holds an `Rc<RefCell<Shared>>` of its
+/// arrangement detail: a closure holds an `Arc<Mutex<Shared>>` of its
 /// own, so `Shared` holding the closures back would be a reference cycle
 /// and every WebSocket a browser opened would leak.
 struct Handlers {
@@ -366,7 +388,16 @@ struct Handlers {
 /// [`FetchWebSocket`] the caller dropped.
 struct Socket {
     ws: web_sys::WebSocket,
-    _handlers: Handlers,
+    /// Wrapped in [`crate::promise::SingleThreaded`], which carries this
+    /// crate's one `unsafe impl Send` (amendment C7) — **no second one**,
+    /// the same way `timer.rs` builds on `SendJsFuture` rather than
+    /// writing a fresh claim. A `Closure` cannot be given a `Send` inner
+    /// `dyn` instead: `WasmClosure` is implemented for
+    /// `dyn FnMut(..) -> R + 'a` and no other shape, so
+    /// `Closure<dyn FnMut() + Send>` is a type that exists and cannot be
+    /// constructed. Checked in wasm-bindgen 0.2.126's
+    /// `convert/closures.rs` rather than inferred from the error.
+    _handlers: crate::promise::SingleThreaded<Handlers>,
 }
 
 impl Drop for Socket {
@@ -383,12 +414,12 @@ impl Drop for Socket {
 /// Installs the three handlers. Called before the first `await`, so no
 /// event can be delivered before all three exist — the browser's event
 /// loop cannot run while this synchronous code does.
-fn install(ws: &web_sys::WebSocket, shared: &Rc<RefCell<Shared>>) -> Handlers {
+fn install(ws: &web_sys::WebSocket, shared: &Arc<Mutex<Shared>>) -> Handlers {
     let on_open = {
-        let shared = Rc::clone(shared);
+        let shared = Arc::clone(shared);
         Closure::wrap(Box::new(move || {
             let waker = {
-                let mut s = shared.borrow_mut();
+                let mut s = shared.lock().expect("websocket state poisoned");
                 s.opened = true;
                 s.open = Some(Ok(()));
                 s.wake_later()
@@ -398,11 +429,11 @@ fn install(ws: &web_sys::WebSocket, shared: &Rc<RefCell<Shared>>) -> Handlers {
     };
 
     let on_message = {
-        let shared = Rc::clone(shared);
+        let shared = Arc::clone(shared);
         Closure::wrap(Box::new(move |e: web_sys::MessageEvent| {
             let item = decode(e.data());
             let waker = {
-                let mut s = shared.borrow_mut();
+                let mut s = shared.lock().expect("websocket state poisoned");
                 if s.ended {
                     None
                 } else {
@@ -415,10 +446,10 @@ fn install(ws: &web_sys::WebSocket, shared: &Rc<RefCell<Shared>>) -> Handlers {
     };
 
     let on_close = {
-        let shared = Rc::clone(shared);
+        let shared = Arc::clone(shared);
         Closure::wrap(Box::new(move |e: web_sys::CloseEvent| {
             let waker = {
-                let mut s = shared.borrow_mut();
+                let mut s = shared.lock().expect("websocket state poisoned");
                 if s.ended {
                     None
                 } else {
@@ -456,13 +487,13 @@ fn install(ws: &web_sys::WebSocket, shared: &Rc<RefCell<Shared>>) -> Handlers {
 }
 
 /// Resolves when `onopen` or `onclose` has spoken, whichever comes first.
-struct Opening<'a>(&'a Rc<RefCell<Shared>>);
+struct Opening<'a>(&'a Arc<Mutex<Shared>>);
 
 impl Future for Opening<'_> {
     type Output = Result<(), Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut s = self.0.borrow_mut();
+        let mut s = self.0.lock().expect("websocket state poisoned");
         match s.open.take() {
             Some(verdict) => Poll::Ready(verdict),
             None => {
@@ -480,7 +511,7 @@ impl Future for Opening<'_> {
 /// declares no `Send` bound, so this costs nothing — see the module doc.
 pub struct FetchWebSocket {
     socket: Socket,
-    shared: Rc<RefCell<Shared>>,
+    shared: Arc<Mutex<Shared>>,
 }
 
 impl Debug for FetchWebSocket {
@@ -490,8 +521,19 @@ impl Debug for FetchWebSocket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FetchWebSocket")
             .field("ready_state", &self.socket.ws.ready_state())
-            .field("queued", &self.shared.borrow().queue.len())
-            .field("ended", &self.shared.borrow().ended)
+            .field(
+                "queued",
+                &self
+                    .shared
+                    .lock()
+                    .expect("websocket state poisoned")
+                    .queue
+                    .len(),
+            )
+            .field(
+                "ended",
+                &self.shared.lock().expect("websocket state poisoned").ended,
+            )
             .finish()
     }
 }
@@ -519,7 +561,7 @@ impl Stream for FetchWebSocket {
     type Item = Result<Message, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut s = self.shared.borrow_mut();
+        let mut s = self.shared.lock().expect("websocket state poisoned");
         // The queue first, `ended` second: the close that ended the stream
         // put a `Message::Close` on the queue in the same call that set the
         // flag, and reading the flag first would drop it.
@@ -615,13 +657,13 @@ impl<H> WebSocketConnect for crate::Fetch<H> {
         // the socket is still handing out `Blob`s.
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-        let shared = Rc::new(RefCell::new(Shared::default()));
+        let shared = Arc::new(Mutex::new(Shared::default()));
         let handlers = install(&ws, &shared);
         // From here on the socket is owned, and dropping this future —
         // which drops `socket` — detaches and closes it.
         let socket = Socket {
             ws,
-            _handlers: handlers,
+            _handlers: crate::promise::SingleThreaded(handlers),
         };
 
         Opening(&shared).await?;
