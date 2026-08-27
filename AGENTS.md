@@ -3627,6 +3627,35 @@ rather than a leftover: `SendJsFuture` is what the WebSocket and the
 sleep's own waiter still run on, and its `Send` must still disappear
 under threads.
 
+**A sweep for what is still `!Send` found one more of the same, and it
+was a feature away rather than a target away.** `http2::On1xx` was
+`&'a dyn Fn(StatusCode, &HeaderMap)`, held across an await, and its doc
+said the callback "neither outlives this call nor crosses a thread" —
+true, and it was the erasure rather than the callback that settled the
+second half. So every build with `http2` on had a `!Send` future,
+including one whose hook is an ordinary `Send` type. It is a type
+parameter now, and the property is inferred: an `Rc`-holding hook still
+yields a `!Send` future and nothing else does.
+
+That one had no gate, because the workspace run is `--all-features`,
+where `http3` switches `tests/send_future.rs` off. `just test-no-default`
+runs this crate's suite under `--features http2`, which is where it is
+checked now — 282 tests.
+
+**What is left, measured rather than listed from memory:**
+
+| `dyn` with no auto trait | what it costs | why it stays |
+|---|---|---|
+| `erased::BoxExchange` | `Client::execute`'s future | bounding it is the bound that excludes `hclient-rt-embassy` — deliberate, amendment C14's own paragraph |
+| `http3::arm`'s three boxes | `Native::execute` under `http3` | the blanket impl would have to prove `StagedConnect::connect`'s RPITIT `Send`, and behind it `Resolve` — the DoH decision |
+| `hclient-tower`'s `type Future` | the tower `Service` | needs return type notation, `E0658` on 1.98 — and its other half is paid now |
+| `hclient-fetch`'s WebSocket `Closure`s | `FetchWebSocket` | the seam's documented `!Send` allowance, whose whole subject this is |
+
+Everything else that grep finds is a trait object whose trait already
+declares `Send` (quinn's `AsyncTimer`, `AsyncUdpSocket`, rustls'
+`ClientSessionStore`) or a `dyn Any`/`dyn Error` that never crosses an
+await.
+
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim
 about there being one thread, so it is stripped under `+atomics` by the

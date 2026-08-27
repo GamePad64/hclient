@@ -21,11 +21,19 @@
 //!
 //! # What it deliberately does not claim
 //!
-//! **Only the TCP stack, and only a resolver whose streams are `Send`.**
+//! **Only a resolver whose streams are `Send`.**
 //! The seam is untouched, so a `Resolve` that hands back a `!Send` stream
 //! still works and still yields a `!Send` future — the answer is per
 //! instantiation, which is what inference means and what a declaration on
 //! the seam would have taken away.
+//!
+//! **HTTP/2 included, and it was not at first.** `http2::On1xx` was
+//! `&'a dyn Fn(StatusCode, &HeaderMap)`, held across an await, so the one
+//! borrowed trait object made this false for every build with that feature
+//! on — including one whose hook is an ordinary `Send` type. It is a type
+//! parameter now. `just test-no-default` runs this crate's suite under
+//! `--features http2`, which is what checks it: the workspace run is
+//! `--all-features`, where `http3` switches this file off.
 //!
 //! **Not with `http3`.** That arm erases through `Box<dyn BoxedStaged<'_>>`
 //! and `Staging<'a>`, neither of which declares `Send`, and declaring it

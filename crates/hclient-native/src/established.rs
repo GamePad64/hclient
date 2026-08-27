@@ -302,7 +302,7 @@ where
                     headers,
                 }));
             };
-            let on_1xx = how.watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange(*e, req, checkin, on_1xx)
                 .await
                 .map(|r| {
@@ -331,7 +331,7 @@ where
                     headers,
                 }));
             };
-            let on_1xx = how.watch_1xx.map(|_| &report as crate::http2::On1xx<'_>);
+            let on_1xx = how.watch_1xx.map(|_| &report);
             crate::http2::exchange_shared(s, req, on_1xx)
                 .await
                 .map(|r| {

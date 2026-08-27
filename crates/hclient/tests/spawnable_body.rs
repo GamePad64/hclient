@@ -21,7 +21,10 @@
 //! not true until the browser's body stopped holding a `js_sys::JsFuture`;
 //! `hclient-fetch`'s `body::pump` is that change, and its cost is written
 //! there.
-#![cfg(not(target_family = "wasm"))]
+// `Client::new()` is `default-transport`'s, so the whole file is: without
+// it there is no transport for a body to come out of, and `just
+// test-no-default` builds exactly that configuration.
+#![cfg(all(not(target_family = "wasm"), feature = "default-transport"))]
 
 use http_body_util::BodyExt;
 use std::io::{Read, Write};

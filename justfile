@@ -503,6 +503,7 @@ test-no-default:
     set -euo pipefail
     for args in "-p hclient-proto --no-default-features" \
                 "-p hclient-native --no-default-features" \
+                "-p hclient-native --features http2" \
                 "-p hclient-rt-embassy" \
                 "-p hclient --no-default-features --features cookies,test-util" \
                 "-p hclient --no-default-features --features test-util"; do

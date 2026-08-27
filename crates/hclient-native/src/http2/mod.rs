@@ -476,21 +476,34 @@ fn strip_connection_headers(headers: &mut http::HeaderMap) {
 /// since `Sent` is the verdict that suppresses a retry.
 /// What a `1xx` is reported through on this path.
 ///
-/// A `&dyn Fn` rather than the hook itself, and that is the whole reason
-/// HTTP/2 costs no bound where HTTP/1 costs `Send + Sync + 'static`: the
-/// callback is called from inside the future that awaits the response, so
-/// it neither outlives this call nor crosses a thread, and nothing here
-/// has to name `H`.
-pub(crate) type On1xx<'a> = &'a dyn Fn(http::StatusCode, &http::HeaderMap);
+/// A borrowed closure rather than the hook itself, which is the whole
+/// reason HTTP/2 costs no bound where HTTP/1 costs
+/// `Send + Sync + 'static`: it is called from inside the future that
+/// awaits the response, so it neither outlives this call nor has to name
+/// `H`.
+///
+/// **A type parameter and not a `&dyn Fn`, which is what it was.** The
+/// alias read `&'a dyn Fn(StatusCode, &HeaderMap)` and its doc said the
+/// callback "neither outlives this call nor crosses a thread" — true, and
+/// it was the *erasure* rather than the callback that decided the second
+/// half. A `dyn` declaring no auto trait removes them from whatever is
+/// behind it, so this one `&dyn` made `Native::execute`'s future `!Send`
+/// for every build with the `http2` feature on, including one whose hook
+/// is an ordinary `Send` type. Named, the property is inferred: a hook
+/// holding an `Rc` still yields a `!Send` future and nothing else does.
+/// Same finding as `connect.rs`'s `Answers`, one feature over.
+pub(crate) trait On1xx: Fn(http::StatusCode, &http::HeaderMap) {}
+impl<F> On1xx for F where F: Fn(http::StatusCode, &http::HeaderMap) {}
 
-pub(crate) async fn exchange<I>(
+pub(crate) async fn exchange<I, F>(
     est: Established<I>,
     req: http::Request<OutgoingBody>,
     checkin: Option<CheckIn<I>>,
-    on_1xx: Option<On1xx<'_>>,
+    on_1xx: Option<&F>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
     I: Read + Write + Unpin,
+    F: On1xx + ?Sized,
 {
     use crate::established::Failed;
 
@@ -1559,13 +1572,14 @@ pub(crate) async fn shared_is_reusable(shared: &mut Shared) -> bool {
 /// as [`Failed::NotSent`](crate::established::Failed::NotSent) — which is
 /// what lets `Native::run` retry it on a fresh connection, exactly as it
 /// does for a pooled exclusive one.
-pub(crate) async fn exchange_shared<I>(
+pub(crate) async fn exchange_shared<I, F>(
     shared: Shared,
     req: http::Request<OutgoingBody>,
-    on_1xx: Option<On1xx<'_>>,
+    on_1xx: Option<&F>,
 ) -> Result<http::Response<H2Body<I>>, crate::established::Failed>
 where
     I: Read + Write + Unpin,
+    F: On1xx + ?Sized,
 {
     use crate::established::Failed;
 
