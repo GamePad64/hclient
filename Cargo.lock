@@ -1256,6 +1256,7 @@ name = "hclient-fetch"
 version = "0.1.0-alpha.2"
 dependencies = [
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-sink",
  "futures-util",
@@ -1266,6 +1267,7 @@ dependencies = [
  "js-sys",
  "thiserror",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-streams",
  "web-sys",

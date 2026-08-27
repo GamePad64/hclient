@@ -55,6 +55,17 @@
 //!
 //! # Why `is_end_stream` needs no help from the underlying stream
 //!
+//! **What this section argues is still true and its subject moved**: the
+//! stream is behind [`pump`] now, so what `poll_frame` observes is a
+//! channel rather than `IntoStream` directly. The conclusion survives for
+//! a simpler reason than the one below — a `Receiver` yields `None`
+//! exactly once its `Sender` is gone, which happens when the pump returns,
+//! and we move to [`Inner::Done`] in the same `poll_frame` that sees it.
+//! There is still no window in which anything underneath would say
+//! something our own state does not. The original argument is kept because
+//! it is what rules out the `hclient-wasi` shape, where the answer really
+//! did have to come from below.
+//!
 //! `hclient-wasi`'s `Body::is_end_stream` has to delegate to
 //! `IncomingResponseBody::is_end_stream()` because the WASI host can know
 //! the stream is finished (e.g. after a trailers frame) one `poll_frame`
@@ -77,7 +88,12 @@
 //!
 //! # Cancellation: dropping a `Body` mid-stream
 //!
-//! `ReadableStream::into_stream()` (used by [`Body::from_response`], not
+//! **Read [`pump`]'s doc comment first**: the stream no longer lives in
+//! the `Body`, so a drop reaches it only when the pump lets go, and that
+//! takes two signals rather than one. What follows is why letting go is
+//! sufficient, and it is unchanged.
+//!
+//! `ReadableStream::into_stream()` (used by [`pump`], not
 //! `get_reader().into_stream()`) sets `cancel_on_drop = true`
 //! (`wasm-streams` 0.5.0, `ReadableStream::try_into_stream`). Its `Drop`
 //! impl calls the reader's `cancel()` and swallows any rejection with a
@@ -91,13 +107,19 @@
 //! reaches the actual JS-level `cancel()` callback, not just that
 //! `wasm-streams` claims to call it — guarding against a future refactor
 //! (e.g. switching to `get_reader().into_stream()`, which sets
-//! `cancel_on_drop = false`) silently turning this off.
+//! `cancel_on_drop = false`) silently turning this off. Its neighbour
+//! `dropping_a_body_whose_read_will_never_answer_still_cancels` covers the
+//! half the pump introduced, and the two are a pair: a pump watching only
+//! the channel passes the first and fails the second.
 use bytes::Bytes;
+use futures_channel::{mpsc, oneshot};
 use futures_core::Stream;
 use futures_util::StreamExt;
+use futures_util::future::{Either, select};
 use hclient_core::{DecompressionSupport, Error, ErrorKind};
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::fmt::Debug;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, JsValue};
@@ -150,7 +172,17 @@ pub struct Body {
 
 enum Inner {
     Stream {
-        stream: Pin<Box<dyn Stream<Item = Result<Bytes, Error>>>>,
+        /// What the pump hands over. `Bytes` and [`Error`] are both `Send`,
+        /// so this receiver is — which is the whole point of the pump: no
+        /// JS handle crosses it.
+        rx: mpsc::Receiver<Result<Bytes, Error>>,
+        /// Held, never sent on, and dropped with this `Body`. That drop is
+        /// what lets the pump abandon a `read()` **already in flight**;
+        /// closing `rx` alone would only be noticed the next time the pump
+        /// tried to send, which is never if the peer has gone quiet. Named
+        /// with a leading underscore because its whole use is being
+        /// dropped.
+        _cancel: oneshot::Sender<()>,
         /// Computed once, in [`Body::from_response`] — see
         /// [`content_length_hint`] and the module doc comment's `size_hint`
         /// section. Read as-is until the stream ends; from then on
@@ -261,12 +293,86 @@ impl Body {
                     .map_err(|_| Error::new(ErrorKind::Decode, NotAByteChunk)),
                 Err(e) => Err(Error::new(ErrorKind::Body, StreamRead(js_message(&e)))),
             });
+        // Capacity zero: `futures` still guarantees one slot per sender, so
+        // the pump runs exactly one chunk ahead of the caller and then
+        // waits. A larger buffer would read a body nobody is consuming.
+        let (tx, rx) = mpsc::channel(0);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        wasm_bindgen_futures::spawn_local(pump(Box::pin(stream), tx, cancel_rx));
         Ok(Self {
             inner: Inner::Stream {
-                stream: Box::pin(stream),
+                rx,
+                _cancel: cancel_tx,
                 hint,
             },
         })
+    }
+}
+
+/// Reads the `ReadableStream` on the thread that owns it and hands the
+/// bytes out through a channel.
+///
+/// # Why this exists rather than the stream living in the `Body`
+///
+/// `wasm_streams`'s `IntoStream` holds a `js_sys::JsFuture`, whose
+/// `Rc<RefCell<Inner<T>>>` makes it — and so the whole `Body` — `!Send`.
+/// The `Bytes` it yields are `Send` on their own, so moving the stream
+/// behind a channel leaves nothing JS-shaped on the caller's side of it.
+///
+/// **Why not [`crate::promise::SendJsFuture`]**, which this crate already
+/// has and which `Timer::sleep` and the WebSocket already use: its `Send`
+/// is an `unsafe impl` whose argument is that there is one thread, so the
+/// `cfg` that strips wasm-bindgen's own `unsafe impl Send for JsValue`
+/// under `target_feature = "atomics"` strips it too. It is the cheaper
+/// repair and it does not survive wasm threads. This one does: no JS
+/// handle crosses the channel, so nothing here depends on how many threads
+/// there are.
+///
+/// # The one thing it costs, said plainly
+///
+/// A spawn. This workspace refuses to spawn on a caller's behalf
+/// everywhere else — `stale-while-revalidate` is unimplemented for exactly
+/// that reason, and so is `hclient-h3`'s body pump. The refusal is about
+/// work continuing behind a caller who walked away, and that is answered
+/// here rather than waived: the pump is bounded by the channel (one chunk
+/// ahead, then it waits) and it ends the moment the `Body` is dropped, by
+/// whichever of the two signals below arrives first.
+///
+/// # Cancellation, which is the part that had to be built
+///
+/// Dropping a `Body` used to drop `IntoStream` synchronously, and
+/// `wasm-streams` sets `cancel_on_drop`, so the underlying source's own
+/// `cancel()` ran. Behind a pump, the drop reaches the stream only when
+/// the pump lets go of it, so there are two ways for it to find out and it
+/// needs both. Closing `rx` is noticed at the **send**, which is enough for
+/// a body that is producing; it is never noticed by a pump parked on a
+/// `read()` that a quiet peer will not answer. `cancel` closes that: it is
+/// selected against every read, so the drop is observed at once. Either way
+/// the pump returns, `stream` drops here, and `cancel_on_drop` does what it
+/// always did — which is why `dropping_a_pending_body_cancels_the_underlying_reader`
+/// is unchanged and still the thing that proves it.
+async fn pump(
+    mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, Error>>>>,
+    mut tx: mpsc::Sender<Result<Bytes, Error>>,
+    mut cancel: oneshot::Receiver<()>,
+) {
+    loop {
+        let item = match select(stream.next(), &mut cancel).await {
+            Either::Left((item, _)) => item,
+            // The `Body` went away mid-read.
+            Either::Right(_) => return,
+        };
+        let Some(item) = item else { return };
+        // An error is terminal for the caller — `poll_frame` moves to
+        // `Done` on the first one — so there is nothing left to read for.
+        let terminal = item.is_err();
+        if poll_fn(|cx| tx.poll_ready(cx)).await.is_err() || tx.start_send(item).is_err() {
+            // The `Body` went away between reads.
+            return;
+        }
+        if terminal {
+            return;
+        }
     }
 }
 
@@ -279,7 +385,7 @@ impl HttpBody for Body {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
         match &mut self.inner {
-            Inner::Stream { stream, .. } => match stream.as_mut().poll_next(cx) {
+            Inner::Stream { rx, .. } => match rx.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(b))) => Poll::Ready(Some(Ok(Frame::data(b)))),
                 // An error is terminal — the same "one shot, then Done" rule
                 // a natural end gets below, not a state a caller could poll

@@ -128,6 +128,16 @@ futures-sink = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # See the note above `[dependencies]` for why this moved off the 0.5 line.
 wasm-streams = "0.6"
+
+# The response body's pump: `spawn_local` for the task that owns the JS
+# handles, and a channel for the `Bytes` it hands out. `futures-channel` is
+# the one crate this adds (`wasm-bindgen-futures` was already in the graph
+# through `wasm-streams`), and it is bought rather than written because a
+# hand-rolled single-slot channel is waker code, whose defects are silent
+# hangs — the same line this workspace draws between hand-writing base64
+# and taking a hash implementation. See `body.rs`'s module doc.
+futures-channel = { version = "0.3", default-features = false, features = ["std"] }
+wasm-bindgen-futures = "0.4"
 thiserror    = { workspace = true }
 
 [dev-dependencies]

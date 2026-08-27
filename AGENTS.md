@@ -3569,14 +3569,38 @@ more place**, not writing one — a hand-rolled loop over
 `ReadableStreamDefaultReader::read()`, whose cost is the reader
 lifecycle and cancel-on-drop that `wasm_streams` is doing today.
 
-It is not done, because on its own it buys nothing: the beneficiary is a
-`Send` erased `ClientBody`, and declaring that is a separate decision
-with its own costs. The alternative shape — an actor per response
-pumping the stream under `spawn_local` and handing `Bytes` over an
-`mpsc` — would also work and is worse here, because it costs a spawn
-this workspace refuses everywhere else plus cancellation and
-back-pressure written by hand, to reach a property the existing adapter
-reaches without either.
+**The actor is what landed, and it is the more expensive of the two on
+purpose.** `hclient_fetch::Body` is `Send` now: `body::pump` owns the
+`IntoStream` on the thread that made it and hands `Bytes` — already
+`Send` — over a `futures_channel::mpsc` of capacity zero, so no JS handle
+crosses to the caller's side and nothing about the property depends on
+how many threads there are. The adapter would have been fewer lines and
+would have died under `+atomics`, which is the configuration this was
+chosen against.
+
+Three things it cost, each answered rather than waived. **A spawn**,
+which this workspace refuses everywhere else — the refusal is about work
+continuing behind a caller who walked away, and the pump is bounded one
+chunk ahead by the channel and ends when the `Body` drops. **One crate**,
+`futures-channel` (33 to 34; `wasm-bindgen-futures` was already there
+through `wasm-streams`), bought rather than written because a hand-rolled
+single-slot channel is waker code and its defects are silent hangs.
+**And cancellation, which had to be built rather than inherited**: a drop
+used to reach `IntoStream` synchronously and fire `wasm-streams`'
+`cancel_on_drop`, where now it reaches the pump. Closing the channel is
+noticed at the send and is enough for a body that is producing; a pump
+parked on a `read()` a quiet peer will never answer never gets there. So
+the `Body` also holds a `oneshot::Sender` it never sends on, selected
+against every read. The pair of tests is the assertion — a pump watching
+only the channel passes
+`dropping_a_pending_body_cancels_the_underlying_reader` and fails
+`dropping_a_body_whose_read_will_never_answer_still_cancels`, verified by
+applying exactly that mutation.
+
+What it does **not** do on its own is give anybody a spawnable response
+body: the beneficiary is a `Send` erased `ClientBody`, and declaring that
+is still a separate decision. What has changed is that the browser is no
+longer the thing standing in its way.
 
 **The two are not interchangeable, and which one is right depends on a
 configuration nobody here builds yet.** The adapter's `Send` is a claim

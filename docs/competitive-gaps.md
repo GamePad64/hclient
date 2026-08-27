@@ -766,9 +766,13 @@ does not weaken the browser backend, it **excludes** it:
 future is `Send`, and `hclient-wasi` is `Send` throughout. The one `!Send`
 type is `js_sys::JsFuture`, whose `Rc<RefCell<Inner<T>>>` reaches the body
 through `wasm_streams::readable::IntoStream`. So this is one read loop
-rather than a property of the target — and the adapter that would replace
-it, `promise::SendJsFuture`, is already in the crate and already carries
-`Timer::sleep` and the WebSocket. See CLAUDE.md.
+rather than a property of the target — and it is closed now:
+`hclient_fetch::Body` is `Send`, because `body::pump` keeps the stream on
+the thread that owns it and hands `Bytes` across a channel. So every
+backend here produces a `Send` body, and declaring `Send` on the erased
+`ClientBody` no longer excludes anybody. That declaration is still a
+decision and still unmade; what changed is that the browser is no longer
+the reason against it. See CLAUDE.md for what the pump cost.
 
 **`+atomics` is supported, and what is not supported there is `Send`.**
 Measured: `cargo check -p hclient-fetch --target wasm32-unknown-unknown

@@ -510,3 +510,53 @@ async fn dropping_a_pending_body_cancels_the_underlying_reader() {
          cancel() must actually run, not just wasm-streams's internal reader lock"
     );
 }
+
+/// The other half of the cancellation story, and the half the pump had to
+/// build rather than inherit.
+///
+/// Its neighbour above drops a `Body` whose pump is parked on a **send** —
+/// the channel closing is enough to wake that. This one drops a `Body`
+/// whose pump is parked on a **read** that will never resolve, which is
+/// what a quiet peer looks like: `pull` enqueues nothing, so the underlying
+/// source never produces a chunk and nothing will ever come back to the
+/// pump to make it notice the closed channel. Only the `oneshot` the `Body`
+/// holds can end it, and if it did not, `cancelled` would stay `false` for
+/// ever.
+///
+/// Checked in the failing direction: with the `select` on that receiver
+/// replaced by the read alone, this test fails and its neighbour above
+/// still passes — which is why the pair is the assertion rather than
+/// either one.
+#[wasm_bindgen_test]
+async fn dropping_a_body_whose_read_will_never_answer_still_cancels() {
+    let cancelled = Rc::new(Cell::new(false));
+    // Enqueues nothing, ever: `read()` stays pending for the life of the
+    // stream.
+    let stream = stream_with_pull_and_cancel(|_controller| {}, cancelled.clone());
+    let resp = response_from_stream(&stream, &[]);
+    let body = hclient_fetch::testing::body_from_response(&resp).unwrap();
+
+    // Let the pump reach its `read()` before the drop, so the drop really
+    // does land on an in-flight one rather than before it started.
+    for _ in 0..5 {
+        microtask_tick().await;
+    }
+    assert!(
+        !cancelled.get(),
+        "must not be cancelled while the Body is still held"
+    );
+
+    drop(body);
+
+    for _ in 0..20 {
+        if cancelled.get() {
+            break;
+        }
+        microtask_tick().await;
+    }
+    assert!(
+        cancelled.get(),
+        "dropping a Body parked on a read that will never answer must still reach the underlying \
+         source's cancel() — the channel closing alone cannot wake a pump nothing will return to"
+    );
+}
