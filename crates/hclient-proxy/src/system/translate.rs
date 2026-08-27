@@ -140,6 +140,102 @@ pub fn http_proxies(sys: &SystemProxies) -> Result<Vec<Proxy<HttpConnect>>, Syst
     Ok(out)
 }
 
+/// The same, for a caller who must not fail — and it hands back what it
+/// could not install rather than swallowing it.
+///
+/// # Why there are two of these
+///
+/// Because a refusal is only useful to somebody who can act on it, and
+/// that is not everybody. [`http_proxies`] refuses because its caller
+/// **asked** for the machine's configuration and can decide what to do
+/// about a part of it this client cannot express. `Client::new` did not
+/// ask — it is a convenience constructor that reads the settings so that
+/// a client is a good citizen by default — and a refusal there would mean
+/// **a client that will not construct** on a network with WPAD, or on a
+/// machine whose owner also configured a SOCKS proxy. That is a worse
+/// answer than proxying what we can.
+///
+/// So: the explicit call refuses, the implicit one degrades and reports.
+/// Nothing is silent at the API level; what a caller does with the report
+/// is theirs.
+///
+/// # What it does with each awkward configuration
+///
+/// - **A PAC script and static entries beside it.** The static ones are
+///   installed, which is not a fallback of ours but the machine's own:
+///   WinINET keeps `ProxyServer` as exactly that when a script is
+///   configured. Better than direct, and better than what a client that
+///   cannot see the script at all would do.
+/// - **A PAC script alone.** Direct — which is what curl and reqwest do
+///   on the same machine, neither of them being able to see it. The
+///   difference is that this one can, and says so in the report.
+/// - **A SOCKS proxy.** Dropped, because a transport holds one proxy
+///   protocol. Where SOCKS was the *only* proxy this means going direct
+///   on a machine that wanted a proxy, which is the one degradation here
+///   that loses something real — and is why the strict call exists.
+/// - **A bypass pattern this matcher cannot state** — a wildcard that is
+///   not a leading `*.`. The pattern is dropped and the proxy is kept,
+///   which is what every other implementation does; dropping the *proxy*
+///   over one odd exclusion would be the larger surprise.
+pub fn http_proxies_lossy(
+    sys: &SystemProxies,
+) -> (Vec<Proxy<HttpConnect>>, Vec<SystemProxyRefused>) {
+    let mut dropped = Vec::new();
+
+    if let Some(pac) = sys.pac() {
+        dropped.push(SystemProxyRefused::PacScript(pac.into()));
+    }
+    for u in sys.unsupported_bypass() {
+        dropped.push(SystemProxyRefused::UnrepresentableBypass(
+            u.to_string().into_boxed_str(),
+        ));
+    }
+    if sys.bypass_everything() {
+        return (Vec::new(), dropped);
+    }
+
+    let mut out = Vec::with_capacity(sys.entries().len());
+    for entry in sys.entries() {
+        if entry.kind() != ProxyKind::Http {
+            dropped.push(SystemProxyRefused::MixedProtocols {
+                kind: entry.kind(),
+                host: entry.host().into(),
+                port: entry.port(),
+            });
+            continue;
+        }
+        let mut protocol = HttpConnect::new();
+        if let Some(c) = entry.credentials() {
+            match protocol.clone().basic_auth(c.user(), c.password()) {
+                Ok(with_auth) => protocol = with_auth,
+                Err(_) => {
+                    // The proxy is installed **without** the credential
+                    // rather than dropped: a proxy that answers `407` is
+                    // a diagnosable failure, where going direct past a
+                    // proxy the machine named is not.
+                    dropped.push(SystemProxyRefused::UnusableCredential {
+                        host: entry.host().into(),
+                        port: entry.port(),
+                    });
+                }
+            }
+        }
+        let mut proxy = Proxy::new(protocol, entry.host(), entry.port())
+            .bypass(sys.bypass().iter().map(|p| p.to_string()));
+        if sys.bypass_local() {
+            proxy = proxy.bypass_local();
+        }
+        if let Some(scheme) = entry.applies_to() {
+            proxy = proxy.only_for(match scheme {
+                Scheme::Http => ProxyScheme::Http,
+                Scheme::Https => ProxyScheme::Https,
+            });
+        }
+        out.push(proxy);
+    }
+    (out, dropped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +383,116 @@ mod tests {
             route(&list, true, "example.com", 443).as_deref(),
             Some("proxy.corp:8080")
         );
+    }
+
+    // --- the lenient path ------------------------------------------
+
+    #[test]
+    fn the_lenient_path_installs_a_pac_machines_static_entries() {
+        // WinINET's own fallback, not an invention of ours: with a script
+        // configured, `ProxyServer` is what it falls back to. Honouring
+        // it beats direct, and beats what a client blind to the script
+        // would do.
+        use crate::system::testing::system_proxies_with_pac;
+        let sys = system_proxies_with_pac(
+            &[("*", "fallback.corp:8080")],
+            &[],
+            false,
+            "http://wpad.corp/proxy.pac",
+        );
+        let (list, dropped) = http_proxies_lossy(&sys);
+
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("fallback.corp:8080")
+        );
+        // Degraded, never silent: the script is in the report.
+        assert!(matches!(dropped[0], SystemProxyRefused::PacScript(_)));
+    }
+
+    #[test]
+    fn the_lenient_path_takes_a_pac_only_machine_direct_and_says_so() {
+        use crate::system::testing::system_proxies_with_pac;
+        let sys = system_proxies_with_pac(&[], &[], false, "http://wpad.corp/proxy.pac");
+        let (list, dropped) = http_proxies_lossy(&sys);
+
+        assert!(list.is_empty());
+        assert_eq!(dropped.len(), 1);
+    }
+
+    #[test]
+    fn the_lenient_path_keeps_the_http_proxy_beside_a_socks_one() {
+        // The common Windows shape — `http=` and `socks=` in one
+        // `ProxyServer` — where dropping the SOCKS entry costs this
+        // client nothing: it is the HTTP one that serves our traffic.
+        let sys = system_proxies(
+            &[("http", "plain.corp:8080"), ("socks", "socks.corp:1080")],
+            &[],
+            false,
+        );
+        let (list, dropped) = http_proxies_lossy(&sys);
+
+        assert_eq!(
+            route(&list, false, "example.com", 80).as_deref(),
+            Some("plain.corp:8080")
+        );
+        assert!(matches!(
+            dropped[0],
+            SystemProxyRefused::MixedProtocols { .. }
+        ));
+    }
+
+    #[test]
+    fn the_lenient_path_goes_direct_where_socks_was_the_only_proxy() {
+        // The one degradation that loses something real, and the reason
+        // the strict call exists. Asserted rather than left implied.
+        let sys = system_proxies(&[("all", "socks5://socks.corp:1080")], &[], false);
+        let (list, dropped) = http_proxies_lossy(&sys);
+
+        assert!(list.is_empty());
+        assert!(matches!(
+            dropped[0],
+            SystemProxyRefused::MixedProtocols { .. }
+        ));
+    }
+
+    #[test]
+    fn the_lenient_path_drops_an_unstatable_pattern_and_keeps_the_proxy() {
+        let sys = system_proxies(&[("*", "proxy.corp:8080")], &["192.168.1.*"], false);
+        let (list, dropped) = http_proxies_lossy(&sys);
+
+        assert_eq!(
+            route(&list, true, "example.com", 443).as_deref(),
+            Some("proxy.corp:8080")
+        );
+        assert!(matches!(
+            dropped[0],
+            SystemProxyRefused::UnrepresentableBypass(_)
+        ));
+    }
+
+    #[test]
+    fn an_ordinary_machine_installs_the_same_list_either_way() {
+        // The two paths may not disagree about a configuration both can
+        // express — otherwise `Client::new` and an explicit call would
+        // proxy differently on the same machine.
+        for sys in [
+            system_proxies(&[], &[], false),
+            system_proxies(&[("*", "proxy.corp:8080")], &["a.com", "*.b.com"], true),
+            system_proxies(
+                &[("http", "p:8080"), ("https", "s:8443")],
+                &["10.0.0.0/8"],
+                false,
+            ),
+        ] {
+            let strict = http_proxies(&sys).expect("expressible");
+            let (lossy, dropped) = http_proxies_lossy(&sys);
+            assert!(dropped.is_empty());
+            let key = |l: &[Proxy<HttpConnect>]| {
+                l.iter().map(|p| (p.key(), p.scheme())).collect::<Vec<_>>()
+            };
+            assert_eq!(key(&strict), key(&lossy));
+        }
     }
 
     #[test]

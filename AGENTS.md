@@ -2875,6 +2875,36 @@ of it without naming `hclient-native` — with `hclient::default_transport()`
 as the piece that was missing, since a proxy is configured **on the
 transport** and there was no way to get one from the facade.
 
+**`Client::new()` reads them, and that is the good-citizen half.** No
+feature to switch on beyond `default-transport`, and no call: a
+convenience constructor that ignored `HTTPS_PROXY` would be the one
+program on the machine that does, and a port from curl or reqwest — both
+of which honour it by default — would silently start going direct.
+`default_transport()` deliberately does **not** read, because it is the
+seam for configuring a transport and `unix_socket` refuses when a proxy
+is configured: a chain that failed on machines with an `HTTP_PROXY` and
+not on others is worse than an explicit line.
+
+That split needed a second translation rather than a second policy.
+`http_proxies` **refuses** a configuration this client cannot express in
+full, and `http_proxies_lossy` **installs what it can and reports the
+rest** — because a refusal is only useful to somebody who can act on it,
+and `Client::new()` did not ask. A constructor that refused would be a
+client that will not start on a network with WPAD. Nothing is silent at
+the API level: the lenient half returns the report, and only the
+constructor discards it. A machine with a PAC script *and* a static
+proxy gets the static one, which is WinINET's own fallback rather than an
+invention of ours.
+
+**`DefaultTransport` names `HttpConnect` even where no proxy is
+configured**, and that is what keeps it one type: `Client::new` builds a
+proxied transport on a proxied machine and an empty-listed one
+everywhere else, so an alias naming `NoProxy` would have made
+`transport_as::<DefaultTransport>()` — the documented way past the facade
+— work on one machine and not on the next. Caught by the test that pins
+two handles sharing one transport, which is the only place that downcast
+is exercised.
+
 **The readers are ours, and taking a crate for them was tried first and
 measured.** `proxy_cfg` does all of it in one dependency; it also depends
 on `url`, and through it on `idna` and the ICU tables — **28 crates**, on

@@ -1014,19 +1014,41 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self.with_proxies(vec![proxy])
     }
 
-    /// The list form, private, and the one place the `P`-changing struct
-    /// literal is written.
+    /// A whole list at once — [`proxy`](Self::proxy)'s plural, and the
+    /// one place the `P`-changing struct literal is written.
     ///
-    /// [`proxy`](Self::proxy) is one entry and
-    /// [`system_proxies_from`](Self::system_proxies_from) is however many
-    /// the machine named, **including none** — which is why this takes a
-    /// `Vec` rather than a first-plus-rest: a machine with no proxy still
-    /// has to come out of that method with the `P` its return type
-    /// promises, and there is no `Proxy` to pass through the public
-    /// method to get there.
-    fn with_proxies<P2>(self, proxies: Vec<crate::proxy::Proxy<P2>>) -> Native<R, T, D, H, P2> {
+    /// **Including an empty list**, which is why it takes a `Vec` rather
+    /// than a first-plus-rest: a machine with no proxy still has to come
+    /// out of [`system_proxies_from`](Self::system_proxies_from) with the
+    /// `P` its return type promises, and there is no `Proxy` to pass
+    /// through the singular method to get there. An empty list proxies
+    /// nothing and claims nothing — `capabilities().proxy` reads the
+    /// list, not the fact that this was called.
+    ///
+    /// It is also the strict system path in one line, for a caller who
+    /// wants the refusal rather than the degradation
+    /// [`Client::new`](https://docs.rs/hclient) takes:
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "system-proxy")]
+    /// # fn f<R: hclient_rt::TcpConnect + hclient_rt::Timer, T: hclient_tls::TlsConnect, D>(
+    /// #     t: hclient_native::Native<R, T, D>,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// use hclient_native::proxy::system::{SystemProxies, http_proxies};
+    ///
+    /// let t = t.with_proxies(http_proxies(&SystemProxies::detect())?);
+    /// # let _ = t; Ok(()) }
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If a Unix socket is configured and the list is non-empty, for
+    /// [`proxy`](Self::proxy)'s reason and by way of it. An **empty** list
+    /// does not panic: it configures no proxy, so the two settings that
+    /// cannot coexist are not both present.
+    pub fn with_proxies<P2>(self, proxies: Vec<crate::proxy::Proxy<P2>>) -> Native<R, T, D, H, P2> {
         assert!(
-            self.unix_socket.is_none(),
+            self.unix_socket.is_none() || proxies.is_empty(),
             "a proxy and a Unix socket both answer `where does this connection go`; \
              configure at most one"
         );
@@ -1142,6 +1164,31 @@ impl<R: TcpConnect + Timer, T: TlsConnect, D, H, P> Native<R, T, D, H, P> {
         self,
     ) -> Result<Native<R, T, D, H, crate::proxy::HttpConnect>, hclient_core::Error> {
         self.system_proxies_from(&crate::proxy::system::SystemProxies::detect())
+    }
+
+    /// [`system_proxies_from`](Self::system_proxies_from) for a caller
+    /// that **must not fail**, handing back what it could not install.
+    ///
+    /// `Client::new` is that caller: it reads the machine's settings so
+    /// that a client is a good citizen by default, and it did not *ask*
+    /// for them the way somebody calling [`system_proxy`](Self::system_proxy)
+    /// did. A refusal there would be a client that will not construct on
+    /// a network with WPAD, or on a machine whose owner also configured a
+    /// SOCKS proxy — a worse answer than proxying what we can.
+    ///
+    /// What each degradation costs is argued where it happens, in
+    /// `hclient_proxy::system::http_proxies_lossy`. Nothing is silent at
+    /// this level: the second half of the pair is the report.
+    #[cfg(feature = "system-proxy")]
+    pub fn system_proxies_from_lossy(
+        self,
+        sys: &crate::proxy::system::SystemProxies,
+    ) -> (
+        Native<R, T, D, H, crate::proxy::HttpConnect>,
+        Vec<crate::proxy::system::SystemProxyRefused>,
+    ) {
+        let (proxies, dropped) = crate::proxy::system::http_proxies_lossy(sys);
+        (self.with_proxies(proxies), dropped)
     }
 
     /// [`system_proxy`](Self::system_proxy) over settings already read.

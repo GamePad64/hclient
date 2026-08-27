@@ -92,37 +92,38 @@ Almost everything is a feature and almost nothing is on by default — a
 build should carry nothing it did not ask for. `default` here is `idn`
 and `public-suffix`.
 
-## Proxies are opt-in twice, and one of those will surprise you
+## `Client::new()` honours the machine's proxy
 
-Nothing here reads `HTTP_PROXY`, `HTTPS_PROXY` or `NO_PROXY` unless you
-ask it to. `Client::new()` does not, and neither does anything else: the
-`system-proxy` feature makes the reader *exist*, and one call makes it
-*run*.
+`HTTP_PROXY` and `HTTPS_PROXY` where the environment names them, the
+registry on Windows, the dynamic store on macOS — read once, at
+construction, with no feature to turn on and no call to make. A client
+that ignored them would be the one program on the machine that does, and
+a port from curl or reqwest would silently start going direct.
 
-```toml
-hclient = { version = "0.1", features = ["default-transport", "system-proxy"] }
-```
+**`default_transport()` does not**, and the asymmetry is deliberate: it
+is the seam for *configuring* a transport, and a step that silently
+installed a proxy would change what the calls after it do — `unix_socket`
+refuses when a proxy is configured, so the same chain would fail on
+machines that happen to have an `HTTP_PROXY` and not on others. The
+convenience constructor is the good citizen; the seam does exactly what it
+is told. A caller who wants both writes it:
 
 ```rust
 let transport = hclient::default_transport()?.system_proxy()?;
-let client = hclient::Client::builder(transport).build()?;
 ```
 
-**This differs from reqwest**, which pushes a system proxy matcher into
-every client it builds, with no feature and no call — so a port from
-reqwest that does not add those two lines will quietly stop using the
-proxy its environment names, and the traffic goes direct. That is worth
-one line in a migration checklist, and it is why this paragraph exists
-rather than only a doc comment.
+The difference between those two lines and the constructor is what
+happens to a configuration this client cannot express in full — a PAC
+script, or a machine naming a SOCKS proxy as well. `system_proxy()`
+**refuses**, naming it, because its caller asked and can decide.
+`Client::new()` **installs what it can**, because a constructor that
+refused would be a client that will not start on a network with WPAD,
+which is a worse answer than proxying what we can. A machine with a PAC
+script and a static proxy beside it gets the static one — WinINET's own
+fallback, not an invention of ours.
 
-Why it is a call rather than a default: reading the machine's settings can
-**fail on purpose**. A machine whose proxy is a PAC script, or one naming
-both an HTTP and a SOCKS proxy, is a named refusal — because installing
-half of what it said would send traffic somewhere its owner did not
-choose. A `Client::new()` that read the settings would therefore fail to
-construct on a network with WPAD, which is a worse answer than going
-direct. So the reading is a call you make, and the refusal is one you can
-see and handle.
+Proxying explicitly needs the `proxy` feature; reading the machine comes
+with `default-transport`.
 
 ## Related crates
 

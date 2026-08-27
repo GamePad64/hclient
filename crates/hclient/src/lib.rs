@@ -248,6 +248,21 @@ pub mod proxy {
 /// # Ok(()) }
 /// ```
 ///
+/// # It does **not** read the machine's proxy settings, and `Client::new` does
+///
+/// The asymmetry is deliberate and it is about what comes next. This is
+/// the seam for *configuring* the transport, and a configuration step
+/// that silently installed a proxy would change what the following calls
+/// do: `unix_socket` **refuses** when a proxy is configured, so
+/// `default_transport()?.unix_socket(path)` would start failing on
+/// machines that happen to have an `HTTP_PROXY` and not on others. An
+/// environment-dependent failure in a builder chain is worse than an
+/// explicit line.
+///
+/// So the convenience constructor is the good citizen and the seam does
+/// exactly what it is told. A caller who wants both writes the line:
+/// `hclient::default_transport()?.system_proxy()?`.
+///
 /// # The signature forks by target, exactly as `Client::new`'s does
 ///
 /// On `wasm32-unknown-unknown` the default transport is the browser's
@@ -433,6 +448,16 @@ pub type DefaultTransport = hclient_native::Native<
     hclient_rt_tokio::Tokio,
     hclient_tls_rustls::Rustls,
     hclient_dns_system::SystemDns<hclient_rt_tokio::Tokio>,
+    hclient_core::unversioned::NoHooks,
+    // **It names `HttpConnect` even where no proxy is configured**, and
+    // that is what keeps it one type. `Client::new` reads the machine's
+    // settings, so on a proxied machine the transport it builds holds
+    // HTTP proxies and on every other machine it holds an empty list of
+    // them. Naming `NoProxy` here would have made `Client::new`'s
+    // transport a *different type* from `default_transport()`'s, and
+    // `transport_as::<DefaultTransport>()` — the documented way past the
+    // facade — would work on one machine and not on the next.
+    hclient_native::HttpConnect,
 >;
 
 /// The default transport on `wasm32-unknown-unknown`: the browser `fetch`

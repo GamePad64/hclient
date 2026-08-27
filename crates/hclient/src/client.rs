@@ -1730,6 +1730,22 @@ impl Client {
     /// called: `try_new` had no caller outside this file.
     pub fn new() -> Result<Self, hclient_core::Error> {
         let transport = Self::default_native_transport()?;
+        // **The machine's own proxy, honoured by default.** `HTTP_PROXY`
+        // and `HTTPS_PROXY` where the environment names them, the
+        // registry on Windows, the dynamic store on macOS — because a
+        // convenience constructor that ignored them would be the one
+        // client on the machine that does, and a port from curl or
+        // reqwest would silently start going direct.
+        //
+        // Lenient rather than strict, and the report is discarded here
+        // rather than swallowed elsewhere: a configuration this client
+        // cannot express in full is not a reason to refuse to construct
+        // — `system_proxies_from_lossy`'s doc has each case. A caller who
+        // wants to *see* what was dropped reads `SystemProxies::detect()`
+        // and installs it themselves, which is what
+        // `Native::system_proxy` is for.
+        let (transport, _dropped) = transport
+            .system_proxies_from_lossy(&hclient_native::proxy::system::SystemProxies::detect());
         Self::builder(transport)
             .build()
             .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
@@ -1750,11 +1766,13 @@ impl Client {
     {
         let rt = hclient_rt_tokio::Tokio;
         let tls = hclient_tls_rustls::Rustls::with_platform_verifier()?;
-        Ok(hclient_native::Native::new(
-            rt,
-            tls,
-            hclient_dns_system::SystemDns::new(rt),
-        ))
+        // `.with_proxies(Vec::new())` names the `P` the alias promises
+        // without configuring anything: this seam stays inert, and
+        // `Client::new` is what fills the list. See `DefaultTransport`.
+        Ok(
+            hclient_native::Native::new(rt, tls, hclient_dns_system::SystemDns::new(rt))
+                .with_proxies(Vec::new()),
+        )
     }
 
     /// The `http3` sibling of the function above, forked on the same single
@@ -1788,7 +1806,11 @@ impl Client {
         let tcp =
             hclient_native::Native::new(rt, tls.clone(), hclient_dns_system::SystemDns::new(rt));
         let quic = hclient_native::H3::new(rt, tls, hclient_dns_system::SystemDns::new(rt))?;
+        // `.proxies(Vec::new())` for the reason the other fork gives:
+        // the alias names the `P` a proxied machine will need, and this
+        // seam stays inert either way.
         tcp.http3(quic)
+            .map(|t| t.with_proxies(Vec::new()))
             .map_err(|e| hclient_core::Error::new(hclient_core::ErrorKind::Unsupported, e))
     }
 }

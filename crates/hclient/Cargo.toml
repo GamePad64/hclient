@@ -65,12 +65,25 @@ test-util = ["dep:hclient-mock"]
 # single feature switch instead of one per platform — the four native crates
 # are already relied on to behave this way when building for wasm, and
 # `hclient-fetch` is the same arrangement pointing the other way.
+#
+# **`hclient-native/system-proxy` is in here on purpose, and it is a
+# behavioural line rather than a graph one.** What this feature means is
+# *the client that just works*, and a client that just works honours the
+# proxy its machine is configured with — curl and reqwest both do, and a
+# port from either that quietly stopped would be the surprise. So
+# `Client::new` reads the settings; `default_transport()` does not, and
+# that difference is deliberate (see its doc).
+#
+# The cost is nothing on Linux, where the environment needs no crate, and
+# four crates on Windows and six on macOS — against a feature that
+# already brings tokio, rustls and the system resolver.
 default-transport = [
     "dep:hclient-native",
     "dep:hclient-rt-tokio",
     "dep:hclient-tls-rustls",
     "dep:hclient-dns-system",
     "dep:hclient-fetch",
+    "hclient-native/system-proxy",
 ]
 # HTTP/2 and HTTP/3 for `Client::new()`, and the pair is deliberately two
 # features per protocol rather than one.

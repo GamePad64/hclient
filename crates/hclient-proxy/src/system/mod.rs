@@ -42,7 +42,7 @@ mod read;
 mod translate;
 
 pub use parse::ParseError;
-pub use translate::{SystemProxyRefused, http_proxies};
+pub use translate::{SystemProxyRefused, http_proxies, http_proxies_lossy};
 
 /// Which protocol a proxy speaks.
 ///
@@ -355,7 +355,19 @@ impl SystemProxies {
                 "https" => Some(Scheme::Https),
                 // `*` is what Windows produces for an unqualified
                 // `ProxyServer`, `all` what an `ALL_PROXY` produces.
-                "*" | "all" => None,
+                //
+                // `socks` and `socks5` join them because a SOCKS proxy
+                // carries every scheme — it is a byte tunnel with no idea
+                // that HTTP exists. They are *entries* rather than
+                // [`ignored`](Self::ignored) precisely so that a
+                // transport which cannot speak them refuses by name: an
+                // `ftp` proxy is not for us, where a SOCKS one is for us
+                // and is one we cannot install.
+                //
+                // Which of the two SOCKS versions is the key's own
+                // decision and is argued in `ProxyKind::Socks4`: Windows
+                // writes `socks=` with no version, macOS means SOCKS5.
+                "*" | "all" | "socks" | "socks5" => None,
                 _ => {
                     out.ignored.push(format!("{key}={value}").into_boxed_str());
                     continue;

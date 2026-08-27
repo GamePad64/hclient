@@ -230,3 +230,66 @@ fn reading_the_real_machine_answers_something_self_consistent() {
         Err(e) => assert!(!e.to_string().is_empty()),
     }
 }
+
+// --- the good-citizen default -------------------------------------------
+
+#[test]
+fn the_lenient_install_never_refuses_what_the_strict_one_does() {
+    // `Client::new` takes this path, so every configuration a machine can
+    // be in must come out of it as a transport rather than as an error —
+    // a client that will not construct on a network with WPAD is worse
+    // than one that goes direct on it. The four awkward shapes, each of
+    // which the strict call refuses by name.
+    use hclient_native::proxy::system::testing::system_proxies_with_pac;
+
+    let awkward = [
+        system_proxies(&[("all", "socks5://socks.corp:1080")], &[], false),
+        system_proxies(&[("*", "p:8080")], &["192.168.1.*"], false),
+        system_proxies_with_pac(&[], &[], false, "http://wpad.corp/p.pac"),
+        system_proxies_with_pac(&[("*", "p:8080")], &["10.*.*.*"], true, "http://w/p.pac"),
+    ];
+    for sys in awkward {
+        assert!(
+            transport().system_proxies_from(&sys).is_err(),
+            "the strict call is supposed to refuse this one"
+        );
+        let (t, dropped) = transport().system_proxies_from_lossy(&sys);
+        assert!(!dropped.is_empty(), "degraded without saying so");
+        // And it is a usable transport either way: the capability agrees
+        // with what actually got installed.
+        let installed = chosen_proxy(&t, true, "example.com", 443).is_some();
+        assert_eq!(t.capabilities().proxy, installed);
+    }
+}
+
+#[tokio::test]
+async fn the_lenient_install_still_reaches_the_proxy_it_could_keep() {
+    // The half that matters about degrading: what survives must still
+    // work. A machine naming an HTTP proxy *and* a SOCKS one is the
+    // ordinary Windows shape, and the HTTP one is what carries our
+    // traffic — so the request must go through it, not direct.
+    let (proxy, seen) = http_proxy();
+    let sys = system_proxies(
+        &[("http", &proxy.to_string()), ("socks", "socks.corp:1080")],
+        &[],
+        false,
+    );
+    let (transport, dropped) = transport().system_proxies_from_lossy(&sys);
+    assert_eq!(dropped.len(), 1, "the SOCKS entry is the only casualty");
+
+    let client = Client::builder(transport).build().expect("caps ok");
+    let body = client
+        .get("http://example.com/thing")
+        .send()
+        .await
+        .expect("the proxy answers")
+        .collect()
+        .await
+        .expect("a body")
+        .text()
+        .expect("utf-8");
+
+    assert_eq!(body, "hi");
+    let head = seen.recv_timeout(BOUND).expect("the proxy saw a request");
+    assert!(head.starts_with("GET http://example.com/thing"), "{head}");
+}
