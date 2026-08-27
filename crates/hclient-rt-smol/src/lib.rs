@@ -11,6 +11,7 @@ mod udp;
 #[cfg(feature = "udp")]
 pub use udp::SmolUdpSocket;
 
+use futures_core::future::BoxFuture;
 use hclient_rt::{
     Blocking, Cancelled, Discard, FuturesIo, Spawn, TcpAdoptStd, TcpConnect, TcpOpts,
     TcpOptsSupport, Timer,
@@ -114,11 +115,11 @@ impl Blocking for Smol {
     /// mechanism, and the same "original payload, no stringifying"
     /// guarantee, that `hclient-rt-tokio`'s `classify()` assembles by
     /// hand. A plain `.await` on `Task<T>` already does what's needed.
-    async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+    fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
-    ) -> Result<T, Cancelled> {
-        Ok(blocking::unblock(f).await)
+    ) -> BoxFuture<'_, Result<T, Cancelled>> {
+        Box::pin(async move { Ok(blocking::unblock(f).await) })
     }
 }
 

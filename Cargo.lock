@@ -1373,6 +1373,7 @@ dependencies = [
 name = "hclient-rt"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "futures-core",
  "futures-executor",
  "futures-io",
  "hclient-core",
@@ -1425,6 +1426,7 @@ dependencies = [
  "async-io",
  "async-net",
  "blocking",
+ "futures-core",
  "futures-executor",
  "futures-lite",
  "hclient-rt",
@@ -1438,6 +1440,7 @@ dependencies = [
 name = "hclient-rt-tokio"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "futures-core",
  "futures-executor",
  "hclient-rt",
  "hyper",

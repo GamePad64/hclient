@@ -65,6 +65,7 @@
 //! `futures_executor::block_on` completed in 120.96 ms.
 
 use super::{Tokio, TokioIo, classify};
+use futures_core::future::BoxFuture;
 use hclient_rt::{
     Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
 };
@@ -156,11 +157,11 @@ impl Blocking for TokioHandle {
     /// is, so this needs no guard either — only the same `classify`,
     /// which is shared with [`Tokio`] rather than repeated, so the
     /// panic-vs-`Cancelled` distinction cannot drift between the two.
-    async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+    fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
-    ) -> Result<T, Cancelled> {
-        classify(self.0.spawn_blocking(f).await)
+    ) -> BoxFuture<'_, Result<T, Cancelled>> {
+        Box::pin(async move { classify(self.0.spawn_blocking(f).await) })
     }
 }
 

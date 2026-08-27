@@ -18,6 +18,7 @@
 //! `src/lib.rs`.
 
 use assert_matches::assert_matches;
+use futures_core::future::BoxFuture;
 use futures_util::StreamExt;
 use hclient_core::{Error, ErrorKind};
 use hclient_dns::{Resolve, ResolvedAddr};
@@ -33,11 +34,11 @@ use std::net::IpAddr;
 struct Inline;
 
 impl Blocking for Inline {
-    async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+    fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
-    ) -> Result<T, Cancelled> {
-        Ok(f())
+    ) -> BoxFuture<'_, Result<T, Cancelled>> {
+        Box::pin(async move { Ok(f()) })
     }
 }
 
@@ -210,11 +211,11 @@ fn supports_svcb_and_lookup_svcb_agree_about_whether_a_backend_exists() {
 fn a_cancelled_svcb_lookup_is_reported_as_cancelled_through_the_trait() {
     struct AlwaysCancelled;
     impl Blocking for AlwaysCancelled {
-        async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+        fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
             &self,
             _f: F,
-        ) -> Result<T, Cancelled> {
-            Err(Cancelled)
+        ) -> BoxFuture<'_, Result<T, Cancelled>> {
+            Box::pin(async move { Err(Cancelled) })
         }
     }
 

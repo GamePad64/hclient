@@ -14,6 +14,7 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
+futures-core = { workspace = true }
 futures-io   = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core = { workspace = true }
 hyper        = { version = "1.11", default-features = false }

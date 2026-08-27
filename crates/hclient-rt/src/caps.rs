@@ -1,3 +1,4 @@
+use futures_core::future::BoxFuture;
 use std::error::Error as StdError;
 use std::fmt::Display;
 use std::future::Future;
@@ -406,7 +407,20 @@ pub trait TcpAdoptStd: TcpConnect {
 ///   no-ops... typed error, never a discarded value" — the same principle
 ///   applied here, just to failure instead of success).
 pub trait Blocking {
-    fn run<T, F>(&self, f: F) -> impl Future<Output = Result<T, Cancelled>>
+    /// **A named future, not an RPITIT, and the `Send` costs nobody
+    /// anything.** A consumer that has to *prove* its own future `Send` —
+    /// `hclient-native`, so that `hclient::Client`'s can be — must be able
+    /// to **name** this one, and `impl Future` has no name. A boxed
+    /// `Send` future is the honest form here rather than an associated
+    /// type per implementor, because this trait already requires
+    /// `T: Send` and `F: Send`: a pool that cannot be handed work from
+    /// another thread is not one, which is amendment C5's whole argument.
+    /// So there is no implementor for whom the weaker form would be true,
+    /// and nothing is excluded that was not already.
+    ///
+    /// The cost is one allocation per blocking call — set against handing
+    /// work to a thread pool, which is what the call is for.
+    fn run<T, F>(&self, f: F) -> BoxFuture<'_, Result<T, Cancelled>>
     where
         T: Send + 'static, // send-bound-exception: amendment-C5
         F: FnOnce() -> T + Send + 'static; // send-bound-exception: amendment-C5

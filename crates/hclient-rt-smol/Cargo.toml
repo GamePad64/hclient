@@ -29,6 +29,7 @@ default = []
 udp = ["dep:quinn-udp"]
 
 [dependencies]
+futures-core = { workspace = true }
 async-net      = "2"
 async-io       = "2"
 async-executor = "1"

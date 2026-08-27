@@ -11,6 +11,7 @@ pub use io::TokioIo;
 #[cfg(feature = "udp")]
 pub use udp::TokioUdpSocket;
 
+use futures_core::future::BoxFuture;
 use hclient_rt::{
     Blocking, Cancelled, Spawn, TcpAdoptStd, TcpConnect, TcpOpts, TcpOptsSupport, Timer,
 };
@@ -71,11 +72,11 @@ impl Blocking for Tokio {
     /// and its comment on why the `JoinError` there is obtained via
     /// `AbortHandle::abort()` rather than by racing a whole-runtime
     /// shutdown.
-    async fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
+    fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
         &self,
         f: F,
-    ) -> Result<T, Cancelled> {
-        classify(tokio::task::spawn_blocking(f).await)
+    ) -> BoxFuture<'_, Result<T, Cancelled>> {
+        Box::pin(async move { classify(tokio::task::spawn_blocking(f).await) })
     }
 }
 
