@@ -698,12 +698,24 @@ pub(crate) struct Attempted {
 ///
 /// The buffer holds one resolution's worth of answers (a `getaddrinfo`
 /// reply, in the shipped resolver) and lives for one `connect` call.
-struct Answers<'a> {
+struct Answers<S> {
     /// Boxed rather than held by value: this crate forbids `unsafe`, and
     /// projecting a pin into an `impl Stream` field cannot be written
     /// without it. One allocation per family per new connection, set
     /// against a DNS query.
-    inner: Pin<Box<dyn Stream<Item = Result<ResolvedAddr, Error>> + 'a>>,
+    ///
+    /// **`Pin<Box<S>>` and not `Pin<Box<dyn Stream<..>>>`, and the
+    /// difference is one auto trait.** The allocation is the same and the
+    /// absence of `unsafe` is the same; what changes is that the concrete
+    /// stream's type is no longer thrown away, so `Send` reaches
+    /// `Native::execute`'s future instead of stopping here. A `dyn` with
+    /// no declared auto traits is not neutral — it *removes* them, from
+    /// every resolver that had them. Declaring `+ Send` on the `dyn`
+    /// instead would have been the other direction: it obliges the seam,
+    /// and `Resolve::lookup_ipv4` returns `impl Stream`, which cannot be
+    /// named and so cannot be bounded — measured, along with what
+    /// converting the seam would cost. See `tests/send_future.rs`.
+    inner: Pin<Box<S>>,
     /// Everything the stream has produced, in order — items **and**
     /// errors, because [`drive`] tells a family that failed apart from one
     /// that answered nothing (`ResolveErrors`), and a replay that dropped
@@ -716,8 +728,8 @@ struct Answers<'a> {
     done: bool,
 }
 
-impl<'a> Answers<'a> {
-    fn new(stream: impl Stream<Item = Result<ResolvedAddr, Error>> + 'a) -> Self {
+impl<S: Stream<Item = Result<ResolvedAddr, Error>>> Answers<S> {
+    fn new(stream: S) -> Self {
         Self {
             inner: Box::pin(stream),
             seen: Vec::new(),
@@ -744,7 +756,7 @@ impl<'a> Answers<'a> {
 
     /// This family from its first answer: what has arrived, then whatever
     /// the resolver still has to say.
-    fn replay(&mut self) -> Replay<'_, 'a> {
+    fn replay(&mut self) -> Replay<'_, S> {
         Replay { src: self, at: 0 }
     }
 }
@@ -755,12 +767,12 @@ impl<'a> Answers<'a> {
 /// [`connect`] are strictly sequential: there is never more than one of
 /// these alive, and the borrow is what says so. A reader that could
 /// outlive its source would be a second resolution wearing this name.
-struct Replay<'r, 'a> {
-    src: &'r mut Answers<'a>,
+struct Replay<'r, S> {
+    src: &'r mut Answers<S>,
     at: usize,
 }
 
-impl Stream for Replay<'_, '_> {
+impl<S: Stream<Item = Result<ResolvedAddr, Error>>> Stream for Replay<'_, S> {
     type Item = Result<ResolvedAddr, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -802,13 +814,15 @@ impl Stream for Replay<'_, '_> {
 /// They are branches of one future rather than tasks; this crate has no
 /// `Spawn` to hand them to, and a discovery query still running after the
 /// request that asked for it is the leak that would be.
-async fn alongside_address_lookups<F>(
-    v6: &mut Answers<'_>,
-    v4: &mut Answers<'_>,
+async fn alongside_address_lookups<F, S6, S4>(
+    v6: &mut Answers<S6>,
+    v4: &mut Answers<S4>,
     discovery: F,
 ) -> F::Output
 where
     F: Future,
+    S6: Stream<Item = Result<ResolvedAddr, Error>>,
+    S4: Stream<Item = Result<ResolvedAddr, Error>>,
 {
     let mut discovery = std::pin::pin!(discovery);
     poll_fn(move |cx| {
@@ -1178,10 +1192,10 @@ where
     // address exists, so this waits for what the next line would wait for
     // anyway; what changes is the error, not the schedule.
     if let Some(bound) = resolve {
-        first_address_within::<R>(rt, bound, &mut v6, &mut v4, endpoint.as_ref()).await?;
+        first_address_within::<R, _, _>(rt, bound, &mut v6, &mut v4, endpoint.as_ref()).await?;
     }
 
-    let first = attempt::<R, L, H>(
+    let first = attempt::<R, L, H, _, _>(
         rt,
         tls,
         host,
@@ -1203,7 +1217,7 @@ where
         Err(_through_the_record) if endpoint.is_some() => {
             discovery_cache.record(Origin::new(host, port), now);
             let retry_began = mark::<H, R>(rt);
-            attempt::<R, L, H>(
+            attempt::<R, L, H, _, _>(
                 rt,
                 tls,
                 host,
@@ -1302,15 +1316,17 @@ pub(crate) const HTTPS_DEFAULT_PORT: u16 = 443;
 /// which has the per-family causes this function does not; producing a
 /// timeout here for a resolver that already answered *no* would replace a
 /// precise diagnosis with a vague one.
-async fn first_address_within<R>(
+async fn first_address_within<R, S6, S4>(
     rt: &R,
     bound: Duration,
-    v6: &mut Answers<'_>,
-    v4: &mut Answers<'_>,
+    v6: &mut Answers<S6>,
+    v4: &mut Answers<S4>,
     endpoint: Option<&Endpoint>,
 ) -> Result<(), Error>
 where
     R: Timer,
+    S6: Stream<Item = Result<ResolvedAddr, Error>>,
+    S4: Stream<Item = Result<ResolvedAddr, Error>>,
 {
     // Hints are addresses. `is_inert` has already dropped a record that
     // contributes nothing, so a `Some` here with hints really is somewhere
@@ -1325,7 +1341,9 @@ where
         // An `Ok` from either family is an address to try. An `Err` is
         // not: a family that failed leaves the other one still worth
         // waiting for, and if both fail `done` below ends the wait.
-        let any = |a: &Answers<'_>| a.seen.iter().any(Result::is_ok);
+        fn any<S>(a: &Answers<S>) -> bool {
+            a.seen.iter().any(Result::is_ok)
+        }
         if any(v6) || any(v4) || (v6.done && v4.done) {
             return Poll::Ready(Ok(()));
         }
@@ -1376,7 +1394,7 @@ pub struct ResolveTimedOut(pub Duration);
 /// the same pacing rules as any other address. Some of them may have
 /// arrived already, while the record was still outstanding; the chain is
 /// what keeps the hint in front of them anyway.
-async fn attempt<R, L, H>(
+async fn attempt<R, L, H, S6, S4>(
     rt: &R,
     tls: &L,
     host: &str,
@@ -1384,8 +1402,8 @@ async fn attempt<R, L, H>(
     port: u16,
     opts: &TcpOpts,
     alpn: &[&[u8]],
-    v6: &mut Answers<'_>,
-    v4: &mut Answers<'_>,
+    v6: &mut Answers<S6>,
+    v4: &mut Answers<S4>,
     endpoint: Option<&Endpoint>,
     began: Option<R::Instant>,
 ) -> Result<
@@ -1400,6 +1418,8 @@ where
     R: TcpConnect + Timer,
     L: TlsConnect,
     H: Hooks,
+    S6: Stream<Item = Result<ResolvedAddr, Error>>,
+    S4: Stream<Item = Result<ResolvedAddr, Error>>,
 {
     let sched = build_scheduler(HeConfig::default())?;
     // RFC 9460 §7.2: the record's port replaces the scheme's default for
