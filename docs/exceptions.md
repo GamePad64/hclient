@@ -156,8 +156,14 @@ a `SendTransport`. Nothing left the seam.
 them**, and neither is a shortcoming of this workspace's code:
 `hclient-tls-native-tls`'s handshake is `async_native_tls`'s `pub async
 fn`, whose future has no name, and `hclient-dns-doh` resolves through a
-generic `C: Transport`, whose `execute` is an RPITIT. Both keep every
-other capability and lose `hclient::Client`'s spawnable request future.
+generic `C: Transport`, whose `execute` is an RPITIT.
+
+**What they lose is `hclient::Client` itself, not a spawnable future**,
+because `Client::builder` requires this trait — so the cookie jar,
+redirects, the cache, decompression, digest auth and SSE go with it.
+`Transport` is untouched: `Native::execute` works, and so does everything
+built directly on a transport. Measured from outside the workspace, since
+nothing in-tree depends on either crate.
 
 At a concrete type — which is what a backend is — the body is
 `Box::pin(self.execute(req))` and `Send` is *inferred*. Proof is only ever

@@ -479,6 +479,31 @@ about an environment, not a preference. It reports less back, and its own
 module doc says exactly what; in particular it cannot report the negotiated
 ALPN, so protocol selection driven by ALPN needs the rustls one.
 
+**And since `Client` began requiring `SendTransport`, it reports less back
+*and* reaches less far: there is no `Client` over it at all.** Measured
+from outside the workspace, because nothing in-tree depends on this crate:
+`Native<Tokio, NativeTls, SystemDns<Tokio>>` is still a `Transport` and
+`execute` works, while `Client::builder` of it does not compile. So the
+cookie jar, redirects, the cache, `Timeouts` merging, decompression,
+digest auth and SSE are all out of reach with this backend.
+
+**It is a third party's limit and it was checked before being accepted.**
+`async_native_tls::TlsConnector::connect` is a `pub async fn`, so its
+future has no name; driving the handshake by hand instead needs a stream
+this crate owns, because `async_native_tls::TlsStream::new` is
+`pub(crate)` and its `StdAdapter` is private. Owning both means porting
+~250 lines of async-native-tls, `StdAdapter`'s two `unsafe impl`s
+included — a second `unsafe` exemption in a workspace that has one. And
+the sans-io shape `hclient-tls-rustls` uses is unavailable here, because
+SChannel and Security.framework want a real stream, which is why that
+adapter exists upstream at all.
+
+**This is the sharpest price C16 charged, and it was under-described when
+it landed** — the commit said this backend loses a `Send` request future,
+which is true of the future and wrong about the reach. Recorded here at
+its real size so the next person weighing `SendTransport` against a
+backend knows what the trade actually was.
+
 **A second TLS seam, for QUIC, and it is not a widening of the first.**
 `hclient-tls-quic`'s `QuicTlsConnect` exists because the intersection of
 `TlsConnect`'s four methods with `quinn_proto::crypto::Session`'s eleven is

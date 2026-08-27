@@ -141,12 +141,33 @@ impl TlsConnect for NativeTls {
     /// decide `Send` once, and deciding it `true` would need `S: Send`,
     /// which this signature cannot state.
     ///
-    /// **What that costs is written down where a caller will meet it**:
-    /// `hclient::Client` over this backend has no `Send` request future,
-    /// so a request through it cannot be `tokio::spawn`ed. Reach for
-    /// `hclient-tls-rustls` where that matters — the same sentence this
-    /// module's doc already makes about ALPN, and for the same kind of
-    /// reason: what the wrapper does not expose, this crate cannot invent.
+    /// **What that costs is larger than a missing `Send`, and it is
+    /// stated here rather than discovered**: `hclient::Client` requires
+    /// `SendTransport`, so a `Client` cannot be built over this backend at
+    /// all. Everything that lives on `Client` — the cookie jar, redirects,
+    /// the response cache, `Timeouts` merging, decompression, digest
+    /// auth, SSE, `error_for_status` — is out of reach with it. What
+    /// remains is the whole of `Transport`: `Native::execute` works, and
+    /// so does everything built directly on a transport.
+    ///
+    /// **Why it cannot be repaired inside this crate**, measured rather
+    /// than assumed. Driving the handshake by hand needs
+    /// `native_tls::MidHandshakeTlsStream` — public — but the *stream*
+    /// that comes out of it must then be one this crate owns, because
+    /// `async_native_tls::TlsStream::new` is `pub(crate)` and its
+    /// `StdAdapter` is private. Owning both means porting
+    /// async-native-tls's ~250 lines, including the `StdAdapter` that
+    /// smuggles a `Context` through two `unsafe impl`s (0.6.0,
+    /// `std_adapter.rs`, 78 lines) — a second `unsafe` exemption in a
+    /// workspace that has exactly one. `native-tls` is not sans-io, so
+    /// the buffer-driven shape `hclient-tls-rustls` uses is unavailable:
+    /// SChannel and Security.framework want a real stream, which is why
+    /// async-native-tls has that adapter in the first place.
+    ///
+    /// Reach for `hclient-tls-rustls` where a `Client` is wanted — the
+    /// same sentence this module's doc already makes about ALPN, and for
+    /// the same kind of reason: what the wrapper does not expose, this
+    /// crate cannot invent.
     type Handshake<'a, S>
         = std::pin::Pin<Box<dyn Future<Output = Result<(Self::Stream<S>, TlsInfo), Error>> + 'a>>
     where
