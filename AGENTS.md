@@ -476,33 +476,49 @@ SChannel, Security.framework, OpenSSL — and exists for deployments whose
 trust decisions live in the OS store: enterprise roots pushed by policy,
 smartcard client certificates, a FIPS-validated provider. That is a fact
 about an environment, not a preference. It reports less back, and its own
-module doc says exactly what; in particular it cannot report the negotiated
-ALPN, so protocol selection driven by ALPN needs the rustls one.
+module doc says exactly what: no protocol version and no cipher suite.
+**The ALPN is no longer on that list**, and the story of why is the
+section below.
 
-**And since `Client` began requiring `SendTransport`, it reports less back
-*and* reaches less far: there is no `Client` over it at all.** Measured
-from outside the workspace, because nothing in-tree depends on this crate:
-`Native<Tokio, NativeTls, SystemDns<Tokio>>` is still a `Transport` and
-`execute` works, while `Client::builder` of it does not compile. So the
-cookie jar, redirects, the cache, `Timeouts` merging, decompression,
-digest auth and SSE are all out of reach with this backend.
+### The wrapper was the limitation, and removing it took the workspace's second `unsafe`
 
-**It is a third party's limit and it was checked before being accepted.**
-`async_native_tls::TlsConnector::connect` is a `pub async fn`, so its
-future has no name; driving the handshake by hand instead needs a stream
-this crate owns, because `async_native_tls::TlsStream::new` is
-`pub(crate)` and its `StdAdapter` is private. Owning both means porting
-~250 lines of async-native-tls, `StdAdapter`'s two `unsafe impl`s
-included — a second `unsafe` exemption in a workspace that has one. And
-the sans-io shape `hclient-tls-rustls` uses is unavailable here, because
-SChannel and Security.framework want a real stream, which is why that
-adapter exists upstream at all.
+`C16` made `hclient::Client` require `SendTransport`, and this backend
+could not implement it: its handshake was
+`async_native_tls::TlsConnector::connect`, a `pub async fn` whose future
+has no name. So there was **no `Client` over the platform TLS stack at
+all** — not a missing `Send` future, which is what the commit that landed
+C16 said, but the cookie jar, redirects, the cache, decompression, digest
+auth and SSE, all out of reach. It took measuring from outside the
+workspace to see, because nothing in-tree depends on this crate.
 
-**This is the sharpest price C16 charged, and it was under-described when
-it landed** — the commit said this backend loses a `Send` request future,
-which is true of the future and wrong about the reach. Recorded here at
-its real size so the next person weighing `SendTransport` against a
-backend knows what the trade actually was.
+**The fix was to stop being a wrapper.** Driving `native-tls`'s own
+handshake was not enough on its own — `async_native_tls::TlsStream::new`
+is `pub(crate)` and its adapter private, so the stream had to be owned
+too. `crates/hclient-tls-native-tls/src/stream.rs` is that: a named
+handshake future whose `Send` follows from `S`, and a `TlsStream` over
+`native_tls`'s.
+
+**It costs one `unsafe` and that is amendment C17.** `native-tls` is not
+sans-io — it fronts SChannel, Security.framework and OpenSSL through a
+synchronous `Read`/`Write` — so bridging it means handing the synchronous
+side a way to reach the current task's waker. That is a raw `Context`
+pointer, set immediately before a call and cleared by a `Guard` whose
+`Drop` runs on unwind, asserted non-null rather than trusted. It is the
+difference between the two TLS backends rather than a difference in care:
+rustls is sans-io, so its handshake is a loop over buffers this workspace
+owns.
+
+**What it bought is two things, and the second was not the point.**
+`Client` works over the platform stack again — which is the whole reason
+this crate exists, since an organisation with MDM roots or a smartcard
+cannot use rustls. And `reports_alpn` is `true`:
+`native_tls::TlsStream::negotiated_alpn` is public, and only the wrapper's
+absence of a re-export had hidden it. This crate's own doc called that
+limitation concrete for two verticals while naming its cause correctly and
+never acting on it.
+
+**Measured: the graph fell from 66 crates to 32**, because
+`async-native-tls` left with its dependencies.
 
 **A second TLS seam, for QUIC, and it is not a widening of the first.**
 `hclient-tls-quic`'s `QuicTlsConnect` exists because the intersection of

@@ -85,3 +85,134 @@ fn without_ech_the_handshake_actually_starts() {
     };
     let _ = futures_executor::block_on(tls.connect(NeverTouched, req));
 }
+
+/// The two properties the port exists for, and neither was true before it.
+///
+/// # `Send` follows from the IO, and is declared nowhere
+///
+/// `TlsConnect::Handshake` is an associated type so a consumer can name
+/// it; this backend answers with a concrete struct rather than a box, so
+/// `Send` is *derived* from `S` instead of being fixed for every `S`. That
+/// is what lets `hclient::Client` — which requires `SendTransport` — be
+/// built over the platform TLS stack at all. Checked in the failing
+/// direction while writing: with the handshake behind a `dyn` with no
+/// declared auto trait, `Client::builder` over this backend does not
+/// compile, which is the state this crate shipped in.
+///
+/// The `!Send` half is asserted too, because a struct that were `Send`
+/// unconditionally would pass the first assertion while lying: the whole
+/// point is that the answer tracks the IO.
+#[test]
+fn the_handshake_is_send_exactly_when_the_io_is() {
+    fn is_send<T: Send>() {}
+
+    // A `Send` transport, which is what a real one is.
+    struct SendIo;
+    impl hyper::rt::Read for SendIo {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: hyper::rt::ReadBufCursor<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+    impl hyper::rt::Write for SendIo {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            unreachable!("never polled")
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+
+    is_send::<<NativeTls as TlsConnect>::Handshake<'static, SendIo>>();
+
+    // And the negation, at a type that holds an `Rc`.
+    struct UnsendIo(#[allow(dead_code)] std::rc::Rc<()>);
+    impl hyper::rt::Read for UnsendIo {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: hyper::rt::ReadBufCursor<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+    impl hyper::rt::Write for UnsendIo {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            unreachable!("never polled")
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            unreachable!("never polled")
+        }
+    }
+    // A real negative, not `fn assert_not_send<T>() {}` — which accepts
+    // anything and would have passed for a handshake that was `Send`
+    // unconditionally, i.e. for the exact defect this half exists to
+    // catch. Inherent methods win over trait ones, so the answer is
+    // `true` only where the bound holds.
+    struct Probe<T>(std::marker::PhantomData<T>);
+    trait Fallback {
+        fn is_send() -> bool {
+            false
+        }
+    }
+    impl<T> Fallback for Probe<T> {}
+    impl<T: Send> Probe<T> {
+        fn is_send() -> bool {
+            true
+        }
+    }
+
+    assert!(
+        Probe::<<NativeTls as TlsConnect>::Handshake<'static, SendIo>>::is_send(),
+        "a handshake over Send IO must be Send — this is what Client rests on",
+    );
+    assert!(
+        !Probe::<<NativeTls as TlsConnect>::Handshake<'static, UnsendIo>>::is_send(),
+        "and one over !Send IO must not be: the answer tracks the IO rather than being fixed",
+    );
+}
+
+/// **`reports_alpn` is `true`**, which this crate's own documentation
+/// called impossible for two verticals.
+///
+/// It is not a claim about the platform: `native_tls::TlsStream::
+/// negotiated_alpn` was always public, and only `async_native_tls::
+/// TlsStream`'s failure to re-export it made the answer unreadable. Owning
+/// the stream made it reachable, and `Native` will offer `h2` over this
+/// backend because of this one `bool`.
+#[test]
+fn alpn_is_reported_now() {
+    assert!(
+        NativeTls::new().reports_alpn(),
+        "owning the stream is what makes the negotiated protocol readable",
+    );
+}

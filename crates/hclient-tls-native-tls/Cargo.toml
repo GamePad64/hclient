@@ -14,29 +14,36 @@ repository.workspace = true
 all-features = true
 
 [dependencies]
-# `runtime-smol` does NOT pull smol in, and this crate has no runtime
-# dependency — verified against async-native-tls 0.6.0's own manifest, where
-# `runtime-smol = ["futures-util"]` and nothing else, while `runtime-tokio =
-# ["tokio"]` genuinely does. The feature only selects which IO traits the
-# crate speaks: `futures_util::io::{AsyncRead, AsyncWrite}`, i.e. futures-io,
-# versus tokio's. It is a misnomer, and it matters here because the whole
-# point of the `hclient-tls` seam is that TLS carries no per-runtime glue — a
-# reader seeing a feature named after a runtime is entitled to assume the
-# opposite, so this comment answers that before it is asked.
+# `async-native-tls` is **gone**, and its absence is the port: this crate
+# drives `native-tls`'s own handshake and owns the stream, because the
+# seam's `Handshake` is an associated type and that crate's connector is a
+# `pub async fn` whose future has no name. See `src/stream.rs`.
 #
-# `default-features = false` even though the default IS `runtime-smol`:
-# naming it explicitly means a future default change cannot silently swap our
-# IO traits for tokio's.
-async-native-tls = { version = "0.6", default-features = false, features = ["runtime-smol"] }
+# What it cost is one `unsafe` (amendment C17) and what it bought is two
+# things: `hclient::Client` works over this backend again, and
+# `reports_alpn` is `true`, because `native_tls::TlsStream::negotiated_alpn`
+# is public where the wrapper's was not.
 futures-io       = { version = "0.3", default-features = false, features = ["std"] }
 hclient-core     = { workspace = true }
 hclient-rt       = { path = "../hclient-rt", version = "0.1.0-alpha.1" }
 hclient-tls      = { path = "../hclient-tls", version = "0.1.0-alpha.1" }
 hyper            = { version = "1.11", default-features = false }
-native-tls       = "0.2"
+native-tls       = { version = "0.2", features = ["alpn"] }
 
 [dev-dependencies]
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 
-[lints]
-workspace = true
+# NOT `[lints] workspace = true`, for the reason `hclient-fetch`'s own
+# table gives: the workspace sets `unsafe_code = "forbid"`, and `forbid`
+# cannot be relaxed from inside a crate (`E0453`). This crate carries the
+# project's second `unsafe` — `src/stream.rs`'s `StdAdapter`, which bridges
+# `native-tls`'s synchronous `Read`/`Write` to a poll-based world — and
+# that needs `deny`, overridable by a scoped `#[allow]` beside each site.
+# See `docs/exceptions.md`, amendment C17.
+#
+# Opting out also drops `missing_debug_implementations` and
+# `unexpected_cfgs`, restated below rather than lost silently.
+[lints.rust]
+unsafe_code                   = "deny"
+missing_debug_implementations = "warn"
+unexpected_cfgs               = { level = "warn", check-cfg = [] }

@@ -154,16 +154,21 @@ a `SendTransport`. Nothing left the seam.
 
 **The two that cannot make the claim are named where a caller meets
 them**, and neither is a shortcoming of this workspace's code:
-`hclient-tls-native-tls`'s handshake is `async_native_tls`'s `pub async
-fn`, whose future has no name, and `hclient-dns-doh` resolves through a
-generic `C: Transport`, whose `execute` is an RPITIT.
+`hclient-dns-doh` resolves through a generic `C: Transport`, whose
+`execute` is an RPITIT with no name.
 
-**What they lose is `hclient::Client` itself, not a spawnable future**,
+**What that loses is `hclient::Client` itself, not a spawnable future**,
 because `Client::builder` requires this trait — so the cookie jar,
 redirects, the cache, decompression, digest auth and SSE go with it.
 `Transport` is untouched: `Native::execute` works, and so does everything
 built directly on a transport. Measured from outside the workspace, since
-nothing in-tree depends on either crate.
+nothing in-tree depends on that crate.
+
+**`hclient-tls-native-tls` was on this list and is not any more**, which
+is the more useful half of the record: it was excluded for the same
+reason — `async_native_tls::TlsConnector::connect` is a `pub async fn` —
+and the exclusion was paid off rather than accepted, by owning the
+handshake and the stream. See amendment C17.
 
 At a concrete type — which is what a backend is — the body is
 `Box::pin(self.execute(req))` and `Send` is *inferred*. Proof is only ever
@@ -232,6 +237,42 @@ given a `Send` inner `dyn`, because `WasmClosure` is implemented for
 `dyn FnMut(..) -> R + 'a` and no other shape (wasm-bindgen 0.2.126,
 `convert/closures.rs`). `Closure<dyn FnMut() + Send>` is a type that
 exists, satisfies `Send` by auto-derivation, and cannot be constructed.
+
+**C17 — `hclient-tls-native-tls` bridges a synchronous TLS stack.**
+`native-tls` fronts SChannel, Security.framework and OpenSSL through one
+**synchronous** `Read`/`Write` interface and answers
+`HandshakeError::WouldBlock` when the transport underneath is not ready.
+Bridging that to a poll-based world means handing the synchronous side a
+`Read`/`Write` that can reach the current task's waker, which is
+`stream.rs`'s `StdAdapter`: a raw `*mut ()` holding the `Context` for the
+length of one call, plus the two `unsafe impl`s that say the pointer does
+not make the type less `Send`/`Sync` than the stream it wraps.
+
+**Bounded three ways, and each is checkable.** The pointer is set
+immediately before a call into `native-tls` and cleared immediately after
+— by a `Guard` whose `Drop` runs on the unwinding path too, so a panic out
+of the platform stack cannot leave a dangling one. `with_context` asserts
+it is non-null rather than trusting the invariant, which turns a violation
+into a panic instead of a use-after-free. And it is null at every instant
+a value could be observed from anywhere but the call that set it, which is
+what the two `unsafe impl`s rest on.
+
+**Why the sans-io shape was not available.** `hclient-tls-rustls` needs
+none of this: rustls is sans-io, so its handshake is a loop over buffers
+this workspace owns and there is no `Context` to smuggle. That is the
+difference between the two TLS backends, not a difference in care.
+
+**What it replaced and what it bought.** The crate was a wrapper over
+`async-native-tls`, whose connector is a `pub async fn` — a future with no
+name, which `TlsConnect::Handshake` being an associated type (C15) made
+unusable, and which cost this backend `hclient::Client` entirely. Driving
+the handshake by hand was not enough on its own, because
+`async_native_tls::TlsStream::new` is `pub(crate)` and its own adapter is
+private, so the stream had to be owned too. Owning it gave back `Client`
+**and** `reports_alpn`, since `native_tls::TlsStream::negotiated_alpn` is
+public where the wrapper's was not — a limitation this crate documented as
+concrete for two verticals and which turned out to be the wrapper's.
+Measured: the graph fell from 66 crates to 32.
 
 ## One that is neither
 
